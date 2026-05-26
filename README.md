@@ -17,11 +17,13 @@ Unlike standalone media servers (Mediasoup, LiveKit), this is an **importable na
 
 ## Packages
 
-| Package                       | Description                                             |
-| ----------------------------- | ------------------------------------------------------- |
-| `@node-webrtc-rust/sdk`       | High-level TypeScript API mirroring the W3C WebRTC spec |
-| `@node-webrtc-rust/bindings`  | NAPI-RS native addon (compiled Rust → `.node` binary)   |
-| `@node-webrtc-rust/signaling` | Optional WebSocket signaling server/client helpers      |
+| Package                          | Description                                                        |
+| -------------------------------- | ------------------------------------------------------------------ |
+| `@node-webrtc-rust/sdk`          | High-level TypeScript API mirroring the W3C WebRTC spec            |
+| `@node-webrtc-rust/bindings`     | NAPI-RS native addon (compiled Rust → `.node` binary)              |
+| `@node-webrtc-rust/signaling`    | Optional WebSocket signaling server/client helpers                 |
+| `@node-webrtc-rust/conference`   | Conference room control plane (mute/kick, signaling bridge)        |
+| `@node-webrtc-rust/conference-bindings` | NAPI-RS native addon for conference rooms and mixing        |
 
 ## Quick Start
 
@@ -65,8 +67,25 @@ pc2.ondatachannel = (event) => {
 ```
 
 See [`examples/`](examples/) for runnable demos — DataChannel chat, a
-[cosine-tone audio track](examples/audio-cosine/) streamer, and
-[browser clients with room chat](examples/browser-cosine-chat/).
+[cosine-tone audio track](examples/audio-cosine/) streamer,
+[browser clients with room chat](examples/browser-cosine-chat/), and
+conference rooms with Rust-side audio mixing (`examples/conference-room/`).
+
+## Conference rooms
+
+Use `@node-webrtc-rust/conference` with `@node-webrtc-rust/signaling` to run
+multi-participant rooms where the Rust engine mixes inbound audio into a
+personalized stream per listener (excluding self-audio). TypeScript handles
+room admin (mute, kick, mixing on/off) and wires WebSocket signaling; the
+native layer owns peer connections and the mixer graph.
+
+```typescript
+import { ConferenceServer } from '@node-webrtc-rust/conference'
+
+const server = new ConferenceServer()
+server.attachSignaling({ url: 'ws://127.0.0.1:3000/ws' })
+await server.createRoom('demo')
+```
 
 ## Supported Platforms
 

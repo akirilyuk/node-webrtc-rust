@@ -1,0 +1,36 @@
+{
+  "name": "@node-webrtc-rust/conference",
+  "version": "0.1.0",
+  "description": "TypeScript control-plane API for node-webrtc-rust conference rooms and audio mixing",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cjs/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@node-webrtc-rust/conference-bindings": "0.1.0",
+    "@node-webrtc-rust/signaling": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

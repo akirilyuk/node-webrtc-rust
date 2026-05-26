@@ -11,6 +11,7 @@ import { MediaStreamTrack } from './MediaStreamTrack'
 import type { LocalAudioTrack } from './LocalAudioTrack'
 import { RTCDataChannel } from './RTCDataChannel'
 import { RTCIceCandidate } from './RTCIceCandidate'
+import { RTCRtpSender } from './RTCRtpSender'
 import { RTCSessionDescription } from './RTCSessionDescription'
 import type {
   RTCConfiguration,
@@ -18,8 +19,10 @@ import type {
   RTCDataChannelInit,
   RTCIceConnectionState,
   RTCIceCandidateInit,
+  RTCIceGatheringState,
   RTCPeerConnectionIceEvent,
   RTCPeerConnectionState,
+  RTCSignalingState,
   RTCOfferOptions,
   RTCTrackEvent,
 } from './types'
@@ -31,6 +34,7 @@ function toNativeConfig(config?: RTCConfiguration) {
       urls: Array.isArray(server.urls) ? server.urls : [server.urls],
       username: server.username,
       credential: server.credential,
+      credentialType: server.credentialType,
     })),
     iceTransportPolicy: config.iceTransportPolicy,
   }
@@ -47,18 +51,35 @@ function fromNativeDescription(desc: JsRtcSessionDescription): RTCSessionDescrip
   })
 }
 
+/**
+ * Browser-compatible WebRTC peer connection for Node.js.
+ *
+ * Wraps the native Rust engine and exposes the familiar W3C `RTCPeerConnection`
+ * event-handler API. Use with a signaling layer (see `@node-webrtc-rust/signaling`)
+ * to exchange SDP and ICE candidates between peers.
+ */
 export class RTCPeerConnection extends EventEmitter {
   private readonly native: NativePeerConnection
   private _localDescription: RTCSessionDescription | null = null
   private _remoteDescription: RTCSessionDescription | null = null
 
+  /** Fired when a local ICE candidate is gathered; `candidate` is null when gathering completes. */
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null
+  /** Fired when a remote media track is received. Requires RTP to flow on the sender side. */
   ontrack: ((event: RTCTrackEvent) => void) | null = null
+  /** Fired when the remote peer opens a data channel. */
   ondatachannel: ((event: RTCDataChannelEvent) => void) | null = null
+  /** Fired when {@link connectionState} changes. */
   onconnectionstatechange: ((event: Event) => void) | null = null
+  /** Fired when {@link iceConnectionState} changes. */
   oniceconnectionstatechange: ((event: Event) => void) | null = null
+  /** Fired when negotiation is required (e.g. after {@link addTrack}). */
   onnegotiationneeded: ((event: Event) => void) | null = null
 
+  /**
+   * Creates a peer connection.
+   * @param config - Optional ICE servers and transport policy (STUN/TURN).
+   */
   constructor(config?: RTCConfiguration) {
     super()
     this.native = new NativePeerConnection(toNativeConfig(config))
@@ -107,17 +128,32 @@ export class RTCPeerConnection extends EventEmitter {
       this.oniceconnectionstatechange?.(event)
       this.emit('iceconnectionstatechange', event)
     })
+
+    this.native.setOnNegotiationNeeded((_err) => {
+      const event = new Event('negotiationneeded')
+      this.onnegotiationneeded?.(event)
+      this.emit('negotiationneeded', event)
+    })
   }
 
+  /**
+   * Creates an SDP offer describing the local media and data channel setup.
+   * @param _options - Reserved for future W3C offer options.
+   */
   async createOffer(_options?: RTCOfferOptions): Promise<RTCSessionDescription> {
     void _options
     return fromNativeDescription(await this.native.createOffer())
   }
 
+  /** Creates an SDP answer after a remote offer has been applied via {@link setRemoteDescription}. */
   async createAnswer(): Promise<RTCSessionDescription> {
     return fromNativeDescription(await this.native.createAnswer())
   }
 
+  /**
+   * Applies the local session description (offer or answer).
+   * Triggers ICE gathering for offers and answers.
+   */
   async setLocalDescription(desc: RTCSessionDescription): Promise<void> {
     await this.native.setLocalDescription(toNativeDescription(desc))
     this._localDescription = desc
@@ -130,11 +166,16 @@ export class RTCPeerConnection extends EventEmitter {
     }
   }
 
+  /** Applies the remote session description received from the peer via signaling. */
   async setRemoteDescription(desc: RTCSessionDescription): Promise<void> {
     await this.native.setRemoteDescription(toNativeDescription(desc))
     this._remoteDescription = desc
   }
 
+  /**
+   * Adds a trickle ICE candidate from the remote peer.
+   * @param candidate - Candidate string and metadata from signaling.
+   */
   async addIceCandidate(candidate: RTCIceCandidate | RTCIceCandidateInit): Promise<void> {
     const init = candidate instanceof RTCIceCandidate ? candidate.toJSON() : candidate
     const nativeCandidate: JsRtcIceCandidate = {
@@ -146,6 +187,11 @@ export class RTCPeerConnection extends EventEmitter {
     await this.native.addIceCandidate(nativeCandidate)
   }
 
+  /**
+   * Creates an outgoing data channel on this connection.
+   * @param label - Application-defined channel name.
+   * @param options - Ordering, reliability, and negotiated channel id.
+   */
   createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannel {
     return RTCDataChannel.fromNativePromise(
       this.native.createDataChannel(label, options),
@@ -154,41 +200,58 @@ export class RTCPeerConnection extends EventEmitter {
     )
   }
 
-  async addTrack(track: LocalAudioTrack): Promise<void> {
+  /**
+   * Adds a local audio track for sending to the remote peer.
+   * Call {@link LocalAudioTrack.writeSample} after connecting to trigger `ontrack` on the receiver.
+   * @returns An {@link RTCRtpSender} handle for the added track.
+   */
+  async addTrack(track: LocalAudioTrack): Promise<RTCRtpSender> {
     await this.native.addTrack(track.native)
+    return new RTCRtpSender(track)
   }
 
+  /**
+   * Blocks until ICE gathering completes and refreshes {@link localDescription}
+   * with gathered candidates. Call after {@link setLocalDescription} before sending SDP.
+   */
   async gatheringComplete(): Promise<void> {
     await this.native.gatheringComplete()
     await this.refreshLocalDescription()
   }
 
+  /** Closes the connection and releases native resources. */
   close(): void {
     void this.native.close()
   }
 
+  /** Last local description set or refreshed after gathering. */
   get localDescription(): RTCSessionDescription | null {
     return this._localDescription
   }
 
+  /** Last remote description applied via {@link setRemoteDescription}. */
   get remoteDescription(): RTCSessionDescription | null {
     return this._remoteDescription
   }
 
+  /** Current overall connection state. */
   get connectionState(): RTCPeerConnectionState {
     return this.native.connectionState as RTCPeerConnectionState
   }
 
+  /** Current ICE transport state. */
   get iceConnectionState(): RTCIceConnectionState {
     return this.native.iceConnectionState as RTCIceConnectionState
   }
 
-  get iceGatheringState(): 'new' | 'gathering' | 'complete' {
-    return 'new'
+  /** Current ICE candidate gathering state. */
+  get iceGatheringState(): RTCIceGatheringState {
+    return this.native.iceGatheringState as RTCIceGatheringState
   }
 
-  get signalingState(): 'stable' | 'closed' {
-    return this.connectionState === 'closed' ? 'closed' : 'stable'
+  /** Current SDP negotiation state. */
+  get signalingState(): RTCSignalingState {
+    return this.native.signalingState as RTCSignalingState
   }
 }
 

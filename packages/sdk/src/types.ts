@@ -3,8 +3,10 @@ import type { MediaStream } from './MediaStream'
 import type { MediaStreamTrack } from './MediaStreamTrack'
 import type { RTCIceCandidate } from './RTCIceCandidate'
 
+/** SDP session description type per the WebRTC specification. */
 export type RTCSdpType = 'offer' | 'answer' | 'pranswer' | 'rollback'
 
+/** Overall peer connection lifecycle state. */
 export type RTCPeerConnectionState =
   | 'new'
   | 'connecting'
@@ -13,6 +15,7 @@ export type RTCPeerConnectionState =
   | 'failed'
   | 'closed'
 
+/** ICE transport connectivity state. */
 export type RTCIceConnectionState =
   | 'new'
   | 'checking'
@@ -22,8 +25,10 @@ export type RTCIceConnectionState =
   | 'failed'
   | 'closed'
 
+/** ICE candidate gathering progress. */
 export type RTCIceGatheringState = 'new' | 'gathering' | 'complete'
 
+/** SDP offer/answer negotiation state. */
 export type RTCSignalingState =
   | 'stable'
   | 'have-local-offer'
@@ -32,28 +37,39 @@ export type RTCSignalingState =
   | 'have-remote-pranswer'
   | 'closed'
 
+/** Data channel connection state. */
 export type RTCDataChannelState = 'connecting' | 'open' | 'closing' | 'closed'
 
+/** Media track kind. */
 export type TrackKind = 'audio' | 'video'
 
+/** STUN or TURN server entry in {@link RTCConfiguration}. */
 export interface RTCIceServer {
+  /** One or more `stun:` or `turn:` URLs. */
   urls: string | string[]
+  /** TURN username (required for authenticated TURN servers). */
   username?: string
+  /** TURN password or time-limited credential. */
   credential?: string
+  /** How the credential should be interpreted; defaults to `password`. */
   credentialType?: 'password' | 'oauth'
 }
 
+/** Peer connection ICE and transport settings. */
 export interface RTCConfiguration {
   iceServers?: RTCIceServer[]
+  /** When `relay`, only TURN relay candidates are used. */
   iceTransportPolicy?: 'all' | 'relay'
 }
 
+/** Options passed to {@link RTCPeerConnection.createOffer}. */
 export interface RTCOfferOptions {
   offerToReceiveAudio?: boolean
   offerToReceiveVideo?: boolean
   iceRestart?: boolean
 }
 
+/** Plain-object ICE candidate for signaling transport. */
 export interface RTCIceCandidateInit {
   candidate?: string
   sdpMid?: string | null
@@ -61,6 +77,7 @@ export interface RTCIceCandidateInit {
   usernameFragment?: string | null
 }
 
+/** Options for {@link RTCPeerConnection.createDataChannel}. */
 export interface RTCDataChannelInit {
   ordered?: boolean
   maxPacketLifeTime?: number
@@ -69,28 +86,35 @@ export interface RTCDataChannelInit {
   negotiated?: number
 }
 
+/** Event payload for {@link RTCPeerConnection.onicecandidate}. */
 export interface RTCPeerConnectionIceEvent {
+  /** Local candidate, or `null` when gathering has finished. */
   candidate: RTCIceCandidate | null
 }
 
+/** Error event emitted by data channels. */
 export interface RTCErrorEvent {
   type: 'error'
   message: string
 }
 
+/** Event payload for {@link RTCPeerConnection.ontrack}. */
 export interface RTCTrackEvent {
   track: MediaStreamTrack
   streams: MediaStream[]
 }
 
+/** Event payload for {@link RTCPeerConnection.ondatachannel}. */
 export interface RTCDataChannelEvent {
   channel: RTCDataChannel
 }
 
+/** Incoming data channel message. */
 export interface MessageEvent<T = string | Buffer> {
   data: T
 }
 
+/** Plain-object session description for signaling transport. */
 export interface RTCSessionDescriptionInit {
   type: RTCSdpType
   sdp: string

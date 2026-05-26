@@ -6,21 +6,40 @@ import type { MessageEvent, RTCDataChannelInit, RTCDataChannelState, RTCErrorEve
 
 type SendPayload = string | Buffer | ArrayBuffer | Uint8Array
 
+/**
+ * WebRTC data channel for peer-to-peer messaging.
+ *
+ * Created via {@link RTCPeerConnection.createDataChannel} or received through
+ * {@link RTCPeerConnection.ondatachannel}.
+ */
 export class RTCDataChannel extends EventEmitter {
   protected native: NativeDataChannel | null = null
+  /** Application-defined channel label. */
   readonly label: string
+  /** Whether messages are delivered in send order. */
   readonly ordered: boolean
+  /** Sub-protocol negotiated for this channel. */
   readonly protocol: string
+  /** Negotiated channel id, or null when assigned by the engine. */
   readonly id: number | null
+  /** Current channel lifecycle state. */
   readyState: RTCDataChannelState = 'connecting'
+  /** Bytes queued for transmission (not yet sent). */
   bufferedAmount = 0
+  /** How binary messages are exposed in {@link onmessage}. */
   binaryType: 'arraybuffer' | 'blob' = 'arraybuffer'
+  /** Threshold for {@link onbufferedamountlow} (not yet emitted in v0.1). */
   bufferedAmountLowThreshold = 0
 
+  /** Fired when the channel is open and ready to send. */
   onopen: ((event: Event) => void) | null = null
+  /** Fired when a message arrives from the remote peer. */
   onmessage: ((event: MessageEvent) => void) | null = null
+  /** Fired when the channel closes. */
   onclose: ((event: Event) => void) | null = null
+  /** Fired on send or transport errors. */
   onerror: ((event: RTCErrorEvent) => void) | null = null
+  /** Reserved; not emitted in v0.1. */
   onbufferedamountlow: ((event: Event) => void) | null = null
 
   private readonly pendingSends: SendPayload[] = []
@@ -36,6 +55,7 @@ export class RTCDataChannel extends EventEmitter {
     this.attachNative(native)
   }
 
+  /** Wraps a native channel that resolves asynchronously (outgoing channels). */
   static fromNativePromise(
     nativePromise: Promise<NativeDataChannel>,
     label: string,
@@ -60,6 +80,10 @@ export class RTCDataChannel extends EventEmitter {
     return channel
   }
 
+  /**
+   * Sends a string or binary payload.
+   * Messages sent before the native channel is ready are queued and flushed on open.
+   */
   send(data: SendPayload): void {
     if (!this.native) {
       this.pendingSends.push(data)
@@ -76,6 +100,7 @@ export class RTCDataChannel extends EventEmitter {
     void this.native.send(payload).catch((error: unknown) => this.emitError(error))
   }
 
+  /** Closes the channel locally. */
   close(): void {
     if (this.native) {
       void this.native.close()

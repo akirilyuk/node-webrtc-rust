@@ -1,15 +1,42 @@
 {
   "name": "@node-webrtc-rust/signaling",
   "version": "0.1.0",
-  "description": "Node.js signaling helpers (WebSocket and HTTP) for node-webrtc-rust",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "description": "TypeScript WebSocket signaling helpers for node-webrtc-rust",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cjs/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc",
-    "test": "echo \"No tests yet\""
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "@node-webrtc-rust/sdk": "0.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  },
+  "peerDependencies": {
+    "@node-webrtc-rust/sdk": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@node-webrtc-rust/sdk": {
+      "optional": true
+    }
   },
   "license": "MIT",
   "engines": {

@@ -19,6 +19,7 @@ interface Peer {
  */
 export class SignalingServer extends EventEmitter {
   private readonly wss: WebSocketServer
+  private readonly attachedServer?: HttpServer
   private readonly rooms = new Map<string, Map<string, Peer>>()
   private httpServer: HttpServer | null = null
   private listeningPort = 0
@@ -26,6 +27,7 @@ export class SignalingServer extends EventEmitter {
   /** @param options - Optional HTTP server attachment or WebSocket path. */
   constructor(options: SignalingServerOptions = {}) {
     super()
+    this.attachedServer = options.server
     this.wss = options.server
       ? new WebSocketServer({ server: options.server, path: options.path })
       : new WebSocketServer({ noServer: true })
@@ -43,6 +45,28 @@ export class SignalingServer extends EventEmitter {
   listen(port = 8080): Promise<void> {
     if (this.httpServer) {
       return Promise.resolve()
+    }
+
+    if (this.attachedServer) {
+      const httpServer = this.attachedServer
+      this.httpServer = httpServer
+      return new Promise((resolve, reject) => {
+        this.wss.on('connection', (socket) => this.handleConnection(socket))
+
+        const onListening = () => {
+          const address = httpServer.address()
+          this.listeningPort = typeof address === 'object' && address ? address.port : port
+          resolve()
+        }
+
+        if (httpServer.listening) {
+          onListening()
+          return
+        }
+
+        httpServer.listen(port, onListening)
+        httpServer.on('error', reject)
+      })
     }
 
     return new Promise((resolve, reject) => {

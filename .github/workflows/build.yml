@@ -59,11 +59,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cargo-zigbuild
+      - name: Install zig for cross-compilation
         if: matrix.cross
-        run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild
+        run: pip3 install ziglang
 
       - name: Install bindings dependencies
         working-directory: packages/bindings
@@ -72,7 +70,11 @@ jobs:
       - name: Build native addon
         working-directory: packages/bindings
         run: |
-          npx napi build --platform --release ${{ matrix.build-args }} ${{ matrix.cross && '-x' || '' }}
+          EXTRA_FLAGS=""
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            EXTRA_FLAGS="--zig"
+          fi
+          npx napi build --platform --release ${{ matrix.build-args }} $EXTRA_FLAGS
 
       - name: Upload bindings artifact
         uses: actions/upload-artifact@v4

@@ -28,13 +28,19 @@ Rebuild and push `ghcr.io/.../ci-build:latest` **only when**:
 
 The main build workflow always pulls `:latest`; it never rebuilds the image.
 
-## Local validation before changing `docker/ci/`
+## Local validation before pushing / opening PRs
 
-When editing the CI Dockerfile, run locally before committing:
+Mirror CI native Linux builds and PR checks without spending Actions minutes:
 
 ```bash
-docker build -t node-webrtc-rust-ci-build:local docker/ci
-docker run --rm node-webrtc-rust-ci-build:local sh -c 'node --version && rustc --version && zig version'
+# Linux cross-target native builds (same as build-linux jobs)
+npm run ci:verify:linux
+
+# PR test job (format, lint, typecheck, cargo test, npm test) inside CI image
+npm run ci:verify:checks:docker
+
+# Both
+npm run ci:verify
 ```
 
-Then push to `ci` to publish the updated image before expecting green Linux jobs.
+After changing `docker/ci/Dockerfile`, rebuild the image (`npm run ci:docker:build`) then push to the `ci` branch so `ghcr.io/.../ci-build:latest` picks up cmake and other deps before merging workflow changes that rely on them.

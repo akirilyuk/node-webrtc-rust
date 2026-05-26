@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Mirror the PR test job checks locally (format, lint, typecheck, cargo test, npm test).
+# Run ./scripts/ci/verify-linux.sh first if you need a linux-gnu .node for npm tests on macOS/Windows.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+IMAGE="${CI_IMAGE_LOCAL:-node-webrtc-rust-ci-build:local}"
+USE_DOCKER="${CI_VERIFY_CHECKS_IN_DOCKER:-}"
+
+run() {
+  if [[ -n "$USE_DOCKER" ]]; then
+    docker run --rm \
+      -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+      -v "$ROOT:/workspace" \
+      -w /workspace \
+      "$IMAGE" \
+      bash -lc "$1"
+  else
+    bash -lc "cd \"$ROOT\" && $1"
+  fi
+}
+
+if [[ -n "$USE_DOCKER" ]]; then
+  echo "==> Using CI Docker image for checks: $IMAGE"
+  docker build -t "$IMAGE" "$ROOT/docker/ci" >/dev/null
+fi
+
+echo "==> npm ci"
+run "npm ci"
+
+echo "==> format:check"
+run "npm run format:check"
+
+echo "==> lint"
+run "npm run lint"
+
+echo "==> typecheck"
+run "npm run typecheck"
+
+echo "==> cargo test (core, mixer, conference)"
+run "cargo test -p node-webrtc-rust-core"
+run "cargo test -p node-webrtc-rust-mixer"
+run "cargo test -p node-webrtc-rust-conference"
+
+echo "==> build:ts"
+run "npm run build:ts"
+
+echo "==> npm test"
+run "npm test"
+
+echo "==> PR checks OK"

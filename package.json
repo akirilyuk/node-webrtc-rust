@@ -16,7 +16,12 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "ci:docker:build": "docker build -t node-webrtc-rust-ci-build:local docker/ci",
+    "ci:verify:linux": "bash scripts/ci/verify-linux.sh",
+    "ci:verify:checks": "bash scripts/ci/verify-checks.sh",
+    "ci:verify:checks:docker": "CI_VERIFY_CHECKS_IN_DOCKER=1 bash scripts/ci/verify-checks.sh",
+    "ci:verify": "npm run ci:verify:linux && npm run ci:verify:checks:docker"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

@@ -17,11 +17,11 @@ Unlike standalone media servers (Mediasoup, LiveKit), this is an **importable na
 
 This is a monorepo containing:
 
-| Package | Description |
-|---------|-------------|
-| `@node-webrtc-rust/sdk` | High-level TypeScript API mirroring the W3C WebRTC spec |
-| `@node-webrtc-rust/bindings` | NAPI-RS native addon (compiled Rust → `.node` binary) |
-| `@node-webrtc-rust/signaling` | Optional WebSocket signaling server/client helpers |
+| Package                       | Description                                             |
+| ----------------------------- | ------------------------------------------------------- |
+| `@node-webrtc-rust/sdk`       | High-level TypeScript API mirroring the W3C WebRTC spec |
+| `@node-webrtc-rust/bindings`  | NAPI-RS native addon (compiled Rust → `.node` binary)   |
+| `@node-webrtc-rust/signaling` | Optional WebSocket signaling server/client helpers      |
 
 ## Quick Start
 
@@ -36,8 +36,8 @@ import { SignalingServer, SignalingClient, autoNegotiate } from '@node-webrtc-ru
 const pc = new RTCPeerConnection({
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'turn:your-server:3478', username: 'user', credential: 'pass' }
-  ]
+    { urls: 'turn:your-server:3478', username: 'user', credential: 'pass' },
+  ],
 })
 
 const dc = pc.createDataChannel('chat')
@@ -47,14 +47,14 @@ dc.onmessage = (event) => console.log('Received:', event.data)
 
 ## Supported Platforms
 
-| OS | Arch | Status |
-|----|------|--------|
-| macOS | arm64 (M1+) | Supported |
-| macOS | x64 (Intel) | Supported |
-| Linux | x64 (glibc) | Supported |
-| Linux | x64 (musl/Alpine) | Supported |
-| Linux | arm64 (glibc) | Supported |
-| Windows | x64 (MSVC) | Supported |
+| OS      | Arch              | Status    |
+| ------- | ----------------- | --------- |
+| macOS   | arm64 (M1+)       | Supported |
+| macOS   | x64 (Intel)       | Supported |
+| Linux   | x64 (glibc)       | Supported |
+| Linux   | x64 (musl/Alpine) | Supported |
+| Linux   | arm64 (glibc)     | Supported |
+| Windows | x64 (MSVC)        | Supported |
 
 ## Repository Structure
 

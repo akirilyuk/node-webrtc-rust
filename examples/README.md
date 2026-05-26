@@ -11,6 +11,7 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | **peer-connection**      | Two-peer WebRTC connection with a DataChannel over WebSocket signaling |
 | **audio-cosine**         | Local audio track streaming a 440 Hz cosine tone generated in PCM      |
 | **browser-cosine-chat**  | Browser clients receive a shared cosine tone from Node and chat in rooms |
+| **conference-room**      | Browser mic audio mixed in Rust with mute, mixing toggle, and kick controls |
 
 ## Prerequisites
 
@@ -58,3 +59,17 @@ npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat
 Open `http://localhost:3000` in multiple tabs, enter the same room name, and
 click **Connect**. Each tab hears the cosine tone; messages propagate to every
 connected peer in that room via WebRTC data channels.
+
+### Conference room (audio mixing)
+
+Browser clients send microphone audio to a Rust-side mixer and receive a personalized
+mixed stream (excluding self-audio). The demo exposes global mute, per-listener mute,
+room-wide mixing on/off, and kick via REST admin routes.
+
+```bash
+npm run start --workspace=@node-webrtc-rust/example-conference-room
+```
+
+Open `http://localhost:8080` in multiple tabs, join the same room, and allow microphone
+access. Set `WEBRTC_DEBUG=1` to trace conference and WebRTC calls. See
+[`conference-room/README.md`](conference-room/README.md) for a manual test script.

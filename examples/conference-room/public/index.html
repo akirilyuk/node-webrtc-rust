@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Conference Room</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Conference Room</h1>
+        <p>
+          Browser clients send microphone audio to a Rust-side mixer and receive a personalized
+          mixed stream (excluding your own voice). Use the controls to try global mute,
+          per-listener mute, room-wide mixing off, and kick.
+        </p>
+      </header>
+
+      <section class="panel">
+        <label>
+          Display name
+          <input id="display-name" type="text" maxlength="32" placeholder="Alice" />
+        </label>
+        <label>
+          Room
+          <input id="room" type="text" maxlength="32" value="demo" />
+        </label>
+        <button id="connect" type="button">Connect</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+        <p id="status" class="status">Disconnected</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Mixed audio</h2>
+        <p id="audio-status">Waiting for mixed track…</p>
+        <audio id="mixed-audio" controls autoplay></audio>
+      </section>
+
+      <section class="panel">
+        <h2>Room controls</h2>
+        <p id="mixing-status">Mixing: unknown</p>
+        <button id="disable-mixing" type="button" disabled>Disable room mixing</button>
+        <button id="enable-mixing" type="button" disabled>Enable room mixing</button>
+      </section>
+
+      <section class="panel">
+        <h2>Participants</h2>
+        <ul id="participants"></ul>
+      </section>
+
+      <section class="panel log-panel">
+        <h2>Event log</h2>
+        <ul id="log"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

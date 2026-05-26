@@ -4,9 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Audio/video mixing pipeline for node-webrtc-rust"
+description = "PCM audio mixing pipeline for node-webrtc-rust"
 
 [dependencies]
-node-webrtc-rust-core = { path = "../core" }
-tokio = { workspace = true }
+audiopus = "0.3.0-rc.0"
 bytes = { workspace = true }
+thiserror = { workspace = true }

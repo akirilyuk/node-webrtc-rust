@@ -2,10 +2,10 @@ name: Build & Publish Bindings
 
 on:
   push:
-    branches: [main]
+    branches: [main, initial-feature]
     tags: ['v*']
   pull_request:
-    branches: [main]
+    branches: [main, initial-feature]
 
 env:
   CARGO_TERM_COLOR: always
@@ -80,6 +80,34 @@ jobs:
           name: bindings-${{ matrix.target }}
           path: packages/bindings/*.node
           if-no-files-found: error
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Download native binding
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-x86_64-unknown-linux-gnu
+          path: packages/bindings/
+
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: cargo test -p node-webrtc-rust-core
+      - run: npm run build:ts
+      - run: npm test
 
   publish:
     name: Publish

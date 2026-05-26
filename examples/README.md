@@ -1,11 +1,18 @@
 # Examples
 
-Runnable demo applications for node-webrtc-rust.
+Runnable TypeScript demo applications for node-webrtc-rust.
 
-Each example will be an npm workspace package under this directory.
+Each example is an npm workspace package under this directory, authored in **TypeScript** and run with `tsx` or compiled output.
 
-Planned examples:
+## Available examples
 
-- **peer-connection** — Basic two-peer WebRTC connection with Node.js signaling
-- **audio-mixer** — Mix multiple audio streams into one output
-- **video-compositor** — Composite multiple video streams into a grid layout
+- **peer-connection** — Basic two-peer WebRTC connection with WebSocket signaling
+
+## Running an example
+
+```bash
+npm install
+npm run build --workspace=@node-webrtc-rust/sdk --workspace=@node-webrtc-rust/signaling
+cd packages/bindings && npm run build
+npm run start --workspace=@node-webrtc-rust/example-peer-connection
+```

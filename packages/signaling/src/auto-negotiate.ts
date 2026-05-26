@@ -7,6 +7,17 @@ import {
 
 import type { AutoNegotiateOptions } from './types'
 
+/**
+ * Wires a {@link RTCPeerConnection} to a {@link SignalingClient} for automatic
+ * SDP and trickle ICE exchange.
+ *
+ * The impolite peer (`polite: false`) creates an offer when a remote peer joins.
+ * The polite peer (`polite: true`) answers incoming offers and handles offer glare
+ * by ignoring concurrent offers while making its own.
+ *
+ * @param options - Peer connection, connected signaling client, and role.
+ * @returns Teardown function that removes all signaling listeners.
+ */
 export function autoNegotiate(options: AutoNegotiateOptions): () => void {
   const { pc, signaling, polite } = options
   const knownPeers = new Set<string>()

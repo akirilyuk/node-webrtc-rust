@@ -11,12 +11,19 @@ interface Peer {
   socket: WebSocket
 }
 
+/**
+ * Minimal room-based WebSocket signaling server for SDP and ICE relay.
+ *
+ * Peers join a named room, receive `peer-joined` notifications, and exchange
+ * targeted `offer`, `answer`, and `ice-candidate` messages.
+ */
 export class SignalingServer extends EventEmitter {
   private readonly wss: WebSocketServer
   private readonly rooms = new Map<string, Map<string, Peer>>()
   private httpServer: HttpServer | null = null
   private listeningPort = 0
 
+  /** @param options - Optional HTTP server attachment or WebSocket path. */
   constructor(options: SignalingServerOptions = {}) {
     super()
     this.wss = options.server
@@ -24,10 +31,15 @@ export class SignalingServer extends EventEmitter {
       : new WebSocketServer({ noServer: true })
   }
 
+  /** Port the HTTP server is listening on after {@link listen}. */
   get port(): number {
     return this.listeningPort
   }
 
+  /**
+   * Starts the HTTP server and WebSocket upgrade handler.
+   * @param port - Port to bind; use `0` for an ephemeral port.
+   */
   listen(port = 8080): Promise<void> {
     if (this.httpServer) {
       return Promise.resolve()
@@ -50,6 +62,7 @@ export class SignalingServer extends EventEmitter {
     })
   }
 
+  /** Closes all peer sockets and the underlying HTTP/WebSocket servers. */
   close(): Promise<void> {
     for (const room of this.rooms.values()) {
       for (const peer of room.values()) {

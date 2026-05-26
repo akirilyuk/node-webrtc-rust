@@ -10,9 +10,17 @@ import type {
   SignalingMessage,
 } from './types'
 
+/**
+ * WebSocket signaling client for a single room.
+ *
+ * Emits `peer-joined`, `offer`, `answer`, and `ice-candidate` events for use
+ * with {@link autoNegotiate} or custom negotiation logic.
+ */
 export class SignalingClient extends EventEmitter {
   private ws: WebSocket | null = null
+  /** This client's peer id (used as the `peerId` field in outbound messages). */
   readonly peerId: string
+  /** Room this client joined. */
   readonly room: string
   private readonly url: string
 
@@ -23,6 +31,7 @@ export class SignalingClient extends EventEmitter {
     this.peerId = options.peerId ?? randomPeerId()
   }
 
+  /** Opens the WebSocket and sends a `join` message for {@link room}. */
   connect(): Promise<void> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return Promise.resolve()
@@ -44,11 +53,13 @@ export class SignalingClient extends EventEmitter {
     })
   }
 
+  /** Closes the WebSocket connection. */
   disconnect(): void {
     this.ws?.close()
     this.ws = null
   }
 
+  /** Sends an SDP offer to a specific peer in the room. */
   sendOffer(targetPeerId: string, sdp: OfferEvent['sdp']): void {
     this.send({
       type: 'offer',
@@ -59,6 +70,7 @@ export class SignalingClient extends EventEmitter {
     })
   }
 
+  /** Sends an SDP answer to a specific peer in the room. */
   sendAnswer(targetPeerId: string, sdp: AnswerEvent['sdp']): void {
     this.send({
       type: 'answer',
@@ -69,6 +81,7 @@ export class SignalingClient extends EventEmitter {
     })
   }
 
+  /** Sends a trickle ICE candidate to a specific peer in the room. */
   sendIceCandidate(targetPeerId: string, candidate: IceCandidateEvent['candidate']): void {
     this.send({
       type: 'ice-candidate',

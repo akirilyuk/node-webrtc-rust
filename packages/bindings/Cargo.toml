@@ -1,0 +1,19 @@
+[package]
+name = "node-webrtc-rust-bindings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NAPI-RS bindings exposing WebRTC and mixing APIs to Node.js"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+node-webrtc-rust-core = { path = "../../crates/core" }
+node-webrtc-rust-mixer = { path = "../../crates/mixer" }
+napi = { workspace = true }
+napi-derive = { workspace = true }
+
+[build-dependencies]
+napi-build = "2"

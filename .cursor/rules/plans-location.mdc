@@ -1,0 +1,15 @@
+---
+description: Store all plans in the development/plans directory
+alwaysApply: true
+---
+
+# Plans Storage
+
+All plans (implementation plans, architecture plans, feature plans, etc.) must be saved as markdown files in `development/plans/`.
+
+- Use descriptive filenames with date prefix, e.g. `2026-05-26-initial-architecture.md`
+- Do not store plans elsewhere in the repo
+
+## After Plan Mode execution
+
+When a plan is confirmed and executed, copy the final plan file into `development/plans/` with a date-prefixed descriptive filename. This ensures the development folder always contains the full history of decisions and executed plans, even though `development/` is git-ignored and plans in `.cursor/plans/` may be transient.

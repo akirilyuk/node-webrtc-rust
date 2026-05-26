@@ -1,0 +1,21 @@
+{
+  "name": "@node-webrtc-rust/sdk",
+  "version": "0.1.0",
+  "description": "Browser-compatible WebRTC API with audio/video mixing for Node.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"No tests yet\""
+  },
+  "dependencies": {
+    "@node-webrtc-rust/bindings": "0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

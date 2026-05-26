@@ -1,0 +1,12 @@
+[package]
+name = "node-webrtc-rust-mixer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Audio/video mixing pipeline for node-webrtc-rust"
+
+[dependencies]
+node-webrtc-rust-core = { path = "../core" }
+tokio = { workspace = true }
+bytes = { workspace = true }

@@ -1,0 +1,14 @@
+{
+  "name": "@node-webrtc-rust/bindings-linux-arm64-gnu",
+  "version": "0.1.0",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "main": "node-webrtc-rust.linux-arm64-gnu.node",
+  "files": ["node-webrtc-rust.linux-arm64-gnu.node"],
+  "description": "node-webrtc-rust native binding for Linux arm64 (glibc)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "libc": ["glibc"]
+}

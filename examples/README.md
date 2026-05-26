@@ -58,7 +58,8 @@ npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat
 
 Open `http://localhost:3000` in multiple tabs, enter the same room name, and
 click **Connect**. Each tab hears the cosine tone; messages propagate to every
-connected peer in that room via WebRTC data channels.
+connected peer in that room via WebRTC data channels. The page shows a live
+waveform and spectrum graph of the incoming server audio track.
 
 ### Conference room (audio mixing)
 
@@ -71,5 +72,6 @@ npm run start --workspace=@node-webrtc-rust/example-conference-room
 ```
 
 Open `http://localhost:8080` in multiple tabs, join the same room, and allow microphone
-access. Set `WEBRTC_DEBUG=1` to trace conference and WebRTC calls. See
+access. Live waveform graphs show your outgoing microphone and the incoming mixed
+track from the Rust mixer. Set `WEBRTC_DEBUG=1` to trace conference and WebRTC calls. See
 [`conference-room/README.md`](conference-room/README.md) for a manual test script.

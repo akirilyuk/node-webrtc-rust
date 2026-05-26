@@ -1,6 +1,8 @@
 const SERVER_PEER_ID = 'cosine-server'
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
 
+import { attachAudioVisualizer } from '/shared/audio-visualizer.js'
+
 const displayNameInput = document.getElementById('display-name')
 const roomInput = document.getElementById('room')
 const connectButton = document.getElementById('connect')
@@ -11,6 +13,8 @@ const toneEl = document.getElementById('tone')
 const messagesEl = document.getElementById('messages')
 const chatForm = document.getElementById('chat-form')
 const messageInput = document.getElementById('message')
+const incomingVizCanvas = document.getElementById('incoming-viz')
+const vizStatusEl = document.getElementById('viz-status')
 
 /** @type {WebSocket | null} */
 let ws = null
@@ -25,6 +29,8 @@ let displayName = 'Guest'
 const peerConnections = new Map()
 /** @type {Map<string, RTCDataChannel>} */
 const chatChannels = new Map()
+/** @type {{ stop: () => void } | null} */
+let incomingVisualizer = null
 
 connectButton.addEventListener('click', () => {
   void connect()
@@ -105,6 +111,9 @@ function disconnect() {
 }
 
 function cleanupPeers() {
+  incomingVisualizer?.stop()
+  incomingVisualizer = null
+  vizStatusEl.textContent = 'Waiting for server track…'
   for (const { pc } of peerConnections.values()) {
     pc.close()
   }
@@ -201,7 +210,16 @@ async function onOffer(fromPeerId, sdp) {
     pc.ontrack = (event) => {
       toneEl.srcObject = event.streams[0] ?? new MediaStream([event.track])
       void toneEl.play().catch(() => undefined)
+      incomingVisualizer?.stop()
+      incomingVisualizer = attachAudioVisualizer({
+        canvas: incomingVizCanvas,
+        audioElement: toneEl,
+        waveColor: '#fbbf24',
+        barColor: '#f59e0b',
+      })
+      incomingVisualizer.resume()
       audioStatusEl.textContent = 'Playing 440 Hz cosine tone from Node server'
+      vizStatusEl.textContent = 'Live waveform of incoming server audio track'
     }
 
     pc.onicecandidate = (event) => {

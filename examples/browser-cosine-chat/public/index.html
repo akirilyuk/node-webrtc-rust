@@ -31,9 +31,11 @@
       </section>
 
       <section class="panel audio-panel">
-        <h2>Cosine tone</h2>
-        <p id="audio-status">Waiting for server track…</p>
+        <h2>Incoming audio track</h2>
+        <canvas id="incoming-viz" width="640" height="160" aria-label="Incoming audio waveform"></canvas>
+        <p id="viz-status" class="viz-status">Waiting for server track…</p>
         <audio id="tone" controls autoplay></audio>
+        <p id="audio-status">Waiting for server track…</p>
       </section>
 
       <section class="panel chat-panel">

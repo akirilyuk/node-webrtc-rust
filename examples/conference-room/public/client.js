@@ -1,6 +1,8 @@
 const SERVER_PEER_ID = 'conference-server'
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
 
+import { attachAudioVisualizer } from '/shared/audio-visualizer.js'
+
 const displayNameInput = document.getElementById('display-name')
 const roomInput = document.getElementById('room')
 const connectButton = document.getElementById('connect')
@@ -13,6 +15,10 @@ const logEl = document.getElementById('log')
 const mixingStatusEl = document.getElementById('mixing-status')
 const disableMixingButton = document.getElementById('disable-mixing')
 const enableMixingButton = document.getElementById('enable-mixing')
+const micVizCanvas = document.getElementById('mic-viz')
+const incomingVizCanvas = document.getElementById('incoming-viz')
+const micVizStatusEl = document.getElementById('mic-viz-status')
+const incomingVizStatusEl = document.getElementById('incoming-viz-status')
 
 /** @type {WebSocket | null} */
 let ws = null
@@ -28,6 +34,10 @@ let pc = null
 let localStream = null
 /** @type {ReturnType<typeof setInterval> | null} */
 let participantPollTimer = null
+/** @type {{ stop: () => void } | null} */
+let micVisualizer = null
+/** @type {{ stop: () => void } | null} */
+let incomingVisualizer = null
 
 connectButton.addEventListener('click', () => {
   void connect()
@@ -110,6 +120,12 @@ function disconnect() {
 
 function cleanupConnection() {
   stopParticipantPolling()
+  micVisualizer?.stop()
+  micVisualizer = null
+  incomingVisualizer?.stop()
+  incomingVisualizer = null
+  micVizStatusEl.textContent = 'Connect to visualize outgoing audio'
+  incomingVizStatusEl.textContent = 'Waiting for mixed track…'
   pc?.close()
   pc = null
   for (const track of localStream?.getTracks() ?? []) {
@@ -151,6 +167,14 @@ async function onServerOffer(sdp) {
 
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    micVisualizer?.stop()
+    micVisualizer = attachAudioVisualizer({
+      canvas: micVizCanvas,
+      mediaStream: localStream,
+      waveColor: '#34d399',
+      barColor: '#10b981',
+    })
+    micVizStatusEl.textContent = 'Live microphone waveform (outgoing to mixer)'
   } catch (error) {
     setStatus(`Microphone access denied: ${error}`)
     connectButton.disabled = false
@@ -166,7 +190,16 @@ async function onServerOffer(sdp) {
   pc.ontrack = (event) => {
     mixedAudioEl.srcObject = event.streams[0] ?? new MediaStream([event.track])
     void mixedAudioEl.play().catch(() => undefined)
+    incomingVisualizer?.stop()
+    incomingVisualizer = attachAudioVisualizer({
+      canvas: incomingVizCanvas,
+      audioElement: mixedAudioEl,
+      waveColor: '#38bdf8',
+      barColor: '#818cf8',
+    })
+    incomingVisualizer.resume()
     audioStatusEl.textContent = 'Playing personalized mixed audio from conference server'
+    incomingVizStatusEl.textContent = 'Live waveform of incoming mixed track'
     appendLog('Receiving mixed audio track')
   }
 

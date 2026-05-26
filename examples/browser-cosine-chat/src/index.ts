@@ -9,6 +9,7 @@ import { RoomManager } from './room-manager'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PUBLIC_DIR = join(__dirname, '../public')
+const SHARED_DIR = join(__dirname, '../../shared')
 const PORT = Number(process.env.PORT ?? 3000)
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
 const TONE_HZ = 440
@@ -21,6 +22,22 @@ const MIME_TYPES: Record<string, string> = {
 
 async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const pathname = req.url?.split('?')[0] ?? '/'
+
+  if (pathname.startsWith('/shared/')) {
+    const sharedPath = join(SHARED_DIR, pathname.slice('/shared/'.length))
+    const ext = extname(sharedPath)
+    try {
+      const body = await readFile(sharedPath)
+      res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] ?? 'application/octet-stream' })
+      res.end(body)
+      return
+    } catch {
+      res.writeHead(404)
+      res.end('Not found')
+      return
+    }
+  }
+
   const filePath = join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname)
   const ext = extname(filePath)
 

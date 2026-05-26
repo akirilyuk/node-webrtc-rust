@@ -32,9 +32,26 @@
       </section>
 
       <section class="panel audio-panel">
-        <h2>Mixed audio</h2>
-        <p id="audio-status">Waiting for mixed track…</p>
+        <h2>Audio levels</h2>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <h3>Your microphone</h3>
+            <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform"></canvas>
+            <p id="mic-viz-status" class="viz-status">Connect to visualize outgoing audio</p>
+          </div>
+          <div class="viz-card">
+            <h3>Incoming mixed track</h3>
+            <canvas
+              id="incoming-viz"
+              width="640"
+              height="160"
+              aria-label="Incoming mixed audio waveform"
+            ></canvas>
+            <p id="incoming-viz-status" class="viz-status">Waiting for mixed track…</p>
+          </div>
+        </div>
         <audio id="mixed-audio" controls autoplay></audio>
+        <p id="audio-status">Waiting for mixed track…</p>
       </section>
 
       <section class="panel">

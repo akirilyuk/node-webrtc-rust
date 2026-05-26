@@ -110,3 +110,19 @@ button:disabled {
 audio {
   width: 100%;
 }
+
+#incoming-viz {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-bottom: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #243041;
+  background: #0b1018;
+}
+
+.viz-status {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  color: #64748b;
+}

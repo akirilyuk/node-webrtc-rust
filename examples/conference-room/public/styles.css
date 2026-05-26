@@ -132,3 +132,37 @@ button:disabled {
 audio {
   width: 100%;
 }
+
+.viz-grid {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+@media (min-width: 640px) {
+  .viz-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.viz-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+  color: #b8c4d4;
+  font-weight: 600;
+}
+
+.viz-card canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid #243041;
+  background: #0b1018;
+}
+
+.viz-status {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}

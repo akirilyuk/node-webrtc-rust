@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  },
+  "include": [
+    "eslint.config.js",
+    "packages/**/src/**/*.ts",
+    "packages/**/tests/**/*.ts",
+    "packages/**/vitest.config.ts",
+    "examples/**/*.ts"
+  ]
+}

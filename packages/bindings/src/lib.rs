@@ -1,0 +1,34 @@
+#![deny(clippy::all)]
+
+mod conference;
+mod config;
+mod data_channel;
+mod events;
+mod media;
+mod peer_connection;
+mod runtime;
+
+use napi_derive::napi;
+
+pub use conference::{
+    JsConferenceRoom, JsConferenceServer, JsIceServer, JsMixingEnabledChangedEvent, JsMuteOptions,
+    JsMuteScope, JsParticipantEvent, JsParticipantInfo, JsParticipantKickedEvent,
+    JsParticipantMutedEvent, JsRoomErrorEvent, JsRoomOptions,
+};
+pub use config::{
+    JsRTCIceCandidate, JsRTCIceServer, JsRTCConfiguration, JsRTCSessionDescription,
+};
+pub use data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
+pub use media::{JsLocalAudioTrack, JsMediaStream, JsMediaStreamTrack};
+pub use peer_connection::JsPeerConnection;
+
+#[napi]
+pub fn version() -> String {
+    format!(
+        "bindings={} core={} mixer={} conference={}",
+        env!("CARGO_PKG_VERSION"),
+        node_webrtc_rust_core::version(),
+        node_webrtc_rust_mixer::version(),
+        node_webrtc_rust_conference::version(),
+    )
+}

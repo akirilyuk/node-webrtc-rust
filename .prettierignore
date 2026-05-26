@@ -1,0 +1,7 @@
+node_modules/
+dist/
+target/
+*.node
+package-lock.json
+packages/bindings/index.d.ts
+packages/bindings/npm/

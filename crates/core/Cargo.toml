@@ -1,0 +1,20 @@
+[package]
+name = "node-webrtc-rust-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust WebRTC engine wrapping webrtc-rs"
+
+[dependencies]
+webrtc = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = "0.4"
+thiserror = "1"
+media = { version = "0.17", package = "webrtc-media" }
+
+[dev-dependencies]
+env_logger = "0.11"

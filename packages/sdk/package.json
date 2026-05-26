@@ -1,0 +1,74 @@
+{
+  "name": "@node-webrtc-rust/sdk",
+  "version": "0.1.5",
+  "description": "Browser-compatible WebRTC and conference APIs for Node.js",
+  "keywords": [
+    "webrtc",
+    "webrtc-node",
+    "node-webrtc",
+    "nodejs",
+    "rust",
+    "napi",
+    "native",
+    "rtcpeerconnection",
+    "peerconnection",
+    "datachannel",
+    "audio",
+    "real-time",
+    "voip",
+    "conference",
+    "mcu",
+    "audio-mixing",
+    "stun",
+    "turn",
+    "ice",
+    "typescript",
+    "browser-compatible"
+  ],
+  "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
+  "bugs": {
+    "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
+    "directory": "packages/sdk"
+  },
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cjs/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./conference": {
+      "types": "./dist/cjs/conference/index.d.ts",
+      "import": "./dist/esm/conference/index.js",
+      "require": "./dist/cjs/conference/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prebuild": "rm -rf dist",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@node-webrtc-rust/bindings": "0.1.5",
+    "@node-webrtc-rust/signaling": "0.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,56 @@
+---
+description: Commit after each logical unit of work
+alwaysApply: true
+---
+
+# Commit Workflow
+
+Commit frequently in small, logical units. Each commit should represent one coherent change.
+
+## IMPORTANT: When to commit
+
+- **Only auto-commit if the user explicitly says so before work begins** (e.g., "commit as you go", "commit after each step")
+- If the user has NOT requested auto-commits, do the work without committing and let the user decide when to commit
+- When asked to commit, follow the logical grouping rules below
+
+## Staging rules
+
+- **Always `git add` newly created files** before committing — never forget untracked files that are part of the current work
+- Run `git status` before committing to verify all relevant new files are staged
+- Do not stage files that are git-ignored (e.g., `development/`, `target/`, `node_modules/`)
+
+## Rules
+
+- Never bundle unrelated changes into a single commit
+- A single task may produce multiple commits if it has distinct logical steps (e.g., "add types" then "add implementation" then "add tests")
+- Always commit working code — do not commit broken intermediate states
+
+## Commit order within a task
+
+1. Do work A (e.g., add a new module with types/structs)
+2. Commit work A
+3. Do work B (e.g., implement logic for that module)
+4. Commit work B
+5. Do work C (e.g., add tests for that module)
+6. Commit work C
+
+## Commit message format
+
+Use conventional commits:
+
+```
+<type>(<scope>): <short description>
+
+<optional body explaining why>
+```
+
+Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`
+
+Scopes: `core`, `bindings`, `sdk`, `signaling`, `ci`, `repo`
+
+Examples:
+- `feat(core): add PeerConnection wrapper with lifecycle methods`
+- `feat(core): implement DataChannel send/receive`
+- `test(core): add integration tests for peer connection`
+- `docs(repo): add project README`
+- `chore(ci): add cross-compile workflow`

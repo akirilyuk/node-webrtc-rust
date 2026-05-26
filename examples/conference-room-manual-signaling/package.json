@@ -1,0 +1,21 @@
+{
+  "name": "@node-webrtc-rust/example-conference-room-manual-signaling",
+  "private": true,
+  "version": "0.1.5",
+  "description": "Conference room with hand-rolled WebSocket signaling (no @node-webrtc-rust/signaling)",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@node-webrtc-rust/sdk": "0.1.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  }
+}

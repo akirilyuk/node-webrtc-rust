@@ -1,0 +1,49 @@
+---
+description: Build only the host native binary during local development
+alwaysApply: true
+---
+
+# Local Native Build (Host Only)
+
+During **local development**, build the native addon for the **current machine only**. Do not cross-compile all platform targets unless explicitly preparing a release or debugging CI.
+
+## Default local commands
+
+From `packages/bindings/`:
+
+```bash
+npm run build:local        # release, host only (~10s after cache warm)
+npm run build:debug:local  # debug, host only (fastest iteration)
+```
+
+These run `napi build` **without** `--platform`, producing a single `.node` file for the host triple.
+
+## When to use full platform builds
+
+Use `npm run build:all` (or CI) only when:
+
+- Verifying prebuild artifacts before publish
+- Debugging a specific cross-compile target
+- Running the GitHub Actions matrix locally (rare)
+
+```bash
+npm run build:all   # all configured triples — slow, CI/publish only
+```
+
+## Agent workflow
+
+When iterating on Rust bindings, core, or SDK integration tests:
+
+1. **Prefer** `build:debug:local` for compile-fix loops
+2. **Use** `build:local` before running release-sensitive tests
+3. **Never** run `build:all` or `napi build --platform` as part of routine dev/test loops
+4. After changing NAPI exports, rebuild bindings once locally, then run TS tests — do not rebuild all platforms
+
+## CI vs local
+
+| Context | Command | Scope |
+|---------|---------|-------|
+| Local dev | `build:debug:local` / `build:local` | Host `.node` only |
+| CI / publish | `build:all` + artifact upload | All 6 platform targets |
+
+Cross-compilation (zigbuild, musl, Windows) is CI's job — not the default dev loop.

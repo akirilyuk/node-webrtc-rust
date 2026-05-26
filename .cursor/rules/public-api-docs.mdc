@@ -1,0 +1,50 @@
+---
+description: JSDoc and comment standards for public SDK and signaling APIs
+globs: packages/sdk/src/**/*.ts,packages/signaling/src/**/*.ts
+alwaysApply: false
+---
+
+# Public API Documentation
+
+All exported classes, interfaces, types, and methods in `packages/sdk` and `packages/signaling` must be documented for consumers.
+
+## Required
+
+- **Exported classes**: file-level or class-level `/** ... */` describing purpose and W3C alignment where relevant
+- **Public methods and getters**: `@param`, `@returns`, and `@throws` when applicable
+- **Event handler properties** (`onicecandidate`, etc.): one-line description of when they fire
+- **Exported interfaces/types** in `types.ts`: describe each field that is not self-evident
+
+## Style
+
+- Write for npm consumers reading `.d.ts` in their IDE — concise, complete sentences
+- Prefer **why/when** over restating the method name
+- Do not document private helpers, internal wiring, or test-only code
+- Skip obvious boilerplate (`toJSON` may stay one line)
+
+## Examples
+
+```typescript
+// ✅ GOOD — class + event + method
+/**
+ * Browser-compatible WebRTC peer connection for Node.js.
+ * Wraps the native Rust engine with the W3C RTCPeerConnection surface.
+ */
+export class RTCPeerConnection extends EventEmitter {
+  /** Fired when a local ICE candidate is gathered; `candidate` is null when gathering is complete. */
+  onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null
+
+  /** Adds a trickle ICE candidate received from the remote peer via signaling. */
+  async addIceCandidate(candidate: RTCIceCandidate | RTCIceCandidateInit): Promise<void> { ... }
+}
+
+// ❌ BAD — exported API with no docs
+export class SignalingClient extends EventEmitter {
+  connect(): Promise<void> { ... }
+}
+```
+
+## Scope
+
+- **In scope**: `packages/sdk/src/**`, `packages/signaling/src/**`
+- **Out of scope**: Rust internals, bindings (generated `.d.ts`), tests, examples (unless they are the primary API demo)

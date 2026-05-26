@@ -1,0 +1,13 @@
+[package]
+name = "node-webrtc-rust-signaling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Optional Rust signaling server for node-webrtc-rust"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

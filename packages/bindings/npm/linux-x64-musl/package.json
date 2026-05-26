@@ -1,0 +1,42 @@
+{
+  "name": "@node-webrtc-rust/bindings-linux-x64-musl",
+  "version": "0.1.5",
+  "description": "node-webrtc-rust native binding for Linux x64 (musl / Alpine)",
+  "keywords": [
+    "webrtc",
+    "native",
+    "napi",
+    "rust",
+    "prebuild",
+    "linux",
+    "x64",
+    "musl",
+    "alpine"
+  ],
+  "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
+  "bugs": {
+    "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
+    "directory": "packages/bindings/npm/linux-x64-musl"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "node-webrtc-rust.linux-x64-musl.node",
+  "files": [
+    "node-webrtc-rust.linux-x64-musl.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "libc": [
+    "musl"
+  ]
+}

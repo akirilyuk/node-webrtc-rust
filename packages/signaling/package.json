@@ -1,0 +1,70 @@
+{
+  "name": "@node-webrtc-rust/signaling",
+  "version": "0.1.5",
+  "description": "TypeScript WebSocket signaling helpers for node-webrtc-rust",
+  "keywords": [
+    "webrtc",
+    "signaling",
+    "websocket",
+    "ws",
+    "sdp",
+    "ice",
+    "stun",
+    "turn",
+    "peer-connection",
+    "nodejs",
+    "typescript",
+    "voip",
+    "real-time",
+    "auto-negotiate"
+  ],
+  "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
+  "bugs": {
+    "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
+    "directory": "packages/signaling"
+  },
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cjs/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@node-webrtc-rust/sdk": "0.1.1",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  },
+  "peerDependencies": {
+    "@node-webrtc-rust/sdk": "^0.1.1"
+  },
+  "peerDependenciesMeta": {
+    "@node-webrtc-rust/sdk": {
+      "optional": true
+    }
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

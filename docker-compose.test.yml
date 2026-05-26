@@ -1,0 +1,12 @@
+services:
+  coturn:
+    image: coturn/coturn:latest
+    ports:
+      - '3478:3478/udp'
+      - '3478:3478/tcp'
+    command: >
+      -n --log-file=stdout
+      --min-port=49152 --max-port=65535
+      --realm=test.local
+      --user=testuser:testpass
+      --no-tls --no-dtls

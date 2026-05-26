@@ -1,0 +1,54 @@
+---
+description: Minimize copies in Rust core and bindings — prefer shared ownership
+globs: crates/**/*.rs,packages/bindings/**/*.rs
+alwaysApply: false
+---
+
+# Rust: Prefer Shared Ownership Over Copies
+
+In the data plane (`crates/core`, `crates/mixer`, `packages/bindings`), avoid unnecessary allocations and buffer copies.
+
+## Defaults
+
+- Wrap heavy objects in `Arc<T>` (`PeerConnection`, tracks, `DataChannel`, runtime state).
+- Use `bytes::Bytes` for RTP payloads, DataChannel binary frames, and PCM sample data crossing API boundaries.
+- Pass `&[u8]`, `Bytes`, or `Arc<[u8]>` into send/write methods; only copy when an downstream API requires ownership and no shared handle exists.
+- Prefer borrowing in hot paths (`&str`, `&[u8]`, `&SessionDescription`) and clone only at FFI/serialization boundaries (NAPI, JSON).
+
+## Patterns
+
+```rust
+// ✅ GOOD — share payload, no extra Vec
+pub struct DataChannelMessage {
+    pub is_string: bool,
+    pub data: Bytes,
+}
+
+pub async fn send_binary(&self, data: Bytes) -> Result<(), CoreError> {
+    self.inner.send(&data).await?;
+    Ok(())
+}
+
+// ❌ BAD — unconditional copy on every message
+pub async fn send_binary(&self, data: &[u8]) -> Result<(), CoreError> {
+    self.inner.send(&Bytes::copy_from_slice(data)).await?;
+    Ok(())
+}
+```
+
+```rust
+// ✅ GOOD — caller reuses Arc track handle
+pub fn as_track_local(&self) -> Arc<dyn TrackLocal + Send + Sync> {
+    Arc::clone(&self.inner)
+}
+```
+
+## Where copies are acceptable
+
+- NAPI boundary (JS `Buffer` ↔ Rust) — one copy each direction is expected.
+- SDP/ICE JSON serialization for signaling.
+- Small config structs and error strings.
+
+## Event handlers
+
+- Forward `Bytes` or `Arc`-wrapped handles through channels; do not `.to_vec()` unless the consumer needs a mutable owned buffer.

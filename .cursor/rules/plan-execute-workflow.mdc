@@ -1,0 +1,26 @@
+---
+description: Use Opus 4.6 for planning, Composer 2.5 for execution
+alwaysApply: true
+---
+
+# Plan → Execute Workflow
+
+This repo uses a two-model workflow:
+
+1. **Planning (Opus 4.6):** The main conversation creates and refines plans in Plan mode. Plans are stored in `development/plans/`.
+
+2. **Execution (Composer 2.5):** Once a plan is confirmed, delegate execution to a `composer-2.5-fast` subagent via the Task tool. Pass the full plan content in the prompt so the subagent has complete context.
+
+## How to execute
+
+When the user confirms a plan, launch a Task subagent with:
+- `model`: `composer-2.5-fast`
+- `prompt`: Include the full plan markdown, the workspace path, and explicit instructions on what to implement
+- `description`: Short summary of what's being executed
+
+## Guidelines
+
+- Never execute plans directly in the main conversation unless the user explicitly asks to
+- If the subagent returns incomplete work or errors, resume it or launch a follow-up subagent
+- After execution completes, copy the plan to `development/plans/` with a date prefix
+- Report the subagent's results back to the user with a concise summary

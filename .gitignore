@@ -1,0 +1,22 @@
+# Development notes (local only)
+development/
+
+# Rust
+target/
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+*.node
+.npm/
+
+# IDE
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.log

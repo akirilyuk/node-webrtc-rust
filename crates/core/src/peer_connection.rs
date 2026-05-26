@@ -258,7 +258,12 @@ impl PeerConnection {
         &self,
         track: Arc<dyn TrackLocal + Send + Sync>,
     ) -> Result<(), CoreError> {
-        self.inner.add_track(track).await?;
+        let sender = self.inner.add_track(track).await?;
+        // webrtc-rs requires reading RTCP from the sender for media to flow correctly.
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 1500];
+            while sender.read(&mut buf).await.is_ok() {}
+        });
         Ok(())
     }
 

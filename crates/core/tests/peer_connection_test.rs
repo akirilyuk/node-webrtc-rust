@@ -179,6 +179,43 @@ async fn test_add_audio_track() {
 }
 
 #[tokio::test]
+async fn test_audio_track_exchange() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    let mut pc2_events = pc2.subscribe_events();
+
+    let track = LocalAudioTrack::new("audio-1", "stream-1");
+    pc1.add_track(track.as_track_local())
+        .await
+        .expect("add track");
+
+    signal_pair(&pc1, &pc2).await;
+
+    wait_for_connection(&pc1).await;
+    wait_for_connection(&pc2).await;
+
+    track
+        .write_sample_slice(&[0u8; 960], Duration::from_millis(20))
+        .await
+        .expect("write sample");
+
+    let remote = timeout(Duration::from_secs(10), pc2_events.tracks.recv())
+        .await
+        .expect("timed out waiting for remote track")
+        .expect("no remote track received");
+
+    assert_eq!(remote.kind(), node_webrtc_rust_core::TrackKind::Audio);
+    assert_eq!(remote.id(), "audio-1");
+
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
 async fn test_write_sample_with_shared_bytes() {
     let track = LocalAudioTrack::new("audio-1", "stream-1");
     let payload = Bytes::from_static(b"\x00\x01\x02");

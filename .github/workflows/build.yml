@@ -61,7 +61,9 @@ jobs:
 
       - name: Install zig for cross-compilation
         if: matrix.cross
-        run: pip3 install ziglang
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
 
       - name: Install bindings dependencies
         working-directory: packages/bindings

@@ -1,8 +1,13 @@
 import { EventEmitter } from 'events'
 
-import type { JsMediaStreamTrack as NativeMediaStreamTrack } from '@node-webrtc-rust/bindings'
+import type {
+  JsLocalAudioTrack,
+  JsMediaStreamTrack as NativeMediaStreamTrack,
+} from '@node-webrtc-rust/bindings'
 
 import type { TrackKind } from './types'
+
+type NativeTrack = NativeMediaStreamTrack | JsLocalAudioTrack
 
 export class MediaStreamTrack extends EventEmitter {
   readonly id: string
@@ -11,7 +16,7 @@ export class MediaStreamTrack extends EventEmitter {
   enabled: boolean
   readonly readyState: 'live' | 'ended' = 'live'
 
-  constructor(native: NativeMediaStreamTrack) {
+  constructor(native: NativeTrack) {
     super()
     this.id = native.id
     this.kind = native.kind === 'video' ? 'video' : 'audio'

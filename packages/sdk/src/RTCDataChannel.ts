@@ -84,29 +84,33 @@ export class RTCDataChannel extends EventEmitter {
   }
 
   protected attachNative(native: NativeDataChannel): void {
-    native.setOnOpen(() => {
+    native.setOnOpen((_err) => {
       this.readyState = 'open'
       const event = new Event('open')
       this.onopen?.(event)
       this.emit('open', event)
     })
 
-    native.setOnMessage((data) => {
+    native.setOnMessage((_err, data) => {
+      if (data === undefined) return
       const message: MessageEvent =
         typeof data === 'string' ? { data } : { data: Buffer.from(data) }
       this.onmessage?.(message)
       this.emit('message', message)
     })
 
-    native.setOnClose(() => {
+    native.setOnClose((_err) => {
       this.readyState = 'closed'
       const event = new Event('close')
       this.onclose?.(event)
       this.emit('close', event)
     })
 
-    native.setOnError((message) => {
-      const event: RTCErrorEvent = { type: 'error', message }
+    native.setOnError((_err, message) => {
+      const event: RTCErrorEvent = {
+        type: 'error',
+        message: typeof message === 'string' ? message : String(_err ?? 'unknown error'),
+      }
       this.onerror?.(event)
       this.emit('error', event)
     })

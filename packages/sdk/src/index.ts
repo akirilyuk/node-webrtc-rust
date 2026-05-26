@@ -4,6 +4,7 @@ export { RTCIceCandidate } from './RTCIceCandidate'
 export { RTCDataChannel } from './RTCDataChannel'
 export { MediaStream } from './MediaStream'
 export { MediaStreamTrack } from './MediaStreamTrack'
+export { LocalAudioTrack } from './LocalAudioTrack'
 export type {
   RTCConfiguration,
   RTCIceServer,

@@ -8,6 +8,7 @@ import {
 
 import { MediaStream } from './MediaStream'
 import { MediaStreamTrack } from './MediaStreamTrack'
+import type { LocalAudioTrack } from './LocalAudioTrack'
 import { RTCDataChannel } from './RTCDataChannel'
 import { RTCIceCandidate } from './RTCIceCandidate'
 import { RTCSessionDescription } from './RTCSessionDescription'
@@ -62,7 +63,7 @@ export class RTCPeerConnection extends EventEmitter {
     super()
     this.native = new NativePeerConnection(toNativeConfig(config))
 
-    this.native.setOnIceCandidate((candidate) => {
+    this.native.setOnIceCandidate((_err, candidate) => {
       const event: RTCPeerConnectionIceEvent = {
         candidate: candidate
           ? new RTCIceCandidate({
@@ -77,7 +78,8 @@ export class RTCPeerConnection extends EventEmitter {
       this.emit('icecandidate', event)
     })
 
-    this.native.setOnTrack((track) => {
+    this.native.setOnTrack((_err, track) => {
+      if (!track) return
       const wrappedTrack = new MediaStreamTrack(track)
       const stream = MediaStream.fromNativeTrack(track)
       const event: RTCTrackEvent = { track: wrappedTrack, streams: [stream] }
@@ -85,21 +87,22 @@ export class RTCPeerConnection extends EventEmitter {
       this.emit('track', event)
     })
 
-    this.native.setOnDataChannel((channel) => {
+    this.native.setOnDataChannel((_err, channel) => {
+      if (!channel) return
       const wrapped = new RTCDataChannel(channel)
       const event: RTCDataChannelEvent = { channel: wrapped }
       this.ondatachannel?.(event)
       this.emit('datachannel', event)
     })
 
-    this.native.setOnConnectionStateChange((state) => {
+    this.native.setOnConnectionStateChange((_err, state) => {
       const event = new Event('connectionstatechange')
       void state
       this.onconnectionstatechange?.(event)
       this.emit('connectionstatechange', event)
     })
 
-    this.native.setOnIceConnectionStateChange((_state) => {
+    this.native.setOnIceConnectionStateChange((_err, _state) => {
       const event = new Event('iceconnectionstatechange')
       this.oniceconnectionstatechange?.(event)
       this.emit('iceconnectionstatechange', event)
@@ -118,6 +121,13 @@ export class RTCPeerConnection extends EventEmitter {
   async setLocalDescription(desc: RTCSessionDescription): Promise<void> {
     await this.native.setLocalDescription(toNativeDescription(desc))
     this._localDescription = desc
+  }
+
+  private async refreshLocalDescription(): Promise<void> {
+    const local = await this.native.localDescription()
+    if (local) {
+      this._localDescription = fromNativeDescription(local)
+    }
   }
 
   async setRemoteDescription(desc: RTCSessionDescription): Promise<void> {
@@ -142,6 +152,15 @@ export class RTCPeerConnection extends EventEmitter {
       label,
       options,
     )
+  }
+
+  async addTrack(track: LocalAudioTrack): Promise<void> {
+    await this.native.addTrack(track.native)
+  }
+
+  async gatheringComplete(): Promise<void> {
+    await this.native.gatheringComplete()
+    await this.refreshLocalDescription()
   }
 
   close(): void {

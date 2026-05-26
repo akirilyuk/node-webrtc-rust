@@ -1,0 +1,40 @@
+---
+description: When GitHub Actions build and CI image workflows should run
+globs:
+  - .github/workflows/**
+  - docker/ci/**
+alwaysApply: false
+---
+
+# CI Workflow Triggers
+
+## Build & Publish (`.github/workflows/build.yml`)
+
+| Event | Native builds (`build-linux`, `build-host`) | Checks (`test`, publish dry-run) | Release publish |
+|---|---|---|---|
+| **PR → `main`** | yes | yes | dry-run only |
+| **Push → `main`** | yes | no | no |
+| **`release/*` tag** | yes | yes | yes |
+| Push / PR on other branches | no | no | no |
+
+Do **not** add `push` triggers for feature branches (`initial-feature`, etc.) or `pull_request` targets other than `main`. Feature-branch commits stay off CI until there is a PR to `main`.
+
+## CI Docker image (`.github/workflows/ci-image.yml`)
+
+Rebuild and push `ghcr.io/.../ci-build:latest` **only when**:
+
+- The **`ci` branch** is pushed (Dockerfile or workflow changes land there)
+- **`workflow_dispatch`** is triggered manually
+
+The main build workflow always pulls `:latest`; it never rebuilds the image.
+
+## Local validation before changing `docker/ci/`
+
+When editing the CI Dockerfile, run locally before committing:
+
+```bash
+docker build -t node-webrtc-rust-ci-build:local docker/ci
+docker run --rm node-webrtc-rust-ci-build:local sh -c 'node --version && rustc --version && zig version'
+```
+
+Then push to `ci` to publish the updated image before expecting green Linux jobs.

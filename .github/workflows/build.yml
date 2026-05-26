@@ -1,11 +1,11 @@
 name: Build & Publish
 
 on:
-  push:
-    branches: [main, initial-feature]
-    tags: ['release/*']
   pull_request:
-    branches: [main, initial-feature]
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['release/*']
 
 env:
   CARGO_TERM_COLOR: always
@@ -96,6 +96,7 @@ jobs:
 
   test:
     name: Test
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/release/')
     runs-on: ubuntu-latest
     needs: [build-linux, build-host]
     container:

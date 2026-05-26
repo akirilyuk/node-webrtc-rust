@@ -1,7 +1,11 @@
-//! MediaStream and MediaStreamTrack NAPI stubs.
+//! MediaStream and MediaStreamTrack NAPI bindings.
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use node_webrtc_rust_core::{RemoteTrack, TrackKind};
+use node_webrtc_rust_core::{LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind};
 
 /// Media stream track exposed to JavaScript (stub).
 #[napi]
@@ -74,5 +78,62 @@ fn track_kind_to_string(kind: TrackKind) -> String {
     match kind {
         TrackKind::Audio => "audio".to_string(),
         TrackKind::Video => "video".to_string(),
+    }
+}
+
+/// Local audio track for sending media to a peer connection.
+#[napi]
+pub struct JsLocalAudioTrack {
+    inner: Arc<LocalAudioTrack>,
+}
+
+#[napi]
+impl JsLocalAudioTrack {
+    #[napi(constructor)]
+    pub fn new(id: String, stream_id: String) -> Self {
+        Self {
+            inner: Arc::new(LocalAudioTrack::new(&id, &stream_id)),
+        }
+    }
+
+    #[napi(getter)]
+    pub fn id(&self) -> String {
+        MediaStreamTrack::id(self.inner.as_ref()).to_string()
+    }
+
+    #[napi(getter)]
+    pub fn kind(&self) -> String {
+        "audio".to_string()
+    }
+
+    #[napi(getter)]
+    pub fn stream_id(&self) -> String {
+        MediaStreamTrack::stream_id(self.inner.as_ref()).to_string()
+    }
+
+    #[napi(getter)]
+    pub fn enabled(&self) -> bool {
+        MediaStreamTrack::enabled(self.inner.as_ref())
+    }
+
+    #[napi(setter)]
+    pub fn set_enabled(&mut self, enabled: bool) {
+        MediaStreamTrack::set_enabled(self.inner.as_ref(), enabled);
+    }
+
+    /// Writes a PCM audio frame to the track.
+    #[napi]
+    pub async fn write_sample(&self, data: Buffer, duration_ms: u32) -> Result<()> {
+        let bytes = bytes::Bytes::copy_from_slice(data.as_ref());
+        self.inner
+            .write_sample(bytes, Duration::from_millis(duration_ms as u64))
+            .await
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+}
+
+impl JsLocalAudioTrack {
+    pub(crate) fn inner(&self) -> Arc<LocalAudioTrack> {
+        Arc::clone(&self.inner)
     }
 }

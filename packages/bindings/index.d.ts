@@ -62,6 +62,17 @@ export declare class JsMediaStream {
   constructor(id: string)
   get id(): string
 }
+/** Local audio track for sending media to a peer connection. */
+export declare class JsLocalAudioTrack {
+  constructor(id: string, streamId: string)
+  get id(): string
+  get kind(): string
+  get streamId(): string
+  get enabled(): boolean
+  set enabled(enabled: boolean)
+  /** Writes a PCM audio frame to the track. */
+  writeSample(data: Buffer, durationMs: number): Promise<void>
+}
 /** WebRTC peer connection exposed to JavaScript. */
 export declare class JsPeerConnection {
   constructor(config?: JsRtcConfiguration | undefined | null)
@@ -72,6 +83,7 @@ export declare class JsPeerConnection {
   setLocalDescription(desc: JsRtcSessionDescription): Promise<void>
   setRemoteDescription(desc: JsRtcSessionDescription): Promise<void>
   addIceCandidate(candidate: JsRtcIceCandidate): Promise<void>
+  addTrack(track: JsLocalAudioTrack): Promise<void>
   createDataChannel(label: string, options?: JsRtcDataChannelInit | undefined | null): Promise<JsRtcDataChannel>
   close(): Promise<void>
   gatheringComplete(): Promise<void>

@@ -34,8 +34,14 @@ Prerequisites:
 ```bash
 cd packages/bindings
 npm install
-npm run build        # release build for current platform
-npm run build:debug  # debug build for development
+npm run build:local        # release build for current platform (default)
+npm run build:debug:local  # debug build — fastest iteration loop
+```
+
+For all platform targets (CI/publish only):
+
+```bash
+npm run build:all
 ```
 
 This produces a `node-webrtc-rust.<platform>.node` file in the current directory, which the loader (`index.js`) picks up as a fallback when no platform package is installed.

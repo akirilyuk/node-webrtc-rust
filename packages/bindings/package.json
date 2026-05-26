@@ -17,7 +17,11 @@
     }
   },
   "scripts": {
-    "build": "napi build --platform --release",
+    "build": "npm run build:local",
+    "build:local": "napi build --release && npm run copy:local-node",
+    "build:debug:local": "napi build && npm run copy:local-node",
+    "copy:local-node": "node scripts/copy-local-node.mjs",
+    "build:all": "napi build --platform --release",
     "build:debug": "napi build --platform",
     "artifacts": "napi artifacts",
     "prepublishOnly": "napi prepublish -t npm",

@@ -16,7 +16,7 @@ use crate::config::{
 };
 use crate::data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
 use crate::events::{create_event_callback, wire_event_channel};
-use crate::media::JsMediaStreamTrack;
+use crate::media::{JsLocalAudioTrack, JsMediaStreamTrack};
 
 struct EventState {
     ice_candidates: Option<mpsc::UnboundedReceiver<Option<IceCandidate>>>,
@@ -125,6 +125,14 @@ impl JsPeerConnection {
     }
 
     #[napi]
+    pub async fn add_track(&self, track: &JsLocalAudioTrack) -> Result<()> {
+        self.inner
+            .add_track(track.inner().as_track_local())
+            .await
+            .map_err(core_err)
+    }
+
+    #[napi]
     pub async fn create_data_channel(
         &self,
         label: String,
@@ -191,7 +199,7 @@ impl JsPeerConnection {
         let mut events = self.events.blocking_lock();
         events.subscribe(&self.inner);
         let rx = events.tracks.take().expect("event receivers initialized");
-        let tsfn = create_event_callback(&env, callback, |ctx| {
+        let tsfn = create_event_callback(&env, callback, |ctx| -> Result<Vec<JsMediaStreamTrack>> {
             Ok(vec![JsMediaStreamTrack::from_remote(ctx.value)])
         })?;
         wire_event_channel(rx, tsfn);
@@ -206,7 +214,7 @@ impl JsPeerConnection {
             .data_channels
             .take()
             .expect("event receivers initialized");
-        let tsfn = create_event_callback(&env, callback, |ctx| {
+        let tsfn = create_event_callback(&env, callback, |ctx| -> Result<Vec<JsRTCDataChannel>> {
             Ok(vec![JsRTCDataChannel::new(ctx.value)])
         })?;
         wire_event_channel(rx, tsfn);

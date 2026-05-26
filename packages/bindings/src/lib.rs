@@ -13,7 +13,7 @@ pub use config::{
     JsRTCIceCandidate, JsRTCIceServer, JsRTCConfiguration, JsRTCSessionDescription,
 };
 pub use data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
-pub use media::{JsMediaStream, JsMediaStreamTrack};
+pub use media::{JsLocalAudioTrack, JsMediaStream, JsMediaStreamTrack};
 pub use peer_connection::JsPeerConnection;
 
 #[napi]

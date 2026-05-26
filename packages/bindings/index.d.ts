@@ -8,6 +8,7 @@ export interface JsRtcIceServer {
   urls: Array<string>
   username?: string
   credential?: string
+  credentialType?: string
 }
 /** Peer connection configuration exposed to JavaScript. */
 export interface JsRtcConfiguration {
@@ -78,6 +79,8 @@ export declare class JsPeerConnection {
   constructor(config?: JsRtcConfiguration | undefined | null)
   get connectionState(): string
   get iceConnectionState(): string
+  get iceGatheringState(): string
+  get signalingState(): string
   createOffer(): Promise<JsRtcSessionDescription>
   createAnswer(): Promise<JsRtcSessionDescription>
   setLocalDescription(desc: JsRtcSessionDescription): Promise<void>
@@ -94,4 +97,5 @@ export declare class JsPeerConnection {
   setOnDataChannel(callback: (...args: any[]) => any): void
   setOnConnectionStateChange(callback: (...args: any[]) => any): void
   setOnIceConnectionStateChange(callback: (...args: any[]) => any): void
+  setOnNegotiationNeeded(callback: (...args: any[]) => any): void
 }

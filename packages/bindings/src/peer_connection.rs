@@ -15,7 +15,7 @@ use crate::config::{
     core_err, to_js_unknown, JsRTCIceCandidate, JsRTCConfiguration, JsRTCSessionDescription,
 };
 use crate::data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
-use crate::events::{create_event_callback, wire_event_channel};
+use crate::events::{create_event_callback, create_void_callback, wire_event_channel, wire_void_channel};
 use crate::media::{JsLocalAudioTrack, JsMediaStreamTrack};
 
 struct EventState {
@@ -24,6 +24,7 @@ struct EventState {
     data_channels: Option<mpsc::UnboundedReceiver<node_webrtc_rust_core::DataChannel>>,
     connection_state: Option<mpsc::UnboundedReceiver<ConnectionState>>,
     ice_connection_state: Option<mpsc::UnboundedReceiver<IceConnectionState>>,
+    negotiation_needed: Option<mpsc::UnboundedReceiver<()>>,
 }
 
 impl EventState {
@@ -34,6 +35,7 @@ impl EventState {
             data_channels: None,
             connection_state: None,
             ice_connection_state: None,
+            negotiation_needed: None,
         }
     }
 
@@ -48,6 +50,7 @@ impl EventState {
         self.data_channels = Some(events.data_channels);
         self.connection_state = Some(events.connection_state);
         self.ice_connection_state = Some(events.ice_connection_state);
+        self.negotiation_needed = Some(events.negotiation_needed);
     }
 }
 
@@ -78,6 +81,16 @@ impl JsPeerConnection {
     #[napi(getter)]
     pub fn ice_connection_state(&self) -> String {
         ice_connection_state_to_string(self.inner.ice_connection_state())
+    }
+
+    #[napi(getter)]
+    pub fn ice_gathering_state(&self) -> String {
+        ice_gathering_state_to_string(self.inner.ice_gathering_state())
+    }
+
+    #[napi(getter)]
+    pub fn signaling_state(&self) -> String {
+        signaling_state_to_string(self.inner.signaling_state())
     }
 
     #[napi]
@@ -256,6 +269,19 @@ impl JsPeerConnection {
         wire_event_channel(rx, tsfn);
         Ok(())
     }
+
+    #[napi]
+    pub fn set_on_negotiation_needed(&self, env: Env, callback: JsFunction) -> Result<()> {
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .negotiation_needed
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_void_callback(&env, callback)?;
+        wire_void_channel(rx, tsfn);
+        Ok(())
+    }
 }
 
 fn connection_state_to_string(state: ConnectionState) -> String {
@@ -278,5 +304,26 @@ fn ice_connection_state_to_string(state: IceConnectionState) -> String {
         IceConnectionState::Disconnected => "disconnected".to_string(),
         IceConnectionState::Failed => "failed".to_string(),
         IceConnectionState::Closed => "closed".to_string(),
+    }
+}
+
+fn ice_gathering_state_to_string(state: node_webrtc_rust_core::IceGatheringState) -> String {
+    match state {
+        node_webrtc_rust_core::IceGatheringState::Gathering => "gathering".to_string(),
+        node_webrtc_rust_core::IceGatheringState::Complete => "complete".to_string(),
+        node_webrtc_rust_core::IceGatheringState::New => "new".to_string(),
+    }
+}
+
+fn signaling_state_to_string(state: node_webrtc_rust_core::SignalingState) -> String {
+    match state {
+        node_webrtc_rust_core::SignalingState::Stable => "stable".to_string(),
+        node_webrtc_rust_core::SignalingState::HaveLocalOffer => "have-local-offer".to_string(),
+        node_webrtc_rust_core::SignalingState::HaveRemoteOffer => "have-remote-offer".to_string(),
+        node_webrtc_rust_core::SignalingState::HaveLocalPranswer => "have-local-pranswer".to_string(),
+        node_webrtc_rust_core::SignalingState::HaveRemotePranswer => {
+            "have-remote-pranswer".to_string()
+        }
+        node_webrtc_rust_core::SignalingState::Closed => "closed".to_string(),
     }
 }

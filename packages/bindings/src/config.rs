@@ -14,14 +14,21 @@ pub struct JsRTCIceServer {
     pub urls: Vec<String>,
     pub username: Option<String>,
     pub credential: Option<String>,
+    pub credential_type: Option<String>,
 }
 
 impl From<JsRTCIceServer> for IceServer {
     fn from(value: JsRTCIceServer) -> Self {
+        let credential_type = match value.credential_type.as_deref() {
+            Some("oauth") => node_webrtc_rust_core::IceCredentialType::Oauth,
+            _ => node_webrtc_rust_core::IceCredentialType::Password,
+        };
+
         Self {
             urls: value.urls,
             username: value.username,
             credential: value.credential,
+            credential_type,
         }
     }
 }

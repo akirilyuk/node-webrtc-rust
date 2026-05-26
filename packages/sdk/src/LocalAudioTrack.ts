@@ -22,8 +22,13 @@ export class LocalAudioTrack extends MediaStreamTrack {
   }
 
   /**
-   * Writes a PCM audio frame to the track.
-   * @param data - Raw PCM samples (typically 960 bytes for 20 ms at 48 kHz mono).
+   * Writes a PCM audio frame to the track and encodes it for RTP transmission.
+   *
+   * The remote peer's {@link RTCPeerConnection.ontrack} handler fires when the
+   * first frame is sent — negotiation and {@link RTCPeerConnection.addTrack}
+   * alone do not surface a remote track on the receiver.
+   *
+   * @param data - Interleaved stereo 16-bit PCM (3840 bytes for 20 ms at 48 kHz).
    * @param durationMs - Sample duration in milliseconds; defaults to 20.
    */
   async writeSample(data: Buffer | Uint8Array, durationMs = 20): Promise<void> {

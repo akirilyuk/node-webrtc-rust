@@ -13,7 +13,8 @@ type NativeTrack = NativeMediaStreamTrack | JsLocalAudioTrack
  * A single audio or video track within a {@link MediaStream}.
  *
  * Represents both local tracks (see {@link LocalAudioTrack}) and remote tracks
- * received through {@link RTCPeerConnection.ontrack}.
+ * received through {@link RTCPeerConnection.ontrack} after the sender writes
+ * the first PCM frame with {@link LocalAudioTrack.writeSample}.
  */
 export class MediaStreamTrack extends EventEmitter {
   /** Unique track identifier. */

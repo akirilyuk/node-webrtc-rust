@@ -98,7 +98,12 @@ export interface RTCErrorEvent {
   message: string
 }
 
-/** Event payload for {@link RTCPeerConnection.ontrack}. */
+/**
+ * Event payload for {@link RTCPeerConnection.ontrack}.
+ *
+ * Emitted only after the remote sender writes the first audio sample via
+ * {@link LocalAudioTrack.writeSample}; track negotiation alone is insufficient.
+ */
 export interface RTCTrackEvent {
   track: MediaStreamTrack
   streams: MediaStream[]

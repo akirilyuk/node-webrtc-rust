@@ -65,7 +65,13 @@ export class RTCPeerConnection extends EventEmitter {
 
   /** Fired when a local ICE candidate is gathered; `candidate` is null when gathering completes. */
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null
-  /** Fired when a remote media track is received. Requires RTP to flow on the sender side. */
+  /**
+   * Fired when a remote media track is received.
+   *
+   * For audio, this handler runs only after the remote peer sends at least one
+   * PCM frame via {@link LocalAudioTrack.writeSample} — adding a track with
+   * {@link addTrack} and completing ICE/SDP negotiation alone is not enough.
+   */
   ontrack: ((event: RTCTrackEvent) => void) | null = null
   /** Fired when the remote peer opens a data channel. */
   ondatachannel: ((event: RTCDataChannelEvent) => void) | null = null
@@ -202,7 +208,11 @@ export class RTCPeerConnection extends EventEmitter {
 
   /**
    * Adds a local audio track for sending to the remote peer.
-   * Call {@link LocalAudioTrack.writeSample} after connecting to trigger `ontrack` on the receiver.
+   *
+   * The remote peer's {@link ontrack} handler fires only after the first
+   * {@link LocalAudioTrack.writeSample} call delivers RTP — call it once the
+   * connection is established (and keep calling it to stream audio).
+   *
    * @returns An {@link RTCRtpSender} handle for the added track.
    */
   async addTrack(track: LocalAudioTrack): Promise<RTCRtpSender> {

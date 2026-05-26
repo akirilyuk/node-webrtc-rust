@@ -6,6 +6,7 @@ members = [
     "crates/conference",
     "crates/signaling",
     "packages/bindings",
+    "packages/conference-bindings",
 ]
 
 [workspace.package]

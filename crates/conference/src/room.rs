@@ -8,6 +8,7 @@ use node_webrtc_rust_mixer::{Frame, MixGraph};
 use tokio::sync::Mutex;
 
 use crate::error::ConferenceError;
+use crate::events::{MixingEnabledChanged, ParticipantJoined, ParticipantKicked, ParticipantLeft, ParticipantMuted, RoomEventSenders, RoomEvents};
 use crate::mute::{MuteMatrix, MuteScope};
 use crate::participant::Participant;
 use crate::signaling::{SignalingMessage, SignalingResponse};
@@ -42,6 +43,7 @@ pub struct Room {
     mix_graph: Arc<Mutex<MixGraph>>,
     mute_matrix: MuteMatrix,
     config: RoomConfig,
+    event_senders: Option<RoomEventSenders>,
 }
 
 impl Room {
@@ -57,7 +59,15 @@ impl Room {
             mix_graph,
             mute_matrix,
             config,
+            event_senders: None,
         }
+    }
+
+    /// Subscribes to room lifecycle and control events via async channels.
+    pub fn subscribe_events(&mut self) -> RoomEvents {
+        let (senders, events) = RoomEventSenders::new();
+        self.event_senders = Some(senders);
+        events
     }
 
     /// Returns the room identifier.
@@ -90,6 +100,7 @@ impl Room {
             "id={}, enabled={enabled}",
             self.id
         );
+        self.emit_mixing_enabled_changed(enabled);
     }
 
     /// Adds a participant with a fresh peer connection and mixer slot.
@@ -133,36 +144,13 @@ impl Room {
             "room={}, participant={participant_id}",
             self.id
         );
+        self.emit_participant_joined(participant_id);
         Ok(())
     }
 
     /// Removes a participant and tears down their peer connection.
     pub async fn remove_participant(&mut self, participant_id: &str) -> Result<(), ConferenceError> {
-        debug_call!(
-            "conference::room",
-            "remove_participant",
-            "room={}, participant={participant_id}",
-            self.id
-        );
-
-        let mut participant = self
-            .participants
-            .remove(participant_id)
-            .ok_or_else(|| {
-                ConferenceError::participant_not_found(format!(
-                    "participant {participant_id} not in room {}",
-                    self.id
-                ))
-            })?;
-
-        participant.shutdown(&self.mix_graph).await?;
-        debug_evt!(
-            "conference::room",
-            "participant_left",
-            "room={}, participant={participant_id}",
-            self.id
-        );
-        Ok(())
+        self.remove_participant_inner(participant_id, true).await
     }
 
     /// Removes a participant with an optional kick reason.
@@ -177,13 +165,14 @@ impl Room {
             "room={}, participant={participant_id}, reason={reason:?}",
             self.id
         );
-        self.remove_participant(participant_id).await?;
+        self.remove_participant_inner(participant_id, false).await?;
         debug_evt!(
             "conference::room",
             "participant_kicked",
             "room={}, participant={participant_id}, reason={reason:?}",
             self.id
         );
+        self.emit_participant_kicked(participant_id, reason);
         Ok(())
     }
 
@@ -204,7 +193,9 @@ impl Room {
         if let Some(listener) = listener_id {
             self.ensure_participant_exists(listener)?;
         }
-        self.mute_matrix.mute(target_id, scope, listener_id).await
+        self.mute_matrix.mute(target_id, scope, listener_id).await?;
+        self.emit_participant_muted(target_id, scope, listener_id);
+        Ok(())
     }
 
     /// Unmutes a participant globally or for one listener.
@@ -374,6 +365,41 @@ impl Room {
         Ok(())
     }
 
+    async fn remove_participant_inner(
+        &mut self,
+        participant_id: &str,
+        emit_left: bool,
+    ) -> Result<(), ConferenceError> {
+        debug_call!(
+            "conference::room",
+            "remove_participant",
+            "room={}, participant={participant_id}",
+            self.id
+        );
+
+        let mut participant = self
+            .participants
+            .remove(participant_id)
+            .ok_or_else(|| {
+                ConferenceError::participant_not_found(format!(
+                    "participant {participant_id} not in room {}",
+                    self.id
+                ))
+            })?;
+
+        participant.shutdown(&self.mix_graph).await?;
+        if emit_left {
+            debug_evt!(
+                "conference::room",
+                "participant_left",
+                "room={}, participant={participant_id}",
+                self.id
+            );
+            self.emit_participant_left(participant_id);
+        }
+        Ok(())
+    }
+
     fn ensure_participant_exists(&self, participant_id: &str) -> Result<(), ConferenceError> {
         if self.participants.contains_key(participant_id) {
             Ok(())
@@ -392,5 +418,48 @@ impl Room {
                 self.id
             ))
         })
+    }
+
+    fn emit_participant_joined(&self, participant_id: &str) {
+        if let Some(senders) = &self.event_senders {
+            let _ = senders.participant_joined.send(ParticipantJoined {
+                participant_id: participant_id.to_owned(),
+            });
+        }
+    }
+
+    fn emit_participant_left(&self, participant_id: &str) {
+        if let Some(senders) = &self.event_senders {
+            let _ = senders.participant_left.send(ParticipantLeft {
+                participant_id: participant_id.to_owned(),
+            });
+        }
+    }
+
+    fn emit_participant_kicked(&self, participant_id: &str, reason: Option<&str>) {
+        if let Some(senders) = &self.event_senders {
+            let _ = senders.participant_kicked.send(ParticipantKicked {
+                participant_id: participant_id.to_owned(),
+                reason: reason.map(str::to_owned),
+            });
+        }
+    }
+
+    fn emit_participant_muted(&self, target_id: &str, scope: MuteScope, listener_id: Option<&str>) {
+        if let Some(senders) = &self.event_senders {
+            let _ = senders.participant_muted.send(ParticipantMuted {
+                target_id: target_id.to_owned(),
+                scope,
+                listener_id: listener_id.map(str::to_owned),
+            });
+        }
+    }
+
+    fn emit_mixing_enabled_changed(&self, enabled: bool) {
+        if let Some(senders) = &self.event_senders {
+            let _ = senders
+                .mixing_enabled_changed
+                .send(MixingEnabledChanged { enabled });
+        }
     }
 }

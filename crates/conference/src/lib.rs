@@ -4,6 +4,7 @@
 //! personalized outbound [`LocalAudioTrack`] rendering.
 
 mod error;
+mod events;
 mod mute;
 mod participant;
 mod room;
@@ -11,6 +12,10 @@ mod server;
 mod signaling;
 
 pub use error::{ConferenceError, ConferenceErrorCode};
+pub use events::{
+    MixingEnabledChanged, ParticipantJoined, ParticipantKicked, ParticipantLeft,
+    ParticipantMuted, RoomError, RoomEvents,
+};
 pub use mute::{MuteMatrix, MuteScope};
 pub use participant::Participant;
 pub use room::{ParticipantInfo, Room, RoomConfig};

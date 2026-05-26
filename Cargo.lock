@@ -1448,6 +1448,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "node-webrtc-rust-conference-bindings"
+version = "0.1.0"
+dependencies = [
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "node-webrtc-rust-conference",
+ "node-webrtc-rust-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "node-webrtc-rust-core"
 version = "0.1.0"
 dependencies = [

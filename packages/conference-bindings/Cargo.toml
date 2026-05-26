@@ -1,0 +1,21 @@
+[package]
+name = "node-webrtc-rust-conference-bindings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NAPI-RS bindings exposing conference server and room APIs to Node.js"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+node-webrtc-rust-conference = { path = "../../crates/conference" }
+node-webrtc-rust-core = { path = "../../crates/core" }
+napi = { workspace = true, features = ["async", "napi4", "tokio_rt"] }
+napi-derive = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+napi-build = "2"

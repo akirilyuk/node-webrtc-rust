@@ -19,6 +19,15 @@ alwaysApply: false
 
 Do **not** add `push` triggers for feature branches (`initial-feature`, etc.) or `pull_request` targets other than `main`. Feature-branch commits stay off CI until there is a PR to `main`.
 
+## Caching and skip logic (`.github/workflows/build.yml`)
+
+- **`changes` job** (`dorny/paths-filter`): classifies diffs as `native`, `typescript`, or `workflows`.
+- **Skip entire build matrix** when only docs/markdown change (no `native` / `typescript` / `workflows`).
+- **Skip `napi build` step** when native sources unchanged *and* per-target `.node` cache hits (keyed by `Cargo.lock` + crate/bindings sources).
+- **`Swatinem/rust-cache`**: Cargo registry + `target/` per triple.
+- **`actions/cache`**: npm, napi-rs Zig toolchain, and native `.node` artifacts (`.github/actions/native-binding-cache`).
+- **`test` job** runs only affected checks (e.g. skip `cargo test` if only TypeScript changed).
+
 ## CI Docker image (`.github/workflows/ci-image.yml`)
 
 Rebuild and push `ghcr.io/.../ci-build:latest` **only when**:

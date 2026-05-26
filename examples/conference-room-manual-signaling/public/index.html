@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Conference Room — Manual Signaling</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Conference Room (manual signaling)</h1>
+        <p>
+          Same Rust-side audio mixer as the standard conference demo, but the WebSocket
+          signaling relay and conference bridge are implemented by hand in
+          <code>src/manual-signaling.ts</code> — no <code>@node-webrtc-rust/signaling</code>
+          package. Browser clients still use the same wire protocol.
+        </p>
+      </header>
+
+      <section class="panel">
+        <label>
+          Display name
+          <input id="display-name" type="text" maxlength="32" placeholder="Alice" />
+        </label>
+        <label>
+          Room
+          <input id="room" type="text" maxlength="32" value="demo" />
+        </label>
+        <button id="connect" type="button">Connect</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+        <p id="status" class="status">Disconnected</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Audio levels</h2>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <h3>Your microphone</h3>
+            <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform"></canvas>
+            <p id="mic-viz-status" class="viz-status">Connect to visualize outgoing audio</p>
+          </div>
+          <div class="viz-card">
+            <h3>Incoming mixed track</h3>
+            <canvas
+              id="incoming-viz"
+              width="640"
+              height="160"
+              aria-label="Incoming mixed audio waveform"
+            ></canvas>
+            <p id="incoming-viz-status" class="viz-status">Waiting for mixed track…</p>
+          </div>
+        </div>
+        <audio id="mixed-audio" controls autoplay></audio>
+        <p id="audio-status">Waiting for mixed track…</p>
+      </section>
+
+      <section class="panel">
+        <h2>Room controls</h2>
+        <p id="mixing-status">Mixing: unknown</p>
+        <button id="disable-mixing" type="button" disabled>Disable room mixing</button>
+        <button id="enable-mixing" type="button" disabled>Enable room mixing</button>
+      </section>
+
+      <section class="panel">
+        <h2>Participants</h2>
+        <ul id="participants"></ul>
+      </section>
+
+      <section class="panel log-panel">
+        <h2>Event log</h2>
+        <ul id="log"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

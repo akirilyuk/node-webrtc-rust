@@ -206,6 +206,7 @@ cd packages/bindings && npm run build:local
 | **audio-cosine** | `npm run start --workspace=@node-webrtc-rust/example-audio-cosine` | PCM cosine tone via `LocalAudioTrack` |
 | **browser-cosine-chat** | `npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat` | Browser tabs hear a server tone + mesh chat; live waveform |
 | **conference-room** | `npm run start --workspace=@node-webrtc-rust/example-conference-room` | Browser mic → Rust mixer → personalized audio; mute/kick UI |
+| **conference-room-manual-signaling** | `npm run start --workspace=@node-webrtc-rust/example-conference-room-manual-signaling` | Same mixer; hand-rolled WebSocket signaling (no signaling package) |
 
 **Conference demo:** open `http://localhost:8080` in multiple tabs, join the same room, allow microphone access. Waveform graphs show outgoing mic and incoming mixed track.
 

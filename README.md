@@ -2,49 +2,138 @@
 
 [![Build](https://github.com/node-webrtc-rust/node-webrtc-rust/actions/workflows/build.yml/badge.svg)](https://github.com/node-webrtc-rust/node-webrtc-rust/actions/workflows/build.yml)
 
-A Rust-backed native Node.js module providing browser-compatible WebRTC APIs with audio/video mixing capabilities. Built with [NAPI-RS](https://napi.rs) and [webrtc-rs](https://github.com/webrtc-rs/webrtc).
+**WebRTC for Node.js — native speed, browser-compatible APIs, Rust-side audio mixing.**
 
-Unlike standalone media servers (Mediasoup, LiveKit), this is an **importable native module** — no separate infrastructure required.
+[node-webrtc-rust](https://github.com/node-webrtc-rust/node-webrtc-rust) is an importable native module built with [NAPI-RS](https://napi.rs) and [webrtc-rs](https://github.com/webrtc-rs/webrtc). Use it like a browser `RTCPeerConnection` from TypeScript, or run multi-participant conference rooms where the Rust engine mixes microphone audio in real time.
 
-## Features (v0.1.0)
+Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate infrastructure** to deploy — install an npm package, load a prebuilt `.node` binary, and go.
 
-- Browser-compatible `RTCPeerConnection` API
-- Full ICE support (STUN + TURN)
-- DataChannels (ordered/unordered, text + binary)
-- Audio track sending and receiving
-- WebSocket-based signaling helpers
-- Prebuilt binaries for macOS, Linux, and Windows (no Rust toolchain needed for users)
+---
+
+## Table of contents
+
+- [Why node-webrtc-rust?](#why-node-webrtc-rust)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Packages](#packages)
+- [Quick start — peer connection](#quick-start--peer-connection)
+- [Quick start — conference room](#quick-start--conference-room)
+- [Examples](#examples)
+- [Supported platforms](#supported-platforms)
+- [Development](#development)
+- [Debug logging](#debug-logging)
+- [Releases](#releases)
+- [Roadmap](#roadmap)
+- [License](#license)
+
+---
+
+## Why node-webrtc-rust?
+
+| | node-webrtc-rust | Standalone SFU/MCU |
+|---|---|---|
+| **Deployment** | npm install | Separate server cluster |
+| **API surface** | W3C-style `RTCPeerConnection` | Proprietary client SDK |
+| **Audio mixing** | In-process Rust MCU | Remote media server |
+| **Signaling** | Bring your own (helpers included) | Built into platform |
+| **Best for** | Embedded WebRTC in Node apps | Large-scale hosted rooms |
+
+The control plane lives in TypeScript (room admin, auth, signaling relay). The data plane — ICE, DTLS, RTP, Opus decode, PCM mixing, encode — runs entirely in Rust.
+
+---
+
+## Features
+
+### WebRTC core (v0.1)
+
+- Browser-compatible [`RTCPeerConnection`](packages/sdk/src/RTCPeerConnection.ts) API
+- ICE with STUN and TURN
+- SCTP DataChannels (text and binary)
+- Local audio track send and remote track receive
+- Optional WebSocket signaling server and client helpers
+- Prebuilt native binaries for macOS, Linux, and Windows
+
+### Conference audio (v0.2 preview)
+
+- Rust-side MCU: one personalized mixed stream per listener
+- **Exclude-self** mixing — you never hear your own mic in the mix
+- Global mute, per-listener mute, and room-wide mixing on/off
+- Participant kick and room lifecycle APIs
+- Live waveform visualizer in browser demos
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+  subgraph node [Node.js — control plane]
+    SDK["@node-webrtc-rust/sdk"]
+    Conf["@node-webrtc-rust/conference"]
+    Sig["@node-webrtc-rust/signaling"]
+    Conf --> Sig
+  end
+
+  subgraph native [Rust — data plane]
+    Bind["bindings / conference-bindings"]
+    Core["crates/core"]
+    Mixer["crates/mixer"]
+    ConfCrate["crates/conference"]
+    Bind --> Core
+    ConfCrate --> Core
+    ConfCrate --> Mixer
+  end
+
+  subgraph clients [Clients]
+    Browser[Browser tabs]
+    NodePeer[Node peers]
+  end
+
+  SDK --> Bind
+  Conf --> Bind
+  Browser -->|Opus RTP| Core
+  NodePeer -->|Opus RTP| Core
+  ConfCrate -->|mixed audio| Browser
+```
+
+**Frame format:** 48 kHz stereo, 16-bit PCM, 20 ms frames (3 840 bytes) — matching Opus and `LocalAudioTrack.writeSample`.
+
+---
 
 ## Packages
 
-| Package                          | Description                                                        |
-| -------------------------------- | ------------------------------------------------------------------ |
-| `@node-webrtc-rust/sdk`          | High-level TypeScript API mirroring the W3C WebRTC spec            |
-| `@node-webrtc-rust/bindings`     | NAPI-RS native addon (compiled Rust → `.node` binary)              |
-| `@node-webrtc-rust/signaling`    | Optional WebSocket signaling server/client helpers                 |
-| `@node-webrtc-rust/conference`   | Conference room control plane (mute/kick, signaling bridge)        |
-| `@node-webrtc-rust/conference-bindings` | NAPI-RS native addon for conference rooms and mixing        |
+| Package | npm | Role |
+| --- | --- | --- |
+| [`@node-webrtc-rust/sdk`](packages/sdk) | TypeScript | W3C-style WebRTC API for Node |
+| [`@node-webrtc-rust/bindings`](packages/bindings) | Native | NAPI addon — peer connections, tracks, data channels |
+| [`@node-webrtc-rust/signaling`](packages/signaling) | TypeScript | WebSocket signaling server, client, auto-negotiate helper |
+| [`@node-webrtc-rust/conference`](packages/conference) | TypeScript | Room admin, mute/kick, signaling bridge |
+| [`@node-webrtc-rust/conference-bindings`](packages/conference-bindings) | Native | NAPI addon — conference rooms and mixer graph |
 
-## Quick Start
+Platform-specific binding packages (`@node-webrtc-rust/bindings-darwin-arm64`, etc.) are published alongside the main packages.
+
+---
+
+## Quick start — peer connection
+
+Install the SDK and signaling helpers:
 
 ```bash
 npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling
 ```
 
+Two peers over WebSocket signaling with a DataChannel:
+
 ```typescript
 import { RTCPeerConnection } from '@node-webrtc-rust/sdk'
 import { SignalingServer, SignalingClient, autoNegotiate } from '@node-webrtc-rust/signaling'
 
-// Start signaling server
 const server = new SignalingServer({ port: 8080 })
 await server.listen()
 
-// Peer 1 — creates the data channel and initiates negotiation
+// Peer 1 — impolite; creates the data channel
 const pc1 = new RTCPeerConnection({
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'turn:your-turn-server:3478', username: 'user', credential: 'pass' },
-  ],
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 })
 const sig1 = new SignalingClient({ url: 'ws://localhost:8080', room: 'demo' })
 autoNegotiate({ pc: pc1, signaling: sig1, polite: false })
@@ -53,7 +142,7 @@ await sig1.connect()
 const dc = pc1.createDataChannel('chat')
 dc.onopen = () => dc.send('Hello from Peer 1!')
 
-// Peer 2 — answers and receives the data channel
+// Peer 2 — polite; receives the data channel
 const pc2 = new RTCPeerConnection({
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 })
@@ -66,101 +155,140 @@ pc2.ondatachannel = (event) => {
 }
 ```
 
-See [`examples/`](examples/) for runnable demos — DataChannel chat, a
-[cosine-tone audio track](examples/audio-cosine/) streamer,
-[browser clients with room chat](examples/browser-cosine-chat/), and
-conference rooms with Rust-side audio mixing (`examples/conference-room/`).
+---
 
-## Conference rooms
+## Quick start — conference room
 
-Use `@node-webrtc-rust/conference` with `@node-webrtc-rust/signaling` to run
-multi-participant rooms where the Rust engine mixes inbound audio into a
-personalized stream per listener (excluding self-audio). TypeScript handles
-room admin (mute, kick, mixing on/off) and wires WebSocket signaling; the
-native layer owns peer connections and the mixer graph.
+Install conference and signaling packages, build native addons (see [Development](#development)), then:
 
 ```typescript
+import { createServer } from 'http'
+
 import { ConferenceServer } from '@node-webrtc-rust/conference'
+import { SignalingServer } from '@node-webrtc-rust/signaling'
 
-const server = new ConferenceServer()
-server.attachSignaling({ url: 'ws://127.0.0.1:3000/ws' })
-await server.createRoom('demo')
+const PORT = 8080
+const httpServer = createServer()
+const signaling = new SignalingServer({ server: httpServer, path: '/ws' })
+await signaling.listen(PORT)
+
+const conference = new ConferenceServer()
+conference.attachSignaling({ url: `ws://127.0.0.1:${PORT}/ws` })
+
+await conference.createRoom('demo', {
+  maxParticipants: 16,
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+})
+
+conference.on('participant-joined', ({ roomId, participantId }) => {
+  console.log(`${participantId} joined ${roomId}`)
+})
 ```
 
-## Supported Platforms
+Each browser client sends mic audio; the Rust mixer returns a **personalized stream** (everyone else, never self). See [`packages/conference/README.md`](packages/conference/README.md) for mute modes and admin APIs.
 
-| OS      | Arch              | Status    |
-| ------- | ----------------- | --------- |
-| macOS   | arm64 (M1+)       | Supported |
-| macOS   | x64 (Intel)       | Supported |
-| Linux   | x64 (glibc)       | Supported |
-| Linux   | x64 (musl/Alpine) | Supported |
-| Linux   | arm64 (glibc)     | Supported |
-| Windows | x64 (MSVC)        | Supported |
+---
 
-## Architecture
+## Examples
 
+Runnable demos live under [`examples/`](examples/). From the repo root after `npm install`:
+
+```bash
+npm run build:ts
+cd packages/bindings && npm run build:local
+cd ../conference-bindings && npm run build:local   # conference demo only
 ```
-┌──────────────────────────────────────────┐
-│            Node.js (Control Plane)       │  Business logic, signaling,
-│         @node-webrtc-rust/sdk            │  authentication
-└──────────────────────┬───────────────────┘
-                       │ NAPI-RS
-                       ▼
-┌──────────────────────────────────────────┐
-│          Rust Core Engine (Data Plane)   │  WebRTC stack, ICE, RTP,
-│           crates/core + crates/mixer     │  audio/video processing
-└──────────────────────────────────────────┘
-```
+
+| Example | Command | What it shows |
+| --- | --- | --- |
+| **peer-connection** | `npm run start --workspace=@node-webrtc-rust/example-peer-connection` | Two Node peers, DataChannel over signaling |
+| **audio-cosine** | `npm run start --workspace=@node-webrtc-rust/example-audio-cosine` | PCM cosine tone via `LocalAudioTrack` |
+| **browser-cosine-chat** | `npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat` | Browser tabs hear a server tone + mesh chat; live waveform |
+| **conference-room** | `npm run start --workspace=@node-webrtc-rust/example-conference-room` | Browser mic → Rust mixer → personalized audio; mute/kick UI |
+
+**Conference demo:** open `http://localhost:8080` in multiple tabs, join the same room, allow microphone access. Waveform graphs show outgoing mic and incoming mixed track.
+
+Details: [`examples/README.md`](examples/README.md)
+
+---
+
+## Supported platforms
+
+Prebuilt `.node` binaries are published for:
+
+| OS | Architecture | Triple |
+| --- | --- | --- |
+| macOS | Apple Silicon (M1+) | `aarch64-apple-darwin` |
+| macOS | Intel | `x86_64-apple-darwin` |
+| Linux | x64 glibc | `x86_64-unknown-linux-gnu` |
+| Linux | x64 musl (Alpine) | `x86_64-unknown-linux-musl` |
+| Linux | arm64 glibc | `aarch64-unknown-linux-gnu` |
+| Windows | x64 MSVC | `x86_64-pc-windows-msvc` |
+
+Node.js **≥ 18** required.
+
+---
 
 ## Development
 
 ### Prerequisites
 
-- Rust toolchain (stable) via [rustup](https://rustup.rs)
-- Node.js >= 18
-- npm >= 9
+- [Rust](https://rustup.rs) (stable)
+- Node.js ≥ 18, npm ≥ 9
 
-### Building from source
+### Clone and build
 
 ```bash
+git clone https://github.com/node-webrtc-rust/node-webrtc-rust.git
+cd node-webrtc-rust
 npm install
-cd packages/bindings && npm run build:local   # host-only — fast local dev
-npm run build
+
+# Native addons — host only (fast local iteration)
+cd packages/bindings && npm run build:debug:local
+cd ../conference-bindings && npm run build:debug:local
+
+# TypeScript packages
+cd ../.. && npm run build:ts
 ```
 
-### Running tests
+Use `build:local` (release) before running release-sensitive tests. Reserve `npm run build:all` inside bindings packages for CI / publish verification only.
+
+### Tests
 
 ```bash
-# Rust integration tests
+# Rust
 cargo test -p node-webrtc-rust-core
 cargo test -p node-webrtc-rust-mixer
 cargo test -p node-webrtc-rust-conference
 
-# TypeScript unit + E2E tests
+# TypeScript (unit + E2E)
 npm test
 
-# TURN integration test (requires coturn)
+# TURN integration (requires coturn)
 docker compose -f docker-compose.test.yml up -d
 TURN_AVAILABLE=1 npm test --workspace=@node-webrtc-rust/sdk
 docker compose -f docker-compose.test.yml down
 ```
 
+CI runs the full matrix on push and pull request — see [`.github/workflows/build.yml`](.github/workflows/build.yml).
+
+---
+
 ## Debug logging
 
-Enable verbose `[webrtc-debug]` logs across the Rust core, NAPI bindings, SDK, and signaling layers:
+Trace function calls and events across Rust core, NAPI bindings, SDK, signaling, and conference layers:
 
 ```bash
 WEBRTC_DEBUG=1 node your-app.js
 ```
 
-Accepted env values: `1`, `true`, or `yes` (case-insensitive). Logs go to stderr (Rust) and `console.error` (TypeScript) so you can filter with:
+Accepted values: `1`, `true`, or `yes` (case-insensitive). Output uses the `[webrtc-debug]` prefix on stderr (Rust) and `console.error` (TypeScript):
 
 ```bash
 WEBRTC_DEBUG=1 node your-app.js 2>&1 | grep '\[webrtc-debug\]'
 ```
 
-Per-connection override via `RTCConfiguration`:
+Per-connection override:
 
 ```typescript
 const pc = new RTCPeerConnection({
@@ -171,9 +299,11 @@ const pc = new RTCPeerConnection({
 
 When `debug` is set on the config object, it overrides the `WEBRTC_DEBUG` environment variable for that process.
 
+---
+
 ## Releases
 
-CI publishes npm packages when you push a tag matching:
+CI builds all platform targets, runs tests, and publishes to npm when you push a tag:
 
 ```text
 release/x.y.z
@@ -181,20 +311,25 @@ release/x.y.z-beta.1
 release/x.y.z-rc.1
 ```
 
-Examples:
-
 ```bash
 git tag release/0.2.0
 git push origin release/0.2.0
 ```
 
-The segment after `release/` becomes the npm version for all published packages (`@node-webrtc-rust/sdk`, `@node-webrtc-rust/bindings`, `@node-webrtc-rust/conference`, platform-specific binding packages, etc.). Requires `NPM_TOKEN` and `GITHUB_TOKEN` secrets in the repository.
+The segment after `release/` becomes the npm version for all packages. Requires `NPM_TOKEN` and `GITHUB_TOKEN` repository secrets. A GitHub Release is created automatically.
+
+---
 
 ## Roadmap
 
-- **v0.1.0** — PeerConnection, DataChannels, audio tracks, STUN/TURN, signaling helpers
-- **v0.2.0** — Video tracks, audio mixing, video compositing
-- **v0.3.0** — Rust-side signaling server, statistics API, simulcast
+| Version | Focus |
+| --- | --- |
+| **v0.1.0** | PeerConnection, DataChannels, audio tracks, STUN/TURN, signaling helpers |
+| **v0.2.0** | Conference audio mixing (MCU), mute matrix, browser demos |
+| **v0.2.x** | Video tracks, video compositing |
+| **v0.3.0** | Rust-side signaling server, statistics API, simulcast |
+
+---
 
 ## License
 

@@ -1,0 +1,242 @@
+//! Integration tests for peer connections.
+
+use std::time::Duration;
+
+use bytes::Bytes;
+use node_webrtc_rust_core::{
+    ConnectionState, DataChannelState, IceServer, LocalAudioTrack, PeerConnection,
+    PeerConnectionConfig,
+};
+use tokio::time::{sleep, timeout};
+
+fn test_config() -> PeerConnectionConfig {
+    PeerConnectionConfig::default()
+}
+
+fn stun_config() -> PeerConnectionConfig {
+    PeerConnectionConfig {
+        ice_servers: vec![IceServer {
+            urls: vec!["stun:stun.l.google.com:19302".into()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+async fn signal_pair(offer: &PeerConnection, answer: &PeerConnection) {
+    let _ = offer
+        .create_data_channel("_signal", None)
+        .await
+        .expect("create signal channel");
+
+    let offer_desc = offer.create_offer().await.expect("create offer");
+    offer
+        .set_local_description(offer_desc)
+        .await
+        .expect("set local offer");
+    offer.gathering_complete().await;
+
+    let local_offer = offer
+        .local_description()
+        .await
+        .expect("local offer missing");
+    answer
+        .set_remote_description(local_offer)
+        .await
+        .expect("set remote offer");
+
+    let answer_desc = answer.create_answer().await.expect("create answer");
+    answer
+        .set_local_description(answer_desc)
+        .await
+        .expect("set local answer");
+    answer.gathering_complete().await;
+
+    let local_answer = answer
+        .local_description()
+        .await
+        .expect("local answer missing");
+    offer
+        .set_remote_description(local_answer)
+        .await
+        .expect("set remote answer");
+}
+
+async fn wait_for_connection(pc: &PeerConnection) {
+    timeout(Duration::from_secs(15), async {
+        loop {
+            match pc.connection_state() {
+                ConnectionState::Connected => return,
+                ConnectionState::Failed | ConnectionState::Closed => {
+                    panic!("connection failed: {:?}", pc.connection_state());
+                }
+                _ => sleep(Duration::from_millis(50)).await,
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for connection");
+}
+
+async fn wait_for_data_channel_open(
+    dc: &node_webrtc_rust_core::DataChannel,
+) {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if dc.ready_state() == DataChannelState::Open {
+                return;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for data channel open");
+}
+
+#[tokio::test]
+async fn test_two_peers_connect() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    signal_pair(&pc1, &pc2).await;
+
+    wait_for_connection(&pc1).await;
+    wait_for_connection(&pc2).await;
+
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
+async fn test_data_channel_round_trip() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    let mut pc2_events = pc2.subscribe_events();
+
+    let dc1 = pc1
+        .create_data_channel("chat", None)
+        .await
+        .expect("create data channel");
+
+    signal_pair(&pc1, &pc2).await;
+
+    let dc2 = timeout(Duration::from_secs(10), pc2_events.data_channels.recv())
+        .await
+        .expect("timed out waiting for dc2")
+        .expect("no data channel received");
+
+    let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel(4);
+    dc2.on_message(move |msg| {
+        let _ = msg_tx.try_send(msg);
+    });
+
+    wait_for_data_channel_open(&dc1).await;
+
+    dc1.send_text("hello")
+        .await
+        .expect("send text");
+    dc1.send_binary_slice(&[1, 2, 3])
+        .await
+        .expect("send binary");
+
+    let text_msg = timeout(Duration::from_secs(10), msg_rx.recv())
+        .await
+        .expect("timed out waiting for text")
+        .expect("no text message");
+
+    assert!(text_msg.is_string);
+    assert_eq!(text_msg.data.as_ref(), b"hello");
+
+    let binary_msg = timeout(Duration::from_secs(10), msg_rx.recv())
+        .await
+        .expect("timed out waiting for binary")
+        .expect("no binary message");
+    assert!(!binary_msg.is_string);
+    assert_eq!(binary_msg.data.as_ref(), &[1, 2, 3]);
+
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
+async fn test_add_audio_track() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config).await.expect("create pc1");
+
+    let track = LocalAudioTrack::new("audio-1", "stream-1");
+    pc1.add_track(track.as_track_local())
+        .await
+        .expect("add track");
+
+    pc1.close().await.expect("close pc1");
+}
+
+#[tokio::test]
+async fn test_write_sample_with_shared_bytes() {
+    let track = LocalAudioTrack::new("audio-1", "stream-1");
+    let payload = Bytes::from_static(b"\x00\x01\x02");
+    track
+        .write_sample(payload, Duration::from_millis(20))
+        .await
+        .expect("write sample");
+}
+
+#[tokio::test]
+async fn test_ice_candidate_generation() {
+    let config = stun_config();
+    let pc = PeerConnection::new(config).await.expect("create pc");
+
+    let mut events = pc.subscribe_events();
+    let _ = pc
+        .create_data_channel("ice-test", None)
+        .await
+        .expect("create dc");
+
+    let offer = pc.create_offer().await.expect("create offer");
+    pc.set_local_description(offer)
+        .await
+        .expect("set local");
+
+    let mut saw_candidate = false;
+    let gather_timeout = timeout(Duration::from_secs(10), async {
+        while let Some(candidate) = events.ice_candidates.recv().await {
+            if let Some(c) = candidate {
+                assert!(!c.candidate.is_empty());
+                saw_candidate = true;
+            } else {
+                break;
+            }
+        }
+    })
+    .await;
+
+    assert!(gather_timeout.is_ok(), "ICE gathering timed out");
+    assert!(saw_candidate, "expected at least one ICE candidate");
+
+    pc.close().await.expect("close pc");
+}
+
+#[tokio::test]
+async fn test_connection_close() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    signal_pair(&pc1, &pc2).await;
+    wait_for_connection(&pc1).await;
+
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+
+    assert_eq!(pc1.connection_state(), ConnectionState::Closed);
+    assert_eq!(pc2.connection_state(), ConnectionState::Closed);
+}

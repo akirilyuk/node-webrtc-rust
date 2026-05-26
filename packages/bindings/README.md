@@ -14,18 +14,19 @@ No Rust toolchain required. The correct platform-specific binary is downloaded d
 
 ### Supported platforms
 
-| OS | Arch | Package |
-|----|------|---------|
-| macOS | arm64 (M1+) | `@node-webrtc-rust/bindings-darwin-arm64` |
-| macOS | x64 (Intel) | `@node-webrtc-rust/bindings-darwin-x64` |
-| Linux | x64 (glibc) | `@node-webrtc-rust/bindings-linux-x64-gnu` |
-| Linux | x64 (musl/Alpine) | `@node-webrtc-rust/bindings-linux-x64-musl` |
-| Linux | arm64 (glibc) | `@node-webrtc-rust/bindings-linux-arm64-gnu` |
-| Windows | x64 (MSVC) | `@node-webrtc-rust/bindings-win32-x64-msvc` |
+| OS      | Arch              | Package                                      |
+| ------- | ----------------- | -------------------------------------------- |
+| macOS   | arm64 (M1+)       | `@node-webrtc-rust/bindings-darwin-arm64`    |
+| macOS   | x64 (Intel)       | `@node-webrtc-rust/bindings-darwin-x64`      |
+| Linux   | x64 (glibc)       | `@node-webrtc-rust/bindings-linux-x64-gnu`   |
+| Linux   | x64 (musl/Alpine) | `@node-webrtc-rust/bindings-linux-x64-musl`  |
+| Linux   | arm64 (glibc)     | `@node-webrtc-rust/bindings-linux-arm64-gnu` |
+| Windows | x64 (MSVC)        | `@node-webrtc-rust/bindings-win32-x64-msvc`  |
 
 ## For developers (building from source)
 
 Prerequisites:
+
 - Rust toolchain (stable, via [rustup](https://rustup.rs))
 - Node.js >= 18
 - `@napi-rs/cli` (installed as devDependency)
@@ -48,6 +49,10 @@ The `index.js` loader resolves the native binding in this order:
 3. Try loading `node-webrtc-rust.node` (generic local build)
 
 If none succeed, an error is thrown with instructions.
+
+### TypeScript note
+
+This package is the **only** Node-facing package that ships hand-written JavaScript (`index.js`) for the napi-rs prebuild loader. TypeScript consumers use the generated `index.d.ts`. All higher-level APIs live in `@node-webrtc-rust/sdk` and `@node-webrtc-rust/signaling`, which are authored in TypeScript.
 
 ## Cross-compilation
 

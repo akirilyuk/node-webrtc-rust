@@ -1,9 +1,26 @@
-/**
- * High-level TypeScript SDK for node-webrtc-rust.
- *
- * Provides a browser-compatible WebRTC API surface plus mixing helpers.
- */
+export { RTCPeerConnection } from './RTCPeerConnection'
+export { RTCSessionDescription } from './RTCSessionDescription'
+export { RTCIceCandidate } from './RTCIceCandidate'
+export { RTCDataChannel } from './RTCDataChannel'
+export { MediaStream } from './MediaStream'
+export { MediaStreamTrack } from './MediaStreamTrack'
+export type {
+  RTCConfiguration,
+  RTCIceServer,
+  RTCDataChannelInit,
+  RTCPeerConnectionState,
+  RTCIceConnectionState,
+  RTCIceGatheringState,
+  RTCSignalingState,
+  RTCSdpType,
+  RTCIceCandidateInit,
+  RTCSessionDescriptionInit,
+  RTCOfferOptions,
+  RTCPeerConnectionIceEvent,
+  RTCTrackEvent,
+  RTCDataChannelEvent,
+  MessageEvent,
+  TrackKind,
+} from './types'
 
-import { version as bindingsVersion } from '@node-webrtc-rust/bindings'
-
-export { bindingsVersion as version }
+export { version } from '@node-webrtc-rust/bindings'

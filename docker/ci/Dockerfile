@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     python3 \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 20 LTS
@@ -33,9 +34,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       aarch64-unknown-linux-gnu
 
 # Zig (napi-rs cross-linking via `napi build --zig`)
+# Tarball names changed in 0.14.1 — resolve URL from the official index.
 ARG ZIG_VERSION=0.14.1
-RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
-      | tar -xJ -C /usr/local \
-    && ln -sf "/usr/local/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig
+RUN set -eux \
+    && ZIG_URL="$(curl -fsSL https://ziglang.org/download/index.json \
+      | python3 -c "import json,sys; print(json.load(sys.stdin)['${ZIG_VERSION}']['x86_64-linux']['tarball'])")" \
+    && curl -fsSL "$ZIG_URL" -o /tmp/zig.tar.xz \
+    && ZIG_DIR="$(tar -tf /tmp/zig.tar.xz | head -1 | cut -f1 -d/)" \
+    && tar -xJf /tmp/zig.tar.xz -C /usr/local \
+    && ln -sf "/usr/local/${ZIG_DIR}/zig" /usr/local/bin/zig \
+    && rm /tmp/zig.tar.xz \
+    && zig version
 
 WORKDIR /workspace

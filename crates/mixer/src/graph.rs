@@ -45,6 +45,24 @@ impl MixGraph {
         self.mixing_enabled = enabled;
     }
 
+    /// Returns whether room-wide mixing is enabled.
+    pub fn mixing_enabled(&self) -> bool {
+        self.mixing_enabled
+    }
+
+    /// Returns true when `target` is muted for all listeners.
+    pub fn is_globally_muted(&self, target: &str) -> bool {
+        self.global_mute.contains(target)
+    }
+
+    /// Returns true when `target` is muted only for `listener`.
+    pub fn is_listener_muted(&self, listener: &str, target: &str) -> bool {
+        self.listener_mute
+            .get(&(listener.to_string(), target.to_string()))
+            .copied()
+            .unwrap_or(false)
+    }
+
     /// Mutes `target` for all listeners when `muted` is true.
     pub fn set_global_mute(&mut self, target: impl Into<ParticipantId>, muted: bool) {
         let target = target.into();

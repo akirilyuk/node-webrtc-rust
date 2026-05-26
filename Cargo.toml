@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/mixer",
+    "crates/conference",
     "crates/signaling",
     "packages/bindings",
 ]

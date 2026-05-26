@@ -150,6 +150,17 @@ impl LocalAudioTrack {
     }
 }
 
+impl Clone for LocalAudioTrack {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            enabled: AtomicBool::new(self.enabled.load(Ordering::SeqCst)),
+            track_id: self.track_id.clone(),
+            stream_id: self.stream_id.clone(),
+        }
+    }
+}
+
 impl MediaStreamTrack for LocalAudioTrack {
     fn id(&self) -> &str {
         &self.track_id
@@ -179,6 +190,7 @@ impl MediaStreamTrack for LocalAudioTrack {
 }
 
 /// Remote track received from a peer connection.
+#[derive(Clone)]
 pub struct RemoteTrack {
     inner: Arc<TrackRemote>,
     track_id: String,

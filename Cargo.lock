@@ -1434,6 +1434,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "node-webrtc-rust-conference"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "env_logger",
+ "node-webrtc-rust-core",
+ "node-webrtc-rust-mixer",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "node-webrtc-rust-core"
 version = "0.1.0"
 dependencies = [

@@ -64,7 +64,9 @@ pc2.ondatachannel = (event) => {
 }
 ```
 
-See [`examples/peer-connection/`](examples/peer-connection/) for a runnable demo.
+See [`examples/`](examples/) for runnable demos — DataChannel chat, a
+[cosine-tone audio track](examples/audio-cosine/) streamer, and
+[browser clients with room chat](examples/browser-cosine-chat/).
 
 ## Supported Platforms
 

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Browser Cosine + Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Browser Cosine + Chat</h1>
+        <p>
+          Connect with native browser WebRTC. The Node server streams a 440 Hz cosine tone;
+          clients in the same room chat over peer-to-peer data channels.
+        </p>
+      </header>
+
+      <section class="panel">
+        <label>
+          Display name
+          <input id="display-name" type="text" maxlength="32" placeholder="Alice" />
+        </label>
+        <label>
+          Room
+          <input id="room" type="text" maxlength="32" value="lobby" />
+        </label>
+        <button id="connect" type="button">Connect</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+        <p id="status" class="status">Disconnected</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Cosine tone</h2>
+        <p id="audio-status">Waiting for server track…</p>
+        <audio id="tone" controls autoplay></audio>
+      </section>
+
+      <section class="panel chat-panel">
+        <h2>Room chat</h2>
+        <ul id="messages"></ul>
+        <form id="chat-form">
+          <input id="message" type="text" maxlength="500" placeholder="Say hello…" disabled />
+          <button type="submit" disabled>Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

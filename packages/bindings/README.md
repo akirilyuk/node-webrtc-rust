@@ -46,6 +46,10 @@ npm run build:all
 
 This produces a `node-webrtc-rust.<platform>.node` file in the current directory, which the loader (`index.js`) picks up as a fallback when no platform package is installed.
 
+### Debug logging
+
+Set `WEBRTC_DEBUG=1` (or pass `debug: true` in `JsRTCConfiguration`) to emit `[webrtc-debug]` lines from native bindings and the Rust core. See the root README for details.
+
 ## How it works
 
 The `index.js` loader resolves the native binding in this order:

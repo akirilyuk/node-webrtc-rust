@@ -44,9 +44,18 @@ pub struct PeerConnectionConfig {
     pub ice_servers: Vec<IceServer>,
     /// Which ICE candidate types are permitted.
     pub ice_transport_policy: IceTransportPolicy,
+    /// When set, enables or disables `[webrtc-debug]` logging for this process.
+    pub debug: Option<bool>,
 }
 
 impl PeerConnectionConfig {
+    /// Applies optional debug override from configuration.
+    pub fn apply_debug_override(&self) {
+        if let Some(enabled) = self.debug {
+            crate::debug::set_debug_enabled(enabled);
+        }
+    }
+
     /// Converts this configuration into a webrtc-rs `RTCConfiguration`.
     pub fn into_rtc_configuration(self) -> RTCConfiguration {
         RTCConfiguration {

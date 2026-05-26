@@ -5,6 +5,7 @@ import {
   type RTCSessionDescriptionInit,
 } from '@node-webrtc-rust/sdk'
 
+import { debugFn } from './debug'
 import type { AutoNegotiateOptions } from './types'
 
 /**
@@ -20,10 +21,12 @@ import type { AutoNegotiateOptions } from './types'
  */
 export function autoNegotiate(options: AutoNegotiateOptions): () => void {
   const { pc, signaling, polite } = options
+  debugFn('signaling::autoNegotiate', 'start', `polite=${polite}`)
   const knownPeers = new Set<string>()
   let makingOffer = false
 
   const onPeerJoined = async (peerId: string) => {
+    debugFn('signaling::autoNegotiate', 'onPeerJoined', `peerId=${peerId}`)
     if (peerId === signaling.peerId || knownPeers.has(peerId)) {
       return
     }
@@ -32,6 +35,7 @@ export function autoNegotiate(options: AutoNegotiateOptions): () => void {
     if (!polite) {
       makingOffer = true
       try {
+        debugFn('signaling::autoNegotiate', 'createOffer', `peerId=${peerId}`)
         const offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
         await pc.gatheringComplete()
@@ -51,6 +55,7 @@ export function autoNegotiate(options: AutoNegotiateOptions): () => void {
   }
 
   const onOffer = async ({ peerId, sdp }: { peerId: string; sdp: RTCSessionDescriptionInit }) => {
+    debugFn('signaling::autoNegotiate', 'onOffer', `peerId=${peerId}`)
     if (!polite && makingOffer) {
       return
     }
@@ -62,11 +67,13 @@ export function autoNegotiate(options: AutoNegotiateOptions): () => void {
     signaling.sendAnswer(peerId, pc.localDescription!.toJSON())
   }
 
-  const onAnswer = async ({ sdp }: { peerId: string; sdp: RTCSessionDescriptionInit }) => {
+  const onAnswer = async ({ peerId, sdp }: { peerId: string; sdp: RTCSessionDescriptionInit }) => {
+    debugFn('signaling::autoNegotiate', 'onAnswer', `peerId=${peerId}`)
     await pc.setRemoteDescription(new RTCSessionDescription(sdp))
   }
 
-  const onRemoteIce = async ({ candidate }: { peerId: string; candidate: RTCIceCandidateInit }) => {
+  const onRemoteIce = async ({ peerId, candidate }: { peerId: string; candidate: RTCIceCandidateInit }) => {
+    debugFn('signaling::autoNegotiate', 'onRemoteIce', `peerId=${peerId}`)
     if (candidate.candidate) {
       await pc.addIceCandidate(new RTCIceCandidate(candidate))
     }
@@ -78,6 +85,7 @@ export function autoNegotiate(options: AutoNegotiateOptions): () => void {
   signaling.on('ice-candidate', onRemoteIce)
 
   return () => {
+    debugFn('signaling::autoNegotiate', 'teardown')
     signaling.off('peer-joined', onPeerJoined)
     signaling.off('offer', onOffer)
     signaling.off('answer', onAnswer)

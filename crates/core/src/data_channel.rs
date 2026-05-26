@@ -8,6 +8,8 @@ use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::data_channel::RTCDataChannel;
 
+use crate::debug_call;
+use crate::debug_evt;
 use crate::error::CoreError;
 
 /// Options for creating a DataChannel.
@@ -99,6 +101,13 @@ impl DataChannel {
 
     /// Sends a UTF-8 text message.
     pub async fn send_text(&self, text: &str) -> Result<(), CoreError> {
+        debug_call!(
+            "core::data_channel",
+            "send",
+            "label={}, bytes={}",
+            self.label(),
+            text.len()
+        );
         self.inner
             .send_text(text.to_owned())
             .await
@@ -108,6 +117,13 @@ impl DataChannel {
 
     /// Sends a binary message without copying when `data` is already `Bytes`.
     pub async fn send_binary(&self, data: Bytes) -> Result<(), CoreError> {
+        debug_call!(
+            "core::data_channel",
+            "send",
+            "label={}, bytes={}",
+            self.label(),
+            data.len()
+        );
         self.inner
             .send(&data)
             .await
@@ -122,6 +138,7 @@ impl DataChannel {
 
     /// Closes the channel.
     pub async fn close(&self) -> Result<(), CoreError> {
+        debug_call!("core::data_channel", "close", "label={}", self.label());
         self.inner
             .close()
             .await
@@ -142,6 +159,13 @@ impl DataChannel {
     /// Registers a handler invoked when a message is received.
     pub fn on_message(&self, handler: impl Fn(DataChannelMessage) + Send + Sync + 'static) {
         self.inner.on_message(Box::new(move |msg| {
+            debug_evt!(
+                "core::data_channel",
+                "message",
+                "is_string={}, bytes={}",
+                msg.is_string,
+                msg.data.len()
+            );
             handler(DataChannelMessage {
                 is_string: msg.is_string,
                 data: msg.data,

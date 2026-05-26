@@ -125,6 +125,31 @@ TURN_AVAILABLE=1 npm test --workspace=@node-webrtc-rust/sdk
 docker compose -f docker-compose.test.yml down
 ```
 
+## Debug logging
+
+Enable verbose `[webrtc-debug]` logs across the Rust core, NAPI bindings, SDK, and signaling layers:
+
+```bash
+WEBRTC_DEBUG=1 node your-app.js
+```
+
+Accepted env values: `1`, `true`, or `yes` (case-insensitive). Logs go to stderr (Rust) and `console.error` (TypeScript) so you can filter with:
+
+```bash
+WEBRTC_DEBUG=1 node your-app.js 2>&1 | grep '\[webrtc-debug\]'
+```
+
+Per-connection override via `RTCConfiguration`:
+
+```typescript
+const pc = new RTCPeerConnection({
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  debug: true,
+})
+```
+
+When `debug` is set on the config object, it overrides the `WEBRTC_DEBUG` environment variable for that process.
+
 ## Roadmap
 
 - **v0.1.0** — PeerConnection, DataChannels, audio tracks, STUN/TURN, signaling helpers

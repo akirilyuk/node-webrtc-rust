@@ -5,6 +5,7 @@ use napi::JsUnknown;
 use napi_derive::napi;
 use node_webrtc_rust_core::{
     IceCandidate, IceServer, IceTransportPolicy, PeerConnectionConfig, SdpType, SessionDescription,
+    set_debug_enabled,
 };
 
 /// ICE server configuration exposed to JavaScript.
@@ -39,6 +40,7 @@ impl From<JsRTCIceServer> for IceServer {
 pub struct JsRTCConfiguration {
     pub ice_servers: Option<Vec<JsRTCIceServer>>,
     pub ice_transport_policy: Option<String>,
+    pub debug: Option<bool>,
 }
 
 impl From<JsRTCConfiguration> for PeerConnectionConfig {
@@ -48,6 +50,10 @@ impl From<JsRTCConfiguration> for PeerConnectionConfig {
             _ => IceTransportPolicy::All,
         };
 
+        if let Some(debug) = value.debug {
+            set_debug_enabled(debug);
+        }
+
         Self {
             ice_servers: value
                 .ice_servers
@@ -56,6 +62,7 @@ impl From<JsRTCConfiguration> for PeerConnectionConfig {
                 .map(Into::into)
                 .collect(),
             ice_transport_policy,
+            debug: value.debug,
         }
     }
 }

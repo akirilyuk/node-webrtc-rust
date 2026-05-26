@@ -3,6 +3,7 @@ import { createServer, type Server as HttpServer } from 'http'
 
 import { WebSocket, WebSocketServer } from 'ws'
 
+import { debugEvent, debugFn } from './debug'
 import type { SignalingMessage, SignalingServerOptions } from './types'
 
 interface Peer {
@@ -43,6 +44,7 @@ export class SignalingServer extends EventEmitter {
    * @param port - Port to bind; use `0` for an ephemeral port.
    */
   listen(port = 8080): Promise<void> {
+    debugFn('signaling::SignalingServer', 'listen', `port=${port}`)
     if (this.httpServer) {
       return Promise.resolve()
     }
@@ -88,6 +90,7 @@ export class SignalingServer extends EventEmitter {
 
   /** Closes all peer sockets and the underlying HTTP/WebSocket servers. */
   close(): Promise<void> {
+    debugFn('signaling::SignalingServer', 'close')
     for (const room of this.rooms.values()) {
       for (const peer of room.values()) {
         peer.socket.close()
@@ -112,6 +115,7 @@ export class SignalingServer extends EventEmitter {
   }
 
   private handleConnection(socket: WebSocket): void {
+    debugEvent('signaling::SignalingServer', 'connection')
     let peer: Peer | null = null
 
     socket.on('message', (raw) => {
@@ -121,6 +125,8 @@ export class SignalingServer extends EventEmitter {
       } catch {
         return
       }
+
+      debugEvent('signaling::SignalingServer', 'message', `type=${message.type}`)
 
       switch (message.type) {
         case 'join': {
@@ -151,6 +157,7 @@ export class SignalingServer extends EventEmitter {
 
     socket.on('close', () => {
       if (!peer) return
+      debugEvent('signaling::SignalingServer', 'disconnect', `peerId=${peer.id}`)
       const room = this.rooms.get(peer.room)
       room?.delete(peer.id)
       if (room && room.size === 0) {
@@ -161,6 +168,11 @@ export class SignalingServer extends EventEmitter {
   }
 
   private forward(roomId: string, targetPeerId: string, message: SignalingMessage): void {
+    debugFn(
+      'signaling::SignalingServer',
+      'forward',
+      `room=${roomId}, targetPeerId=${targetPeerId}, type=${message.type}`,
+    )
     const peer = this.rooms.get(roomId)?.get(targetPeerId)
     if (peer) {
       send(peer.socket, message)
@@ -179,6 +191,7 @@ export class SignalingServer extends EventEmitter {
 }
 
 function send(socket: WebSocket, message: SignalingMessage): void {
+  debugFn('signaling::SignalingServer', 'send', `type=${message.type}`)
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message))
   }

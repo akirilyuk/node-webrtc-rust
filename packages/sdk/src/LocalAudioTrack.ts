@@ -1,5 +1,6 @@
 import { JsLocalAudioTrack as NativeLocalAudioTrack } from '@node-webrtc-rust/bindings'
 
+import { debugFn } from './debug'
 import { MediaStreamTrack } from './MediaStreamTrack'
 
 /**
@@ -16,6 +17,7 @@ export class LocalAudioTrack extends MediaStreamTrack {
    * @param streamId - Stream id grouped in {@link RTCPeerConnection.ontrack} events.
    */
   constructor(id: string, streamId: string) {
+    debugFn('sdk::LocalAudioTrack', 'constructor', `id=${id}, streamId=${streamId}`)
     const native = new NativeLocalAudioTrack(id, streamId)
     super(native)
     this.native = native
@@ -32,6 +34,7 @@ export class LocalAudioTrack extends MediaStreamTrack {
    * @param durationMs - Sample duration in milliseconds; defaults to 20.
    */
   async writeSample(data: Buffer | Uint8Array, durationMs = 20): Promise<void> {
+    debugFn('sdk::LocalAudioTrack', 'writeSample', `bytes=${data.byteLength}, durationMs=${durationMs}`)
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
     await this.native.writeSample(buffer, durationMs)
   }

@@ -5,6 +5,7 @@ import type {
   JsMediaStreamTrack as NativeMediaStreamTrack,
 } from '@node-webrtc-rust/bindings'
 
+import { debugFn } from './debug'
 import type { TrackKind } from './types'
 
 type NativeTrack = NativeMediaStreamTrack | JsLocalAudioTrack
@@ -38,11 +39,13 @@ export class MediaStreamTrack extends EventEmitter {
 
   /** Marks the track ended locally. */
   stop(): void {
+    debugFn('sdk::MediaStreamTrack', 'stop', `id=${this.id}`)
     ;(this as { readyState: 'live' | 'ended' }).readyState = 'ended'
   }
 
   /** Returns this track (shallow clone; shared native handle). */
   clone(): MediaStreamTrack {
+    debugFn('sdk::MediaStreamTrack', 'clone', `id=${this.id}`)
     return this
   }
 }

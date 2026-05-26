@@ -13,6 +13,7 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_remote::TrackRemote;
 
+use crate::debug_call;
 use crate::error::CoreError;
 
 /// Track media kind.
@@ -118,6 +119,14 @@ impl LocalAudioTrack {
 
     /// Writes a PCM audio sample using a shared buffer (no extra copy).
     pub async fn write_sample(&self, data: Bytes, duration: Duration) -> Result<(), CoreError> {
+        debug_call!(
+            "core::media",
+            "write_sample",
+            "id={}, bytes={}, duration_ms={}",
+            self.track_id,
+            data.len(),
+            duration.as_millis()
+        );
         let sample = Sample {
             data,
             duration,
@@ -159,6 +168,12 @@ impl MediaStreamTrack for LocalAudioTrack {
     }
 
     fn set_enabled(&self, enabled: bool) {
+        debug_call!(
+            "core::media",
+            "set_enabled",
+            "id={}, enabled={enabled}",
+            self.track_id
+        );
         self.enabled.store(enabled, Ordering::SeqCst);
     }
 }
@@ -211,6 +226,7 @@ impl RemoteTrack {
 
     /// Reads the next RTP packet from the track.
     pub async fn read_rtp(&self) -> Result<RtpPacket, CoreError> {
+        debug_call!("core::media", "read_rtp", "id={}", self.track_id);
         let (packet, _) = self
             .inner
             .read_rtp()

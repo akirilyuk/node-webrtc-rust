@@ -60,6 +60,11 @@ export interface RTCConfiguration {
   iceServers?: RTCIceServer[]
   /** When `relay`, only TURN relay candidates are used. */
   iceTransportPolicy?: 'all' | 'relay'
+  /**
+   * When `true`, emit `[webrtc-debug]` logs for SDK and native calls.
+   * Overrides `WEBRTC_DEBUG` when set; also set `WEBRTC_DEBUG=1` for process-wide logging.
+   */
+  debug?: boolean
 }
 
 /** Options passed to {@link RTCPeerConnection.createOffer}. */

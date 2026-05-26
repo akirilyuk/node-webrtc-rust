@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod data_channel;
+pub mod debug;
 pub mod error;
 pub mod events;
 pub mod media;
@@ -11,6 +12,7 @@ pub mod peer_connection;
 
 pub use config::*;
 pub use data_channel::*;
+pub use debug::{debug_event, debug_fn, is_debug_enabled, set_debug_enabled};
 pub use error::CoreError;
 pub use events::*;
 pub use media::*;

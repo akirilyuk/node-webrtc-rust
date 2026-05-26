@@ -30,6 +30,8 @@ cd packages/bindings && npm run build:local
 npm run start --workspace=@node-webrtc-rust/example-peer-connection
 ```
 
+Set `WEBRTC_DEBUG=1` to trace WebRTC and signaling calls (see the root README).
+
 ### Audio track + cosine generator
 
 Streams interleaved stereo 16-bit PCM at 48 kHz from a `CosineGenerator` through

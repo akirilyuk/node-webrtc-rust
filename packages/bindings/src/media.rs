@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use node_webrtc_rust_core::{LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind};
+use node_webrtc_rust_core::{LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind, debug_call};
 
 /// Media stream track exposed to JavaScript (stub).
 #[napi]
@@ -91,6 +91,7 @@ pub struct JsLocalAudioTrack {
 impl JsLocalAudioTrack {
     #[napi(constructor)]
     pub fn new(id: String, stream_id: String) -> Self {
+        debug_call!("bindings::media", "LocalAudioTrack::new", "id={id}, stream_id={stream_id}");
         Self {
             inner: Arc::new(LocalAudioTrack::new(&id, &stream_id)),
         }
@@ -118,12 +119,19 @@ impl JsLocalAudioTrack {
 
     #[napi(setter)]
     pub fn set_enabled(&mut self, enabled: bool) {
+        debug_call!("bindings::media", "LocalAudioTrack::set_enabled", "enabled={enabled}");
         MediaStreamTrack::set_enabled(self.inner.as_ref(), enabled);
     }
 
     /// Writes a PCM audio frame to the track.
     #[napi]
     pub async fn write_sample(&self, data: Buffer, duration_ms: u32) -> Result<()> {
+        debug_call!(
+            "bindings::media",
+            "LocalAudioTrack::write_sample",
+            "bytes={}, duration_ms={duration_ms}",
+            data.len()
+        );
         let bytes = bytes::Bytes::copy_from_slice(data.as_ref());
         self.inner
             .write_sample(bytes, Duration::from_millis(duration_ms as u64))

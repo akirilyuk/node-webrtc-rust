@@ -19,6 +19,8 @@ use webrtc::track::track_local::TrackLocal;
 
 use crate::config::PeerConnectionConfig;
 use crate::data_channel::{DataChannel, DataChannelOptions};
+use crate::debug_call;
+use crate::debug_evt;
 use crate::error::CoreError;
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
 use crate::media::RemoteTrack;
@@ -244,6 +246,8 @@ fn shared_api() -> Result<Arc<API>, CoreError> {
 impl PeerConnection {
     /// Creates a new peer connection with the given configuration.
     pub async fn new(config: PeerConnectionConfig) -> Result<Self, CoreError> {
+        config.apply_debug_override();
+        debug_call!("core::peer_connection", "new", "ice_servers={}", config.ice_servers.len());
         let api = shared_api()?;
         let rtc_config = config.into_rtc_configuration();
         let pc = Arc::new(api.new_peer_connection(rtc_config).await?);
@@ -268,6 +272,12 @@ impl PeerConnection {
         &self,
         desc: SessionDescription,
     ) -> Result<(), CoreError> {
+        debug_call!(
+            "core::peer_connection",
+            "set_local_description",
+            "type={:?}",
+            desc.sdp_type
+        );
         self.inner.set_local_description(desc.into_rtc()?).await?;
         Ok(())
     }
@@ -277,12 +287,24 @@ impl PeerConnection {
         &self,
         desc: SessionDescription,
     ) -> Result<(), CoreError> {
+        debug_call!(
+            "core::peer_connection",
+            "set_remote_description",
+            "type={:?}",
+            desc.sdp_type
+        );
         self.inner.set_remote_description(desc.into_rtc()?).await?;
         Ok(())
     }
 
     /// Adds a trickle ICE candidate.
     pub async fn add_ice_candidate(&self, candidate: IceCandidate) -> Result<(), CoreError> {
+        debug_call!(
+            "core::peer_connection",
+            "add_ice_candidate",
+            "candidate={}",
+            candidate.candidate
+        );
         self.inner.add_ice_candidate(candidate.into_rtc()).await?;
         Ok(())
     }
@@ -293,6 +315,7 @@ impl PeerConnection {
         label: &str,
         options: Option<DataChannelOptions>,
     ) -> Result<DataChannel, CoreError> {
+        debug_call!("core::peer_connection", "create_data_channel", "label={label}");
         let init = options.map(Into::into);
         let dc = self.inner.create_data_channel(label, init).await?;
         Ok(DataChannel::from_inner(dc))
@@ -303,6 +326,7 @@ impl PeerConnection {
         &self,
         track: Arc<dyn TrackLocal + Send + Sync>,
     ) -> Result<(), CoreError> {
+        debug_call!("core::peer_connection", "add_track");
         let sender = self.inner.add_track(track).await?;
         // webrtc-rs requires reading RTCP from the sender for media to flow correctly.
         tokio::spawn(async move {
@@ -314,6 +338,7 @@ impl PeerConnection {
 
     /// Closes the peer connection.
     pub async fn close(&self) -> Result<(), CoreError> {
+        debug_call!("core::peer_connection", "close");
         self.inner.close().await?;
         Ok(())
     }
@@ -342,6 +367,12 @@ impl PeerConnection {
     pub fn on_ice_candidate(&self, handler: impl Fn(Option<IceCandidate>) + Send + Sync + 'static) {
         self.inner.on_ice_candidate(Box::new(move |candidate| {
             let mapped = candidate.and_then(|c| c.to_json().ok().map(IceCandidate::from));
+            debug_evt!(
+                "core::peer_connection",
+                "icecandidate",
+                "present={}",
+                mapped.is_some()
+            );
             handler(mapped);
             Box::pin(async {})
         }));
@@ -350,7 +381,9 @@ impl PeerConnection {
     /// Registers a handler for incoming remote tracks.
     pub fn on_track(&self, handler: impl Fn(RemoteTrack) + Send + Sync + 'static) {
         self.inner.on_track(Box::new(move |track, _, _| {
-            handler(RemoteTrack::from_inner(track));
+            let remote = RemoteTrack::from_inner(track);
+            debug_evt!("core::peer_connection", "track", "id={}", remote.id());
+            handler(remote);
             Box::pin(async {})
         }));
     }
@@ -358,7 +391,14 @@ impl PeerConnection {
     /// Registers a handler for incoming data channels.
     pub fn on_data_channel(&self, handler: impl Fn(DataChannel) + Send + Sync + 'static) {
         self.inner.on_data_channel(Box::new(move |dc| {
-            handler(DataChannel::from_inner(dc));
+            let channel = DataChannel::from_inner(dc);
+            debug_evt!(
+                "core::peer_connection",
+                "datachannel",
+                "label={}",
+                channel.label()
+            );
+            handler(channel);
             Box::pin(async {})
         }));
     }
@@ -370,6 +410,7 @@ impl PeerConnection {
     ) {
         self.inner
             .on_peer_connection_state_change(Box::new(move |state| {
+                debug_evt!("core::peer_connection", "connectionstatechange", "{state:?}");
                 handler(state.into());
                 Box::pin(async {})
             }));
@@ -382,6 +423,11 @@ impl PeerConnection {
     ) {
         self.inner
             .on_ice_connection_state_change(Box::new(move |state| {
+                debug_evt!(
+                    "core::peer_connection",
+                    "iceconnectionstatechange",
+                    "{state:?}"
+                );
                 handler(state.into());
                 Box::pin(async {})
             }));
@@ -398,25 +444,41 @@ impl PeerConnection {
         let ice_tx = senders.ice_candidates;
         self.inner.on_ice_candidate(Box::new(move |candidate| {
             let mapped = candidate.and_then(|c| c.to_json().ok().map(IceCandidate::from));
+            debug_evt!(
+                "core::peer_connection",
+                "icecandidate",
+                "present={}",
+                mapped.is_some()
+            );
             let _ = ice_tx.send(mapped);
             Box::pin(async {})
         }));
 
         let track_tx = senders.tracks;
         self.inner.on_track(Box::new(move |track, _, _| {
-            let _ = track_tx.send(RemoteTrack::from_inner(track));
+            let remote = RemoteTrack::from_inner(track);
+            debug_evt!("core::peer_connection", "track", "id={}", remote.id());
+            let _ = track_tx.send(remote);
             Box::pin(async {})
         }));
 
         let dc_tx = senders.data_channels;
         self.inner.on_data_channel(Box::new(move |dc| {
-            let _ = dc_tx.send(DataChannel::from_inner(dc));
+            let channel = DataChannel::from_inner(dc);
+            debug_evt!(
+                "core::peer_connection",
+                "datachannel",
+                "label={}",
+                channel.label()
+            );
+            let _ = dc_tx.send(channel);
             Box::pin(async {})
         }));
 
         let conn_tx = senders.connection_state;
         self.inner
             .on_peer_connection_state_change(Box::new(move |state| {
+                debug_evt!("core::peer_connection", "connectionstatechange", "{state:?}");
                 let _ = conn_tx.send(state.into());
                 Box::pin(async {})
             }));
@@ -424,12 +486,18 @@ impl PeerConnection {
         let ice_conn_tx = senders.ice_connection_state;
         self.inner
             .on_ice_connection_state_change(Box::new(move |state| {
+                debug_evt!(
+                    "core::peer_connection",
+                    "iceconnectionstatechange",
+                    "{state:?}"
+                );
                 let _ = ice_conn_tx.send(state.into());
                 Box::pin(async {})
             }));
 
         let neg_tx = senders.negotiation_needed;
         self.inner.on_negotiation_needed(Box::new(move || {
+            debug_evt!("core::peer_connection", "negotiationneeded");
             let _ = neg_tx.send(());
             Box::pin(async {})
         }));

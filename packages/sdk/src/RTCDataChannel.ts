@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 
 import type { JsRTCDataChannel as NativeDataChannel } from '@node-webrtc-rust/bindings'
 
+import { debugEvent, debugFn } from './debug'
 import type { MessageEvent, RTCDataChannelInit, RTCDataChannelState, RTCErrorEvent } from './types'
 
 type SendPayload = string | Buffer | ArrayBuffer | Uint8Array
@@ -85,6 +86,7 @@ export class RTCDataChannel extends EventEmitter {
    * Messages sent before the native channel is ready are queued and flushed on open.
    */
   send(data: SendPayload): void {
+    debugFn('sdk::RTCDataChannel', 'send', `label=${this.label}`)
     if (!this.native) {
       this.pendingSends.push(data)
       return
@@ -102,6 +104,7 @@ export class RTCDataChannel extends EventEmitter {
 
   /** Closes the channel locally. */
   close(): void {
+    debugFn('sdk::RTCDataChannel', 'close', `label=${this.label}`)
     if (this.native) {
       void this.native.close()
     }
@@ -110,6 +113,7 @@ export class RTCDataChannel extends EventEmitter {
 
   protected attachNative(native: NativeDataChannel): void {
     native.setOnOpen((_err) => {
+      debugEvent('sdk::RTCDataChannel', 'open', `label=${this.label}`)
       this.readyState = 'open'
       const event = new Event('open')
       this.onopen?.(event)
@@ -118,6 +122,11 @@ export class RTCDataChannel extends EventEmitter {
 
     native.setOnMessage((_err, data) => {
       if (data === undefined) return
+      debugEvent(
+        'sdk::RTCDataChannel',
+        'message',
+        `label=${this.label}, type=${typeof data === 'string' ? 'string' : 'binary'}`,
+      )
       const message: MessageEvent =
         typeof data === 'string' ? { data } : { data: Buffer.from(data) }
       this.onmessage?.(message)
@@ -125,6 +134,7 @@ export class RTCDataChannel extends EventEmitter {
     })
 
     native.setOnClose((_err) => {
+      debugEvent('sdk::RTCDataChannel', 'close', `label=${this.label}`)
       this.readyState = 'closed'
       const event = new Event('close')
       this.onclose?.(event)

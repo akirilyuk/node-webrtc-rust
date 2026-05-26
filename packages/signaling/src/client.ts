@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 
 import WebSocket from 'ws'
 
+import { debugEvent, debugFn } from './debug'
 import type {
   AnswerEvent,
   IceCandidateEvent,
@@ -33,6 +34,7 @@ export class SignalingClient extends EventEmitter {
 
   /** Opens the WebSocket and sends a `join` message for {@link room}. */
   connect(): Promise<void> {
+    debugFn('signaling::SignalingClient', 'connect', `url=${this.url}, room=${this.room}`)
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return Promise.resolve()
     }
@@ -40,6 +42,7 @@ export class SignalingClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.url)
       this.ws.once('open', () => {
+        debugEvent('signaling::SignalingClient', 'connected')
         this.send({ type: 'join', room: this.room, peerId: this.peerId })
         this.emit('connected')
         resolve()
@@ -49,18 +52,23 @@ export class SignalingClient extends EventEmitter {
         reject(error)
       })
       this.ws.on('message', (raw) => this.handleMessage(raw.toString()))
-      this.ws.on('close', () => this.emit('disconnected'))
+      this.ws.on('close', () => {
+        debugEvent('signaling::SignalingClient', 'disconnected')
+        this.emit('disconnected')
+      })
     })
   }
 
   /** Closes the WebSocket connection. */
   disconnect(): void {
+    debugFn('signaling::SignalingClient', 'disconnect')
     this.ws?.close()
     this.ws = null
   }
 
   /** Sends an SDP offer to a specific peer in the room. */
   sendOffer(targetPeerId: string, sdp: OfferEvent['sdp']): void {
+    debugFn('signaling::SignalingClient', 'sendOffer', `targetPeerId=${targetPeerId}`)
     this.send({
       type: 'offer',
       room: this.room,
@@ -72,6 +80,7 @@ export class SignalingClient extends EventEmitter {
 
   /** Sends an SDP answer to a specific peer in the room. */
   sendAnswer(targetPeerId: string, sdp: AnswerEvent['sdp']): void {
+    debugFn('signaling::SignalingClient', 'sendAnswer', `targetPeerId=${targetPeerId}`)
     this.send({
       type: 'answer',
       room: this.room,
@@ -83,6 +92,7 @@ export class SignalingClient extends EventEmitter {
 
   /** Sends a trickle ICE candidate to a specific peer in the room. */
   sendIceCandidate(targetPeerId: string, candidate: IceCandidateEvent['candidate']): void {
+    debugFn('signaling::SignalingClient', 'sendIceCandidate', `targetPeerId=${targetPeerId}`)
     this.send({
       type: 'ice-candidate',
       room: this.room,
@@ -99,6 +109,8 @@ export class SignalingClient extends EventEmitter {
     } catch {
       return
     }
+
+    debugEvent('signaling::SignalingClient', 'message', `type=${message.type}`)
 
     switch (message.type) {
       case 'peer-joined':
@@ -125,6 +137,7 @@ export class SignalingClient extends EventEmitter {
   }
 
   private send(message: SignalingMessage): void {
+    debugFn('signaling::SignalingClient', 'send', `type=${message.type}`)
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message))
     }

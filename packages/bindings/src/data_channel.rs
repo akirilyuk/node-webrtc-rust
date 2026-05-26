@@ -7,7 +7,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use napi::JsFunction;
 use napi::JsUnknown;
-use node_webrtc_rust_core::{DataChannel, DataChannelMessage, DataChannelOptions, DataChannelState};
+use node_webrtc_rust_core::{DataChannel, DataChannelMessage, DataChannelOptions, DataChannelState, debug_call};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::config::{core_err, to_js_unknown};
@@ -67,6 +67,22 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub async fn send(&self, data: Either<String, Buffer>) -> Result<()> {
+        match &data {
+            Either::A(text) => debug_call!(
+                "bindings::data_channel",
+                "send",
+                "label={}, text_bytes={}",
+                self.inner.label(),
+                text.len()
+            ),
+            Either::B(buffer) => debug_call!(
+                "bindings::data_channel",
+                "send",
+                "label={}, binary_bytes={}",
+                self.inner.label(),
+                buffer.len()
+            ),
+        }
         match data {
             Either::A(text) => self.inner.send_text(&text).await.map_err(core_err),
             Either::B(buffer) => {
@@ -78,11 +94,13 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub async fn close(&self) -> Result<()> {
+        debug_call!("bindings::data_channel", "close", "label={}", self.inner.label());
         self.inner.close().await.map_err(core_err)
     }
 
     #[napi]
     pub fn set_on_open(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!("bindings::data_channel", "set_on_open", "label={}", self.inner.label());
         let mut wired = self.open_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -103,6 +121,7 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub fn set_on_message(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!("bindings::data_channel", "set_on_message", "label={}", self.inner.label());
         let mut wired = self.message_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -138,6 +157,7 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub fn set_on_close(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!("bindings::data_channel", "set_on_close", "label={}", self.inner.label());
         let mut wired = self.close_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -158,6 +178,7 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub fn set_on_error(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!("bindings::data_channel", "set_on_error", "label={}", self.inner.label());
         let mut wired = self.error_wired.blocking_lock();
         if *wired {
             return Ok(());

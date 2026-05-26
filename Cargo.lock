@@ -1394,11 +1394,14 @@ dependencies = [
 name = "node-webrtc-rust-bindings"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "napi",
  "napi-build",
  "napi-derive",
  "node-webrtc-rust-core",
  "node-webrtc-rust-mixer",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

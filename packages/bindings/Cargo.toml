@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 node-webrtc-rust-core = { path = "../../crates/core" }
 node-webrtc-rust-mixer = { path = "../../crates/mixer" }
-napi = { workspace = true }
+napi = { workspace = true, features = ["async", "napi4", "tokio_rt"] }
 napi-derive = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }

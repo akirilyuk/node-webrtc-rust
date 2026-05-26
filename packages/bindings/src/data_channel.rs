@@ -5,10 +5,12 @@ use std::sync::Arc;
 use bytes::Bytes;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use napi::JsFunction;
+use napi::JsUnknown;
 use node_webrtc_rust_core::{DataChannel, DataChannelMessage, DataChannelOptions, DataChannelState};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::config::core_err;
+use crate::config::{core_err, to_js_unknown};
 use crate::events::{
     create_error_callback, create_event_callback, create_void_callback, wire_error_channel,
     wire_event_channel, wire_void_channel,
@@ -32,19 +34,6 @@ impl JsRTCDataChannel {
             message_wired: Mutex::new(false),
             close_wired: Mutex::new(false),
             error_wired: Mutex::new(false),
-        }
-    }
-
-    fn map_message(env: &Env, message: DataChannelMessage) -> Result<Vec<Unknown<'static>>> {
-        if message.is_string {
-            let text = std::str::from_utf8(&message.data).map_err(|err| {
-                Error::from_reason(format!("invalid UTF-8 in data channel message: {err}"))
-            })?;
-            Ok(vec![env.create_string(text)?.into()])
-        } else {
-            Ok(vec![env
-                .create_buffer_with_borrowed_data(message.data)?
-                .into_unknown()])
         }
     }
 }
@@ -93,7 +82,7 @@ impl JsRTCDataChannel {
     }
 
     #[napi]
-    pub fn set_on_open(&self, env: Env, callback: Function<'static, UnknownReturnValue>) -> Result<()> {
+    pub fn set_on_open(&self, env: Env, callback: JsFunction) -> Result<()> {
         let mut wired = self.open_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -113,11 +102,7 @@ impl JsRTCDataChannel {
     }
 
     #[napi]
-    pub fn set_on_message(
-        &self,
-        env: Env,
-        callback: Function<'static, UnknownReturnValue>,
-    ) -> Result<()> {
+    pub fn set_on_message(&self, env: Env, callback: JsFunction) -> Result<()> {
         let mut wired = self.message_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -125,7 +110,22 @@ impl JsRTCDataChannel {
         *wired = true;
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let tsfn = create_event_callback(&env, callback, Self::map_message)?;
+        let tsfn = create_event_callback(&env, callback, |ctx| -> Result<Vec<JsUnknown>> {
+            let message: DataChannelMessage = ctx.value;
+            if message.is_string {
+                let text = std::str::from_utf8(&message.data).map_err(|err| {
+                    Error::from_reason(format!("invalid UTF-8 in data channel message: {err}"))
+                })?;
+                to_js_unknown(&ctx.env, ctx.env.create_string(text)?)
+                    .map(|value| vec![value])
+            } else {
+                Ok(vec![
+                    ctx.env
+                        .create_buffer_with_data(message.data.to_vec())?
+                        .into_unknown(),
+                ])
+            }
+        })?;
         wire_event_channel(rx, tsfn);
 
         let inner = Arc::clone(&self.inner);
@@ -137,7 +137,7 @@ impl JsRTCDataChannel {
     }
 
     #[napi]
-    pub fn set_on_close(&self, env: Env, callback: Function<'static, UnknownReturnValue>) -> Result<()> {
+    pub fn set_on_close(&self, env: Env, callback: JsFunction) -> Result<()> {
         let mut wired = self.close_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -157,7 +157,7 @@ impl JsRTCDataChannel {
     }
 
     #[napi]
-    pub fn set_on_error(&self, env: Env, callback: Function<'static, UnknownReturnValue>) -> Result<()> {
+    pub fn set_on_error(&self, env: Env, callback: JsFunction) -> Result<()> {
         let mut wired = self.error_wired.blocking_lock();
         if *wired {
             return Ok(());

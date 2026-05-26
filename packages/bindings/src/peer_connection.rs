@@ -4,80 +4,58 @@ use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use napi::JsFunction;
 use node_webrtc_rust_core::{
-    ConnectionState, IceConnectionState, PeerConnection, PeerConnectionEvents, RemoteTrack,
+    ConnectionState, IceConnectionState, IceCandidate, PeerConnection, RemoteTrack,
+    SessionDescription,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::config::{
-    core_err, JsRTCIceCandidate, JsRTCConfiguration, JsRTCSessionDescription,
+    core_err, to_js_unknown, JsRTCIceCandidate, JsRTCConfiguration, JsRTCSessionDescription,
 };
 use crate::data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
 use crate::events::{create_event_callback, wire_event_channel};
 use crate::media::JsMediaStreamTrack;
 
-struct EventReceivers {
-    events: Option<PeerConnectionEvents>,
+struct EventState {
+    ice_candidates: Option<mpsc::UnboundedReceiver<Option<IceCandidate>>>,
+    tracks: Option<mpsc::UnboundedReceiver<RemoteTrack>>,
+    data_channels: Option<mpsc::UnboundedReceiver<node_webrtc_rust_core::DataChannel>>,
+    connection_state: Option<mpsc::UnboundedReceiver<ConnectionState>>,
+    ice_connection_state: Option<mpsc::UnboundedReceiver<IceConnectionState>>,
+}
+
+impl EventState {
+    fn new() -> Self {
+        Self {
+            ice_candidates: None,
+            tracks: None,
+            data_channels: None,
+            connection_state: None,
+            ice_connection_state: None,
+        }
+    }
+
+    fn subscribe(&mut self, pc: &PeerConnection) {
+        if self.ice_candidates.is_some() {
+            return;
+        }
+
+        let events = pc.subscribe_events();
+        self.ice_candidates = Some(events.ice_candidates);
+        self.tracks = Some(events.tracks);
+        self.data_channels = Some(events.data_channels);
+        self.connection_state = Some(events.connection_state);
+        self.ice_connection_state = Some(events.ice_connection_state);
+    }
 }
 
 /// WebRTC peer connection exposed to JavaScript.
 #[napi]
 pub struct JsPeerConnection {
     inner: Arc<PeerConnection>,
-    events: Arc<Mutex<EventReceivers>>,
-}
-
-impl JsPeerConnection {
-    fn ensure_events(&self) -> PeerConnectionEvents {
-        let mut guard = self.events.blocking_lock();
-        if guard.events.is_none() {
-            guard.events = Some(self.inner.subscribe_events());
-        }
-        guard.events.take().expect("events just initialized")
-    }
-
-    fn return_events(&self, events: PeerConnectionEvents) {
-        let mut guard = self.events.blocking_lock();
-        guard.events = Some(events);
-    }
-
-    fn map_ice_candidate(
-        env: &Env,
-        candidate: Option<node_webrtc_rust_core::IceCandidate>,
-    ) -> Result<Vec<Unknown<'static>>> {
-        match candidate {
-            None => Ok(vec![env.get_null()?.into()]),
-            Some(candidate) => {
-                let js = JsRTCIceCandidate::from(candidate);
-                Ok(vec![js.into_unknown(env)?])
-            }
-        }
-    }
-
-    fn map_track(env: &Env, track: RemoteTrack) -> Result<Vec<Unknown<'static>>> {
-        let js = JsMediaStreamTrack::from_remote(track);
-        Ok(vec![js.into_unknown(env)?])
-    }
-
-    fn map_data_channel(env: &Env, channel: node_webrtc_rust_core::DataChannel) -> Result<Vec<Unknown<'static>>> {
-        let js = JsRTCDataChannel::new(channel);
-        Ok(vec![js.into_unknown(env)?])
-    }
-
-    fn map_connection_state(env: &Env, state: ConnectionState) -> Result<Vec<Unknown<'static>>> {
-        Ok(vec![env
-            .create_string(&connection_state_to_string(state))?
-            .into()])
-    }
-
-    fn map_ice_connection_state(
-        env: &Env,
-        state: IceConnectionState,
-    ) -> Result<Vec<Unknown<'static>>> {
-        Ok(vec![env
-            .create_string(&ice_connection_state_to_string(state))?
-            .into()])
-    }
+    events: Arc<Mutex<EventState>>,
 }
 
 #[napi]
@@ -85,12 +63,10 @@ impl JsPeerConnection {
     #[napi(constructor)]
     pub fn new(config: Option<JsRTCConfiguration>) -> Result<Self> {
         let config = config.unwrap_or_default().into();
-        let inner = napi::tokio::runtime::Handle::current()
-            .block_on(PeerConnection::new(config))
-            .map_err(core_err)?;
+        let inner = block_on(PeerConnection::new(config)).map_err(core_err)?;
         Ok(Self {
             inner: Arc::new(inner),
-            events: Arc::new(Mutex::new(EventReceivers { events: None })),
+            events: Arc::new(Mutex::new(EventState::new())),
         })
     }
 
@@ -191,72 +167,88 @@ impl JsPeerConnection {
     }
 
     #[napi]
-    pub fn set_on_ice_candidate(
-        &self,
-        env: Env,
-        callback: Function<'static, UnknownReturnValue>,
-    ) -> Result<()> {
-        let mut events = self.ensure_events();
-        let tsfn = create_event_callback(&env, callback, Self::map_ice_candidate)?;
-        wire_event_channel(events.ice_candidates, tsfn);
-        self.return_events(events);
+    pub fn set_on_ice_candidate(&self, env: Env, callback: JsFunction) -> Result<()> {
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .ice_candidates
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| -> Result<Vec<napi::JsUnknown>> {
+            match ctx.value {
+                None => to_js_unknown(&ctx.env, ctx.env.get_null()?).map(|value| vec![value]),
+                Some(candidate) => {
+                    to_js_unknown(&ctx.env, JsRTCIceCandidate::from(candidate)).map(|value| vec![value])
+                }
+            }
+        })?;
+        wire_event_channel(rx, tsfn);
         Ok(())
     }
 
     #[napi]
-    pub fn set_on_track(
-        &self,
-        env: Env,
-        callback: Function<'static, UnknownReturnValue>,
-    ) -> Result<()> {
-        let mut events = self.ensure_events();
-        let tsfn = create_event_callback(&env, callback, Self::map_track)?;
-        wire_event_channel(events.tracks, tsfn);
-        self.return_events(events);
+    pub fn set_on_track(&self, env: Env, callback: JsFunction) -> Result<()> {
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events.tracks.take().expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| {
+            Ok(vec![JsMediaStreamTrack::from_remote(ctx.value)])
+        })?;
+        wire_event_channel(rx, tsfn);
         Ok(())
     }
 
     #[napi]
-    pub fn set_on_data_channel(
-        &self,
-        env: Env,
-        callback: Function<'static, UnknownReturnValue>,
-    ) -> Result<()> {
-        let mut events = self.ensure_events();
-        let tsfn = create_event_callback(&env, callback, Self::map_data_channel)?;
-        wire_event_channel(events.data_channels, tsfn);
-        self.return_events(events);
+    pub fn set_on_data_channel(&self, env: Env, callback: JsFunction) -> Result<()> {
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .data_channels
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| {
+            Ok(vec![JsRTCDataChannel::new(ctx.value)])
+        })?;
+        wire_event_channel(rx, tsfn);
         Ok(())
     }
 
     #[napi]
-    pub fn set_on_connection_state_change(
-        &self,
-        env: Env,
-        callback: Function<'static, UnknownReturnValue>,
-    ) -> Result<()> {
-        let mut events = self.ensure_events();
-        let tsfn = create_event_callback(&env, callback, Self::map_connection_state)?;
-        wire_event_channel(events.connection_state, tsfn);
-        self.return_events(events);
+    pub fn set_on_connection_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .connection_state
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| {
+            Ok(vec![
+                ctx.env
+                    .create_string(&connection_state_to_string(ctx.value))?,
+            ])
+        })?;
+        wire_event_channel(rx, tsfn);
         Ok(())
     }
 
     #[napi]
-    pub fn set_on_ice_connection_state_change(
-        &self,
-        env: Env,
-        callback: Function<'static, UnknownReturnValue>,
-    ) -> Result<()> {
-        let mut events = self.ensure_events();
-        let tsfn = create_event_callback(&env, callback, Self::map_ice_connection_state)?;
-        wire_event_channel(events.ice_connection_state, tsfn);
-        self.return_events(events);
+    pub fn set_on_ice_connection_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .ice_connection_state
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| {
+            Ok(vec![
+                ctx.env
+                    .create_string(&ice_connection_state_to_string(ctx.value))?,
+            ])
+        })?;
+        wire_event_channel(rx, tsfn);
         Ok(())
     }
 }
-
-use node_webrtc_rust_core::SessionDescription;
 
 fn connection_state_to_string(state: ConnectionState) -> String {
     match state {

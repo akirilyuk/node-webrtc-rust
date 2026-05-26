@@ -1,8 +1,18 @@
 {
   "name": "@node-webrtc-rust/bindings-linux-arm64-gnu",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "node-webrtc-rust native binding for Linux arm64 (glibc)",
-  "keywords": ["webrtc", "native", "napi", "rust", "prebuild", "linux", "arm64", "aarch64", "glibc"],
+  "keywords": [
+    "webrtc",
+    "native",
+    "napi",
+    "rust",
+    "prebuild",
+    "linux",
+    "arm64",
+    "aarch64",
+    "glibc"
+  ],
   "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
   "bugs": {
     "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
@@ -12,13 +22,21 @@
     "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
     "directory": "packages/bindings/npm/linux-arm64-gnu"
   },
-  "os": ["linux"],
-  "cpu": ["arm64"],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
   "main": "node-webrtc-rust.linux-arm64-gnu.node",
-  "files": ["node-webrtc-rust.linux-arm64-gnu.node"],
+  "files": [
+    "node-webrtc-rust.linux-arm64-gnu.node"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18"
   },
-  "libc": ["glibc"]
+  "libc": [
+    "glibc"
+  ]
 }

@@ -2,6 +2,7 @@ import {
   RTCIceCandidate,
   RTCSessionDescription,
   type RTCIceCandidateInit,
+  type RTCPeerConnectionIceEvent,
   type RTCSessionDescriptionInit,
 } from '@node-webrtc-rust/sdk'
 
@@ -47,7 +48,7 @@ export function autoNegotiate(options: AutoNegotiateOptions): () => void {
   }
 
   const wireIceToPeer = (peerId: string) => {
-    pc.onicecandidate = (event) => {
+    pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate) {
         signaling.sendIceCandidate(peerId, event.candidate.toJSON())
       }

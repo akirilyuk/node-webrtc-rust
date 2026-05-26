@@ -21,7 +21,8 @@
     "ci:verify:linux": "bash scripts/ci/verify-linux.sh",
     "ci:verify:checks": "bash scripts/ci/verify-checks.sh",
     "ci:verify:checks:docker": "CI_VERIFY_CHECKS_IN_DOCKER=1 bash scripts/ci/verify-checks.sh",
-    "ci:verify": "npm run ci:verify:linux && npm run ci:verify:checks:docker"
+    "ci:verify": "npm run ci:verify:linux && npm run ci:verify:checks:docker",
+    "release:publish": "bash scripts/release-publish.sh"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

@@ -1,8 +1,18 @@
 {
   "name": "@node-webrtc-rust/bindings-darwin-x64",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "node-webrtc-rust native binding for macOS x64 (Intel)",
-  "keywords": ["webrtc", "native", "napi", "rust", "prebuild", "darwin", "x64", "macos", "intel"],
+  "keywords": [
+    "webrtc",
+    "native",
+    "napi",
+    "rust",
+    "prebuild",
+    "darwin",
+    "x64",
+    "macos",
+    "intel"
+  ],
   "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
   "bugs": {
     "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
@@ -12,10 +22,16 @@
     "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
     "directory": "packages/bindings/npm/darwin-x64"
   },
-  "os": ["darwin"],
-  "cpu": ["x64"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "main": "node-webrtc-rust.darwin-x64.node",
-  "files": ["node-webrtc-rust.darwin-x64.node"],
+  "files": [
+    "node-webrtc-rust.darwin-x64.node"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18"

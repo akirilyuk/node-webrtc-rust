@@ -1,7 +1,7 @@
 {
   "name": "@node-webrtc-rust/example-conference-room",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "Browser conference room with Rust-side audio mixing, mute controls, and kick",
   "type": "module",
   "scripts": {
@@ -9,8 +9,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@node-webrtc-rust/sdk": "0.1.0",
-    "@node-webrtc-rust/signaling": "0.1.0"
+    "@node-webrtc-rust/sdk": "0.1.5",
+    "@node-webrtc-rust/signaling": "0.1.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -1,8 +1,18 @@
 {
   "name": "@node-webrtc-rust/bindings-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "node-webrtc-rust native binding for macOS arm64 (Apple Silicon)",
-  "keywords": ["webrtc", "native", "napi", "rust", "prebuild", "darwin", "arm64", "macos", "apple-silicon"],
+  "keywords": [
+    "webrtc",
+    "native",
+    "napi",
+    "rust",
+    "prebuild",
+    "darwin",
+    "arm64",
+    "macos",
+    "apple-silicon"
+  ],
   "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
   "bugs": {
     "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
@@ -12,10 +22,16 @@
     "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
     "directory": "packages/bindings/npm/darwin-arm64"
   },
-  "os": ["darwin"],
-  "cpu": ["arm64"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
   "main": "node-webrtc-rust.darwin-arm64.node",
-  "files": ["node-webrtc-rust.darwin-arm64.node"],
+  "files": [
+    "node-webrtc-rust.darwin-arm64.node"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18"

@@ -1,9 +1,9 @@
-name: Build & Publish Bindings
+name: Build & Publish
 
 on:
   push:
     branches: [main, initial-feature]
-    tags: ['v*']
+    tags: ['release/*']
   pull_request:
     branches: [main, initial-feature]
 
@@ -65,20 +65,36 @@ jobs:
           pip3 install ziglang
           cargo install cargo-zigbuild
 
-      - name: Install dependencies
+      - name: Install WebRTC bindings dependencies
         working-directory: packages/bindings
         run: npm ci --ignore-scripts
 
-      - name: Build native addon
+      - name: Install conference bindings dependencies
+        working-directory: packages/conference-bindings
+        run: npm ci --ignore-scripts
+
+      - name: Build WebRTC native addon
         working-directory: packages/bindings
         run: |
           npx napi build --platform --release ${{ matrix.build-args }} ${{ matrix.cross && '-x' || '' }}
 
-      - name: Upload artifact
+      - name: Build conference native addon
+        working-directory: packages/conference-bindings
+        run: |
+          npx napi build --platform --release ${{ matrix.build-args }} ${{ matrix.cross && '-x' || '' }}
+
+      - name: Upload WebRTC bindings artifact
         uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.target }}
           path: packages/bindings/*.node
+          if-no-files-found: error
+
+      - name: Upload conference bindings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conference-bindings-${{ matrix.target }}
+          path: packages/conference-bindings/*.node
           if-no-files-found: error
 
   test:
@@ -113,17 +129,25 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Download native binding
+      - name: Download WebRTC native binding
         uses: actions/download-artifact@v4
         with:
           name: bindings-x86_64-unknown-linux-gnu
           path: packages/bindings/
+
+      - name: Download conference native binding
+        uses: actions/download-artifact@v4
+        with:
+          name: conference-bindings-x86_64-unknown-linux-gnu
+          path: packages/conference-bindings/
 
       - run: npm ci
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
       - run: cargo test -p node-webrtc-rust-core
+      - run: cargo test -p node-webrtc-rust-mixer
+      - run: cargo test -p node-webrtc-rust-conference
       - run: npm run build:ts
       - run: npm test
 
@@ -143,22 +167,38 @@ jobs:
 
       - run: npm ci --ignore-scripts
 
-      - name: Download all artifacts
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          path: packages/bindings/artifacts
+          path: ci-artifacts
 
-      - name: Move artifacts
+      - name: Stage WebRTC binding artifacts
         working-directory: packages/bindings
-        run: npx napi artifacts --dir artifacts
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          for dir in ../../ci-artifacts/bindings-*; do
+            cp -r "$dir" "artifacts/$(basename "$dir")"
+          done
+          npx napi artifacts --dir artifacts
+
+      - name: Stage conference binding artifacts
+        working-directory: packages/conference-bindings
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          for dir in ../../ci-artifacts/conference-bindings-*; do
+            cp -r "$dir" "artifacts/$(basename "$dir")"
+          done
+          npx napi artifacts --dir artifacts
 
       - run: npm publish --dry-run --workspaces
 
   publish:
-    name: Publish
+    name: Publish release
     runs-on: ubuntu-latest
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, test]
+    if: startsWith(github.ref, 'refs/tags/release/')
 
     steps:
       - uses: actions/checkout@v4
@@ -169,33 +209,89 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
+      - name: Resolve release version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#release/}"
+          if [ -z "$VERSION" ]; then
+            echo "Could not parse version from tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing release version: $VERSION"
+
       - name: Install dependencies
-        working-directory: packages/bindings
         run: npm ci --ignore-scripts
 
-      - name: Download all artifacts
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          path: packages/bindings/artifacts
+          path: ci-artifacts
 
-      - name: Move artifacts
+      - name: Stage WebRTC binding artifacts
         working-directory: packages/bindings
-        run: npx napi artifacts --dir artifacts
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          for dir in ../../ci-artifacts/bindings-*; do
+            cp -r "$dir" "artifacts/$(basename "$dir")"
+          done
+          npx napi artifacts --dir artifacts
 
-      - name: Publish platform packages
+      - name: Stage conference binding artifacts
+        working-directory: packages/conference-bindings
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          for dir in ../../ci-artifacts/conference-bindings-*; do
+            cp -r "$dir" "artifacts/$(basename "$dir")"
+          done
+          npx napi artifacts --dir artifacts
+
+      - name: Set workspace package versions
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for ws in \
+            @node-webrtc-rust/bindings \
+            @node-webrtc-rust/conference-bindings \
+            @node-webrtc-rust/sdk \
+            @node-webrtc-rust/signaling \
+            @node-webrtc-rust/conference; do
+            npm version "$VERSION" --no-git-tag-version --workspace="$ws"
+          done
+
+      - name: Publish WebRTC platform packages
         working-directory: packages/bindings
         run: npx napi prepublish -t npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish npm packages
-        working-directory: packages/bindings
-        run: |
-          for dir in npm/*/; do
-            if [ -f "$dir/package.json" ]; then
-              npm publish "$dir" --access public || true
-            fi
-          done
-          npm publish --access public
+      - name: Publish conference platform packages
+        working-directory: packages/conference-bindings
+        run: npx napi prepublish -t npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish npm packages
+        run: |
+          for pkg in packages/bindings packages/conference-bindings; do
+            for dir in "$pkg"/npm/*/; do
+              if [ -f "${dir}package.json" ]; then
+                npm publish "$dir" --access public || true
+              fi
+            done
+            npm publish "$pkg" --access public
+          done
+          npm publish --workspace=@node-webrtc-rust/sdk --access public
+          npm publish --workspace=@node-webrtc-rust/signaling --access public
+          npm publish --workspace=@node-webrtc-rust/conference --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

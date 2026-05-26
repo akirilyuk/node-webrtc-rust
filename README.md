@@ -134,6 +134,8 @@ npm run build
 ```bash
 # Rust integration tests
 cargo test -p node-webrtc-rust-core
+cargo test -p node-webrtc-rust-mixer
+cargo test -p node-webrtc-rust-conference
 
 # TypeScript unit + E2E tests
 npm test
@@ -168,6 +170,25 @@ const pc = new RTCPeerConnection({
 ```
 
 When `debug` is set on the config object, it overrides the `WEBRTC_DEBUG` environment variable for that process.
+
+## Releases
+
+CI publishes npm packages when you push a tag matching:
+
+```text
+release/x.y.z
+release/x.y.z-beta.1
+release/x.y.z-rc.1
+```
+
+Examples:
+
+```bash
+git tag release/0.2.0
+git push origin release/0.2.0
+```
+
+The segment after `release/` becomes the npm version for all published packages (`@node-webrtc-rust/sdk`, `@node-webrtc-rust/bindings`, `@node-webrtc-rust/conference`, platform-specific binding packages, etc.). Requires `NPM_TOKEN` and `GITHUB_TOKEN` secrets in the repository.
 
 ## Roadmap
 

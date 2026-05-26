@@ -9,9 +9,45 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
 
 jobs:
-  build:
+  build-linux:
+    name: Build - ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bindings dependencies
+        working-directory: packages/bindings
+        run: npm ci --ignore-scripts
+
+      - name: Build native addon
+        working-directory: packages/bindings
+        run: npx napi build --platform --release --target ${{ matrix.target }} --zig
+
+      - name: Upload bindings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: packages/bindings/*.node
+          if-no-files-found: error
+
+  build-host:
+    name: Build - ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -24,26 +60,10 @@ jobs:
             os: macos-latest
             build-args: --target aarch64-apple-darwin
 
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            build-args: --target x86_64-unknown-linux-gnu
-            cross: true
-
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            build-args: --target x86_64-unknown-linux-musl
-            cross: true
-
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            build-args: --target aarch64-unknown-linux-gnu
-            cross: true
-
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             build-args: --target x86_64-pc-windows-msvc
 
-    name: Build - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -59,24 +79,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install zig for cross-compilation
-        if: matrix.cross
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.14.1
-
       - name: Install bindings dependencies
         working-directory: packages/bindings
         run: npm ci --ignore-scripts
 
       - name: Build native addon
         working-directory: packages/bindings
-        run: |
-          EXTRA_FLAGS=""
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            EXTRA_FLAGS="--zig"
-          fi
-          npx napi build --platform --release ${{ matrix.build-args }} $EXTRA_FLAGS
+        run: npx napi build --platform --release ${{ matrix.build-args }}
 
       - name: Upload bindings artifact
         uses: actions/upload-artifact@v4
@@ -88,7 +97,12 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build-linux, build-host]
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     services:
       coturn:
@@ -111,12 +125,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - uses: dtolnay/rust-toolchain@stable
-
       - name: Download native binding
         uses: actions/download-artifact@v4
         with:
@@ -136,16 +144,16 @@ jobs:
   publish-dryrun:
     name: Publish (dry-run)
     runs-on: ubuntu-latest
-    needs: [build, test]
+    needs: [build-linux, build-host, test]
     if: github.event_name == 'pull_request'
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
 
       - run: npm ci --ignore-scripts
 
@@ -172,17 +180,16 @@ jobs:
   publish:
     name: Publish release
     runs-on: ubuntu-latest
-    needs: [build, test]
+    needs: [build-linux, build-host, test]
     if: startsWith(github.ref, 'refs/tags/release/')
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
 
       - name: Resolve release version from tag
         id: version
@@ -195,8 +202,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Publishing release version: $VERSION"
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - run: npm ci --ignore-scripts
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4

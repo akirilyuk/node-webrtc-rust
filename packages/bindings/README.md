@@ -66,4 +66,4 @@ This package is the **only** Node-facing package that ships hand-written JavaScr
 
 ## Cross-compilation
 
-CI builds all platform targets using GitHub Actions. Linux targets use `cargo-zigbuild` to pin a minimum glibc version. See `.github/workflows/build.yml` for the full matrix.
+CI builds all platform targets using GitHub Actions. Linux builds and tests pull `ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest` (rebuild by pushing to the `ci` branch — see [`docker/ci/Dockerfile`](../../docker/ci/Dockerfile) and [`.github/workflows/ci-image.yml`](../../.github/workflows/ci-image.yml)). macOS and Windows jobs use native runners. See [`.github/workflows/build.yml`](../../.github/workflows/build.yml).

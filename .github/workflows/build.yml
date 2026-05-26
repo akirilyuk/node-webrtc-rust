@@ -1,11 +1,10 @@
-name: Build & Publish
+name: Build & Test
 
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
-    tags: ['release/*']
 
 # paths-filter lists PR files via the API on pull_request events
 permissions:
@@ -19,6 +18,9 @@ env:
   CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
   # audiopus_sys builds bundled Opus via cmake; Opus 2.8 CMakeLists needs this on CMake 4.x
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  # Cross-compiles: build.rs sees the host (linux gnu), not the target, so force static Opus.
+  # Zig link fails with "unable to find dynamic system library 'opus'" otherwise.
+  OPUS_STATIC: "1"
 
 jobs:
   changes:
@@ -65,8 +67,7 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       needs.changes.outputs.native == 'true' ||
       needs.changes.outputs.typescript == 'true' ||
-      needs.changes.outputs.workflows == 'true' ||
-      startsWith(github.ref, 'refs/tags/release/')
+      needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -149,8 +150,7 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       needs.changes.outputs.native == 'true' ||
       needs.changes.outputs.typescript == 'true' ||
-      needs.changes.outputs.workflows == 'true' ||
-      startsWith(github.ref, 'refs/tags/release/')
+      needs.changes.outputs.workflows == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -247,10 +247,7 @@ jobs:
         needs.changes.outputs.typescript == 'true' ||
         needs.changes.outputs.workflows == 'true'
       ) &&
-      (
-        github.event_name == 'pull_request' ||
-        startsWith(github.ref, 'refs/tags/release/')
-      )
+      github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -386,98 +383,3 @@ jobs:
         run: npm run build:ts
 
       - run: npm publish --dry-run --workspaces
-
-  publish:
-    name: Publish release
-    runs-on: ubuntu-latest
-    needs: [changes, build-linux, build-host, test]
-    if: |
-      always() &&
-      !cancelled() &&
-      startsWith(github.ref, 'refs/tags/release/') &&
-      (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
-      (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped')
-    container:
-      image: ghcr.io/${{ github.repository }}/ci-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve release version from tag
-        id: version
-        run: |
-          VERSION="${GITHUB_REF_NAME#release/}"
-          if [ -z "$VERSION" ]; then
-            echo "Could not parse version from tag: $GITHUB_REF_NAME" >&2
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Publishing release version: $VERSION"
-
-      - name: Cache npm
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.npm
-            node_modules
-          key: npm-${{ hashFiles('package-lock.json') }}
-          restore-keys: npm-
-
-      - run: npm ci --ignore-scripts
-
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ci-artifacts
-
-      - name: Stage binding artifacts
-        working-directory: packages/bindings
-        run: |
-          mkdir -p artifacts
-          shopt -s nullglob
-          for dir in ../../ci-artifacts/bindings-*; do
-            cp -r "$dir" "artifacts/$(basename "$dir")"
-          done
-          npx napi artifacts --dir artifacts
-
-      - name: Set workspace package versions
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          for ws in \
-            @node-webrtc-rust/bindings \
-            @node-webrtc-rust/sdk \
-            @node-webrtc-rust/signaling; do
-            npm version "$VERSION" --no-git-tag-version --workspace="$ws"
-          done
-
-      - name: Build TypeScript packages
-        run: npm run build:ts
-
-      - name: Prepare binding packages
-        working-directory: packages/bindings
-        run: npx napi prepublish -t npm
-
-      - name: Publish npm packages
-        run: |
-          for dir in packages/bindings/npm/*/; do
-            if [ -f "${dir}package.json" ]; then
-              npm publish "$dir" --access public
-            fi
-          done
-          npm publish packages/bindings --access public
-          npm publish --workspace=@node-webrtc-rust/sdk --access public
-          npm publish --workspace=@node-webrtc-rust/signaling --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Release ${{ steps.version.outputs.version }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

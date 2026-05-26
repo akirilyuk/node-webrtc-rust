@@ -8,14 +8,23 @@ alwaysApply: false
 
 # CI Workflow Triggers
 
-## Build & Publish (`.github/workflows/build.yml`)
+## Build & Test (`.github/workflows/build.yml`)
 
-| Event | Native builds (`build-linux`, `build-host`) | Checks (`test`, publish dry-run) | Release publish |
-|---|---|---|---|
-| **PR → `main`** | yes | yes | dry-run only |
-| **Push → `main`** | yes | no | no |
-| **`release/*` tag** | yes | yes | yes |
-| Push / PR on other branches | no | no | no |
+| Event | Native builds (`build-linux`, `build-host`) | Checks (`test`, publish dry-run) |
+|---|---|---|
+| **PR → `main`** | yes (cached / path-filtered) | yes |
+| **Push → `main`** | yes | no |
+| Push / PR on other branches | no | no |
+
+PR workflows do **not** include a release publish job.
+
+## Release (`.github/workflows/release.yml`)
+
+Runs **only** on `release/*` tag push: full matrix build → test → npm publish → GitHub Release.
+
+```bash
+git tag release/0.1.0 && git push origin release/0.1.0
+```
 
 Do **not** add `push` triggers for feature branches (`initial-feature`, etc.) or `pull_request` targets other than `main`. Feature-branch commits stay off CI until there is a PR to `main`.
 

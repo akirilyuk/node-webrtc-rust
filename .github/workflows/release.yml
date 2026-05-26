@@ -1,0 +1,276 @@
+name: Release
+
+# Builds all targets, runs tests, publishes to npm, and creates a GitHub Release.
+# Trigger by pushing a tag: git tag release/0.1.0 && git push origin release/0.1.0
+
+on:
+  push:
+    tags: ['release/*']
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  OPUS_STATIC: "1"
+
+jobs:
+  build-linux:
+    name: Build - ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Cargo (registry + target)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-release
+          cache-targets: ${{ matrix.target }}
+          workspaces: .
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            node_modules
+            packages/bindings/node_modules
+          key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
+          restore-keys: npm-
+
+      - name: Cache napi-rs Zig toolchain
+        uses: actions/cache@v4
+        with:
+          path: /github/home/.cache/napi-rs-nodejs
+          key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: napi-zig-${{ runner.os }}-
+
+      - name: Install bindings dependencies
+        working-directory: packages/bindings
+        run: npm ci --ignore-scripts
+
+      - name: Build native addon
+        working-directory: packages/bindings
+        run: npx napi build --platform --release --target ${{ matrix.target }} --zig
+
+      - name: Upload bindings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: packages/bindings/*.node
+          if-no-files-found: error
+
+  build-host:
+    name: Build - ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            build-args: --target x86_64-apple-darwin
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            build-args: --target aarch64-apple-darwin
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            build-args: --target x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo (registry + target)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-release
+          cache-targets: ${{ matrix.target }}
+          workspaces: .
+
+      - name: Cache napi-rs Zig toolchain (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/napi-rs-nodejs
+          key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: napi-zig-${{ runner.os }}-
+
+      - name: Install bindings dependencies
+        working-directory: packages/bindings
+        run: npm ci --ignore-scripts
+
+      - name: Build native addon
+        working-directory: packages/bindings
+        run: npx napi build --platform --release ${{ matrix.build-args }}
+
+      - name: Upload bindings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: packages/bindings/*.node
+          if-no-files-found: error
+
+  test:
+    name: Test
+    needs: [build-linux, build-host]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    services:
+      coturn:
+        image: coturn/coturn:latest
+        ports:
+          - 3478:3478/udp
+          - 3478:3478/tcp
+        options: >-
+          --entrypoint turnserver
+          turnserver -n --log-file=stdout
+          --min-port=49152 --max-port=65535
+          --realm=test.local
+          --user=testuser:testpass
+          --no-tls --no-dtls
+          --listening-port=3478
+
+    env:
+      TURN_AVAILABLE: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download native binding
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-x86_64-unknown-linux-gnu
+          path: packages/bindings/
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-release-test
+          workspaces: .
+
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: |
+          cargo test -p node-webrtc-rust-core
+          cargo test -p node-webrtc-rust-mixer
+          cargo test -p node-webrtc-rust-conference
+      - run: npm run build:ts
+      - run: npm test
+
+  publish:
+    name: Publish release
+    needs: [build-linux, build-host, test]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#release/}"
+          if [ -z "$VERSION" ]; then
+            echo "Could not parse version from tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing release version: $VERSION"
+
+      - run: npm ci --ignore-scripts
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ci-artifacts
+
+      - name: Stage binding artifacts
+        working-directory: packages/bindings
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          for dir in ../../ci-artifacts/bindings-*; do
+            cp -r "$dir" "artifacts/$(basename "$dir")"
+          done
+          npx napi artifacts --dir artifacts
+
+      - name: Set workspace package versions
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for ws in \
+            @node-webrtc-rust/bindings \
+            @node-webrtc-rust/sdk \
+            @node-webrtc-rust/signaling; do
+            npm version "$VERSION" --no-git-tag-version --workspace="$ws"
+          done
+
+      - name: Build TypeScript packages
+        run: npm run build:ts
+
+      - name: Prepare binding packages
+        working-directory: packages/bindings
+        run: npx napi prepublish -t npm
+
+      - name: Publish npm packages
+        run: |
+          for dir in packages/bindings/npm/*/; do
+            if [ -f "${dir}package.json" ]; then
+              npm publish "$dir" --access public
+            fi
+          done
+          npm publish packages/bindings --access public
+          npm publish --workspace=@node-webrtc-rust/sdk --access public
+          npm publish --workspace=@node-webrtc-rust/signaling --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

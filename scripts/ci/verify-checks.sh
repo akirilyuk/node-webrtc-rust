@@ -11,6 +11,7 @@ run() {
   if [[ -n "$USE_DOCKER" ]]; then
     docker run --rm \
       -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+      -e OPUS_STATIC=1 \
       -v "$ROOT:/workspace" \
       -w /workspace \
       "$IMAGE" \

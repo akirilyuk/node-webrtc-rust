@@ -14,6 +14,9 @@ node-webrtc-rust-core = { path = "../../crates/core" }
 node-webrtc-rust-mixer = { path = "../../crates/mixer" }
 napi = { workspace = true }
 napi-derive = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
 
 [build-dependencies]
 napi-build = "2"

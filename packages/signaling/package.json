@@ -2,6 +2,31 @@
   "name": "@node-webrtc-rust/signaling",
   "version": "0.1.0",
   "description": "TypeScript WebSocket signaling helpers for node-webrtc-rust",
+  "keywords": [
+    "webrtc",
+    "signaling",
+    "websocket",
+    "ws",
+    "sdp",
+    "ice",
+    "stun",
+    "turn",
+    "peer-connection",
+    "nodejs",
+    "typescript",
+    "voip",
+    "real-time",
+    "auto-negotiate"
+  ],
+  "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
+  "bugs": {
+    "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
+    "directory": "packages/signaling"
+  },
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/cjs/index.d.ts",

@@ -1,10 +1,10 @@
 # node-webrtc-rust
 
-[![Build](https://github.com/node-webrtc-rust/node-webrtc-rust/actions/workflows/build.yml/badge.svg)](https://github.com/node-webrtc-rust/node-webrtc-rust/actions/workflows/build.yml)
+[![Build](https://github.com/akirilyuk/node-webrtc-rust/actions/workflows/build.yml/badge.svg)](https://github.com/akirilyuk/node-webrtc-rust/actions/workflows/build.yml)
 
 **WebRTC for Node.js — native speed, browser-compatible APIs, Rust-side audio mixing.**
 
-[node-webrtc-rust](https://github.com/node-webrtc-rust/node-webrtc-rust) is an importable native module built with [NAPI-RS](https://napi.rs) and [webrtc-rs](https://github.com/webrtc-rs/webrtc). Use it like a browser `RTCPeerConnection` from TypeScript, or run multi-participant conference rooms where the Rust engine mixes microphone audio in real time.
+[node-webrtc-rust](https://github.com/akirilyuk/node-webrtc-rust) is an importable native module built with [NAPI-RS](https://napi.rs) and [webrtc-rs](https://github.com/webrtc-rs/webrtc). Use it like a browser `RTCPeerConnection` from TypeScript, or run multi-participant conference rooms where the Rust engine mixes microphone audio in real time.
 
 Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate infrastructure** to deploy — install an npm package, load a prebuilt `.node` binary, and go.
 
@@ -241,7 +241,7 @@ Node.js **≥ 18** required.
 ### Clone and build
 
 ```bash
-git clone https://github.com/node-webrtc-rust/node-webrtc-rust.git
+git clone https://github.com/akirilyuk/node-webrtc-rust.git
 cd node-webrtc-rust
 npm install
 

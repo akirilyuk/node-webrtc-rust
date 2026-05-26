@@ -2,6 +2,38 @@
   "name": "@node-webrtc-rust/sdk",
   "version": "0.1.0",
   "description": "Browser-compatible WebRTC and conference APIs for Node.js",
+  "keywords": [
+    "webrtc",
+    "webrtc-node",
+    "node-webrtc",
+    "nodejs",
+    "rust",
+    "napi",
+    "native",
+    "rtcpeerconnection",
+    "peerconnection",
+    "datachannel",
+    "audio",
+    "real-time",
+    "voip",
+    "conference",
+    "mcu",
+    "audio-mixing",
+    "stun",
+    "turn",
+    "ice",
+    "typescript",
+    "browser-compatible"
+  ],
+  "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
+  "bugs": {
+    "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
+    "directory": "packages/sdk"
+  },
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/cjs/index.d.ts",

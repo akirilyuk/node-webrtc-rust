@@ -1,7 +1,33 @@
 {
   "name": "@node-webrtc-rust/bindings",
   "version": "0.1.0",
-  "description": "NAPI-RS native bindings for node-webrtc-rust",
+  "description": "NAPI-RS native bindings for node-webrtc-rust — WebRTC peer connections, data channels, and conference audio mixing",
+  "keywords": [
+    "webrtc",
+    "native",
+    "napi",
+    "napi-rs",
+    "rust",
+    "node-addon",
+    "node-native",
+    "prebuild",
+    "bindings",
+    "rtcpeerconnection",
+    "datachannel",
+    "conference",
+    "audio-mixing",
+    "mcu",
+    "nodejs"
+  ],
+  "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
+  "bugs": {
+    "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
+    "directory": "packages/bindings"
+  },
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {

@@ -5,10 +5,10 @@ import {
   type JsMuteOptions,
   type JsParticipantInfo,
   type JsRoomOptions,
-} from '@node-webrtc-rust/conference-bindings'
+} from '@node-webrtc-rust/bindings'
 
 import type { ConferenceServer } from './ConferenceServer'
-import { debugEvent, debugFn } from './debug'
+import { debugEvent, debugFn } from '../debug'
 import type {
   MuteOptions,
   ParticipantInfo,

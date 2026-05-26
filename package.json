@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "build:ts": "npm run build --workspace=@node-webrtc-rust/sdk --workspace=@node-webrtc-rust/signaling --workspace=@node-webrtc-rust/conference",
+    "build:ts": "npm run build --workspace=@node-webrtc-rust/sdk --workspace=@node-webrtc-rust/signaling",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

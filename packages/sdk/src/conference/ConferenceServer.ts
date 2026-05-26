@@ -8,10 +8,10 @@ import {
   type JsParticipantKickedEvent,
   type JsParticipantMutedEvent,
   type JsRoomErrorEvent,
-} from '@node-webrtc-rust/conference-bindings'
+} from '@node-webrtc-rust/bindings'
 
 import { ConferenceRoom, toJsRoomOptions } from './ConferenceRoom'
-import { debugEvent, debugFn } from './debug'
+import { debugEvent, debugFn } from '../debug'
 import { attachSignalingBridge, detachSignalingBridge } from './signaling-bridge'
 import type {
   ConferenceErrorEvent,

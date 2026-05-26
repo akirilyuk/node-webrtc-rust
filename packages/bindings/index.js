@@ -288,18 +288,4 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const {
-  JsRtcDataChannel,
-  JsMediaStreamTrack,
-  JsMediaStream,
-  JsLocalAudioTrack,
-  JsPeerConnection,
-  version,
-} = nativeBinding
-
-module.exports.JsRtcDataChannel = JsRtcDataChannel
-module.exports.JsMediaStreamTrack = JsMediaStreamTrack
-module.exports.JsMediaStream = JsMediaStream
-module.exports.JsLocalAudioTrack = JsLocalAudioTrack
-module.exports.JsPeerConnection = JsPeerConnection
-module.exports.version = version
+module.exports = nativeBinding

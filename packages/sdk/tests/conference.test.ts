@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { ConferenceServer } from '../src'
+import { ConferenceServer } from '../src/conference'
 
 describe('ConferenceServer', () => {
   test('creates and lists rooms', async () => {

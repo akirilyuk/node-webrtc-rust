@@ -65,36 +65,20 @@ jobs:
           pip3 install ziglang
           cargo install cargo-zigbuild
 
-      - name: Install WebRTC bindings dependencies
+      - name: Install bindings dependencies
         working-directory: packages/bindings
         run: npm ci --ignore-scripts
 
-      - name: Install conference bindings dependencies
-        working-directory: packages/conference-bindings
-        run: npm ci --ignore-scripts
-
-      - name: Build WebRTC native addon
+      - name: Build native addon
         working-directory: packages/bindings
         run: |
           npx napi build --platform --release ${{ matrix.build-args }} ${{ matrix.cross && '-x' || '' }}
 
-      - name: Build conference native addon
-        working-directory: packages/conference-bindings
-        run: |
-          npx napi build --platform --release ${{ matrix.build-args }} ${{ matrix.cross && '-x' || '' }}
-
-      - name: Upload WebRTC bindings artifact
+      - name: Upload bindings artifact
         uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.target }}
           path: packages/bindings/*.node
-          if-no-files-found: error
-
-      - name: Upload conference bindings artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: conference-bindings-${{ matrix.target }}
-          path: packages/conference-bindings/*.node
           if-no-files-found: error
 
   test:
@@ -129,17 +113,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Download WebRTC native binding
+      - name: Download native binding
         uses: actions/download-artifact@v4
         with:
           name: bindings-x86_64-unknown-linux-gnu
           path: packages/bindings/
-
-      - name: Download conference native binding
-        uses: actions/download-artifact@v4
-        with:
-          name: conference-bindings-x86_64-unknown-linux-gnu
-          path: packages/conference-bindings/
 
       - run: npm ci
       - run: npm run format:check
@@ -172,7 +150,7 @@ jobs:
         with:
           path: ci-artifacts
 
-      - name: Stage WebRTC binding artifacts
+      - name: Stage binding artifacts
         working-directory: packages/bindings
         run: |
           mkdir -p artifacts
@@ -182,15 +160,8 @@ jobs:
           done
           npx napi artifacts --dir artifacts
 
-      - name: Stage conference binding artifacts
-        working-directory: packages/conference-bindings
-        run: |
-          mkdir -p artifacts
-          shopt -s nullglob
-          for dir in ../../ci-artifacts/conference-bindings-*; do
-            cp -r "$dir" "artifacts/$(basename "$dir")"
-          done
-          npx napi artifacts --dir artifacts
+      - name: Build TypeScript packages
+        run: npm run build:ts
 
       - run: npm publish --dry-run --workspaces
 
@@ -228,7 +199,7 @@ jobs:
         with:
           path: ci-artifacts
 
-      - name: Stage WebRTC binding artifacts
+      - name: Stage binding artifacts
         working-directory: packages/bindings
         run: |
           mkdir -p artifacts
@@ -238,53 +209,33 @@ jobs:
           done
           npx napi artifacts --dir artifacts
 
-      - name: Stage conference binding artifacts
-        working-directory: packages/conference-bindings
-        run: |
-          mkdir -p artifacts
-          shopt -s nullglob
-          for dir in ../../ci-artifacts/conference-bindings-*; do
-            cp -r "$dir" "artifacts/$(basename "$dir")"
-          done
-          npx napi artifacts --dir artifacts
-
       - name: Set workspace package versions
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           for ws in \
             @node-webrtc-rust/bindings \
-            @node-webrtc-rust/conference-bindings \
             @node-webrtc-rust/sdk \
-            @node-webrtc-rust/signaling \
-            @node-webrtc-rust/conference; do
+            @node-webrtc-rust/signaling; do
             npm version "$VERSION" --no-git-tag-version --workspace="$ws"
           done
 
-      - name: Publish WebRTC platform packages
+      - name: Build TypeScript packages
+        run: npm run build:ts
+
+      - name: Prepare binding packages
         working-directory: packages/bindings
         run: npx napi prepublish -t npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish conference platform packages
-        working-directory: packages/conference-bindings
-        run: npx napi prepublish -t npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish npm packages
         run: |
-          for pkg in packages/bindings packages/conference-bindings; do
-            for dir in "$pkg"/npm/*/; do
-              if [ -f "${dir}package.json" ]; then
-                npm publish "$dir" --access public || true
-              fi
-            done
-            npm publish "$pkg" --access public
+          for dir in packages/bindings/npm/*/; do
+            if [ -f "${dir}package.json" ]; then
+              npm publish "$dir" --access public
+            fi
           done
+          npm publish packages/bindings --access public
           npm publish --workspace=@node-webrtc-rust/sdk --access public
           npm publish --workspace=@node-webrtc-rust/signaling --access public
-          npm publish --workspace=@node-webrtc-rust/conference --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

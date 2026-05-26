@@ -1,6 +1,6 @@
 # @node-webrtc-rust/bindings
 
-Native NAPI-RS bindings for node-webrtc-rust. This package provides the compiled `.node` addon that bridges Rust and Node.js.
+Native NAPI-RS bindings for node-webrtc-rust. This package provides the compiled `.node` addon that bridges Rust and Node.js — including W3C WebRTC APIs and conference room mixing.
 
 ## For end users
 
@@ -62,7 +62,7 @@ If none succeed, an error is thrown with instructions.
 
 ### TypeScript note
 
-This package is the **only** Node-facing package that ships hand-written JavaScript (`index.js`) for the napi-rs prebuild loader. TypeScript consumers use the generated `index.d.ts`. All higher-level APIs live in `@node-webrtc-rust/sdk` and `@node-webrtc-rust/signaling`, which are authored in TypeScript.
+This package is the **only** Node-facing package that ships hand-written JavaScript (`index.js`) for the napi-rs prebuild loader. The loader re-exports the full native module (WebRTC peer APIs and conference room APIs). TypeScript consumers use the generated `index.d.ts`. Higher-level APIs live in `@node-webrtc-rust/sdk` (including `@node-webrtc-rust/sdk/conference`) and `@node-webrtc-rust/signaling`.
 
 ## Cross-compilation
 

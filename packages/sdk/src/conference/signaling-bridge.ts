@@ -1,5 +1,5 @@
 /**
- * Signaling bridge between `@node-webrtc-rust/signaling` and `@node-webrtc-rust/conference`.
+ * Signaling bridge between `@node-webrtc-rust/signaling` and `@node-webrtc-rust/sdk/conference`.
  *
  * ## Contract
  *
@@ -19,7 +19,7 @@ import type { IceCandidateEvent, OfferEvent, AnswerEvent } from '@node-webrtc-ru
 
 import type { ConferenceRoom } from './ConferenceRoom'
 import type { ConferenceServer } from './ConferenceServer'
-import { debugEvent, debugFn } from './debug'
+import { debugEvent, debugFn } from '../debug'
 import type { ConferenceSignalingResponse, SignalingBridgeConfig } from './types'
 
 const MODULE = 'conference::signaling-bridge'

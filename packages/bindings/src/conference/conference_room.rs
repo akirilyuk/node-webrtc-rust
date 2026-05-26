@@ -9,8 +9,8 @@ use napi_derive::napi;
 use node_webrtc_rust_conference::{Room, SignalingMessage};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::events::{create_event_callback, wire_event_channel};
-use crate::types::{
+use crate::conference::events::{create_event_callback, wire_event_channel};
+use crate::conference::types::{
     conference_err, JsMixingEnabledChangedEvent, JsMuteOptions, JsParticipantEvent,
     JsParticipantInfo, JsParticipantKickedEvent, JsParticipantMutedEvent, JsRoomErrorEvent,
 };

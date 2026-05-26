@@ -1,7 +1,7 @@
 {
   "name": "@node-webrtc-rust/sdk",
   "version": "0.1.0",
-  "description": "Browser-compatible WebRTC API with audio/video mixing for Node.js",
+  "description": "Browser-compatible WebRTC and conference APIs for Node.js",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/cjs/index.d.ts",
@@ -10,21 +10,27 @@
       "types": "./dist/cjs/index.d.ts",
       "import": "./dist/esm/index.js",
       "require": "./dist/cjs/index.js"
+    },
+    "./conference": {
+      "types": "./dist/cjs/conference/index.d.ts",
+      "import": "./dist/esm/conference/index.js",
+      "require": "./dist/cjs/conference/index.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
+    "prebuild": "rm -rf dist",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },
   "dependencies": {
-    "@node-webrtc-rust/bindings": "0.1.0"
+    "@node-webrtc-rust/bindings": "0.1.0",
+    "@node-webrtc-rust/signaling": "0.1.0"
   },
   "devDependencies": {
-    "@node-webrtc-rust/signaling": "0.1.0",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.8"

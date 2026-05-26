@@ -6,8 +6,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_conference::ConferenceServer;
 
-use crate::conference_room::JsConferenceRoom;
-use crate::types::{conference_err, JsRoomOptions};
+use crate::conference::conference_room::JsConferenceRoom;
+use crate::conference::types::{conference_err, JsRoomOptions};
 
 /// Conference server managing multiple rooms.
 #[napi]

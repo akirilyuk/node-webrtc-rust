@@ -1,23 +1,51 @@
-# @node-webrtc-rust/conference
+# @node-webrtc-rust/sdk
 
-TypeScript control-plane API for conference rooms with Rust-side audio mixing.
+Browser-compatible WebRTC APIs for Node.js, backed by the Rust native engine.
 
-This package manages **who** is in a room, **mute state**, and **signaling wiring**. Audio capture, decode, mix, and encode run in the native `crates/conference` data plane — TypeScript never handles PCM or Opus buffers.
+## Exports
 
-## Control plane vs data plane
+| Import path | Purpose |
+| ----------- | ------- |
+| `@node-webrtc-rust/sdk` | W3C-style `RTCPeerConnection`, tracks, data channels |
+| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing) |
+
+Install once:
+
+```bash
+npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling
+```
+
+---
+
+## WebRTC core
+
+```typescript
+import { RTCPeerConnection } from '@node-webrtc-rust/sdk'
+import { SignalingServer, SignalingClient, autoNegotiate } from '@node-webrtc-rust/signaling'
+```
+
+See the [root README](../../README.md) for a full peer-connection quick start.
+
+---
+
+## Conference rooms
+
+Conference APIs live under the `/conference` subpath. They manage **who** is in a room, **mute state**, and **signaling wiring**. Audio capture, decode, mix, and encode run in the native `crates/conference` data plane — TypeScript never handles PCM or Opus buffers.
+
+### Control plane vs data plane
 
 | Layer | Package / crate | Responsibility |
 | ----- | ---------------- | -------------- |
-| Control plane | `@node-webrtc-rust/conference` | Room lifecycle, mute/kick admin APIs, signaling bridge |
+| Control plane | `@node-webrtc-rust/sdk/conference` | Room lifecycle, mute/kick admin APIs, signaling bridge |
 | Signaling | `@node-webrtc-rust/signaling` | WebSocket SDP/ICE relay between browsers and Node |
-| Data plane | `conference-bindings` → `crates/conference` | Peer connections, mixer graph, personalized output |
+| Data plane | `@node-webrtc-rust/bindings` → `crates/conference` | Peer connections, mixer graph, personalized output |
 
-## Quick start
+### Quick start
 
 ```typescript
 import { createServer } from 'http'
 
-import { ConferenceServer } from '@node-webrtc-rust/conference'
+import { ConferenceServer } from '@node-webrtc-rust/sdk/conference'
 import { SignalingServer } from '@node-webrtc-rust/signaling'
 
 const PORT = 3000
@@ -36,13 +64,11 @@ await conference.createRoom('demo', {
   maxParticipants: 16,
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 })
-
-// Serve static browser UI, REST admin routes, etc.
 ```
 
-See [`examples/conference-room`](../../examples/conference-room/) for a full browser demo (when available).
+See [`examples/conference-room`](../../examples/conference-room/) for a full browser demo.
 
-## Mute modes
+### Mute modes
 
 | Mode | API | Effect |
 | ---- | --- | ------ |
@@ -52,7 +78,7 @@ See [`examples/conference-room`](../../examples/conference-room/) for a full bro
 
 Use `unmuteParticipant` with the same scope to reverse a mute.
 
-## Authentication (production)
+### Authentication (production)
 
 v1 does not enforce roles in the library. Document and enforce policy in your app:
 
@@ -65,7 +91,7 @@ v1 does not enforce roles in the library. Document and enforce policy in your ap
 
 Gate REST or RPC routes that call these methods before forwarding to `ConferenceRoom`.
 
-## Events
+### Events
 
 `ConferenceServer` extends `EventEmitter` and emits:
 

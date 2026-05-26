@@ -3,8 +3,8 @@ import { readFile } from 'fs/promises'
 import { dirname, extname, join } from 'path'
 import { fileURLToPath } from 'url'
 
-import { ConferenceServer } from '@node-webrtc-rust/conference'
-import type { MuteScope } from '@node-webrtc-rust/conference'
+import { ConferenceServer } from '@node-webrtc-rust/sdk/conference'
+import type { MuteScope } from '@node-webrtc-rust/sdk/conference'
 import { SignalingServer } from '@node-webrtc-rust/signaling'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))

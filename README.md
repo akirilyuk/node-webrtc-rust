@@ -69,18 +69,18 @@ The control plane lives in TypeScript (room admin, auth, signaling relay). The d
 flowchart TB
   subgraph node [Node.js — control plane]
     SDK["@node-webrtc-rust/sdk"]
-    Conf["@node-webrtc-rust/conference"]
+    SDKConf["sdk/conference"]
     Sig["@node-webrtc-rust/signaling"]
-    Conf --> Sig
+    SDKConf --> Sig
   end
 
   subgraph native [Rust — data plane]
-    Bind["bindings / conference-bindings"]
+    Bind["@node-webrtc-rust/bindings"]
     Core["crates/core"]
     Mixer["crates/mixer"]
     ConfCrate["crates/conference"]
     Bind --> Core
-    ConfCrate --> Core
+    Bind --> ConfCrate
     ConfCrate --> Mixer
   end
 
@@ -90,7 +90,7 @@ flowchart TB
   end
 
   SDK --> Bind
-  Conf --> Bind
+  SDKConf --> Bind
   Browser -->|Opus RTP| Core
   NodePeer -->|Opus RTP| Core
   ConfCrate -->|mixed audio| Browser
@@ -104,11 +104,9 @@ flowchart TB
 
 | Package | npm | Role |
 | --- | --- | --- |
-| [`@node-webrtc-rust/sdk`](packages/sdk) | TypeScript | W3C-style WebRTC API for Node |
-| [`@node-webrtc-rust/bindings`](packages/bindings) | Native | NAPI addon — peer connections, tracks, data channels |
+| [`@node-webrtc-rust/sdk`](packages/sdk) | TypeScript | W3C WebRTC API + [`/conference`](packages/sdk/README.md#conference-rooms) subpath for room mixing |
+| [`@node-webrtc-rust/bindings`](packages/bindings) | Native | Single NAPI addon — peer connections, tracks, data channels, and conference rooms |
 | [`@node-webrtc-rust/signaling`](packages/signaling) | TypeScript | WebSocket signaling server, client, auto-negotiate helper |
-| [`@node-webrtc-rust/conference`](packages/conference) | TypeScript | Room admin, mute/kick, signaling bridge |
-| [`@node-webrtc-rust/conference-bindings`](packages/conference-bindings) | Native | NAPI addon — conference rooms and mixer graph |
 
 Platform-specific binding packages (`@node-webrtc-rust/bindings-darwin-arm64`, etc.) are published alongside the main packages.
 
@@ -159,12 +157,16 @@ pc2.ondatachannel = (event) => {
 
 ## Quick start — conference room
 
-Install conference and signaling packages, build native addons (see [Development](#development)), then:
+Install the SDK (conference APIs are included via the `/conference` subpath):
+
+```bash
+npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling
+```
 
 ```typescript
 import { createServer } from 'http'
 
-import { ConferenceServer } from '@node-webrtc-rust/conference'
+import { ConferenceServer } from '@node-webrtc-rust/sdk/conference'
 import { SignalingServer } from '@node-webrtc-rust/signaling'
 
 const PORT = 8080
@@ -185,7 +187,7 @@ conference.on('participant-joined', ({ roomId, participantId }) => {
 })
 ```
 
-Each browser client sends mic audio; the Rust mixer returns a **personalized stream** (everyone else, never self). See [`packages/conference/README.md`](packages/conference/README.md) for mute modes and admin APIs.
+Each browser client sends mic audio; the Rust mixer returns a **personalized stream** (everyone else, never self). Conference mute modes and admin APIs are documented in [`packages/sdk/README.md`](packages/sdk/README.md) and [`packages/sdk/src/conference/`](packages/sdk/src/conference/).
 
 ---
 
@@ -196,7 +198,6 @@ Runnable demos live under [`examples/`](examples/). From the repo root after `np
 ```bash
 npm run build:ts
 cd packages/bindings && npm run build:local
-cd ../conference-bindings && npm run build:local   # conference demo only
 ```
 
 | Example | Command | What it shows |
@@ -245,7 +246,6 @@ npm install
 
 # Native addons — host only (fast local iteration)
 cd packages/bindings && npm run build:debug:local
-cd ../conference-bindings && npm run build:debug:local
 
 # TypeScript packages
 cd ../.. && npm run build:ts

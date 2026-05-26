@@ -15,12 +15,6 @@ async function main(): Promise<void> {
   const sig1 = new SignalingClient({ url: `ws://localhost:${server.port}`, room: 'demo' })
   const sig2 = new SignalingClient({ url: `ws://localhost:${server.port}`, room: 'demo' })
 
-  autoNegotiate({ pc: pc1, signaling: sig1, polite: true })
-  autoNegotiate({ pc: pc2, signaling: sig2, polite: false })
-
-  await sig1.connect()
-  await sig2.connect()
-
   const dc = pc1.createDataChannel('chat')
   dc.onopen = () => {
     dc.send('Hello from peer 1!')
@@ -34,6 +28,12 @@ async function main(): Promise<void> {
       void server.close()
     }
   }
+
+  autoNegotiate({ pc: pc1, signaling: sig1, polite: false })
+  autoNegotiate({ pc: pc2, signaling: sig2, polite: true })
+
+  await sig1.connect()
+  await sig2.connect()
 }
 
 void main()

@@ -1,10 +1,12 @@
 # node-webrtc-rust
 
+[![Build](https://github.com/node-webrtc-rust/node-webrtc-rust/actions/workflows/build.yml/badge.svg)](https://github.com/node-webrtc-rust/node-webrtc-rust/actions/workflows/build.yml)
+
 A Rust-backed native Node.js module providing browser-compatible WebRTC APIs with audio/video mixing capabilities. Built with [NAPI-RS](https://napi.rs) and [webrtc-rs](https://github.com/webrtc-rs/webrtc).
 
 Unlike standalone media servers (Mediasoup, LiveKit), this is an **importable native module** — no separate infrastructure required.
 
-## Features (v0.1.0 target)
+## Features (v0.1.0)
 
 - Browser-compatible `RTCPeerConnection` API
 - Full ICE support (STUN + TURN)
@@ -14,8 +16,6 @@ Unlike standalone media servers (Mediasoup, LiveKit), this is an **importable na
 - Prebuilt binaries for macOS, Linux, and Windows (no Rust toolchain needed for users)
 
 ## Packages
-
-This is a monorepo containing:
 
 | Package                       | Description                                             |
 | ----------------------------- | ------------------------------------------------------- |
@@ -33,17 +33,38 @@ npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling
 import { RTCPeerConnection } from '@node-webrtc-rust/sdk'
 import { SignalingServer, SignalingClient, autoNegotiate } from '@node-webrtc-rust/signaling'
 
-const pc = new RTCPeerConnection({
+// Start signaling server
+const server = new SignalingServer({ port: 8080 })
+await server.listen()
+
+// Peer 1 — creates the data channel and initiates negotiation
+const pc1 = new RTCPeerConnection({
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'turn:your-server:3478', username: 'user', credential: 'pass' },
+    { urls: 'turn:your-turn-server:3478', username: 'user', credential: 'pass' },
   ],
 })
+const sig1 = new SignalingClient({ url: 'ws://localhost:8080', room: 'demo' })
+autoNegotiate({ pc: pc1, signaling: sig1, polite: false })
+await sig1.connect()
 
-const dc = pc.createDataChannel('chat')
-dc.onopen = () => dc.send('Hello!')
-dc.onmessage = (event) => console.log('Received:', event.data)
+const dc = pc1.createDataChannel('chat')
+dc.onopen = () => dc.send('Hello from Peer 1!')
+
+// Peer 2 — answers and receives the data channel
+const pc2 = new RTCPeerConnection({
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+})
+const sig2 = new SignalingClient({ url: 'ws://localhost:8080', room: 'demo' })
+autoNegotiate({ pc: pc2, signaling: sig2, polite: true })
+await sig2.connect()
+
+pc2.ondatachannel = (event) => {
+  event.channel.onmessage = (msg) => console.log('Received:', msg.data)
+}
 ```
+
+See [`examples/peer-connection/`](examples/peer-connection/) for a runnable demo.
 
 ## Supported Platforms
 
@@ -55,27 +76,6 @@ dc.onmessage = (event) => console.log('Received:', event.data)
 | Linux   | x64 (musl/Alpine) | Supported |
 | Linux   | arm64 (glibc)     | Supported |
 | Windows | x64 (MSVC)        | Supported |
-
-## Repository Structure
-
-```
-node-webrtc-rust/
-├── Cargo.toml                    # Rust workspace manifest
-├── package.json                  # npm workspace root
-├── crates/
-│   ├── core/                     # Pure Rust WebRTC engine (webrtc-rs wrapper)
-│   ├── mixer/                    # Audio/video mixing pipeline (v0.2+)
-│   └── signaling/                # Optional Rust signaling server (v0.2+)
-├── packages/
-│   ├── bindings/                 # NAPI-RS native addon + platform packages
-│   │   ├── npm/                  # Per-platform prebuilt binary packages
-│   │   └── src/                  # Rust NAPI binding code
-│   ├── sdk/                      # TypeScript SDK (what users import)
-│   └── signaling/                # Node.js signaling helpers
-├── examples/                     # Runnable demo applications
-├── .github/workflows/            # CI: cross-compile + test + publish
-└── development/                  # Dev notes & plans (git-ignored)
-```
 
 ## Architecture
 
@@ -103,24 +103,24 @@ node-webrtc-rust/
 ### Building from source
 
 ```bash
-# Install JS dependencies
 npm install
-
-# Build the native addon (current platform)
-cd packages/bindings && npm run build
-
-# Build the TypeScript packages
+cd packages/bindings && npm run build:local   # host-only — fast local dev
 npm run build
 ```
 
 ### Running tests
 
 ```bash
-# Rust tests
-cargo test --workspace
+# Rust integration tests
+cargo test -p node-webrtc-rust-core
 
-# Node.js tests
+# TypeScript unit + E2E tests
 npm test
+
+# TURN integration test (requires coturn)
+docker compose -f docker-compose.test.yml up -d
+TURN_AVAILABLE=1 npm test --workspace=@node-webrtc-rust/sdk
+docker compose -f docker-compose.test.yml down
 ```
 
 ## Roadmap

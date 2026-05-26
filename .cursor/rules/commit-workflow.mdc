@@ -7,9 +7,20 @@ alwaysApply: true
 
 Commit frequently in small, logical units. Each commit should represent one coherent change.
 
+## IMPORTANT: When to commit
+
+- **Only auto-commit if the user explicitly says so before work begins** (e.g., "commit as you go", "commit after each step")
+- If the user has NOT requested auto-commits, do the work without committing and let the user decide when to commit
+- When asked to commit, follow the logical grouping rules below
+
+## Staging rules
+
+- **Always `git add` newly created files** before committing — never forget untracked files that are part of the current work
+- Run `git status` before committing to verify all relevant new files are staged
+- Do not stage files that are git-ignored (e.g., `development/`, `target/`, `node_modules/`)
+
 ## Rules
 
-- After completing a sub-task or logical unit of work, immediately commit it before moving to the next
 - Never bundle unrelated changes into a single commit
 - A single task may produce multiple commits if it has distinct logical steps (e.g., "add types" then "add implementation" then "add tests")
 - Always commit working code — do not commit broken intermediate states

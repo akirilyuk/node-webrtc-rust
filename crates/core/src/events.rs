@@ -18,6 +18,8 @@ pub struct PeerConnectionEvents {
     pub connection_state: mpsc::UnboundedReceiver<ConnectionState>,
     /// ICE connection state changes.
     pub ice_connection_state: mpsc::UnboundedReceiver<IceConnectionState>,
+    /// Negotiation-needed events (add track / data channel, etc.).
+    pub negotiation_needed: mpsc::UnboundedReceiver<()>,
 }
 
 /// Senders for peer connection events (internal use).
@@ -27,6 +29,7 @@ pub(crate) struct PeerConnectionEventSenders {
     pub data_channels: mpsc::UnboundedSender<DataChannel>,
     pub connection_state: mpsc::UnboundedSender<ConnectionState>,
     pub ice_connection_state: mpsc::UnboundedSender<IceConnectionState>,
+    pub negotiation_needed: mpsc::UnboundedSender<()>,
 }
 
 impl PeerConnectionEventSenders {
@@ -36,6 +39,7 @@ impl PeerConnectionEventSenders {
         let (data_channels_tx, data_channels_rx) = mpsc::unbounded_channel();
         let (connection_state_tx, connection_state_rx) = mpsc::unbounded_channel();
         let (ice_connection_state_tx, ice_connection_state_rx) = mpsc::unbounded_channel();
+        let (negotiation_needed_tx, negotiation_needed_rx) = mpsc::unbounded_channel();
 
         (
             Self {
@@ -44,6 +48,7 @@ impl PeerConnectionEventSenders {
                 data_channels: data_channels_tx,
                 connection_state: connection_state_tx,
                 ice_connection_state: ice_connection_state_tx,
+                negotiation_needed: negotiation_needed_tx,
             },
             PeerConnectionEvents {
                 ice_candidates: ice_candidates_rx,
@@ -51,6 +56,7 @@ impl PeerConnectionEventSenders {
                 data_channels: data_channels_rx,
                 connection_state: connection_state_rx,
                 ice_connection_state: ice_connection_state_rx,
+                negotiation_needed: negotiation_needed_rx,
             },
         )
     }

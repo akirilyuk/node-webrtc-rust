@@ -5,6 +5,14 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 
+/// ICE server credential type (W3C `RTCIceCredentialType`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum IceCredentialType {
+    #[default]
+    Password,
+    Oauth,
+}
+
 /// ICE server configuration (STUN/TURN).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IceServer {
@@ -14,6 +22,9 @@ pub struct IceServer {
     pub username: Option<String>,
     /// Optional TURN credential.
     pub credential: Option<String>,
+    /// Credential type (`password` or `oauth`). Only password is used by the underlying stack today.
+    #[serde(default)]
+    pub credential_type: IceCredentialType,
 }
 
 /// Policy controlling which ICE candidates may be used.

@@ -9,6 +9,8 @@ use webrtc::api::API;
 use webrtc::interceptor::registry::Registry;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
+use webrtc::peer_connection::signaling_state::RTCSignalingState;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -167,6 +169,49 @@ impl From<RTCIceConnectionState> for IceConnectionState {
     }
 }
 
+/// ICE candidate gathering state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IceGatheringState {
+    New,
+    Gathering,
+    Complete,
+}
+
+impl From<RTCIceGatheringState> for IceGatheringState {
+    fn from(state: RTCIceGatheringState) -> Self {
+        match state {
+            RTCIceGatheringState::Gathering => Self::Gathering,
+            RTCIceGatheringState::Complete => Self::Complete,
+            _ => Self::New,
+        }
+    }
+}
+
+/// SDP offer/answer signaling state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalingState {
+    Stable,
+    HaveLocalOffer,
+    HaveRemoteOffer,
+    HaveLocalPranswer,
+    HaveRemotePranswer,
+    Closed,
+}
+
+impl From<RTCSignalingState> for SignalingState {
+    fn from(state: RTCSignalingState) -> Self {
+        match state {
+            RTCSignalingState::Stable => Self::Stable,
+            RTCSignalingState::HaveLocalOffer => Self::HaveLocalOffer,
+            RTCSignalingState::HaveRemoteOffer => Self::HaveRemoteOffer,
+            RTCSignalingState::HaveLocalPranswer => Self::HaveLocalPranswer,
+            RTCSignalingState::HaveRemotePranswer => Self::HaveRemotePranswer,
+            RTCSignalingState::Closed => Self::Closed,
+            _ => Self::Stable,
+        }
+    }
+}
+
 /// WebRTC peer connection wrapper.
 pub struct PeerConnection {
     inner: Arc<RTCPeerConnection>,
@@ -283,6 +328,16 @@ impl PeerConnection {
         self.inner.ice_connection_state().into()
     }
 
+    /// Returns the current ICE gathering state.
+    pub fn ice_gathering_state(&self) -> IceGatheringState {
+        self.inner.ice_gathering_state().into()
+    }
+
+    /// Returns the current signaling state.
+    pub fn signaling_state(&self) -> SignalingState {
+        self.inner.signaling_state().into()
+    }
+
     /// Registers a handler for local ICE candidates.
     pub fn on_ice_candidate(&self, handler: impl Fn(Option<IceCandidate>) + Send + Sync + 'static) {
         self.inner.on_ice_candidate(Box::new(move |candidate| {
@@ -372,6 +427,12 @@ impl PeerConnection {
                 let _ = ice_conn_tx.send(state.into());
                 Box::pin(async {})
             }));
+
+        let neg_tx = senders.negotiation_needed;
+        self.inner.on_negotiation_needed(Box::new(move || {
+            let _ = neg_tx.send(());
+            Box::pin(async {})
+        }));
     }
 
     /// Returns a promise that resolves when ICE gathering completes.

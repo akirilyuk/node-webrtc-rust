@@ -202,31 +202,37 @@ export class ConferenceRoom {
     this.eventsWired = true
 
     this.native.setOnParticipantJoined((event) => {
+      if (!event) return
       debugEvent(MODULE, 'participant-joined', `roomId=${event.roomId}, participantId=${event.participantId}`)
       this.server.emitParticipantJoined(event)
     })
 
     this.native.setOnParticipantLeft((event) => {
+      if (!event) return
       debugEvent(MODULE, 'participant-left', `roomId=${event.roomId}, participantId=${event.participantId}`)
       this.server.emitParticipantLeft(event)
     })
 
     this.native.setOnParticipantKicked((event) => {
+      if (!event) return
       debugEvent(MODULE, 'participant-kicked', `roomId=${event.roomId}, participantId=${event.participantId}`)
       this.server.emitParticipantKicked(event)
     })
 
     this.native.setOnParticipantMuted((event) => {
+      if (!event) return
       debugEvent(MODULE, 'participant-muted', `roomId=${event.roomId}, targetId=${event.targetId}`)
       this.server.emitParticipantMuted(event)
     })
 
     this.native.setOnMixingEnabledChanged((event) => {
+      if (!event) return
       debugEvent(MODULE, 'mixing-enabled-changed', `roomId=${event.roomId}, enabled=${event.enabled}`)
       this.server.emitMixingEnabledChanged(event)
     })
 
     this.native.setOnError((event) => {
+      if (!event) return
       debugEvent(MODULE, 'error', `roomId=${event.roomId ?? this.roomId}, message=${event.message}`)
       this.server.emitError(event)
     })

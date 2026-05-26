@@ -23,7 +23,8 @@ export function autoNegotiate(options: AutoNegotiateOptions): () => void {
       try {
         const offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
-        signaling.sendOffer(peerId, offer.toJSON())
+        await pc.gatheringComplete()
+        signaling.sendOffer(peerId, pc.localDescription!.toJSON())
       } finally {
         makingOffer = false
       }
@@ -46,7 +47,8 @@ export function autoNegotiate(options: AutoNegotiateOptions): () => void {
     await pc.setRemoteDescription(new RTCSessionDescription(sdp))
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
-    signaling.sendAnswer(peerId, answer.toJSON())
+    await pc.gatheringComplete()
+    signaling.sendAnswer(peerId, pc.localDescription!.toJSON())
   }
 
   const onAnswer = async ({ sdp }: { peerId: string; sdp: RTCSessionDescriptionInit }) => {

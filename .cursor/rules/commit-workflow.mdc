@@ -1,0 +1,45 @@
+---
+description: Commit after each logical unit of work
+alwaysApply: true
+---
+
+# Commit Workflow
+
+Commit frequently in small, logical units. Each commit should represent one coherent change.
+
+## Rules
+
+- After completing a sub-task or logical unit of work, immediately commit it before moving to the next
+- Never bundle unrelated changes into a single commit
+- A single task may produce multiple commits if it has distinct logical steps (e.g., "add types" then "add implementation" then "add tests")
+- Always commit working code — do not commit broken intermediate states
+
+## Commit order within a task
+
+1. Do work A (e.g., add a new module with types/structs)
+2. Commit work A
+3. Do work B (e.g., implement logic for that module)
+4. Commit work B
+5. Do work C (e.g., add tests for that module)
+6. Commit work C
+
+## Commit message format
+
+Use conventional commits:
+
+```
+<type>(<scope>): <short description>
+
+<optional body explaining why>
+```
+
+Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`
+
+Scopes: `core`, `bindings`, `sdk`, `signaling`, `ci`, `repo`
+
+Examples:
+- `feat(core): add PeerConnection wrapper with lifecycle methods`
+- `feat(core): implement DataChannel send/receive`
+- `test(core): add integration tests for peer connection`
+- `docs(repo): add project README`
+- `chore(ci): add cross-compile workflow`

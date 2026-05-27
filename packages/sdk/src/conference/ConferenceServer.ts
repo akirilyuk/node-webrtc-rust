@@ -1,5 +1,7 @@
 import { EventEmitter } from 'events'
 
+/* eslint-disable @typescript-eslint/no-unsafe-declaration-merging -- typed EventEmitter overloads */
+
 import {
   JsConferenceServer,
   type JsConferenceRoom,

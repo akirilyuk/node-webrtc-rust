@@ -8,8 +8,8 @@ cd "$ROOT"
 echo "==> npm ci"
 npm ci
 
-echo "==> typecheck (packages only — examples need build:ts first)"
-npm run typecheck --workspace=@node-webrtc-rust/sdk --workspace=@node-webrtc-rust/signaling
+echo "==> typecheck (sdk + signaling sources)"
+npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json
 
 echo "==> lint"
 npm run lint

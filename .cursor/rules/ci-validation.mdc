@@ -1,0 +1,40 @@
+---
+description: Validate CI script changes against all pipelines before finishing
+globs:
+  - .github/workflows/**
+  - scripts/ci/**
+  - docker/ci/**
+alwaysApply: false
+---
+
+# CI Change Validation
+
+When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix one pipeline in isolation**.
+
+## Pipelines to consider
+
+| Pipeline | Trigger | Entry script / job |
+|---|---|---|
+| PR quality | `build.yml` → `quality` | `scripts/ci/run-pr-quality.sh` |
+| PR integration | `build.yml` → `test` (PR) | `scripts/ci/run-pr-integration.sh` |
+| Main push test | `build.yml` → `test` (push) | `scripts/ci/run-pr-tests-full.sh` |
+| Release test | `release.yml` → `test` | `scripts/ci/run-pr-tests-full.sh` |
+| Local mirror | developer | `scripts/ci/verify-checks.sh`, `npm run ci:verify*` |
+
+## Rules
+
+1. **Shared scripts first** — put logic in `scripts/ci/*.sh` and call it from workflows; avoid duplicating steps in YAML.
+2. **Cross-package typecheck** — PR quality uses `scripts/ci/tsconfig.typecheck.json` (workspace path aliases). Do not run per-workspace `npm run typecheck` in CI before packages are built; examples need `build:ts` first.
+3. **Validate locally before push**:
+   ```bash
+   bash scripts/ci/run-pr-quality.sh
+   npm run ci:verify:checks:docker   # when Docker is available
+   ```
+4. **If you change a script used by multiple workflows**, grep for references (`run-pr-quality`, `run-pr-integration`, `run-pr-tests-full`, `verify-checks`) and update every caller.
+5. **Lint scope** — `npm run lint` runs repo-wide; browser demo scripts under `examples/**/public/` are ignored in `eslint.config.js`.
+
+## Anti-patterns
+
+- Fixing PR typecheck by typechecking examples without building packages first
+- Updating `run-pr-quality.sh` but leaving `verify-checks.sh` on the old command
+- Adding workflow-only steps that diverge from local `ci:verify` scripts

@@ -335,11 +335,11 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    container:
-      image: docker:24-cli
     env:
       DOCKER_HOST: tcp://docker:2376
       DOCKER_TLS_CERTDIR: /certs
+      DOCKER_TLS_VERIFY: 1
+      DOCKER_CERT_PATH: /certs/client
       TURN_AVAILABLE: "1"
 
     steps:

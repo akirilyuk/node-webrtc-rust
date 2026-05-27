@@ -41,7 +41,7 @@ Rebuild `ghcr.io/.../ci-build:latest` when `docker/ci/Dockerfile` changes — pu
 - **PR `build-pr`**: debug `.node` cache (`profile: debug`); skip compile when native unchanged and cache hits.
 - **Main `build-linux` / `build-host`**: release `.node` cache (`profile: release`); always compile on main push.
 - **`Swatinem/rust-cache`**: separate prefix keys for PR debug vs main release.
-- **Test job**: `docker:24-cli` + `docker:24-dind` service; tests run in `ci-build` with coturn sharing network namespace.
+- **Test job**: `docker:24-dind` service on `ubuntu-latest` (no job container — avoids checkout/DNS failures with `DOCKER_HOST`); tests run in `ci-build` with coturn sharing network namespace.
 
 ## Local validation
 

@@ -32,6 +32,7 @@ When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix on
    ```
 4. **If you change a script used by multiple workflows**, grep for references (`run-pr-quality`, `run-pr-integration`, `run-pr-tests-full`, `verify-checks`) and update every caller.
 5. **Lint scope** — `npm run lint` runs repo-wide; browser demo scripts under `examples/**/public/` are ignored in `eslint.config.js`.
+6. **DinD test jobs** — use `docker:24-dind` service on `ubuntu-latest` without a job-level `container:`; job containers break `actions/checkout` when `DOCKER_HOST` is set.
 
 ## Anti-patterns
 

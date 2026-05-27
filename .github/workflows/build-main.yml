@@ -30,4 +30,5 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-tests-full.sh
+      binding_profile: release
     secrets: inherit

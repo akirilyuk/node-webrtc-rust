@@ -21,7 +21,7 @@ Reusable workflows (called via `workflow_call`, not triggered directly):
 |------|------|
 | [`reusable-build-linux.yml`](../../.github/workflows/reusable-build-linux.yml) | Linux release matrix (gnu, musl, arm64) |
 | [`reusable-build-host.yml`](../../.github/workflows/reusable-build-host.yml) | macOS + Windows release matrix |
-| [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) | Host Docker + coturn + integration tests |
+| [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) | Download binding artifact → cache fallback → host Docker tests |
 
 Composite actions live in [`.github/actions/`](../../.github/actions/).
 
@@ -99,12 +99,15 @@ Vitest tests import from `src/`, but this step validates publishable `dist/` out
 - **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 
-Before tests, restores **both** caches onto the workspace:
+Before tests, the test job receives the native binding from the **same workflow run**:
 
-1. Native `.node` (debug, linux-gnu)
-2. TS `dist/`
+1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact uploaded by `compile-native` (PR) or `build-linux` (main/release)
+2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) when compile was skipped (e.g. TS-only PR) or artifact download failed
+3. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist)
 
-**Fallbacks inside the test script** (cache miss, e.g. first PR on a branch):
+Jobs do not share a workspace on self-hosted runners (each job checks out fresh). The GHA cache key matches between compile and test, but **cache restore in called workflows can miss** even after a hit in the caller — artifact download avoids recompiling in tests.
+
+**Last resort inside the test script** (no artifact and no cache):
 
 - Compile debug `.node` if missing
 - Run `build:ts` if `dist/` missing
@@ -160,7 +163,7 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 |--------|---------|--------------|
 | [`run-pr-quality.sh`](run-pr-quality.sh) | PR quality job | `npm ci`, typecheck, lint |
 | [`build-ts-workspace.sh`](build-ts-workspace.sh) | PR build-ts + integration fallback | sdk core → signaling → full sdk |
-| [`run-pr-integration.sh`](run-pr-integration.sh) | PR test job | `npm ci`, cargo test, optional build:ts, npm test |
+| [`run-pr-integration.sh`](run-pr-integration.sh) | PR test job | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test, optional build:ts, npm test |
 | [`run-pr-tests-full.sh`](run-pr-tests-full.sh) | main + release test | quality + integration |
 | [`verify-checks.sh`](verify-checks.sh) | `npm run ci:verify:checks*` | Local mirror of quality + integration |
 | [`verify-linux.sh`](verify-linux.sh) | `npm run ci:verify:linux` | Local release cross-builds in Docker |

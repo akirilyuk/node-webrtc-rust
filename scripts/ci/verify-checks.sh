@@ -27,7 +27,7 @@ if [[ -n "$USE_DOCKER" ]]; then
 fi
 
 echo "==> npm ci"
-run "npm ci"
+run "bash scripts/ci/npm-ci-workspace.sh"
 
 echo "==> format:check"
 run "npm run format:check"

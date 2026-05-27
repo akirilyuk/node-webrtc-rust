@@ -8,13 +8,13 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
 echo "==> npm ci"
-npm ci
+bash scripts/ci/npm-ci-workspace.sh
 
 echo "==> ensure native binding"
 shopt -s nullglob
 nodes=(packages/bindings/*.node)
 if [[ ${#nodes[@]} -eq 0 ]]; then
-  echo "    cache miss — compiling debug linux-gnu binding"
+  echo "    no .node in workspace — compiling debug linux-gnu binding (artifact/cache miss)"
   ( cd packages/bindings && npx napi build --target x86_64-unknown-linux-gnu )
   shopt -s nullglob
   nodes=(packages/bindings/*.node)
@@ -22,6 +22,8 @@ if [[ ${#nodes[@]} -eq 0 ]]; then
     echo "No .node artifact after fallback compile." >&2
     exit 1
   fi
+else
+  echo "    using $(basename "${nodes[0]}") (artifact or cache)"
 fi
 
 echo "==> cargo test (core, mixer, conference)"

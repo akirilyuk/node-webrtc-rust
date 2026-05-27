@@ -39,7 +39,7 @@ Runs on **`release/*` tag push**: same reusable build/test workflows → npm pub
 |---|---|
 | `reusable-build-linux.yml` | Linux release matrix (3 targets) |
 | `reusable-build-host.yml` | macOS + Windows release matrix |
-| `reusable-test.yml` | Host Docker test job (`coturn/coturn` + `ci-build`) |
+| `reusable-test.yml` | Download binding artifact, cache fallback, host Docker tests |
 | `actions/ci-build-native-linux` | Cache, compile, verify, upload (Linux) |
 | `actions/ci-build-native-host` | Toolchain setup + compile (host OS) |
 | `actions/ci-cache-ts-dist` | sdk/signaling `dist/` cache restore/save |

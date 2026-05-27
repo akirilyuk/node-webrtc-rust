@@ -33,7 +33,7 @@ Composite actions live in [`.github/actions/`](../../.github/actions/).
 | macOS | `macos-latest` | Release host matrix (darwin x64 + arm64) |
 | Windows | `windows-latest` | Release host matrix (x64) |
 
-The self-hosted runner must have **Docker** with passwordless **sudo** for workspace ownership fixes (container jobs and test `docker run` leave root-owned files). Used for `ci-build` job containers, integration tests, and `ci-image` buildx. macOS/Windows jobs stay on GitHub-hosted runners.
+The self-hosted runner must have **Docker** (runner user in the `docker` group). Container jobs and test `docker run` leave root-owned files; host jobs run an inline **Docker `chown`** prepare step before checkout (no passwordless sudo required).
 
 ---
 

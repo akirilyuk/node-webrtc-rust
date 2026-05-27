@@ -38,7 +38,7 @@ Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github
    Do not push until local commands exit 0.
 4. **If you change a script used by multiple workflows**, grep for references (`run-pr-quality`, `run-pr-integration`, `run-pr-tests-full`, `verify-checks`) and update every caller.
 5. **Lint scope** — `npm run lint` runs repo-wide; browser demo scripts under `examples/**/public/` are ignored in `eslint.config.js`.
-6. **Test jobs** — use the self-hosted runner's **host Docker** (no DinD service; the `docker` hostname is unavailable off GitHub-hosted runners). Start public `coturn/coturn:latest` as a sidecar; run tests in prebuilt `ci-build` via `docker run --network container:coturn`. Run an inline `sudo chown` prepare step **before** `actions/checkout` on host jobs (local composite actions are unavailable pre-checkout).
+6. **Test jobs** — use the self-hosted runner's **host Docker** (no DinD service; the `docker` hostname is unavailable off GitHub-hosted runners). Start public `coturn/coturn:latest` as a sidecar; run tests in prebuilt `ci-build` via `docker run --network container:coturn`. Before checkout on host jobs, reset ownership with `docker run alpine chown` (not `sudo` — runner user must be in the `docker` group).
 
 ## Anti-patterns
 

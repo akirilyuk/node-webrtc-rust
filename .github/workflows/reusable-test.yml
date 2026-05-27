@@ -19,7 +19,10 @@ jobs:
       - name: Prepare workspace
         run: |
           if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            sudo chown -R "$(id -u)":"$(id -g)" "${RUNNER_WORKSPACE}" || true
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
           fi
 
       - uses: actions/checkout@v4

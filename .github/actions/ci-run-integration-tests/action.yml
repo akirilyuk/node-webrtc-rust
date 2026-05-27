@@ -40,7 +40,5 @@ runs:
           "${{ inputs.ci_image }}" \
           bash "${{ inputs.test_script }}"
 
-    - name: Restore workspace ownership
+    - uses: ./.github/actions/ci-restore-workspace-ownership
       if: always()
-      shell: bash
-      run: sudo chown -R "$(id -u)":"$(id -g)" "${GITHUB_WORKSPACE}" || true

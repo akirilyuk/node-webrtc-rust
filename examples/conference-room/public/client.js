@@ -38,6 +38,24 @@ let participantPollTimer = null
 let micVisualizer = null
 /** @type {{ stop: () => void } | null} */
 let incomingVisualizer = null
+/** @type {Map<string, string>} */
+const peerDisplayNames = new Map()
+
+/** @param {string} peerId @param {string} [knownName] */
+function participantLabel(peerId, knownName) {
+  if (peerId === clientId) return displayName
+  if (knownName) return knownName
+  return peerDisplayNames.get(peerId) ?? 'Unknown'
+}
+
+async function registerDisplayName() {
+  if (!room || !clientId) return
+  await fetch(`/api/rooms/${encodeURIComponent(room)}/display-name`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ peerId: clientId, displayName }),
+  })
+}
 
 connectButton.addEventListener('click', () => {
   void connect()
@@ -85,7 +103,8 @@ async function connect() {
     disconnectButton.disabled = false
     disableMixingButton.disabled = false
     enableMixingButton.disabled = false
-    appendLog(`Joined room "${room}" as ${displayName} (${clientId})`)
+    void registerDisplayName().then(() => refreshParticipants())
+    appendLog(`Joined room "${room}" as ${displayName}`)
     startParticipantPolling()
   }
 
@@ -141,11 +160,14 @@ function handleSignal(message) {
       if (message.peerId === SERVER_PEER_ID) {
         appendLog('Conference server present in room')
       } else if (message.peerId !== clientId) {
-        appendLog(`${message.peerId} joined signaling room`)
+        void refreshParticipants().then(() => {
+          appendLog(`${participantLabel(message.peerId)} joined the room`)
+        })
       }
       break
     case 'peer-left':
-      appendLog(`${message.peerId} left signaling room`)
+      peerDisplayNames.delete(message.peerId)
+      appendLog(`${participantLabel(message.peerId)} left the room`)
       break
     case 'offer':
       if (message.peerId === SERVER_PEER_ID) {
@@ -187,13 +209,15 @@ async function onServerOffer(sdp) {
     pc.addTrack(track, localStream)
   }
 
-  pc.ontrack = (event) => {
-    mixedAudioEl.srcObject = event.streams[0] ?? new MediaStream([event.track])
+  const attachMixedAudio = (track, stream) => {
+    if (mixedAudioEl.srcObject) return
+    const playStream = stream ?? new MediaStream([track])
+    mixedAudioEl.srcObject = playStream
     void mixedAudioEl.play().catch(() => undefined)
     incomingVisualizer?.stop()
     incomingVisualizer = attachAudioVisualizer({
       canvas: incomingVizCanvas,
-      audioElement: mixedAudioEl,
+      mediaStream: playStream,
       waveColor: '#38bdf8',
       barColor: '#818cf8',
     })
@@ -201,6 +225,10 @@ async function onServerOffer(sdp) {
     audioStatusEl.textContent = 'Playing personalized mixed audio from conference server'
     incomingVizStatusEl.textContent = 'Live waveform of incoming mixed track'
     appendLog('Receiving mixed audio track')
+  }
+
+  pc.ontrack = (event) => {
+    attachMixedAudio(event.track, event.streams[0])
   }
 
   pc.onicecandidate = (event) => {
@@ -217,6 +245,14 @@ async function onServerOffer(sdp) {
     if (!pc) return
     if (pc.connectionState === 'connected') {
       setStatus(`Connected to room "${room}" as ${displayName}`)
+      if (!mixedAudioEl.srcObject) {
+        for (const receiver of pc.getReceivers()) {
+          if (receiver.track?.kind === 'audio') {
+            attachMixedAudio(receiver.track, null)
+            break
+          }
+        }
+      }
     } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
       setStatus(`WebRTC ${pc.connectionState}`)
       appendLog(`WebRTC connection ${pc.connectionState}`)
@@ -269,6 +305,12 @@ async function refreshParticipants() {
   const mixingEnabled = payload.mixingEnabled ?? true
   mixingStatusEl.textContent = `Mixing: ${mixingEnabled ? 'enabled' : 'disabled (silence for all)'}`
 
+  for (const entry of participants) {
+    if (entry.displayName) {
+      peerDisplayNames.set(entry.id, entry.displayName)
+    }
+  }
+
   const ids = participants.map((entry) => entry.id)
   if (!ids.includes(clientId) && pc) {
     appendLog('No longer in participant list — disconnecting')
@@ -287,10 +329,10 @@ function renderParticipants(participants) {
     const row = document.createElement('div')
     row.className = 'participant-row'
 
+    const name = participantLabel(participant.id, participant.displayName)
     const label = document.createElement('div')
     label.className = 'participant-id'
-    label.textContent =
-      participant.id === clientId ? `${participant.id} (you)` : participant.id
+    label.textContent = participant.id === clientId ? `${name} (you)` : name
 
     const state = document.createElement('div')
     state.className = 'participant-state'
@@ -375,17 +417,18 @@ async function muteParticipant(targetId, scope, muted) {
     return
   }
 
+  const targetName = participantLabel(targetId)
   if (scope === 'global') {
     appendLog(
       muted
-        ? `Global mute applied to ${targetId} (everyone stops hearing them)`
-        : `Global unmute applied to ${targetId}`,
+        ? `Global mute applied to ${targetName} (everyone stops hearing them)`
+        : `Global unmute applied to ${targetName}`,
     )
   } else {
     appendLog(
       muted
-        ? `You muted ${targetId} in your mix only`
-        : `You unmuted ${targetId} in your mix`,
+        ? `You muted ${targetName} in your mix only`
+        : `You unmuted ${targetName} in your mix`,
     )
   }
 }
@@ -426,7 +469,7 @@ async function kickParticipant(participantId) {
     return
   }
 
-  appendLog(`Kicked ${participantId}`)
+  appendLog(`Kicked ${participantLabel(participantId)}`)
 }
 
 function sendSignal(message) {

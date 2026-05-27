@@ -8,6 +8,8 @@ import type { MuteScope } from '@node-webrtc-rust/sdk/conference'
 
 import { ManualSignalingServer } from './manual-signaling'
 
+import { DisplayNameRegistry } from './display-names'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PUBLIC_DIR = join(__dirname, '../public')
 const SHARED_DIR = join(__dirname, '../../shared')
@@ -74,6 +76,7 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<v
 }
 
 async function main(): Promise<void> {
+  const displayNames = new DisplayNameRegistry()
   const conference = new ConferenceServer()
 
   conference.on('mixing-enabled-changed', ({ roomId, enabled }) => {
@@ -135,6 +138,27 @@ async function main(): Promise<void> {
       return
     }
 
+    const displayNameRoom = roomFromApiPath(pathname, '/display-name')
+    if (req.method === 'POST' && displayNameRoom) {
+      try {
+        const body = (await readJsonBody(req)) as { peerId?: string; displayName?: string }
+        if (!body.peerId || typeof body.peerId !== 'string') {
+          sendJson(res, 400, { error: 'peerId is required' })
+          return
+        }
+        if (!body.displayName || typeof body.displayName !== 'string') {
+          sendJson(res, 400, { error: 'displayName is required' })
+          return
+        }
+        await ensureRoom(displayNameRoom)
+        displayNames.set(displayNameRoom, body.peerId, body.displayName)
+        sendJson(res, 200, { ok: true })
+      } catch (error) {
+        sendJson(res, 500, { error: String(error) })
+      }
+      return
+    }
+
     const participantsRoom = roomFromApiPath(pathname, '/participants')
     if (req.method === 'GET' && participantsRoom) {
       try {
@@ -143,7 +167,10 @@ async function main(): Promise<void> {
           sendJson(res, 404, { error: 'room not found' })
           return
         }
-        const participants = await roomHandle.listParticipants()
+        const participants = displayNames.enrich(
+          participantsRoom,
+          await roomHandle.listParticipants(),
+        )
         const mixingEnabled = await roomHandle.isMixingEnabled()
         sendJson(res, 200, { participants, mixingEnabled })
       } catch (error) {

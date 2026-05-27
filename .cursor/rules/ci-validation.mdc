@@ -34,7 +34,7 @@ Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github
    ```
 4. **If you change a script used by multiple workflows**, grep for references (`run-pr-quality`, `run-pr-integration`, `run-pr-tests-full`, `verify-checks`) and update every caller.
 5. **Lint scope** — `npm run lint` runs repo-wide; browser demo scripts under `examples/**/public/` are ignored in `eslint.config.js`.
-6. **Test jobs** — run scripts directly in the prebuilt `ci-build` job container; coturn is a GitHub **service container** (`ci-coturn`). Do not nest `docker run` of `ci-build` inside DinD unless unavoidable.
+6. **Test jobs** — use DinD on `ubuntu-latest` (no job container) with public `coturn/coturn:latest`; run tests in prebuilt `ci-build` via `docker run --network container:coturn`. Do not maintain a custom coturn image.
 
 ## Anti-patterns
 

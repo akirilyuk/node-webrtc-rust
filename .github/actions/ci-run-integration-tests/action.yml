@@ -1,5 +1,5 @@
-name: Run integration tests (ci-build + coturn service)
-description: Stage linux-gnu binding and run test script in the CI container
+name: Run integration tests (DinD + coturn/coturn)
+description: Start public coturn sidecar on DinD and run tests in the ci-build image
 
 inputs:
   test_script:
@@ -9,21 +9,48 @@ inputs:
     description: Artifact name suffix (e.g. x86_64-unknown-linux-gnu)
     required: false
     default: x86_64-unknown-linux-gnu
+  ci_image:
+    description: Prebuilt CI image (Node + Rust + Zig)
+    required: true
+  github_token:
+    description: GitHub token for GHCR login
+    required: true
 
 runs:
   using: composite
   steps:
+    - name: Log in to GHCR (pull CI image)
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github_token }}
+
     - name: Download native binding
       uses: actions/download-artifact@v4
       with:
         name: bindings-${{ inputs.binding_target }}
         path: packages/bindings/
 
-    - name: Run integration tests
+    - name: Run integration tests (coturn/coturn + ci-build)
       shell: bash
       env:
-        TURN_AVAILABLE: 1
-        TURN_URL: turn:coturn:3478
-        CMAKE_POLICY_VERSION_MINIMUM: 3.5
-        OPUS_STATIC: 1
-      run: bash "${{ inputs.test_script }}"
+        DOCKER_HOST: tcp://docker:2376
+        DOCKER_TLS_CERTDIR: /certs
+        DOCKER_TLS_VERIFY: 1
+        DOCKER_CERT_PATH: /certs/client
+      run: |
+        set -euo pipefail
+        docker run -d --name coturn coturn/coturn:latest \
+          turnserver -n -L 0.0.0.0:3478 -a \
+          -u testuser:testpass -r test.local \
+          --min-port 49152 --max-port 65535 \
+          --no-tls --no-dtls --log-file=stdout -v
+        docker run --rm --network container:coturn \
+          -v "${GITHUB_WORKSPACE}:/workspace" \
+          -w /workspace \
+          -e TURN_AVAILABLE=1 \
+          -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+          -e OPUS_STATIC=1 \
+          "${{ inputs.ci_image }}" \
+          bash "${{ inputs.test_script }}"

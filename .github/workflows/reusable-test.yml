@@ -1,4 +1,4 @@
-name: Reusable — integration tests (ci-build + coturn)
+name: Reusable — integration tests (DinD + coturn)
 
 on:
   workflow_call:
@@ -16,28 +16,18 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/${{ github.repository }}/ci-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     services:
-      coturn:
-        image: ghcr.io/${{ github.repository }}/ci-coturn:latest
-        credentials:
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      docker:
+        image: docker:24-dind
         options: >-
-          --health-cmd "bash -c 'echo > /dev/udp/127.0.0.1/3478'"
+          --privileged
+          --health-cmd "docker info"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          --health-start-period 10s
     env:
       TURN_AVAILABLE: "1"
-      TURN_URL: turn:coturn:3478
-      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-      OPUS_STATIC: "1"
+      CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
     steps:
       - uses: actions/checkout@v4
 
@@ -45,3 +35,5 @@ jobs:
         with:
           test_script: ${{ inputs.test_script }}
           binding_target: ${{ inputs.binding_target }}
+          ci_image: ${{ env.CI_IMAGE }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}

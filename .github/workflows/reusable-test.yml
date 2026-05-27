@@ -15,6 +15,14 @@ on:
         description: native-binding-cache profile when artifact download is skipped
         type: string
         default: debug
+      require_binding_artifact:
+        description: Fail when the binding artifact is missing (compile/build-linux ran)
+        type: boolean
+        default: false
+      cargo_cache_prefix:
+        description: Swatinem/rust-cache prefix (must match compile/build-linux job)
+        type: string
+        default: v1-pr-debug
 
 jobs:
   test:
@@ -42,7 +50,7 @@ jobs:
         with:
           name: ${{ inputs.binding_artifact }}
           path: packages/bindings
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.require_binding_artifact }}
 
       # GHA cache restore often misses in workflow_call jobs even after a hit in the
       # caller (compile-native). Artifact download is the reliable same-run path.
@@ -51,6 +59,22 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
           profile: ${{ inputs.binding_profile }}
+
+      - name: Verify native binding in workspace
+        run: |
+          shopt -s nullglob
+          files=(packages/bindings/*.node)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No .node in packages/bindings after artifact/cache restore." >&2
+            exit 1
+          fi
+          echo "Native binding ready: $(basename "${files[0]}")"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ inputs.cargo_cache_prefix }}
+          cache-targets: x86_64-unknown-linux-gnu
+          workspaces: .
 
       - uses: ./.github/actions/ci-cache-ts-dist
 

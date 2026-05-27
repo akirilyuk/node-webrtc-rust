@@ -101,9 +101,11 @@ Vitest tests import from `src/`, but this step validates publishable `dist/` out
 
 Before tests, the test job receives the native binding from the **same workflow run**:
 
-1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact uploaded by `compile-native` (PR) or `build-linux` (main/release)
-2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) only when artifact download fails (e.g. TS-only PR with compile-native skipped)
-3. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist)
+1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact uploaded by `compile-native` (PR) or `build-linux` (main/release). Fails the job when compile ran but the artifact is missing.
+2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) only when artifact download is skipped or failed (e.g. TS-only PR).
+3. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
+4. **Cargo:** [`Swatinem/rust-cache`](https://github.com/Swatinem/rust-cache) with the same prefix as compile/build-linux so `cargo test` reuses `target/`.
+5. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist).
 
 Jobs do not share a workspace on self-hosted runners (each job checks out fresh). **GHA cache can hit in `compile-native` but miss in the test job** when test runs via `workflow_call` — same key, different job context. Artifact download avoids that gap; skip the native cache step when the artifact is present.
 
@@ -115,6 +117,8 @@ Jobs do not share a workspace on self-hosted runners (each job checks out fresh)
 - Run `build:ts` if `dist/` missing
 
 Test execution: runner **host Docker** → public `coturn/coturn:latest` sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`. A prepare step resets workspace ownership before checkout (container jobs write root-owned files).
+
+**TURN test networking:** peers and coturn share the test container network namespace (`--network container:coturn`). Traffic stays on loopback / Docker — **no inbound ports on the host firewall** (80/443 nginx is unrelated). coturn uses UDP/TCP **3478** for TURN control and **49152–65535** for relay allocations inside the container only. CI enables `--allow-loopback-peers` because both WebRTC peers run on the same host.
 
 ---
 

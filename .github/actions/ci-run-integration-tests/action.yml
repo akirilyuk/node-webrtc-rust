@@ -32,7 +32,9 @@ runs:
           turnserver -n -L 0.0.0.0:3478 -a \
           -u testuser:testpass -r test.local \
           --min-port 49152 --max-port 65535 \
-          --no-tls --no-dtls --log-file=stdout -v
+          --no-tls --no-dtls --log-file=stdout -v \
+          --allow-loopback-peers \
+          --external-ip=127.0.0.1/127.0.0.1
         docker run --rm --network "container:${coturn_name}" \
           -v "${GITHUB_WORKSPACE}:/workspace" \
           -w /workspace \

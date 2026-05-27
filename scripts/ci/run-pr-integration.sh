@@ -14,7 +14,11 @@ echo "==> ensure native binding"
 shopt -s nullglob
 nodes=(packages/bindings/*.node)
 if [[ ${#nodes[@]} -eq 0 ]]; then
-  echo "    no .node in workspace — compiling debug linux-gnu binding (artifact/cache miss)"
+  if [[ "${CI:-}" == "true" ]]; then
+    echo "No .node in CI workspace — compile-native artifact or cache should have restored it." >&2
+    exit 1
+  fi
+  echo "    no .node in workspace — compiling debug linux-gnu binding (local fallback)"
   ( cd packages/bindings && npx napi build --target x86_64-unknown-linux-gnu )
   shopt -s nullglob
   nodes=(packages/bindings/*.node)

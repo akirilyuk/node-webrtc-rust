@@ -38,6 +38,8 @@ jobs:
     with:
       test_script: scripts/ci/run-pr-tests-full.sh
       binding_profile: release
+      require_binding_artifact: true
+      cargo_cache_prefix: v1-release
     secrets: inherit
 
   publish:

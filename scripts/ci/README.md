@@ -158,6 +158,8 @@ git push origin ci
 
 Used by: PR compile-native, release Linux matrix, integration test container.
 
+**Native build env:** `audiopus_sys` needs static Opus + CMake policy shim. Set `OPUS_STATIC=1` and `CMAKE_POLICY_VERSION_MINIMUM=3.5` on reusable build workflows and in [`ci-build-native-*`](../../.github/actions/) build steps (caller workflow `env` does not propagate into `workflow_call` jobs).
+
 ---
 
 ## Scripts reference

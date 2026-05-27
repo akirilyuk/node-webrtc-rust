@@ -55,6 +55,9 @@ runs:
     - name: Build native addon
       shell: bash
       working-directory: packages/bindings
+      env:
+        CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        OPUS_STATIC: "1"
       run: npx napi build --platform --release ${{ inputs.build_args }}
 
     - name: Require native artifact

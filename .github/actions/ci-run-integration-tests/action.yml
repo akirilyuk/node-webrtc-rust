@@ -34,11 +34,6 @@ runs:
 
     - name: Run integration tests (coturn/coturn + ci-build)
       shell: bash
-      env:
-        DOCKER_HOST: tcp://docker:2376
-        DOCKER_TLS_CERTDIR: /certs
-        DOCKER_TLS_VERIFY: 1
-        DOCKER_CERT_PATH: /certs/client
       run: |
         set -euo pipefail
         docker run -d --name coturn coturn/coturn:latest \

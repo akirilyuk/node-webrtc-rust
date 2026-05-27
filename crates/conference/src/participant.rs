@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use node_webrtc_rust_core::{
     debug_call, debug_evt, ConnectionState, LocalAudioTrack, PeerConnection, RemoteTrack,
 };
@@ -12,6 +13,10 @@ use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::error::ConferenceError;
+
+/// Prime frame: 960 B stereo PCM @ 48 kHz = 5 ms — kicks browser `ontrack` / first RTP.
+const PCM_KICK_BYTES: usize = 960;
+const PCM_KICK_MS: u64 = 5;
 
 /// Runtime state for one conference participant.
 pub struct Participant {
@@ -66,6 +71,7 @@ impl Participant {
             id.clone(),
             Arc::clone(&mix_graph),
             outbound_track.clone(),
+            pc.clone(),
         );
 
         Ok(Self {
@@ -156,6 +162,7 @@ fn spawn_outbound_task(
     participant_id: String,
     mix_graph: Arc<Mutex<MixGraph>>,
     outbound_track: LocalAudioTrack,
+    pc: PeerConnection,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         debug_evt!(
@@ -165,9 +172,36 @@ fn spawn_outbound_task(
             participant_id
         );
 
+        let wait_deadline = time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match pc.connection_state() {
+                ConnectionState::Connected => break,
+                ConnectionState::Failed | ConnectionState::Closed => return,
+                _ => {
+                    if time::Instant::now() >= wait_deadline {
+                        return;
+                    }
+                    time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+
+        let kick = Bytes::from(vec![0u8; PCM_KICK_BYTES]);
+        if outbound_track
+            .write_sample(kick, Duration::from_millis(PCM_KICK_MS))
+            .await
+            .is_err()
+        {
+            return;
+        }
+
         let mut interval = time::interval(Duration::from_millis(FRAME_MS as u64));
         loop {
             interval.tick().await;
+
+            if pc.connection_state() != ConnectionState::Connected {
+                break;
+            }
 
             let frame = {
                 let graph = mix_graph.lock().await;

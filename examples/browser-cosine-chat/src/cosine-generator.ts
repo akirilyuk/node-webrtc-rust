@@ -3,6 +3,10 @@ export const PCM_SAMPLE_RATE = 48_000
 export const PCM_CHANNELS = 2
 export const PCM_FRAME_DURATION_MS = 20
 
+/** Browser ontrack kick — quarter frame; pass `durationMs: 5` to writeSample. */
+export const PCM_KICK_FRAME_BYTES = 960
+export const PCM_KICK_DURATION_MS = 5
+
 export interface CosineGeneratorOptions {
   /** Tone frequency in hertz (default 440 Hz — concert A). */
   frequencyHz?: number

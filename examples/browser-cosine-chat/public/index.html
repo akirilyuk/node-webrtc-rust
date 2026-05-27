@@ -34,7 +34,7 @@
         <h2>Incoming audio track</h2>
         <canvas id="incoming-viz" width="640" height="160" aria-label="Incoming audio waveform"></canvas>
         <p id="viz-status" class="viz-status">Waiting for server track…</p>
-        <audio id="tone" controls autoplay></audio>
+        <audio id="tone" controls autoplay playsinline></audio>
         <p id="audio-status">Waiting for server track…</p>
       </section>
 
@@ -46,8 +46,14 @@
           <button type="submit" disabled>Send</button>
         </form>
       </section>
+
+      <section id="debug-panel" class="panel debug-panel" hidden>
+        <h2>Debug log</h2>
+        <p class="debug-hint">Visible when URL contains <code>?debug</code> — also mirrored to the browser console.</p>
+        <pre id="debug-log"></pre>
+      </section>
     </main>
 
-    <script type="module" src="/client.js"></script>
+    <script type="module" src="/client.js?v=4"></script>
   </body>
 </html>

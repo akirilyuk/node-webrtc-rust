@@ -7,6 +7,7 @@ import { CosineStreamServer } from './cosine-stream-server'
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
 const TONE_HZ = 440
 const STREAM_SECONDS = 5
+const REMOTE_TRACK_TIMEOUT_MS = 30_000
 
 async function waitForConnection(pc: RTCPeerConnection, timeoutMs = 20_000): Promise<void> {
   if (pc.connectionState === 'connected') return
@@ -27,6 +28,27 @@ async function waitForConnection(pc: RTCPeerConnection, timeoutMs = 20_000): Pro
     }
     pc.onconnectionstatechange = check
     check()
+  })
+}
+
+function waitForRemoteTrack(
+  receiver: RTCPeerConnection,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`no remote audio track received within ${timeoutMs / 1000}s`))
+    }, timeoutMs)
+
+    receiver.ontrack = (event) => {
+      clearTimeout(timer)
+      console.log('Receiver got remote track:', {
+        trackId: event.track.id,
+        kind: event.track.kind,
+        streamIds: event.streams.map((stream) => stream.id),
+      })
+      resolve()
+    }
   })
 }
 
@@ -59,48 +81,52 @@ async function main(): Promise<void> {
     peerId: 'receiver',
   })
 
-  autoNegotiate({ pc: sender, signaling: sigSender, polite: false })
-  autoNegotiate({ pc: receiver, signaling: sigReceiver, polite: true })
+  const cleanup = async (): Promise<void> => {
+    streamServer.stop()
+    sender.close()
+    receiver.close()
+    sigSender.disconnect()
+    sigReceiver.disconnect()
+    await server.close()
+  }
 
-  const remoteTrackPromise = new Promise<void>((resolve) => {
-    receiver.ontrack = (event) => {
-      console.log('Receiver got remote track:', {
-        trackId: event.track.id,
-        kind: event.track.kind,
-        streamIds: event.streams.map((stream) => stream.id),
-      })
-      resolve()
-    }
-  })
+  try {
+    autoNegotiate({ pc: sender, signaling: sigSender, polite: false })
+    autoNegotiate({ pc: receiver, signaling: sigReceiver, polite: true })
 
-  await sigSender.connect()
-  await sigReceiver.connect()
+    const remoteTrackPromise = waitForRemoteTrack(receiver, REMOTE_TRACK_TIMEOUT_MS)
 
-  await waitForConnection(sender)
-  await waitForConnection(receiver)
-  console.log('Peers connected — starting audio stream')
+    await sigSender.connect()
+    await sigReceiver.connect()
 
-  const totalFrames = Math.ceil((STREAM_SECONDS * 1000) / PCM_FRAME_DURATION_MS)
-  console.log(
-    `Streaming ${TONE_HZ} Hz tone: ${totalFrames} frames @ ${PCM_FRAME_DURATION_MS} ms (${PCM_SAMPLE_RATE} Hz stereo PCM)`,
-  )
+    await waitForConnection(sender)
+    await waitForConnection(receiver)
+    console.log('Peers connected — starting audio stream')
 
-  await streamServer.primeTrack(toneTrack)
-  await remoteTrackPromise
+    const totalFrames = Math.ceil((STREAM_SECONDS * 1000) / PCM_FRAME_DURATION_MS)
+    console.log(
+      `Streaming ${TONE_HZ} Hz tone: ${totalFrames} frames @ ${PCM_FRAME_DURATION_MS} ms (${PCM_SAMPLE_RATE} Hz stereo PCM)`,
+    )
 
-  streamServer.start()
-  await delay(STREAM_SECONDS * 1000 - PCM_FRAME_DURATION_MS)
-  streamServer.stop()
+    // First frame triggers remote ontrack (matches sdk e2e test); then stream full PCM frames.
+    await toneTrack.writeSample(Buffer.alloc(960), 5)
+    await remoteTrackPromise
 
-  console.log('Done — closing peers')
-  sender.close()
-  receiver.close()
-  sigSender.disconnect()
-  sigReceiver.disconnect()
-  await server.close()
+    streamServer.start()
+    await delay(STREAM_SECONDS * 1000 - PCM_FRAME_DURATION_MS)
+    streamServer.stop()
+
+    console.log('Done — closing peers')
+    await cleanup()
+    process.exit(0)
+  } catch (error) {
+    await cleanup().catch(() => undefined)
+    throw error
+  }
 }
 
 void main().catch((error: unknown) => {
-  console.error(error)
-  process.exitCode = 1
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(message)
+  process.exit(1)
 })

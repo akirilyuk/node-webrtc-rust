@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
+    "start:debug": "TONE_STREAM_DEBUG=1 tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

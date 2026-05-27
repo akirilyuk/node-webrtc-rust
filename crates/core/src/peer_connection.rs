@@ -219,6 +219,14 @@ pub struct PeerConnection {
     inner: Arc<RTCPeerConnection>,
 }
 
+impl Clone for PeerConnection {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
 static SHARED_API: OnceLock<Arc<API>> = OnceLock::new();
 
 fn shared_api() -> Result<Arc<API>, CoreError> {

@@ -126,3 +126,30 @@ audio {
   font-size: 0.8rem;
   color: #64748b;
 }
+
+.debug-panel {
+  margin-top: 1.5rem;
+  border-color: #334155;
+}
+
+.debug-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+#debug-log {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: #0b1018;
+  border: 1px solid #243041;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

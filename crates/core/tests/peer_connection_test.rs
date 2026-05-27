@@ -199,7 +199,7 @@ async fn test_audio_track_exchange() {
     wait_for_connection(&pc2).await;
 
     track
-        .write_sample_slice(&[0u8; 960], Duration::from_millis(20))
+        .write_sample_slice(&[0u8; 960], Duration::from_millis(5))
         .await
         .expect("write sample");
 
@@ -218,7 +218,7 @@ async fn test_audio_track_exchange() {
 #[tokio::test]
 async fn test_write_sample_with_shared_bytes() {
     let track = LocalAudioTrack::new("audio-1", "stream-1");
-    let payload = Bytes::from_static(b"\x00\x01\x02");
+    let payload = Bytes::from_static(&[0u8; 3_840]);
     track
         .write_sample(payload, Duration::from_millis(20))
         .await

@@ -17,7 +17,7 @@ export interface CosineStreamServerOptions {
 export class CosineStreamServer {
   readonly generator: CosineGenerator
   private readonly tracks = new Set<LocalAudioTrack>()
-  private timer: ReturnType<typeof setInterval> | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
   private running = false
 
   constructor(options: CosineStreamServerOptions = {}) {
@@ -30,6 +30,7 @@ export class CosineStreamServer {
   /** Adds a track that receives every generated frame. */
   subscribe(track: LocalAudioTrack): () => void {
     this.tracks.add(track)
+    void this.writeFrame(track)
     return () => {
       this.tracks.delete(track)
     }
@@ -44,28 +45,44 @@ export class CosineStreamServer {
   start(): void {
     if (this.running) return
     this.running = true
-
-    this.timer = setInterval(() => {
-      void this.tick()
-    }, PCM_FRAME_DURATION_MS)
+    this.scheduleTick()
   }
 
   /** Stops generating frames. */
   stop(): void {
     if (this.timer) {
-      clearInterval(this.timer)
+      clearTimeout(this.timer)
       this.timer = null
     }
     this.running = false
     this.tracks.clear()
   }
 
-  private async tick(): Promise<void> {
-    if (this.tracks.size === 0) return
+  private scheduleTick(): void {
+    if (!this.running) return
+    this.timer = setTimeout(() => {
+      void this.runTick()
+    }, PCM_FRAME_DURATION_MS)
+  }
 
+  private async runTick(): Promise<void> {
+    if (!this.running) return
+
+    const tracks = [...this.tracks]
+    for (const track of tracks) {
+      await this.writeFrame(track)
+    }
+
+    this.scheduleTick()
+  }
+
+  private async writeFrame(track: LocalAudioTrack): Promise<void> {
     const frame = this.generator.nextFrame()
-    await Promise.all(
-      [...this.tracks].map((track) => track.writeSample(frame, PCM_FRAME_DURATION_MS)),
-    )
+    try {
+      // Copy per track — writeSample may retain the buffer while encoding.
+      await track.writeSample(Buffer.from(frame), PCM_FRAME_DURATION_MS)
+    } catch (error: unknown) {
+      console.error('CosineStreamServer: writeSample failed', error)
+    }
   }
 }

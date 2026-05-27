@@ -1452,6 +1452,8 @@ dependencies = [
 name = "node-webrtc-rust-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "audiopus",
  "bytes",
  "env_logger",
  "log",

@@ -104,7 +104,7 @@ Before tests, the test job receives the native binding from the **same workflow 
 1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact uploaded by `compile-native` (PR) or `build-linux` (main/release). Fails the job when compile ran but the artifact is missing.
 2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) only when artifact download is skipped or failed (e.g. TS-only PR).
 3. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
-4. **Cargo target/:** compile uploads `cargo-target-{prefix}` artifact (same-run; GHA cache misses across `workflow_call`). Test downloads it first; [`ci-restore-cargo-target`](../../.github/actions/ci-restore-cargo-target) is fallback when compile was skipped. Compile also restores/saves `target/` via `actions/cache` for cross-run warm starts.
+4. **Cargo target/:** compile uploads `cargo-target-{prefix}` artifact for the test job (GHA cache is not visible across `workflow_call` in the same run). Test downloads it first; [`ci-restore-cargo-target`](../../.github/actions/ci-restore-cargo-target) is fallback when compile was skipped. Compile may restore a prior `target/` cache entry for cross-run warm starts (restore-only — keys are immutable once saved).
 5. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist).
 
 Jobs do not share a workspace on self-hosted runners (each job checks out fresh). Compile uploads `target/` as an artifact; the test job downloads it on the host before mounting the workspace into Docker (no `rustc` on the runner host).

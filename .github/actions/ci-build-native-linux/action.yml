@@ -45,7 +45,8 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Restore Cargo target/ (cross-job)
+    - name: Restore Cargo target/ (cross-run warm start)
+      id: target-restore
       uses: actions/cache/restore@v4
       with:
         path: target
@@ -126,12 +127,6 @@ runs:
         fi
         echo "Building workspace test deps for cross-job target/ cache"
         cargo build --workspace --tests
-
-    - name: Save Cargo target/ for cross-job restore
-      uses: actions/cache/save@v4
-      with:
-        path: target
-        key: ${{ inputs.cache_prefix }}-target-Linux-x64-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
 
     - name: Upload Cargo target/ artifact
       if: inputs.upload_target_artifact == 'true'

@@ -15,11 +15,13 @@ When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix on
 
 | Pipeline | Trigger | Entry script / job |
 |---|---|---|
-| PR quality | `build.yml` → `quality` | `scripts/ci/run-pr-quality.sh` |
-| PR integration | `build.yml` → `test` (PR) | `scripts/ci/run-pr-integration.sh` |
-| Main push test | `build.yml` → `test` (push) | `scripts/ci/run-pr-tests-full.sh` |
-| Release test | `release.yml` → `test` | `scripts/ci/run-pr-tests-full.sh` |
+| PR quality + build | `build.yml` → `build` | `scripts/ci/run-pr-quality.sh` + native compile |
+| PR integration | `build.yml` → `test` | `scripts/ci/run-pr-integration.sh` |
+| Main push build + test | `build-main.yml` | `reusable-build-*` → `run-pr-tests-full.sh` |
+| Release build + test | `release.yml` | `reusable-build-*` → `run-pr-tests-full.sh` |
 | Local mirror | developer | `scripts/ci/verify-checks.sh`, `npm run ci:verify*` |
+
+Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github/actions/ci-*` — update those when changing compile or test steps.
 
 ## Rules
 
@@ -32,7 +34,7 @@ When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix on
    ```
 4. **If you change a script used by multiple workflows**, grep for references (`run-pr-quality`, `run-pr-integration`, `run-pr-tests-full`, `verify-checks`) and update every caller.
 5. **Lint scope** — `npm run lint` runs repo-wide; browser demo scripts under `examples/**/public/` are ignored in `eslint.config.js`.
-6. **DinD test jobs** — use `docker:24-dind` service on `ubuntu-latest` without a job-level `container:`; job containers break `actions/checkout` when `DOCKER_HOST` is set.
+6. **Test jobs** — run scripts directly in the prebuilt `ci-build` job container; coturn is a GitHub **service container** (`ci-coturn`). Do not nest `docker run` of `ci-build` inside DinD unless unavoidable.
 
 ## Anti-patterns
 

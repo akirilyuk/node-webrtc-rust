@@ -2,52 +2,53 @@
 description: When GitHub Actions build and CI image workflows should run
 globs:
   - .github/workflows/**
+  - .github/actions/**
   - docker/ci/**
 alwaysApply: false
 ---
 
 # CI Workflow Triggers
 
-## Build & Test (`.github/workflows/build.yml`)
+## Build & Test — PR (`.github/workflows/build.yml`)
 
-| Event | Native builds | Tests |
-|---|---|---|
-| **PR → `main`** | quality → debug compile → test (sequential) | DinD + coturn |
-| **Push → `main`** | full release matrix, then test | yes |
-| Other branches | no | no |
+| Job | Purpose |
+|---|---|
+| Detect changes | path filters (`native`, `typescript`, `workflows`) |
+| Typecheck & lint | `run-pr-quality.sh` (must pass before build) |
+| **Build** | debug compile → upload `.node` (single native build job) |
+| Test | `ci-build` container + `ci-coturn` service; tests run directly (no nested Docker) |
 
-PR pipeline order: **typecheck → lint → debug compile → integration tests**. Quality uses workspace `npm ci` only (no registry packages, no `.node`).
+Runs on **pull_request → `main`** only. No skipped release-matrix jobs on PRs.
 
-Release tags run **real `npm publish`** (not dry-run); version is taken from the tag (`release/x.y.z` → `x.y.z`).
+## Build & Test — main (`.github/workflows/build-main.yml`)
+
+Runs on **push → `main`**: reusable release matrix (`reusable-build-linux`, `reusable-build-host`) → `reusable-test`.
 
 ## Release (`.github/workflows/release.yml`)
 
-Runs **only** on `release/*` tag push: full **release** matrix build → test (DinD) → npm publish → GitHub Release.
+Runs on **`release/*` tag push**: same reusable build/test workflows → npm publish → GitHub Release.
 
-```bash
-git checkout main && git pull
-git tag release/0.1.0 && git push origin release/0.1.0
-```
+## Reusable workflows & composite actions
 
-Local alternatives: `scripts/release-local.sh` and `scripts/release-publish.sh`. See `scripts/RELEASE.md`.
+| File | Role |
+|---|---|
+| `reusable-build-linux.yml` | Linux release matrix (3 targets) |
+| `reusable-build-host.yml` | macOS + Windows release matrix |
+| `reusable-test.yml` | Test job in `ci-build` + `ci-coturn` service |
+| `actions/ci-build-native-linux` | Cache, compile, verify, upload (Linux) |
+| `actions/ci-build-native-host` | Toolchain setup + compile (host OS) |
+| `actions/ci-run-integration-tests` | Download binding artifact and run test script |
+| `actions/native-binding-cache` | Per-target `.node` cache restore/save |
 
 ## CI Docker image (`ci` branch)
 
-Rebuild `ghcr.io/.../ci-build:latest` when `docker/ci/Dockerfile` changes — push to **`ci`** branch or **`workflow_dispatch`** on CI Docker image workflow.
-
-## Caching (`.github/workflows/build.yml`)
-
-- **`changes` job** (`dorny/paths-filter`): `native`, `typescript`, `workflows`.
-- **PR `build-pr`**: debug `.node` cache (`profile: debug`); skip compile when native unchanged and cache hits.
-- **Main `build-linux` / `build-host`**: release `.node` cache (`profile: release`); always compile on main push.
-- **`Swatinem/rust-cache`**: separate prefix keys for PR debug vs main release.
-- **Test job**: `docker:24-dind` service on `ubuntu-latest` (no job container — avoids checkout/DNS failures with `DOCKER_HOST`); tests run in `ci-build` with coturn sharing network namespace.
+Rebuild `ghcr.io/.../ci-build:latest` and `ghcr.io/.../ci-coturn:latest` when CI Dockerfiles change — push to **`ci`** branch or **`workflow_dispatch`** on CI Docker image workflow.
 
 ## Local validation
 
 ```bash
 npm run ci:verify:linux          # release cross-builds (matches main push)
-npm run ci:verify:checks:docker  # PR test checks
+npm run ci:verify:checks:docker  # PR quality + integration checks
 npm run ci:verify                # both
 ```
 

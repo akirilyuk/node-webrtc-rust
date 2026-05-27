@@ -1,0 +1,29 @@
+name: Run integration tests (ci-build + coturn service)
+description: Stage linux-gnu binding and run test script in the CI container
+
+inputs:
+  test_script:
+    description: Bash script path under repo root
+    required: true
+  binding_target:
+    description: Artifact name suffix (e.g. x86_64-unknown-linux-gnu)
+    required: false
+    default: x86_64-unknown-linux-gnu
+
+runs:
+  using: composite
+  steps:
+    - name: Download native binding
+      uses: actions/download-artifact@v4
+      with:
+        name: bindings-${{ inputs.binding_target }}
+        path: packages/bindings/
+
+    - name: Run integration tests
+      shell: bash
+      env:
+        TURN_AVAILABLE: 1
+        TURN_URL: turn:coturn:3478
+        CMAKE_POLICY_VERSION_MINIMUM: 3.5
+        OPUS_STATIC: 1
+      run: bash "${{ inputs.test_script }}"

@@ -1,0 +1,33 @@
+name: Build & Test (main)
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  OPUS_STATIC: "1"
+
+jobs:
+  build-linux:
+    uses: ./.github/workflows/reusable-build-linux.yml
+    secrets: inherit
+
+  build-host:
+    uses: ./.github/workflows/reusable-build-host.yml
+    secrets: inherit
+
+  test:
+    name: Test
+    needs: [build-linux, build-host]
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      test_script: scripts/ci/run-pr-tests-full.sh
+    secrets: inherit

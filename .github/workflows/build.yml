@@ -3,8 +3,6 @@ name: Build & Test
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -56,17 +54,13 @@ jobs:
               - '.github/**'
               - 'docker/ci/**'
 
-  # PR: typecheck + lint first (workspace npm ci — no published packages, no .node)
   quality:
     name: Typecheck & lint
     needs: changes
     if: |
-      github.event_name == 'pull_request' &&
-      (
-        needs.changes.outputs.native == 'true' ||
-        needs.changes.outputs.typescript == 'true' ||
-        needs.changes.outputs.workflows == 'true'
-      )
+      needs.changes.outputs.native == 'true' ||
+      needs.changes.outputs.typescript == 'true' ||
+      needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -77,17 +71,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash scripts/ci/run-pr-quality.sh
 
-  # PR: debug compile only after typecheck + lint pass
-  build-pr:
-    name: Compile check (debug, linux-gnu)
+  build:
+    name: Build
     needs: [changes, quality]
     if: |
-      github.event_name == 'pull_request' &&
-      (
-        needs.changes.outputs.native == 'true' ||
-        needs.changes.outputs.typescript == 'true' ||
-        needs.changes.outputs.workflows == 'true'
-      )
+      needs.changes.outputs.native == 'true' ||
+      needs.changes.outputs.typescript == 'true' ||
+      needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -103,276 +93,25 @@ jobs:
           target: x86_64-unknown-linux-gnu
           profile: debug
 
-      - name: Cache Cargo (registry + target)
-        uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/ci-build-native-linux
         with:
-          prefix-key: v1-pr-debug
-          cache-targets: x86_64-unknown-linux-gnu
-          workspaces: .
-
-      - name: Cache npm
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.npm
-            node_modules
-            packages/bindings/node_modules
-          key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
-          restore-keys: npm-
-
-      - name: Install bindings dependencies
-        working-directory: packages/bindings
-        run: npm ci --ignore-scripts
-
-      - name: Build native addon (debug)
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        working-directory: packages/bindings
-        run: npx napi build --target x86_64-unknown-linux-gnu
-
-      - name: Require native artifact
-        shell: bash
-        working-directory: packages/bindings
-        run: |
-          shopt -s nullglob
-          files=(*.node)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No .node artifact for x86_64-unknown-linux-gnu." >&2
-            exit 1
-          fi
-
-      - name: Upload bindings artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bindings-x86_64-unknown-linux-gnu
-          path: packages/bindings/*.node
-          if-no-files-found: error
-
-  # main push: full release matrix (Linux)
-  build-linux:
-    name: Build - ${{ matrix.target }}
-    needs: changes
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/${{ github.repository }}/ci-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-gnu
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/native-binding-cache
-        with:
-          target: ${{ matrix.target }}
-          profile: release
-
-      - name: Cache Cargo (registry + target)
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-native-release
-          cache-targets: ${{ matrix.target }}
-          workspaces: .
-
-      - name: Cache npm
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.npm
-            node_modules
-            packages/bindings/node_modules
-          key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
-          restore-keys: npm-
-
-      - name: Cache napi-rs Zig toolchain
-        uses: actions/cache@v4
-        with:
-          path: /github/home/.cache/napi-rs-nodejs
-          key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: napi-zig-${{ runner.os }}-
-
-      - name: Install bindings dependencies
-        working-directory: packages/bindings
-        run: npm ci --ignore-scripts
-
-      - name: Build native addon
-        working-directory: packages/bindings
-        run: npx napi build --platform --release --target ${{ matrix.target }} --zig
-
-      - name: Require native artifact
-        shell: bash
-        working-directory: packages/bindings
-        run: |
-          shopt -s nullglob
-          files=(*.node)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No .node artifact for ${{ matrix.target }}." >&2
-            exit 1
-          fi
-
-      - name: Upload bindings artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bindings-${{ matrix.target }}
-          path: packages/bindings/*.node
-          if-no-files-found: error
-
-  # main push: full release matrix (macOS + Windows)
-  build-host:
-    name: Build - ${{ matrix.target }}
-    needs: changes
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            build-args: --target x86_64-apple-darwin
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            build-args: --target aarch64-apple-darwin
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            build-args: --target x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/native-binding-cache
-        with:
-          target: ${{ matrix.target }}
-          profile: release
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache Cargo (registry + target)
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-native-release
-          cache-targets: ${{ matrix.target }}
-          workspaces: .
-
-      - name: Cache napi-rs Zig toolchain (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/napi-rs-nodejs
-          key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: napi-zig-${{ runner.os }}-
-
-      - name: Install bindings dependencies
-        working-directory: packages/bindings
-        run: npm ci --ignore-scripts
-
-      - name: Build native addon
-        working-directory: packages/bindings
-        run: npx napi build --platform --release ${{ matrix.build-args }}
-
-      - name: Require native artifact
-        shell: bash
-        working-directory: packages/bindings
-        run: |
-          shopt -s nullglob
-          files=(*.node)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No .node artifact for ${{ matrix.target }}." >&2
-            exit 1
-          fi
-
-      - name: Upload bindings artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bindings-${{ matrix.target }}
-          path: packages/bindings/*.node
-          if-no-files-found: error
+          target: x86_64-unknown-linux-gnu
+          profile: debug
+          cache_prefix: v1-pr-debug
+          platform: 'false'
+          zig: 'false'
+          skip_build_on_cache_hit: 'true'
+          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
 
   test:
     name: Test
-    needs: [changes, quality, build-pr, build-linux, build-host]
+    needs: [changes, quality, build]
     if: |
       always() &&
       !cancelled() &&
-      (
-        (github.event_name == 'pull_request' &&
-          (
-            needs.changes.outputs.native == 'true' ||
-            needs.changes.outputs.typescript == 'true' ||
-            needs.changes.outputs.workflows == 'true'
-          ) &&
-          (needs.quality.result == 'success') &&
-          (needs.build-pr.result == 'success') &&
-          (needs.build-linux.result == 'skipped') &&
-          (needs.build-host.result == 'skipped')) ||
-        (github.event_name == 'push' &&
-          github.ref == 'refs/heads/main' &&
-          needs.build-linux.result == 'success' &&
-          needs.build-host.result == 'success')
-      )
-    runs-on: ubuntu-latest
-    services:
-      docker:
-        image: docker:24-dind
-        options: >-
-          --privileged
-          --health-cmd "docker info"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DOCKER_HOST: tcp://docker:2376
-      DOCKER_TLS_CERTDIR: /certs
-      DOCKER_TLS_VERIFY: 1
-      DOCKER_CERT_PATH: /certs/client
-      TURN_AVAILABLE: "1"
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GHCR (pull CI image)
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download native binding
-        uses: actions/download-artifact@v4
-        with:
-          name: bindings-x86_64-unknown-linux-gnu
-          path: packages/bindings/
-
-      - name: Run integration tests (DinD + coturn)
-        shell: bash
-        env:
-          TEST_SCRIPT: ${{ github.event_name == 'pull_request' && 'scripts/ci/run-pr-integration.sh' || 'scripts/ci/run-pr-tests-full.sh' }}
-        run: |
-          set -euo pipefail
-          docker run -d --name coturn \
-            -v "${GITHUB_WORKSPACE}/docker/coturn/ci-turnserver.conf:/etc/coturn/turnserver.conf:ro" \
-            coturn/coturn:latest \
-            turnserver -n -c /etc/coturn/turnserver.conf
-          docker run --rm --network container:coturn \
-            -v "${GITHUB_WORKSPACE}:/workspace" \
-            -w /workspace \
-            -e TURN_AVAILABLE=1 \
-            -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -e OPUS_STATIC=1 \
-            "${{ env.CI_IMAGE }}" \
-            bash "$TEST_SCRIPT"
+      needs.quality.result == 'success' &&
+      needs.build.result == 'success'
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      test_script: scripts/ci/run-pr-integration.sh
+    secrets: inherit

@@ -1,0 +1,47 @@
+name: Reusable — integration tests (ci-build + coturn)
+
+on:
+  workflow_call:
+    inputs:
+      test_script:
+        description: Bash script path under repo root
+        type: string
+        required: true
+      binding_target:
+        description: Linux-gnu artifact target triple
+        type: string
+        default: x86_64-unknown-linux-gnu
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    services:
+      coturn:
+        image: ghcr.io/${{ github.repository }}/ci-coturn:latest
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        options: >-
+          --health-cmd "bash -c 'echo > /dev/udp/127.0.0.1/3478'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 10s
+    env:
+      TURN_AVAILABLE: "1"
+      TURN_URL: turn:coturn:3478
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      OPUS_STATIC: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ci-run-integration-tests
+        with:
+          test_script: ${{ inputs.test_script }}
+          binding_target: ${{ inputs.binding_target }}

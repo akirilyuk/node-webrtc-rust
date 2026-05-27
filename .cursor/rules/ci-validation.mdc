@@ -26,7 +26,7 @@ Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github
 ## Rules
 
 1. **Shared scripts first** — put logic in `scripts/ci/*.sh` and call it from workflows; avoid duplicating steps in YAML.
-2. **Cross-package typecheck** — PR quality uses `scripts/ci/tsconfig.typecheck.json` (workspace path aliases). Do not run per-workspace `npm run typecheck` in CI before packages are built; examples need `build:ts` first.
+2. **Cross-package typecheck** — PR quality uses `scripts/ci/tsconfig.typecheck.json` on `ubuntu-latest` with `actions/setup-node` (not `ci-build`; that image is for native compile and integration tests only).
 3. **Validate locally before push**:
    ```bash
    bash scripts/ci/run-pr-quality.sh

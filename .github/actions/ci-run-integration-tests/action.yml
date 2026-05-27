@@ -26,12 +26,14 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        docker run -d --name coturn coturn/coturn:latest \
+        coturn_name="coturn-${GITHUB_RUN_ID:-local}"
+        docker rm -f coturn "$coturn_name" 2>/dev/null || true
+        docker run -d --name "$coturn_name" coturn/coturn:latest \
           turnserver -n -L 0.0.0.0:3478 -a \
           -u testuser:testpass -r test.local \
           --min-port 49152 --max-port 65535 \
           --no-tls --no-dtls --log-file=stdout -v
-        docker run --rm --network container:coturn \
+        docker run --rm --network "container:${coturn_name}" \
           -v "${GITHUB_WORKSPACE}:/workspace" \
           -w /workspace \
           -e TURN_AVAILABLE=1 \
@@ -39,6 +41,11 @@ runs:
           -e OPUS_STATIC=1 \
           "${{ inputs.ci_image }}" \
           bash "${{ inputs.test_script }}"
+
+    - name: Remove coturn sidecar
+      if: always()
+      shell: bash
+      run: docker rm -f "coturn-${GITHUB_RUN_ID:-local}" coturn 2>/dev/null || true
 
     - uses: ./.github/actions/ci-restore-workspace-ownership
       if: always()

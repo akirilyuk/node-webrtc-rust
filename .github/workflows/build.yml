@@ -123,11 +123,13 @@ jobs:
 
   build-ts:
     name: Build TypeScript
-    needs: [changes, quality]
+    needs: [changes, quality, compile-native]
     if: |
       always() &&
       !cancelled() &&
       needs.quality.result == 'success' &&
+      (needs.compile-native.result == 'success' || needs.compile-native.result == 'skipped') &&
+      needs.compile-native.result != 'failure' &&
       (
         needs.changes.outputs.typescript == 'true' ||
         needs.changes.outputs.workflows == 'true'

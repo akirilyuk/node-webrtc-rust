@@ -21,7 +21,7 @@ alwaysApply: false
 | Build TypeScript | `npm run build:ts` — **only** when `typescript` or `workflows` paths change |
 | Test | restores native + TS dist caches; runs cargo + npm tests (fallback compile/build on cache miss) |
 
-`compile-native` and `build-ts` run **in parallel** after quality passes. TS-only PRs skip native compile; Rust-only PRs skip TS build. Vitest imports `src/` directly, but `build:ts` still validates publishable output when TS changes.
+`compile-native` and `build-ts` run **in parallel** after quality passes on GitHub-hosted runners; on **self-hosted** runners `build-ts` waits for `compile-native` because both share one workspace directory. TS-only PRs skip native compile; Rust-only PRs skip TS build. Vitest imports `src/` directly, but `build:ts` still validates publishable output when TS changes.
 
 Runs on **pull_request → `main`** only. Linux x64 jobs use **`self-hosted`**; macOS/Windows stay on GitHub-hosted runners.
 

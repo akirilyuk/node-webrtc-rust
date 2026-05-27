@@ -10,6 +10,16 @@ All plans (implementation plans, architecture plans, feature plans, etc.) must b
 - Use descriptive filenames with date prefix, e.g. `2026-05-26-initial-architecture.md`
 - Do not store plans elsewhere in the repo
 
+## Follow-ups (`development/followups/`)
+
+Deferred work discovered during development (not blocking the current task) goes in `development/followups/`:
+
+- One dated markdown file per topic: `YYYY-MM-DD-short-slug.md`
+- Include context, problem, proposed fix, and acceptance criteria
+- Index open items in `development/followups/README.md`
+
+Both `development/plans/` and `development/followups/` are git-ignored — local tracking only.
+
 ## After Plan Mode execution
 
 When a plan is confirmed and executed, copy the final plan file into `development/plans/` with a date-prefixed descriptive filename. This ensures the development folder always contains the full history of decisions and executed plans, even though `development/` is git-ignored and plans in `.cursor/plans/` may be transient.

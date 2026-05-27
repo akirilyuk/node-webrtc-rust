@@ -5,6 +5,10 @@ inputs:
   target:
     description: Rust triple (e.g. x86_64-unknown-linux-gnu)
     required: true
+  profile:
+    description: Cargo/napi profile (debug or release)
+    required: false
+    default: release
 
 outputs:
   cache-hit:
@@ -19,6 +23,6 @@ runs:
       uses: actions/cache@v4
       with:
         path: packages/bindings/*.node
-        key: native-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/src/**', 'packages/bindings/Cargo.toml', 'packages/bindings/build.rs', 'packages/bindings/package.json', 'packages/bindings/src/**') }}
+        key: native-${{ inputs.profile }}-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/src/**', 'packages/bindings/Cargo.toml', 'packages/bindings/build.rs', 'packages/bindings/package.json', 'packages/bindings/src/**') }}
         restore-keys: |
-          native-${{ inputs.target }}-
+          native-${{ inputs.profile }}-${{ inputs.target }}-

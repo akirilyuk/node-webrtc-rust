@@ -10,6 +10,7 @@ on:
 permissions:
   contents: write
   packages: read
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -146,26 +147,32 @@ jobs:
     name: Test
     needs: [build-linux, build-host]
     runs-on: ubuntu-latest
+    services:
+      docker:
+        image: docker:24-dind
+        options: >-
+          --privileged
+          --health-cmd "docker info"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     container:
-      image: ghcr.io/${{ github.repository }}/ci-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
+      image: docker:24-cli
     env:
-      TURN_AVAILABLE: '1'
+      DOCKER_HOST: tcp://docker:2376
+      DOCKER_TLS_CERTDIR: /certs
+      CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+      TURN_AVAILABLE: "1"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start coturn for TURN tests
-        shell: bash
-        run: |
-          docker run -d --rm --name coturn-sidecar \
-            --network "container:$(hostname)" \
-            -v "${GITHUB_WORKSPACE}/docker/coturn/ci-turnserver.conf:/etc/coturn/turnserver.conf:ro" \
-            coturn/coturn:latest \
-            turnserver -n -c /etc/coturn/turnserver.conf
+      - name: Log in to GHCR (pull CI image)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download native binding
         uses: actions/download-artifact@v4
@@ -173,22 +180,22 @@ jobs:
           name: bindings-x86_64-unknown-linux-gnu
           path: packages/bindings/
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-release-test
-          workspaces: .
-
-      - run: npm ci
-      - run: npm run format:check
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: |
-          cargo test -p node-webrtc-rust-core
-          cargo test -p node-webrtc-rust-mixer
-          cargo test -p node-webrtc-rust-conference
-      - run: npm run build:ts
-      - run: npm test
+      - name: Run tests in CI image with coturn (DinD)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name coturn \
+            -v "${GITHUB_WORKSPACE}/docker/coturn/ci-turnserver.conf:/etc/coturn/turnserver.conf:ro" \
+            coturn/coturn:latest \
+            turnserver -n -c /etc/coturn/turnserver.conf
+          docker run --rm --network container:coturn \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -w /workspace \
+            -e TURN_AVAILABLE=1 \
+            -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -e OPUS_STATIC=1 \
+            "${CI_IMAGE}" \
+            bash scripts/ci/run-pr-tests-full.sh
 
   publish:
     name: Publish release
@@ -276,6 +283,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
           BINDINGS="packages/bindings"
 
           publish_dir() {
@@ -294,29 +302,47 @@ jobs:
                 exit 1
               fi
             fi
-            echo "  publishing $label"
+            echo "  publishing $label@${VERSION}"
             (cd "$dir" && npm publish --access public "${extra[@]}")
+          }
+
+          verify_published() {
+            local pkg="$1"
+            local published
+            published="$(npm view "${pkg}@${VERSION}" version 2>/dev/null || true)"
+            if [[ "$published" != "$VERSION" ]]; then
+              echo "Not on npm registry after publish: ${pkg}@${VERSION}" >&2
+              exit 1
+            fi
           }
 
           echo "==> Platform binding packages"
           for dir in "${BINDINGS}"/npm/*/; do
-            publish_dir "$dir" "$(node -p "require('./${dir}package.json').name")"
+            pkg="$(node -p "require('./${dir}package.json').name")"
+            publish_dir "$dir" "$pkg"
+            verify_published "$pkg"
           done
 
           echo "==> @node-webrtc-rust/bindings"
           publish_dir "$BINDINGS/" "@node-webrtc-rust/bindings" --ignore-scripts
+          verify_published "@node-webrtc-rust/bindings"
 
           echo "==> @node-webrtc-rust/signaling"
           publish_dir "packages/signaling/" "@node-webrtc-rust/signaling" --ignore-scripts --omit=dev
+          verify_published "@node-webrtc-rust/signaling"
 
           echo "==> @node-webrtc-rust/sdk"
           publish_dir "packages/sdk/" "@node-webrtc-rust/sdk" --ignore-scripts
+          verify_published "@node-webrtc-rust/sdk"
+
+          echo "==> Published @node-webrtc-rust/*@${VERSION} to npm"
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           name: Release ${{ steps.version.outputs.version }}
           generate_release_notes: true
         env:

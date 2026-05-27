@@ -10,58 +10,45 @@ alwaysApply: false
 
 ## Build & Test (`.github/workflows/build.yml`)
 
-| Event | Native builds (`build-linux`, `build-host`) | Checks (`test`, publish dry-run) |
+| Event | Native builds | Tests |
 |---|---|---|
-| **PR → `main`** | yes (cached / path-filtered) | yes |
-| **Push → `main`** | yes | no |
-| Push / PR on other branches | no | no |
+| **PR → `main`** | quality → debug compile → test (sequential) | DinD + coturn |
+| **Push → `main`** | full release matrix, then test | yes |
+| Other branches | no | no |
 
-PR workflows do **not** include a release publish job.
+PR pipeline order: **typecheck → lint → debug compile → integration tests**. Quality uses workspace `npm ci` only (no registry packages, no `.node`).
+
+Release tags run **real `npm publish`** (not dry-run); version is taken from the tag (`release/x.y.z` → `x.y.z`).
 
 ## Release (`.github/workflows/release.yml`)
 
-Runs **only** on `release/*` tag push (typically from **`main`** after merge): full matrix build → test → npm publish → GitHub Release.
+Runs **only** on `release/*` tag push: full **release** matrix build → test (DinD) → npm publish → GitHub Release.
 
 ```bash
 git checkout main && git pull
 git tag release/0.1.0 && git push origin release/0.1.0
 ```
 
-Local alternatives: `scripts/release-local.sh` (host platform) and `scripts/release-publish.sh` (macOS, all buildable targets). See `scripts/RELEASE.md`.
+Local alternatives: `scripts/release-local.sh` and `scripts/release-publish.sh`. See `scripts/RELEASE.md`.
 
 ## CI Docker image (`ci` branch)
 
-Rebuild and push `ghcr.io/.../ci-build:latest` when `docker/ci/Dockerfile` or the ci-image workflow changes:
+Rebuild `ghcr.io/.../ci-build:latest` when `docker/ci/Dockerfile` changes — push to **`ci`** branch or **`workflow_dispatch`** on CI Docker image workflow.
 
-- Push to the **`ci`** branch
-- Or **`workflow_dispatch`** on CI Docker image workflow
+## Caching (`.github/workflows/build.yml`)
 
-PR and release workflows pull `:latest`; they never rebuild the image in those workflows.
+- **`changes` job** (`dorny/paths-filter`): `native`, `typescript`, `workflows`.
+- **PR `build-pr`**: debug `.node` cache (`profile: debug`); skip compile when native unchanged and cache hits.
+- **Main `build-linux` / `build-host`**: release `.node` cache (`profile: release`); always compile on main push.
+- **`Swatinem/rust-cache`**: separate prefix keys for PR debug vs main release.
+- **Test job**: `docker:24-cli` + `docker:24-dind` service; tests run in `ci-build` with coturn sharing network namespace.
 
-Do **not** add `push` triggers for feature branches or `pull_request` targets other than `main`. Feature-branch commits stay off CI until there is a PR to `main`.
-
-## Caching and skip logic (`.github/workflows/build.yml`)
-
-- **`changes` job** (`dorny/paths-filter`): classifies diffs as `native`, `typescript`, or `workflows`.
-- **Skip entire build matrix** when only docs/markdown change (no `native` / `typescript` / `workflows`).
-- **Skip `napi build` step** when native sources unchanged *and* per-target `.node` cache hits (keyed by `Cargo.lock` + crate/bindings sources).
-- **`Swatinem/rust-cache`**: Cargo registry + `target/` per triple.
-- **`actions/cache`**: npm, napi-rs Zig toolchain, and native `.node` artifacts (`.github/actions/native-binding-cache`).
-- **`test` job** runs only affected checks (e.g. skip `cargo test` if only TypeScript changed).
-
-## Local validation before pushing / opening PRs
-
-Mirror CI native Linux builds and PR checks without spending Actions minutes:
+## Local validation
 
 ```bash
-# Linux cross-target native builds (same as build-linux jobs)
-npm run ci:verify:linux
-
-# PR test job (format, lint, typecheck, cargo test, npm test) inside CI image
-npm run ci:verify:checks:docker
-
-# Both
-npm run ci:verify
+npm run ci:verify:linux          # release cross-builds (matches main push)
+npm run ci:verify:checks:docker  # PR test checks
+npm run ci:verify                # both
 ```
 
-After changing `docker/ci/Dockerfile`, rebuild the image (`npm run ci:docker:build`) then push to the `ci` branch so `ghcr.io/.../ci-build:latest` picks up cmake and other deps before merging workflow changes that rely on them.
+After changing `docker/ci/Dockerfile`, rebuild (`npm run ci:docker:build`) and push to `ci` branch.

@@ -152,26 +152,20 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    services:
-      coturn:
-        image: coturn/coturn:latest
-        ports:
-          - 3478:3478/udp
-          - 3478:3478/tcp
-        options: >-
-          --entrypoint turnserver
-          turnserver -n --log-file=stdout
-          --min-port=49152 --max-port=65535
-          --realm=test.local
-          --user=testuser:testpass
-          --no-tls --no-dtls
-          --listening-port=3478
-
     env:
       TURN_AVAILABLE: '1'
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start coturn for TURN tests
+        shell: bash
+        run: |
+          docker run -d --rm --name coturn-sidecar \
+            --network "container:$(hostname)" \
+            -v "${GITHUB_WORKSPACE}/docker/coturn/ci-turnserver.conf:/etc/coturn/turnserver.conf:ro" \
+            coturn/coturn:latest \
+            turnserver -n -c /etc/coturn/turnserver.conf
 
       - name: Download native binding
         uses: actions/download-artifact@v4

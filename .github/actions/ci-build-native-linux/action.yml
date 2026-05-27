@@ -33,6 +33,14 @@ inputs:
     description: Upload bindings artifact
     required: false
     default: 'true'
+  upload_target_artifact:
+    description: Upload target/ artifact for the test job (GHA cache misses across workflow_call)
+    required: false
+    default: 'true'
+  target_artifact_name:
+    description: Artifact name for target/ (defaults to cargo-target-{cache_prefix})
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -124,6 +132,15 @@ runs:
       with:
         path: target
         key: ${{ inputs.cache_prefix }}-target-Linux-x64-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+
+    - name: Upload Cargo target/ artifact
+      if: inputs.upload_target_artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.target_artifact_name || format('cargo-target-{0}', inputs.cache_prefix) }}
+        path: target/
+        if-no-files-found: error
+        retention-days: 1
 
     - name: Upload bindings artifact
       if: inputs.upload_artifact == 'true'

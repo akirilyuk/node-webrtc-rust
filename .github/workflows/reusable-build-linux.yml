@@ -47,3 +47,4 @@ jobs:
           zig: 'true'
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
+          upload_target_artifact: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}

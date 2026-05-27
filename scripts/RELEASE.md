@@ -40,6 +40,8 @@ Never commit tokens. `release-local.sh` uses a temp `.npmrc_release` file (git-i
 
 Linux build and test jobs use `ghcr.io/<owner>/node-webrtc-rust/ci-build:latest`.
 
+Pipeline details: [`scripts/ci/README.md`](ci/README.md).
+
 Rebuild the image when `docker/ci/Dockerfile` changes:
 
 1. Merge Dockerfile changes to the **`ci`** branch (or push directly to `ci`).

@@ -271,7 +271,9 @@ TURN_AVAILABLE=1 npm test --workspace=@node-webrtc-rust/sdk
 docker compose -f docker-compose.test.yml down
 ```
 
-CI builds all platform targets using GitHub Actions. Linux builds and tests use a prebuilt container image (`ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest`) with Node, Rust, Zig, and CMake — rebuild it by pushing to the `ci` branch (see [`docker/ci/Dockerfile`](docker/ci/Dockerfile) and [`.github/workflows/ci-image.yml`](.github/workflows/ci-image.yml)). macOS and Windows jobs use native runners.
+CI builds all platform targets using GitHub Actions. See **[`scripts/ci/README.md`](scripts/ci/README.md)** for pipeline diagrams, path filters, and caching.
+
+Linux builds and tests use a prebuilt container image (`ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest`) with Node, Rust, Zig, and CMake — rebuild it by pushing to the `ci` branch (see [`docker/ci/Dockerfile`](docker/ci/Dockerfile) and [`.github/workflows/ci-image.yml`](.github/workflows/ci-image.yml)). macOS and Windows jobs use native runners.
 
 Before opening a PR, mirror CI locally to save Actions minutes:
 

@@ -9,6 +9,8 @@ alwaysApply: false
 
 # CI Workflow Triggers
 
+> **Full docs:** [`scripts/ci/README.md`](../../scripts/ci/README.md) — update that file when changing CI (see [`ci-documentation.mdc`](ci-documentation.mdc)).
+
 ## Build & Test — PR (`.github/workflows/build.yml`)
 
 | Job | Purpose |

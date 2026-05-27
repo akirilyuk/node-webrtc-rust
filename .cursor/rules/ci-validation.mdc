@@ -23,7 +23,7 @@ When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix on
 | Release build + test | `release.yml` | `reusable-build-*` → `run-pr-tests-full.sh` |
 | Local mirror | developer | `scripts/ci/verify-checks.sh`, `npm run ci:verify*` |
 
-Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github/actions/ci-*` — update those when changing compile or test steps.
+Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github/actions/ci-*` — update those and **[`scripts/ci/README.md`](../../scripts/ci/README.md)** when changing compile or test steps.
 
 ## Rules
 

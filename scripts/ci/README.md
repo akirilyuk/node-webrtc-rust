@@ -104,10 +104,9 @@ Before tests, the test job receives the native binding from the **same workflow 
 1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact uploaded by `compile-native` (PR) or `build-linux` (main/release). Fails the job when compile ran but the artifact is missing.
 2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) only when artifact download is skipped or failed (e.g. TS-only PR).
 3. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
-4. **Cargo target/:** compile uploads `cargo-target-{prefix}` artifact for the test job (GHA cache is not visible across `workflow_call` in the same run). Test downloads it first; [`ci-restore-cargo-target`](../../.github/actions/ci-restore-cargo-target) is fallback when compile was skipped. Compile may restore a prior `target/` cache entry for cross-run warm starts (restore-only — keys are immutable once saved).
-5. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist).
+4. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist).
 
-Jobs do not share a workspace on self-hosted runners (each job checks out fresh). Compile uploads `target/` as an artifact; the test job downloads it on the host before mounting the workspace into Docker (no `rustc` on the runner host).
+Jobs do not share a workspace on self-hosted runners (each job checks out fresh). Only the `.node` binding is passed compile → test via artifact (~48 MB). `cargo test` runs inside the ci-build container and compiles Rust test deps there (registry cached via prior compile job on the same workspace is not shared across jobs).
 
 **Last resort inside the test script** (no artifact and no cache):
 
@@ -198,7 +197,7 @@ After changing `docker/ci/Dockerfile`, rebuild and push to the `ci` branch befor
 | Native binding | `Cargo.lock`, crates, bindings sources | `packages/bindings/*.node` | compile-native, test |
 | TS dist | sdk/signaling sources + tsconfigs | `packages/*/dist` | build-ts, test |
 | npm | `package-lock.json` | `node_modules` | setup-node jobs |
-| Rust target (Swatinem + restore) | `Cargo.lock`, workspace | `target/` | compile/build-linux save; test restores |
+| Rust target (restore-only) | `Cargo.lock`, workspace | `target/` | compile/build-linux warm start only |
 
 PR native cache profile: **debug**. Main/release: **release**.
 
@@ -209,7 +208,6 @@ PR native cache profile: **debug**. Main/release: **release**.
 | Action | Purpose |
 |--------|---------|
 | [`native-binding-cache`](../../.github/actions/native-binding-cache) | Per-target `.node` restore/save |
-| [`ci-restore-cargo-target`](../../.github/actions/ci-restore-cargo-target) | Restore `target/` before Docker tests |
 | [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) | Cache, npm, napi build, upload artifact |
 | [`ci-build-native-host`](../../.github/actions/ci-build-native-host) | Node + Rust setup, napi build, upload |
 | [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) | sdk/signaling `dist/` cache |

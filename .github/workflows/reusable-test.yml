@@ -19,18 +19,6 @@ on:
         description: Fail when the binding artifact is missing (compile/build-linux ran)
         type: boolean
         default: false
-      cargo_target_artifact:
-        description: Uploaded target/ artifact from compile/build-linux (skip download when empty)
-        type: string
-        default: cargo-target-v1-pr-debug
-      require_cargo_target_artifact:
-        description: Fail when the cargo target artifact is missing (compile/build-linux ran)
-        type: boolean
-        default: false
-      cargo_cache_prefix:
-        description: Cargo target cache prefix (must match compile/build-linux rust-cache)
-        type: string
-        default: v1-pr-debug
 
 jobs:
   test:
@@ -77,31 +65,6 @@ jobs:
             exit 1
           fi
           echo "Native binding ready: $(basename "${files[0]}")"
-
-      - name: Download Cargo target/ artifact
-        id: cargo-target-artifact
-        if: inputs.cargo_target_artifact != ''
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.cargo_target_artifact }}
-        continue-on-error: ${{ !inputs.require_cargo_target_artifact }}
-
-      # GHA cache restore misses across workflow_call even when compile saved in the same run.
-      - uses: ./.github/actions/ci-restore-cargo-target
-        if: inputs.cargo_target_artifact == '' || steps.cargo-target-artifact.outcome != 'success'
-        with:
-          cache_prefix: ${{ inputs.cargo_cache_prefix }}
-
-      - name: Verify Cargo target/ in workspace
-        run: |
-          if [[ -d target && -n "$(ls -A target 2>/dev/null)" ]]; then
-            echo "Cargo target/ ready ($(du -sh target | cut -f1))"
-          elif [[ "${{ inputs.require_cargo_target_artifact }}" == "true" ]]; then
-            echo "No target/ after artifact/cache restore." >&2
-            exit 1
-          else
-            echo "Cargo target/ missing — cargo test will compile from scratch"
-          fi
 
       - uses: ./.github/actions/ci-cache-ts-dist
 

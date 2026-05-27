@@ -33,14 +33,6 @@ inputs:
     description: Upload bindings artifact
     required: false
     default: 'true'
-  upload_target_artifact:
-    description: Upload target/ artifact for the test job (GHA cache misses across workflow_call)
-    required: false
-    default: 'true'
-  target_artifact_name:
-    description: Artifact name for target/ (defaults to cargo-target-{cache_prefix})
-    required: false
-    default: ''
 
 runs:
   using: composite
@@ -116,26 +108,6 @@ runs:
           echo "No .node artifact for ${{ inputs.target }}." >&2
           exit 1
         fi
-
-    # Swatinem only caches the registry; target/ uses the dedicated cache above.
-    - name: Warm Cargo target/ for tests
-      shell: bash
-      run: |
-        if [[ -d target && -n "$(ls -A target 2>/dev/null)" ]]; then
-          echo "Cargo target/ already populated"
-          exit 0
-        fi
-        echo "Building workspace test deps for cross-job target/ cache"
-        cargo build --workspace --tests
-
-    - name: Upload Cargo target/ artifact
-      if: inputs.upload_target_artifact == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ inputs.target_artifact_name || format('cargo-target-{0}', inputs.cache_prefix) }}
-        path: target/
-        if-no-files-found: error
-        retention-days: 1
 
     - name: Upload bindings artifact
       if: inputs.upload_artifact == 'true'

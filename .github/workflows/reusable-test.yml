@@ -1,0 +1,75 @@
+name: Reusable — integration tests (host Docker + coturn)
+
+on:
+  workflow_call:
+    inputs:
+      test_script:
+        description: Bash script path under repo root
+        type: string
+        required: true
+      binding_artifact:
+        description: Uploaded .node artifact from compile/build-linux (skip download when empty)
+        type: string
+        default: bindings-x86_64-unknown-linux-gnu
+      binding_profile:
+        description: native-binding-cache profile when artifact download is skipped
+        type: string
+        default: debug
+      require_binding_artifact:
+        description: Fail when the binding artifact is missing (compile/build-linux ran)
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: self-hosted
+    env:
+      TURN_AVAILABLE: "1"
+      CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Download native binding artifact
+        id: binding-artifact
+        if: inputs.binding_artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.binding_artifact }}
+          path: packages/bindings
+        continue-on-error: ${{ !inputs.require_binding_artifact }}
+
+      # GHA cache restore often misses in workflow_call jobs even after a hit in the
+      # caller (compile-native). Artifact download is the reliable same-run path.
+      - uses: ./.github/actions/native-binding-cache
+        if: steps.binding-artifact.outcome != 'success'
+        with:
+          target: x86_64-unknown-linux-gnu
+          profile: ${{ inputs.binding_profile }}
+
+      - name: Verify native binding in workspace
+        run: |
+          shopt -s nullglob
+          files=(packages/bindings/*.node)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No .node in packages/bindings after artifact/cache restore." >&2
+            exit 1
+          fi
+          echo "Native binding ready: $(basename "${files[0]}")"
+
+      - uses: ./.github/actions/ci-cache-ts-dist
+
+      - uses: ./.github/actions/ci-run-integration-tests
+        with:
+          test_script: ${{ inputs.test_script }}
+          ci_image: ${{ env.CI_IMAGE }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}

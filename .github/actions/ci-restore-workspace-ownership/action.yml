@@ -1,0 +1,16 @@
+name: Restore workspace ownership
+description: Reset root-owned files left by container jobs using Docker (no sudo)
+
+runs:
+  using: composite
+  steps:
+    - name: Restore workspace ownership
+      shell: bash
+      run: |
+        target="${RUNNER_WORKSPACE:-${GITHUB_WORKSPACE:-}}"
+        if [[ -n "$target" && -d "$target" ]]; then
+          docker run --rm \
+            -v "${target}:${target}" \
+            alpine:3.20 \
+            chown -R "$(id -u):$(id -g)" "${target}" || true
+        fi

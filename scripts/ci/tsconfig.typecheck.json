@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "CommonJS",
+    "lib": ["ES2022"],
+    "baseUrl": "../..",
+    "paths": {
+      "@node-webrtc-rust/bindings": ["packages/bindings/index.d.ts"],
+      "@node-webrtc-rust/sdk": ["packages/sdk/src/index.ts"],
+      "@node-webrtc-rust/sdk/*": ["packages/sdk/src/*"],
+      "@node-webrtc-rust/signaling": ["packages/signaling/src/index.ts"]
+    }
+  },
+  "include": [
+    "../../packages/sdk/src/**/*.ts",
+    "../../packages/signaling/src/**/*.ts"
+  ],
+  "exclude": ["../../packages/**/tests/**", "../../packages/**/node_modules/**"]
+}

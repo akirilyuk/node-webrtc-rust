@@ -1,0 +1,77 @@
+name: Build native addon (macOS / Windows)
+description: Setup toolchain, compile, verify, and optionally upload a host .node binding
+
+inputs:
+  target:
+    description: Rust triple (e.g. x86_64-apple-darwin)
+    required: true
+  build_args:
+    description: Extra napi build arguments (e.g. --target x86_64-apple-darwin)
+    required: true
+  cache_prefix:
+    description: Prefix for Swatinem/rust-cache
+    required: false
+    default: v1-native-release
+  upload_artifact:
+    description: Upload bindings artifact
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: package-lock.json
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.target }}
+
+    - name: Cache Cargo (registry + target)
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: ${{ inputs.cache_prefix }}
+        cache-targets: ${{ inputs.target }}
+        workspaces: .
+
+    - name: Cache napi-rs Zig toolchain (macOS)
+      if: runner.os == 'macOS'
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/napi-rs-nodejs
+        key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        restore-keys: napi-zig-${{ runner.os }}-
+
+    - name: Install bindings dependencies
+      shell: bash
+      working-directory: packages/bindings
+      run: npm ci --ignore-scripts
+
+    - name: Build native addon
+      shell: bash
+      working-directory: packages/bindings
+      run: npx napi build --platform --release ${{ inputs.build_args }}
+
+    - name: Require native artifact
+      shell: bash
+      working-directory: packages/bindings
+      run: |
+        shopt -s nullglob
+        files=(*.node)
+        if [ ${#files[@]} -eq 0 ]; then
+          echo "No .node artifact for ${{ inputs.target }}." >&2
+          exit 1
+        fi
+
+    - name: Upload bindings artifact
+      if: inputs.upload_artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: bindings-${{ inputs.target }}
+        path: packages/bindings/*.node
+        if-no-files-found: error

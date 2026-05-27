@@ -1,0 +1,53 @@
+name: Run integration tests (host Docker + coturn/coturn)
+description: Start public coturn sidecar on the runner Docker daemon and run tests in ci-build
+
+inputs:
+  test_script:
+    description: Bash script path under repo root
+    required: true
+  ci_image:
+    description: Prebuilt CI image (Node + Rust + Zig)
+    required: true
+  github_token:
+    description: GitHub token for GHCR login
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Log in to GHCR (pull CI image)
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github_token }}
+
+    - name: Run integration tests (coturn/coturn + ci-build)
+      shell: bash
+      run: |
+        set -euo pipefail
+        coturn_name="coturn-${GITHUB_RUN_ID:-local}"
+        docker rm -f coturn "$coturn_name" 2>/dev/null || true
+        docker run -d --name "$coturn_name" coturn/coturn:latest \
+          turnserver -n -L 0.0.0.0:3478 -a \
+          -u testuser:testpass -r test.local \
+          --min-port 49152 --max-port 65535 \
+          --no-tls --no-dtls --log-file=stdout -v \
+          --allow-loopback-peers \
+          --external-ip=127.0.0.1/127.0.0.1
+        docker run --rm --network "container:${coturn_name}" \
+          -v "${GITHUB_WORKSPACE}:/workspace" \
+          -w /workspace \
+          -e TURN_AVAILABLE=1 \
+          -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+          -e OPUS_STATIC=1 \
+          "${{ inputs.ci_image }}" \
+          bash "${{ inputs.test_script }}"
+
+    - name: Remove coturn sidecar
+      if: always()
+      shell: bash
+      run: docker rm -f "coturn-${GITHUB_RUN_ID:-local}" coturn 2>/dev/null || true
+
+    - uses: ./.github/actions/ci-restore-workspace-ownership
+      if: always()

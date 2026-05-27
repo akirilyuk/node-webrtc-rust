@@ -4,11 +4,12 @@ import { RTCPeerConnection } from '../src'
 import { waitForConnection, waitForMessage, waitForOpen } from './helpers'
 
 const turnAvailable = process.env.TURN_AVAILABLE === '1'
+const turnHost = process.env.TURN_URL ?? 'turn:localhost:3478'
 
 const turnConfig = {
   iceServers: [
     {
-      urls: 'turn:localhost:3478',
+      urls: turnHost,
       username: 'testuser',
       credential: 'testpass',
     },

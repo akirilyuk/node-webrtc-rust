@@ -1,0 +1,49 @@
+---
+description: Run CI steps locally before commit and push
+globs:
+  - .github/workflows/**
+  - .github/actions/**
+  - scripts/ci/**
+  - docker/ci/**
+alwaysApply: false
+---
+
+# Validate CI Locally Before Push
+
+**Never commit and push CI changes until the affected steps pass locally.**
+
+See [`scripts/ci/README.md`](../../scripts/ci/README.md) for pipeline layout.
+
+## Minimum checks by change type
+
+| You changed | Run locally before push |
+|-------------|-------------------------|
+| Quality / typecheck / lint | `bash scripts/ci/run-pr-quality.sh` |
+| TS build (`build-ts`, `build-ts-workspace.sh`) | `bash scripts/ci/build-ts-workspace.sh` (from clean `dist/`) |
+| Native compile / bindings | `npm run build:debug:local` in `packages/bindings/` (or `npm run ci:verify:linux` for full matrix) |
+| Integration / test scripts | `bash scripts/ci/run-pr-integration.sh` (needs linux-gnu `.node`) |
+| Any CI script or workflow | At least `bash scripts/ci/run-pr-quality.sh`; prefer `npm run ci:verify:checks:docker` when Docker is available |
+| Release / main workflows | Also confirm reusable workflow callers still match (`build-main.yml`, `release.yml`) |
+
+## Full local mirrors
+
+```bash
+bash scripts/ci/run-pr-quality.sh          # PR quality job
+bash scripts/ci/build-ts-workspace.sh        # PR build-ts job
+npm run ci:verify:checks:docker              # quality + integration in ci-build image
+npm run ci:verify:linux                      # release Linux cross-builds
+npm run ci:verify                            # both
+```
+
+## Workflow
+
+1. Make CI change
+2. Run the matching local command(s) above — fix failures **before** commit
+3. Update [`scripts/ci/README.md`](../../scripts/ci/README.md) if behavior changed
+4. Commit → ask user if push confirmation is required → push → watch GitHub Actions
+
+## Do not push when
+
+- Local script exits non-zero
+- You only fixed one pipeline without checking callers (see `ci-validation.mdc`)
+- TS build was not tested from **clean** `packages/*/dist` (catches sdk↔signaling cycle bugs)

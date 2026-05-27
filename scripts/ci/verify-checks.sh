@@ -27,7 +27,7 @@ if [[ -n "$USE_DOCKER" ]]; then
 fi
 
 echo "==> npm ci"
-run "npm ci"
+run "bash scripts/ci/npm-ci-workspace.sh"
 
 echo "==> format:check"
 run "npm run format:check"
@@ -35,8 +35,8 @@ run "npm run format:check"
 echo "==> lint"
 run "npm run lint"
 
-echo "==> typecheck"
-run "npm run typecheck"
+echo "==> typecheck (sdk + signaling sources)"
+run "npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json"
 
 echo "==> cargo test (core, mixer, conference)"
 run "cargo test -p node-webrtc-rust-core"

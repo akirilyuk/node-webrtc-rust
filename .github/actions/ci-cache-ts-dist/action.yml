@@ -1,0 +1,27 @@
+name: Cache TypeScript dist
+description: Restore/save sdk and signaling dist/ keyed by TS sources
+
+inputs:
+  profile:
+    description: Cache namespace (e.g. pr or release)
+    required: false
+    default: pr
+
+outputs:
+  cache-hit:
+    description: Whether dist/ cache matched
+    value: ${{ steps.ts.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore TypeScript dist cache
+      id: ts
+      uses: actions/cache@v4
+      with:
+        path: |
+          packages/sdk/dist
+          packages/signaling/dist
+        key: ts-dist-${{ inputs.profile }}-${{ hashFiles('packages/sdk/src/**', 'packages/signaling/src/**', 'packages/sdk/tsconfig*.json', 'packages/signaling/tsconfig*.json', 'tsconfig.base.json') }}
+        restore-keys: |
+          ts-dist-${{ inputs.profile }}-

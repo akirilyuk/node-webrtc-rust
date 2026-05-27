@@ -1,0 +1,49 @@
+name: Reusable — build Linux native targets
+
+on:
+  workflow_call:
+    inputs:
+      cache_prefix:
+        description: Swatinem/rust-cache prefix key
+        type: string
+        default: v1-native-release
+      use_native_cache:
+        description: Restore/save per-target .node cache before compile
+        type: boolean
+        default: true
+
+jobs:
+  build-linux:
+    name: Build - ${{ matrix.target }}
+    runs-on: self-hosted
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/native-binding-cache
+        id: native-cache
+        if: inputs.use_native_cache
+        with:
+          target: ${{ matrix.target }}
+          profile: release
+
+      - uses: ./.github/actions/ci-build-native-linux
+        with:
+          target: ${{ matrix.target }}
+          profile: release
+          cache_prefix: ${{ inputs.cache_prefix }}
+          platform: 'true'
+          zig: 'true'
+          skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
+          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}

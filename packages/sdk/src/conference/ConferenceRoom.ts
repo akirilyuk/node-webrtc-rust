@@ -1,6 +1,6 @@
 import {
-  JsConferenceRoom,
   JsMuteScope,
+  type JsConferenceRoom,
   type JsIceServer,
   type JsMuteOptions,
   type JsParticipantInfo,

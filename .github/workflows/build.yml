@@ -3,10 +3,7 @@ name: Build & Test
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
 
-# paths-filter lists PR files via the API on pull_request events
 permissions:
   contents: read
   pull-requests: read
@@ -16,21 +13,27 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
-  # audiopus_sys builds bundled Opus via cmake; Opus 2.8 CMakeLists needs this on CMake 4.x
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-  # Cross-compiles: build.rs sees the host (linux gnu), not the target, so force static Opus.
-  # Zig link fails with "unable to find dynamic system library 'opus'" otherwise.
   OPUS_STATIC: "1"
 
 jobs:
   changes:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       native: ${{ steps.filter.outputs.native }}
       typescript: ${{ steps.filter.outputs.typescript }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -60,326 +63,129 @@ jobs:
               - '.github/**'
               - 'docker/ci/**'
 
-  build-linux:
-    name: Build - ${{ matrix.target }}
+  quality:
+    name: Typecheck & lint
     needs: changes
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       needs.changes.outputs.native == 'true' ||
       needs.changes.outputs.typescript == 'true' ||
       needs.changes.outputs.workflows == 'true'
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/${{ github.repository }}/ci-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-gnu
-
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/native-binding-cache
-        id: native-cache
-        with:
-          target: ${{ matrix.target }}
-
-      - name: Cache Cargo (registry + target)
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-native
-          cache-targets: ${{ matrix.target }}
-          workspaces: .
-
-      - name: Cache npm
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.npm
-            node_modules
-            packages/bindings/node_modules
-          key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
-          restore-keys: npm-
-
-      - name: Cache napi-rs Zig toolchain
-        uses: actions/cache@v4
-        with:
-          path: /github/home/.cache/napi-rs-nodejs
-          key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: napi-zig-${{ runner.os }}-
-
-      - name: Install bindings dependencies
-        working-directory: packages/bindings
-        run: npm ci --ignore-scripts
-
-      - name: Build native addon
-        if: |
-          needs.changes.outputs.native == 'true' ||
-          needs.changes.outputs.workflows == 'true' ||
-          steps.native-cache.outputs.cache-hit != 'true'
-        working-directory: packages/bindings
-        run: npx napi build --platform --release --target ${{ matrix.target }} --zig
-
-      - name: Require native artifact
-        working-directory: packages/bindings
+      - name: Prepare workspace
         run: |
-          shopt -s nullglob
-          files=(*.node)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No .node artifact for ${{ matrix.target }} (cache miss and build skipped)." >&2
-            exit 1
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
           fi
 
-      - name: Upload bindings artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bindings-${{ matrix.target }}
-          path: packages/bindings/*.node
-          if-no-files-found: error
-
-  build-host:
-    name: Build - ${{ matrix.target }}
-    needs: changes
-    if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      needs.changes.outputs.native == 'true' ||
-      needs.changes.outputs.typescript == 'true' ||
-      needs.changes.outputs.workflows == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            build-args: --target x86_64-apple-darwin
-
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            build-args: --target aarch64-apple-darwin
-
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            build-args: --target x86_64-pc-windows-msvc
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/native-binding-cache
-        id: native-cache
-        with:
-          target: ${{ matrix.target }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      - run: bash scripts/ci/run-pr-quality.sh
 
-      - name: Cache Cargo (registry + target)
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-native
-          cache-targets: ${{ matrix.target }}
-          workspaces: .
-
-      - name: Cache napi-rs Zig toolchain (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/napi-rs-nodejs
-          key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: napi-zig-${{ runner.os }}-
-
-      - name: Install bindings dependencies
-        working-directory: packages/bindings
-        run: npm ci --ignore-scripts
-
-      - name: Build native addon
-        if: |
-          needs.changes.outputs.native == 'true' ||
-          needs.changes.outputs.workflows == 'true' ||
-          steps.native-cache.outputs.cache-hit != 'true'
-        working-directory: packages/bindings
-        run: npx napi build --platform --release ${{ matrix.build-args }}
-
-      - name: Require native artifact
-        shell: bash
-        working-directory: packages/bindings
-        run: |
-          shopt -s nullglob
-          files=(*.node)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No .node artifact for ${{ matrix.target }} (cache miss and build skipped)." >&2
-            exit 1
-          fi
-
-      - name: Upload bindings artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bindings-${{ matrix.target }}
-          path: packages/bindings/*.node
-          if-no-files-found: error
-
-  test:
-    name: Test
-    needs: [changes, build-linux, build-host]
+  compile-native:
+    name: Compile native
+    needs: [changes, quality]
     if: |
       always() &&
       !cancelled() &&
-      (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
-      (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
+      needs.quality.result == 'success' &&
       (
         needs.changes.outputs.native == 'true' ||
-        needs.changes.outputs.typescript == 'true' ||
         needs.changes.outputs.workflows == 'true'
-      ) &&
-      github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+      )
+    runs-on: self-hosted
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-
-    services:
-      coturn:
-        image: coturn/coturn:latest
-        ports:
-          - 3478:3478/udp
-          - 3478:3478/tcp
-        options: >-
-          --entrypoint turnserver
-          turnserver -n --log-file=stdout
-          --min-port=49152 --max-port=65535
-          --realm=test.local
-          --user=testuser:testpass
-          --no-tls --no-dtls
-          --listening-port=3478
-
-    env:
-      TURN_AVAILABLE: '1'
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download native binding
-        uses: actions/download-artifact@v4
+      - uses: ./.github/actions/native-binding-cache
+        id: native-cache
         with:
-          name: bindings-x86_64-unknown-linux-gnu
-          path: packages/bindings/
+          target: x86_64-unknown-linux-gnu
+          profile: debug
 
-      - name: Cache npm
-        uses: actions/cache@v4
+      - uses: ./.github/actions/ci-build-native-linux
         with:
-          path: |
-            ~/.npm
-            node_modules
-          key: npm-${{ hashFiles('package-lock.json') }}
-          restore-keys: npm-
+          target: x86_64-unknown-linux-gnu
+          profile: debug
+          cache_prefix: v1-pr-debug
+          platform: 'false'
+          zig: 'false'
+          skip_build_on_cache_hit: 'true'
+          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
 
-      - name: Cache Cargo
-        if: needs.changes.outputs.native == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-test
-          workspaces: .
-
-      - run: npm ci
-
-      - name: Format check
-        if: needs.changes.outputs.typescript == 'true' || needs.changes.outputs.workflows == 'true'
-        run: npm run format:check
-
-      - name: Lint
-        if: needs.changes.outputs.typescript == 'true' || needs.changes.outputs.workflows == 'true'
-        run: npm run lint
-
-      - name: Typecheck
-        if: needs.changes.outputs.typescript == 'true' || needs.changes.outputs.workflows == 'true'
-        run: npm run typecheck
-
-      - name: Cargo test
-        if: needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows == 'true'
-        run: |
-          cargo test -p node-webrtc-rust-core
-          cargo test -p node-webrtc-rust-mixer
-          cargo test -p node-webrtc-rust-conference
-
-      - name: Build TypeScript packages
-        if: needs.changes.outputs.typescript == 'true' || needs.changes.outputs.workflows == 'true'
-        run: npm run build:ts
-
-      - name: npm test
-        if: needs.changes.outputs.typescript == 'true' || needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows == 'true'
-        run: npm test
-
-  publish-dryrun:
-    name: Publish (dry-run)
-    runs-on: ubuntu-latest
-    needs: [changes, build-linux, build-host, test]
+  build-ts:
+    name: Build TypeScript
+    needs: [changes, quality, compile-native]
     if: |
       always() &&
       !cancelled() &&
-      github.event_name == 'pull_request' &&
-      (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
-      (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      needs.quality.result == 'success' &&
+      (needs.compile-native.result == 'success' || needs.compile-native.result == 'skipped') &&
+      needs.compile-native.result != 'failure' &&
+      (
+        needs.changes.outputs.typescript == 'true' ||
+        needs.changes.outputs.workflows == 'true'
+      )
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: ./.github/actions/ci-cache-ts-dist
+        id: ts-cache
+
+      - name: Build TypeScript packages
+        if: steps.ts-cache.outputs.cache-hit != 'true'
+        run: |
+          npm ci
+          bash scripts/ci/build-ts-workspace.sh
+
+  test:
+    name: Test
+    needs: [changes, quality, compile-native, build-ts]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.quality.result == 'success' &&
+      (needs.compile-native.result == 'success' || needs.compile-native.result == 'skipped') &&
+      (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
+      needs.compile-native.result != 'failure' &&
+      needs.build-ts.result != 'failure' &&
       (
         needs.changes.outputs.native == 'true' ||
         needs.changes.outputs.typescript == 'true' ||
         needs.changes.outputs.workflows == 'true'
       )
-    container:
-      image: ghcr.io/${{ github.repository }}/ci-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Cache npm
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.npm
-            node_modules
-          key: npm-${{ hashFiles('package-lock.json') }}
-          restore-keys: npm-
-
-      - run: npm ci --ignore-scripts
-
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ci-artifacts
-
-      - name: Stage binding artifacts
-        working-directory: packages/bindings
-        run: |
-          mkdir -p artifacts
-          shopt -s nullglob
-          for dir in ../../ci-artifacts/bindings-*; do
-            cp -r "$dir" "artifacts/$(basename "$dir")"
-          done
-          npx napi artifacts --dir artifacts
-
-      - name: Build TypeScript packages
-        if: needs.changes.outputs.typescript == 'true' || needs.changes.outputs.workflows == 'true'
-        run: npm run build:ts
-
-      - run: npm publish --dry-run --workspaces
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      test_script: scripts/ci/run-pr-integration.sh
+      require_binding_artifact: ${{ needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows == 'true' }}
+    secrets: inherit

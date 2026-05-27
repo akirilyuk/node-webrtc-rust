@@ -271,7 +271,9 @@ TURN_AVAILABLE=1 npm test --workspace=@node-webrtc-rust/sdk
 docker compose -f docker-compose.test.yml down
 ```
 
-CI builds all platform targets using GitHub Actions. Linux builds and tests use a prebuilt container image (`ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest`) with Node, Rust, Zig, and CMake — rebuild it by pushing to the `ci` branch (see [`docker/ci/Dockerfile`](docker/ci/Dockerfile) and [`.github/workflows/ci-image.yml`](.github/workflows/ci-image.yml)). macOS and Windows jobs use native runners.
+CI builds all platform targets using GitHub Actions. See **[`scripts/ci/README.md`](scripts/ci/README.md)** for pipeline diagrams, path filters, and caching.
+
+Linux builds and tests use a prebuilt container image (`ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest`) with Node, Rust, Zig, and CMake — rebuild it by pushing to the `ci` branch (see [`docker/ci/Dockerfile`](docker/ci/Dockerfile) and [`.github/workflows/ci-image.yml`](.github/workflows/ci-image.yml)). macOS and Windows jobs use native runners.
 
 Before opening a PR, mirror CI locally to save Actions minutes:
 
@@ -312,20 +314,39 @@ When `debug` is set on the config object, it overrides the `WEBRTC_DEBUG` enviro
 
 ## Releases
 
-CI builds all platform targets, runs tests, and publishes to npm when you push a tag:
+Full guide: [`scripts/RELEASE.md`](scripts/RELEASE.md)
 
-```text
-release/x.y.z
-release/x.y.z-beta.1
-release/x.y.z-rc.1
-```
+### CI release (all platforms)
+
+Merge to **`main`**, then push a **`release/*`** tag. GitHub Actions builds every target, runs tests, publishes to npm, and opens a GitHub Release.
 
 ```bash
+git checkout main && git pull
 git tag release/0.2.0
 git push origin release/0.2.0
 ```
 
-The segment after `release/` becomes the npm version for all packages. Requires `NPM_TOKEN` and `GITHUB_TOKEN` repository secrets. A GitHub Release is created automatically.
+Tag examples: `release/0.2.0`, `release/0.2.0-beta.1`, `release/0.2.0-rc.1`. The part after `release/` is the npm version.
+
+Requires repository secret **`NPM_TOKEN`**. Linux jobs use the CI image built from the **`ci`** branch (`ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest`).
+
+### Local release
+
+| Script | Use when |
+| --- | --- |
+| [`scripts/release-local.sh`](scripts/release-local.sh) | Publish from your machine for **one platform** (host `.node` only) |
+| [`scripts/release-publish.sh`](scripts/release-publish.sh) | macOS: build Linux + Darwin locally; supply Windows `.node` separately |
+
+```bash
+# Host-only (fast)
+./scripts/release-local.sh 0.2.0 "$NPM_TOKEN" --dry-run
+
+# All platforms you can build on macOS (+ prebuilt Windows)
+export NPM_TOKEN=...
+npm run release:publish -- 0.2.0
+```
+
+After a local publish, commit version bumps and optionally push the same `release/x.y.z` tag for GitHub Release metadata.
 
 ---
 

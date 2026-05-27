@@ -10,6 +10,13 @@ export default tseslint.config(
       '**/target/**',
       'packages/bindings/index.js',
       'packages/bindings/index.d.ts',
+      // Browser demo scripts (not part of Node/TS package lint scope)
+      'examples/**/public/**',
+      'examples/shared/**/*.js',
+      // Stray compile output if tsc is run with wrong outDir
+      'packages/**/src/**/*.d.ts',
+      'packages/**/src/**/*.d.ts.map',
+      'packages/**/src/**/*.js.map',
     ],
   },
   eslint.configs.recommended,

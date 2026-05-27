@@ -6,9 +6,9 @@ import {
   type RTCIceCandidateInit,
   type RTCSessionDescriptionInit,
 } from '@node-webrtc-rust/sdk'
-import { SignalingClient } from '@node-webrtc-rust/signaling'
+import type { SignalingClient } from '@node-webrtc-rust/signaling'
 
-import { CosineStreamServer } from './cosine-stream-server'
+import type { CosineStreamServer } from './cosine-stream-server'
 
 interface ClientSession {
   pc: RTCPeerConnection

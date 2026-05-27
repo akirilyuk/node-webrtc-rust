@@ -2,63 +2,60 @@
 description: When GitHub Actions build and CI image workflows should run
 globs:
   - .github/workflows/**
+  - .github/actions/**
   - docker/ci/**
 alwaysApply: false
 ---
 
 # CI Workflow Triggers
 
-## Build & Test (`.github/workflows/build.yml`)
+> **Full docs:** [`scripts/ci/README.md`](../../scripts/ci/README.md) — update that file when changing CI (see [`ci-documentation.mdc`](ci-documentation.mdc)).
 
-| Event | Native builds (`build-linux`, `build-host`) | Checks (`test`, publish dry-run) |
-|---|---|---|
-| **PR → `main`** | yes (cached / path-filtered) | yes |
-| **Push → `main`** | yes | no |
-| Push / PR on other branches | no | no |
+## Build & Test — PR (`.github/workflows/build.yml`)
 
-PR workflows do **not** include a release publish job.
+| Job | Purpose |
+|---|---|
+| Detect changes | path filters (`native`, `typescript`, `workflows`) |
+| Typecheck & lint | `run-pr-quality.sh` on `self-hosted` + Node 20 (no ci-build pull) |
+| Compile native | debug `.node` — **only** when `native` or `workflows` paths change |
+| Build TypeScript | `npm run build:ts` — **only** when `typescript` or `workflows` paths change |
+| Test | restores native + TS dist caches; runs cargo + npm tests (fallback compile/build on cache miss) |
+
+`compile-native` and `build-ts` run **in parallel** after quality passes on GitHub-hosted runners; on **self-hosted** runners `build-ts` waits for `compile-native` because both share one workspace directory. TS-only PRs skip native compile; Rust-only PRs skip TS build. Vitest imports `src/` directly, but `build:ts` still validates publishable output when TS changes.
+
+Runs on **pull_request → `main`** only. Linux x64 jobs use **`self-hosted`**; macOS/Windows stay on GitHub-hosted runners.
+
+## Build & Test — main (`.github/workflows/build-main.yml`)
+
+Runs on **push → `main`**: reusable release matrix (`reusable-build-linux`, `reusable-build-host`) → `reusable-test`.
 
 ## Release (`.github/workflows/release.yml`)
 
-Runs **only** on `release/*` tag push: full matrix build → test → npm publish → GitHub Release.
+Runs on **`release/*` tag push**: same reusable build/test workflows → npm publish → GitHub Release.
+
+## Reusable workflows & composite actions
+
+| File | Role |
+|---|---|
+| `reusable-build-linux.yml` | Linux release matrix (3 targets) |
+| `reusable-build-host.yml` | macOS + Windows release matrix |
+| `reusable-test.yml` | Download binding artifact, cache fallback, host Docker tests |
+| `actions/ci-build-native-linux` | Cache, compile, verify, upload (Linux) |
+| `actions/ci-build-native-host` | Toolchain setup + compile (host OS) |
+| `actions/ci-cache-ts-dist` | sdk/signaling `dist/` cache restore/save |
+| `actions/ci-run-integration-tests` | coturn sidecar + ci-build test run |
+| `actions/native-binding-cache` | Per-target `.node` cache restore/save |
+
+## CI Docker image (`ci` branch)
+
+Rebuild `ghcr.io/.../ci-build:latest` when `docker/ci/Dockerfile` changes — push to **`ci`** branch or **`workflow_dispatch`** on CI Docker image workflow.
+
+## Local validation
 
 ```bash
-git tag release/0.1.0 && git push origin release/0.1.0
+npm run ci:verify:linux          # release cross-builds (matches main push)
+npm run ci:verify:checks:docker  # PR quality + integration checks
+npm run ci:verify                # both
 ```
 
-Do **not** add `push` triggers for feature branches (`initial-feature`, etc.) or `pull_request` targets other than `main`. Feature-branch commits stay off CI until there is a PR to `main`.
-
-## Caching and skip logic (`.github/workflows/build.yml`)
-
-- **`changes` job** (`dorny/paths-filter`): classifies diffs as `native`, `typescript`, or `workflows`.
-- **Skip entire build matrix** when only docs/markdown change (no `native` / `typescript` / `workflows`).
-- **Skip `napi build` step** when native sources unchanged *and* per-target `.node` cache hits (keyed by `Cargo.lock` + crate/bindings sources).
-- **`Swatinem/rust-cache`**: Cargo registry + `target/` per triple.
-- **`actions/cache`**: npm, napi-rs Zig toolchain, and native `.node` artifacts (`.github/actions/native-binding-cache`).
-- **`test` job** runs only affected checks (e.g. skip `cargo test` if only TypeScript changed).
-
-## CI Docker image (`.github/workflows/ci-image.yml`)
-
-Rebuild and push `ghcr.io/.../ci-build:latest` **only when**:
-
-- The **`ci` branch** is pushed (Dockerfile or workflow changes land there)
-- **`workflow_dispatch`** is triggered manually
-
-The main build workflow always pulls `:latest`; it never rebuilds the image.
-
-## Local validation before pushing / opening PRs
-
-Mirror CI native Linux builds and PR checks without spending Actions minutes:
-
-```bash
-# Linux cross-target native builds (same as build-linux jobs)
-npm run ci:verify:linux
-
-# PR test job (format, lint, typecheck, cargo test, npm test) inside CI image
-npm run ci:verify:checks:docker
-
-# Both
-npm run ci:verify
-```
-
-After changing `docker/ci/Dockerfile`, rebuild the image (`npm run ci:docker:build`) then push to the `ci` branch so `ghcr.io/.../ci-build:latest` picks up cmake and other deps before merging workflow changes that rely on them.
+After changing `docker/ci/Dockerfile`, rebuild (`npm run ci:docker:build`) and push to `ci` branch.

@@ -1,0 +1,35 @@
+name: Reusable — build macOS / Windows native targets
+
+on:
+  workflow_call:
+    inputs:
+      cache_prefix:
+        description: Swatinem/rust-cache prefix key
+        type: string
+        default: v1-native-release
+
+jobs:
+  build-host:
+    name: Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            build-args: --target x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            build-args: --target aarch64-apple-darwin
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            build-args: --target x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ci-build-native-host
+        with:
+          target: ${{ matrix.target }}
+          build_args: ${{ matrix.build-args }}
+          cache_prefix: ${{ inputs.cache_prefix }}

@@ -1,0 +1,118 @@
+name: Build native addon (Linux)
+description: Cache, compile, verify, and optionally upload a Linux .node binding
+
+inputs:
+  target:
+    description: Rust triple (e.g. x86_64-unknown-linux-gnu)
+    required: true
+  profile:
+    description: napi profile (debug or release)
+    required: false
+    default: release
+  cache_prefix:
+    description: Prefix for Swatinem/rust-cache
+    required: false
+    default: v1-native-release
+  platform:
+    description: Pass --platform to napi build
+    required: false
+    default: 'true'
+  zig:
+    description: Pass --zig to napi build
+    required: false
+    default: 'true'
+  skip_build_on_cache_hit:
+    description: Skip compile when native-binding-cache hit
+    required: false
+    default: 'false'
+  native_cache_hit:
+    description: Value from native-binding-cache output
+    required: false
+    default: 'false'
+  upload_artifact:
+    description: Upload bindings artifact
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Cargo target/ (cross-run warm start)
+      id: target-restore
+      uses: actions/cache/restore@v4
+      with:
+        path: target
+        key: ${{ inputs.cache_prefix }}-target-Linux-x64-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+        restore-keys: |
+          ${{ inputs.cache_prefix }}-target-Linux-x64-
+          ${{ inputs.cache_prefix }}-target-
+
+    - name: Cache Cargo registry
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: ${{ inputs.cache_prefix }}
+        cache-targets: 'false'
+        workspaces: .
+        shared-key: registry
+        add-job-id-key: false
+        add-rust-environment-hash-key: false
+
+    - name: Cache npm
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.npm
+          node_modules
+          packages/bindings/node_modules
+        key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
+        restore-keys: npm-
+
+    - name: Cache napi-rs Zig toolchain
+      if: inputs.zig == 'true'
+      uses: actions/cache@v4
+      with:
+        path: /github/home/.cache/napi-rs-nodejs
+        key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        restore-keys: napi-zig-${{ runner.os }}-
+
+    - name: Install bindings dependencies
+      shell: bash
+      working-directory: packages/bindings
+      run: npm ci --ignore-scripts
+
+    - name: Build native addon
+      if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
+      shell: bash
+      working-directory: packages/bindings
+      run: |
+        set -euo pipefail
+        args=(build --target "${{ inputs.target }}")
+        if [[ "${{ inputs.profile }}" == "release" ]]; then
+          args+=(--release)
+        fi
+        if [[ "${{ inputs.platform }}" == "true" ]]; then
+          args+=(--platform)
+        fi
+        if [[ "${{ inputs.zig }}" == "true" ]]; then
+          args+=(--zig)
+        fi
+        npx napi "${args[@]}"
+
+    - name: Require native artifact
+      shell: bash
+      working-directory: packages/bindings
+      run: |
+        shopt -s nullglob
+        files=(*.node)
+        if [ ${#files[@]} -eq 0 ]; then
+          echo "No .node artifact for ${{ inputs.target }}." >&2
+          exit 1
+        fi
+
+    - name: Upload bindings artifact
+      if: inputs.upload_artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: bindings-${{ inputs.target }}
+        path: packages/bindings/*.node
+        if-no-files-found: error

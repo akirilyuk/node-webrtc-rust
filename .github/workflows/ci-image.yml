@@ -19,7 +19,11 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            sudo chown -R "$(id -u)":"$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
 
       - uses: actions/checkout@v4
 

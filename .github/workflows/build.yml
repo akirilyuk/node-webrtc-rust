@@ -25,7 +25,11 @@ jobs:
       typescript: ${{ steps.filter.outputs.typescript }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
-      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            sudo chown -R "$(id -u)":"$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
 
       - uses: actions/checkout@v4
         with:
@@ -65,7 +69,11 @@ jobs:
       needs.changes.outputs.workflows == 'true'
     runs-on: self-hosted
     steps:
-      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            sudo chown -R "$(id -u)":"$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
 
       - uses: actions/checkout@v4
 
@@ -126,7 +134,11 @@ jobs:
       )
     runs-on: self-hosted
     steps:
-      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            sudo chown -R "$(id -u)":"$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
 
       - uses: actions/checkout@v4
 

@@ -92,7 +92,7 @@ describe('End-to-end peer connection', () => {
     await waitForConnection(pc1)
     await waitForConnection(pc2)
 
-    await localTrack.writeSample(Buffer.alloc(960))
+    await localTrack.writeSample(Buffer.alloc(960), 5)
 
     const remoteTrack = await remoteTrackPromise
     expect(remoteTrack.kind).toBe('audio')

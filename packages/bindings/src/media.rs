@@ -123,7 +123,7 @@ impl JsLocalAudioTrack {
         MediaStreamTrack::set_enabled(self.inner.as_ref(), enabled);
     }
 
-    /// Writes a PCM audio frame to the track.
+    /// Writes interleaved stereo PCM; encoded to the negotiated RTP codec before send.
     #[napi]
     pub async fn write_sample(&self, data: Buffer, duration_ms: u32) -> Result<()> {
         debug_call!(

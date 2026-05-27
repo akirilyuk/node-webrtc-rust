@@ -90,6 +90,12 @@ async function main(): Promise<void> {
   console.log(`Browser cosine + chat example running at http://localhost:${PORT}`)
   console.log(`WebSocket signaling: ws://localhost:${PORT}/ws`)
   console.log(`Open multiple browser tabs, pick a room, and connect.`)
+  if (process.env.TONE_STREAM_DEBUG === '1') {
+    console.log('TONE_STREAM_DEBUG=1 — PCM tick logs also written to examples/browser-cosine-chat/tone-debug.log')
+    console.log('  tail -f examples/browser-cosine-chat/tone-debug.log')
+  } else {
+    console.log('Run npm run start:debug (or TONE_STREAM_DEBUG=1) to log PCM ticks to tone-debug.log')
+  }
 
   const shutdown = async () => {
     await roomManager.close()

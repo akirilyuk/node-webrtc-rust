@@ -2,29 +2,85 @@
 
 Runnable TypeScript demo applications for node-webrtc-rust.
 
-Each example is an npm workspace package under this directory, authored in **TypeScript** and run with `tsx` or compiled output.
+Each example is an npm workspace package under this directory, authored in **TypeScript** and run with `tsx` (no separate compile step).
 
 ## Available examples
 
-| Package                  | Description                                                            |
-| ------------------------ | ---------------------------------------------------------------------- |
-| **peer-connection**      | Two-peer WebRTC connection with a DataChannel over WebSocket signaling |
-| **audio-cosine**         | Local audio track streaming a 440 Hz cosine tone generated in PCM      |
-| **browser-cosine-chat**  | Browser clients receive a shared cosine tone from Node and chat in rooms |
-| **conference-room**      | Browser mic audio mixed in Rust with mute, mixing toggle, and kick controls |
-| **conference-room-manual-signaling** | Same conference mixer; WebSocket signaling implemented by hand (no `@node-webrtc-rust/signaling`) |
+| Package | Type | Default port | Description |
+| --- | --- | --- | --- |
+| **peer-connection** | CLI (exits on success) | 8080 (signaling) | Two Node peers, DataChannel over WebSocket signaling |
+| **audio-cosine** | CLI (runs ~5s) | 8080 (signaling) | Local audio track streaming a 440 Hz cosine tone in PCM |
+| **browser-cosine-chat** | Browser + Node server | 3000 | Browser tabs hear a server cosine tone and mesh chat via data channels |
+| **conference-room** | Browser + Node server | 8080 | Browser mic → Rust mixer → personalized mixed audio; mute/kick UI |
+| **conference-room-manual-signaling** | Browser + Node server | 8081 | Same as conference-room; hand-rolled WebSocket signaling |
 
-## Prerequisites
+## Run examples locally
 
-Build the TypeScript packages and native bindings once:
+### Prerequisites
+
+- **Node.js** ≥ 18 and **npm** ≥ 9
+- **[Rust](https://rustup.rs)** (stable) — required to build the native `.node` addon
+- **Network** — examples use public STUN (`stun.l.google.com:19302`); no TURN required for local demos
+- **Browser examples** — Chrome, Firefox, or Safari with microphone permission (conference demos only)
+
+### One-time setup (from repo root)
 
 ```bash
-npm install
-npm run build:ts
-cd packages/bindings && npm run build:local
+npm run setup
 ```
 
-## Running an example
+This runs, in order:
+
+1. `npm run install:all` — install root + all workspace deps (`packages/*`, `examples/*`)
+2. `npm run build:native` — build the host debug `.node` in `packages/bindings/`
+3. `npm run build:ts` — compile `@node-webrtc-rust/sdk` and `@node-webrtc-rust/signaling`
+
+Verify the native binding loads:
+
+```bash
+node -e "require('./packages/bindings').version()"
+```
+
+### Start an example
+
+Always run from the **repo root**:
+
+```bash
+npm run start --workspace=@node-webrtc-rust/example-<name>
+```
+
+Replace `<name>` with `peer-connection`, `audio-cosine`, `browser-cosine-chat`, `conference-room`, or `conference-room-manual-signaling`.
+
+**Run one example at a time.** Several CLI demos bind signaling on port **8080**; only one process can listen. Stop the previous example (`Ctrl+C`) before starting the next, or override the port where supported (`PORT=8090 npm run start --workspace=...` for browser servers).
+
+Optional debug logging:
+
+```bash
+WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-room
+```
+
+### Quick reference
+
+| Example | Command | How to verify |
+| --- | --- | --- |
+| peer-connection | `npm run start --workspace=@node-webrtc-rust/example-peer-connection` | Prints `Received: Hello from peer 1!` and exits |
+| audio-cosine | `npm run start --workspace=@node-webrtc-rust/example-audio-cosine` | Logs remote track + streams tone for ~5s, then exits |
+| browser-cosine-chat | `npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat` | Open `http://localhost:3000`, same room in multiple tabs |
+| conference-room | `npm run start --workspace=@node-webrtc-rust/example-conference-room` | Open `http://localhost:8080`, join room, allow mic |
+| conference-room-manual-signaling | `npm run start --workspace=@node-webrtc-rust/example-conference-room-manual-signaling` | Open `http://localhost:8081` (see its README) |
+
+### Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| `Failed to load native binding` | Run `npm run build:native` from repo root |
+| `EADDRINUSE` on 8080 / 3000 / 8081 | Stop the other example or `lsof -i :8080` and kill the stale process |
+| Browser page loads but no audio | Allow microphone (conference demos); check browser console; try `WEBRTC_DEBUG=1` |
+| After changing Rust or TS packages | `npm run build:native && npm run build:ts` then restart the example |
+
+---
+
+## Running an example (details)
 
 ### DataChannel demo
 

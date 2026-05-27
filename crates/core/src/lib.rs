@@ -8,6 +8,8 @@ pub mod debug;
 pub mod error;
 pub mod events;
 pub mod media;
+pub mod pcm_audio_track;
+pub mod pcm_encoder;
 pub mod peer_connection;
 
 pub use config::*;

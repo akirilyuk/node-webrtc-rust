@@ -5,16 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use media::Sample;
-use webrtc::api::media_engine::MIME_TYPE_OPUS;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_remote::TrackRemote;
 
 use crate::debug_call;
 use crate::error::CoreError;
+use crate::pcm_audio_track::PcmAudioTrackLocal;
+use crate::pcm_encoder::NegotiatedAudioFormat;
 
 /// Track media kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,62 +84,40 @@ impl MediaStream {
     }
 }
 
-/// Local audio track backed by Opus samples.
+/// Local audio track: callers pass PCM; RTP uses the codec negotiated in SDP.
 pub struct LocalAudioTrack {
-    inner: Arc<TrackLocalStaticSample>,
+    inner: Arc<PcmAudioTrackLocal>,
     enabled: AtomicBool,
     track_id: String,
     stream_id: String,
 }
 
 impl LocalAudioTrack {
-    /// Creates a new local audio track.
+    /// Creates a new local audio track advertising Opus (WebRTC default).
     pub fn new(id: &str, stream_id: &str) -> Self {
-        let inner = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_OPUS.to_owned(),
-                clock_rate: 48_000,
-                channels: 2,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
-                ..Default::default()
-            },
-            id.to_owned(),
-            stream_id.to_owned(),
-        ));
-
         Self {
-            inner,
+            inner: Arc::new(
+                PcmAudioTrackLocal::new(id, stream_id).expect("PCM audio track init"),
+            ),
             enabled: AtomicBool::new(true),
             track_id: id.to_owned(),
             stream_id: stream_id.to_owned(),
         }
     }
 
-    /// Writes a PCM audio sample using a shared buffer (no extra copy).
+    /// Writes interleaved stereo PCM; encoded to the negotiated RTP codec before send.
     pub async fn write_sample(&self, data: Bytes, duration: Duration) -> Result<(), CoreError> {
-        debug_call!(
-            "core::media",
-            "write_sample",
-            "id={}, bytes={}, duration_ms={}",
-            self.track_id,
-            data.len(),
-            duration.as_millis()
-        );
-        let sample = Sample {
-            data,
-            duration,
-            ..Default::default()
-        };
-
-        self.inner
-            .write_sample(&sample)
-            .await
-            .map_err(|e| CoreError::Track(e.to_string()))
+        self.inner.write_pcm_sample(data, duration).await
     }
 
     /// Writes a PCM slice, copying once into a shared buffer.
     pub async fn write_sample_slice(&self, data: &[u8], duration: Duration) -> Result<(), CoreError> {
         self.write_sample(Bytes::copy_from_slice(data), duration).await
+    }
+
+    /// Negotiated audio format after the track is bound to a peer connection.
+    pub async fn negotiated_format(&self) -> Option<NegotiatedAudioFormat> {
+        self.inner.negotiated_format().await
     }
 
     /// Returns the underlying track for use with [`PeerConnection::add_track`](crate::PeerConnection::add_track).

@@ -1,7 +1,8 @@
+import { attachAudioVisualizer } from '/shared/audio-visualizer.js'
+
 const SERVER_PEER_ID = 'cosine-server'
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
-
-import { attachAudioVisualizer } from '/shared/audio-visualizer.js'
+const DEBUG = new URLSearchParams(location.search).has('debug')
 
 const displayNameInput = document.getElementById('display-name')
 const roomInput = document.getElementById('room')
@@ -15,6 +16,8 @@ const chatForm = document.getElementById('chat-form')
 const messageInput = document.getElementById('message')
 const incomingVizCanvas = document.getElementById('incoming-viz')
 const vizStatusEl = document.getElementById('viz-status')
+const debugPanelEl = document.getElementById('debug-panel')
+const debugLogEl = document.getElementById('debug-log')
 
 /** @type {WebSocket | null} */
 let ws = null
@@ -27,10 +30,31 @@ let displayName = 'Guest'
 
 /** @type {Map<string, { pc: RTCPeerConnection, dc?: RTCDataChannel }>} */
 const peerConnections = new Map()
+/** @type {Map<string, string>} */
+const peerNames = new Map()
 /** @type {Map<string, RTCDataChannel>} */
 const chatChannels = new Map()
+/** @type {Map<string, RTCIceCandidateInit[]>} */
+const pendingIceByPeer = new Map()
 /** @type {{ stop: () => void } | null} */
 let incomingVisualizer = null
+
+if (DEBUG && debugPanelEl && debugLogEl) {
+  debugPanelEl.hidden = false
+  debugLog('Debug mode on — reload with ?debug if you change this URL mid-session')
+}
+
+function debugLog(...args) {
+  if (!DEBUG) return
+  const line = args
+    .map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg)))
+    .join(' ')
+  console.log('[browser-cosine-chat]', ...args)
+  if (debugLogEl) {
+    debugLogEl.textContent += `${new Date().toISOString().slice(11, 23)} ${line}\n`
+    debugLogEl.scrollTop = debugLogEl.scrollHeight
+  }
+}
 
 connectButton.addEventListener('click', () => {
   void connect()
@@ -57,6 +81,7 @@ async function connect() {
   clientId = `client-${Math.random().toString(36).slice(2, 10)}`
 
   setStatus(`Joining room "${room}"…`)
+  debugLog(`connect room=${room} clientId=${clientId}`)
   connectButton.disabled = true
 
   const ensureResponse = await fetch('/api/rooms', {
@@ -119,9 +144,12 @@ function cleanupPeers() {
   }
   peerConnections.clear()
   chatChannels.clear()
+  peerNames.clear()
+  pendingIceByPeer.clear()
 }
 
 function handleSignal(message) {
+  debugLog(`signal type=${message.type} peer=${message.peerId ?? message.targetPeerId ?? '-'}`)
   switch (message.type) {
     case 'peer-joined':
       onPeerJoined(message.peerId)
@@ -143,6 +171,40 @@ function handleSignal(message) {
   }
 }
 
+function peerLabel(peerId) {
+  return peerNames.get(peerId) ?? peerId
+}
+
+/** Poll inbound RTP counters when ?debug is in the URL. */
+function startInboundRtpDebug(pc, label) {
+  if (!DEBUG) return
+  debugLog(`${label}: RTP stats polling started`)
+  let lastBytes = 0
+  let polls = 0
+  setInterval(async () => {
+    polls++
+    try {
+      const stats = await pc.getStats()
+      let found = false
+      stats.forEach((report) => {
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          found = true
+          const delta = report.bytesReceived - lastBytes
+          lastBytes = report.bytesReceived
+          debugLog(
+            `${label} rtp packets=${report.packetsReceived} bytes=${report.bytesReceived} (+${delta}/2s) state=${pc.connectionState}`,
+          )
+        }
+      })
+      if (!found) {
+        debugLog(`${label} rtp poll #${polls}: no inbound-rtp audio yet, pc=${pc.connectionState}`)
+      }
+    } catch (error) {
+      debugLog(`${label} rtp getStats failed: ${error}`)
+    }
+  }, 2000)
+}
+
 function onPeerJoined(peerId) {
   if (!clientId || peerId === clientId || peerConnections.has(peerId)) return
 
@@ -151,7 +213,7 @@ function onPeerJoined(peerId) {
     return
   }
 
-  appendSystem(`${peerId} joined the room`)
+  appendSystem('Someone joined the room')
 
   // Lexicographic tie-break: higher id creates the chat offer.
   if (clientId > peerId) {
@@ -160,7 +222,9 @@ function onPeerJoined(peerId) {
 }
 
 function onPeerLeft(peerId) {
-  appendSystem(`${peerId} left the room`)
+  appendSystem(`${peerLabel(peerId)} left the room`)
+  peerNames.delete(peerId)
+  pendingIceByPeer.delete(peerId)
   const session = peerConnections.get(peerId)
   if (session) {
     session.pc.close()
@@ -204,16 +268,31 @@ async function connectToPeer(peerId, createOffer) {
 
 async function onOffer(fromPeerId, sdp) {
   if (fromPeerId === SERVER_PEER_ID) {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
-    peerConnections.set(fromPeerId, { pc })
+    try {
+      debugLog('server offer received')
+      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+      peerConnections.set(fromPeerId, { pc })
+      startInboundRtpDebug(pc, 'server-audio')
 
-    pc.ontrack = (event) => {
-      toneEl.srcObject = event.streams[0] ?? new MediaStream([event.track])
+    const attachServerAudio = (track, stream, source) => {
+      if (toneEl.srcObject) {
+        debugLog(`attach skipped (already have srcObject) source=${source}`)
+        return
+      }
+      debugLog(`attach audio track id=${track.id} muted=${track.muted} source=${source}`)
+      track.onunmute = () => {
+        debugLog(`track unmuted id=${track.id}`)
+        void toneEl.play().catch(() => undefined)
+      }
+      track.onmute = () => debugLog(`track muted id=${track.id}`)
+      track.onended = () => debugLog(`track ended id=${track.id}`)
+      const playStream = stream ?? new MediaStream([track])
+      toneEl.srcObject = playStream
       void toneEl.play().catch(() => undefined)
       incomingVisualizer?.stop()
       incomingVisualizer = attachAudioVisualizer({
         canvas: incomingVizCanvas,
-        audioElement: toneEl,
+        mediaStream: playStream,
         waveColor: '#fbbf24',
         barColor: '#f59e0b',
       })
@@ -222,8 +301,29 @@ async function onOffer(fromPeerId, sdp) {
       vizStatusEl.textContent = 'Live waveform of incoming server audio track'
     }
 
+    pc.ontrack = (event) => {
+      debugLog(`ontrack kind=${event.track.kind} id=${event.track.id}`)
+      attachServerAudio(event.track, event.streams[0], 'ontrack')
+    }
+
+    pc.onconnectionstatechange = () => {
+      debugLog(`server pc connectionState=${pc.connectionState}`)
+      if (pc.connectionState !== 'connected' || toneEl.srcObject) return
+      for (const receiver of pc.getReceivers()) {
+        if (receiver.track?.kind === 'audio') {
+          attachServerAudio(receiver.track, null, 'getReceivers')
+          break
+        }
+      }
+    }
+
+    pc.oniceconnectionstatechange = () => {
+      debugLog(`server pc iceConnectionState=${pc.iceConnectionState}`)
+    }
+
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        debugLog(`server pc local ice → cosine-server`)
         sendSignal({
           type: 'ice-candidate',
           targetPeerId: fromPeerId,
@@ -233,14 +333,29 @@ async function onOffer(fromPeerId, sdp) {
     }
 
     await pc.setRemoteDescription(sdp)
+    await flushPendingIce(fromPeerId)
+    debugLog(`server pc remoteDescription set, receivers=${pc.getReceivers().length}`)
+
+    for (const receiver of pc.getReceivers()) {
+      if (receiver.track?.kind === 'audio') {
+        attachServerAudio(receiver.track, null, 'post-setRemoteDescription')
+        break
+      }
+    }
+
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     await waitGatheringComplete(pc)
+    debugLog('server answer sent → cosine-server')
     sendSignal({
       type: 'answer',
       targetPeerId: fromPeerId,
       sdp: pc.localDescription,
     })
+    } catch (error) {
+      debugLog(`server offer handling FAILED: ${error}`)
+      console.error(error)
+    }
     return
   }
 
@@ -252,6 +367,7 @@ async function onOffer(fromPeerId, sdp) {
   if (!session) return
 
   await session.pc.setRemoteDescription(sdp)
+  await flushPendingIce(fromPeerId)
   const answer = await session.pc.createAnswer()
   await session.pc.setLocalDescription(answer)
   await waitGatheringComplete(session.pc)
@@ -266,29 +382,65 @@ async function onAnswer(fromPeerId, sdp) {
   const session = peerConnections.get(fromPeerId)
   if (!session) return
   await session.pc.setRemoteDescription(sdp)
+  await flushPendingIce(fromPeerId)
 }
 
 async function onRemoteIce(fromPeerId, candidate) {
   const session = peerConnections.get(fromPeerId)
   if (!session || !candidate?.candidate) return
-  await session.pc.addIceCandidate(candidate)
+
+  if (!session.pc.remoteDescription) {
+    if (!pendingIceByPeer.has(fromPeerId)) {
+      pendingIceByPeer.set(fromPeerId, [])
+    }
+    pendingIceByPeer.get(fromPeerId).push(candidate)
+    return
+  }
+
+  try {
+    await session.pc.addIceCandidate(candidate)
+  } catch {
+    // Ignore stale candidates after reconnect.
+  }
+}
+
+async function flushPendingIce(peerId) {
+  const session = peerConnections.get(peerId)
+  const pending = pendingIceByPeer.get(peerId)
+  if (!session?.pc.remoteDescription || !pending?.length) return
+
+  for (const candidate of pending) {
+    try {
+      await session.pc.addIceCandidate(candidate)
+    } catch {
+      // Ignore stale candidates.
+    }
+  }
+  pendingIceByPeer.delete(peerId)
 }
 
 function wireChatChannel(peerId, dc) {
   chatChannels.set(peerId, dc)
 
   dc.onopen = () => {
-    appendSystem(`Chat link ready with ${peerId}`)
+    dc.send(JSON.stringify({ type: 'hello', name: displayName }))
+    appendSystem('Chat link established')
   }
 
   dc.onmessage = (event) => {
     try {
       const payload = JSON.parse(String(event.data))
+      if (payload.type === 'hello' && payload.name) {
+        peerNames.set(peerId, payload.name)
+        appendSystem(`${payload.name} joined the chat`)
+        return
+      }
       if (payload.type === 'chat') {
         appendMessage(`${payload.name}: ${payload.text}`)
+        return
       }
     } catch {
-      appendMessage(`${peerId}: ${event.data}`)
+      appendMessage(`${peerLabel(peerId)}: ${event.data}`)
     }
   }
 }

@@ -49,13 +49,33 @@ export function attachAudioVisualizer(options) {
   analyser.fftSize = 2048
   analyser.smoothingTimeConstant = 0.75
 
-  if (audioElement) {
+  // Prefer MediaStream tap: works reliably with WebRTC remote tracks while the
+  // <audio> element plays the same stream independently.
+  const streamSource =
+    mediaStream ??
+    (audioElement?.srcObject instanceof MediaStream ? audioElement.srcObject : null)
+
+  if (streamSource) {
+    audioCtx.createMediaStreamSource(streamSource).connect(analyser)
+  } else if (audioElement) {
     const source = audioCtx.createMediaElementSource(audioElement)
     source.connect(analyser)
     analyser.connect(audioCtx.destination)
-  } else if (mediaStream) {
-    const source = audioCtx.createMediaStreamSource(mediaStream)
-    source.connect(analyser)
+  } else {
+    throw new Error('attachAudioVisualizer requires audioElement or mediaStream')
+  }
+
+  const ensureRunning = () => {
+    if (audioCtx.state === 'suspended') {
+      void audioCtx.resume()
+    }
+  }
+
+  if (audioElement) {
+    audioElement.addEventListener('playing', ensureRunning)
+  }
+  for (const track of streamSource?.getAudioTracks() ?? []) {
+    track.addEventListener('unmute', ensureRunning)
   }
 
   const timeData = new Uint8Array(analyser.fftSize)
@@ -67,6 +87,7 @@ export function attachAudioVisualizer(options) {
     if (stopped) return
 
     rafId = requestAnimationFrame(draw)
+    ensureRunning()
 
     const width = canvas.width
     const height = canvas.height
@@ -82,9 +103,9 @@ export function attachAudioVisualizer(options) {
     ctx.beginPath()
     const sliceWidth = width / timeData.length
     let x = 0
+    const waveMid = waveHeight / 2
     for (let i = 0; i < timeData.length; i += 1) {
-      const v = timeData[i] / 128.0
-      const y = (v * waveHeight) / 2
+      const y = waveMid + ((timeData[i] - 128) / 128) * waveMid
       if (i === 0) {
         ctx.moveTo(x, y)
       } else {
@@ -120,19 +141,18 @@ export function attachAudioVisualizer(options) {
     }
   }
 
-  const resume = () => {
-    if (audioCtx.state === 'suspended') {
-      void audioCtx.resume()
-    }
-  }
+  const resume = ensureRunning
 
-  resume()
+  ensureRunning()
   draw()
 
   return {
     stop() {
       stopped = true
       cancelAnimationFrame(rafId)
+      if (audioElement) {
+        audioElement.removeEventListener('playing', ensureRunning)
+      }
       void audioCtx.close()
     },
     resume,

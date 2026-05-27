@@ -172,7 +172,7 @@ export declare class JsLocalAudioTrack {
   get streamId(): string
   get enabled(): boolean
   set enabled(enabled: boolean)
-  /** Writes a PCM audio frame to the track. */
+  /** Writes interleaved stereo PCM; encoded to the negotiated RTP codec before send. */
   writeSample(data: Buffer, durationMs: number): Promise<void>
 }
 /** WebRTC peer connection exposed to JavaScript. */

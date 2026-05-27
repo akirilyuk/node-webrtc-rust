@@ -9,7 +9,10 @@
     "examples/*"
   ],
   "scripts": {
+    "install:all": "bash scripts/install-workspace.sh",
+    "setup": "npm run install:all && npm run build:native && npm run build:ts",
     "build": "npm run build --workspaces --if-present",
+    "build:native": "npm run build:debug:local --workspace=@node-webrtc-rust/bindings",
     "build:ts": "npm run build --workspace=@node-webrtc-rust/sdk --workspace=@node-webrtc-rust/signaling",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
@@ -17,6 +20,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run test --workspaces --if-present",
+    "test:rust": "cargo test --workspace",
+    "test:ts": "npm run test --workspaces --if-present",
+    "test:all": "bash scripts/run-all-tests.sh",
     "ci:docker:build": "docker build -t node-webrtc-rust-ci-build:local docker/ci",
     "ci:verify:linux": "bash scripts/ci/verify-linux.sh",
     "ci:verify:checks": "bash scripts/ci/verify-checks.sh",

@@ -193,11 +193,18 @@ Each browser client sends mic audio; the Rust mixer returns a **personalized str
 
 ## Examples
 
-Runnable demos live under [`examples/`](examples/). From the repo root after `npm install`:
+Runnable demos live under [`examples/`](examples/).
+
+**One-time setup:**
 
 ```bash
-npm run build:ts
-cd packages/bindings && npm run build:local
+npm run setup   # install deps + build native .node + build TS packages
+```
+
+**Start any example** (from repo root):
+
+```bash
+npm run start --workspace=@node-webrtc-rust/example-<name>
 ```
 
 | Example | Command | What it shows |
@@ -208,9 +215,9 @@ cd packages/bindings && npm run build:local
 | **conference-room** | `npm run start --workspace=@node-webrtc-rust/example-conference-room` | Browser mic → Rust mixer → personalized audio; mute/kick UI |
 | **conference-room-manual-signaling** | `npm run start --workspace=@node-webrtc-rust/example-conference-room-manual-signaling` | Same mixer; hand-rolled WebSocket signaling (no signaling package) |
 
-**Conference demo:** open `http://localhost:8080` in multiple tabs, join the same room, allow microphone access. Waveform graphs show outgoing mic and incoming mixed track.
+Run **one example at a time** — several bind port 8080. Browser demos: conference on `http://localhost:8080`, cosine chat on `http://localhost:3000`, manual-signaling conference on `http://localhost:8081`.
 
-Details: [`examples/README.md`](examples/README.md)
+Full prerequisites, ports, and troubleshooting: [`examples/README.md`](examples/README.md)
 
 ---
 
@@ -243,29 +250,37 @@ Node.js **≥ 18** required.
 ```bash
 git clone https://github.com/akirilyuk/node-webrtc-rust.git
 cd node-webrtc-rust
-npm install
-
-# Native addons — host only (fast local iteration)
-cd packages/bindings && npm run build:debug:local
-
-# TypeScript packages
-cd ../.. && npm run build:ts
+npm run setup   # install deps, build native .node, build TS packages
 ```
 
-Use `build:local` (release) before running release-sensitive tests. Reserve `npm run build:all` inside bindings packages for CI / publish verification only.
+Or step by step:
+
+```bash
+npm run install:all
+npm run build:native   # host-only debug .node (~10s after cache warm)
+npm run build:ts
+```
+
+Use release builds (`cd packages/bindings && npm run build:local`) before release-sensitive tests. Reserve `npm run build:all` in bindings for CI / publish verification only.
 
 ### Tests
 
 ```bash
-# Rust
-cargo test -p node-webrtc-rust-core
-cargo test -p node-webrtc-rust-mixer
-cargo test -p node-webrtc-rust-conference
+# Everything: Rust workspace + npm workspaces (sdk, signaling)
+npm run test:all
 
-# TypeScript (unit + E2E)
-npm test
+# Rust only
+npm run test:rust
 
-# TURN integration (requires coturn)
+# TypeScript / Vitest only (sdk, signaling)
+npm run test:ts
+```
+
+`test:all` runs `cargo test --workspace` (core, mixer, conference, bindings compile) and `npm test` in every workspace that defines a test script. Requires a built `.node` — use `npm run build:native` first if needed.
+
+TURN integration (optional, skipped by default):
+
+```bash
 docker compose -f docker-compose.test.yml up -d
 TURN_AVAILABLE=1 npm test --workspace=@node-webrtc-rust/sdk
 docker compose -f docker-compose.test.yml down

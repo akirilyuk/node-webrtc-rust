@@ -1,9 +1,9 @@
 name: Restore Cargo target cache
-description: Restore workspace target/ saved by compile/build (Swatinem/rust-cache on Linux)
+description: Restore workspace target/ saved by ci-build-native-linux (target-only cache entry)
 
 inputs:
   cache_prefix:
-    description: Must match compile/build rust-cache prefix-key (e.g. v1-pr-debug)
+    description: Must match compile/build cache_prefix (e.g. v1-pr-debug)
     required: true
 
 outputs:
@@ -19,10 +19,10 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: target
-        key: ${{ inputs.cache_prefix }}-target-${{ hashFiles('Cargo.lock', 'crates/**/Cargo.toml', 'packages/bindings/Cargo.toml') }}
+        key: ${{ inputs.cache_prefix }}-target-Linux-x64-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
         restore-keys: |
+          ${{ inputs.cache_prefix }}-target-Linux-x64-
           ${{ inputs.cache_prefix }}-target-
-          ${{ inputs.cache_prefix }}-
 
     - name: Report Cargo target restore
       shell: bash

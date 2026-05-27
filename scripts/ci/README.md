@@ -102,10 +102,12 @@ Vitest tests import from `src/`, but this step validates publishable `dist/` out
 Before tests, the test job receives the native binding from the **same workflow run**:
 
 1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact uploaded by `compile-native` (PR) or `build-linux` (main/release)
-2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) when compile was skipped (e.g. TS-only PR) or artifact download failed
+2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) only when artifact download fails (e.g. TS-only PR with compile-native skipped)
 3. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist)
 
-Jobs do not share a workspace on self-hosted runners (each job checks out fresh). The GHA cache key matches between compile and test, but **cache restore in called workflows can miss** even after a hit in the caller — artifact download avoids recompiling in tests.
+Jobs do not share a workspace on self-hosted runners (each job checks out fresh). **GHA cache can hit in `compile-native` but miss in the test job** when test runs via `workflow_call` — same key, different job context. Artifact download avoids that gap; skip the native cache step when the artifact is present.
+
+`cargo test` in the test container may still compile Rust crates on a cold `target/` cache; that is unrelated to the prebuilt `.node` binding.
 
 **Last resort inside the test script** (no artifact and no cache):
 

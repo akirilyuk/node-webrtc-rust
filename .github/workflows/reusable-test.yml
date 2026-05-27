@@ -36,6 +36,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download native binding artifact
+        id: binding-artifact
         if: inputs.binding_artifact != ''
         uses: actions/download-artifact@v4
         with:
@@ -43,7 +44,10 @@ jobs:
           path: packages/bindings
         continue-on-error: true
 
+      # GHA cache restore often misses in workflow_call jobs even after a hit in the
+      # caller (compile-native). Artifact download is the reliable same-run path.
       - uses: ./.github/actions/native-binding-cache
+        if: steps.binding-artifact.outcome != 'success'
         with:
           target: x86_64-unknown-linux-gnu
           profile: ${{ inputs.binding_profile }}

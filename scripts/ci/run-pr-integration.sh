@@ -27,6 +27,7 @@ else
 fi
 
 echo "==> cargo test (core, mixer, conference)"
+echo "    (compiles Rust test deps on cold cache — separate from the .node binding above)"
 cargo test -p node-webrtc-rust-core
 cargo test -p node-webrtc-rust-mixer
 cargo test -p node-webrtc-rust-conference

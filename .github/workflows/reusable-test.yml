@@ -1,4 +1,4 @@
-name: Reusable — integration tests (DinD + coturn)
+name: Reusable — integration tests (host Docker + coturn)
 
 on:
   workflow_call:
@@ -12,23 +12,12 @@ jobs:
   test:
     name: Test
     runs-on: self-hosted
-    services:
-      docker:
-        image: docker:24-dind
-        env:
-          DOCKER_TLS_CERTDIR: ""
-        options: >-
-          --privileged
-          --health-cmd "docker info"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     env:
-      DOCKER_HOST: tcp://docker:2375
-      DOCKER_TLS_CERTDIR: ""
       TURN_AVAILABLE: "1"
       CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
     steps:
+      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/native-binding-cache

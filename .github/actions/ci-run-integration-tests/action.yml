@@ -1,5 +1,5 @@
-name: Run integration tests (DinD + coturn/coturn)
-description: Start public coturn sidecar on DinD and run tests in the ci-build image
+name: Run integration tests (host Docker + coturn/coturn)
+description: Start public coturn sidecar on the runner Docker daemon and run tests in ci-build
 
 inputs:
   test_script:
@@ -39,3 +39,8 @@ runs:
           -e OPUS_STATIC=1 \
           "${{ inputs.ci_image }}" \
           bash "${{ inputs.test_script }}"
+
+    - name: Restore workspace ownership
+      if: always()
+      shell: bash
+      run: sudo chown -R "$(id -u)":"$(id -g)" "${GITHUB_WORKSPACE}" || true

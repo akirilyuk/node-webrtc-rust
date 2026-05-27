@@ -25,6 +25,8 @@ jobs:
       typescript: ${{ steps.filter.outputs.typescript }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
+      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -63,6 +65,8 @@ jobs:
       needs.changes.outputs.workflows == 'true'
     runs-on: self-hosted
     steps:
+      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -122,6 +126,8 @@ jobs:
       )
     runs-on: self-hosted
     steps:
+      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4

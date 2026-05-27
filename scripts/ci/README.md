@@ -21,7 +21,7 @@ Reusable workflows (called via `workflow_call`, not triggered directly):
 |------|------|
 | [`reusable-build-linux.yml`](../../.github/workflows/reusable-build-linux.yml) | Linux release matrix (gnu, musl, arm64) |
 | [`reusable-build-host.yml`](../../.github/workflows/reusable-build-host.yml) | macOS + Windows release matrix |
-| [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) | DinD + coturn + integration tests |
+| [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) | Host Docker + coturn + integration tests |
 
 Composite actions live in [`.github/actions/`](../../.github/actions/).
 
@@ -33,7 +33,7 @@ Composite actions live in [`.github/actions/`](../../.github/actions/).
 | macOS | `macos-latest` | Release host matrix (darwin x64 + arm64) |
 | Windows | `windows-latest` | Release host matrix (x64) |
 
-The self-hosted runner must have **Docker** (for `ci-build` job containers, DinD integration tests, and `ci-image` buildx). macOS/Windows jobs stay on GitHub-hosted runners.
+The self-hosted runner must have **Docker** with passwordless **sudo** for workspace ownership fixes (container jobs and test `docker run` leave root-owned files). Used for `ci-build` job containers, integration tests, and `ci-image` buildx. macOS/Windows jobs stay on GitHub-hosted runners.
 
 ---
 
@@ -69,7 +69,7 @@ If none match, the whole workflow is skipped.
 ### 2. Typecheck & lint
 
 - **When:** `native` OR `typescript` OR `workflows`
-- **Runner:** `ubuntu-latest` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
+- **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
 - **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → `npm ci`, unified typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`
 
 Must pass before compile / TS build / test.
@@ -87,7 +87,7 @@ Populates the shared native cache used by the test job.
 ### 4. Build TypeScript
 
 - **When:** `typescript` OR `workflows` (skipped on Rust-only PRs)
-- **Runner:** `ubuntu-latest` + `setup-node`
+- **Runner:** `self-hosted` + `setup-node`
 - **Cache:** [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) → `packages/sdk/dist`, `packages/signaling/dist`
 - **Build:** `npm run build:ts` only on cache miss via [`build-ts-workspace.sh`](build-ts-workspace.sh) (3-phase: sdk core → signaling → full sdk)
 
@@ -109,7 +109,7 @@ Before tests, restores **both** caches onto the workspace:
 - Compile debug `.node` if missing
 - Run `build:ts` if `dist/` missing
 
-Test execution: DinD service (port **2375**, no TLS) → public `coturn/coturn:latest` sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`.
+Test execution: runner **host Docker** → public `coturn/coturn:latest` sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`. A prepare step resets workspace ownership before checkout (container jobs write root-owned files).
 
 ---
 

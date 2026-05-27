@@ -1,0 +1,12 @@
+name: Prepare self-hosted workspace
+description: Fix root-owned files from prior container jobs before checkout
+
+runs:
+  using: composite
+  steps:
+    - name: Restore workspace ownership
+      shell: bash
+      run: |
+        if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+          sudo chown -R "$(id -u)":"$(id -g)" "${RUNNER_WORKSPACE}" || true
+        fi

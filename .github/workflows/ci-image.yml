@@ -19,6 +19,8 @@ jobs:
       contents: read
       packages: write
     steps:
+      - uses: ./.github/actions/ci-prepare-self-hosted-workspace
+
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx

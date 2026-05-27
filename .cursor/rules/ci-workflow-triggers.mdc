@@ -20,13 +20,25 @@ PR workflows do **not** include a release publish job.
 
 ## Release (`.github/workflows/release.yml`)
 
-Runs **only** on `release/*` tag push: full matrix build → test → npm publish → GitHub Release.
+Runs **only** on `release/*` tag push (typically from **`main`** after merge): full matrix build → test → npm publish → GitHub Release.
 
 ```bash
+git checkout main && git pull
 git tag release/0.1.0 && git push origin release/0.1.0
 ```
 
-Do **not** add `push` triggers for feature branches (`initial-feature`, etc.) or `pull_request` targets other than `main`. Feature-branch commits stay off CI until there is a PR to `main`.
+Local alternatives: `scripts/release-local.sh` (host platform) and `scripts/release-publish.sh` (macOS, all buildable targets). See `scripts/RELEASE.md`.
+
+## CI Docker image (`ci` branch)
+
+Rebuild and push `ghcr.io/.../ci-build:latest` when `docker/ci/Dockerfile` or the ci-image workflow changes:
+
+- Push to the **`ci`** branch
+- Or **`workflow_dispatch`** on CI Docker image workflow
+
+PR and release workflows pull `:latest`; they never rebuild the image in those workflows.
+
+Do **not** add `push` triggers for feature branches or `pull_request` targets other than `main`. Feature-branch commits stay off CI until there is a PR to `main`.
 
 ## Caching and skip logic (`.github/workflows/build.yml`)
 
@@ -36,15 +48,6 @@ Do **not** add `push` triggers for feature branches (`initial-feature`, etc.) or
 - **`Swatinem/rust-cache`**: Cargo registry + `target/` per triple.
 - **`actions/cache`**: npm, napi-rs Zig toolchain, and native `.node` artifacts (`.github/actions/native-binding-cache`).
 - **`test` job** runs only affected checks (e.g. skip `cargo test` if only TypeScript changed).
-
-## CI Docker image (`.github/workflows/ci-image.yml`)
-
-Rebuild and push `ghcr.io/.../ci-build:latest` **only when**:
-
-- The **`ci` branch** is pushed (Dockerfile or workflow changes land there)
-- **`workflow_dispatch`** is triggered manually
-
-The main build workflow always pulls `:latest`; it never rebuilds the image.
 
 ## Local validation before pushing / opening PRs
 

@@ -13,4 +13,6 @@ packages/bindings/node-webrtc-rust.win32-x64-msvc.node
 
 `scripts/release-publish.sh` picks these up automatically and skips compiling.
 
+See [`scripts/RELEASE.md`](../RELEASE.md) for the full release guide.
+
 You can also use `prebuilt/bindings-<target>/` or `artifacts/bindings-<target>/` from a previous run.

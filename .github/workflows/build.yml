@@ -127,6 +127,7 @@ jobs:
         run: npx napi build --platform --release --target ${{ matrix.target }} --zig
 
       - name: Require native artifact
+        shell: bash
         working-directory: packages/bindings
         run: |
           shopt -s nullglob
@@ -369,6 +370,7 @@ jobs:
           path: ci-artifacts
 
       - name: Stage binding artifacts
+        shell: bash
         working-directory: packages/bindings
         run: |
           mkdir -p artifacts

@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
       cargo_cache_prefix:
-        description: Swatinem/rust-cache prefix (must match compile/build-linux job)
+        description: Cargo target cache prefix (must match compile/build-linux rust-cache)
         type: string
         default: v1-pr-debug
 
@@ -70,11 +70,9 @@ jobs:
           fi
           echo "Native binding ready: $(basename "${files[0]}")"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/ci-restore-cargo-target
         with:
-          prefix-key: ${{ inputs.cargo_cache_prefix }}
-          cache-targets: x86_64-unknown-linux-gnu
-          workspaces: .
+          cache_prefix: ${{ inputs.cargo_cache_prefix }}
 
       - uses: ./.github/actions/ci-cache-ts-dist
 

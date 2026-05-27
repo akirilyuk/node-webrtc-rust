@@ -43,6 +43,9 @@ runs:
         prefix-key: ${{ inputs.cache_prefix }}
         cache-targets: ${{ inputs.target }}
         workspaces: .
+        shared-key: target
+        add-job-id-key: false
+        add-rust-environment-hash-key: false
 
     - name: Cache npm
       uses: actions/cache@v4

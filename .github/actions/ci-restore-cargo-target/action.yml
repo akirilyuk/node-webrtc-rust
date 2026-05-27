@@ -1,0 +1,36 @@
+name: Restore Cargo target cache
+description: Restore workspace target/ saved by compile/build (Swatinem/rust-cache on Linux)
+
+inputs:
+  cache_prefix:
+    description: Must match compile/build rust-cache prefix-key (e.g. v1-pr-debug)
+    required: true
+
+outputs:
+  cache-hit:
+    description: Whether an exact cache key matched
+    value: ${{ steps.target.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Cargo target/
+      id: target
+      uses: actions/cache/restore@v4
+      with:
+        path: target
+        key: ${{ inputs.cache_prefix }}-target-${{ hashFiles('Cargo.lock', 'crates/**/Cargo.toml', 'packages/bindings/Cargo.toml') }}
+        restore-keys: |
+          ${{ inputs.cache_prefix }}-target-
+          ${{ inputs.cache_prefix }}-
+
+    - name: Report Cargo target restore
+      shell: bash
+      run: |
+        if [[ "${{ steps.target.outputs.cache-hit }}" == "true" ]]; then
+          echo "Cargo target/ cache hit (${{ inputs.cache_prefix }})"
+        elif [[ -d target ]]; then
+          echo "Cargo target/ partially restored via restore-keys (${{ inputs.cache_prefix }})"
+        else
+          echo "Cargo target/ cache miss — cargo test will compile from scratch"
+        fi

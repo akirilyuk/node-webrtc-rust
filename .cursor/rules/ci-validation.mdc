@@ -38,7 +38,7 @@ Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github
    Do not push until local commands exit 0.
 4. **If you change a script used by multiple workflows**, grep for references (`run-pr-quality`, `run-pr-integration`, `run-pr-tests-full`, `verify-checks`) and update every caller.
 5. **Lint scope** — `npm run lint` runs repo-wide; browser demo scripts under `examples/**/public/` are ignored in `eslint.config.js`.
-6. **Test jobs** — use DinD on `ubuntu-latest` (no job container) with public `coturn/coturn:latest`; run tests in prebuilt `ci-build` via `docker run --network container:coturn`. Do not maintain a custom coturn image.
+6. **Test jobs** — use DinD on `ubuntu-latest` (no job container) with public `coturn/coturn:latest`; run tests in prebuilt `ci-build` via `docker run --network container:coturn`. Use `DOCKER_HOST=tcp://docker:2375` and empty `DOCKER_TLS_CERTDIR` (not TLS `:2376` — cert paths break composite login steps).
 
 ## Anti-patterns
 

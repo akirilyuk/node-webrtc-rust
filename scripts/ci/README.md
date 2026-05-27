@@ -99,7 +99,7 @@ Before tests, restores **both** caches onto the workspace:
 - Compile debug `.node` if missing
 - Run `build:ts` if `dist/` missing
 
-Test execution: DinD service → public `coturn/coturn:latest` sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`.
+Test execution: DinD service (port **2375**, no TLS) → public `coturn/coturn:latest` sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`.
 
 ---
 

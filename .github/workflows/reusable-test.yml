@@ -7,10 +7,6 @@ on:
         description: Bash script path under repo root
         type: string
         required: true
-      binding_target:
-        description: Linux-gnu artifact target triple
-        type: string
-        default: x86_64-unknown-linux-gnu
 
 jobs:
   test:
@@ -35,9 +31,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/native-binding-cache
+        with:
+          target: x86_64-unknown-linux-gnu
+          profile: debug
+
+      - uses: ./.github/actions/ci-cache-ts-dist
+
       - uses: ./.github/actions/ci-run-integration-tests
         with:
           test_script: ${{ inputs.test_script }}
-          binding_target: ${{ inputs.binding_target }}
           ci_image: ${{ env.CI_IMAGE }}
           github_token: ${{ secrets.GITHUB_TOKEN }}

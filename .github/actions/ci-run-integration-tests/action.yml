@@ -5,10 +5,6 @@ inputs:
   test_script:
     description: Bash script path under repo root
     required: true
-  binding_target:
-    description: Artifact name suffix (e.g. x86_64-unknown-linux-gnu)
-    required: false
-    default: x86_64-unknown-linux-gnu
   ci_image:
     description: Prebuilt CI image (Node + Rust + Zig)
     required: true
@@ -25,12 +21,6 @@ runs:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ inputs.github_token }}
-
-    - name: Download native binding
-      uses: actions/download-artifact@v4
-      with:
-        name: bindings-${{ inputs.binding_target }}
-        path: packages/bindings/
 
     - name: Run integration tests (coturn/coturn + ci-build)
       shell: bash

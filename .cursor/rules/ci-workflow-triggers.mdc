@@ -15,8 +15,11 @@ alwaysApply: false
 |---|---|
 | Detect changes | path filters (`native`, `typescript`, `workflows`) |
 | Typecheck & lint | `run-pr-quality.sh` on `ubuntu-latest` + Node 20 (no ci-build pull) |
-| **Build** | debug compile → upload `.node` (single native build job) |
-| Test | DinD + public `coturn/coturn` sidecar; tests run in prebuilt `ci-build` |
+| Compile native | debug `.node` — **only** when `native` or `workflows` paths change |
+| Build TypeScript | `npm run build:ts` — **only** when `typescript` or `workflows` paths change |
+| Test | restores native + TS dist caches; runs cargo + npm tests (fallback compile/build on cache miss) |
+
+`compile-native` and `build-ts` run **in parallel** after quality passes. TS-only PRs skip native compile; Rust-only PRs skip TS build. Vitest imports `src/` directly, but `build:ts` still validates publishable output when TS changes.
 
 Runs on **pull_request → `main`** only. No skipped release-matrix jobs on PRs.
 
@@ -37,7 +40,8 @@ Runs on **`release/*` tag push**: same reusable build/test workflows → npm pub
 | `reusable-test.yml` | DinD test job (`coturn/coturn` + `ci-build`) |
 | `actions/ci-build-native-linux` | Cache, compile, verify, upload (Linux) |
 | `actions/ci-build-native-host` | Toolchain setup + compile (host OS) |
-| `actions/ci-run-integration-tests` | coturn sidecar + artifact download + ci-build test run |
+| `actions/ci-cache-ts-dist` | sdk/signaling `dist/` cache restore/save |
+| `actions/ci-run-integration-tests` | coturn sidecar + ci-build test run |
 | `actions/native-binding-cache` | Per-target `.node` cache restore/save |
 
 ## CI Docker image (`ci` branch)

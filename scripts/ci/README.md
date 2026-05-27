@@ -25,6 +25,16 @@ Reusable workflows (called via `workflow_call`, not triggered directly):
 
 Composite actions live in [`.github/actions/`](../../.github/actions/).
 
+## Runners
+
+| Platform | `runs-on` | Workflows |
+|----------|-----------|-----------|
+| Linux x64 | `self-hosted` | PR pipeline, Linux release matrix, integration tests, CI image build, release publish |
+| macOS | `macos-latest` | Release host matrix (darwin x64 + arm64) |
+| Windows | `windows-latest` | Release host matrix (x64) |
+
+The self-hosted runner must have **Docker** (for `ci-build` job containers, DinD integration tests, and `ci-image` buildx). macOS/Windows jobs stay on GitHub-hosted runners.
+
 ---
 
 ## PR pipeline (`build.yml`)

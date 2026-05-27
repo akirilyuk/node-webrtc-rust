@@ -16,14 +16,14 @@ alwaysApply: false
 | Job | Purpose |
 |---|---|
 | Detect changes | path filters (`native`, `typescript`, `workflows`) |
-| Typecheck & lint | `run-pr-quality.sh` on `ubuntu-latest` + Node 20 (no ci-build pull) |
+| Typecheck & lint | `run-pr-quality.sh` on `self-hosted` + Node 20 (no ci-build pull) |
 | Compile native | debug `.node` — **only** when `native` or `workflows` paths change |
 | Build TypeScript | `npm run build:ts` — **only** when `typescript` or `workflows` paths change |
 | Test | restores native + TS dist caches; runs cargo + npm tests (fallback compile/build on cache miss) |
 
 `compile-native` and `build-ts` run **in parallel** after quality passes. TS-only PRs skip native compile; Rust-only PRs skip TS build. Vitest imports `src/` directly, but `build:ts` still validates publishable output when TS changes.
 
-Runs on **pull_request → `main`** only. No skipped release-matrix jobs on PRs.
+Runs on **pull_request → `main`** only. Linux x64 jobs use **`self-hosted`**; macOS/Windows stay on GitHub-hosted runners.
 
 ## Build & Test — main (`.github/workflows/build-main.yml`)
 

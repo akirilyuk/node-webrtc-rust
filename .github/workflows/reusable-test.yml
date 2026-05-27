@@ -11,7 +11,7 @@ on:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     services:
       docker:
         image: docker:24-dind

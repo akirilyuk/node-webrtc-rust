@@ -15,7 +15,7 @@ on:
 jobs:
   build-linux:
     name: Build - ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:

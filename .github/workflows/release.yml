@@ -42,7 +42,7 @@ jobs:
   publish:
     name: Publish release
     needs: [build-linux, build-host, test]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:

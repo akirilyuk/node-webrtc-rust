@@ -37,13 +37,22 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Cache Cargo (registry + target)
+    - name: Restore Cargo target/ (cross-job)
+      uses: actions/cache/restore@v4
+      with:
+        path: target
+        key: ${{ inputs.cache_prefix }}-target-Linux-x64-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+        restore-keys: |
+          ${{ inputs.cache_prefix }}-target-Linux-x64-
+          ${{ inputs.cache_prefix }}-target-
+
+    - name: Cache Cargo registry
       uses: Swatinem/rust-cache@v2
       with:
         prefix-key: ${{ inputs.cache_prefix }}
-        cache-targets: ${{ inputs.target }}
+        cache-targets: 'false'
         workspaces: .
-        shared-key: target
+        shared-key: registry
         add-job-id-key: false
         add-rust-environment-hash-key: false
 
@@ -99,21 +108,18 @@ runs:
           exit 1
         fi
 
-    # Swatinem bundles registry + target in one cache entry (different paths/version).
-    # Save target/ alone so the host test job can restore it before Docker tests.
-    - name: Check Cargo target/ for cross-job cache
-      id: target-cache
+    # Swatinem only caches the registry; target/ uses the dedicated cache above.
+    - name: Warm Cargo target/ for tests
       shell: bash
       run: |
         if [[ -d target && -n "$(ls -A target 2>/dev/null)" ]]; then
-          echo "exists=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "exists=false" >> "$GITHUB_OUTPUT"
-          echo "No target/ to save for cross-job restore"
+          echo "Cargo target/ already populated"
+          exit 0
         fi
+        echo "Building workspace test deps for cross-job target/ cache"
+        cargo build --workspace --tests
 
     - name: Save Cargo target/ for cross-job restore
-      if: steps.target-cache.outputs.exists == 'true'
       uses: actions/cache/save@v4
       with:
         path: target

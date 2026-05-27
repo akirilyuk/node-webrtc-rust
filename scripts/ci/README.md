@@ -104,7 +104,7 @@ Before tests, the test job receives the native binding from the **same workflow 
 1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact uploaded by `compile-native` (PR) or `build-linux` (main/release). Fails the job when compile ran but the artifact is missing.
 2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) only when artifact download is skipped or failed (e.g. TS-only PR).
 3. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
-4. **Cargo target/:** compile saves `target/` alone via `actions/cache/save` (Swatinem bundles registry paths and cannot be partially restored); [`ci-restore-cargo-target`](../../.github/actions/ci-restore-cargo-target) restores it on the host before Docker tests (no host `rustc` needed).
+4. **Cargo target/:** compile restores and saves `target/` via dedicated `actions/cache` keys (`{prefix}-target-Linux-x64-{lock hash}`); Swatinem caches the registry only. [`ci-restore-cargo-target`](../../.github/actions/ci-restore-cargo-target) restores `target/` on the host before Docker tests (no host `rustc` needed).
 5. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist).
 
 Jobs do not share a workspace on self-hosted runners (each job checks out fresh). Compile saves `target/` with a dedicated cache key (`{prefix}-target-Linux-x64-{lock hash}`); the test job restores it with [`ci-restore-cargo-target`](../../.github/actions/ci-restore-cargo-target) on the host before mounting the workspace into Docker (no `rustc` on the runner host).

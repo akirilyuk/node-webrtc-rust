@@ -23,10 +23,13 @@ When editing workflows, composite actions, CI scripts, or `docker/ci/Dockerfile`
 - Reusable workflow inputs/outputs
 - Local verify commands (`npm run ci:verify*`)
 
+**Validate locally before commit/push** — follow [`ci-local-validation.mdc`](ci-local-validation.mdc).
+
 ## Also check
 
 - [`.cursor/rules/ci-workflow-triggers.mdc`](ci-workflow-triggers.mdc) — short agent summary; keep aligned with README
 - [`.cursor/rules/ci-validation.mdc`](ci-validation.mdc) — cross-pipeline validation rules
+- [`.cursor/rules/ci-local-validation.mdc`](ci-local-validation.mdc) — run CI steps locally before commit/push
 - [`scripts/RELEASE.md`](../../scripts/RELEASE.md) — only if release/publish flow changes
 - Root [`README.md`](../../README.md) — only if user-facing `ci:verify` commands change
 

@@ -79,11 +79,9 @@ Populates the shared native cache used by the test job.
 - **When:** `typescript` OR `workflows` (skipped on Rust-only PRs)
 - **Runner:** `ubuntu-latest` + `setup-node`
 - **Cache:** [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) → `packages/sdk/dist`, `packages/signaling/dist`
-- **Build:** `npm run build:ts` only on cache miss
+- **Build:** `npm run build:ts` only on cache miss via [`build-ts-workspace.sh`](build-ts-workspace.sh) (3-phase: sdk core → signaling → full sdk)
 
-Runs **in parallel** with compile-native (both depend only on quality).
-
-Vitest tests import from `src/`, but this step validates publishable `dist/` output when TS changes.
+Vitest tests import from `src/`, but this step validates publishable `dist/` output when TS changes. The sdk↔signaling cycle (`conference/signaling-bridge.ts`) requires bootstrapping sdk without `conference/` before signaling can build.
 
 ### 5. Test
 
@@ -151,6 +149,7 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 | Script | Used by | What it runs |
 |--------|---------|--------------|
 | [`run-pr-quality.sh`](run-pr-quality.sh) | PR quality job | `npm ci`, typecheck, lint |
+| [`build-ts-workspace.sh`](build-ts-workspace.sh) | PR build-ts + integration fallback | sdk core → signaling → full sdk |
 | [`run-pr-integration.sh`](run-pr-integration.sh) | PR test job | `npm ci`, cargo test, optional build:ts, npm test |
 | [`run-pr-tests-full.sh`](run-pr-tests-full.sh) | main + release test | quality + integration |
 | [`verify-checks.sh`](verify-checks.sh) | `npm run ci:verify:checks*` | Local mirror of quality + integration |
@@ -160,11 +159,15 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 ## Local validation
 
+Run these **before pushing CI changes** (see [`.cursor/rules/ci-local-validation.mdc`](../../.cursor/rules/ci-local-validation.mdc)):
+
 ```bash
-npm run ci:verify:checks:docker  # PR-quality + integration (Docker)
-npm run ci:verify:linux          # Release Linux cross-builds
-npm run ci:verify                # Both
-npm run ci:docker:build          # Build ci-build image locally
+bash scripts/ci/run-pr-quality.sh     # PR quality job
+bash scripts/ci/build-ts-workspace.sh # PR build-ts job (from clean dist/)
+npm run ci:verify:checks:docker       # quality + integration in ci-build image
+npm run ci:verify:linux               # release Linux cross-builds
+npm run ci:verify                     # both verify targets
+npm run ci:docker:build               # build ci-build image locally
 ```
 
 After changing `docker/ci/Dockerfile`, rebuild and push to the `ci` branch before expecting Linux CI jobs to pick up toolchain changes.

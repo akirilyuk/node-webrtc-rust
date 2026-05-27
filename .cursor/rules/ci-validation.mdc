@@ -17,7 +17,7 @@ When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix on
 |---|---|---|
 | PR quality | `build.yml` → `quality` | `scripts/ci/run-pr-quality.sh` |
 | PR native compile | `build.yml` → `compile-native` (if Rust/bindings changed) | `ci-build-native-linux` |
-| PR TS build | `build.yml` → `build-ts` (if sdk/signaling changed) | `npm run build:ts` + `ci-cache-ts-dist` |
+| PR TS build | `build.yml` → `build-ts` (if sdk/signaling changed) | `build-ts-workspace.sh` + `ci-cache-ts-dist` |
 | PR integration | `build.yml` → `test` | restores both caches → `run-pr-integration.sh` |
 | Main push build + test | `build-main.yml` | `reusable-build-*` → `run-pr-tests-full.sh` |
 | Release build + test | `release.yml` | `reusable-build-*` → `run-pr-tests-full.sh` |
@@ -29,11 +29,13 @@ Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github
 
 1. **Shared scripts first** — put logic in `scripts/ci/*.sh` and call it from workflows; avoid duplicating steps in YAML.
 2. **Cross-package typecheck** — PR quality uses `scripts/ci/tsconfig.typecheck.json` on `ubuntu-latest` with `actions/setup-node` (not `ci-build`; that image is for native compile and integration tests only).
-3. **Validate locally before push**:
+3. **Validate locally before commit/push** — see [`ci-local-validation.mdc`](ci-local-validation.mdc). At minimum:
    ```bash
    bash scripts/ci/run-pr-quality.sh
-   npm run ci:verify:checks:docker   # when Docker is available
+   bash scripts/ci/build-ts-workspace.sh   # when TS build logic changed
+   npm run ci:verify:checks:docker       # when Docker is available
    ```
+   Do not push until local commands exit 0.
 4. **If you change a script used by multiple workflows**, grep for references (`run-pr-quality`, `run-pr-integration`, `run-pr-tests-full`, `verify-checks`) and update every caller.
 5. **Lint scope** — `npm run lint` runs repo-wide; browser demo scripts under `examples/**/public/` are ignored in `eslint.config.js`.
 6. **Test jobs** — use DinD on `ubuntu-latest` (no job container) with public `coturn/coturn:latest`; run tests in prebuilt `ci-build` via `docker run --network container:coturn`. Do not maintain a custom coturn image.

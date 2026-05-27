@@ -31,8 +31,7 @@ cargo test -p node-webrtc-rust-conference
 
 if [[ ! -f packages/sdk/dist/cjs/index.js ]] || [[ ! -f packages/signaling/dist/cjs/index.js ]]; then
   echo "==> build:ts (dist cache miss)"
-  npm run build --workspace=@node-webrtc-rust/signaling
-  npm run build --workspace=@node-webrtc-rust/sdk
+  bash scripts/ci/build-ts-workspace.sh
 else
   echo "==> build:ts skipped (dist restored from cache)"
 fi

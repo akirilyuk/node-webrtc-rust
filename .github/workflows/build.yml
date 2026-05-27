@@ -137,8 +137,7 @@ jobs:
         if: steps.ts-cache.outputs.cache-hit != 'true'
         run: |
           npm ci
-          npm run build --workspace=@node-webrtc-rust/signaling
-          npm run build --workspace=@node-webrtc-rust/sdk
+          bash scripts/ci/build-ts-workspace.sh
 
   test:
     name: Test

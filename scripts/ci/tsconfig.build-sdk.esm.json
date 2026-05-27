@@ -1,0 +1,10 @@
+{
+  "extends": "../../packages/sdk/tsconfig.esm.json",
+  "include": ["../../packages/sdk/src/**/*"],
+  "exclude": [
+    "../../packages/sdk/node_modules",
+    "../../packages/sdk/dist",
+    "../../packages/sdk/tests",
+    "../../packages/sdk/src/conference/**"
+  ]
+}

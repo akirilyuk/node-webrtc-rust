@@ -19,8 +19,8 @@ Reusable workflows (called via `workflow_call`, not triggered directly):
 
 | File | Role |
 |------|------|
-| [`reusable-build-linux.yml`](../../.github/workflows/reusable-build-linux.yml) | Linux release matrix (gnu, musl, arm64) |
-| [`reusable-build-host.yml`](../../.github/workflows/reusable-build-host.yml) | macOS + Windows release matrix |
+| [`reusable-build-linux.yml`](../../.github/workflows/reusable-build-linux.yml) | Linux x64 release matrix (gnu, musl) |
+| [`reusable-build-host.yml`](../../.github/workflows/reusable-build-host.yml) | macOS, Windows, and Linux arm64 release matrix |
 | [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) | Download binding artifact → cache fallback → host Docker tests |
 
 Composite actions live in [`.github/actions/`](../../.github/actions/).
@@ -29,7 +29,8 @@ Composite actions live in [`.github/actions/`](../../.github/actions/).
 
 | Platform | `runs-on` | Workflows |
 |----------|-----------|-----------|
-| Linux x64 | `self-hosted` | PR pipeline, Linux release matrix, integration tests, CI image build, release publish |
+| Linux x64 | `self-hosted` | PR pipeline, Linux x64 release matrix, integration tests, CI image build, release publish |
+| Linux arm64 (gnu) | `ubuntu-24.04-arm` (GitHub-hosted, native) | Release host matrix only |
 | macOS | `macos-latest` | Release host matrix (darwin x64 + arm64) |
 | Windows | `windows-latest` | Release host matrix (x64) |
 
@@ -189,7 +190,7 @@ Rebuild when the Dockerfile changes:
 git push origin ci
 ```
 
-Used by: PR compile-native, release Linux matrix, integration test container.
+Used by: PR compile-native, release Linux x64 matrix, integration test container.
 
 **Native build env:** `audiopus_sys` needs static Opus + CMake policy shim. Set `OPUS_STATIC=1` and `CMAKE_POLICY_VERSION_MINIMUM=3.5` on reusable build workflows and in [`ci-build-native-*`](../../.github/actions/) build steps (caller workflow `env` does not propagate into `workflow_call` jobs).
 

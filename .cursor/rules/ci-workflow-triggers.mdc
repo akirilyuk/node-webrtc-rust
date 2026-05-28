@@ -37,8 +37,8 @@ Runs on **`release/*` tag push**: **quality** → reusable build matrix (skip co
 
 | File | Role |
 |---|---|
-| `reusable-build-linux.yml` | Linux release matrix (3 targets) |
-| `reusable-build-host.yml` | macOS + Windows release matrix |
+| `reusable-build-linux.yml` | Linux x64 release matrix (gnu + musl) |
+| `reusable-build-host.yml` | macOS, Windows, and Linux arm64 release matrix |
 | `reusable-test.yml` | Download binding artifact, cache fallback, host Docker tests |
 | `actions/ci-build-native-linux` | Cache, compile, verify, upload (Linux) |
 | `actions/ci-build-native-host` | Toolchain setup + compile; skip on native cache hit (host OS) |

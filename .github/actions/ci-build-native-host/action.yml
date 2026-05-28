@@ -1,4 +1,4 @@
-name: Build native addon (macOS / Windows)
+name: Build native addon (macOS / Windows / Linux arm64)
 description: Setup toolchain, compile, verify, and optionally upload a host .node binding
 
 inputs:

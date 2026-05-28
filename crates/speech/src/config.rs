@@ -33,12 +33,23 @@ impl Default for EventsConfig {
     }
 }
 
-/// Barge-in behavior when inbound speech is detected.
+/// Barge-in: stop agent TTS and emit `barge_in`.
+///
+/// - `enabled` — master switch for flush + `barge_in` event.
+/// - `use_vad` (default true) — when true, inbound VAD `SpeechStart` triggers barge-in
+///   (`vad.enabled` must be true on the same agent). When false, only `flushTts()` from
+///   your app triggers barge-in (no automatic interrupt on noise or test tones).
+/// - `flush_tts` — clear pending outbound PCM when barge-in runs.
+///
+/// Tune `vad.threshold` and `vad.minSpeechDurationMs` to avoid brief sounds triggering
+/// interrupt when `use_vad` is true.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BargeInConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub use_vad: bool,
     #[serde(default = "default_true")]
     pub flush_tts: bool,
 }
@@ -47,6 +58,7 @@ impl Default for BargeInConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            use_vad: true,
             flush_tts: true,
         }
     }

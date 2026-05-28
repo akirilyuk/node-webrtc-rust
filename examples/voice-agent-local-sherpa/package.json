@@ -28,6 +28,7 @@
     "download-tts:zh": "node scripts/download-tts.mjs --lang=zh",
     "start": "tsx src/index.ts",
     "start:roundtrip": "tsx src/roundtrip.ts",
+    "start:roundtrip-barge-in": "tsx src/roundtrip-barge-in.ts",
     "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },

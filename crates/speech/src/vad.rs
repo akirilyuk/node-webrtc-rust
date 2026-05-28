@@ -184,7 +184,7 @@ impl VadEngine {
     }
 }
 
-/// Apply barge-in policy when user speech starts.
+/// Apply barge-in policy (flush + `barge_in` event) when `enabled` is true.
 pub async fn handle_barge_in(
     barge_in: &BargeInConfig,
     tts_buffer: &TtsBuffer,

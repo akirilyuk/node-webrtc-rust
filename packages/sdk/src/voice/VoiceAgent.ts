@@ -47,7 +47,11 @@ function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
           ? JsVadSampleRate.Hz16000
           : undefined,
     bargeIn: vad.bargeIn
-      ? { enabled: vad.bargeIn.enabled, flushTts: vad.bargeIn.flushTts }
+      ? {
+          enabled: vad.bargeIn.enabled,
+          useVad: vad.bargeIn.useVad,
+          flushTts: vad.bargeIn.flushTts,
+        }
       : undefined,
     gateStt: vad.gateStt,
     gateSttOpenOnPending: vad.gateSttOpenOnPending,

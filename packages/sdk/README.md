@@ -50,16 +50,11 @@ await pc.addTrack(agentTrack)
 let userTrack: RemoteAudioTrack
 pc.ontrack = (e) => { if (e.track.kind === 'audio') userTrack = e.track as RemoteAudioTrack }
 
-// 2. Configure one VoiceAgent per conversation
+// 2. Configure one VoiceAgent per conversation (VAD preset = good defaults for phone bots)
+import { VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+
 const agent = new VoiceAgent({
-  vad: {
-    enabled: true,
-    threshold: 0.5,
-    minSpeechDurationMs: 250,
-    minSilenceDurationMs: 300,
-    bargeIn: { enabled: true, flushTts: true },
-    gateStt: false, // set true to only send PCM to STT during detected speech
-  },
+  vad: VOICE_AGENT_VAD_PRESET,
   stt: { provider: 'deepgram', model: 'nova-2', language: 'en' },
   tts: { provider: 'openai', model: 'tts-1', voice: 'alloy' },
   events: { mode: 'both' },
@@ -107,14 +102,14 @@ interface VoiceAgentConfig {
     speechPadMs?: number           // pre-roll ring capacity (ms), default 300
     sampleRate?: 8000 | 16000
     bargeIn?: {
-      enabled?: boolean            // emit barge_in on user speech start
-      flushTts?: boolean           // flush TTS buffer before event (default true)
+      enabled?: boolean            // master switch (default true)
+      useVad?: boolean             // auto barge on VAD SpeechStart (default true); false = flushTts() only
+      flushTts?: boolean           // clear TTS buffer when barge-in runs (default true)
     }
     gateStt?: boolean              // only feed STT while gate is open (default false)
     gateSttOpenOnPending?: boolean // also open gate during VAD pending speech (default true)
     sttGateHoldMs?: number         // keep feeding STT after speech end (default 2500)
   }
-  // VAD timing vs test harness silence: examples/voice-agent-local-sherpa/ROUNDTRIP.md
   stt?: {
     provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'local-sherpa' | 'mock'
     model?: string
@@ -206,13 +201,26 @@ Two layers — **fast VAD** vs **text-bearing STT**:
 
 | Event | Source | Use in your agent |
 | --- | --- | --- |
-| `user_speaking_start` | VAD | Early interrupt; triggers barge-in |
-| `user_speaking_end` | VAD | End-of-utterance hint |
+| `user_speaking_start` | VAD `SpeechStart` | User began talking (inbound voice activity) |
+| `user_speaking_end` | VAD `SpeechEnd` | End-of-utterance hint |
 | `user_speech_partial` | STT | Live captions, prefetch |
 | `user_speech_final` | STT | **Primary LLM turn trigger** |
 | `agent_speaking_start` / `end` | TTS playback | UI / state machine |
-| `barge_in` | VAD + config | Cancel LLM/TTS pipeline |
+| `barge_in` | VAD `SpeechStart` + `bargeIn.enabled` | Cancel agent TTS (after optional flush) |
 | `error` | Any | Vendor or pipeline failure |
+
+### VAD and barge-in
+
+**Full guide:** [`VOICE-VAD-AND-BARGE-IN.md`](./VOICE-VAD-AND-BARGE-IN.md) — use cases, defaults, when to tune, two-peer layouts.
+
+**Quick start:** use `VOICE_AGENT_VAD_PRESET` (or omit `vad` and only set `gateStt: true` if you stream STT). Defaults are aimed at phone bots: 250 ms min speech, 300 ms min silence (no split on TTS word gaps), barge-in on VAD `SpeechStart`, `sttGateHoldMs` 2500.
+
+| Export | Use |
+| --- | --- |
+| `VOICE_AGENT_VAD_PRESET` | Recommended — `gateStt: true` + default barge-in |
+| `DEFAULT_VOICE_AGENT_VAD` | Rust defaults (`gateStt: false`) |
+
+Barge-in auto-fires only when `vad.enabled` and `bargeIn.useVad` (both default `true`). Set `useVad: false` and call `flushTts()` for manual interrupt only.
 
 **Callback delivery:**
 

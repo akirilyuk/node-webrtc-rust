@@ -10,10 +10,18 @@ export type EventDeliveryMode = 'callback' | 'stream' | 'both'
 export type VadSampleRate = 8000 | 16000
 
 export interface BargeInConfig {
+  /** Master switch for flush + `barge_in` event. Default true. */
   enabled?: boolean
+  /**
+   * When true (default), inbound VAD `SpeechStart` triggers barge-in (`vad.enabled` required).
+   * When false, only `flushTts()` triggers barge-in — avoids auto-interrupt on noise/tones.
+   */
+  useVad?: boolean
+  /** Clear pending TTS PCM when barge-in runs. Default true. */
   flushTts?: boolean
 }
 
+/** See VOICE-VAD-AND-BARGE-IN.md — prefer VOICE_AGENT_VAD_PRESET for voice bots. */
 export interface VadConfig {
   enabled?: boolean
   provider?: 'silero'
@@ -23,6 +31,7 @@ export interface VadConfig {
   /** Pre-roll ring capacity (ms), added to minSpeechDurationMs. Default 300. */
   speechPadMs?: number
   sampleRate?: VadSampleRate
+  /** Flush TTS on inbound VAD SpeechStart; requires `enabled: true`. */
   bargeIn?: BargeInConfig
   gateStt?: boolean
   /** When gateStt is true, feed STT during VAD pending speech. Default true. */

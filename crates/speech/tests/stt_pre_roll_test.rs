@@ -346,3 +346,61 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
         "subsequent speech frames should stream to STT"
     );
 }
+
+#[tokio::test]
+async fn min_silence_default_300_requires_fifteen_silent_frames_to_end() {
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::new(MockFactory));
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 300;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = false;
+
+    let config = VoiceAgentConfig {
+        stt: None,
+        tts: None,
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut rx = agent.subscribe_events();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    for _ in 0..3 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let mut saw_end = false;
+    for i in 0..20 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == node_webrtc_rust_speech::events::SpeechEventKind::UserSpeakingEnd {
+                saw_end = true;
+                assert!(
+                    i >= 14,
+                    "default min_silence 300 ms needs ~15 silent 20 ms frames, got end at frame {i}"
+                );
+            }
+        }
+    }
+    assert!(saw_end, "expected user_speaking_end after sustained silence");
+}

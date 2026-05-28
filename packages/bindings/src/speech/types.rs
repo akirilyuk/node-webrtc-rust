@@ -49,6 +49,7 @@ impl From<JsEventsConfig> for EventsConfig {
 #[derive(Debug, Clone, Default)]
 pub struct JsBargeInConfig {
     pub enabled: Option<bool>,
+    pub use_vad: Option<bool>,
     pub flush_tts: Option<bool>,
 }
 
@@ -56,6 +57,7 @@ impl From<JsBargeInConfig> for BargeInConfig {
     fn from(value: JsBargeInConfig) -> Self {
         Self {
             enabled: value.enabled.unwrap_or(true),
+            use_vad: value.use_vad.unwrap_or(true),
             flush_tts: value.flush_tts.unwrap_or(true),
         }
     }

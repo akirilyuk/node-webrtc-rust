@@ -199,10 +199,20 @@ impl VoiceAgent {
     }
 
     pub async fn flush_tts(&self) -> SpeechResult<()> {
-        self.tts_buffer.flush().await;
-        self.end_agent_speaking(true).await;
-        voice_debug("agent_speaking=false (flush_tts)");
-        self.emit(SpeechEvent::agent_speaking_end());
+        let barge_in = {
+            let inner = self.inner.lock().await;
+            inner.config.vad.barge_in.clone()
+        };
+        if barge_in.enabled && !barge_in.use_vad {
+            handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+            self.end_agent_speaking(false).await;
+            voice_debug("agent_speaking=false (manual barge-in flush)");
+        } else {
+            self.tts_buffer.flush().await;
+            self.end_agent_speaking(true).await;
+            voice_debug("agent_speaking=false (flush_tts)");
+            self.emit(SpeechEvent::agent_speaking_end());
+        }
         Ok(())
     }
 
@@ -359,10 +369,12 @@ impl VoiceAgent {
                         let inner = self.inner.lock().await;
                         inner.config.vad.barge_in.clone()
                     };
-                    handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
-                    if barge_in.flush_tts {
-                        self.end_agent_speaking(false).await;
-                        voice_debug("agent_speaking=false (barge-in flush)");
+                    if barge_in.enabled && barge_in.use_vad {
+                        handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+                        if barge_in.flush_tts {
+                            self.end_agent_speaking(false).await;
+                            voice_debug("agent_speaking=false (barge-in flush)");
+                        }
                     }
                     self.emit(SpeechEvent::user_speaking_start());
                 }
@@ -493,8 +505,14 @@ impl VoiceAgent {
                 .ok_or(SpeechError::NotAttached)?
         };
 
+        let drain_generation = self.tts_buffer.current_generation().await;
+
         while let Some(chunk) = self.tts_buffer.pop_chunk().await {
             for (frame, duration_ms) in split_stereo_pcm_frames(&chunk.pcm, chunk.duration_ms) {
+                if self.tts_buffer.current_generation().await != drain_generation {
+                    voice_debug("TTS drain stopped (barge-in flush)");
+                    return Ok(());
+                }
                 writer(frame, duration_ms)?;
             }
         }

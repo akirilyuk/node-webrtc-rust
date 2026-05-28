@@ -117,6 +117,7 @@ export interface JsEventsConfig {
 }
 export interface JsBargeInConfig {
   enabled?: boolean
+  useVad?: boolean
   flushTts?: boolean
 }
 export const enum JsVadSampleRate {

@@ -1,6 +1,10 @@
 /**
  * Resolve VoiceAgent config for local Sherpa STT + TTS in the browser demo.
  *
+ * VAD/barge-in values follow packages/sdk/VOICE-VAD-AND-BARGE-IN.md (preset + energy
+ * threshold 0.05). Override via env only when debugging — defaults are meant to work
+ * without tuning.
+ *
  * Requires SHERPA_STT_MODEL_PATH (run `npm run download-stt` first).
  * Requires SHERPA_TTS_MODEL_PATH (run `npm run download-tts` first).
  * Optional SHERPA_STT_LANGUAGE sets stt.language when it matches the downloaded STT bundle.
@@ -13,6 +17,7 @@ import { existsSync } from 'fs'
 import { basename } from 'path'
 
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
+import { VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 
 import {
   applyVoiceDebugOverrides,
@@ -58,13 +63,9 @@ const LOCAL_SHERPA_VOICE_CONFIG = (
   },
   events: { mode: 'both' },
   vad: {
-    enabled: true,
+    ...VOICE_AGENT_VAD_PRESET,
+    // Energy VAD (when Silero feature off): RMS scale — not Silero's 0.5 default.
     threshold: 0.05,
-    minSpeechDurationMs: 250,
-    speechPadMs: 300,
-    gateStt: true,
-    sttGateHoldMs: 2500,
-    bargeIn: { enabled: true, flushTts: true },
   },
 })
 

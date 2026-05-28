@@ -42,7 +42,7 @@ This matches production:
 - **Listener** receives remote audio on its inbound track (like a phone call).
 - The listener does **not** hear its own TTS; the browser does not loop playback into the mic send path either (separate capture vs speaker output, plus AEC).
 
-**Barge-in on the listener** (`bargeIn: true` by default) is safe here: the listener is not playing TTS, so `barge_in` does not cut off the speaker’s playback.
+The **listener** does not play TTS — its `bargeIn` setting does not stop the speaker. See [VOICE-VAD-AND-BARGE-IN.md](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md) for two-peer vs single-agent layouts.
 
 ## Quick start
 
@@ -192,8 +192,62 @@ Roundtrip OK — 5 phrase(s) passed similarity check.
 
 Exit code `1` if any phrase is empty or below the similarity threshold.
 
+## Barge-in E2E
+
+[`src/roundtrip-barge-in.ts`](./src/roundtrip-barge-in.ts) — same WebRTC loopback as the STT roundtrip, but tests **interrupting agent TTS** mid-utterance.
+
+### What barge-in is
+
+**Barge-in** = the **speaking agent** stops its TTS and emits `barge_in`.
+
+```typescript
+bargeIn: { enabled: true, useVad: true, flushTts: true }
+```
+
+| Setting | Behavior |
+|---------|----------|
+| `enabled` | Master switch for flush + `barge_in`. |
+| `useVad: true` (default) | Automatic interrupt on inbound VAD `SpeechStart` (`vad.enabled` required). |
+| `useVad: false` | No auto interrupt on voice; call `flushTts()` from your app only. |
+
+Avoid false interrupts from short tones/noise when `useVad: true` by raising `vad.minSpeechDurationMs` (e.g. 200–300 ms) or `vad.threshold` on the **speaker** agent.
+
+| Requirement | Why |
+|-------------|-----|
+| `vad.enabled: true` on the **speaker** | Needed for `useVad` auto barge-in |
+| `vad.bargeIn.useVad: true` | E2E test uses this; tone on `agentInbound` triggers `SpeechStart` |
+| Interrupt audio on speaker **inbound** (`agentInbound`) | User leg tone simulates the user talking over the agent |
+
+```text
+Speaker (agent PC)                    User leg
+Sherpa TTS → agentOut → userInbound   userOut → agentInbound (440 Hz tone)
+VAD on agentInbound                   voice activity → SpeechStart → barge_in + flush TTS
+```
+
+The STT roundtrip **listener** has VAD for `gateStt` but does not play TTS — barge-in there would not cut the speaker’s playback. This test puts VAD + barge-in on the **speaker**.
+
+| Phase | What happens |
+|-------|----------------|
+| 1 | Long phrase, no interrupt → measure full received audio (ms) on `userInbound` |
+| 2 | Same phrase; after `SHERPA_BARGE_IN_DELAY_MS`, stream user tone at real time → expect `barge_in` and received audio **&lt; 65%** of phase 1 (configurable) |
+
+```bash
+npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SHERPA_BARGE_IN_PHRASE` | long built-in sentence | TTS text |
+| `SHERPA_BARGE_IN_DELAY_MS` | `400` | Wait before injecting user tone (must be before TTS finishes) |
+| `SHERPA_BARGE_IN_INTERRUPT_S` | `1.2` | User tone duration (real-time frames) |
+| `SHERPA_BARGE_IN_MAX_RATIO` | `0.65` | Max allowed `cutMs / fullMs` |
+| `SHERPA_BARGE_IN_VERBOSE` | off | Log speaker speech events |
+
+Success ends with `Barge-in E2E OK — TTS playback was truncated after user interrupt.`
+
 ## Related docs
 
+- [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md) — VAD/barge-in use cases and defaults
 - [Example README](./README.md) — browser demo, model download
 - [`crates/vendor-sherpa-onnx/README.md`](../../crates/vendor-sherpa-onnx/README.md) — model layout
 - [`packages/sdk/README.md`](../../packages/sdk/README.md) — `VoiceAgent` / VAD config reference

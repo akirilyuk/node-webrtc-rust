@@ -25,7 +25,7 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | **voice-agent** `start:live:*` | CLI (exits on success) | 8080 | Per-vendor live manual test (API keys; see `voice-agent/README.md`) |
 | **voice-agent-browser** | Browser + Node server | 3001 | Browser mic → STT events via DataChannel; client triggers TTS + barge-in demo |
 | **voice-agent-browser** `start:live:*` | Browser + Node server | 3001 | Same UI with live cloud STT/TTS (`VOICE_VENDOR` + API keys; see README) |
-| **voice-agent-local-sherpa** | Browser + Node server | 3002 | **Free local Sherpa STT + TTS** — browser demo; [`start:roundtrip`](./voice-agent-local-sherpa/ROUNDTRIP.md) = two-agent TTS→STT test (5 phrases + similarity) |
+| **voice-agent-local-sherpa** | Browser + Node server | 3002 | Sherpa browser demo; [`start:roundtrip`](./voice-agent-local-sherpa/ROUNDTRIP.md) (TTS→STT); [`start:roundtrip-barge-in`](./voice-agent-local-sherpa/ROUNDTRIP.md#barge-in-e2e) (interrupt TTS) |
 
 ## Run examples locally
 

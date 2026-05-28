@@ -39,6 +39,7 @@ async fn run_barge_in(barge_in: BargeInConfig) -> (usize, bool) {
 async fn barge_in_flush_then_emit() {
     let (pending, saw_barge_in) = run_barge_in(BargeInConfig {
         enabled: true,
+        use_vad: true,
         flush_tts: true,
     })
     .await;
@@ -50,6 +51,7 @@ async fn barge_in_flush_then_emit() {
 async fn barge_in_notify_only() {
     let (pending, saw_barge_in) = run_barge_in(BargeInConfig {
         enabled: true,
+        use_vad: true,
         flush_tts: false,
     })
     .await;
@@ -61,6 +63,7 @@ async fn barge_in_notify_only() {
 async fn barge_in_disabled() {
     let (pending, saw_barge_in) = run_barge_in(BargeInConfig {
         enabled: false,
+        use_vad: true,
         flush_tts: true,
     })
     .await;

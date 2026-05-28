@@ -11,6 +11,8 @@ This example mirrors [`voice-agent-browser`](../voice-agent-browser/README.md) b
 
 Your **browser microphone** → WebRTC → Node **VoiceAgent** → Sherpa `OnlineRecognizer` → partial/final events on the `voice-control` DataChannel.
 
+**VAD / barge-in:** configured in [`resolve-voice-config.ts`](./src/resolve-voice-config.ts) from `VOICE_AGENT_VAD_PRESET` (good defaults; only `threshold: 0.05` for energy VAD). Guide: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md).
+
 ---
 
 ## Why use free local STT?
@@ -172,6 +174,16 @@ Quick reference:
 | `SHERPA_ROUNDTRIP_VERBOSE` | off | Log every VAD/STT event |
 
 Inter-phrase separation comes from **listener VAD** (`sttGateHoldMs`, endpoint tail, wait for `user_speech_final`) plus **post-TTS trailing silence** on the speaker track (duration derived from those VAD timings). See [ROUNDTRIP.md § Timing](./ROUNDTRIP.md#timing-vad-vs-explicit-silence).
+
+### 3c. Barge-in E2E (interrupt TTS mid-playback)
+
+Same loopback as §3b, but the **speaker** has VAD + `bargeIn`; the user leg injects tone on `agentInbound` after a delay. Phase 1 measures full TTS received on `userInbound`; phase 2 must be shorter and emit `barge_in`.
+
+```bash
+npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Details: [ROUNDTRIP.md § Barge-in E2E](./ROUNDTRIP.md#barge-in-e2e).
 
 Rust-level smoke (no WebRTC): `cargo test -p node-webrtc-rust-vendor-sherpa-onnx tts_synthesize_produces_stereo_pcm_with_model -- --ignored` with `SHERPA_TTS_MODEL_PATH` set.
 

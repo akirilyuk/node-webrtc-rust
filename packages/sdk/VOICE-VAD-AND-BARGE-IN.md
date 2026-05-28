@@ -1,0 +1,255 @@
+# VAD and barge-in guide
+
+How `VoiceAgent` uses voice activity detection (VAD) and barge-in, which settings matter, and what you can leave at defaults.
+
+Rust defaults live in `crates/speech/src/config.rs`. TypeScript mirrors them in [`src/voice/defaults.ts`](./src/voice/defaults.ts).
+
+## Philosophy: defaults first
+
+Most phone-bot / voice-assistant apps only need:
+
+```typescript
+import { VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+
+const agent = new VoiceAgent({
+  stt: { provider: 'deepgram', /* … */ },
+  tts: { provider: 'openai', /* … */ },
+  vad: VOICE_AGENT_VAD_PRESET,
+  events: { mode: 'both' },
+})
+```
+
+Or omit `vad` entirely and get library defaults (VAD on, barge-in on, `gateStt` off). For production voice agents that stream STT, prefer **`VOICE_AGENT_VAD_PRESET`** (`gateStt: true`).
+
+Override a field only when you hit a concrete issue (false barge-in, STT cutting off words, TTS split into two utterances).
+
+---
+
+## Defaults at a glance
+
+| Field | Default | Role |
+|-------|---------|------|
+| `vad.enabled` | `true` | Inbound VAD on |
+| `vad.threshold` | `0.5` | Silero-style sensitivity (see energy VAD note below) |
+| `vad.minSpeechDurationMs` | `250` | Min voiced time before `user_speaking_start` |
+| `vad.minSilenceDurationMs` | `300` | Min silence before `user_speaking_end` (avoids TTS word-gap splits) |
+| `vad.speechPadMs` | `300` | Pre-roll ring size for `gateStt` (not subtracted from speech start) |
+| `vad.gateStt` | `false` | If `true`, STT only while gate is open |
+| `vad.gateSttOpenOnPending` | `true` | Include VAD “pending” speech in gate (WebRTC lead-in) |
+| `vad.sttGateHoldMs` | `2500` | Keep feeding STT after `user_speaking_end` |
+| `vad.bargeIn.enabled` | `true` | Allow barge-in flush + event |
+| `vad.bargeIn.useVad` | `true` | Auto barge on VAD `SpeechStart` |
+| `vad.bargeIn.flushTts` | `true` | Clear pending TTS PCM on barge-in |
+
+**Energy VAD fallback** (no Silero feature): the Sherpa example uses `threshold: 0.05` because RMS energy scores differ from Silero probabilities. See [Local Sherpa example](#local-sherpa-on-device).
+
+---
+
+## Use cases
+
+### 1. Standard voice agent (one peer, user talks, agent replies)
+
+**One `VoiceAgent`** on the call:
+
+- `inboundTrack` = user mic (remote)
+- `outboundTrack` = agent TTS (local)
+- **VAD + barge-in + `gateStt`** on this agent
+
+```typescript
+vad: VOICE_AGENT_VAD_PRESET
+// or: { gateStt: true }  // everything else default
+```
+
+| Piece | Setting | Why |
+|-------|---------|-----|
+| VAD | `enabled: true` (default) | Utterance boundaries, barge-in |
+| `gateStt` | `true` | Don’t stream silence/noise to STT |
+| `bargeIn` | defaults (`useVad: true`) | User can talk over TTS |
+| `sttGateHoldMs` | default `2500` | Trailing phonemes after user stops |
+
+**App wiring:**
+
+```typescript
+agent.on('user_speech_final', (e) => startLLM(e.text!))
+agent.on('barge_in', () => cancelLLM())
+```
+
+You do **not** need a second agent for barge-in on a normal client.
+
+---
+
+### 2. Listen-only leg (STT roundtrip, conference listener)
+
+Agent **receives** audio but **does not** play TTS on the same instance (or never calls `sendTextToTTS`).
+
+```typescript
+vad: {
+  gateStt: true,
+  bargeIn: { enabled: false }, // optional: no TTS to interrupt
+}
+```
+
+| Piece | Setting | Why |
+|-------|---------|-----|
+| `bargeIn.enabled` | `false` | No outbound TTS → barge-in has no effect |
+| `gateStt` | `true` | STT only during speech |
+
+Example: [`examples/voice-agent-local-sherpa` roundtrip](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md) — **speaker** has `vad.enabled: false`; **listener** uses `VOICE_AGENT_VAD_PRESET`.
+
+---
+
+### 3. Separate TTS speaker + STT listener (two peers)
+
+Used in tests and some pipelines:
+
+| Peer | VAD | Barge-in | Notes |
+|------|-----|----------|-------|
+| **Speaker** (plays TTS) | `enabled: true`, `gateStt: false` | `useVad: true` | Inbound = interrupt audio (user leg) |
+| **Listener** (STT only) | `gateStt: true` | `enabled: false` | Does **not** stop speaker TTS |
+
+Barge-in only cuts TTS on the agent that **plays** audio and **hears** the interrupt on **inbound**.
+
+---
+
+### 4. Manual interrupt only (no VAD-driven barge)
+
+Push-to-talk, hardware mute, or your own cloud VAD:
+
+```typescript
+vad: {
+  ...VOICE_AGENT_VAD_PRESET,
+  bargeIn: { enabled: true, useVad: false, flushTts: true },
+}
+```
+
+Call `agent.flushTts()` when **you** decide to interrupt. Inbound tones/noise will **not** auto-cut TTS.
+
+`user_speaking_start` / `end` still fire if VAD stays enabled.
+
+---
+
+### 5. Disable barge-in, keep VAD events
+
+Agent never plays TTS, or you handle overlap in the UI only:
+
+```typescript
+vad: {
+  gateStt: true,
+  bargeIn: { enabled: false },
+}
+```
+
+---
+
+### 6. Disable VAD entirely
+
+Always-on STT (rare, higher cost):
+
+```typescript
+vad: { enabled: false }
+```
+
+No `user_speaking_*`, no `barge_in`. STT receives all inbound PCM (vendor permitting).
+
+---
+
+## Barge-in reference
+
+**Barge-in** = stop pending agent TTS and emit `barge_in` so the app can cancel the LLM stream.
+
+```typescript
+bargeIn: {
+  enabled: true,   // master switch
+  useVad: true,    // auto: inbound VAD SpeechStart
+  flushTts: true,  // clear queued PCM before event
+}
+```
+
+| `enabled` | `useVad` | What happens |
+|-----------|----------|----------------|
+| `false` | — | No `barge_in`, no TTS flush from barge path |
+| `true` | `true` | **Automatic** on VAD `SpeechStart` (`vad.enabled` required) |
+| `true` | `false` | **Manual** via `flushTts()` only |
+
+Event order on auto barge: optional TTS flush → `barge_in` → `user_speaking_start`.
+
+**Requirements for auto barge:**
+
+1. Same `VoiceAgent` that calls `sendTextToTTS`
+2. `vad.enabled: true`
+3. Real user speech on `inboundTrack` (not agent TTS loopback on that track)
+
+---
+
+## VAD timing (when to tune)
+
+### `minSpeechDurationMs` (default 250)
+
+Time inbound audio must look “voiced” before `user_speaking_start` / auto barge.
+
+| Symptom | Direction |
+|---------|-----------|
+| Coughs / clicks trigger barge-in | **Increase** (300–400) |
+| User feels lag before agent reacts | **Decrease** (150–200) cautiously |
+
+### `minSilenceDurationMs` (default 300)
+
+Silence needed **inside** one utterance to emit `user_speaking_end`.
+
+| Symptom | Direction |
+|---------|-----------|
+| One sentence split into two STT finals | **Increase** (400–500) |
+| Agent waits too long after user stops | **Decrease** (200–250) |
+
+Keeps short TTS word gaps (&lt; 300 ms) inside a single utterance when the agent is speaking.
+
+### `threshold` (default 0.5)
+
+| Symptom | Direction |
+|---------|-----------|
+| Noise floor triggers speech | **Increase** |
+| Quiet speakers never start | **Decrease** |
+
+### `sttGateHoldMs` (default 2500)
+
+Audio time fed to STT **after** `user_speaking_end`. Usually leave default; see [ROUNDTRIP.md](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md) for harness timing.
+
+### `speechPadMs` (default 300)
+
+Pre-roll buffer capacity for `gateStt` only. Rarely change; does **not** delay `SpeechStart`.
+
+---
+
+## Recommendations (quick)
+
+| Goal | Suggested config |
+|------|------------------|
+| **Default voice bot** | `vad: VOICE_AGENT_VAD_PRESET` + `on('barge_in')` / `on('user_speech_final')` |
+| **Minimal config** | Omit `vad` or `{}` — add `gateStt: true` for real STT |
+| **No false interrupts from beeps** | Keep defaults; raise `minSpeechDurationMs` to 300 first |
+| **No auto interrupt** | `bargeIn: { useVad: false }` + `flushTts()` |
+| **STT-only leg** | `gateStt: true`, `bargeIn.enabled: false` |
+| **Local Sherpa** | Use example `resolve-voice-config` (`threshold: 0.05` for energy VAD) |
+
+---
+
+## Local Sherpa (on-device)
+
+[`examples/voice-agent-local-sherpa`](../../examples/voice-agent-local-sherpa/README.md) sets:
+
+- `threshold: 0.05` — energy VAD RMS scale, not Silero 0.5
+- Otherwise aligned with `VOICE_AGENT_VAD_PRESET` (250 / 300 ms speech/silence, `gateStt`, barge-in defaults)
+
+Do not copy `0.05` into cloud Silero deployments.
+
+**Tests:**
+
+- TTS → STT: `npm run start:roundtrip`
+- Barge-in: `npm run start:roundtrip-barge-in` — [ROUNDTRIP.md § Barge-in E2E](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md#barge-in-e2e)
+
+---
+
+## Related
+
+- [`packages/sdk/README.md`](./README.md) — VoiceAgent API
+- [`examples/voice-agent-local-sherpa/ROUNDTRIP.md`](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md) — timing and loopback tests

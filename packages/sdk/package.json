@@ -47,6 +47,11 @@
       "types": "./dist/cjs/conference/index.d.ts",
       "import": "./dist/esm/conference/index.js",
       "require": "./dist/cjs/conference/index.js"
+    },
+    "./voice": {
+      "types": "./dist/cjs/voice/index.d.ts",
+      "import": "./dist/esm/voice/index.js",
+      "require": "./dist/cjs/voice/index.js"
     }
   },
   "files": [

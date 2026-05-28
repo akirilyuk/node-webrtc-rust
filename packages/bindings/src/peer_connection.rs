@@ -162,6 +162,12 @@ impl JsPeerConnection {
     }
 
     #[napi]
+    pub async fn remove_track(&self, sender: &crate::rtp_sender::JsRtpSender) -> Result<()> {
+        debug_call!("bindings::peer_connection", "remove_track");
+        self.inner.remove_track(sender.inner()).await.map_err(core_err)
+    }
+
+    #[napi]
     pub async fn create_data_channel(
         &self,
         label: String,

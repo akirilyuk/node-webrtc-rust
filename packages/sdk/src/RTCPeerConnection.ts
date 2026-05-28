@@ -239,6 +239,14 @@ export class RTCPeerConnection extends EventEmitter {
   }
 
   /**
+   * Stops sending on the given sender and detaches its track.
+   */
+  async removeTrack(sender: RTCRtpSender): Promise<void> {
+    debugFn('sdk::RTCPeerConnection', 'removeTrack', `sender=${sender.id}`)
+    await this.native.removeTrack(sender.native)
+  }
+
+  /**
    * Blocks until ICE gathering completes and refreshes {@link localDescription}
    * with gathered candidates. Call after {@link setLocalDescription} before sending SDP.
    */

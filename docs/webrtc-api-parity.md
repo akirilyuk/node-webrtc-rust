@@ -84,7 +84,7 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 | API | Status | Notes |
 |-----|--------|-------|
 | `addTrack(track, ...streams)` | 🟡 | **`LocalAudioTrack` only**; stream args ignored |
-| `removeTrack(sender)` | ❌ | |
+| `removeTrack(sender)` | ✅ | Detaches send on the given {@link RTCRtpSender} |
 | `addTransceiver(...)` | ❌ | |
 | `getSenders()` | ❌ | Only handle returned from `addTrack` |
 | `getReceivers()` | ❌ | |
@@ -249,7 +249,7 @@ Prioritized for **browser interop** and **your conference product**:
 ### P0 — interoperability
 
 1. ~~**`RTCRtpSender.replaceTrack()`**~~ — done (v0.2.x)
-2. **`removeTrack()`** — stop sending a m-line
+2. ~~**`removeTrack()`**~~ — done (v0.2.x)
 3. **`createOffer` / `createAnswer` options** — at least `iceRestart`, receive audio/video hints
 4. **Remote audio decode in SDK** — optional `RemoteAudioTrack.readSamples()` or Opus→PCM callback for non-conference peers
 

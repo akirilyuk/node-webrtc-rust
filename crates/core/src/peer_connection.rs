@@ -340,6 +340,15 @@ impl PeerConnection {
         Ok(RtpSender::from_webrtc(sender))
     }
 
+    /// Stops sending on the given sender (detaches the track).
+    pub async fn remove_track(&self, sender: &RtpSender) -> Result<(), CoreError> {
+        debug_call!("core::peer_connection", "remove_track", "sender_id={}", sender.id());
+        self.inner
+            .remove_track(&sender.inner())
+            .await
+            .map_err(|e| CoreError::Track(e.to_string()))
+    }
+
     /// Closes the peer connection.
     pub async fn close(&self) -> Result<(), CoreError> {
         debug_call!("core::peer_connection", "close");

@@ -188,6 +188,7 @@ export declare class JsPeerConnection {
   setRemoteDescription(desc: JsRtcSessionDescription): Promise<void>
   addIceCandidate(candidate: JsRtcIceCandidate): Promise<void>
   addTrack(track: JsLocalAudioTrack): Promise<JsRtpSender>
+  removeTrack(sender: JsRtpSender): Promise<void>
   createDataChannel(label: string, options?: JsRtcDataChannelInit | undefined | null): Promise<JsRtcDataChannel>
   close(): Promise<void>
   gatheringComplete(): Promise<void>

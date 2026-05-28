@@ -314,6 +314,29 @@ async fn test_replace_track_swaps_outbound_audio() {
 }
 
 #[tokio::test]
+async fn test_remove_track_detaches_sender() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    let track = LocalAudioTrack::new("audio-1", "stream-1");
+    let sender = pc1
+        .add_track(track.as_track_local())
+        .await
+        .expect("add track");
+
+    signal_pair(&pc1, &pc2).await;
+    wait_for_connection(&pc1).await;
+
+    pc1.remove_track(&sender).await.expect("remove track");
+
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
 async fn test_connection_close() {
     let config = test_config();
     let pc1 = PeerConnection::new(config.clone())

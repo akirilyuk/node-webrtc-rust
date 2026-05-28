@@ -29,6 +29,14 @@ describe('SDK type surface', () => {
     pc.close()
   })
 
+  test('RTCPeerConnection.removeTrack accepts RTCRtpSender from addTrack', async () => {
+    const pc = new RTCPeerConnection()
+    const track = new LocalAudioTrack('a1', 's1')
+    const sender = await pc.addTrack(track)
+    await expect(pc.removeTrack(sender)).resolves.toBeUndefined()
+    pc.close()
+  })
+
   test('RTCPeerConnection fires negotiationneeded when adding a track', async () => {
     const pc = new RTCPeerConnection()
     const fired = new Promise<void>((resolve) => {

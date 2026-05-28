@@ -1,8 +1,34 @@
 /**
  * Live vendor presets for manual VoiceAgent testing.
  *
- * Each preset lists required env vars and default STT/TTS models.
- * Import from voice-agent live scripts; mirrored in SDK live tests.
+ * ## Why this file exists
+ *
+ * Each cloud provider needs different env vars, models, and often **STT/TTS pairing**
+ * because not every vendor supports both directions in this SDK:
+ *
+ * | Provider   | STT in SDK | TTS in SDK | Typical pairing in demos      |
+ * |------------|------------|------------|-------------------------------|
+ * | openai     | yes        | yes        | OpenAI + OpenAI               |
+ * | deepgram   | yes        | no         | Deepgram STT + OpenAI TTS     |
+ * | elevenlabs | no         | yes        | OpenAI STT + ElevenLabs TTS   |
+ * | cartesia   | no         | yes        | OpenAI STT + Cartesia TTS     |
+ * | assemblyai | yes      | no         | AssemblyAI STT + OpenAI TTS   |
+ * | google     | yes        | yes        | Google STT + Google TTS       |
+ *
+ * Production apps can mix providers freely via `VoiceAgentConfig.stt` / `.tts`.
+ *
+ * ## API keys
+ *
+ * Keys are read from env at runtime (or explicit `apiKey` in config). They are never
+ * logged. Prefer env vars in local dev; inject secrets from your worker orchestrator
+ * in production.
+ *
+ * ## Mirrored in tests
+ *
+ * `packages/sdk/tests/voice-vendor-presets.ts` duplicates the vendor list for vitest.
+ * Keep both in sync when adding a provider.
+ *
+ * Used by: `examples/voice-agent/src/live-vendor.ts` and npm `start:live:*` scripts.
  */
 
 import type { SttConfig, TtsConfig, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
@@ -33,11 +59,16 @@ function env(key: string): string | undefined {
   return value && value.trim().length > 0 ? value.trim() : undefined
 }
 
+/** Shared defaults for live demos: VAD + barge-in on, deliver events both ways. */
 function withKeys(stt: SttConfig, tts: TtsConfig): VoiceAgentConfig {
   return {
     vad: { enabled: true, bargeIn: { enabled: true, flushTts: true } },
     events: { mode: 'both' },
-    stt: { ...stt, apiKey: stt.apiKey ?? (stt.provider === 'openai' ? env('OPENAI_API_KEY') : undefined) },
+    stt: {
+      ...stt,
+      // OpenAI STT reads OPENAI_API_KEY when apiKey omitted; other STT vendors set explicitly below.
+      apiKey: stt.apiKey ?? (stt.provider === 'openai' ? env('OPENAI_API_KEY') : undefined),
+    },
     tts: { ...tts, apiKey: resolveTtsApiKey(tts) },
   }
 }
@@ -155,6 +186,7 @@ export function missingEnvVars(preset: LiveVendorPreset): string[] {
   return preset.requiredEnv.filter((key) => !env(key))
 }
 
+/** Same gate as SDK `voice-live.test.ts` — global flag + per-vendor flag + credentials. */
 export function liveVendorEnabled(id: LiveVendorId): boolean {
   if (process.env.VOICE_LIVE_TEST !== '1') return false
   if (process.env[`VOICE_LIVE_${id.toUpperCase()}`] !== '1') return false

@@ -1,10 +1,33 @@
 # Voice agent example
 
-Mock demos (`start:callback`, `start:stream`, `start:barge-in`) run without API keys.
+Runnable tours of `@node-webrtc-rust/sdk/voice` — mock demos need **no API keys**; live scripts
+exercise each cloud vendor once you have credentials.
 
-## Live vendor manual tests
+## Architecture (read this first)
 
-One npm script per supported cloud provider. Each checks required env vars before starting.
+```
+┌─────────────┐   userOut RTP    ┌─────────────┐
+│  user PC    │ ───────────────► │  agent PC   │
+│  (simulated │                  │ VoiceAgent  │
+│   caller)   │ ◄─────────────── │  host       │
+└─────────────┘   agentOut RTP   └─────────────┘
+                       ▲
+                       │ sendTextToTTS() → TTS vendor → PCM
+```
+
+- **`agentInbound`** — attach as `inboundTrack` (user speech → VAD/STT)
+- **`agentOut`** — attach as `outboundTrack` (agent TTS → WebRTC send)
+- Do **not** swap these; `userInbound` is agent audio heard on the user side only.
+
+Shared helpers and comments: `src/shared-loopback.ts`, `examples/shared/pcm-streaming.ts`.
+
+## Mock demos (CI-safe)
+
+| Script | File | Teaches |
+|--------|------|---------|
+| `start:callback` | `src/callback.ts` | `agent.on()` event handlers |
+| `start:stream` | `src/stream.ts` | `for await … speechEvents()` |
+| `start:barge-in` | `src/barge-in.ts` | VAD + `bargeIn.flushTts` |
 
 | Vendor | Command | Required env |
 |--------|---------|--------------|

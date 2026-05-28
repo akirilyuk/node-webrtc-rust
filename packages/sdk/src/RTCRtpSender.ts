@@ -2,7 +2,7 @@ import type { JsRtpSender } from '@node-webrtc-rust/bindings'
 
 import { debugFn } from './debug'
 import type { LocalAudioTrack } from './LocalAudioTrack'
-import { MediaStreamTrack } from './MediaStreamTrack'
+import type { MediaStreamTrack } from './MediaStreamTrack'
 
 /**
  * Handle for a local RTP media sender on a peer connection.

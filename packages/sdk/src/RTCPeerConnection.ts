@@ -30,7 +30,6 @@ import type {
   RTCSignalingState,
   RTCAnswerOptions,
   RTCOfferOptions,
-  RTCRtpTransceiverDirection,
   RTCRtpTransceiverInit,
   RTCStatsReport,
   RTCTrackEvent,

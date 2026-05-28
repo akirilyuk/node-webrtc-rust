@@ -1,6 +1,5 @@
 import type { JsRtpReceiver } from '@node-webrtc-rust/bindings'
 
-import { debugFn } from './debug'
 import type { TrackKind } from './types'
 
 /**

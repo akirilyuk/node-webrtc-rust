@@ -80,6 +80,11 @@ runs:
       working-directory: packages/bindings
       run: npm ci --ignore-scripts
 
+    - name: Reuse cached native addon
+      if: inputs.skip_build_on_cache_hit == 'true' && inputs.native_cache_hit == 'true'
+      shell: bash
+      run: echo "Skipping compile for ${{ inputs.target }} — native binding cache hit"
+
     - name: Build native addon
       if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
       shell: bash

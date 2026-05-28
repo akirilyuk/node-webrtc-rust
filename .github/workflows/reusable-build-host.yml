@@ -11,6 +11,10 @@ on:
         description: Swatinem/rust-cache prefix key
         type: string
         default: v1-native-release
+      use_native_cache:
+        description: Restore/save per-target .node cache before compile
+        type: boolean
+        default: true
 
 jobs:
   build-host:
@@ -32,8 +36,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/native-binding-cache
+        id: native-cache
+        if: inputs.use_native_cache
+        with:
+          target: ${{ matrix.target }}
+          profile: release
+
       - uses: ./.github/actions/ci-build-native-host
         with:
           target: ${{ matrix.target }}
           build_args: ${{ matrix.build-args }}
           cache_prefix: ${{ inputs.cache_prefix }}
+          skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
+          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}

@@ -12,6 +12,14 @@ inputs:
     description: Prefix for Swatinem/rust-cache
     required: false
     default: v1-native-release
+  skip_build_on_cache_hit:
+    description: Skip compile when native-binding-cache hit
+    required: false
+    default: 'false'
+  native_cache_hit:
+    description: Value from native-binding-cache output
+    required: false
+    default: 'false'
   upload_artifact:
     description: Upload bindings artifact
     required: false
@@ -53,12 +61,18 @@ runs:
       run: npm ci --ignore-scripts
 
     - name: Build native addon
+      if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
       shell: bash
       working-directory: packages/bindings
       env:
         CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         OPUS_STATIC: "1"
       run: npx napi build --platform --release ${{ inputs.build_args }}
+
+    - name: Reuse cached native addon
+      if: inputs.skip_build_on_cache_hit == 'true' && inputs.native_cache_hit == 'true'
+      shell: bash
+      run: echo "Skipping compile for ${{ inputs.target }} — native binding cache hit"
 
     - name: Require native artifact
       shell: bash

@@ -123,9 +123,23 @@ Test execution: runner **host Docker** → public `coturn/coturn:latest` sidecar
 
 Triggered on every push to `main`.
 
-1. **build-linux** — reusable workflow, release profile, 3 Linux triples (gnu, musl, arm64-gnu)
-2. **build-host** — reusable workflow, macOS ×2 + Windows
-3. **test** — [`run-pr-tests-full.sh`](run-pr-tests-full.sh) (= quality + integration)
+```mermaid
+flowchart TD
+  quality[Typecheck and lint]
+  buildLinux[build-linux matrix]
+  buildHost[build-host matrix]
+  test[Integration tests]
+
+  quality --> buildLinux
+  quality --> buildHost
+  buildLinux --> test
+  buildHost --> test
+  quality --> test
+```
+
+1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh) (must pass before native compile)
+2. **build-linux** / **build-host** — release matrix; skip `napi build` per target on native cache hit
+3. **test** — [`run-pr-integration.sh`](run-pr-integration.sh) only (quality already ran)
 
 No path filtering — always validates the full release surface after merge.
 
@@ -135,9 +149,26 @@ No path filtering — always validates the full release surface after merge.
 
 Triggered by `git push origin release/x.y.z`.
 
-1. **build-linux** / **build-host** — same reusable workflows (`cache_prefix: v1-release`)
-2. **test** — full suite via `run-pr-tests-full.sh`
-3. **publish** — stage all platform `.node` artifacts, set versions from tag, `npm publish`, GitHub Release
+```mermaid
+flowchart TD
+  quality[Typecheck and lint]
+  buildLinux[build-linux matrix]
+  buildHost[build-host matrix]
+  test[Integration tests]
+  publish[Publish npm + GitHub Release]
+
+  quality --> buildLinux
+  quality --> buildHost
+  buildLinux --> test
+  buildHost --> test
+  quality --> test
+  test --> publish
+```
+
+1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh) (must pass before any native compile)
+2. **build-linux** / **build-host** — same reusable workflows (`cache_prefix: v1-release`); per-target compile skipped on native cache hit
+3. **test** — [`run-pr-integration.sh`](run-pr-integration.sh) only (quality already ran)
+4. **publish** — runs only when quality, both build workflows, and test all **succeeded**; stage artifacts, `npm publish`, GitHub Release
 
 See [`scripts/RELEASE.md`](../RELEASE.md) for tagging and secrets.
 
@@ -169,7 +200,8 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 | [`run-pr-quality.sh`](run-pr-quality.sh) | PR quality job | `npm ci`, typecheck, lint |
 | [`build-ts-workspace.sh`](build-ts-workspace.sh) | PR build-ts + integration fallback | sdk core → signaling → full sdk |
 | [`run-pr-integration.sh`](run-pr-integration.sh) | PR test job | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test, optional build:ts, npm test |
-| [`run-pr-tests-full.sh`](run-pr-tests-full.sh) | main + release test | quality + integration |
+| [`run-pr-tests-full.sh`](run-pr-tests-full.sh) | local `ci:verify` | quality + integration |
+| [`run-pr-integration.sh`](run-pr-integration.sh) | main + release test | integration only (after quality job) |
 | [`verify-checks.sh`](verify-checks.sh) | `npm run ci:verify:checks*` | Local mirror of quality + integration |
 | [`verify-linux.sh`](verify-linux.sh) | `npm run ci:verify:linux` | Local release cross-builds in Docker |
 
@@ -196,7 +228,7 @@ After changing `docker/ci/Dockerfile`, rebuild and push to the `ci` branch befor
 
 | Cache | Key inputs | Paths | Used in |
 |-------|------------|-------|---------|
-| Native binding | `Cargo.lock`, crates, bindings sources | `packages/bindings/*.node` | compile-native, test |
+| Native binding | `Cargo.lock`, crates, bindings sources | `packages/bindings/*.node` | compile-native, release/main/host matrix, test |
 | TS dist | sdk/signaling sources + tsconfigs | `packages/*/dist` | build-ts, test |
 | npm | `package-lock.json` | `node_modules` | setup-node jobs |
 | Rust target (restore-only) | `Cargo.lock`, workspace | `target/` | compile/build-linux warm start only |

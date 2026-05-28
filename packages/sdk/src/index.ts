@@ -13,6 +13,7 @@ export { RTCRtpSender } from './RTCRtpSender'
 export { MediaStream } from './MediaStream'
 export { MediaStreamTrack } from './MediaStreamTrack'
 export { LocalAudioTrack } from './LocalAudioTrack'
+export { RemoteAudioTrack } from './RemoteAudioTrack'
 export { debugEvent, debugFn, isDebugEnabled, setDebugEnabled } from './debug'
 export type {
   RTCConfiguration,

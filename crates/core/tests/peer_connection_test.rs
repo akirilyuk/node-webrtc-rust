@@ -211,6 +211,17 @@ async fn test_audio_track_exchange() {
     assert_eq!(remote.kind(), node_webrtc_rust_core::TrackKind::Audio);
     assert_eq!(remote.id(), "audio-1");
 
+    track
+        .write_sample_slice(&[0u8; 3_840], Duration::from_millis(20))
+        .await
+        .expect("stream pcm");
+
+    let sample = timeout(Duration::from_secs(10), remote.read_sample())
+        .await
+        .expect("timed out waiting for pcm")
+        .expect("read sample");
+    assert_eq!(sample.pcm.len(), 3_840);
+
     pc1.close().await.expect("close pc1");
     pc2.close().await.expect("close pc2");
 }

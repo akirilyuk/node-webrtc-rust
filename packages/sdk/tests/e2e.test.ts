@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
-import { LocalAudioTrack, RTCPeerConnection } from '../src'
+import { LocalAudioTrack, RemoteAudioTrack, RTCPeerConnection } from '../src'
 import { defaultIceConfig, waitForConnection, waitForMessage, waitForOpen } from './helpers'
 
 describe('End-to-end peer connection', () => {
@@ -146,6 +146,53 @@ describe('End-to-end peer connection', () => {
 
     await trackB.writeSample(Buffer.alloc(960), 5)
     await trackB.writeSample(Buffer.alloc(3840), 20)
+
+    pc1.close()
+    pc2.close()
+    sig1.disconnect()
+    sig2.disconnect()
+  })
+
+  test('remote peer readSample returns decoded PCM', async () => {
+    const pc1 = new RTCPeerConnection(defaultIceConfig)
+    const pc2 = new RTCPeerConnection(defaultIceConfig)
+
+    const localTrack = new LocalAudioTrack('audio-rx', 'stream-rx')
+    await pc1.addTrack(localTrack)
+
+    const sig1 = new SignalingClient({
+      url: `ws://localhost:${server.port}`,
+      room: 'e2e-read-sample',
+      peerId: 'pc1',
+    })
+    const sig2 = new SignalingClient({
+      url: `ws://localhost:${server.port}`,
+      room: 'e2e-read-sample',
+      peerId: 'pc2',
+    })
+
+    autoNegotiate({ pc: pc1, signaling: sig1, polite: false })
+    autoNegotiate({ pc: pc2, signaling: sig2, polite: true })
+
+    const remoteTrackPromise = new Promise<RemoteAudioTrack>((resolve) => {
+      pc2.ontrack = (event) => {
+        if (event.track instanceof RemoteAudioTrack) {
+          resolve(event.track)
+        }
+      }
+    })
+
+    await sig1.connect()
+    await sig2.connect()
+    await waitForConnection(pc1)
+    await waitForConnection(pc2)
+
+    await localTrack.writeSample(Buffer.alloc(960), 5)
+    await localTrack.writeSample(Buffer.alloc(3840), 20)
+
+    const remote = await remoteTrackPromise
+    const pcm = await remote.readSample()
+    expect(pcm.length).toBe(3840)
 
     pc1.close()
     pc2.close()

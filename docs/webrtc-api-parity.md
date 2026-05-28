@@ -52,8 +52,8 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 
 | API | Status | Notes |
 |-----|--------|-------|
-| `createOffer(options?)` | 🟡 | Options type exists; **ignored** by native (`offerToReceiveAudio`, `iceRestart`, etc.) |
-| `createAnswer(options?)` | 🟡 | No answer options surface |
+| `createOffer(options?)` | 🟡 | `iceRestart`, `offerToReceiveAudio`, `voiceActivityDetection`; `offerToReceiveVideo` errors (video N/A) |
+| `createAnswer(options?)` | 🟡 | `voiceActivityDetection` |
 | `setLocalDescription(desc)` | ✅ | |
 | `setLocalDescription()` (implicit) | ❌ | Must pass explicit description |
 | `setRemoteDescription(desc)` | ✅ | |
@@ -152,7 +152,7 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 | `onended` / `onmute` / `onunmute` | ❌ | |
 | `clone()` | 🟡 | Shallow clone |
 | `getSettings()` / `getCapabilities()` / `applyConstraints()` | ❌ | |
-| **Remote decode in SDK** | ❌ | Native `RemoteTrack.read_rtp()` exists in Rust; **not exposed** in TypeScript SDK |
+| **Remote decode in SDK** | ✅ | {@link RemoteAudioTrack.readSample} (Opus → 48 kHz stereo PCM) |
 
 ### `LocalAudioTrack` (library pattern)
 
@@ -250,8 +250,8 @@ Prioritized for **browser interop** and **your conference product**:
 
 1. ~~**`RTCRtpSender.replaceTrack()`**~~ — done (v0.2.x)
 2. ~~**`removeTrack()`**~~ — done (v0.2.x)
-3. **`createOffer` / `createAnswer` options** — at least `iceRestart`, receive audio/video hints
-4. **Remote audio decode in SDK** — optional `RemoteAudioTrack.readSamples()` or Opus→PCM callback for non-conference peers
+3. ~~**`createOffer` / `createAnswer` options**~~ — `iceRestart` + `offerToReceiveAudio` done; video receive N/A
+4. **Remote audio decode in SDK** — `RemoteAudioTrack.readSample()` (in progress)
 
 ### P1 — operability
 

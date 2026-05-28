@@ -162,13 +162,15 @@ export declare class JsRtcDataChannel {
   setOnClose(callback: (...args: any[]) => any): void
   setOnError(callback: (...args: any[]) => any): void
 }
-/** Media stream track exposed to JavaScript (stub). */
+/** Media stream track exposed to JavaScript. */
 export declare class JsMediaStreamTrack {
   get id(): string
   get kind(): string
   get streamId(): string
   get enabled(): boolean
   set enabled(enabled: boolean)
+  /** Decodes the next inbound Opus RTP packet to stereo PCM (remote audio only). */
+  readSample(): Promise<Buffer>
 }
 /** Media stream exposed to JavaScript (stub). */
 export declare class JsMediaStream {

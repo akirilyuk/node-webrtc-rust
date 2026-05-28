@@ -10,6 +10,7 @@ import { debugEvent, debugFn, setDebugEnabled } from './debug'
 import { MediaStream } from './MediaStream'
 import { MediaStreamTrack } from './MediaStreamTrack'
 import type { LocalAudioTrack } from './LocalAudioTrack'
+import { RemoteAudioTrack } from './RemoteAudioTrack'
 import { RTCDataChannel } from './RTCDataChannel'
 import { RTCIceCandidate } from './RTCIceCandidate'
 import { RTCRtpSender } from './RTCRtpSender'
@@ -116,7 +117,8 @@ export class RTCPeerConnection extends EventEmitter {
     this.native.setOnTrack((_err, track) => {
       if (!track) return
       debugEvent('sdk::RTCPeerConnection', 'track', `id=${track.id}`)
-      const wrappedTrack = new MediaStreamTrack(track)
+      const wrappedTrack =
+        track.kind === 'audio' ? new RemoteAudioTrack(track) : new MediaStreamTrack(track)
       const stream = MediaStream.fromNativeTrack(track)
       const event: RTCTrackEvent = { track: wrappedTrack, streams: [stream] }
       this.ontrack?.(event)

@@ -19,7 +19,7 @@ pub use data_channel::*;
 pub use debug::{debug_event, debug_fn, is_debug_enabled, set_debug_enabled};
 pub use error::CoreError;
 pub use events::*;
-pub use media::*;
+pub use media::{PcmSample, *};
 pub use offer_answer::{AnswerOptions, OfferOptions};
 pub use peer_connection::*;
 pub use rtp_sender::RtpSender;

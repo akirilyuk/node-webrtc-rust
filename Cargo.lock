@@ -1457,6 +1457,7 @@ dependencies = [
  "bytes",
  "env_logger",
  "log",
+ "node-webrtc-rust-mixer",
  "serde",
  "serde_json",
  "thiserror",

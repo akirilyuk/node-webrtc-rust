@@ -4,8 +4,8 @@ use napi::bindgen_prelude::{Env, FromNapiValue, Result, ToNapiValue};
 use napi::JsUnknown;
 use napi_derive::napi;
 use node_webrtc_rust_core::{
-    IceCandidate, IceServer, IceTransportPolicy, PeerConnectionConfig, SdpType, SessionDescription,
-    set_debug_enabled,
+    AnswerOptions, IceCandidate, IceServer, IceTransportPolicy, OfferOptions, PeerConnectionConfig,
+    SdpType, SessionDescription, set_debug_enabled,
 };
 
 /// ICE server configuration exposed to JavaScript.
@@ -64,6 +64,40 @@ impl From<JsRTCConfiguration> for PeerConnectionConfig {
             ice_transport_policy,
             debug: value.debug,
         }
+    }
+}
+
+/// Offer options (W3C `RTCOfferOptions` subset).
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsRTCOfferOptions {
+    pub ice_restart: Option<bool>,
+    pub voice_activity_detection: Option<bool>,
+    pub offer_to_receive_audio: Option<bool>,
+    pub offer_to_receive_video: Option<bool>,
+}
+
+pub(crate) fn offer_options_from_js(value: Option<JsRTCOfferOptions>) -> OfferOptions {
+    let value = value.unwrap_or_default();
+    OfferOptions {
+        ice_restart: value.ice_restart.unwrap_or(false),
+        voice_activity_detection: value.voice_activity_detection.unwrap_or(true),
+        offer_to_receive_audio: value.offer_to_receive_audio.unwrap_or(false),
+        offer_to_receive_video: value.offer_to_receive_video.unwrap_or(false),
+    }
+}
+
+/// Answer options (W3C `RTCAnswerOptions` subset).
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsRTCAnswerOptions {
+    pub voice_activity_detection: Option<bool>,
+}
+
+pub(crate) fn answer_options_from_js(value: Option<JsRTCAnswerOptions>) -> AnswerOptions {
+    let value = value.unwrap_or_default();
+    AnswerOptions {
+        voice_activity_detection: value.voice_activity_detection.unwrap_or(true),
     }
 }
 

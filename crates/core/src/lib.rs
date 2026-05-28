@@ -10,6 +10,7 @@ pub mod events;
 pub mod media;
 pub mod pcm_audio_track;
 pub mod pcm_encoder;
+pub mod offer_answer;
 pub mod peer_connection;
 pub mod rtp_sender;
 
@@ -19,6 +20,7 @@ pub use debug::{debug_event, debug_fn, is_debug_enabled, set_debug_enabled};
 pub use error::CoreError;
 pub use events::*;
 pub use media::*;
+pub use offer_answer::{AnswerOptions, OfferOptions};
 pub use peer_connection::*;
 pub use rtp_sender::RtpSender;
 

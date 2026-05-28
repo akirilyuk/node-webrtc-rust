@@ -12,12 +12,17 @@ use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
 use webrtc::peer_connection::signaling_state::RTCSignalingState;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::offer_answer_options::{RTCAnswerOptions, RTCOfferOptions};
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::TrackLocal;
 
 use crate::config::PeerConnectionConfig;
+use crate::offer_answer::{AnswerOptions, OfferOptions};
 use crate::data_channel::{DataChannel, DataChannelOptions};
 use crate::debug_call;
 use crate::debug_evt;
@@ -265,15 +270,57 @@ impl PeerConnection {
     }
 
     /// Creates an SDP offer.
-    pub async fn create_offer(&self) -> Result<SessionDescription, CoreError> {
-        let desc = self.inner.create_offer(None).await?;
+    pub async fn create_offer(
+        &self,
+        options: Option<OfferOptions>,
+    ) -> Result<SessionDescription, CoreError> {
+        let options = options.unwrap_or_default();
+        if options.offer_to_receive_audio {
+            self.ensure_recv_transceiver(RTPCodecType::Audio).await?;
+        }
+        if options.offer_to_receive_video {
+            return Err(CoreError::InvalidState(
+                "offerToReceiveVideo is not supported yet".into(),
+            ));
+        }
+        let rtc_options = RTCOfferOptions {
+            ice_restart: options.ice_restart,
+            voice_activity_detection: options.voice_activity_detection,
+        };
+        let desc = self.inner.create_offer(Some(rtc_options)).await?;
         Ok(desc.into())
     }
 
     /// Creates an SDP answer.
-    pub async fn create_answer(&self) -> Result<SessionDescription, CoreError> {
-        let desc = self.inner.create_answer(None).await?;
+    pub async fn create_answer(
+        &self,
+        options: Option<AnswerOptions>,
+    ) -> Result<SessionDescription, CoreError> {
+        let options = options.unwrap_or_default();
+        let rtc_options = RTCAnswerOptions {
+            voice_activity_detection: options.voice_activity_detection,
+        };
+        let desc = self.inner.create_answer(Some(rtc_options)).await?;
         Ok(desc.into())
+    }
+
+    async fn ensure_recv_transceiver(&self, kind: RTPCodecType) -> Result<(), CoreError> {
+        let transceivers = self.inner.get_transceivers().await;
+        for transceiver in transceivers {
+            if transceiver.kind() == kind && transceiver.direction().has_recv() {
+                return Ok(());
+            }
+        }
+        self.inner
+            .add_transceiver_from_kind(
+                kind,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    send_encodings: Vec::new(),
+                }),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Sets the local session description.

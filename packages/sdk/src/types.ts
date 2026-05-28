@@ -72,6 +72,12 @@ export interface RTCOfferOptions {
   offerToReceiveAudio?: boolean
   offerToReceiveVideo?: boolean
   iceRestart?: boolean
+  voiceActivityDetection?: boolean
+}
+
+/** Options passed to {@link RTCPeerConnection.createAnswer}. */
+export interface RTCAnswerOptions {
+  voiceActivityDetection?: boolean
 }
 
 /** Plain-object ICE candidate for signaling transport. */

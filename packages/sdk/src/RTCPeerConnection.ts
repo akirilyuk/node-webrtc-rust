@@ -24,6 +24,7 @@ import type {
   RTCPeerConnectionIceEvent,
   RTCPeerConnectionState,
   RTCSignalingState,
+  RTCAnswerOptions,
   RTCOfferOptions,
   RTCTrackEvent,
 } from './types'
@@ -157,16 +158,19 @@ export class RTCPeerConnection extends EventEmitter {
    * Creates an SDP offer describing the local media and data channel setup.
    * @param _options - Reserved for future W3C offer options.
    */
-  async createOffer(_options?: RTCOfferOptions): Promise<RTCSessionDescription> {
+  async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescription> {
     debugFn('sdk::RTCPeerConnection', 'createOffer')
-    void _options
-    return fromNativeDescription(await this.native.createOffer())
+    return fromNativeDescription(
+      await this.native.createOffer(toNativeOfferOptions(options)),
+    )
   }
 
   /** Creates an SDP answer after a remote offer has been applied via {@link setRemoteDescription}. */
-  async createAnswer(): Promise<RTCSessionDescription> {
+  async createAnswer(options?: RTCAnswerOptions): Promise<RTCSessionDescription> {
     debugFn('sdk::RTCPeerConnection', 'createAnswer')
-    return fromNativeDescription(await this.native.createAnswer())
+    return fromNativeDescription(
+      await this.native.createAnswer(toNativeAnswerOptions(options)),
+    )
   }
 
   /**
@@ -293,4 +297,21 @@ export class RTCPeerConnection extends EventEmitter {
   }
 }
 
-export type { RTCConfiguration, RTCOfferOptions } from './types'
+function toNativeOfferOptions(options?: RTCOfferOptions) {
+  if (!options) return undefined
+  return {
+    iceRestart: options.iceRestart,
+    voiceActivityDetection: options.voiceActivityDetection,
+    offerToReceiveAudio: options.offerToReceiveAudio,
+    offerToReceiveVideo: options.offerToReceiveVideo,
+  }
+}
+
+function toNativeAnswerOptions(options?: RTCAnswerOptions) {
+  if (!options) return undefined
+  return {
+    voiceActivityDetection: options.voiceActivityDetection,
+  }
+}
+
+export type { RTCAnswerOptions, RTCConfiguration, RTCOfferOptions } from './types'

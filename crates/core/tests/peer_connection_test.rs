@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use node_webrtc_rust_core::{
-    ConnectionState, DataChannelState, IceServer, LocalAudioTrack, PeerConnection,
+    ConnectionState, DataChannelState, IceServer, LocalAudioTrack, OfferOptions, PeerConnection,
     PeerConnectionConfig,
 };
 use tokio::time::{sleep, timeout};
@@ -29,7 +29,7 @@ async fn signal_pair(offer: &PeerConnection, answer: &PeerConnection) {
         .await
         .expect("create signal channel");
 
-    let offer_desc = offer.create_offer().await.expect("create offer");
+    let offer_desc = offer.create_offer(None).await.expect("create offer");
     offer
         .set_local_description(offer_desc)
         .await
@@ -45,7 +45,7 @@ async fn signal_pair(offer: &PeerConnection, answer: &PeerConnection) {
         .await
         .expect("set remote offer");
 
-    let answer_desc = answer.create_answer().await.expect("create answer");
+    let answer_desc = answer.create_answer(None).await.expect("create answer");
     answer
         .set_local_description(answer_desc)
         .await
@@ -236,7 +236,7 @@ async fn test_ice_candidate_generation() {
         .await
         .expect("create dc");
 
-    let offer = pc.create_offer().await.expect("create offer");
+    let offer = pc.create_offer(None).await.expect("create offer");
     pc.set_local_description(offer)
         .await
         .expect("set local");
@@ -311,6 +311,38 @@ async fn test_replace_track_swaps_outbound_audio() {
 
     pc1.close().await.expect("close pc1");
     pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
+async fn test_offer_to_receive_audio_adds_audio_mline() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let desc = pc
+        .create_offer(Some(OfferOptions {
+            offer_to_receive_audio: true,
+            ..Default::default()
+        }))
+        .await
+        .expect("create offer");
+    assert!(desc.sdp.contains("m=audio"));
+    pc.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn test_offer_to_receive_video_returns_error() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let err = pc
+        .create_offer(Some(OfferOptions {
+            offer_to_receive_video: true,
+            ..Default::default()
+        }))
+        .await
+        .expect_err("video receive should fail");
+    assert!(err.to_string().contains("offerToReceiveVideo"));
+    pc.close().await.expect("close");
 }
 
 #[tokio::test]

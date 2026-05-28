@@ -12,7 +12,8 @@ use node_webrtc_rust_core::{
 use tokio::sync::{mpsc, Mutex};
 
 use crate::config::{
-    core_err, to_js_unknown, JsRTCIceCandidate, JsRTCConfiguration, JsRTCSessionDescription,
+    answer_options_from_js, core_err, offer_options_from_js, to_js_unknown, JsRTCAnswerOptions,
+    JsRTCIceCandidate, JsRTCConfiguration, JsRTCOfferOptions, JsRTCSessionDescription,
 };
 use crate::data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
 use crate::events::{create_event_callback, create_void_callback, wire_event_channel, wire_void_channel};
@@ -96,20 +97,26 @@ impl JsPeerConnection {
     }
 
     #[napi]
-    pub async fn create_offer(&self) -> Result<JsRTCSessionDescription> {
+    pub async fn create_offer(
+        &self,
+        options: Option<JsRTCOfferOptions>,
+    ) -> Result<JsRTCSessionDescription> {
         debug_call!("bindings::peer_connection", "create_offer");
         self.inner
-            .create_offer()
+            .create_offer(Some(offer_options_from_js(options)))
             .await
             .map(JsRTCSessionDescription::from)
             .map_err(core_err)
     }
 
     #[napi]
-    pub async fn create_answer(&self) -> Result<JsRTCSessionDescription> {
+    pub async fn create_answer(
+        &self,
+        options: Option<JsRTCAnswerOptions>,
+    ) -> Result<JsRTCSessionDescription> {
         debug_call!("bindings::peer_connection", "create_answer");
         self.inner
-            .create_answer()
+            .create_answer(Some(answer_options_from_js(options)))
             .await
             .map(JsRTCSessionDescription::from)
             .map_err(core_err)

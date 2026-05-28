@@ -25,6 +25,7 @@ export type {
   RTCSdpType,
   RTCIceCandidateInit,
   RTCSessionDescriptionInit,
+  RTCAnswerOptions,
   RTCOfferOptions,
   RTCPeerConnectionIceEvent,
   RTCTrackEvent,

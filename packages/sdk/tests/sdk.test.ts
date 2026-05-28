@@ -29,6 +29,13 @@ describe('SDK type surface', () => {
     pc.close()
   })
 
+  test('createOffer accepts offerToReceiveAudio option', async () => {
+    const pc = new RTCPeerConnection()
+    const desc = await pc.createOffer({ offerToReceiveAudio: true })
+    expect(desc.sdp).toContain('m=audio')
+    pc.close()
+  })
+
   test('RTCPeerConnection.removeTrack accepts RTCRtpSender from addTrack', async () => {
     const pc = new RTCPeerConnection()
     const track = new LocalAudioTrack('a1', 's1')

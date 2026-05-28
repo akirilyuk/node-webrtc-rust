@@ -17,7 +17,8 @@ pub use conference::{
     JsParticipantMutedEvent, JsRoomErrorEvent, JsRoomOptions,
 };
 pub use config::{
-    JsRTCIceCandidate, JsRTCIceServer, JsRTCConfiguration, JsRTCSessionDescription,
+    JsRTCAnswerOptions, JsRTCIceCandidate, JsRTCIceServer, JsRTCConfiguration, JsRTCOfferOptions,
+    JsRTCSessionDescription,
 };
 pub use data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
 pub use media::{JsLocalAudioTrack, JsMediaStream, JsMediaStreamTrack};

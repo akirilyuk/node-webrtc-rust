@@ -72,6 +72,17 @@ export interface JsRtcConfiguration {
   iceTransportPolicy?: string
   debug?: boolean
 }
+/** Offer options (W3C `RTCOfferOptions` subset). */
+export interface JsRtcOfferOptions {
+  iceRestart?: boolean
+  voiceActivityDetection?: boolean
+  offerToReceiveAudio?: boolean
+  offerToReceiveVideo?: boolean
+}
+/** Answer options (W3C `RTCAnswerOptions` subset). */
+export interface JsRtcAnswerOptions {
+  voiceActivityDetection?: boolean
+}
 /** Session description exposed to JavaScript. */
 export interface JsRtcSessionDescription {
   type: string
@@ -182,8 +193,8 @@ export declare class JsPeerConnection {
   get iceConnectionState(): string
   get iceGatheringState(): string
   get signalingState(): string
-  createOffer(): Promise<JsRtcSessionDescription>
-  createAnswer(): Promise<JsRtcSessionDescription>
+  createOffer(options?: JsRtcOfferOptions | undefined | null): Promise<JsRtcSessionDescription>
+  createAnswer(options?: JsRtcAnswerOptions | undefined | null): Promise<JsRtcSessionDescription>
   setLocalDescription(desc: JsRtcSessionDescription): Promise<void>
   setRemoteDescription(desc: JsRtcSessionDescription): Promise<void>
   addIceCandidate(candidate: JsRtcIceCandidate): Promise<void>

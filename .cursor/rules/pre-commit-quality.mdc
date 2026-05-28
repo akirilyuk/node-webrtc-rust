@@ -1,0 +1,37 @@
+---
+description: Run CI quality gates before commit
+alwaysApply: true
+---
+
+# Pre-commit quality gates
+
+**Before creating any commit**, run the checks that CI will run. Do not rely on partial checks (e.g. typecheck alone).
+
+From repo root:
+
+```bash
+bash scripts/ci/run-pr-quality.sh
+```
+
+This mirrors the PR **Typecheck & lint** job:
+
+1. `npm ci`
+2. `npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json` (sdk + signaling **sources**, not workspace dist)
+3. `npm run lint` (eslint — catches unused imports, `import type`, etc.)
+
+### When to run
+
+| Changed paths | Required before commit |
+|---------------|------------------------|
+| `packages/sdk/`, `packages/signaling/`, `examples/`, `scripts/ci/`, `.github/`, `eslint*`, `tsconfig*` | **`run-pr-quality.sh`** |
+| `packages/bindings/` (`.rs` or `index.d.ts`) | **`run-pr-quality.sh`** + rebuild bindings if TS surface changed |
+| `crates/` only (Rust) | `cargo test` for affected crates; run **`run-pr-quality.sh`** if any TS or workflow files also changed |
+
+### Common mistakes
+
+- **`npm run typecheck` is not enough** — it typechecks workspaces/examples but does not run eslint. CI fails on lint even when typecheck passes.
+- **Do not skip lint** because a local typecheck succeeded.
+
+### Before push / PR
+
+Re-run `bash scripts/ci/run-pr-quality.sh` if the last commit touched TS/JS or CI config. For native changes, also run `bash scripts/ci/run-pr-integration.sh` when feasible (needs Linux `.node` or Docker — see `scripts/ci/README.md`).

@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 
 import {
   JsPeerConnection as NativePeerConnection,
+  type JsRtcConfiguration,
   type JsRtcIceCandidate,
   type JsRtcSessionDescription,
 } from '@node-webrtc-rust/bindings'
@@ -36,20 +37,19 @@ import type {
   TrackKind,
 } from './types'
 
-function toNativeConfig(config?: RTCConfiguration) {
-  if (!config) return undefined
-  if (config.debug !== undefined) {
+function toNativeConfig(config?: RTCConfiguration): JsRtcConfiguration {
+  if (config?.debug !== undefined) {
     setDebugEnabled(config.debug)
   }
   return {
-    iceServers: config.iceServers?.map((server) => ({
+    iceServers: config?.iceServers?.map((server) => ({
       urls: Array.isArray(server.urls) ? server.urls : [server.urls],
       username: server.username,
       credential: server.credential,
       credentialType: server.credentialType,
     })),
-    iceTransportPolicy: config.iceTransportPolicy,
-    debug: config.debug,
+    iceTransportPolicy: config?.iceTransportPolicy,
+    debug: config?.debug,
   }
 }
 

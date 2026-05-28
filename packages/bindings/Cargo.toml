@@ -8,7 +8,7 @@ description = "NAPI-RS bindings exposing WebRTC and mixing APIs to Node.js"
 
 [features]
 default = []
-# Opt-in Silero ONNX VAD (requires ONNX Runtime at runtime). Default npm build uses energy VAD only.
+# Opt-in Silero VAD via ort load-dynamic — operators must install libonnxruntime locally (see VOICE-VAD-AND-BARGE-IN.md).
 silero-vad = ["node-webrtc-rust-speech/silero-vad"]
 
 [lib]

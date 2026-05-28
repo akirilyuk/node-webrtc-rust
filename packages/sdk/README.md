@@ -95,7 +95,7 @@ Multiple concurrent callers = multiple `VoiceAgent` instances, each with its own
 interface VoiceAgentConfig {
   vad?: {
     enabled?: boolean              // default true
-    provider?: 'energy' | 'silero'   // default energy; silero errors at attach if silero-vad not compiled in
+    provider?: 'energy' | 'silero'   // default energy; silero needs custom build + local ONNX Runtime — see VOICE-VAD-AND-BARGE-IN.md
     threshold?: number             // energy ~0.05–0.2; silero probability ~0.5
     minSpeechDurationMs?: number
     minSilenceDurationMs?: number

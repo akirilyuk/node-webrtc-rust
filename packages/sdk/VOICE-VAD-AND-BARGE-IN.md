@@ -73,7 +73,7 @@ If you set `provider: 'silero'` on the **stock** `.node` without rebuilding, `Vo
 |---|------------|------------|
 | **In shipped `.node`** | Yes (default Cargo feature `energy-vad`) | No |
 | **Algorithm** | RMS of mono PCM vs `threshold` | Small ONNX model (~309k params), probability vs `threshold` |
-| **Model / runtime size** | None (inline math) | Model ~**1–2 MB** + **ONNX Runtime** (`ort`) linked into native — typically **tens of MB** extra on the `.node` vs energy |
+| **Model / runtime size** | None (inline math) | Model ~**1–2 MB** embedded in `silero-vad-rust`; **ONNX Runtime loaded dynamically** at runtime (not in the `.node`) — install ORT separately (see below) |
 | **CPU per 20 ms frame** | Negligible (one RMS) | ~**&lt;1 ms** per ~30 ms chunk (upstream Silero docs; plus ORT overhead) |
 | **Threshold scale** | RMS ~**0.05–0.2** (Sherpa example uses `0.05`) | Probability ~**0.3–0.6** (default config uses `0.5` when you opt into Silero) |
 | **False triggers** | Tones, keyboard, loud noise can look like “speech” | Generally fewer false starts in noise |
@@ -82,32 +82,73 @@ If you set `provider: 'silero'` on the **stock** `.node` without rebuilding, `Vo
 
 ### Weight (how heavy is Silero?)
 
-Rough breakdown for planning — exact numbers depend on platform and static vs dynamic linking:
+| Component | Energy | Silero (this repo) |
+|-----------|--------|---------------------|
+| Extra Rust code | A few KB | `silero-vad-rust` + `ort` crate (dynamic load only) |
+| Embedded model | — | ~**1.2–2.2 MB** (v5/v6 ONNX inside `silero-vad-rust`) |
+| **`.node` size delta** | **0** | Modest (Rust + model bytes); **ORT is not linked into the addon** |
+| **Runtime on disk** | — | **ONNX Runtime** you install yourself (~**15–50 MB** depending on platform/build) |
 
-| Component | Energy | Silero |
-|-----------|--------|--------|
-| Extra Rust code | A few KB | `silero-vad-rust` + **`ort` (ONNX Runtime)** |
-| Embedded model | — | ~**1.2–2.2 MB** (v5/v6 ONNX; upstream cites &lt;2 MB JIT) |
-| **Typical `.node` delta** | **0** (baseline) | Often **+20–50 MB** or more when ORT is linked statically (WebRTC + Sherpa already dominate total size; Silero still adds a large step) |
-
-Published macOS arm64 `.node` today is ~**90 MB** (WebRTC, vendors, Sherpa optional paths, etc.) — energy VAD does not move that needle. Silero is optional precisely because of ORT + model cost.
+Published macOS arm64 `.node` today is ~**90 MB** (WebRTC, vendors, Sherpa, etc.). Sherpa already ships **its own** ONNX stack for STT/TTS; Silero VAD uses a **second** ONNX Runtime via `ort` — we do **not** bundle that into npm artifacts.
 
 **Status:** `silero-vad` is an optional feature on `node-webrtc-rust-speech` and `node-webrtc-rust-bindings`. Default npm / CI builds use **energy only**. Silero is **documented, opt-in, not CI-shipped** (ORT + model size).
 
 ### Enabling Silero (maintainers / custom builds)
 
-1. Build native with the bindings feature (speech pins `ort = 2.0.0-rc.10` for `silero-vad-rust` compatibility):
+There is **no** runtime toggle: one VAD backend per compiled `.node`.
 
-   ```bash
-   cd node-webrtc-rust
-   npm run build:native -- --features silero-vad
-   ```
+#### 1. Install ONNX Runtime locally (required)
 
-   Or enable `features = ["silero-vad"]` on the bindings crate / `node-webrtc-rust-speech` dependency in `packages/bindings/Cargo.toml`, then `npm run build:native`.
+Silero uses the [`ort`](https://crates.io/crates/ort) crate with **`load-dynamic`**: at runtime the process must find **`libonnxruntime.dylib`** (macOS), **`libonnxruntime.so`** (Linux), or **`onnxruntime.dll`** (Windows). We **do not** download or copy ORT into the published `.node`; custom-build operators install it on each machine / image.
 
-2. Run with `vad: { provider: 'silero', threshold: 0.5, sampleRate: 16000 }`.
+**Version:** speech pins `ort = 2.0.0-rc.10`, which targets **ONNX Runtime 1.22**. Use a 1.22-compatible install when possible (newer minors are often fine; mismatches show up as load or inference errors).
 
-There is **no** runtime toggle: one backend per compiled `.node`.
+**Not Sherpa’s ONNX:** the default bindings build already includes ONNX inside `sherpa-onnx` for local STT/TTS. That runtime is **not** shared with Silero VAD — you still need a separate ORT install for `provider: 'silero'`.
+
+**macOS (Homebrew example):**
+
+```bash
+brew install onnxruntime
+export DYLD_LIBRARY_PATH="$(brew --prefix onnxruntime)/lib:${DYLD_LIBRARY_PATH:-}"
+```
+
+**Linux:** install from your distro if available, or unpack a [Microsoft ONNX Runtime release](https://github.com/microsoft/onnxruntime/releases) (CPU build is enough for VAD) and point the loader at the `lib/` directory:
+
+```bash
+export LD_LIBRARY_PATH="/path/to/onnxruntime/lib:${LD_LIBRARY_PATH:-}"
+```
+
+**Windows:** add the directory containing `onnxruntime.dll` to `PATH`.
+
+**Verify before running Node** (optional):
+
+```bash
+# macOS — should print a path, not "no such file"
+ls "$(brew --prefix onnxruntime)/lib/libonnxruntime.dylib" 2>/dev/null || ls libonnxruntime.dylib
+```
+
+If ORT is missing, the first Silero inference typically fails with an error like `dlopen(libonnxruntime.dylib, …): tried: … (no such file)`.
+
+**Deploying custom builds:** document ORT installation for your team (same as above), or bake ORT into your container/AMI. We intentionally avoid bundling ORT in npm to keep default artifacts smaller; static/bundled ORT remains a possible future maintainer choice (`ort` features `download-binaries` + `copy-dylibs`) at the cost of a much larger per-platform binary.
+
+#### 2. Build native with `silero-vad`
+
+Speech pins `ort = 2.0.0-rc.10` for `silero-vad-rust` compatibility:
+
+```bash
+cd node-webrtc-rust
+npm run build:native -- --features silero-vad
+```
+
+Or enable `features = ["silero-vad"]` on the bindings crate in `packages/bindings/Cargo.toml`, then `npm run build:native`.
+
+Run your app with the same `DYLD_LIBRARY_PATH` / `LD_LIBRARY_PATH` / `PATH` you used when testing.
+
+#### 3. Configure the agent
+
+```typescript
+vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'silero', threshold: 0.5, sampleRate: 16000 }
+```
 
 ### Which should I use?
 
@@ -116,7 +157,7 @@ There is **no** runtime toggle: one backend per compiled `.node`.
 | Default npm package, demos, Sherpa local example | **`energy`** + `VOICE_AGENT_VAD_PRESET`; tune `threshold` (Sherpa uses `0.05`) |
 | Noisy office, fan, music bleed, false barge-in | Try higher `minSpeechDurationMs` first; then consider a **Silero custom build** |
 | Maximum simplicity, CI, edge devices | **Energy** |
-| You control native builds and want best VAD quality | **Silero** (once feature build is green) |
+| You control native builds, can install ORT locally, and want best VAD quality | **Silero** custom build |
 
 ---
 

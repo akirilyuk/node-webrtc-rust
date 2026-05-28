@@ -152,9 +152,23 @@ jobs:
           npm run build --workspace=@node-webrtc-rust/sdk
           npm run build --workspace=@node-webrtc-rust/signaling
 
-      - name: Prepare binding packages
+      # napi artifacts + napi version already stage per-platform packages.
+      # Do not run `napi prepublish` here — it tries to npm publish and create a
+      # GitHub release before auth is configured (see release-local.sh).
+      - name: Verify binding packages are staged
+        shell: bash
         working-directory: packages/bindings
-        run: npx napi prepublish -t npm
+        run: |
+          set -euo pipefail
+          for dir in npm/*/; do
+            shopt -s nullglob
+            nodes=("$dir"*.node)
+            if [[ ${#nodes[@]} -eq 0 ]]; then
+              echo "Missing .node in $dir (napi artifacts should have copied it)" >&2
+              exit 1
+            fi
+            echo "  ok: $(basename "$dir") (${nodes[0]##*/})"
+          done
 
       - name: Configure npm registry auth
         shell: bash

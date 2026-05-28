@@ -13,6 +13,14 @@ inputs:
     description: Prefix for Swatinem/rust-cache
     required: false
     default: v1-native-release
+  cache_target_label:
+    description: Runner arch label for target/ cache (Linux-x64 or Linux-arm64)
+    required: false
+    default: Linux-x64
+  setup_host_toolchain:
+    description: Install Node/Rust/apt deps on GitHub-hosted Linux (no ci-build container)
+    required: false
+    default: 'false'
   platform:
     description: Pass --platform to napi build
     required: false
@@ -41,14 +49,40 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Install Linux build dependencies
+      if: inputs.setup_host_toolchain == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential \
+          ca-certificates \
+          cmake \
+          curl \
+          pkg-config
+
+    - name: Setup Node.js
+      if: inputs.setup_host_toolchain == 'true'
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: package-lock.json
+
+    - name: Install Rust toolchain
+      if: inputs.setup_host_toolchain == 'true'
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.target }}
+
     - name: Restore Cargo target/ (cross-run warm start)
       id: target-restore
       uses: actions/cache/restore@v4
       with:
         path: target
-        key: ${{ inputs.cache_prefix }}-target-Linux-x64-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+        key: ${{ inputs.cache_prefix }}-target-${{ inputs.cache_target_label }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
         restore-keys: |
-          ${{ inputs.cache_prefix }}-target-Linux-x64-
+          ${{ inputs.cache_prefix }}-target-${{ inputs.cache_target_label }}-
           ${{ inputs.cache_prefix }}-target-
 
     - name: Cache Cargo registry

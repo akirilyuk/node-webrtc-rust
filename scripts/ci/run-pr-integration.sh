@@ -36,7 +36,7 @@ cargo test -p node-webrtc-rust-core
 cargo test -p node-webrtc-rust-mixer
 cargo test -p node-webrtc-rust-conference
 
-if [[ ! -f packages/sdk/dist/cjs/index.js ]] || [[ ! -f packages/signaling/dist/cjs/index.js ]]; then
+if [[ ! -f packages/sdk/dist/cjs/index.js ]] || [[ ! -f packages/signaling/dist/cjs/index.js ]] || [[ ! -f packages/helpers/dist/cjs/index.js ]]; then
   echo "==> build:ts (dist cache miss)"
   bash scripts/ci/build-ts-workspace.sh
 else

@@ -21,9 +21,9 @@ import { dirname, extname, join } from 'path'
 import { fileURLToPath } from 'url'
 
 import { SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
+import { SERVER_PEER_ID, VoiceAgentSessionHost } from '@node-webrtc-rust/helpers'
 
 import { resolveVoiceConfig } from './resolve-voice-config.js'
-import { SERVER_PEER_ID, VoiceAgentSessionHost } from '../../voice-agent-browser/src/session-host.js'
 import { isVoiceDebugEnabled } from '@node-webrtc-rust/sdk/voice'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))

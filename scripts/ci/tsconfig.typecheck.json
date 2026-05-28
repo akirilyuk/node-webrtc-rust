@@ -9,12 +9,15 @@
       "@node-webrtc-rust/bindings": ["packages/bindings/index.d.ts"],
       "@node-webrtc-rust/sdk": ["packages/sdk/src/index.ts"],
       "@node-webrtc-rust/sdk/*": ["packages/sdk/src/*"],
-      "@node-webrtc-rust/signaling": ["packages/signaling/src/index.ts"]
+      "@node-webrtc-rust/signaling": ["packages/signaling/src/index.ts"],
+      "@node-webrtc-rust/helpers": ["packages/helpers/src/index.ts"],
+      "@node-webrtc-rust/helpers/*": ["packages/helpers/src/*"]
     }
   },
   "include": [
     "../../packages/sdk/src/**/*.ts",
-    "../../packages/signaling/src/**/*.ts"
+    "../../packages/signaling/src/**/*.ts",
+    "../../packages/helpers/src/**/*.ts"
   ],
   "exclude": ["../../packages/**/tests/**", "../../packages/**/node_modules/**"]
 }

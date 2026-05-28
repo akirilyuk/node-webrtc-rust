@@ -37,7 +37,7 @@ export function printSherpaModelCatalog() {
       console.log(`       ${entry.note}`)
     }
   }
-  console.log(`\nDownload: npm run download-model --workspace=${ws} -- --lang=es`)
-  console.log(`Or:       npm run download-model:es --workspace=${ws}`)
-  console.log(`List:     npm run download-model:list --workspace=${ws}`)
+  console.log(`\nDownload: npm run download-stt --workspace=${ws} -- --lang=es`)
+  console.log(`Or:       npm run download-stt:es --workspace=${ws}`)
+  console.log(`List:     npm run download-stt:list --workspace=${ws}`)
 }

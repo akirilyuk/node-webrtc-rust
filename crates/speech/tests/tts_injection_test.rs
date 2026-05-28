@@ -47,6 +47,7 @@ async fn tts_injection_emits_agent_speaking_events() {
         tts: Some(node_webrtc_rust_speech::TtsConfig {
             provider: TtsVendor::Mock,
             model: None,
+            model_path: None,
             voice: None,
             api_key: None,
         }),

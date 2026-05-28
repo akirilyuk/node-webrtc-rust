@@ -1,9 +1,12 @@
 /**
- * Resolve VoiceAgent config for local Sherpa STT in the browser demo.
+ * Resolve VoiceAgent config for local Sherpa STT + TTS in the browser demo.
  *
- * Requires SHERPA_MODEL_PATH (run `npm run download-model` first).
- * Optional SHERPA_LANGUAGE sets stt.language when it matches the downloaded bundle.
- * TTS stays on mock — no cloud API keys needed.
+ * Requires SHERPA_STT_MODEL_PATH (run `npm run download-stt` first).
+ * Requires SHERPA_TTS_MODEL_PATH (run `npm run download-tts` first).
+ * Optional SHERPA_STT_LANGUAGE sets stt.language when it matches the downloaded STT bundle.
+ * Optional SHERPA_TTS_SPEAKER sets Piper speaker id (default 0).
+ *
+ * Deprecated aliases (still read): SHERPA_MODEL_PATH, SHERPA_LANGUAGE.
  */
 
 import { existsSync } from 'fs'
@@ -19,7 +22,8 @@ import {
 export interface ResolvedVoiceConfig {
   config: VoiceAgentConfig
   label: string
-  modelPath: string
+  sttModelPath: string
+  ttsModelPath: string
   language: string
 }
 
@@ -37,69 +41,88 @@ function inferLanguageFromPath(modelPath: string): string {
 }
 
 const LOCAL_SHERPA_VOICE_CONFIG = (
-  modelPath: string,
+  sttModelPath: string,
+  ttsModelPath: string,
   language: string,
+  speaker: string,
 ): VoiceAgentConfig => ({
   stt: {
     provider: 'local-sherpa',
     language,
-    modelPath,
+    modelPath: sttModelPath,
   },
-  tts: { provider: 'mock', voice: 'demo' },
+  tts: {
+    provider: 'local-sherpa',
+    modelPath: ttsModelPath,
+    voice: speaker,
+  },
   events: { mode: 'both' },
   vad: {
     enabled: true,
     threshold: 0.05,
     minSpeechDurationMs: 80,
+    speechPadMs: 400,
+    gateStt: true,
     bargeIn: { enabled: true, flushTts: true },
   },
 })
 
+function requireDirectory(path: string | undefined, envName: string, downloadHint: string): string {
+  const trimmed = path?.trim()
+  if (!trimmed) {
+    console.error(`${envName} is not set.\n`)
+    console.error(downloadHint)
+    process.exit(1)
+  }
+  if (!existsSync(trimmed)) {
+    console.error(`${envName} does not exist: ${trimmed}`)
+    console.error(downloadHint)
+    process.exit(1)
+  }
+  return trimmed
+}
+
 /**
- * Loads local Sherpa config from SHERPA_MODEL_PATH.
- * Exits with setup instructions when the path is missing or invalid.
+ * Loads local Sherpa config from SHERPA_STT_MODEL_PATH and SHERPA_TTS_MODEL_PATH.
  */
 export function resolveVoiceConfig(): ResolvedVoiceConfig {
-  const modelPath = process.env.SHERPA_MODEL_PATH?.trim()
-  if (!modelPath) {
-    console.error('SHERPA_MODEL_PATH is not set.\n')
-    console.error('1. Download weights (once), e.g.:')
-    console.error(
-      '   npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa',
-    )
-    console.error('   npm run download-model:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa')
-    console.error('   npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --list')
-    console.error('2. Export the path printed by the script, e.g.:')
-    console.error(
-      '   export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"',
-    )
-    console.error('3. Start the server:')
-    console.error(
-      '   npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa',
-    )
-    console.error('\nSee examples/voice-agent-local-sherpa/README.md for full walkthrough.')
-    process.exit(1)
-  }
+  const sttDownloadHint =
+    'Run: npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa'
+  const ttsDownloadHint =
+    'Run: npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa'
 
-  if (!existsSync(modelPath)) {
-    console.error(`SHERPA_MODEL_PATH does not exist: ${modelPath}`)
-    console.error('Run download-model or point to a directory containing tokens.txt and *.onnx files.')
-    process.exit(1)
-  }
+  const sttModelPath = requireDirectory(
+    process.env.SHERPA_STT_MODEL_PATH ?? process.env.SHERPA_MODEL_PATH,
+    'SHERPA_STT_MODEL_PATH',
+    sttDownloadHint,
+  )
+  const ttsModelPath = requireDirectory(
+    process.env.SHERPA_TTS_MODEL_PATH,
+    'SHERPA_TTS_MODEL_PATH',
+    ttsDownloadHint,
+  )
 
   const language =
-    process.env.SHERPA_LANGUAGE?.trim() || inferLanguageFromPath(modelPath)
+    process.env.SHERPA_STT_LANGUAGE?.trim() ??
+    process.env.SHERPA_LANGUAGE?.trim() ??
+    inferLanguageFromPath(sttModelPath)
+  const speaker = process.env.SHERPA_TTS_SPEAKER?.trim() || '0'
 
-  const config = applyVoiceDebugOverrides(LOCAL_SHERPA_VOICE_CONFIG(modelPath, language))
+  const config = applyVoiceDebugOverrides(
+    LOCAL_SHERPA_VOICE_CONFIG(sttModelPath, ttsModelPath, language, speaker),
+  )
   logResolvedVoiceConfig('local-sherpa', config, {
-    SHERPA_MODEL_PATH: modelPath,
-    SHERPA_LANGUAGE: language,
+    SHERPA_STT_MODEL_PATH: sttModelPath,
+    SHERPA_TTS_MODEL_PATH: ttsModelPath,
+    SHERPA_STT_LANGUAGE: language,
+    SHERPA_TTS_SPEAKER: speaker,
   })
 
   return {
     config,
-    label: `local Sherpa-ONNX (${language}, browser mic → on-device STT)`,
-    modelPath,
+    label: `local Sherpa-ONNX (${language}, on-device STT + TTS)`,
+    sttModelPath,
+    ttsModelPath,
     language,
   }
 }

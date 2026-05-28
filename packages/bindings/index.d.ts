@@ -133,6 +133,7 @@ export interface JsVadConfig {
   sampleRate?: JsVadSampleRate
   bargeIn?: JsBargeInConfig
   gateStt?: boolean
+  sttGateHoldMs?: number
 }
 export const enum JsSttVendor {
   Openai = 'openai',
@@ -147,6 +148,7 @@ export const enum JsTtsVendor {
   Elevenlabs = 'elevenlabs',
   Google = 'google',
   Cartesia = 'cartesia',
+  LocalSherpa = 'local-sherpa',
   Mock = 'mock'
 }
 export interface JsSttConfig {
@@ -159,6 +161,7 @@ export interface JsSttConfig {
 export interface JsTtsConfig {
   provider: JsTtsVendor
   model?: string
+  modelPath?: string
   voice?: string
   apiKey?: string
 }

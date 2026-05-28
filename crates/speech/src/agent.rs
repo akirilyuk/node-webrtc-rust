@@ -12,6 +12,7 @@ use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::pcm::i16_samples_to_bytes;
 use crate::pipeline::{SttProvider, SttTranscript, TtsProvider};
 use crate::registry::VendorRegistry;
+use crate::stt_pre_roll::SttPreRollBuffer;
 use crate::tts_buffer::TtsBuffer;
 use crate::vad::{handle_barge_in, VadEngine, VadTransition};
 
@@ -41,6 +42,9 @@ struct AgentInner {
     attached: bool,
     running: bool,
     vad: Option<VadEngine>,
+    stt_pre_roll: Option<SttPreRollBuffer>,
+    /// Milliseconds of inbound audio still forwarded to STT after VAD speech end.
+    stt_gate_hold_ms: u32,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
 }
@@ -73,6 +77,11 @@ impl VoiceAgent {
         } else {
             None
         };
+        let stt_pre_roll = if config.vad.enabled && config.vad.gate_stt {
+            Some(SttPreRollBuffer::from_vad_config(&config.vad))
+        } else {
+            None
+        };
 
         Ok(Self {
             event_bus: SpeechEventBus::new(),
@@ -83,6 +92,8 @@ impl VoiceAgent {
                 attached: false,
                 running: false,
                 vad,
+                stt_pre_roll,
+                stt_gate_hold_ms: 0,
                 pcm_writer: None,
                 pcm_reader: None,
             }),
@@ -204,13 +215,77 @@ impl VoiceAgent {
             return Ok(());
         }
 
-        let transitions = {
+        let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
+        let mono_bytes = i16_samples_to_bytes(&mono);
+
+        let (transitions, gate_stt, pre_roll_flush, stt_gate_open) = {
             let mut inner = self.inner.lock().await;
-            match inner.vad.as_mut() {
+            let was_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
+            let gate_stt = inner.config.vad.gate_stt;
+
+            let (transitions, frame_active) = match inner.vad.as_mut() {
                 Some(vad) => vad.process_webrtc_pcm(pcm.as_ref(), duration_ms)?,
-                None => Vec::new(),
+                None => (Vec::new(), false),
+            };
+
+            if gate_stt {
+                let pending = inner
+                    .vad
+                    .as_ref()
+                    .map(VadEngine::is_pending_speech)
+                    .unwrap_or(false);
+                if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
+                    // Only retain voice-bearing frames — silence must not evict speech from the ring.
+                    if !was_speaking && (frame_active || pending) {
+                        pre_roll.push(&mono_bytes);
+                    }
+                }
             }
+
+            let mut pre_roll_flush = None;
+            if gate_stt {
+                if transitions.contains(&VadTransition::SpeechStart) {
+                    inner.stt_gate_hold_ms = 0;
+                    if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
+                        let buffered = pre_roll.drain();
+                        if !buffered.is_empty() {
+                            voice_debug(format!(
+                                "STT pre-roll flush: {} bytes (~{} ms)",
+                                buffered.len(),
+                                crate::pcm::duration_ms_from_mono_s16le(
+                                    buffered.len(),
+                                    crate::pcm::STT_PCM_SAMPLE_RATE,
+                                )
+                            ));
+                            pre_roll_flush = Some(buffered);
+                        }
+                    }
+                } else if transitions.contains(&VadTransition::SpeechEnd) {
+                    inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+                    inner.stt_gate_hold_ms = inner.config.vad.stt_gate_hold_ms;
+                    voice_debug(format!(
+                        "STT gate hold: {} ms after speech end",
+                        inner.stt_gate_hold_ms
+                    ));
+                } else if inner.stt_gate_hold_ms > 0 {
+                    inner.stt_gate_hold_ms =
+                        inner.stt_gate_hold_ms.saturating_sub(duration_ms);
+                }
+            }
+
+            let stt_gate_open = if gate_stt {
+                inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false)
+                    || inner.stt_gate_hold_ms > 0
+            } else {
+                true
+            };
+
+            (transitions, gate_stt, pre_roll_flush, stt_gate_open)
         };
+
+        if let Some(buffered) = pre_roll_flush {
+            self.push_stt_audio_bytes(buffered).await?;
+        }
 
         for transition in &transitions {
             voice_debug(format!("VAD {transition:?}"));
@@ -225,25 +300,20 @@ impl VoiceAgent {
                 }
                 VadTransition::SpeechEnd => {
                     self.emit(SpeechEvent::user_speaking_end());
+                    let tail_ms = {
+                        let inner = self.inner.lock().await;
+                        inner.config.vad.min_silence_duration_ms.max(600)
+                    };
+                    self.push_stt_endpoint_tail(tail_ms).await?;
                 }
             }
         }
 
-        let gate_stt = {
-            let inner = self.inner.lock().await;
-            inner.config.vad.gate_stt
-        };
-        if gate_stt {
-            let speaking = {
-                let inner = self.inner.lock().await;
-                inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(true)
-            };
-            if !speaking {
-                voice_debug(format!(
-                    "process_inbound_pcm call={call} skipped: gate_stt and VAD not speaking"
-                ));
-                return Ok(());
-            }
+        if gate_stt && !stt_gate_open {
+            voice_debug(format!(
+                "process_inbound_pcm call={call} skipped: gate_stt closed (not speaking, hold expired)"
+            ));
+            return Ok(());
         }
 
         if call == 1 || call % 50 == 0 {
@@ -253,16 +323,34 @@ impl VoiceAgent {
             ));
         }
 
-        self.push_stt_audio(pcm).await?;
+        if gate_stt {
+            let speech_start = transitions.contains(&VadTransition::SpeechStart);
+            if !speech_start {
+                self.push_stt_audio_bytes(mono_bytes).await?;
+            }
+        } else {
+            self.push_stt_audio_bytes(mono_bytes).await?;
+        }
         self.poll_stt_transcripts().await
     }
 
-    async fn push_stt_audio(&self, pcm: Bytes) -> SpeechResult<()> {
-        let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
-        let mono_bytes = i16_samples_to_bytes(&mono);
+    async fn push_stt_audio_bytes(&self, mono_bytes: Bytes) -> SpeechResult<()> {
         let mut stt = self.stt.lock().await;
         if let Some(stt) = stt.as_mut() {
             stt.push_audio(mono_bytes).await?;
+        }
+        Ok(())
+    }
+
+    /// Push trailing silence after VAD speech end so streaming STT vendors can detect endpoints.
+    async fn push_stt_endpoint_tail(&self, tail_ms: u32) -> SpeechResult<()> {
+        voice_debug(format!("STT endpoint tail: {tail_ms} ms silence"));
+        const CHUNK_MS: u32 = 100;
+        let chunks = tail_ms.div_ceil(CHUNK_MS);
+        let chunk = crate::pcm::silence_mono_s16le_bytes(CHUNK_MS);
+        for _ in 0..chunks {
+            self.push_stt_audio_bytes(chunk.clone()).await?;
+            self.poll_stt_transcripts().await?;
         }
         Ok(())
     }

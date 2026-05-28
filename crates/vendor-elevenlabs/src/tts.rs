@@ -118,6 +118,7 @@ mod tests {
         let tts = ElevenLabsTts::new(&TtsConfig {
             provider: TtsVendor::Elevenlabs,
             model: None,
+            model_path: None,
             voice: None,
             api_key: Some("test".into()),
         })

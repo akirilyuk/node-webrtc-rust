@@ -6,7 +6,7 @@ Each example is an npm workspace package under this directory, authored in **Typ
 
 **Voice STT/TTS vendor API docs:** [`shared/VOICE_VENDOR_REFERENCE.md`](./shared/VOICE_VENDOR_REFERENCE.md)
 
-**Free local STT:** we recommend [`voice-agent-local-sherpa`](./voice-agent-local-sherpa/README.md) (`local-sherpa`) when you want **privacy** (mic audio not sent to third-party STT APIs) and **lower latency** (no cloud STT round-trip). Download open-weight Sherpa models once — no STT API key.
+**Free local STT + TTS:** we recommend [`voice-agent-local-sherpa`](./voice-agent-local-sherpa/README.md) (`local-sherpa`) when you want **privacy** (mic audio not sent to third-party speech APIs) and **lower latency** (no cloud STT/TTS round-trips). Download open-weight Sherpa models once — no speech API keys.
 
 ## Available examples
 
@@ -25,7 +25,7 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | **voice-agent** `start:live:*` | CLI (exits on success) | 8080 | Per-vendor live manual test (API keys; see `voice-agent/README.md`) |
 | **voice-agent-browser** | Browser + Node server | 3001 | Browser mic → STT events via DataChannel; client triggers TTS + barge-in demo |
 | **voice-agent-browser** `start:live:*` | Browser + Node server | 3001 | Same UI with live cloud STT/TTS (`VOICE_VENDOR` + API keys; see README) |
-| **voice-agent-local-sherpa** | Browser + Node server | 3002 | **Free local Sherpa STT** — on-device, no cloud keys; privacy-friendly (mic audio stays off third-party STT APIs); `download-model:es|fr|de|zh|…` |
+| **voice-agent-local-sherpa** | Browser + Node server | 3002 | **Free local Sherpa STT + TTS** — on-device Piper/VITS; `start:roundtrip` for Node TTS→STT loopback |
 
 ## Run examples locally
 
@@ -91,7 +91,7 @@ WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-ro
 | voice-agent-browser | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser` | Open `http://localhost:3001`, connect, speak, use TTS form and barge-in button |
 | voice-agent-browser live OpenAI | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent-browser` | Live STT/TTS via browser mic + DataChannel; see `voice-agent-browser/README.md` |
 | voice-agent-browser live (any) | `start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google` | Set `VOICE_VENDOR` + vendor env vars; full table in README |
-| voice-agent-local-sherpa | `npm run download-model:es` (or `:fr`, `:de`, `:zh`, … — see example README) then start | Open `http://localhost:3002`, connect, speak — partial/final Sherpa transcripts in log |
+| voice-agent-local-sherpa | `download-stt:en` + `download-tts:en` then `start:roundtrip` | Console prints input phrase + non-empty STT `Recognized:`; browser: connect + Speak |
 
 ### Troubleshooting
 

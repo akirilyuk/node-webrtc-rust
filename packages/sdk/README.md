@@ -120,8 +120,9 @@ interface VoiceAgentConfig {
     apiKey?: string                // or env var — see vendor table
   }
   tts?: {
-    provider: 'openai' | 'elevenlabs' | 'google' | 'cartesia' | 'mock'
+    provider: 'openai' | 'elevenlabs' | 'google' | 'cartesia' | 'local-sherpa' | 'mock'
     model?: string
+    modelPath?: string               // local-sherpa: Piper/VITS directory
     voice?: string
     apiKey?: string
   }
@@ -143,7 +144,7 @@ Providers are **mix-and-match** per session. **Official API docs:** [`examples/s
 | `cartesia` | — | ✓ | `CARTESIA_API_KEY` | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
 | `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming) |
 | `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs) |
-| `local-sherpa` | ✓ | — | `SHERPA_MODEL_PATH`, `SHERPA_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
+| `local-sherpa` | ✓ | ✓ | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
 | `mock` | ✓ | ✓ | _(none — use for CI/local)_ | — |
 
 Example pairings when a vendor only supports one direction:
@@ -160,22 +161,25 @@ tts: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice: '...' },
 
 API keys via `apiKey` in config or env vars. Never logged or returned in speech events.
 
-#### Local Sherpa-ONNX (`local-sherpa`) — free on-device STT
+#### Local Sherpa-ONNX (`local-sherpa`) — free on-device STT + TTS
 
-**Recommended when privacy and STT latency matter.** User speech is transcribed on **your server** with Sherpa-ONNX — audio is **not** sent to third-party cloud STT APIs, and you avoid cloud STT network round-trips. No STT API key; download open-weight models once.
+**Recommended when privacy and speech latency matter.** User speech is transcribed and agent replies synthesized on **your server** with Sherpa-ONNX — no cloud STT/TTS API keys or network round-trips.
 
-Requires a **Zipformer transducer** directory (`tokens.txt` + encoder/decoder/joiner `.onnx`).
+Requires downloaded **Zipformer transducer** (STT) and **Piper/VITS** (TTS) directories.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `SHERPA_MODEL_PATH` | **Yes** | Path to extracted model directory |
-| `SHERPA_LANGUAGE` | No | `stt.language` tag (inferred from path when omitted; required for multilingual bundles) |
+| `SHERPA_STT_MODEL_PATH` | **Yes** (STT) | Path to extracted Zipformer STT directory |
+| `SHERPA_TTS_MODEL_PATH` | **Yes** (TTS) | Path to Piper/VITS directory (`tokens.txt`, `*.onnx`, `espeak-ng-data/`) |
+| `SHERPA_STT_LANGUAGE` | No | `stt.language` tag (inferred from path when omitted) |
+| `SHERPA_TTS_SPEAKER` | No | Piper speaker id for `tts.voice` (default `0`) |
 
 Automatic downloads (from repo root):
 
 ```bash
-npm run download-model:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-npm run download-model:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa   # es, fr, de, zh, ja, ar, ru, bn, …
+npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-tts:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
 Supported languages, bundle names, and unavailable locales (Hindi, Portuguese, Italian): [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models). Full walkthrough: [`examples/voice-agent-local-sherpa/README.md`](../../examples/voice-agent-local-sherpa/README.md).
@@ -183,8 +187,13 @@ Supported languages, bundle names, and unavailable locales (Hindi, Portuguese, I
 ```typescript
 stt: {
   provider: 'local-sherpa',
-  language: process.env.SHERPA_LANGUAGE ?? 'en',
-  modelPath: process.env.SHERPA_MODEL_PATH,
+  language: process.env.SHERPA_STT_LANGUAGE ?? 'en',
+  modelPath: process.env.SHERPA_STT_MODEL_PATH,
+},
+tts: {
+  provider: 'local-sherpa',
+  modelPath: process.env.SHERPA_TTS_MODEL_PATH,
+  voice: process.env.SHERPA_TTS_SPEAKER ?? '0',
 },
 ```
 

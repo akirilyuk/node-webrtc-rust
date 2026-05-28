@@ -43,11 +43,17 @@ fn resolve_model_dir(config: &SttConfig) -> SpeechResult<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
-    std::env::var("SHERPA_MODEL_PATH")
-        .map(PathBuf::from)
-        .map_err(|_| {
-            SpeechError::Config("missing STT model_path or SHERPA_MODEL_PATH".into())
-        })
+    if let Ok(path) = std::env::var("SHERPA_STT_MODEL_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+
+    if let Ok(path) = std::env::var("SHERPA_MODEL_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+
+    Err(SpeechError::Config(
+        "missing STT model_path or SHERPA_STT_MODEL_PATH".into(),
+    ))
 }
 
 fn find_tokens(dir: &Path) -> SpeechResult<PathBuf> {

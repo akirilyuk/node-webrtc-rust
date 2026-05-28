@@ -173,7 +173,7 @@ STT and TTS providers are **independently configurable** — mix vendors per ses
 | `cartesia` | — | ✓ | `CARTESIA_API_KEY` |
 | `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` |
 | `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` |
-| **`local-sherpa`** | ✓ | — | `SHERPA_MODEL_PATH`, `SHERPA_LANGUAGE` |
+| **`local-sherpa`** | ✓ | ✓ | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` |
 | `mock` | ✓ | ✓ | _(none — CI/local)_ |
 
 Pass `apiKey` in config or rely on env vars. Keys are never logged or returned in events.
@@ -183,8 +183,10 @@ Pass `apiKey` in config or rely on env vars. Keys are never logged or returned i
 For production voice agents that handle **sensitive audio** or need **lower STT latency**, prefer **`local-sherpa`**: Sherpa-ONNX runs on your worker CPU, so user speech is **not** sent to third-party STT APIs and you skip cloud STT network round-trips. Models are free to download; no STT API key required.
 
 ```bash
-npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+export SHERPA_TTS_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low"
 npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
@@ -226,7 +228,7 @@ npm run setup   # once: deps + native .node + TS build
 
 | Example | Command | Teaches |
 | --- | --- | --- |
-| **voice-agent-local-sherpa** | `download-model` + `npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa` | **Free on-device STT** — privacy-friendly, no cloud STT API; browser mic → Sherpa |
+| **voice-agent-local-sherpa** | `download-stt` + `download-tts` + `start:roundtrip` | **Free on-device STT + TTS**; Node roundtrip or browser mic → Sherpa |
 | **voice-agent** callback | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | `agent.on()` handlers, mock vendors |
 | **voice-agent** stream | `npm run start:stream --workspace=...` | `for await … speechEvents()` |
 | **voice-agent** barge-in | `npm run start:barge-in --workspace=...` | VAD + `flushTts` |

@@ -50,6 +50,7 @@ function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
       ? { enabled: vad.bargeIn.enabled, flushTts: vad.bargeIn.flushTts }
       : undefined,
     gateStt: vad.gateStt,
+    sttGateHoldMs: vad.sttGateHoldMs,
   }
 }
 
@@ -67,6 +68,7 @@ function toJsTtsConfig(tts: TtsConfig): JsTtsConfig {
   return {
     provider: ttsVendorToJs(tts.provider),
     model: tts.model,
+    modelPath: tts.modelPath,
     voice: tts.voice,
     apiKey: tts.apiKey,
   }
@@ -99,6 +101,8 @@ function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
       return JsTtsVendor.Google
     case 'cartesia':
       return JsTtsVendor.Cartesia
+    case 'local-sherpa':
+      return JsTtsVendor.LocalSherpa
     default:
       return JsTtsVendor.Mock
   }

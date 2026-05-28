@@ -8,6 +8,7 @@ fn cartesia_factory_creates_tts() {
     let tts = factory.create_tts(&TtsConfig {
         provider: TtsVendor::Cartesia,
         model: None,
+        model_path: None,
         voice: Some("default".into()),
         api_key: Some("test-key".into()),
     });

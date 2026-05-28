@@ -9,12 +9,12 @@
   <body>
     <main>
       <header>
-        <h1>Local Sherpa STT — Browser Client</h1>
+        <h1>Local Sherpa STT + TTS — Browser Client</h1>
         <p>
           Your microphone is sent to a Node <strong>VoiceAgent</strong> over WebRTC. Speech is
-          transcribed on-device with <strong>Sherpa-ONNX</strong> (no cloud API keys). Partial and
-          final transcripts arrive on the <code>voice-control</code> data channel. TTS uses the
-          mock vendor for agent playback and barge-in demos.
+          transcribed and synthesized on-device with <strong>Sherpa-ONNX</strong> (no cloud API keys).
+          Partial and final transcripts arrive on the <code>voice-control</code> data channel.
+          Use the Speak form for local Piper TTS and barge-in demos.
         </p>
       </header>
 
@@ -22,11 +22,15 @@
         <h2>Server setup (one time)</h2>
         <ol>
           <li>
-            Download model weights:
-            <code>npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
+            Download STT weights:
+            <code>npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
           </li>
           <li>
-            Export <code>SHERPA_MODEL_PATH</code> to the extracted directory (printed by the script)
+            Download TTS voice:
+            <code>npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
+          </li>
+          <li>
+            Export <code>SHERPA_STT_MODEL_PATH</code> and <code>SHERPA_TTS_MODEL_PATH</code> (printed by the scripts)
           </li>
           <li>
             Start this server:

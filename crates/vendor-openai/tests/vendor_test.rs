@@ -17,6 +17,7 @@ fn openai_factory_creates_providers() {
     let tts = factory.create_tts(&TtsConfig {
         provider: TtsVendor::Openai,
         model: None,
+        model_path: None,
         voice: Some("alloy".into()),
         api_key: Some("test-key".into()),
     });

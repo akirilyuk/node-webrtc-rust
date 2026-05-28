@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Download and extract a Sherpa-ONNX streaming Zipformer bundle.
+ * Download and extract a Sherpa-ONNX streaming Zipformer STT bundle.
  *
  * Run from repo root:
- *   npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
- *   npm run download-model:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
- *   npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --lang=zh
- *   npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --list
+ *   npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+ *   npm run download-stt:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+ *   npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --lang=zh
+ *   npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --list
  *
- * Then export SHERPA_MODEL_PATH (and optionally SHERPA_LANGUAGE) before `npm run start`.
+ * Then export SHERPA_STT_MODEL_PATH (and optionally SHERPA_STT_LANGUAGE) before `npm run start`.
  */
 
 import { existsSync, mkdirSync, readdirSync } from 'fs'
@@ -36,7 +36,10 @@ export const DEFAULT_BUNDLE =
 const REQUIRED_KEYS = ['tokens.txt', 'encoder', 'decoder', 'joiner']
 
 function parseArgs(argv) {
-  let lang = process.env.SHERPA_LANGUAGE?.trim() ?? ''
+  let lang =
+    process.env.SHERPA_STT_LANGUAGE?.trim() ??
+    process.env.SHERPA_LANGUAGE?.trim() ??
+    ''
   let list = false
 
   for (const arg of argv) {
@@ -61,15 +64,16 @@ function parseArgs(argv) {
 }
 
 function printUsage() {
-  console.log(`Usage: node scripts/download-model.mjs [--lang=<id>] [--list]
+  console.log(`Usage: node scripts/download-stt.mjs [--lang=<id>] [--list]
 
 Environment:
-  SHERPA_LANGUAGE   Default language id when --lang is omitted (e.g. es, zh, de)
+  SHERPA_STT_LANGUAGE   Default language id when --lang is omitted (e.g. es, zh, de)
+  SHERPA_LANGUAGE       Deprecated alias for SHERPA_STT_LANGUAGE
 
 Examples:
-  npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-  npm run download-model:fr --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-  npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --lang=ru
+  npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+  npm run download-stt:fr --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+  npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --lang=ru
 `)
   printSherpaModelCatalog()
 }
@@ -97,24 +101,24 @@ function download(url, dest) {
 }
 
 function printEnvHints(entry, targetDir) {
-  console.log('\n✓ Sherpa model ready')
+  console.log('\n✓ Sherpa STT model ready')
   console.log(`  Language: ${entry.label} (${entry.language ?? entry.id})`)
   if (entry.note) {
     console.log(`  Note: ${entry.note}`)
   }
-  console.log(`\nexport SHERPA_MODEL_PATH="${targetDir}"`)
+  console.log(`\nexport SHERPA_STT_MODEL_PATH="${targetDir}"`)
   if (entry.language) {
-    console.log(`export SHERPA_LANGUAGE="${entry.language}"`)
+    console.log(`export SHERPA_STT_LANGUAGE="${entry.language}"`)
   }
   console.log(
-    '\nThen start the browser demo:\n  npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa',
+    '\nPair with TTS (npm run download-tts), then start:\n  npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa',
   )
 }
 
 /**
  * @param {string} modelId
  */
-export function downloadSherpaModel(modelId = DEFAULT_MODEL_ID) {
+export function downloadSherpaSttModel(modelId = DEFAULT_MODEL_ID) {
   const entry = getSherpaModelEntry(resolveSherpaModelId(modelId))
   if (!entry) {
     throw new Error(
@@ -129,7 +133,7 @@ export function downloadSherpaModel(modelId = DEFAULT_MODEL_ID) {
   const targetDir = bundleDir(entry.bundle)
   if (existsSync(targetDir)) {
     verifyBundle(targetDir)
-    console.log(`Model already present: ${targetDir}`)
+    console.log(`STT model already present: ${targetDir}`)
     printEnvHints(entry, targetDir)
     return { entry, targetDir }
   }
@@ -163,7 +167,7 @@ function main() {
     printSherpaModelCatalog()
     return
   }
-  downloadSherpaModel(lang)
+  downloadSherpaSttModel(lang)
 }
 
 main()

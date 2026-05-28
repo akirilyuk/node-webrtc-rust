@@ -18,6 +18,7 @@ fn google_factory_creates_providers() {
         .create_tts(&TtsConfig {
             provider: TtsVendor::Google,
             model: None,
+            model_path: None,
             voice: Some("en-US-Neural2-A".into()),
             api_key: None,
         })

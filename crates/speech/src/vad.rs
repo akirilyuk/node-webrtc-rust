@@ -118,19 +118,20 @@ impl VadEngine {
     }
 
     /// Process one inbound WebRTC PCM frame (48 kHz stereo).
+    /// Returns detected transitions and whether the current frame is voice-active.
     pub fn process_webrtc_pcm(
         &mut self,
         pcm: &[u8],
         duration_ms: u32,
-    ) -> SpeechResult<Vec<VadTransition>> {
+    ) -> SpeechResult<(Vec<VadTransition>, bool)> {
         if !self.config.enabled {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
 
         self.frame_ms = duration_ms.max(1);
         let mono = stereo_48k_to_mono_16k(pcm);
         if mono.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
 
         let active = match &mut self.backend {
@@ -139,7 +140,12 @@ impl VadEngine {
             VadBackend::Silero(v) => v.process_mono_frame(&mono, self.config.sample_rate.as_u32())?,
         };
 
-        Ok(self.update_state(active))
+        Ok((self.update_state(active), active))
+    }
+
+    /// True while the VAD is accumulating speech time but has not yet declared `SpeechStart`.
+    pub fn is_pending_speech(&self) -> bool {
+        !self.speaking && self.speech_ms > 0
     }
 
     fn update_state(&mut self, active: bool) -> Vec<VadTransition> {

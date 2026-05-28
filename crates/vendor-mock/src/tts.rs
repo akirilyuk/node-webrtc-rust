@@ -55,6 +55,7 @@ mod tests {
         let tts = MockTts::new(&TtsConfig {
             provider: node_webrtc_rust_speech::config::TtsVendor::Mock,
             model: None,
+            model_path: None,
             voice: Some("test".into()),
             api_key: None,
         });

@@ -2,15 +2,17 @@
  * Browser + Node local Sherpa STT demo.
  *
  * Prerequisites:
- *   npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
- *   export SHERPA_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/<bundle>
+ *   npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+ *   npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+ *   export SHERPA_STT_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/<stt-bundle>
+ *   export SHERPA_TTS_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/<tts-bundle>
  *
  * Run:
  *   npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *
  * Open http://localhost:3002 — allow microphone, connect, speak.
  * Partial/final transcripts arrive on the voice-control DataChannel.
- * Mock TTS plays agent replies (no cloud keys).
+ * Local Sherpa TTS (Piper/VITS) plays agent replies — no cloud keys.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
@@ -36,7 +38,8 @@ const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
 }
 
-  const { config: voiceConfig, label: voiceLabel, modelPath, language } = resolveVoiceConfig()
+  const { config: voiceConfig, label: voiceLabel, sttModelPath, ttsModelPath, language } =
+    resolveVoiceConfig()
 
 interface ActiveRoom {
   signaling: SignalingClient
@@ -124,10 +127,11 @@ async function main(): Promise<void> {
   console.log(`Local Sherpa voice demo at http://localhost:${PORT}`)
   console.log(`Signaling: ws://localhost:${PORT}/ws`)
   console.log(`Voice pipeline: ${voiceLabel}`)
-  console.log(`STT=local-sherpa (${language})  TTS=mock`)
-  console.log(`SHERPA_MODEL_PATH=${modelPath}`)
+  console.log(`STT=local-sherpa (${language})  TTS=local-sherpa`)
+  console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
+  console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log('Allow microphone, connect, speak — watch partial/final STT in the event log.')
-  console.log('Use the TTS form to test mock agent playback and barge-in.')
+  console.log('Use the Speak form to hear on-device Piper TTS and test barge-in.')
   if (isVoiceDebugEnabled()) {
     console.error('[voice-debug] VOICE_DEBUG=1 — verbose pipeline logs on stderr')
     console.error('[voice-debug] WEBRTC_DEBUG=' + (process.env.WEBRTC_DEBUG ?? '0'))

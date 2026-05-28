@@ -36,6 +36,7 @@ pub fn default_vendor_registry() -> Arc<VendorRegistry> {
     registry.register_stt(SttVendor::Assemblyai, arc_factory(AssemblyAiFactory));
 
     registry.register_stt(SttVendor::LocalSherpa, arc_factory(SherpaFactory));
+    registry.register_tts(TtsVendor::LocalSherpa, arc_factory(SherpaFactory));
 
     registry.register_stt(SttVendor::Mock, arc_factory(MockFactory));
     registry.register_tts(TtsVendor::Mock, arc_factory(MockFactory));

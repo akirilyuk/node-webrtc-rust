@@ -32,37 +32,37 @@ On-device STT uses **streaming Zipformer transducer** bundles (encoder + decoder
 
 | Language | Lang id | npm download script | Sherpa bundle |
 |----------|---------|---------------------|---------------|
-| English | `en` | `download-model` or `download-model:en` | `…-en-2023-06-26` |
-| Spanish | `es` | `download-model:es` | `…-es-kroko-2025-08-06` |
-| French | `fr` | `download-model:fr` | `…-fr-kroko-2025-08-06` |
-| German | `de` | `download-model:de` | `…-de-kroko-2025-08-06` |
-| Chinese (Mandarin) | `zh` | `download-model:zh` | `…-zh-int8-2025-06-30` |
-| Japanese | `ja` | `download-model:ja` | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual) |
-| Arabic | `ar` | `download-model:ar` | same multilingual bundle — set `SHERPA_LANGUAGE=ar` |
-| Russian | `ru` | `download-model:ru` | `…-small-ru-vosk-int8-2025-08-16` |
-| Bengali (South Asia) | `bn` | `download-model:bn` | `…-bn-vosk-2026-02-09` |
-| Hindi | `hi` | `download-model:hi` | *No streaming Zipformer in official releases yet* |
-| Portuguese | `pt` | `download-model:pt` | *Not available for `local-sherpa` yet* |
-| Italian | `it` | `download-model:it` | *Not available for `local-sherpa` yet* |
+| English | `en` | `download-stt` or `download-stt:en` | `…-en-2023-06-26` |
+| Spanish | `es` | `download-stt:es` | `…-es-kroko-2025-08-06` |
+| French | `fr` | `download-stt:fr` | `…-fr-kroko-2025-08-06` |
+| German | `de` | `download-stt:de` | `…-de-kroko-2025-08-06` |
+| Chinese (Mandarin) | `zh` | `download-stt:zh` | `…-zh-int8-2025-06-30` |
+| Japanese | `ja` | `download-stt:ja` | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual) |
+| Arabic | `ar` | `download-stt:ar` | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar` |
+| Russian | `ru` | `download-stt:ru` | `…-small-ru-vosk-int8-2025-08-16` |
+| Bengali (South Asia) | `bn` | `download-stt:bn` | `…-bn-vosk-2026-02-09` |
+| Hindi | `hi` | `download-stt:hi` | *No streaming Zipformer in official releases yet* |
+| Portuguese | `pt` | `download-stt:pt` | *Not available for `local-sherpa` yet* |
+| Italian | `it` | `download-stt:it` | *Not available for `local-sherpa` yet* |
 
 List every entry (including unavailable ones with notes):
 
 ```bash
-npm run download-model:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-stt:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
 Download and configure (example — German):
 
 ```bash
-npm run download-model:de --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06"
-export SHERPA_LANGUAGE=de   # optional — inferred from model path when omitted
+npm run download-stt:de --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06"
+export SHERPA_STT_LANGUAGE=de   # optional — inferred from model path when omitted
 ```
 
 | Env var | Required | Purpose |
 |---------|----------|---------|
-| `SHERPA_MODEL_PATH` | **Yes** | Directory with `tokens.txt` and encoder/decoder/joiner `.onnx` files |
-| `SHERPA_LANGUAGE` | No | Sets `stt.language` (must match bundle; required for multilingual pack) |
+| `SHERPA_STT_MODEL_PATH` | **Yes** | Directory with `tokens.txt` and encoder/decoder/joiner `.onnx` files |
+| `SHERPA_STT_LANGUAGE` | No | Sets `stt.language` (must match bundle; required for multilingual pack) |
 
 **Hindi / Portuguese / Italian:** Sherpa publishes some languages only in non–Zipformer bundles (e.g. `sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01`), which are not wired to `local-sherpa` yet. Use cloud STT ([`voice-agent-browser`](../voice-agent-browser/README.md)) or Bengali (`bn`) as a South Asian alternative.
 
@@ -76,6 +76,7 @@ export SHERPA_LANGUAGE=de   # optional — inferred from model path when omitted
 | ElevenLabs | `elevenlabs` | `eleven_multilingual_v2` | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) · [Voices](https://elevenlabs.io/docs/voices) |
 | Google Cloud | `google` | `en-US-Neural2-A` | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs) · [Voice list](https://cloud.google.com/text-to-speech/docs/voices) |
 | Cartesia | `cartesia` | `sonic-english` | [TTS bytes API](https://docs.cartesia.ai/api-reference/tts/bytes) · [Models](https://docs.cartesia.ai/models) |
+| Sherpa-ONNX (local) | `local-sherpa` | `vits-piper-en_US-amy-low` | [Sherpa TTS](https://k2-fsa.github.io/sherpa/onnx/tts/index.html) · [TTS models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models) |
 | Mock | `mock` | _(deterministic test harness)_ | [`crates/vendor-mock`](../../crates/vendor-mock/) |
 
 ---
@@ -107,4 +108,5 @@ export SHERPA_LANGUAGE=de   # optional — inferred from model path when omitted
 | [`packages/sdk/README.md`](../../packages/sdk/README.md) | SDK voice API |
 
 When adding a vendor, update **`voice-vendor-docs.ts`** and this file together.  
-When adding a Sherpa language, update **`sherpa-local-model-catalog.json`**, the example `package.json` scripts, and this file.
+When adding a Sherpa STT language, update **`sherpa-local-model-catalog.json`**, the example `package.json` scripts, and this file.  
+When adding a Sherpa TTS voice, update **`sherpa-tts-model-catalog.json`**, `download-tts:*` scripts, and this file.

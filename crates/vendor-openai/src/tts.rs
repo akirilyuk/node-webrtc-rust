@@ -143,6 +143,7 @@ mod tests {
         let tts = OpenAiTts::new(&TtsConfig {
             provider: TtsVendor::Openai,
             model: None,
+            model_path: None,
             voice: None,
             api_key: Some("test".into()),
         })

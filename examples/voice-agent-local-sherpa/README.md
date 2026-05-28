@@ -1,13 +1,13 @@
-# Local Sherpa STT — Browser + Node
+# Local Sherpa STT + TTS — Browser + Node
 
-**Free, on-device streaming speech-to-text** with [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) — no cloud API keys, no per-minute STT billing.
+**Free, on-device streaming speech-to-text and text-to-speech** with [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) — no cloud API keys, no per-minute billing.
 
 This example mirrors [`voice-agent-browser`](../voice-agent-browser/README.md) but uses:
 
 | Component | Provider |
 |-----------|----------|
 | STT | `local-sherpa` (Sherpa-ONNX Zipformer on CPU) |
-| TTS | `mock` (deterministic playback for barge-in demos) |
+| TTS | `local-sherpa` (Sherpa-ONNX Piper/VITS offline synthesis) |
 
 Your **browser microphone** → WebRTC → Node **VoiceAgent** → Sherpa `OnlineRecognizer` → partial/final events on the `voice-control` DataChannel.
 
@@ -21,12 +21,12 @@ We **explicitly support and recommend** the `local-sherpa` flow when you can run
 |---------|----------------|
 | **Privacy** | User speech is decoded **on your server** — raw audio is **not** sent to OpenAI, Deepgram, Google, or other cloud STT APIs. |
 | **Lower latency** | No network round-trip to a third-party STT service; transcripts come from in-process Sherpa inference after WebRTC delivery. |
-| **No API keys or usage fees** | Download open-weight models once (`download-model:*` scripts); run without STT cloud credentials. |
+| **No API keys or usage fees** | Download open-weight models once (`download-stt:*` scripts); run without STT cloud credentials. |
 | **Offline-capable** | After models are cached, STT works without outbound calls to speech vendors (WebRTC signaling still needs your network). |
 
 Cloud STT remains available via [`voice-agent-browser`](../voice-agent-browser/README.md) when you need vendor-specific features or languages without a local bundle. For agent loops that handle sensitive audio or care about tail latency, **start with this example**.
 
-Pair `local-sherpa` with any TTS provider you choose — this demo uses **`mock` TTS** so the full browser path runs with zero cloud keys. Swap in cloud TTS later if you need natural voice synthesis.
+Pair `local-sherpa` for **both** STT and TTS for a fully on-device voice loop — user speech and agent replies stay off third-party cloud speech APIs.
 
 ---
 
@@ -40,7 +40,7 @@ getUserMedia ──WebRTC audio──►  VoiceAgent inbound (VAD + local Sherpa
                                 ▼
 Event log ◄── DataChannel ◄── user_speech_partial / user_speech_final
    │
-   └── { type: 'speak', text } ──► mock TTS ──► agent outbound track ──► browser <audio>
+   └── { type: 'speak', text } ──► local Sherpa TTS ──► agent outbound track ──► browser <audio>
 ```
 
 - **Signaling:** WebSocket on the same HTTP port as the static page (default **3002**)
@@ -53,13 +53,27 @@ Event log ◄── DataChannel ◄── user_speech_partial / user_speech_fina
 
 From the **repo root**, after `npm run setup`:
 
-### 1. Download model weights (once)
+### 1. Download STT model weights (once)
 
 ```bash
-npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-This fetches **English streaming Zipformer** (`sherpa-onnx-streaming-zipformer-en-2023-06-26`, ~70 MB compressed) from the official Sherpa-ONNX releases and extracts it to:
+### 1b. Download TTS voice model (once)
+
+```bash
+npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Default English voice: **Piper Amy (low)** (`vits-piper-en_US-amy-low`). Other voices:
+
+```bash
+npm run download-tts:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-tts:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-tts:de --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+This fetches **English streaming Zipformer** STT (`sherpa-onnx-streaming-zipformer-en-2023-06-26`, ~70 MB compressed) from the official Sherpa-ONNX releases and extracts it to:
 
 ```text
 examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26/
@@ -79,47 +93,49 @@ joiner-epoch-99-avg-1.onnx
 List all entries (including ones without a dedicated streaming bundle):
 
 ```bash
-npm run download-model:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-stt:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
 Per-language shortcuts (from repo root) — full table also in [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models):
 
 | Language | npm script | Sherpa bundle |
 |----------|------------|---------------|
-| English (default) | `download-model` or `download-model:en` | `…-en-2023-06-26` |
-| Spanish | `download-model:es` | `…-es-kroko-2025-08-06` |
-| French | `download-model:fr` | `…-fr-kroko-2025-08-06` |
-| German | `download-model:de` | `…-de-kroko-2025-08-06` |
-| Chinese | `download-model:zh` | `…-zh-int8-2025-06-30` |
-| Japanese | `download-model:ja` | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual) |
-| Arabic | `download-model:ar` | same multilingual bundle — set `SHERPA_LANGUAGE=ar` |
-| Russian | `download-model:ru` | `…-small-ru-vosk-int8-2025-08-16` |
-| Bengali (South Asia) | `download-model:bn` | `…-bn-vosk-2026-02-09` |
-| Hindi | `download-model:hi` | *No streaming Zipformer transducer in official releases yet* |
-| Portuguese | `download-model:pt` | *Not available for this example yet* |
-| Italian | `download-model:it` | *Not available for this example yet* |
+| English (default) | `download-stt` or `download-stt:en` | `…-en-2023-06-26` |
+| Spanish | `download-stt:es` | `…-es-kroko-2025-08-06` |
+| French | `download-stt:fr` | `…-fr-kroko-2025-08-06` |
+| German | `download-stt:de` | `…-de-kroko-2025-08-06` |
+| Chinese | `download-stt:zh` | `…-zh-int8-2025-06-30` |
+| Japanese | `download-stt:ja` | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual) |
+| Arabic | `download-stt:ar` | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar` |
+| Russian | `download-stt:ru` | `…-small-ru-vosk-int8-2025-08-16` |
+| Bengali (South Asia) | `download-stt:bn` | `…-bn-vosk-2026-02-09` |
+| Hindi | `download-stt:hi` | *No streaming Zipformer transducer in official releases yet* |
+| Portuguese | `download-stt:pt` | *Not available for this example yet* |
+| Italian | `download-stt:it` | *Not available for this example yet* |
 
 Generic form:
 
 ```bash
-npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --lang=de
+npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --lang=de
 ```
 
 After download, export both path and language (the script prints them):
 
 ```bash
-export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06"
-export SHERPA_LANGUAGE=de
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06"
+export SHERPA_STT_LANGUAGE=de
 ```
 
-For the **multilingual** Japanese/Arabic bundle, always set `SHERPA_LANGUAGE` to the language you are speaking (`ja`, `ar`, `ru`, `vi`, `id`, `th`, `zh`, or `en`).
+For the **multilingual** Japanese/Arabic bundle, always set `SHERPA_STT_LANGUAGE` to the language you are speaking (`ja`, `ar`, `ru`, `vi`, `id`, `th`, `zh`, or `en`).
 
-### 2. Point the server at the model directory
+### 2. Point the server at both model directories
 
-From **`node-webrtc-rust`** repo root:
+From **`node-webrtc-rust`** repo root (paths printed by the download scripts):
 
 ```bash
-export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+export SHERPA_TTS_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low"
+export SHERPA_TTS_SPEAKER=0   # optional — Piper speaker id for multi-speaker models
 ```
 
 You can also set `stt.modelPath` in code instead of the env var (see [Configuration](#configuration)).
@@ -129,6 +145,22 @@ You can also set `stt.modelPath` in code instead of the env var (see [Configurat
 ```bash
 npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
+
+### 3b. Node-only TTS → STT roundtrip (no browser)
+
+Verifies the full on-device loop without a microphone: **text → Sherpa TTS → WebRTC relay → Sherpa STT → text**.
+
+```bash
+npm run build:native   # if you changed Rust since last build
+npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- "The weather is nice today."
+```
+
+Optional env: `SHERPA_ROUNDTRIP_PHRASE`, `SHERPA_ROUNDTRIP_TIMEOUT_MS` (default 45000).
+
+Expected output ends with non-empty `Recognized:` and `Roundtrip OK`. Implementation: [`src/roundtrip.ts`](./src/roundtrip.ts) (PCM relay in [`src/pcm-relay.ts`](./src/pcm-relay.ts)).
+
+Rust-level smoke (no WebRTC): `cargo test -p node-webrtc-rust-vendor-sherpa-onnx tts_synthesize_produces_stereo_pcm_with_model -- --ignored` with `SHERPA_TTS_MODEL_PATH` set.
 
 **Debug pipeline (VAD, PCM, Sherpa, DataChannel):**
 
@@ -151,8 +183,9 @@ Startup logs show the active pipeline and model path:
 ```text
 Local Sherpa voice demo at http://localhost:3002
 Voice pipeline: local Sherpa-ONNX (browser mic → on-device STT)
-STT=local-sherpa  TTS=mock
-SHERPA_MODEL_PATH=.../sherpa-onnx-streaming-zipformer-en-2023-06-26
+STT=local-sherpa  TTS=local-sherpa
+SHERPA_STT_MODEL_PATH=.../sherpa-onnx-streaming-zipformer-en-2023-06-26
+SHERPA_TTS_MODEL_PATH=.../vits-piper-en_US-amy-low
 ```
 
 ### 4. Open the browser client
@@ -162,7 +195,7 @@ Visit [http://localhost:3002](http://localhost:3002) (override with `PORT=`).
 1. Allow **microphone** access.
 2. Click **Connect**.
 3. Speak — watch **`user_speech_partial`** and **`user_speech_final`** in the event log.
-4. Optional: use **Speak** / **Speak long reply** to test mock TTS and **barge-in**.
+4. Optional: use **Speak** / **Speak long reply** to test on-device Piper TTS and **barge-in**.
 
 ---
 
@@ -173,7 +206,7 @@ If the download script fails (no `tar`, firewall, etc.):
 1. Open [Sherpa-ONNX ASR model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)
 2. Download `sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2`
 3. Extract anywhere on disk
-4. Set `SHERPA_MODEL_PATH` to the extracted folder containing `tokens.txt` and the three ONNX files
+4. Set `SHERPA_STT_MODEL_PATH` to the extracted folder containing `tokens.txt` and the three ONNX files
 
 Other **streaming transducer** bundles work if they include `tokens.txt` + encoder/decoder/joiner `.onnx` files. See [`crates/vendor-sherpa-onnx/README.md`](../../crates/vendor-sherpa-onnx/README.md).
 
@@ -185,8 +218,11 @@ Other **streaming transducer** bundles work if they include `tokens.txt` + encod
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `SHERPA_MODEL_PATH` | **Yes** | Directory with Sherpa ONNX weights |
-| `SHERPA_LANGUAGE` | No | BCP-47-ish tag for `stt.language` (inferred from path when omitted) |
+| `SHERPA_STT_MODEL_PATH` | **Yes** | STT directory with Sherpa ONNX Zipformer weights |
+| `SHERPA_TTS_MODEL_PATH` | **Yes** | TTS directory with Piper/VITS `.onnx`, `tokens.txt`, `espeak-ng-data/` |
+| `SHERPA_STT_LANGUAGE` | No | BCP-47-ish tag for `stt.language` (inferred from path when omitted) |
+| `SHERPA_TTS_SPEAKER` | No | Piper speaker id for `tts.voice` (default `0`) |
+| `SHERPA_TTS_SPEED` | No | Speech speed multiplier passed via `tts.model` or env (default `1.0`) |
 | `PORT` | No | HTTP + WebSocket port (default `3002`) |
 
 ### VoiceAgent config (TypeScript)
@@ -198,9 +234,9 @@ The server resolves config in `src/resolve-voice-config.ts`:
   stt: {
     provider: 'local-sherpa',
     language: 'en',
-    modelPath: process.env.SHERPA_MODEL_PATH,
+    modelPath: process.env.SHERPA_STT_MODEL_PATH,
   },
-  tts: { provider: 'mock', voice: 'demo' },
+  tts: { provider: 'local-sherpa', modelPath: process.env.SHERPA_TTS_MODEL_PATH, voice: '0' },
   vad: { enabled: true, threshold: 0.05, bargeIn: { enabled: true, flushTts: true } },
 }
 ```
@@ -214,9 +250,10 @@ const agent = new VoiceAgent({
   stt: {
     provider: 'local-sherpa',
     language: 'en',
-    modelPath: process.env.SHERPA_MODEL_PATH,
+    modelPath: process.env.SHERPA_STT_MODEL_PATH,
   },
-  tts: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY }, // or mock / other vendor
+  tts: { provider: 'local-sherpa', modelPath: process.env.SHERPA_TTS_MODEL_PATH, voice: '0' },
+  // tts: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY }, // cloud fallback
 })
 
 await agent.attach({ inboundTrack, outboundTrack })
@@ -246,8 +283,9 @@ Sherpa runs in Rust via `crates/vendor-sherpa-onnx` — included in the **defaul
 
 | Symptom | Fix |
 |---------|-----|
-| `SHERPA_MODEL_PATH is not set` on startup | Run `download-model` and export the path |
-| `no encoder .onnx model found` | Point `SHERPA_MODEL_PATH` at the **extracted** folder, not the `.tar.bz2` |
+| `SHERPA_STT_MODEL_PATH is not set` on startup | Run `download-stt` and export the path |
+| `SHERPA_TTS_MODEL_PATH is not set` on startup | Run `download-tts` and export the path |
+| `no encoder .onnx model found` | Point `SHERPA_STT_MODEL_PATH` at the **extracted** folder, not the `.tar.bz2` |
 | Empty partials / no finals | Run `start:debug` and check `[voice-debug]` — confirm inbound PCM bytes, Sherpa hypotheses, and `voice-control send` lines; try `VOICE_VAD_DISABLED=1` |
 | Native load error / missing symbol | Rebuild: `npm run build:native` from repo root |
 | **`npm` exit code 137** (process killed silently) | macOS stale code signature on `.node` after Sherpa rebuild — from repo root: `npm run build:native`, or `codesign --force --sign - packages/bindings/node-webrtc-rust.node packages/bindings/node-webrtc-rust.darwin-arm64.node` |

@@ -95,14 +95,19 @@ pub struct VadConfig {
     pub min_speech_duration_ms: u32,
     #[serde(default = "default_min_silence_ms")]
     pub min_silence_duration_ms: u32,
+    /// Pre-roll ring size contributor (with min_speech_duration_ms) and VAD start padding.
     #[serde(default = "default_speech_pad_ms")]
     pub speech_pad_ms: u32,
     #[serde(default)]
     pub sample_rate: VadSampleRate,
     #[serde(default)]
     pub barge_in: BargeInConfig,
+    /// When true, STT receives audio only during VAD speech segments (plus pre-roll on speech start).
     #[serde(default)]
     pub gate_stt: bool,
+    /// After VAD speech end, keep passing inbound audio to STT for this long (covers relay lag / trailing phonemes).
+    #[serde(default = "default_stt_gate_hold_ms")]
+    pub stt_gate_hold_ms: u32,
 }
 
 fn default_silero_provider() -> String {
@@ -122,7 +127,11 @@ fn default_min_silence_ms() -> u32 {
 }
 
 fn default_speech_pad_ms() -> u32 {
-    30
+    300
+}
+
+fn default_stt_gate_hold_ms() -> u32 {
+    2500
 }
 
 impl Default for VadConfig {
@@ -137,6 +146,7 @@ impl Default for VadConfig {
             sample_rate: VadSampleRate::default(),
             barge_in: BargeInConfig::default(),
             gate_stt: false,
+            stt_gate_hold_ms: default_stt_gate_hold_ms(),
         }
     }
 }
@@ -162,6 +172,8 @@ pub enum TtsVendor {
     Elevenlabs,
     Google,
     Cartesia,
+    #[serde(rename = "local-sherpa")]
+    LocalSherpa,
     Mock,
 }
 
@@ -187,6 +199,8 @@ pub struct TtsConfig {
     pub provider: TtsVendor,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_path: Option<String>,
     #[serde(default)]
     pub voice: Option<String>,
     #[serde(default)]
@@ -220,6 +234,7 @@ impl Default for VoiceAgentConfig {
             tts: Some(TtsConfig {
                 provider: TtsVendor::Mock,
                 model: None,
+                model_path: None,
                 voice: None,
                 api_key: None,
             }),

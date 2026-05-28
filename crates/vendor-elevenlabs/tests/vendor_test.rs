@@ -8,6 +8,7 @@ fn elevenlabs_factory_creates_tts() {
     let tts = factory.create_tts(&TtsConfig {
         provider: TtsVendor::Elevenlabs,
         model: None,
+        model_path: None,
         voice: Some("default".into()),
         api_key: Some("test-key".into()),
     });

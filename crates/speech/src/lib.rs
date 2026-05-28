@@ -7,6 +7,7 @@ pub mod events;
 pub mod pcm;
 pub mod pipeline;
 pub mod registry;
+pub mod stt_pre_roll;
 pub mod tts_buffer;
 pub mod vad;
 

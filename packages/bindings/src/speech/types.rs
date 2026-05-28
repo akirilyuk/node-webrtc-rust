@@ -91,6 +91,7 @@ pub struct JsVadConfig {
     pub sample_rate: Option<JsVadSampleRate>,
     pub barge_in: Option<JsBargeInConfig>,
     pub gate_stt: Option<bool>,
+    pub stt_gate_hold_ms: Option<u32>,
 }
 
 impl From<JsVadConfig> for VadConfig {
@@ -101,13 +102,14 @@ impl From<JsVadConfig> for VadConfig {
             threshold: value.threshold.unwrap_or(0.5) as f32,
             min_speech_duration_ms: value.min_speech_duration_ms.unwrap_or(250),
             min_silence_duration_ms: value.min_silence_duration_ms.unwrap_or(100),
-            speech_pad_ms: value.speech_pad_ms.unwrap_or(30),
+            speech_pad_ms: value.speech_pad_ms.unwrap_or(300),
             sample_rate: value
                 .sample_rate
                 .map(Into::into)
                 .unwrap_or(VadSampleRate::Hz16000),
             barge_in: value.barge_in.map(Into::into).unwrap_or_default(),
             gate_stt: value.gate_stt.unwrap_or(false),
+            stt_gate_hold_ms: value.stt_gate_hold_ms.unwrap_or(2500),
         }
     }
 }
@@ -153,6 +155,8 @@ pub enum JsTtsVendor {
     Google,
     #[napi(value = "cartesia")]
     Cartesia,
+    #[napi(value = "local-sherpa")]
+    LocalSherpa,
     #[napi(value = "mock")]
     Mock,
 }
@@ -164,6 +168,7 @@ impl From<JsTtsVendor> for TtsVendor {
             JsTtsVendor::Elevenlabs => Self::Elevenlabs,
             JsTtsVendor::Google => Self::Google,
             JsTtsVendor::Cartesia => Self::Cartesia,
+            JsTtsVendor::LocalSherpa => Self::LocalSherpa,
             JsTtsVendor::Mock => Self::Mock,
         }
     }
@@ -196,6 +201,7 @@ impl From<JsSttConfig> for SttConfig {
 pub struct JsTtsConfig {
     pub provider: JsTtsVendor,
     pub model: Option<String>,
+    pub model_path: Option<String>,
     pub voice: Option<String>,
     pub api_key: Option<String>,
 }
@@ -205,6 +211,7 @@ impl From<JsTtsConfig> for TtsConfig {
         Self {
             provider: value.provider.into(),
             model: value.model,
+            model_path: value.model_path,
             voice: value.voice,
             api_key: value.api_key,
         }

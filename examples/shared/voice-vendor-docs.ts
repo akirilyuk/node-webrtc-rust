@@ -123,10 +123,14 @@ export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
     id: 'local-sherpa',
     label: 'Sherpa-ONNX (local)',
     stt: true,
-    tts: false,
-    defaultModels: { stt: 'sherpa-onnx-streaming-zipformer-en-2023-06-26' },
+    tts: true,
+    defaultModels: {
+      stt: 'sherpa-onnx-streaming-zipformer-en-2023-06-26',
+      tts: 'vits-piper-en_US-amy-low',
+    },
     home: 'https://github.com/k2-fsa/sherpa-onnx',
     sttDocs: 'https://k2-fsa.github.io/sherpa/onnx/',
+    ttsDocs: 'https://k2-fsa.github.io/sherpa/onnx/tts/index.html',
     modelsDocs: 'https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models',
   },
   {
@@ -166,9 +170,9 @@ export function formatTtsDocsTable(): string {
 
 function sherpaDownloadScript(entry: SherpaLocalModelEntry): string {
   if (entry.id === 'en') {
-    return '`download-model` or `download-model:en`'
+    return '`download-stt` or `download-stt:en`'
   }
-  return `\`download-model:${entry.id}\``
+  return `\`download-stt:${entry.id}\``
 }
 
 /** Markdown table: Sherpa local STT languages + npm download scripts (see voice-agent-local-sherpa). */
@@ -189,23 +193,23 @@ export function formatSherpaLocalModelsUsage(): string {
   return `List all languages (including unavailable):
 
 \`\`\`bash
-npm run download-model:list --workspace=${ws}
+npm run download-stt:list --workspace=${ws}
 \`\`\`
 
 Per-language download (examples):
 
 \`\`\`bash
-npm run download-model:es --workspace=${ws}
-npm run download-model:de --workspace=${ws}
-npm run download-model --workspace=${ws} -- --lang=zh
+npm run download-stt:es --workspace=${ws}
+npm run download-stt:de --workspace=${ws}
+npm run download-stt --workspace=${ws} -- --lang=zh
 \`\`\`
 
 After download, export path and language (printed by the script):
 
 \`\`\`bash
-export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/<bundle-name>"
-export SHERPA_LANGUAGE=de   # optional — inferred from path when omitted
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/<bundle-name>"
+export SHERPA_STT_LANGUAGE=de   # optional — inferred from path when omitted
 \`\`\`
 
-For the **multilingual** Japanese/Arabic bundle (\`…-ar_en_id_ja_ru_th_vi_zh-2025-02-10\`), set \`SHERPA_LANGUAGE\` to the language you speak: \`ja\`, \`ar\`, \`ru\`, \`vi\`, \`id\`, \`th\`, \`zh\`, or \`en\`.`
+For the **multilingual** Japanese/Arabic bundle (\`…-ar_en_id_ja_ru_th_vi_zh-2025-02-10\`), set \`SHERPA_STT_LANGUAGE\` to the language you speak: \`ja\`, \`ar\`, \`ru\`, \`vi\`, \`id\`, \`th\`, \`zh\`, or \`en\`.`
 }

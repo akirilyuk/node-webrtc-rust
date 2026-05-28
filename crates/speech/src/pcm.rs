@@ -12,6 +12,12 @@ pub const STT_PCM_SAMPLE_RATE: u32 = 16_000;
 /// Minimum mono PCM bytes before batch STT vendors attempt transcription (~100 ms @ 16 kHz i16).
 pub const STT_MIN_BATCH_BYTES: usize = 3_200;
 
+/// Mono 16 kHz s16le silence for a given duration (used for streaming STT endpoint tails).
+pub fn silence_mono_s16le_bytes(duration_ms: u32) -> Bytes {
+    let samples = (STT_PCM_SAMPLE_RATE as usize * duration_ms as usize / 1000).max(1);
+    Bytes::from(vec![0u8; samples * 2])
+}
+
 /// Preferred batch size for utterance-style cloud STT (~1 s @ 16 kHz i16).
 pub const STT_PREFERRED_BATCH_BYTES: usize = 32_000;
 

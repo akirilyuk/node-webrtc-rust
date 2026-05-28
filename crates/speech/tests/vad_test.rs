@@ -23,7 +23,7 @@ fn energy_vad_detects_loud_frame() {
     let mut vad = VadEngine::new(config).unwrap();
     let loud = stereo_frame(960, i16::MAX / 3);
     let transitions = vad.process_webrtc_pcm(&loud, 20).unwrap();
-    assert!(transitions.contains(&VadTransition::SpeechStart));
+    assert!(transitions.0.contains(&VadTransition::SpeechStart));
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn energy_vad_ignores_silence() {
     let mut vad = VadEngine::new(config).unwrap();
     let silence = stereo_frame(960, 0);
     let transitions = vad.process_webrtc_pcm(&silence, 20).unwrap();
-    assert!(transitions.is_empty());
+    assert!(transitions.0.is_empty());
 }
 
 #[test]

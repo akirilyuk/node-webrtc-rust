@@ -20,10 +20,13 @@ export interface VadConfig {
   threshold?: number
   minSpeechDurationMs?: number
   minSilenceDurationMs?: number
+  /** Pre-roll ring (ms) retained before VAD speech start; also speeds up speech-start detection. */
   speechPadMs?: number
   sampleRate?: VadSampleRate
   bargeIn?: BargeInConfig
   gateStt?: boolean
+  /** Keep feeding STT after VAD speech end (ms). Default 2500. */
+  sttGateHoldMs?: number
 }
 
 export interface EventsConfig {
@@ -38,7 +41,13 @@ export type SttVendor =
   | 'local-sherpa'
   | 'mock'
 
-export type TtsVendor = 'openai' | 'elevenlabs' | 'google' | 'cartesia' | 'mock'
+export type TtsVendor =
+  | 'openai'
+  | 'elevenlabs'
+  | 'google'
+  | 'cartesia'
+  | 'local-sherpa'
+  | 'mock'
 
 export interface SttConfig {
   provider: SttVendor
@@ -52,6 +61,9 @@ export interface SttConfig {
 export interface TtsConfig {
   provider: TtsVendor
   model?: string
+  /** Directory with Sherpa VITS/Piper weights (model.onnx, tokens.txt, espeak-ng-data). */
+  modelPath?: string
+  /** Speaker id for multi-speaker Piper models (default 0). */
   voice?: string
   apiKey?: string
 }

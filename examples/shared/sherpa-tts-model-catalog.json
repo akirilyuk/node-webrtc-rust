@@ -1,0 +1,52 @@
+{
+  "releaseBase": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models",
+  "defaultModelId": "en",
+  "exampleWorkspace": "@node-webrtc-rust/example-voice-agent-local-sherpa",
+  "models": [
+    {
+      "id": "en",
+      "label": "English (Amy, Piper low)",
+      "bundle": "vits-piper-en_US-amy-low",
+      "language": "en",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~40"
+    },
+    {
+      "id": "en-glados",
+      "label": "English (GLaDOS, single speaker)",
+      "bundle": "vits-piper-en_US-glados",
+      "language": "en",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~64"
+    },
+    {
+      "id": "es",
+      "label": "Spanish (GLaDOS medium)",
+      "bundle": "vits-piper-es-glados-medium",
+      "language": "es",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~64"
+    },
+    {
+      "id": "de",
+      "label": "German (Thorsten medium)",
+      "bundle": "vits-piper-de_DE-thorsten-medium",
+      "language": "de",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~64"
+    },
+    {
+      "id": "zh",
+      "label": "Chinese + English (Melo TTS)",
+      "bundle": "vits-melo-tts-zh_en",
+      "language": "zh",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~163"
+    }
+  ]
+}

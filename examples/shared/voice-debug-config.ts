@@ -29,7 +29,8 @@ export function applyVoiceDebugOverrides(config: VoiceAgentConfig): VoiceAgentCo
       threshold,
       minSpeechDurationMs: 40,
       minSilenceDurationMs: 400,
-      gateStt: false,
+      speechPadMs: 400,
+      gateStt: true,
     },
   }
 }

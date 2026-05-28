@@ -1,7 +1,7 @@
 /**
- * Relay decoded remote PCM back onto a local send track.
+ * PCM helpers for voice examples (silence tail, optional relay).
  *
- * Used by the roundtrip demo: agent TTS → userInbound → userOut → agentInbound → STT.
+ * Roundtrip uses two VoiceAgents over WebRTC (speaker → listener); it does not use relay.
  */
 
 import type { LocalAudioTrack, RemoteAudioTrack } from '@node-webrtc-rust/sdk'
@@ -46,12 +46,20 @@ export async function relayRemoteAudioToLocal(
   }
 }
 
-/** Sends silent 20 ms frames — helps VAD/STT endpoint after TTS playback. */
+/**
+ * Sends silent 20 ms frames at real-time pace (one frame every {@link PCM_FRAME_DURATION_MS} ms).
+ * Matches browser cosine / live capture timing so VAD hold and silence endpoint behave like production.
+ */
 export async function streamSilence(sink: LocalAudioTrack, seconds: number): Promise<void> {
+  if (seconds <= 0) return
   const frameCount = Math.ceil((seconds * 1000) / PCM_FRAME_DURATION_MS)
   const silent = Buffer.alloc(PCM_FULL_FRAME_BYTES)
+  const endAt = performance.now() + seconds * 1000
   for (let i = 0; i < frameCount; i++) {
     await sink.writeSample(silent, PCM_FRAME_DURATION_MS)
+    const nextTickAt = endAt - (frameCount - i - 1) * PCM_FRAME_DURATION_MS
+    const waitMs = nextTickAt - performance.now()
+    if (waitMs > 0) await sleep(waitMs)
   }
 }
 

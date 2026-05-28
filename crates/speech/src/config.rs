@@ -95,16 +95,20 @@ pub struct VadConfig {
     pub min_speech_duration_ms: u32,
     #[serde(default = "default_min_silence_ms")]
     pub min_silence_duration_ms: u32,
-    /// Pre-roll ring size contributor (with min_speech_duration_ms) and VAD start padding.
+    /// Extra mono PCM retained in the STT pre-roll ring (added to `min_speech_duration_ms` for capacity).
     #[serde(default = "default_speech_pad_ms")]
     pub speech_pad_ms: u32,
     #[serde(default)]
     pub sample_rate: VadSampleRate,
     #[serde(default)]
     pub barge_in: BargeInConfig,
-    /// When true, STT receives audio only during VAD speech segments (plus pre-roll on speech start).
+    /// When true, STT receives audio only while the gate is open (see VoiceAgent): VAD
+    /// speaking, optional pending speech, or post-speech hold.
     #[serde(default)]
     pub gate_stt: bool,
+    /// When `gate_stt` is true, also feed STT during VAD pending speech (before `SpeechStart`).
+    #[serde(default = "default_true")]
+    pub gate_stt_open_on_pending: bool,
     /// After VAD speech end, keep passing inbound audio to STT for this long (covers relay lag / trailing phonemes).
     #[serde(default = "default_stt_gate_hold_ms")]
     pub stt_gate_hold_ms: u32,
@@ -122,8 +126,9 @@ fn default_min_speech_ms() -> u32 {
     250
 }
 
+// Brief gaps inside a phrase (TTS word pauses, natural speech) should not split VAD.
 fn default_min_silence_ms() -> u32 {
-    100
+    300
 }
 
 fn default_speech_pad_ms() -> u32 {
@@ -146,6 +151,7 @@ impl Default for VadConfig {
             sample_rate: VadSampleRate::default(),
             barge_in: BargeInConfig::default(),
             gate_stt: false,
+            gate_stt_open_on_pending: true,
             stt_gate_hold_ms: default_stt_gate_hold_ms(),
         }
     }

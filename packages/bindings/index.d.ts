@@ -133,6 +133,7 @@ export interface JsVadConfig {
   sampleRate?: JsVadSampleRate
   bargeIn?: JsBargeInConfig
   gateStt?: boolean
+  gateSttOpenOnPending?: boolean
   sttGateHoldMs?: number
 }
 export const enum JsSttVendor {

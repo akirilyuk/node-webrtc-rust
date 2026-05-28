@@ -56,7 +56,7 @@ const agent = new VoiceAgent({
     enabled: true,
     threshold: 0.5,
     minSpeechDurationMs: 250,
-    minSilenceDurationMs: 100,
+    minSilenceDurationMs: 300,
     bargeIn: { enabled: true, flushTts: true },
     gateStt: false, // set true to only send PCM to STT during detected speech
   },
@@ -104,15 +104,17 @@ interface VoiceAgentConfig {
     threshold?: number             // 0.0–1.0, default 0.5
     minSpeechDurationMs?: number
     minSilenceDurationMs?: number
-    speechPadMs?: number
+    speechPadMs?: number           // pre-roll ring capacity (ms), default 300
     sampleRate?: 8000 | 16000
     bargeIn?: {
       enabled?: boolean            // emit barge_in on user speech start
       flushTts?: boolean           // flush TTS buffer before event (default true)
     }
-    gateStt?: boolean              // only feed STT during detected speech
+    gateStt?: boolean              // only feed STT while gate is open (default false)
+    gateSttOpenOnPending?: boolean // also open gate during VAD pending speech (default true)
     sttGateHoldMs?: number         // keep feeding STT after speech end (default 2500)
   }
+  // VAD timing vs test harness silence: examples/voice-agent-local-sherpa/ROUNDTRIP.md
   stt?: {
     provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'local-sherpa' | 'mock'
     model?: string

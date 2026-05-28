@@ -60,9 +60,10 @@ const LOCAL_SHERPA_VOICE_CONFIG = (
   vad: {
     enabled: true,
     threshold: 0.05,
-    minSpeechDurationMs: 80,
-    speechPadMs: 400,
+    minSpeechDurationMs: 250,
+    speechPadMs: 300,
     gateStt: true,
+    sttGateHoldMs: 2500,
     bargeIn: { enabled: true, flushTts: true },
   },
 })

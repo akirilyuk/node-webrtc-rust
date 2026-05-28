@@ -91,6 +91,7 @@ pub struct JsVadConfig {
     pub sample_rate: Option<JsVadSampleRate>,
     pub barge_in: Option<JsBargeInConfig>,
     pub gate_stt: Option<bool>,
+    pub gate_stt_open_on_pending: Option<bool>,
     pub stt_gate_hold_ms: Option<u32>,
 }
 
@@ -101,7 +102,7 @@ impl From<JsVadConfig> for VadConfig {
             provider: value.provider.unwrap_or_else(|| "silero".to_string()),
             threshold: value.threshold.unwrap_or(0.5) as f32,
             min_speech_duration_ms: value.min_speech_duration_ms.unwrap_or(250),
-            min_silence_duration_ms: value.min_silence_duration_ms.unwrap_or(100),
+            min_silence_duration_ms: value.min_silence_duration_ms.unwrap_or(300),
             speech_pad_ms: value.speech_pad_ms.unwrap_or(300),
             sample_rate: value
                 .sample_rate
@@ -109,6 +110,7 @@ impl From<JsVadConfig> for VadConfig {
                 .unwrap_or(VadSampleRate::Hz16000),
             barge_in: value.barge_in.map(Into::into).unwrap_or_default(),
             gate_stt: value.gate_stt.unwrap_or(false),
+            gate_stt_open_on_pending: value.gate_stt_open_on_pending.unwrap_or(true),
             stt_gate_hold_ms: value.stt_gate_hold_ms.unwrap_or(2500),
         }
     }

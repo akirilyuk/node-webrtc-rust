@@ -126,16 +126,15 @@ async fn gate_stt_pre_roll_ignores_leading_silence() {
     );
 
     let frame = loud_stereo_frame();
-    agent
-        .process_inbound_pcm(Bytes::from(frame.clone()), 20)
-        .await
-        .unwrap();
-    agent
-        .process_inbound_pcm(Bytes::from(frame), 20)
-        .await
-        .unwrap();
+    // min_speech_duration_ms=60 → SpeechStart on the 3rd 20 ms voice frame.
+    for _ in 0..3 {
+        agent
+            .process_inbound_pcm(Bytes::from(frame.clone()), 20)
+            .await
+            .unwrap();
+    }
     assert!(
-        *bytes.lock().unwrap() >= 640 * 2,
+        *bytes.lock().unwrap() >= 640 * 3,
         "speech start should flush only voice frames from pre-roll"
     );
 }
@@ -213,6 +212,70 @@ async fn gate_stt_hold_passes_trailing_speech_after_speech_end() {
 }
 
 #[tokio::test]
+async fn gate_stt_pending_gate_disabled_waits_for_speech_start() {
+    let bytes = Arc::new(Mutex::new(0_usize));
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::new(CountingFactory {
+            bytes: Arc::clone(&bytes),
+        }),
+    );
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 60;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.gate_stt_open_on_pending = false;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: None,
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let frame = loud_stereo_frame();
+    agent
+        .process_inbound_pcm(Bytes::from(frame.clone()), 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        *bytes.lock().unwrap(),
+        0,
+        "with gate_stt_open_on_pending=false, first frame stays in pre-roll only"
+    );
+
+    for _ in 0..2 {
+        agent
+            .process_inbound_pcm(Bytes::from(frame.clone()), 20)
+            .await
+            .unwrap();
+    }
+    assert!(
+        *bytes.lock().unwrap() >= 640 * 3,
+        "STT opens only after SpeechStart when pending gate is disabled"
+    );
+}
+
+#[tokio::test]
 async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
     let bytes = Arc::new(Mutex::new(0_usize));
     let mut registry = VendorRegistry::new();
@@ -255,14 +318,21 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
         .process_inbound_pcm(Bytes::from(frame.clone()), 20)
         .await
         .unwrap();
-    assert_eq!(*bytes.lock().unwrap(), 0, "first frame should stay in pre-roll only");
+    assert!(
+        *bytes.lock().unwrap() >= 640,
+        "pending gate opens STT while accumulating min_speech_duration_ms"
+    );
 
     agent
         .process_inbound_pcm(Bytes::from(frame.clone()), 20)
         .await
         .unwrap();
+    agent
+        .process_inbound_pcm(Bytes::from(frame.clone()), 20)
+        .await
+        .unwrap();
     assert!(
-        *bytes.lock().unwrap() >= 640 * 2,
+        *bytes.lock().unwrap() >= 640 * 3,
         "speech start should flush pre-roll including prior frames"
     );
 

@@ -148,17 +148,30 @@ npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 
 ### 3b. Node-only TTS → STT roundtrip (no browser)
 
-Verifies the full on-device loop without a microphone: **text → Sherpa TTS → WebRTC relay → Sherpa STT → text**.
+Verifies the full on-device loop without a microphone: **two VoiceAgents** (speaker TTS → WebRTC → listener STT + VAD + gateStt).
 
 ```bash
 npm run build:native   # if you changed Rust since last build
 npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- "The weather is nice today."
+npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- "I love America"
 ```
 
-Optional env: `SHERPA_ROUNDTRIP_PHRASE`, `SHERPA_ROUNDTRIP_TIMEOUT_MS` (default 45000).
+Default (no args) runs **5 built-in phrases** and checks **word similarity** (lowercased word overlap, default 75% threshold).
 
-Expected output ends with non-empty `Recognized:` and `Roundtrip OK`. Implementation: [`src/roundtrip.ts`](./src/roundtrip.ts) (PCM relay in [`src/pcm-relay.ts`](./src/pcm-relay.ts)).
+**Full documentation:** [`ROUNDTRIP.md`](./ROUNDTRIP.md) — architecture, VAD timing vs explicit silence, similarity, env vars, and defaults.
+
+Quick reference:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SHERPA_ROUNDTRIP_PHRASE` | — | Single phrase instead of the 5-sentence batch |
+| `SHERPA_ROUNDTRIP_MIN_SIMILARITY` | `0.75` | Min fraction of input words matched in recognition |
+| `SHERPA_ROUNDTRIP_TIMEOUT_MS` | `45000` | Per-phrase STT timeout |
+| `SHERPA_ROUNDTRIP_WARMUP_S` | `0.6` | Speaker warmup silence before first TTS (WebRTC priming) |
+| `SHERPA_ROUNDTRIP_GAP_S` | `0` | **Extra** silence between phrases; off by default (VAD hold + trailing silence suffice) |
+| `SHERPA_ROUNDTRIP_VERBOSE` | off | Log every VAD/STT event |
+
+Inter-phrase separation comes from **listener VAD** (`sttGateHoldMs`, endpoint tail, wait for `user_speech_final`) plus **post-TTS trailing silence** on the speaker track (duration derived from those VAD timings). See [ROUNDTRIP.md § Timing](./ROUNDTRIP.md#timing-vad-vs-explicit-silence).
 
 Rust-level smoke (no WebRTC): `cargo test -p node-webrtc-rust-vendor-sherpa-onnx tts_synthesize_produces_stereo_pcm_with_model -- --ignored` with `SHERPA_TTS_MODEL_PATH` set.
 

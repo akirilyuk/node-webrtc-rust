@@ -47,6 +47,8 @@ struct AgentInner {
     stt_gate_hold_ms: u32,
     /// When true, finalize STT once gate hold drains (after trailing speech is relayed).
     stt_finalize_pending: bool,
+    /// True while agent TTS is synthesizing or playing — keeps gateStt open for relayed/echo audio.
+    agent_speaking: bool,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
 }
@@ -97,6 +99,7 @@ impl VoiceAgent {
                 stt_pre_roll,
                 stt_gate_hold_ms: 0,
                 stt_finalize_pending: false,
+                agent_speaking: false,
                 pcm_writer: None,
                 pcm_reader: None,
             }),
@@ -175,6 +178,12 @@ impl VoiceAgent {
     }
 
     pub async fn send_text_to_tts(&self, text: &str) -> SpeechResult<()> {
+        {
+            let mut inner = self.inner.lock().await;
+            inner.agent_speaking = true;
+        }
+        voice_debug("agent_speaking=true (TTS starting)");
+
         let chunks = {
             let tts = self.tts.lock().await;
             let tts = tts
@@ -191,12 +200,39 @@ impl VoiceAgent {
 
     pub async fn flush_tts(&self) -> SpeechResult<()> {
         self.tts_buffer.flush().await;
+        self.end_agent_speaking(true).await;
+        voice_debug("agent_speaking=false (flush_tts)");
         self.emit(SpeechEvent::agent_speaking_end());
         Ok(())
     }
 
     pub async fn pull_speech_event(&self) -> Option<SpeechEvent> {
         None
+    }
+
+    /// Clears TTS playback state; optionally arms STT hold when playback ends and VAD is idle.
+    async fn end_agent_speaking(&self, arm_stt_hold_after_playback: bool) {
+        let mut inner = self.inner.lock().await;
+        inner.agent_speaking = false;
+        if arm_stt_hold_after_playback {
+            Self::arm_stt_hold_if_idle(&mut inner);
+        }
+    }
+
+    fn arm_stt_hold_if_idle(inner: &mut AgentInner) {
+        if !inner.config.vad.gate_stt || inner.stt_gate_hold_ms > 0 {
+            return;
+        }
+        let still_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
+        if still_speaking {
+            return;
+        }
+        inner.stt_gate_hold_ms = inner.config.vad.stt_gate_hold_ms;
+        inner.stt_finalize_pending = true;
+        voice_debug(format!(
+            "STT gate hold: {} ms after TTS playback ended",
+            inner.stt_gate_hold_ms
+        ));
     }
 
     /// Process one inbound PCM frame through VAD, barge-in, and optional STT gating.
@@ -238,7 +274,7 @@ impl VoiceAgent {
                     .map(VadEngine::is_pending_speech)
                     .unwrap_or(false);
                 if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
-                    // Only retain voice-bearing frames — silence must not evict speech from the ring.
+                    // Voice-only — silence must not fill the ring (see stt_pre_roll tests).
                     if !was_speaking && (frame_active || pending) {
                         pre_roll.push(&mono_bytes);
                     }
@@ -247,10 +283,11 @@ impl VoiceAgent {
 
             let mut pre_roll_flush = None;
             let mut hold_just_expired = false;
-            if gate_stt {
-                if transitions.contains(&VadTransition::SpeechStart) {
-                    inner.stt_gate_hold_ms = 0;
-                    inner.stt_finalize_pending = false;
+
+            if transitions.contains(&VadTransition::SpeechStart) {
+                inner.stt_gate_hold_ms = 0;
+                inner.stt_finalize_pending = false;
+                if gate_stt {
                     if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                         let buffered = pre_roll.drain();
                         if !buffered.is_empty() {
@@ -265,25 +302,37 @@ impl VoiceAgent {
                             pre_roll_flush = Some(buffered);
                         }
                     }
-                } else if transitions.contains(&VadTransition::SpeechEnd) {
+                }
+            } else if transitions.contains(&VadTransition::SpeechEnd) {
+                if gate_stt {
                     inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+                }
+                // TTS word gaps can trigger SpeechEnd; defer finalize until agent finishes speaking.
+                if !inner.agent_speaking {
                     inner.stt_gate_hold_ms = inner.config.vad.stt_gate_hold_ms;
                     inner.stt_finalize_pending = true;
                     voice_debug(format!(
                         "STT gate hold: {} ms after speech end",
                         inner.stt_gate_hold_ms
                     ));
-                } else if inner.stt_gate_hold_ms > 0 {
-                    let before = inner.stt_gate_hold_ms;
-                    inner.stt_gate_hold_ms = before.saturating_sub(duration_ms);
-                    hold_just_expired =
-                        inner.stt_finalize_pending && before > 0 && inner.stt_gate_hold_ms == 0;
                 }
+            } else if inner.stt_gate_hold_ms > 0 {
+                let before = inner.stt_gate_hold_ms;
+                inner.stt_gate_hold_ms = before.saturating_sub(duration_ms);
+                hold_just_expired =
+                    inner.stt_finalize_pending && before > 0 && inner.stt_gate_hold_ms == 0;
             }
 
+            let pending_gate = inner.config.vad.gate_stt_open_on_pending
+                && inner
+                    .vad
+                    .as_ref()
+                    .map(VadEngine::is_pending_speech)
+                    .unwrap_or(false);
             let stt_gate_open = if gate_stt {
                 inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false)
                     || inner.stt_gate_hold_ms > 0
+                    || pending_gate
             } else {
                 true
             };
@@ -297,6 +346,7 @@ impl VoiceAgent {
             )
         };
 
+        let pre_roll_was_empty = pre_roll_flush.as_ref().is_none_or(|b| b.is_empty());
         if let Some(buffered) = pre_roll_flush {
             self.push_stt_audio_bytes(buffered).await?;
         }
@@ -310,6 +360,10 @@ impl VoiceAgent {
                         inner.config.vad.barge_in.clone()
                     };
                     handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+                    if barge_in.flush_tts {
+                        self.end_agent_speaking(false).await;
+                        voice_debug("agent_speaking=false (barge-in flush)");
+                    }
                     self.emit(SpeechEvent::user_speaking_start());
                 }
                 VadTransition::SpeechEnd => {
@@ -334,7 +388,8 @@ impl VoiceAgent {
 
         if gate_stt {
             let speech_start = transitions.contains(&VadTransition::SpeechStart);
-            if !speech_start {
+            // Current frame is usually in the pre-roll flush on SpeechStart; push it when flush was empty.
+            if !speech_start || pre_roll_was_empty {
                 self.push_stt_audio_bytes(mono_bytes).await?;
             }
         } else {
@@ -443,6 +498,8 @@ impl VoiceAgent {
                 writer(frame, duration_ms)?;
             }
         }
+        self.end_agent_speaking(true).await;
+        voice_debug("agent_speaking=false (TTS drained)");
         self.emit(SpeechEvent::agent_speaking_end());
         Ok(())
     }

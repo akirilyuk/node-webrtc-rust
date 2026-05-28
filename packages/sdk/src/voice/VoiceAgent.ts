@@ -50,6 +50,7 @@ function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
       ? { enabled: vad.bargeIn.enabled, flushTts: vad.bargeIn.flushTts }
       : undefined,
     gateStt: vad.gateStt,
+    gateSttOpenOnPending: vad.gateSttOpenOnPending,
     sttGateHoldMs: vad.sttGateHoldMs,
   }
 }

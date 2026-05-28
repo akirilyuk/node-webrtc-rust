@@ -154,9 +154,9 @@ impl VadEngine {
         if active {
             self.speech_ms = self.speech_ms.saturating_add(self.frame_ms);
             self.silence_ms = 0;
-            if !self.speaking
-                && self.speech_ms >= self.config.min_speech_duration_ms.saturating_sub(self.config.speech_pad_ms)
-            {
+            // `speech_pad_ms` sizes the STT pre-roll ring only — do not subtract it here or
+            // a large pad forces immediate SpeechStart with an almost empty pre-roll flush.
+            if !self.speaking && self.speech_ms >= self.config.min_speech_duration_ms {
                 self.speaking = true;
                 transitions.push(VadTransition::SpeechStart);
             }

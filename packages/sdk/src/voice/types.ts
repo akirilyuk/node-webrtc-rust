@@ -20,11 +20,13 @@ export interface VadConfig {
   threshold?: number
   minSpeechDurationMs?: number
   minSilenceDurationMs?: number
-  /** Pre-roll ring (ms) retained before VAD speech start; also speeds up speech-start detection. */
+  /** Pre-roll ring capacity (ms), added to minSpeechDurationMs. Default 300. */
   speechPadMs?: number
   sampleRate?: VadSampleRate
   bargeIn?: BargeInConfig
   gateStt?: boolean
+  /** When gateStt is true, feed STT during VAD pending speech. Default true. */
+  gateSttOpenOnPending?: boolean
   /** Keep feeding STT after VAD speech end (ms). Default 2500. */
   sttGateHoldMs?: number
 }

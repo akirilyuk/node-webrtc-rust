@@ -22,3 +22,4 @@ silero-vad-rust = { version = "6.2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+node-webrtc-rust-vendor-mock = { path = "../vendor-mock" }

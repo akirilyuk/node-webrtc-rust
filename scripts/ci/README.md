@@ -168,7 +168,7 @@ flowchart TD
 1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh) (must pass before any native compile)
 2. **build-linux** / **build-host** — same reusable workflows (`cache_prefix: v1-release`); per-target compile skipped on native cache hit
 3. **test** — [`run-pr-integration.sh`](run-pr-integration.sh) only (quality already ran)
-4. **publish** — runs only when quality, both build workflows, and test all **succeeded**; stage artifacts, `npm publish`, GitHub Release
+4. **publish** — runs only when quality, both build workflows, and test all **succeeded**; stage artifacts, `npm publish`, poll registry via [`wait-for-npm-package.sh`](wait-for-npm-package.sh), GitHub Release
 
 See [`scripts/RELEASE.md`](../RELEASE.md) for tagging and secrets.
 

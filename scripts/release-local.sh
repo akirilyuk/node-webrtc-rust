@@ -262,10 +262,7 @@ publish_pkg_with_extra() {
 verify_published() {
   local pkg="$1"
   [[ "$DRY_RUN" == true ]] && return 0
-  sleep 2
-  if ! npm view "${pkg}@${VERSION}" version &>/dev/null; then
-    echo "WARNING: ${pkg}@${VERSION} not yet visible on registry (propagation delay)" >&2
-  fi
+  bash "$ROOT/scripts/ci/wait-for-npm-package.sh" "$pkg" "$VERSION"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════

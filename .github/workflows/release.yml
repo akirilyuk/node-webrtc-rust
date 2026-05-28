@@ -205,13 +205,7 @@ jobs:
           }
 
           verify_published() {
-            local pkg="$1"
-            local published
-            published="$(npm view "${pkg}@${VERSION}" version 2>/dev/null || true)"
-            if [[ "$published" != "$VERSION" ]]; then
-              echo "Not on npm registry after publish: ${pkg}@${VERSION}" >&2
-              exit 1
-            fi
+            bash scripts/ci/wait-for-npm-package.sh "$1" "$VERSION"
           }
 
           echo "==> Platform binding packages"

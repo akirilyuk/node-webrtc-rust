@@ -4,8 +4,8 @@ use napi::bindgen_prelude::{Env, FromNapiValue, Result, ToNapiValue};
 use napi::JsUnknown;
 use napi_derive::napi;
 use node_webrtc_rust_core::{
-    IceCandidate, IceServer, IceTransportPolicy, PeerConnectionConfig, SdpType, SessionDescription,
-    set_debug_enabled,
+    AnswerOptions, IceCandidate, IceServer, IceTransportPolicy, OfferOptions, PeerConnectionConfig,
+    SdpType, SessionDescription, set_debug_enabled,
 };
 
 /// ICE server configuration exposed to JavaScript.
@@ -30,6 +30,20 @@ impl From<JsRTCIceServer> for IceServer {
             username: value.username,
             credential: value.credential,
             credential_type,
+        }
+    }
+}
+
+impl From<IceServer> for JsRTCIceServer {
+    fn from(value: IceServer) -> Self {
+        Self {
+            urls: value.urls,
+            username: value.username,
+            credential: value.credential,
+            credential_type: Some(match value.credential_type {
+                node_webrtc_rust_core::IceCredentialType::Oauth => "oauth".to_string(),
+                node_webrtc_rust_core::IceCredentialType::Password => "password".to_string(),
+            }),
         }
     }
 }
@@ -64,6 +78,59 @@ impl From<JsRTCConfiguration> for PeerConnectionConfig {
             ice_transport_policy,
             debug: value.debug,
         }
+    }
+}
+
+impl From<PeerConnectionConfig> for JsRTCConfiguration {
+    fn from(value: PeerConnectionConfig) -> Self {
+        Self {
+            ice_servers: Some(
+                value
+                    .ice_servers
+                    .into_iter()
+                    .map(JsRTCIceServer::from)
+                    .collect(),
+            ),
+            ice_transport_policy: Some(match value.ice_transport_policy {
+                IceTransportPolicy::Relay => "relay".to_string(),
+                IceTransportPolicy::All => "all".to_string(),
+            }),
+            debug: value.debug,
+        }
+    }
+}
+
+/// Offer options (W3C `RTCOfferOptions` subset).
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsRTCOfferOptions {
+    pub ice_restart: Option<bool>,
+    pub voice_activity_detection: Option<bool>,
+    pub offer_to_receive_audio: Option<bool>,
+    pub offer_to_receive_video: Option<bool>,
+}
+
+pub(crate) fn offer_options_from_js(value: Option<JsRTCOfferOptions>) -> OfferOptions {
+    let value = value.unwrap_or_default();
+    OfferOptions {
+        ice_restart: value.ice_restart.unwrap_or(false),
+        voice_activity_detection: value.voice_activity_detection.unwrap_or(true),
+        offer_to_receive_audio: value.offer_to_receive_audio.unwrap_or(false),
+        offer_to_receive_video: value.offer_to_receive_video.unwrap_or(false),
+    }
+}
+
+/// Answer options (W3C `RTCAnswerOptions` subset).
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsRTCAnswerOptions {
+    pub voice_activity_detection: Option<bool>,
+}
+
+pub(crate) fn answer_options_from_js(value: Option<JsRTCAnswerOptions>) -> AnswerOptions {
+    let value = value.unwrap_or_default();
+    AnswerOptions {
+        voice_activity_detection: value.voice_activity_detection.unwrap_or(true),
     }
 }
 

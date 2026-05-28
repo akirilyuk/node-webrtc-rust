@@ -19,7 +19,7 @@ if [[ ${#nodes[@]} -eq 0 ]]; then
     exit 1
   fi
   echo "    no .node in workspace — compiling debug linux-gnu binding (local fallback)"
-  ( cd packages/bindings && npx napi build --target x86_64-unknown-linux-gnu )
+  ( cd packages/bindings && npx napi build --target x86_64-unknown-linux-gnu && npm run copy:local-node )
   shopt -s nullglob
   nodes=(packages/bindings/*.node)
   if [[ ${#nodes[@]} -eq 0 ]]; then

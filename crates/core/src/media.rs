@@ -1,7 +1,7 @@
 //! MediaStream and track abstractions.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -13,6 +13,7 @@ use crate::debug_call;
 use crate::error::CoreError;
 use crate::pcm_audio_track::PcmAudioTrackLocal;
 use crate::pcm_encoder::NegotiatedAudioFormat;
+use node_webrtc_rust_mixer::OpusDecoder;
 
 /// Track media kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,12 +166,20 @@ impl MediaStreamTrack for LocalAudioTrack {
     }
 }
 
+/// Decoded PCM from a remote audio track (48 kHz stereo, 20 ms by default).
+#[derive(Debug, Clone)]
+pub struct PcmSample {
+    pub pcm: Bytes,
+    pub duration: Duration,
+}
+
 /// Remote track received from a peer connection.
 #[derive(Clone)]
 pub struct RemoteTrack {
     inner: Arc<TrackRemote>,
     track_id: String,
     stream_id: String,
+    decoder: Arc<Mutex<OpusDecoder>>,
 }
 
 impl RemoteTrack {
@@ -179,6 +188,9 @@ impl RemoteTrack {
             track_id: inner.id(),
             stream_id: inner.stream_id(),
             inner,
+            decoder: Arc::new(Mutex::new(
+                OpusDecoder::new().expect("Opus decoder init"),
+            )),
         }
     }
 
@@ -210,6 +222,20 @@ impl RemoteTrack {
             clock_rate: params.capability.clock_rate,
             channels: params.capability.channels,
         }
+    }
+
+    /// Reads the next RTP packet, decodes Opus to PCM, and returns one sample buffer.
+    pub async fn read_sample(&self) -> Result<PcmSample, CoreError> {
+        let packet = self.read_rtp().await?;
+        let frame = self
+            .decoder
+            .lock()
+            .expect("remote track decoder lock")
+            .decode_payload(&packet.payload);
+        Ok(PcmSample {
+            pcm: frame.pcm,
+            duration: Duration::from_millis(node_webrtc_rust_mixer::FRAME_MS as u64),
+        })
     }
 
     /// Reads the next RTP packet from the track.

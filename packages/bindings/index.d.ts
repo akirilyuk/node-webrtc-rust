@@ -72,6 +72,17 @@ export interface JsRtcConfiguration {
   iceTransportPolicy?: string
   debug?: boolean
 }
+/** Offer options (W3C `RTCOfferOptions` subset). */
+export interface JsRtcOfferOptions {
+  iceRestart?: boolean
+  voiceActivityDetection?: boolean
+  offerToReceiveAudio?: boolean
+  offerToReceiveVideo?: boolean
+}
+/** Answer options (W3C `RTCAnswerOptions` subset). */
+export interface JsRtcAnswerOptions {
+  voiceActivityDetection?: boolean
+}
 /** Session description exposed to JavaScript. */
 export interface JsRtcSessionDescription {
   type: string
@@ -91,6 +102,10 @@ export interface JsRtcDataChannelInit {
   maxRetransmits?: number
   protocol?: string
   negotiated?: number
+}
+/** Init options for {@link RTCPeerConnection.addTransceiver}. */
+export interface JsRtcRtpTransceiverInit {
+  direction?: string
 }
 export declare function version(): string
 /** One conference room with participant and mixing controls. */
@@ -146,18 +161,22 @@ export declare class JsRtcDataChannel {
   bufferedAmount(): Promise<number>
   send(data: string | Buffer): Promise<void>
   close(): Promise<void>
+  setBufferedAmountLowThreshold(threshold: number): void
+  setOnBufferedAmountLow(callback: (...args: any[]) => any): void
   setOnOpen(callback: (...args: any[]) => any): void
   setOnMessage(callback: (...args: any[]) => any): void
   setOnClose(callback: (...args: any[]) => any): void
   setOnError(callback: (...args: any[]) => any): void
 }
-/** Media stream track exposed to JavaScript (stub). */
+/** Media stream track exposed to JavaScript. */
 export declare class JsMediaStreamTrack {
   get id(): string
   get kind(): string
   get streamId(): string
   get enabled(): boolean
   set enabled(enabled: boolean)
+  /** Decodes the next inbound Opus RTP packet to stereo PCM (remote audio only). */
+  readSample(): Promise<Buffer>
 }
 /** Media stream exposed to JavaScript (stub). */
 export declare class JsMediaStream {
@@ -182,15 +201,24 @@ export declare class JsPeerConnection {
   get iceConnectionState(): string
   get iceGatheringState(): string
   get signalingState(): string
-  createOffer(): Promise<JsRtcSessionDescription>
-  createAnswer(): Promise<JsRtcSessionDescription>
+  createOffer(options?: JsRtcOfferOptions | undefined | null): Promise<JsRtcSessionDescription>
+  createAnswer(options?: JsRtcAnswerOptions | undefined | null): Promise<JsRtcSessionDescription>
   setLocalDescription(desc: JsRtcSessionDescription): Promise<void>
   setRemoteDescription(desc: JsRtcSessionDescription): Promise<void>
   addIceCandidate(candidate: JsRtcIceCandidate): Promise<void>
-  addTrack(track: JsLocalAudioTrack): Promise<void>
+  addTrack(track: JsLocalAudioTrack): Promise<JsRtpSender>
+  removeTrack(sender: JsRtpSender): Promise<void>
+  addTransceiver(kind?: string | undefined | null, track?: JsLocalAudioTrack | undefined | null, init?: JsRTCRtpTransceiverInit | undefined | null): Promise<JsRtpTransceiver>
+  getTransceivers(): Promise<Array<JsRtpTransceiver>>
+  getSenders(): Promise<Array<JsRtpSender>>
+  getReceivers(): Promise<Array<JsRtpReceiver>>
   createDataChannel(label: string, options?: JsRtcDataChannelInit | undefined | null): Promise<JsRtcDataChannel>
   close(): Promise<void>
   gatheringComplete(): Promise<void>
+  setConfiguration(config: JsRtcConfiguration): Promise<void>
+  getConfiguration(): Promise<JsRtcConfiguration>
+  restartIce(): Promise<void>
+  getStats(): Promise<string>
   localDescription(): Promise<JsRtcSessionDescription | null>
   remoteDescription(): Promise<JsRtcSessionDescription | null>
   setOnIceCandidate(callback: (...args: any[]) => any): void
@@ -198,5 +226,30 @@ export declare class JsPeerConnection {
   setOnDataChannel(callback: (...args: any[]) => any): void
   setOnConnectionStateChange(callback: (...args: any[]) => any): void
   setOnIceConnectionStateChange(callback: (...args: any[]) => any): void
+  setOnIceGatheringStateChange(callback: (...args: any[]) => any): void
+  setOnSignalingStateChange(callback: (...args: any[]) => any): void
   setOnNegotiationNeeded(callback: (...args: any[]) => any): void
+}
+/** RTP receiver leg of an {@link RTCRtpTransceiver}. */
+export declare class JsRtpReceiver {
+  get id(): string
+  get kind(): string
+}
+/** RTP sender returned from {@link RTCPeerConnection.addTrack}. */
+export declare class JsRtpSender {
+  get id(): string
+  /** Replaces the outbound audio track without renegotiation. */
+  replaceTrack(track?: JsLocalAudioTrack | undefined | null): Promise<void>
+}
+/** Unified Plan transceiver (sender + receiver pair). */
+export declare class JsRtpTransceiver {
+  get mid(): string | null
+  get direction(): string
+  get currentDirection(): string | null
+  get kind(): string
+  get stopped(): boolean
+  get sender(): JsRtpSender
+  get receiver(): JsRtpReceiver
+  setDirection(direction: string): Promise<void>
+  stop(): Promise<void>
 }

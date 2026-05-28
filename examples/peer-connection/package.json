@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
+    "start:parity": "tsx src/parity-features.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

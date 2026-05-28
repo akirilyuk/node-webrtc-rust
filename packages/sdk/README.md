@@ -9,6 +9,10 @@ Browser-compatible WebRTC APIs for Node.js, backed by the Rust native engine.
 | `@node-webrtc-rust/sdk` | W3C-style `RTCPeerConnection`, tracks, data channels |
 | `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing) |
 
+**API coverage vs browser WebRTC:** see [`docs/webrtc-api-parity.md`](../../docs/webrtc-api-parity.md) (supported, partial, and missing APIs).
+
+**Recent APIs:** `addTransceiver`, `getTransceivers` / `getSenders` / `getReceivers`, `RTCRtpSender.replaceTrack`, `removeTrack`, `RemoteAudioTrack.readSample`, `getStats`, `setConfiguration`.
+
 Install once:
 
 ```bash

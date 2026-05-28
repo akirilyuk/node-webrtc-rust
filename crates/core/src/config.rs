@@ -76,3 +76,25 @@ impl PeerConnectionConfig {
         }
     }
 }
+
+impl From<RTCConfiguration> for PeerConnectionConfig {
+    fn from(config: RTCConfiguration) -> Self {
+        Self {
+            ice_servers: config
+                .ice_servers
+                .into_iter()
+                .map(|server| IceServer {
+                    urls: server.urls,
+                    username: (!server.username.is_empty()).then_some(server.username),
+                    credential: (!server.credential.is_empty()).then_some(server.credential),
+                    credential_type: IceCredentialType::Password,
+                })
+                .collect(),
+            ice_transport_policy: match config.ice_transport_policy {
+                RTCIceTransportPolicy::Relay => IceTransportPolicy::Relay,
+                _ => IceTransportPolicy::All,
+            },
+            debug: None,
+        }
+    }
+}

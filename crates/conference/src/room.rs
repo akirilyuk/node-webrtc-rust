@@ -254,7 +254,7 @@ impl Room {
                     .get(&participant_id)
                     .ok_or_else(|| ConferenceError::internal("participant missing after join"))?;
 
-                let offer = participant.peer_connection().create_offer().await?;
+                let offer = participant.peer_connection().create_offer(None).await?;
                 participant
                     .peer_connection()
                     .set_local_description(offer)
@@ -293,7 +293,7 @@ impl Room {
                     })
                     .await?;
 
-                let answer = participant.peer_connection().create_answer().await?;
+                let answer = participant.peer_connection().create_answer(None).await?;
                 participant
                     .peer_connection()
                     .set_local_description(answer)

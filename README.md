@@ -23,6 +23,7 @@ Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate inf
 - [Development](#development)
 - [Debug logging](#debug-logging)
 - [Releases](#releases)
+- [WebRTC API parity](#webrtc-api-parity)
 - [Roadmap](#roadmap)
 - [License](#license)
 
@@ -365,14 +366,21 @@ After a local publish, commit version bumps and optionally push the same `releas
 
 ---
 
+## WebRTC API parity
+
+The SDK mirrors browser **WebRTC 1.0** where it matters for Node↔browser audio and data channels. Full gap analysis (supported / partial / missing) lives in **[`docs/webrtc-api-parity.md`](docs/webrtc-api-parity.md)** — update that doc when adding or changing public APIs.
+
+High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceivers are in place for Node↔browser audio. **Video**, **simulcast**, **DTMF**, and **`MediaDevices`** are planned for **v0.4**; Voice AI pipelines (VAD, barge-in, TTS/STT) for **v0.3** — see roadmap below.
+
 ## Roadmap
 
 | Version | Focus |
 | --- | --- |
 | **v0.1.0** | PeerConnection, DataChannels, audio tracks, STUN/TURN, signaling helpers |
 | **v0.2.0** | Conference audio mixing (MCU), mute matrix, browser demos |
-| **v0.2.x** | Video tracks, video compositing |
-| **v0.3.0** | Rust-side signaling server, statistics API, simulcast |
+| **v0.2.x** | Conference MCU, API parity P0–P1, `addTransceiver` / Unified Plan |
+| **v0.3.0** | Voice AI OS: Silero VAD, barge-in, TTS/STT vendor configs, Node middle-layer (`user_speech_final`, text injection) |
+| **v0.4.0** | Video tracks, simulcast / encodings, DTMF, conference video compositing |
 
 ---
 

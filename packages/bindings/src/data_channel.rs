@@ -24,6 +24,7 @@ pub struct JsRTCDataChannel {
     message_wired: Mutex<bool>,
     close_wired: Mutex<bool>,
     error_wired: Mutex<bool>,
+    buffered_amount_low_wired: Mutex<bool>,
 }
 
 impl JsRTCDataChannel {
@@ -34,6 +35,7 @@ impl JsRTCDataChannel {
             message_wired: Mutex::new(false),
             close_wired: Mutex::new(false),
             error_wired: Mutex::new(false),
+            buffered_amount_low_wired: Mutex::new(false),
         }
     }
 }
@@ -96,6 +98,45 @@ impl JsRTCDataChannel {
     pub async fn close(&self) -> Result<()> {
         debug_call!("bindings::data_channel", "close", "label={}", self.inner.label());
         self.inner.close().await.map_err(core_err)
+    }
+
+    #[napi]
+    pub fn set_buffered_amount_low_threshold(&self, threshold: u32) {
+        debug_call!(
+            "bindings::data_channel",
+            "set_buffered_amount_low_threshold",
+            "label={}, threshold={}",
+            self.inner.label(),
+            threshold
+        );
+        self.inner
+            .set_buffered_amount_low_threshold(threshold as usize);
+    }
+
+    #[napi]
+    pub fn set_on_buffered_amount_low(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!(
+            "bindings::data_channel",
+            "set_on_buffered_amount_low",
+            "label={}",
+            self.inner.label()
+        );
+        let mut wired = self.buffered_amount_low_wired.blocking_lock();
+        if *wired {
+            return Ok(());
+        }
+        *wired = true;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let tsfn = create_void_callback(&env, callback)?;
+        wire_void_channel(rx, tsfn);
+
+        let inner = Arc::clone(&self.inner);
+        inner.on_buffered_amount_low(move || {
+            let _ = tx.send(());
+        });
+
+        Ok(())
     }
 
     #[napi]

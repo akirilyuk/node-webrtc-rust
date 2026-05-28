@@ -17,6 +17,7 @@ thiserror = "1"
 media = { version = "0.17", package = "webrtc-media" }
 audiopus = "0.3.0-rc.0"
 async-trait = "0.1"
+node-webrtc-rust-mixer = { path = "../mixer" }
 
 [dev-dependencies]
 env_logger = "0.11"

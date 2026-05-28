@@ -7,13 +7,14 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_core::{LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind, debug_call};
 
-/// Media stream track exposed to JavaScript (stub).
+/// Media stream track exposed to JavaScript.
 #[napi]
 pub struct JsMediaStreamTrack {
     id: String,
     kind: String,
     stream_id: String,
     enabled: bool,
+    remote: Option<RemoteTrack>,
 }
 
 impl JsMediaStreamTrack {
@@ -23,6 +24,7 @@ impl JsMediaStreamTrack {
             kind: track_kind_to_string(track.kind()),
             stream_id: track.stream_id().to_string(),
             enabled: true,
+            remote: Some(track),
         }
     }
 }
@@ -52,6 +54,20 @@ impl JsMediaStreamTrack {
     #[napi(setter)]
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+
+    /// Decodes the next inbound Opus RTP packet to stereo PCM (remote audio only).
+    #[napi]
+    pub async fn read_sample(&self) -> Result<Buffer> {
+        let remote = self
+            .remote
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("readSample requires a remote track"))?;
+        if self.kind != "audio" {
+            return Err(Error::from_reason("readSample supports audio tracks only"));
+        }
+        let sample = remote.read_sample().await.map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(Buffer::from(sample.pcm.as_ref()))
     }
 }
 

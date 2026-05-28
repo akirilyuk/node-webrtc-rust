@@ -99,6 +99,9 @@ impl MuteMatrix {
         }
 
         !graph.is_globally_muted(target) && !graph.is_listener_muted(listener, target)
+            && graph
+                .listener_sources(listener)
+                .is_none_or(|allowed| allowed.contains(target))
     }
 }
 

@@ -1,0 +1,43 @@
+---
+description: Extend examples when adding SDK features — commented, runnable, verified
+alwaysApply: true
+---
+
+# Examples workflow
+
+When shipping a **user-facing SDK or API change**, extend **`examples/`** in the same PR (or immediately after merge on the feature branch).
+
+## Requirements
+
+1. **Prefer extending existing examples** over one-off scripts — add entry points (`start:…` npm scripts) or shared helpers under `examples/shared/`.
+2. **Comment extensively** — file header explains purpose, run command, and which APIs are demonstrated; inline comments for non-obvious WebRTC timing (PCM kick frames, negotiation order, etc.).
+3. **Verify they run** before commit:
+   ```bash
+   bash scripts/ci/run-pr-quality.sh
+   npm run build:native
+   bash scripts/ci/run-pr-tests-full.sh
+   npm run typecheck --workspace=@node-webrtc-rust/example-<name>
+   npm run start[:script] --workspace=@node-webrtc-rust/example-<name>
+   ```
+4. **Update** [`examples/README.md`](../../examples/README.md) — table row + quick-reference verify column.
+
+## What to demonstrate
+
+| API area | Example location |
+|----------|------------------|
+| DataChannel, ICE/signaling state, `getStats`, backpressure | `peer-connection` |
+| Transceivers, `setConfiguration`, `restartIce`, `removeTrack` | `peer-connection` → `start:parity` |
+| `addTrack`, PCM streaming, `readSample`, `replaceTrack` | `audio-cosine` |
+| Browser ↔ Node interop, debug stats | `browser-cosine-chat` (`?debug`) |
+| Conference / MCU | `conference-room*` |
+
+## Shared code
+
+- [`examples/shared/pcm-streaming.ts`](../../examples/shared/pcm-streaming.ts) — PCM frame sizes and kick-frame convention
+- [`examples/shared/webrtc-demo-helpers.ts`](../../examples/shared/webrtc-demo-helpers.ts) — wait helpers, state logging, stats summary
+
+Import from example `src/` with relative paths and `.js` extension for ESM (`tsx`).
+
+## Out of scope for examples
+
+Rust-only internals with no TS surface (e.g. `MixGraph` routing until exposed in `@node-webrtc-rust/sdk/conference`) — document in parity doc / tests instead.

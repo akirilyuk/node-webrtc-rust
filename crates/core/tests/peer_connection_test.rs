@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use node_webrtc_rust_core::{
-    ConnectionState, DataChannelState, IceServer, LocalAudioTrack, PeerConnection,
-    PeerConnectionConfig,
+    ConnectionState, DataChannelState, IceServer, LocalAudioTrack, OfferOptions, PeerConnection,
+    PeerConnectionConfig, RtpTransceiverDirection, RtpTransceiverInit, TrackKind, TransceiverSource,
 };
 use tokio::time::{sleep, timeout};
 
@@ -29,7 +29,7 @@ async fn signal_pair(offer: &PeerConnection, answer: &PeerConnection) {
         .await
         .expect("create signal channel");
 
-    let offer_desc = offer.create_offer().await.expect("create offer");
+    let offer_desc = offer.create_offer(None).await.expect("create offer");
     offer
         .set_local_description(offer_desc)
         .await
@@ -45,7 +45,7 @@ async fn signal_pair(offer: &PeerConnection, answer: &PeerConnection) {
         .await
         .expect("set remote offer");
 
-    let answer_desc = answer.create_answer().await.expect("create answer");
+    let answer_desc = answer.create_answer(None).await.expect("create answer");
     answer
         .set_local_description(answer_desc)
         .await
@@ -211,6 +211,17 @@ async fn test_audio_track_exchange() {
     assert_eq!(remote.kind(), node_webrtc_rust_core::TrackKind::Audio);
     assert_eq!(remote.id(), "audio-1");
 
+    track
+        .write_sample_slice(&[0u8; 3_840], Duration::from_millis(20))
+        .await
+        .expect("stream pcm");
+
+    let sample = timeout(Duration::from_secs(10), remote.read_sample())
+        .await
+        .expect("timed out waiting for pcm")
+        .expect("read sample");
+    assert_eq!(sample.pcm.len(), 3_840);
+
     pc1.close().await.expect("close pc1");
     pc2.close().await.expect("close pc2");
 }
@@ -236,7 +247,7 @@ async fn test_ice_candidate_generation() {
         .await
         .expect("create dc");
 
-    let offer = pc.create_offer().await.expect("create offer");
+    let offer = pc.create_offer(None).await.expect("create offer");
     pc.set_local_description(offer)
         .await
         .expect("set local");
@@ -258,6 +269,190 @@ async fn test_ice_candidate_generation() {
     assert!(saw_candidate, "expected at least one ICE candidate");
 
     pc.close().await.expect("close pc");
+}
+
+#[tokio::test]
+async fn test_replace_track_swaps_outbound_audio() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    let mut pc2_events = pc2.subscribe_events();
+
+    let track_a = LocalAudioTrack::new("audio-a", "stream-a");
+    let sender = pc1
+        .add_track(track_a.as_track_local())
+        .await
+        .expect("add track a");
+
+    signal_pair(&pc1, &pc2).await;
+    wait_for_connection(&pc1).await;
+    wait_for_connection(&pc2).await;
+
+    track_a
+        .write_sample_slice(&[0u8; 960], Duration::from_millis(5))
+        .await
+        .expect("prime track a");
+
+    let remote_a = timeout(Duration::from_secs(10), pc2_events.tracks.recv())
+        .await
+        .expect("timed out waiting for remote track")
+        .expect("no remote track");
+    assert_eq!(remote_a.id(), "audio-a");
+
+    let track_b = LocalAudioTrack::new("audio-b", "stream-b");
+    sender
+        .replace_track(Some(track_b.as_track_local()))
+        .await
+        .expect("replace track");
+
+    track_b
+        .write_sample_slice(&[0u8; 960], Duration::from_millis(5))
+        .await
+        .expect("prime track b");
+
+    // Same transceiver — track id on the wire stays the initial id; remote still receives RTP.
+    let packet = timeout(Duration::from_secs(10), remote_a.read_rtp())
+        .await
+        .expect("timed out waiting for rtp after replace")
+        .expect("read rtp");
+    assert!(!packet.payload.is_empty());
+
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
+async fn test_offer_to_receive_audio_adds_audio_mline() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let desc = pc
+        .create_offer(Some(OfferOptions {
+            offer_to_receive_audio: true,
+            ..Default::default()
+        }))
+        .await
+        .expect("create offer");
+    assert!(desc.sdp.contains("m=audio"));
+    pc.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn test_offer_to_receive_video_returns_error() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let err = pc
+        .create_offer(Some(OfferOptions {
+            offer_to_receive_video: true,
+            ..Default::default()
+        }))
+        .await
+        .expect_err("video receive should fail");
+    assert!(err.to_string().contains("offerToReceiveVideo"));
+    pc.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn test_remove_track_detaches_sender() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    let track = LocalAudioTrack::new("audio-1", "stream-1");
+    let sender = pc1
+        .add_track(track.as_track_local())
+        .await
+        .expect("add track");
+
+    signal_pair(&pc1, &pc2).await;
+    wait_for_connection(&pc1).await;
+
+    pc1.remove_track(&sender).await.expect("remove track");
+
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
+async fn test_add_transceiver_recvonly_audio() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let transceiver = pc
+        .add_transceiver(
+            TransceiverSource::Kind(TrackKind::Audio),
+            Some(RtpTransceiverInit {
+                direction: RtpTransceiverDirection::Recvonly,
+            }),
+        )
+        .await
+        .expect("add transceiver");
+
+    assert_eq!(transceiver.kind(), TrackKind::Audio);
+    assert_eq!(transceiver.direction(), RtpTransceiverDirection::Recvonly);
+    assert!(!transceiver.stopped());
+
+    let listed = pc.get_transceivers().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(pc.get_senders().await.len(), 1);
+    assert_eq!(pc.get_receivers().await.len(), 1);
+
+    let offer = pc.create_offer(None).await.expect("create offer");
+    assert!(offer.sdp.contains("m=audio"));
+
+    pc.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn test_add_transceiver_from_local_track() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let track = LocalAudioTrack::new("tx-a1", "stream-1");
+    let transceiver = pc
+        .add_transceiver(
+            TransceiverSource::Track(track.as_track_local()),
+            None,
+        )
+        .await
+        .expect("add transceiver from track");
+
+    assert_eq!(transceiver.kind(), TrackKind::Audio);
+    assert_eq!(transceiver.direction(), RtpTransceiverDirection::Sendrecv);
+
+    pc.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn test_transceiver_set_direction_and_stop() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let transceiver = pc
+        .add_transceiver(
+            TransceiverSource::Kind(TrackKind::Audio),
+            Some(RtpTransceiverInit {
+                direction: RtpTransceiverDirection::Recvonly,
+            }),
+        )
+        .await
+        .expect("add transceiver");
+
+    transceiver
+        .set_direction(RtpTransceiverDirection::Inactive)
+        .await;
+    assert_eq!(transceiver.direction(), RtpTransceiverDirection::Inactive);
+
+    transceiver.stop().await.expect("stop transceiver");
+    assert!(transceiver.stopped());
+
+    pc.close().await.expect("close");
 }
 
 #[tokio::test]

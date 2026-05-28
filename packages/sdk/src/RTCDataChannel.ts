@@ -29,8 +29,8 @@ export class RTCDataChannel extends EventEmitter {
   bufferedAmount = 0
   /** How binary messages are exposed in {@link onmessage}. */
   binaryType: 'arraybuffer' | 'blob' = 'arraybuffer'
-  /** Threshold for {@link onbufferedamountlow} (not yet emitted in v0.1). */
-  bufferedAmountLowThreshold = 0
+  /** Threshold for {@link onbufferedamountlow}. */
+  private _bufferedAmountLowThreshold = 0
 
   /** Fired when the channel is open and ready to send. */
   onopen: ((event: Event) => void) | null = null
@@ -40,7 +40,7 @@ export class RTCDataChannel extends EventEmitter {
   onclose: ((event: Event) => void) | null = null
   /** Fired on send or transport errors. */
   onerror: ((event: RTCErrorEvent) => void) | null = null
-  /** Reserved; not emitted in v0.1. */
+  /** Fired when {@link bufferedAmount} drops to or below {@link bufferedAmountLowThreshold}. */
   onbufferedamountlow: ((event: Event) => void) | null = null
 
   private readonly pendingSends: SendPayload[] = []
@@ -87,10 +87,13 @@ export class RTCDataChannel extends EventEmitter {
    */
   send(data: SendPayload): void {
     debugFn('sdk::RTCDataChannel', 'send', `label=${this.label}`)
+    const byteLength = payloadByteLength(data)
     if (!this.native) {
       this.pendingSends.push(data)
+      this.bufferedAmount += byteLength
       return
     }
+    this.bufferedAmount += byteLength
     const payload =
       typeof data === 'string'
         ? data
@@ -99,7 +102,10 @@ export class RTCDataChannel extends EventEmitter {
           : data instanceof ArrayBuffer
             ? Buffer.from(new Uint8Array(data))
             : Buffer.from(data)
-    void this.native.send(payload).catch((error: unknown) => this.emitError(error))
+    void this.native
+      .send(payload)
+      .then(() => this.refreshBufferedAmount())
+      .catch((error: unknown) => this.emitError(error))
   }
 
   /** Closes the channel locally. */
@@ -111,13 +117,26 @@ export class RTCDataChannel extends EventEmitter {
     this.readyState = 'closed'
   }
 
+  /** Threshold at which {@link onbufferedamountlow} fires. */
+  get bufferedAmountLowThreshold(): number {
+    return this._bufferedAmountLowThreshold
+  }
+
+  set bufferedAmountLowThreshold(value: number) {
+    this._bufferedAmountLowThreshold = value
+    this.native?.setBufferedAmountLowThreshold(value)
+  }
+
   protected attachNative(native: NativeDataChannel): void {
+    native.setBufferedAmountLowThreshold(this._bufferedAmountLowThreshold)
+
     native.setOnOpen((_err) => {
       debugEvent('sdk::RTCDataChannel', 'open', `label=${this.label}`)
       this.readyState = 'open'
       const event = new Event('open')
       this.onopen?.(event)
       this.emit('open', event)
+      this.refreshBufferedAmount()
     })
 
     native.setOnMessage((_err, data) => {
@@ -149,6 +168,20 @@ export class RTCDataChannel extends EventEmitter {
       this.onerror?.(event)
       this.emit('error', event)
     })
+
+    native.setOnBufferedAmountLow((_err) => {
+      debugEvent('sdk::RTCDataChannel', 'bufferedamountlow', `label=${this.label}`)
+      void this.refreshBufferedAmount().then(() => {
+        const event = new Event('bufferedamountlow')
+        this.onbufferedamountlow?.(event)
+        this.emit('bufferedamountlow', event)
+      })
+    })
+  }
+
+  private async refreshBufferedAmount(): Promise<void> {
+    if (!this.native) return
+    this.bufferedAmount = await this.native.bufferedAmount()
   }
 
   private emitError(error: unknown): void {
@@ -156,6 +189,19 @@ export class RTCDataChannel extends EventEmitter {
     this.onerror?.(event)
     this.emit('error', event)
   }
+}
+
+function payloadByteLength(data: SendPayload): number {
+  if (typeof data === 'string') {
+    return Buffer.byteLength(data)
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.length
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength
+  }
+  return data.byteLength
 }
 
 function createErrorEvent(error: unknown): RTCErrorEvent {
@@ -173,10 +219,12 @@ function createDeferredNative(label: string, init?: RTCDataChannelInit): NativeD
     bufferedAmount: async () => 0,
     send: async () => undefined,
     close: async () => undefined,
+    setBufferedAmountLowThreshold: () => undefined,
     setOnOpen: () => undefined,
     setOnMessage: () => undefined,
     setOnClose: () => undefined,
     setOnError: () => undefined,
+    setOnBufferedAmountLow: () => undefined,
   }
 }
 

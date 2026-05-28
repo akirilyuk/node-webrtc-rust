@@ -9,21 +9,31 @@ use webrtc::api::API;
 use webrtc::interceptor::registry::Registry;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+use webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState;
 use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
 use webrtc::peer_connection::signaling_state::RTCSignalingState;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::offer_answer_options::{RTCAnswerOptions, RTCOfferOptions};
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::TrackLocal;
 
 use crate::config::PeerConnectionConfig;
+use crate::offer_answer::{AnswerOptions, OfferOptions};
 use crate::data_channel::{DataChannel, DataChannelOptions};
 use crate::debug_call;
 use crate::debug_evt;
 use crate::error::CoreError;
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
 use crate::media::RemoteTrack;
+use crate::rtp_sender::RtpSender;
+use crate::rtp_transceiver::{
+    track_kind_to_rtp, RtpReceiver, RtpTransceiver, RtpTransceiverInit, TransceiverSource,
+};
 
 /// SDP session description type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +199,16 @@ impl From<RTCIceGatheringState> for IceGatheringState {
     }
 }
 
+impl From<RTCIceGathererState> for IceGatheringState {
+    fn from(state: RTCIceGathererState) -> Self {
+        match state {
+            RTCIceGathererState::Gathering => Self::Gathering,
+            RTCIceGathererState::Complete => Self::Complete,
+            _ => Self::New,
+        }
+    }
+}
+
 /// SDP offer/answer signaling state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalingState {
@@ -264,15 +284,57 @@ impl PeerConnection {
     }
 
     /// Creates an SDP offer.
-    pub async fn create_offer(&self) -> Result<SessionDescription, CoreError> {
-        let desc = self.inner.create_offer(None).await?;
+    pub async fn create_offer(
+        &self,
+        options: Option<OfferOptions>,
+    ) -> Result<SessionDescription, CoreError> {
+        let options = options.unwrap_or_default();
+        if options.offer_to_receive_audio {
+            self.ensure_recv_transceiver(RTPCodecType::Audio).await?;
+        }
+        if options.offer_to_receive_video {
+            return Err(CoreError::InvalidState(
+                "offerToReceiveVideo is not supported yet".into(),
+            ));
+        }
+        let rtc_options = RTCOfferOptions {
+            ice_restart: options.ice_restart,
+            voice_activity_detection: options.voice_activity_detection,
+        };
+        let desc = self.inner.create_offer(Some(rtc_options)).await?;
         Ok(desc.into())
     }
 
     /// Creates an SDP answer.
-    pub async fn create_answer(&self) -> Result<SessionDescription, CoreError> {
-        let desc = self.inner.create_answer(None).await?;
+    pub async fn create_answer(
+        &self,
+        options: Option<AnswerOptions>,
+    ) -> Result<SessionDescription, CoreError> {
+        let options = options.unwrap_or_default();
+        let rtc_options = RTCAnswerOptions {
+            voice_activity_detection: options.voice_activity_detection,
+        };
+        let desc = self.inner.create_answer(Some(rtc_options)).await?;
         Ok(desc.into())
+    }
+
+    async fn ensure_recv_transceiver(&self, kind: RTPCodecType) -> Result<(), CoreError> {
+        let transceivers = self.inner.get_transceivers().await;
+        for transceiver in transceivers {
+            if transceiver.kind() == kind && transceiver.direction().has_recv() {
+                return Ok(());
+            }
+        }
+        self.inner
+            .add_transceiver_from_kind(
+                kind,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    send_encodings: Vec::new(),
+                }),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Sets the local session description.
@@ -333,15 +395,70 @@ impl PeerConnection {
     pub async fn add_track(
         &self,
         track: Arc<dyn TrackLocal + Send + Sync>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<RtpSender, CoreError> {
         debug_call!("core::peer_connection", "add_track");
         let sender = self.inner.add_track(track).await?;
-        // webrtc-rs requires reading RTCP from the sender for media to flow correctly.
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 1500];
-            while sender.read(&mut buf).await.is_ok() {}
-        });
-        Ok(())
+        Ok(RtpSender::from_webrtc(sender))
+    }
+
+    /// Stops sending on the given sender (detaches the track).
+    pub async fn remove_track(&self, sender: &RtpSender) -> Result<(), CoreError> {
+        debug_call!("core::peer_connection", "remove_track", "sender_id={}", sender.id());
+        self.inner
+            .remove_track(&sender.inner())
+            .await
+            .map_err(|e| CoreError::Track(e.to_string()))
+    }
+
+    /// Adds a transceiver for a media kind or local track (Unified Plan).
+    pub async fn add_transceiver(
+        &self,
+        source: TransceiverSource,
+        init: Option<RtpTransceiverInit>,
+    ) -> Result<RtpTransceiver, CoreError> {
+        debug_call!("core::peer_connection", "add_transceiver");
+        let rtc_init = init.map(Into::into);
+        let transceiver = match source {
+            TransceiverSource::Kind(kind) => {
+                self.inner
+                    .add_transceiver_from_kind(track_kind_to_rtp(kind), rtc_init)
+                    .await?
+            }
+            TransceiverSource::Track(track) => {
+                self.inner
+                    .add_transceiver_from_track(track, rtc_init)
+                    .await?
+            }
+        };
+        Ok(RtpTransceiver::from_webrtc(transceiver))
+    }
+
+    /// Returns all RTP transceivers on this connection.
+    pub async fn get_transceivers(&self) -> Vec<RtpTransceiver> {
+        self.inner
+            .get_transceivers()
+            .await
+            .into_iter()
+            .map(RtpTransceiver::from_webrtc)
+            .collect()
+    }
+
+    /// Returns all RTP senders (one per transceiver sender leg).
+    pub async fn get_senders(&self) -> Vec<RtpSender> {
+        let mut senders = Vec::new();
+        for transceiver in self.inner.get_transceivers().await {
+            senders.push(RtpSender::from_webrtc(transceiver.sender().await));
+        }
+        senders
+    }
+
+    /// Returns all RTP receivers (one per transceiver receiver leg).
+    pub async fn get_receivers(&self) -> Vec<RtpReceiver> {
+        let mut receivers = Vec::new();
+        for transceiver in self.inner.get_transceivers().await {
+            receivers.push(RtpReceiver::from_webrtc(transceiver.receiver().await));
+        }
+        receivers
     }
 
     /// Closes the peer connection.
@@ -369,6 +486,40 @@ impl PeerConnection {
     /// Returns the current signaling state.
     pub fn signaling_state(&self) -> SignalingState {
         self.inner.signaling_state().into()
+    }
+
+    /// Updates ICE servers and transport policy mid-session (W3C `setConfiguration`).
+    pub async fn set_configuration(&self, config: PeerConnectionConfig) -> Result<(), CoreError> {
+        debug_call!(
+            "core::peer_connection",
+            "set_configuration",
+            "ice_servers={}",
+            config.ice_servers.len()
+        );
+        config.apply_debug_override();
+        self.inner
+            .set_configuration(config.into_rtc_configuration())
+            .await?;
+        Ok(())
+    }
+
+    /// Returns the active configuration (copy of internal state).
+    pub async fn get_configuration(&self) -> PeerConnectionConfig {
+        PeerConnectionConfig::from(self.inner.get_configuration().await)
+    }
+
+    /// Triggers ICE restart and negotiation-needed (W3C `restartIce`).
+    pub async fn restart_ice(&self) -> Result<(), CoreError> {
+        debug_call!("core::peer_connection", "restart_ice");
+        self.inner.restart_ice().await?;
+        Ok(())
+    }
+
+    /// Collects WebRTC statistics as a JSON object keyed by stat id.
+    pub async fn get_stats_json(&self) -> Result<String, CoreError> {
+        let report = self.inner.get_stats().await;
+        serde_json::to_string(&report.reports)
+            .map_err(|e| CoreError::InvalidState(format!("stats serialization failed: {e}")))
     }
 
     /// Registers a handler for local ICE candidates.
@@ -441,6 +592,35 @@ impl PeerConnection {
             }));
     }
 
+    /// Registers a handler for ICE gathering state changes.
+    pub fn on_ice_gathering_state_change(
+        &self,
+        handler: impl Fn(IceGatheringState) + Send + Sync + 'static,
+    ) {
+        self.inner
+            .on_ice_gathering_state_change(Box::new(move |state| {
+                debug_evt!(
+                    "core::peer_connection",
+                    "icegatheringstatechange",
+                    "{state:?}"
+                );
+                handler(state.into());
+                Box::pin(async {})
+            }));
+    }
+
+    /// Registers a handler for signaling state changes.
+    pub fn on_signaling_state_change(
+        &self,
+        handler: impl Fn(SignalingState) + Send + Sync + 'static,
+    ) {
+        self.inner.on_signaling_state_change(Box::new(move |state| {
+            debug_evt!("core::peer_connection", "signalingstatechange", "{state:?}");
+            handler(state.into());
+            Box::pin(async {})
+        }));
+    }
+
     /// Subscribes to all peer connection events via async channels.
     pub fn subscribe_events(&self) -> PeerConnectionEvents {
         let (senders, events) = PeerConnectionEventSenders::new();
@@ -502,6 +682,25 @@ impl PeerConnection {
                 let _ = ice_conn_tx.send(state.into());
                 Box::pin(async {})
             }));
+
+        let ice_gather_tx = senders.ice_gathering_state;
+        self.inner
+            .on_ice_gathering_state_change(Box::new(move |state| {
+                debug_evt!(
+                    "core::peer_connection",
+                    "icegatheringstatechange",
+                    "{state:?}"
+                );
+                let _ = ice_gather_tx.send(state.into());
+                Box::pin(async {})
+            }));
+
+        let signaling_tx = senders.signaling_state;
+        self.inner.on_signaling_state_change(Box::new(move |state| {
+            debug_evt!("core::peer_connection", "signalingstatechange", "{state:?}");
+            let _ = signaling_tx.send(state.into());
+            Box::pin(async {})
+        }));
 
         let neg_tx = senders.negotiation_needed;
         self.inner.on_negotiation_needed(Box::new(move || {

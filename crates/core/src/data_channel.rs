@@ -190,6 +190,27 @@ impl DataChannel {
         }));
     }
 
+    /// Sets the threshold for [`Self::on_buffered_amount_low`].
+    pub fn set_buffered_amount_low_threshold(&self, threshold: usize) {
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            inner.set_buffered_amount_low_threshold(threshold).await;
+        });
+    }
+
+    /// Registers a handler invoked when buffered send data drops at or below the low threshold.
+    pub fn on_buffered_amount_low(&self, handler: impl Fn() + Send + Sync + 'static) {
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            inner
+                .on_buffered_amount_low(Box::new(move || {
+                    handler();
+                    Box::pin(async {})
+                }))
+                .await;
+        });
+    }
+
     pub(crate) fn inner(&self) -> Arc<RTCDataChannel> {
         Arc::clone(&self.inner)
     }

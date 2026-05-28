@@ -6,17 +6,22 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use napi::JsFunction;
 use node_webrtc_rust_core::{
-    ConnectionState, IceConnectionState, IceCandidate, PeerConnection, RemoteTrack,
-    SessionDescription, debug_call,
+    ConnectionState, IceConnectionState, IceCandidate, IceGatheringState, PeerConnection,
+    RemoteTrack, SessionDescription, SignalingState, TransceiverSource, debug_call,
+    rtp_kind_from_str,
 };
 use tokio::sync::{mpsc, Mutex};
 
 use crate::config::{
-    core_err, to_js_unknown, JsRTCIceCandidate, JsRTCConfiguration, JsRTCSessionDescription,
+    answer_options_from_js, core_err, offer_options_from_js, to_js_unknown, JsRTCAnswerOptions,
+    JsRTCIceCandidate, JsRTCConfiguration, JsRTCOfferOptions, JsRTCSessionDescription,
 };
 use crate::data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
 use crate::events::{create_event_callback, create_void_callback, wire_event_channel, wire_void_channel};
 use crate::media::{JsLocalAudioTrack, JsMediaStreamTrack};
+use crate::rtp_receiver::JsRtpReceiver;
+use crate::rtp_sender::JsRtpSender;
+use crate::rtp_transceiver::{transceiver_init_from_js, JsRTCRtpTransceiverInit, JsRtpTransceiver};
 
 struct EventState {
     ice_candidates: Option<mpsc::UnboundedReceiver<Option<IceCandidate>>>,
@@ -24,6 +29,8 @@ struct EventState {
     data_channels: Option<mpsc::UnboundedReceiver<node_webrtc_rust_core::DataChannel>>,
     connection_state: Option<mpsc::UnboundedReceiver<ConnectionState>>,
     ice_connection_state: Option<mpsc::UnboundedReceiver<IceConnectionState>>,
+    ice_gathering_state: Option<mpsc::UnboundedReceiver<IceGatheringState>>,
+    signaling_state: Option<mpsc::UnboundedReceiver<SignalingState>>,
     negotiation_needed: Option<mpsc::UnboundedReceiver<()>>,
 }
 
@@ -35,6 +42,8 @@ impl EventState {
             data_channels: None,
             connection_state: None,
             ice_connection_state: None,
+            ice_gathering_state: None,
+            signaling_state: None,
             negotiation_needed: None,
         }
     }
@@ -50,6 +59,8 @@ impl EventState {
         self.data_channels = Some(events.data_channels);
         self.connection_state = Some(events.connection_state);
         self.ice_connection_state = Some(events.ice_connection_state);
+        self.ice_gathering_state = Some(events.ice_gathering_state);
+        self.signaling_state = Some(events.signaling_state);
         self.negotiation_needed = Some(events.negotiation_needed);
     }
 }
@@ -95,20 +106,26 @@ impl JsPeerConnection {
     }
 
     #[napi]
-    pub async fn create_offer(&self) -> Result<JsRTCSessionDescription> {
+    pub async fn create_offer(
+        &self,
+        options: Option<JsRTCOfferOptions>,
+    ) -> Result<JsRTCSessionDescription> {
         debug_call!("bindings::peer_connection", "create_offer");
         self.inner
-            .create_offer()
+            .create_offer(Some(offer_options_from_js(options)))
             .await
             .map(JsRTCSessionDescription::from)
             .map_err(core_err)
     }
 
     #[napi]
-    pub async fn create_answer(&self) -> Result<JsRTCSessionDescription> {
+    pub async fn create_answer(
+        &self,
+        options: Option<JsRTCAnswerOptions>,
+    ) -> Result<JsRTCSessionDescription> {
         debug_call!("bindings::peer_connection", "create_answer");
         self.inner
-            .create_answer()
+            .create_answer(Some(answer_options_from_js(options)))
             .await
             .map(JsRTCSessionDescription::from)
             .map_err(core_err)
@@ -149,12 +166,99 @@ impl JsPeerConnection {
     }
 
     #[napi]
-    pub async fn add_track(&self, track: &JsLocalAudioTrack) -> Result<()> {
+    pub async fn add_track(&self, track: &JsLocalAudioTrack) -> Result<JsRtpSender> {
         debug_call!("bindings::peer_connection", "add_track");
-        self.inner
-            .add_track(track.inner().as_track_local())
+        let inner_track = track.inner();
+        let sender = self
+            .inner
+            .add_track(inner_track.as_track_local())
             .await
-            .map_err(core_err)
+            .map_err(core_err)?;
+        Ok(JsRtpSender::new(sender, inner_track))
+    }
+
+    #[napi]
+    pub async fn remove_track(&self, sender: &crate::rtp_sender::JsRtpSender) -> Result<()> {
+        debug_call!("bindings::peer_connection", "remove_track");
+        self.inner.remove_track(sender.inner()).await.map_err(core_err)
+    }
+
+    #[napi]
+    pub async fn add_transceiver(
+        &self,
+        kind: Option<String>,
+        track: Option<&JsLocalAudioTrack>,
+        init: Option<JsRTCRtpTransceiverInit>,
+    ) -> Result<JsRtpTransceiver> {
+        debug_call!("bindings::peer_connection", "add_transceiver");
+        let rtc_init = Some(transceiver_init_from_js(init));
+        let transceiver = match (kind.as_deref(), track) {
+            (Some(kind), None) => {
+                let parsed = rtp_kind_from_str(kind).map_err(core_err)?;
+                (
+                    self.inner
+                        .add_transceiver(TransceiverSource::Kind(parsed), rtc_init)
+                        .await
+                        .map_err(core_err)?,
+                    None,
+                )
+            }
+            (None, Some(track)) => (
+                self.inner
+                    .add_transceiver(
+                        TransceiverSource::Track(track.inner().as_track_local()),
+                        rtc_init,
+                    )
+                    .await
+                    .map_err(core_err)?,
+                Some(track.inner()),
+            ),
+            (Some(_), Some(_)) => {
+                return Err(napi::Error::from_reason(
+                    "addTransceiver: pass either kind or track, not both",
+                ))
+            }
+            (None, None) => {
+                return Err(napi::Error::from_reason(
+                    "addTransceiver: kind or track is required",
+                ))
+            }
+        };
+        Ok(JsRtpTransceiver::from_transceiver(transceiver.0, transceiver.1).await)
+    }
+
+    #[napi]
+    pub async fn get_transceivers(&self) -> Result<Vec<JsRtpTransceiver>> {
+        debug_call!("bindings::peer_connection", "get_transceivers");
+        let mut out = Vec::new();
+        for transceiver in self.inner.get_transceivers().await {
+            out.push(JsRtpTransceiver::from_transceiver(transceiver, None).await);
+        }
+        Ok(out)
+    }
+
+    #[napi]
+    pub async fn get_senders(&self) -> Result<Vec<JsRtpSender>> {
+        debug_call!("bindings::peer_connection", "get_senders");
+        Ok(self
+            .inner
+            .get_senders()
+            .await
+            .into_iter()
+            .map(JsRtpSender::from_sender)
+            .collect())
+    }
+
+    #[napi]
+    pub async fn get_receivers(&self) -> Result<Vec<JsRtpReceiver>> {
+        debug_call!("bindings::peer_connection", "get_receivers");
+        Ok(self
+            .inner
+            .get_receivers()
+            .await
+            .into_iter()
+            .map(JsRtpReceiver::from_receiver)
+            .collect())
     }
 
     #[napi]
@@ -182,6 +286,33 @@ impl JsPeerConnection {
     pub async fn gathering_complete(&self) {
         debug_call!("bindings::peer_connection", "gathering_complete");
         self.inner.gathering_complete().await;
+    }
+
+    #[napi]
+    pub async fn set_configuration(&self, config: JsRTCConfiguration) -> Result<()> {
+        debug_call!("bindings::peer_connection", "set_configuration");
+        self.inner
+            .set_configuration(config.into())
+            .await
+            .map_err(core_err)
+    }
+
+    #[napi]
+    pub async fn get_configuration(&self) -> Result<JsRTCConfiguration> {
+        debug_call!("bindings::peer_connection", "get_configuration");
+        Ok(self.inner.get_configuration().await.into())
+    }
+
+    #[napi]
+    pub async fn restart_ice(&self) -> Result<()> {
+        debug_call!("bindings::peer_connection", "restart_ice");
+        self.inner.restart_ice().await.map_err(core_err)
+    }
+
+    #[napi]
+    pub async fn get_stats(&self) -> Result<String> {
+        debug_call!("bindings::peer_connection", "get_stats");
+        self.inner.get_stats_json().await.map_err(core_err)
     }
 
     #[napi]
@@ -286,6 +417,44 @@ impl JsPeerConnection {
             Ok(vec![
                 ctx.env
                     .create_string(&ice_connection_state_to_string(ctx.value))?,
+            ])
+        })?;
+        wire_event_channel(rx, tsfn);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_on_ice_gathering_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!("bindings::peer_connection", "set_on_ice_gathering_state_change");
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .ice_gathering_state
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| {
+            Ok(vec![
+                ctx.env
+                    .create_string(&ice_gathering_state_to_string(ctx.value))?,
+            ])
+        })?;
+        wire_event_channel(rx, tsfn);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_on_signaling_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!("bindings::peer_connection", "set_on_signaling_state_change");
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .signaling_state
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| {
+            Ok(vec![
+                ctx.env
+                    .create_string(&signaling_state_to_string(ctx.value))?,
             ])
         })?;
         wire_event_channel(rx, tsfn);

@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 
 import {
   JsPeerConnection as NativePeerConnection,
+  type JsRtcConfiguration,
   type JsRtcIceCandidate,
   type JsRtcSessionDescription,
 } from '@node-webrtc-rust/bindings'
@@ -10,9 +11,12 @@ import { debugEvent, debugFn, setDebugEnabled } from './debug'
 import { MediaStream } from './MediaStream'
 import { MediaStreamTrack } from './MediaStreamTrack'
 import type { LocalAudioTrack } from './LocalAudioTrack'
+import { RemoteAudioTrack } from './RemoteAudioTrack'
 import { RTCDataChannel } from './RTCDataChannel'
 import { RTCIceCandidate } from './RTCIceCandidate'
+import { RTCRtpReceiver } from './RTCRtpReceiver'
 import { RTCRtpSender } from './RTCRtpSender'
+import { RTCRtpTransceiver } from './RTCRtpTransceiver'
 import { RTCSessionDescription } from './RTCSessionDescription'
 import type {
   RTCConfiguration,
@@ -24,24 +28,27 @@ import type {
   RTCPeerConnectionIceEvent,
   RTCPeerConnectionState,
   RTCSignalingState,
+  RTCAnswerOptions,
   RTCOfferOptions,
+  RTCRtpTransceiverInit,
+  RTCStatsReport,
   RTCTrackEvent,
+  TrackKind,
 } from './types'
 
-function toNativeConfig(config?: RTCConfiguration) {
-  if (!config) return undefined
-  if (config.debug !== undefined) {
+function toNativeConfig(config?: RTCConfiguration): JsRtcConfiguration {
+  if (config?.debug !== undefined) {
     setDebugEnabled(config.debug)
   }
   return {
-    iceServers: config.iceServers?.map((server) => ({
+    iceServers: config?.iceServers?.map((server) => ({
       urls: Array.isArray(server.urls) ? server.urls : [server.urls],
       username: server.username,
       credential: server.credential,
       credentialType: server.credentialType,
     })),
-    iceTransportPolicy: config.iceTransportPolicy,
-    debug: config.debug,
+    iceTransportPolicy: config?.iceTransportPolicy,
+    debug: config?.debug,
   }
 }
 
@@ -67,6 +74,7 @@ export class RTCPeerConnection extends EventEmitter {
   private readonly native: NativePeerConnection
   private _localDescription: RTCSessionDescription | null = null
   private _remoteDescription: RTCSessionDescription | null = null
+  private _configuration: RTCConfiguration
 
   /** Fired when a local ICE candidate is gathered; `candidate` is null when gathering completes. */
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null
@@ -84,6 +92,10 @@ export class RTCPeerConnection extends EventEmitter {
   onconnectionstatechange: ((event: Event) => void) | null = null
   /** Fired when {@link iceConnectionState} changes. */
   oniceconnectionstatechange: ((event: Event) => void) | null = null
+  /** Fired when {@link iceGatheringState} changes. */
+  onicegatheringstatechange: ((event: Event) => void) | null = null
+  /** Fired when {@link signalingState} changes. */
+  onsignalingstatechange: ((event: Event) => void) | null = null
   /** Fired when negotiation is required (e.g. after {@link addTrack}). */
   onnegotiationneeded: ((event: Event) => void) | null = null
 
@@ -93,6 +105,7 @@ export class RTCPeerConnection extends EventEmitter {
    */
   constructor(config?: RTCConfiguration) {
     super()
+    this._configuration = cloneConfiguration(config)
     debugFn('sdk::RTCPeerConnection', 'constructor', config?.debug !== undefined ? `debug=${config.debug}` : '')
     this.native = new NativePeerConnection(toNativeConfig(config))
 
@@ -115,7 +128,8 @@ export class RTCPeerConnection extends EventEmitter {
     this.native.setOnTrack((_err, track) => {
       if (!track) return
       debugEvent('sdk::RTCPeerConnection', 'track', `id=${track.id}`)
-      const wrappedTrack = new MediaStreamTrack(track)
+      const wrappedTrack =
+        track.kind === 'audio' ? new RemoteAudioTrack(track) : new MediaStreamTrack(track)
       const stream = MediaStream.fromNativeTrack(track)
       const event: RTCTrackEvent = { track: wrappedTrack, streams: [stream] }
       this.ontrack?.(event)
@@ -145,6 +159,20 @@ export class RTCPeerConnection extends EventEmitter {
       this.emit('iceconnectionstatechange', event)
     })
 
+    this.native.setOnIceGatheringStateChange((_err, state) => {
+      debugEvent('sdk::RTCPeerConnection', 'icegatheringstatechange', String(state))
+      const event = new Event('icegatheringstatechange')
+      this.onicegatheringstatechange?.(event)
+      this.emit('icegatheringstatechange', event)
+    })
+
+    this.native.setOnSignalingStateChange((_err, state) => {
+      debugEvent('sdk::RTCPeerConnection', 'signalingstatechange', String(state))
+      const event = new Event('signalingstatechange')
+      this.onsignalingstatechange?.(event)
+      this.emit('signalingstatechange', event)
+    })
+
     this.native.setOnNegotiationNeeded((_err) => {
       debugEvent('sdk::RTCPeerConnection', 'negotiationneeded')
       const event = new Event('negotiationneeded')
@@ -157,16 +185,19 @@ export class RTCPeerConnection extends EventEmitter {
    * Creates an SDP offer describing the local media and data channel setup.
    * @param _options - Reserved for future W3C offer options.
    */
-  async createOffer(_options?: RTCOfferOptions): Promise<RTCSessionDescription> {
+  async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescription> {
     debugFn('sdk::RTCPeerConnection', 'createOffer')
-    void _options
-    return fromNativeDescription(await this.native.createOffer())
+    return fromNativeDescription(
+      await this.native.createOffer(toNativeOfferOptions(options)),
+    )
   }
 
   /** Creates an SDP answer after a remote offer has been applied via {@link setRemoteDescription}. */
-  async createAnswer(): Promise<RTCSessionDescription> {
+  async createAnswer(options?: RTCAnswerOptions): Promise<RTCSessionDescription> {
     debugFn('sdk::RTCPeerConnection', 'createAnswer')
-    return fromNativeDescription(await this.native.createAnswer())
+    return fromNativeDescription(
+      await this.native.createAnswer(toNativeAnswerOptions(options)),
+    )
   }
 
   /**
@@ -234,8 +265,58 @@ export class RTCPeerConnection extends EventEmitter {
    */
   async addTrack(track: LocalAudioTrack): Promise<RTCRtpSender> {
     debugFn('sdk::RTCPeerConnection', 'addTrack', `id=${track.id}`)
-    await this.native.addTrack(track.native)
-    return new RTCRtpSender(track)
+    const sender = await this.native.addTrack(track.native)
+    return RTCRtpSender.fromNative(sender, track)
+  }
+
+  /**
+   * Creates a Unified Plan transceiver from a media kind or local audio track.
+   *
+   * @param trackOrKind - `'audio'`, `'video'`, or a {@link LocalAudioTrack}.
+   * @param init - Optional direction (defaults to `sendrecv` for tracks, `sendrecv` for kinds).
+   */
+  async addTransceiver(
+    trackOrKind: LocalAudioTrack | TrackKind,
+    init?: RTCRtpTransceiverInit,
+  ): Promise<RTCRtpTransceiver> {
+    const initArg = init ? { direction: init.direction } : undefined
+    if (typeof trackOrKind === 'string') {
+      debugFn('sdk::RTCPeerConnection', 'addTransceiver', `kind=${trackOrKind}`)
+      const native = await this.native.addTransceiver(trackOrKind, undefined, initArg)
+      return new RTCRtpTransceiver(native)
+    }
+    debugFn('sdk::RTCPeerConnection', 'addTransceiver', `track=${trackOrKind.id}`)
+    const native = await this.native.addTransceiver(undefined, trackOrKind.native, initArg)
+    return new RTCRtpTransceiver(native, trackOrKind)
+  }
+
+  /** Returns all transceivers on this connection. */
+  async getTransceivers(): Promise<RTCRtpTransceiver[]> {
+    debugFn('sdk::RTCPeerConnection', 'getTransceivers')
+    const native = await this.native.getTransceivers()
+    return native.map((t) => new RTCRtpTransceiver(t))
+  }
+
+  /** Returns all RTP senders (including those without an attached track). */
+  async getSenders(): Promise<RTCRtpSender[]> {
+    debugFn('sdk::RTCPeerConnection', 'getSenders')
+    const native = await this.native.getSenders()
+    return native.map((s) => RTCRtpSender.fromNative(s))
+  }
+
+  /** Returns all RTP receivers. */
+  async getReceivers(): Promise<RTCRtpReceiver[]> {
+    debugFn('sdk::RTCPeerConnection', 'getReceivers')
+    const native = await this.native.getReceivers()
+    return native.map((r) => new RTCRtpReceiver(r))
+  }
+
+  /**
+   * Stops sending on the given sender and detaches its track.
+   */
+  async removeTrack(sender: RTCRtpSender): Promise<void> {
+    debugFn('sdk::RTCPeerConnection', 'removeTrack', `sender=${sender.id}`)
+    await this.native.removeTrack(sender.native)
   }
 
   /**
@@ -246,6 +327,38 @@ export class RTCPeerConnection extends EventEmitter {
     debugFn('sdk::RTCPeerConnection', 'gatheringComplete')
     await this.native.gatheringComplete()
     await this.refreshLocalDescription()
+  }
+
+  /**
+   * Updates ICE servers and transport policy without renegotiation where allowed.
+   * Use for mid-session TURN credential rotation.
+   */
+  async setConfiguration(config: RTCConfiguration): Promise<void> {
+    debugFn('sdk::RTCPeerConnection', 'setConfiguration')
+    await this.native.setConfiguration(toNativeConfig(config))
+    this._configuration = cloneConfiguration(config)
+  }
+
+  /** Returns a copy of the active configuration. */
+  getConfiguration(): RTCConfiguration {
+    return cloneConfiguration(this._configuration)
+  }
+
+  /** Triggers ICE restart; typically followed by a new offer with `iceRestart: true`. */
+  async restartIce(): Promise<void> {
+    debugFn('sdk::RTCPeerConnection', 'restartIce')
+    await this.native.restartIce()
+  }
+
+  /**
+   * Collects connection statistics (candidate pairs, inbound/outbound RTP, etc.).
+   * Returns a `Map` keyed by stat id, matching browser `RTCStatsReport`.
+   */
+  async getStats(): Promise<RTCStatsReport> {
+    debugFn('sdk::RTCPeerConnection', 'getStats')
+    const json = await this.native.getStats()
+    const parsed = JSON.parse(json) as Record<string, Record<string, unknown>>
+    return new Map(Object.entries(parsed))
   }
 
   /** Closes the connection and releases native resources. */
@@ -285,4 +398,32 @@ export class RTCPeerConnection extends EventEmitter {
   }
 }
 
-export type { RTCConfiguration, RTCOfferOptions } from './types'
+function toNativeOfferOptions(options?: RTCOfferOptions) {
+  if (!options) return undefined
+  return {
+    iceRestart: options.iceRestart,
+    voiceActivityDetection: options.voiceActivityDetection,
+    offerToReceiveAudio: options.offerToReceiveAudio,
+    offerToReceiveVideo: options.offerToReceiveVideo,
+  }
+}
+
+function toNativeAnswerOptions(options?: RTCAnswerOptions) {
+  if (!options) return undefined
+  return {
+    voiceActivityDetection: options.voiceActivityDetection,
+  }
+}
+
+function cloneConfiguration(config?: RTCConfiguration): RTCConfiguration {
+  if (!config) return {}
+  return {
+    ...config,
+    iceServers: config.iceServers?.map((server) => ({
+      ...server,
+      urls: Array.isArray(server.urls) ? [...server.urls] : server.urls,
+    })),
+  }
+}
+
+export type { RTCAnswerOptions, RTCConfiguration, RTCOfferOptions, RTCStatsReport } from './types'

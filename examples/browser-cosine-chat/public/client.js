@@ -175,6 +175,23 @@ function peerLabel(peerId) {
   return peerNames.get(peerId) ?? peerId
 }
 
+/**
+ * Log W3C peer connection state transitions when ?debug is present.
+ * Node SDK exposes the same callbacks on RTCPeerConnection (parity v0.2).
+ */
+function attachPeerStateDebug(pc, label) {
+  if (!DEBUG) return
+  pc.onicegatheringstatechange = () => {
+    debugLog(`${label} iceGatheringState=${pc.iceGatheringState}`)
+  }
+  pc.onsignalingstatechange = () => {
+    debugLog(`${label} signalingState=${pc.signalingState}`)
+  }
+  pc.oniceconnectionstatechange = () => {
+    debugLog(`${label} iceConnectionState=${pc.iceConnectionState}`)
+  }
+}
+
 /** Poll inbound RTP counters when ?debug is in the URL. */
 function startInboundRtpDebug(pc, label) {
   if (!DEBUG) return
@@ -236,6 +253,8 @@ function onPeerLeft(peerId) {
 async function connectToPeer(peerId, createOffer) {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
   peerConnections.set(peerId, { pc })
+  attachPeerStateDebug(pc, `peer-${peerId}`)
+  startInboundRtpDebug(pc, `peer-${peerId}`)
 
   if (createOffer) {
     const dc = pc.createDataChannel('chat')
@@ -272,6 +291,7 @@ async function onOffer(fromPeerId, sdp) {
       debugLog('server offer received')
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
       peerConnections.set(fromPeerId, { pc })
+      attachPeerStateDebug(pc, 'server-audio')
       startInboundRtpDebug(pc, 'server-audio')
 
     const attachServerAudio = (track, stream, source) => {
@@ -421,6 +441,14 @@ async function flushPendingIce(peerId) {
 
 function wireChatChannel(peerId, dc) {
   chatChannels.set(peerId, dc)
+
+  // Node SDK parity: onbufferedamountlow when bufferedAmount <= bufferedAmountLowThreshold.
+  if (DEBUG) {
+    dc.bufferedAmountLowThreshold = 256 * 1024
+    dc.onbufferedamountlow = () => {
+      debugLog(`chat dc bufferedamountlow peer=${peerId} amount=${dc.bufferedAmount}`)
+    }
+  }
 
   dc.onopen = () => {
     dc.send(JSON.stringify({ type: 'hello', name: displayName }))

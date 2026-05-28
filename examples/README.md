@@ -9,7 +9,9 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | Package | Type | Default port | Description |
 | --- | --- | --- | --- |
 | **peer-connection** | CLI (exits on success) | 8080 (signaling) | Two Node peers, DataChannel over WebSocket signaling |
+| **peer-connection** `start:parity` | CLI (exits on success) | 8080 | Transceivers, `getStats`, `setConfiguration`, `replaceTrack`, `readSample` tour |
 | **audio-cosine** | CLI (runs ~5s) | 8080 (signaling) | Local audio track streaming a 440 Hz cosine tone in PCM |
+| **audio-cosine** `start:replace-track` | CLI (runs ~4s) | 8080 | `replaceTrack` + `RemoteAudioTrack.readSample` with 440→880 Hz swap |
 | **browser-cosine-chat** | Browser + Node server | 3000 | Browser tabs hear a server cosine tone and mesh chat via data channels |
 | **conference-room** | Browser + Node server | 8080 | Browser mic → Rust mixer → personalized mixed audio; mute/kick UI |
 | **conference-room-manual-signaling** | Browser + Node server | 8081 | Same as conference-room; hand-rolled WebSocket signaling |
@@ -64,7 +66,9 @@ WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-ro
 | Example | Command | How to verify |
 | --- | --- | --- |
 | peer-connection | `npm run start --workspace=@node-webrtc-rust/example-peer-connection` | Prints `Received: Hello from peer 1!` and exits |
+| peer-connection parity | `npm run start:parity --workspace=@node-webrtc-rust/example-peer-connection` | Runs three parity scenarios; prints `All parity scenarios completed` |
 | audio-cosine | `npm run start --workspace=@node-webrtc-rust/example-audio-cosine` | Logs remote track + streams tone for ~5s, then exits |
+| audio-cosine replace | `npm run start:replace-track --workspace=@node-webrtc-rust/example-audio-cosine` | Swaps 440→880 Hz via `replaceTrack`; logs `readSample` byte lengths |
 | browser-cosine-chat | `npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat` | Open `http://localhost:3000`, same room in multiple tabs |
 | conference-room | `npm run start --workspace=@node-webrtc-rust/example-conference-room` | Open `http://localhost:8080`, join room, allow mic |
 | conference-room-manual-signaling | `npm run start --workspace=@node-webrtc-rust/example-conference-room-manual-signaling` | Open `http://localhost:8081` (see its README) |
@@ -89,6 +93,19 @@ npm run start --workspace=@node-webrtc-rust/example-peer-connection
 ```
 
 Set `WEBRTC_DEBUG=1` to trace WebRTC and signaling calls (see the root README).
+
+### WebRTC parity APIs (v0.2)
+
+Commented CLI tours for transceivers, statistics, configuration, and media lifecycle:
+
+```bash
+npm run start:parity --workspace=@node-webrtc-rust/example-peer-connection
+npm run start:replace-track --workspace=@node-webrtc-rust/example-audio-cosine
+```
+
+Shared helpers and PCM notes: [`examples/shared/`](shared/).
+
+Browser demo: open `http://localhost:3000?debug` to log ICE/signaling state and `getStats` RTP counters.
 
 ### Audio track + cosine generator
 

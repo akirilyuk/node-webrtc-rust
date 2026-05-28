@@ -126,6 +126,7 @@ jobs:
           zig: 'false'
           skip_build_on_cache_hit: 'true'
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
+          binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}
 
   build-ts:
     name: Build TypeScript

@@ -10,15 +10,24 @@ pub mod events;
 pub mod media;
 pub mod pcm_audio_track;
 pub mod pcm_encoder;
+pub mod offer_answer;
 pub mod peer_connection;
+pub mod rtp_sender;
+pub mod rtp_transceiver;
 
 pub use config::*;
 pub use data_channel::*;
 pub use debug::{debug_event, debug_fn, is_debug_enabled, set_debug_enabled};
 pub use error::CoreError;
 pub use events::*;
-pub use media::*;
+pub use media::{PcmSample, *};
+pub use offer_answer::{AnswerOptions, OfferOptions};
 pub use peer_connection::*;
+pub use rtp_sender::RtpSender;
+pub use rtp_transceiver::{
+    rtp_kind_from_str, RtpReceiver, RtpTransceiver, RtpTransceiverDirection, RtpTransceiverInit,
+    TransceiverSource,
+};
 
 pub use bytes::Bytes;
 

@@ -55,6 +55,14 @@ export interface RTCIceServer {
   credentialType?: 'password' | 'oauth'
 }
 
+/** Unified Plan transceiver direction. */
+export type RTCRtpTransceiverDirection = 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive'
+
+/** Options for {@link RTCPeerConnection.addTransceiver}. */
+export interface RTCRtpTransceiverInit {
+  direction?: RTCRtpTransceiverDirection
+}
+
 /** Peer connection ICE and transport settings. */
 export interface RTCConfiguration {
   iceServers?: RTCIceServer[]
@@ -72,6 +80,12 @@ export interface RTCOfferOptions {
   offerToReceiveAudio?: boolean
   offerToReceiveVideo?: boolean
   iceRestart?: boolean
+  voiceActivityDetection?: boolean
+}
+
+/** Options passed to {@link RTCPeerConnection.createAnswer}. */
+export interface RTCAnswerOptions {
+  voiceActivityDetection?: boolean
 }
 
 /** Plain-object ICE candidate for signaling transport. */
@@ -123,6 +137,12 @@ export interface RTCDataChannelEvent {
 export interface MessageEvent<T = string | Buffer> {
   data: T
 }
+
+/** WebRTC statistics entry (W3C `RTCStats` dictionary subset). */
+export type RTCStats = Record<string, unknown>
+
+/** Map of stat id → stat object, matching browser `RTCStatsReport`. */
+export type RTCStatsReport = Map<string, RTCStats>
 
 /** Plain-object session description for signaling transport. */
 export interface RTCSessionDescriptionInit {

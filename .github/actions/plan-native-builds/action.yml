@@ -1,0 +1,64 @@
+name: Plan native release builds
+description: Per-target cache hash check; outputs dynamic build matrices and cached target list
+
+inputs:
+  profile:
+    description: Native cache profile (release or debug)
+    required: false
+    default: release
+  check_main_success:
+    description: Set main_validated output from build-main.yml for this SHA
+    required: false
+    default: 'false'
+
+outputs:
+  native_hash:
+    description: Source hash fingerprint for native-v2 cache keys
+    value: ${{ steps.plan.outputs.native_hash }}
+  linux_x64_matrix:
+    description: JSON array of {target,zig} needing linux-x64 compile
+    value: ${{ steps.plan.outputs.linux_x64_matrix }}
+  build_linux_arm64:
+    description: Whether aarch64-unknown-linux-gnu needs compile
+    value: ${{ steps.plan.outputs.build_linux_arm64 }}
+  host_matrix:
+    description: JSON array of {target,os,build-args} needing host compile
+    value: ${{ steps.plan.outputs.host_matrix }}
+  cached_targets:
+    description: JSON array of targets with valid cache entries
+    value: ${{ steps.plan.outputs.cached_targets }}
+  cached_linux_x64:
+    description: JSON array of cached linux x64 triples
+    value: ${{ steps.plan.outputs.cached_linux_x64 }}
+  cached_linux_arm64:
+    description: Whether linux arm64 is cached
+    value: ${{ steps.plan.outputs.cached_linux_arm64 }}
+  cached_host:
+    description: JSON array of cached macOS/Windows triples
+    value: ${{ steps.plan.outputs.cached_host }}
+  all_cached:
+    description: All release targets hit cache for current hash
+    value: ${{ steps.plan.outputs.all_cached }}
+  main_validated:
+    description: build-main.yml succeeded for this commit (when check_main_success)
+    value: ${{ steps.main.outputs.main_validated }}
+
+runs:
+  using: composite
+  steps:
+    - name: Plan per-target native builds
+      id: plan
+      shell: bash
+      env:
+        PLAN_NATIVE_PROFILE: ${{ inputs.profile }}
+      run: bash scripts/ci/plan-native-builds.sh
+
+    - name: Check main CI success
+      id: main
+      shell: bash
+      run: |
+        if [[ "${{ inputs.check_main_success }}" == "true" ]]; then
+          bash scripts/ci/check-main-ci-success.sh
+        else
+          echo "main_validated=false" >> "$GITHUB_OUTPUT"
+        fi

@@ -1,0 +1,125 @@
+name: Reusable — stage cached binding artifacts
+
+on:
+  workflow_call:
+    inputs:
+      cached_linux_x64:
+        description: JSON array of linux x64 triples to restore from cache
+        type: string
+        default: '[]'
+      cached_linux_arm64:
+        description: Stage aarch64-unknown-linux-gnu from cache
+        type: boolean
+        default: false
+      cached_host:
+        description: JSON array of macOS/Windows triples to restore from cache
+        type: string
+        default: '[]'
+      profile:
+        description: Native cache profile
+        type: string
+        default: release
+
+jobs:
+  stage-linux-x64:
+    name: Stage cache - ${{ matrix.target }}
+    if: inputs.cached_linux_x64 != '[]' && inputs.cached_linux_x64 != ''
+    runs-on: self-hosted
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(inputs.cached_linux_x64) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/native-binding-cache
+        with:
+          target: ${{ matrix.target }}
+          profile: ${{ inputs.profile }}
+
+      - name: Require cached native artifact
+        shell: bash
+        working-directory: packages/bindings
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(*.node)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "Expected cached .node for ${{ matrix.target }}." >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: packages/bindings/*.node
+          if-no-files-found: error
+
+  stage-linux-arm64:
+    name: Stage cache - aarch64-unknown-linux-gnu
+    if: inputs.cached_linux_arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/native-binding-cache
+        with:
+          target: aarch64-unknown-linux-gnu
+          profile: ${{ inputs.profile }}
+
+      - name: Require cached native artifact
+        shell: bash
+        working-directory: packages/bindings
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(*.node)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "Expected cached .node for aarch64-unknown-linux-gnu." >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-aarch64-unknown-linux-gnu
+          path: packages/bindings/*.node
+          if-no-files-found: error
+
+  stage-host:
+    name: Stage cache - ${{ matrix.target }}
+    if: inputs.cached_host != '[]' && inputs.cached_host != ''
+    runs-on: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'windows-latest' || 'macos-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(inputs.cached_host) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/native-binding-cache
+        with:
+          target: ${{ matrix.target }}
+          profile: ${{ inputs.profile }}
+
+      - name: Require cached native artifact
+        shell: bash
+        working-directory: packages/bindings
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(*.node)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "Expected cached .node for ${{ matrix.target }}." >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: packages/bindings/*.node
+          if-no-files-found: error

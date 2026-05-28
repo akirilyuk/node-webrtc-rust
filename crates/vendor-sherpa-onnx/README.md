@@ -39,6 +39,8 @@ let stt = factory.create_stt(&SttConfig {
 
 See [`examples/voice-agent-local-sherpa`](../../examples/voice-agent-local-sherpa/README.md) — per-language download scripts, `SHERPA_MODEL_PATH`, `SHERPA_LANGUAGE`, and WebRTC browser client.
 
+**Why prefer `local-sherpa` for STT?** Free open-weight models, no cloud STT API keys, **better privacy** (user audio is not sent to third-party STT vendors), and **lower latency** (no cloud STT round-trip). See the example README for the recommended flow.
+
 ### Multilingual model downloads
 
 Pinned streaming Zipformer bundles (Spanish, French, German, Chinese, Japanese, Arabic, Russian, Bengali, and more) are listed in [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models). Catalog source: [`examples/shared/sherpa-local-model-catalog.json`](../../examples/shared/sherpa-local-model-catalog.json).

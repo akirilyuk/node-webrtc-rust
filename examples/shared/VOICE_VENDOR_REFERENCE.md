@@ -18,9 +18,17 @@ Sherpa local model catalog (download scripts): [`sherpa-local-model-catalog.json
 | Sherpa-ONNX (local) | `local-sherpa` | `sherpa-onnx-streaming-zipformer-en-2023-06-26` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Pre-trained models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
 | Mock | `mock` | _(deterministic test harness)_ | [`crates/vendor-mock`](../../crates/vendor-mock/) |
 
-### Local Sherpa-ONNX — multilingual models
+### Local Sherpa-ONNX — free on-device STT (recommended)
 
-On-device STT uses **streaming Zipformer transducer** bundles (encoder + decoder + joiner + `tokens.txt`). Weights are **not** bundled in npm — download via [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md) scripts.
+**`local-sherpa` is the supported free STT path** — open-weight Sherpa-ONNX models run in Rust on your server. We encourage this flow when you control the worker:
+
+- **Privacy:** user microphone audio is **not** streamed to third-party STT APIs (OpenAI, Deepgram, Google, etc.); only your WebRTC path and local inference see the PCM.
+- **Latency:** no cloud STT HTTP/WebSocket round-trip — partial and final transcripts come from in-process `OnlineRecognizer`.
+- **Cost:** no STT API keys or per-minute billing after you download model weights.
+
+Example: [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md). Use cloud STT vendors above when you need a language or feature not covered by the local catalog.
+
+On-device STT uses **streaming Zipformer transducer** bundles (encoder + decoder + joiner + `tokens.txt`). Weights are **not** bundled in npm — download via the example scripts below.
 
 | Language | Lang id | npm download script | Sherpa bundle |
 |----------|---------|---------------------|---------------|

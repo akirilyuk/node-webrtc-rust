@@ -160,9 +160,11 @@ tts: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice: '...' },
 
 API keys via `apiKey` in config or env vars. Never logged or returned in speech events.
 
-#### Local Sherpa-ONNX (`local-sherpa`)
+#### Local Sherpa-ONNX (`local-sherpa`) — free on-device STT
 
-On-device streaming STT — no API key. Requires a downloaded **Zipformer transducer** directory (`tokens.txt` + encoder/decoder/joiner `.onnx`).
+**Recommended when privacy and STT latency matter.** User speech is transcribed on **your server** with Sherpa-ONNX — audio is **not** sent to third-party cloud STT APIs, and you avoid cloud STT network round-trips. No STT API key; download open-weight models once.
+
+Requires a **Zipformer transducer** directory (`tokens.txt` + encoder/decoder/joiner `.onnx`).
 
 | Variable | Required | Purpose |
 | --- | --- | --- |

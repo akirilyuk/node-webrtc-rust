@@ -173,9 +173,22 @@ STT and TTS providers are **independently configurable** — mix vendors per ses
 | `cartesia` | — | ✓ | `CARTESIA_API_KEY` |
 | `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` |
 | `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` |
+| **`local-sherpa`** | ✓ | — | `SHERPA_MODEL_PATH`, `SHERPA_LANGUAGE` |
 | `mock` | ✓ | ✓ | _(none — CI/local)_ |
 
 Pass `apiKey` in config or rely on env vars. Keys are never logged or returned in events.
+
+### Free local STT (`local-sherpa`)
+
+For production voice agents that handle **sensitive audio** or need **lower STT latency**, prefer **`local-sherpa`**: Sherpa-ONNX runs on your worker CPU, so user speech is **not** sent to third-party STT APIs and you skip cloud STT network round-trips. Models are free to download; no STT API key required.
+
+```bash
+npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Multilingual bundles and per-language scripts: [`examples/voice-agent-local-sherpa/README.md`](examples/voice-agent-local-sherpa/README.md). Cloud STT vendors in the table above remain available when you need vendor-specific models or locales without a local bundle.
 
 Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI builds use stub adapters; enable per-crate `live` features when wiring production vendor calls.
 
@@ -213,6 +226,7 @@ npm run setup   # once: deps + native .node + TS build
 
 | Example | Command | Teaches |
 | --- | --- | --- |
+| **voice-agent-local-sherpa** | `download-model` + `npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa` | **Free on-device STT** — privacy-friendly, no cloud STT API; browser mic → Sherpa |
 | **voice-agent** callback | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | `agent.on()` handlers, mock vendors |
 | **voice-agent** stream | `npm run start:stream --workspace=...` | `for await … speechEvents()` |
 | **voice-agent** barge-in | `npm run start:barge-in --workspace=...` | VAD + `flushTts` |

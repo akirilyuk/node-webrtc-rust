@@ -1,6 +1,6 @@
 # Local Sherpa STT — Browser + Node
 
-**On-device streaming speech-to-text** with [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) — no cloud API keys.
+**Free, on-device streaming speech-to-text** with [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) — no cloud API keys, no per-minute STT billing.
 
 This example mirrors [`voice-agent-browser`](../voice-agent-browser/README.md) but uses:
 
@@ -10,6 +10,23 @@ This example mirrors [`voice-agent-browser`](../voice-agent-browser/README.md) b
 | TTS | `mock` (deterministic playback for barge-in demos) |
 
 Your **browser microphone** → WebRTC → Node **VoiceAgent** → Sherpa `OnlineRecognizer` → partial/final events on the `voice-control` DataChannel.
+
+---
+
+## Why use free local STT?
+
+We **explicitly support and recommend** the `local-sherpa` flow when you can run inference on your own hardware:
+
+| Benefit | What it means |
+|---------|----------------|
+| **Privacy** | User speech is decoded **on your server** — raw audio is **not** sent to OpenAI, Deepgram, Google, or other cloud STT APIs. |
+| **Lower latency** | No network round-trip to a third-party STT service; transcripts come from in-process Sherpa inference after WebRTC delivery. |
+| **No API keys or usage fees** | Download open-weight models once (`download-model:*` scripts); run without STT cloud credentials. |
+| **Offline-capable** | After models are cached, STT works without outbound calls to speech vendors (WebRTC signaling still needs your network). |
+
+Cloud STT remains available via [`voice-agent-browser`](../voice-agent-browser/README.md) when you need vendor-specific features or languages without a local bundle. For agent loops that handle sensitive audio or care about tail latency, **start with this example**.
+
+Pair `local-sherpa` with any TTS provider you choose — this demo uses **`mock` TTS** so the full browser path runs with zero cloud keys. Swap in cloud TTS later if you need natural voice synthesis.
 
 ---
 

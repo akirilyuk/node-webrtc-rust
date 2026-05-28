@@ -18,6 +18,7 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | **voice-agent** `start:callback` | CLI (exits on success) | 8080 (signaling) | Mock VoiceAgent with callback speech events |
 | **voice-agent** `start:stream` | CLI (exits on success) | 8080 | Mock VoiceAgent with `speechEvents()` stream |
 | **voice-agent** `start:barge-in` | CLI (exits on success) | 8080 | Barge-in flush when VAD detects inbound speech |
+| **voice-agent** `start:live:*` | CLI (exits on success) | 8080 | Per-vendor live manual test (API keys; see `voice-agent/README.md`) |
 
 ## Run examples locally
 
@@ -78,6 +79,8 @@ WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-ro
 | voice-agent callback | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | Prints callback speech events and exits |
 | voice-agent stream | `npm run start:stream --workspace=@node-webrtc-rust/example-voice-agent` | Prints stream events from mock TTS |
 | voice-agent barge-in | `npm run start:barge-in --workspace=@node-webrtc-rust/example-voice-agent` | Logs barge-in after simulated user speech |
+| voice-agent live OpenAI | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent` | Live vendor demo; see `examples/voice-agent/README.md` |
+| voice-agent live (any) | `npm run start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google` | Same pattern with vendor env vars |
 
 ### Troubleshooting
 

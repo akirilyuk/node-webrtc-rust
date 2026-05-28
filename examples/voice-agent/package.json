@@ -8,6 +8,12 @@
     "start:callback": "tsx src/callback.ts",
     "start:stream": "tsx src/stream.ts",
     "start:barge-in": "tsx src/barge-in.ts",
+    "start:live:openai": "tsx src/live-vendor.ts openai",
+    "start:live:deepgram": "tsx src/live-vendor.ts deepgram",
+    "start:live:elevenlabs": "tsx src/live-vendor.ts elevenlabs",
+    "start:live:cartesia": "tsx src/live-vendor.ts cartesia",
+    "start:live:assemblyai": "tsx src/live-vendor.ts assemblyai",
+    "start:live:google": "tsx src/live-vendor.ts google",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

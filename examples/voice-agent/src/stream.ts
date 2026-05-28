@@ -9,14 +9,14 @@ import { VoiceAgent } from '@node-webrtc-rust/sdk/voice'
 import { createLoopbackAudio, mockVoiceConfig } from './shared-loopback.js'
 
 async function main(): Promise<void> {
-  const { agentOut, userInbound, cleanup } = await createLoopbackAudio()
+  const { agentOut, agentInbound, cleanup } = await createLoopbackAudio()
 
   const agent = new VoiceAgent({
     ...mockVoiceConfig,
     events: { mode: 'stream' },
   })
 
-  await agent.attach({ inboundTrack: userInbound, outboundTrack: agentOut })
+  await agent.attach({ inboundTrack: agentInbound, outboundTrack: agentOut })
   await agent.start()
 
   const streamTask = (async () => {

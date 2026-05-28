@@ -5,6 +5,7 @@ members = [
     "crates/mixer",
     "crates/conference",
     "crates/signaling",
+    "crates/speech",
     "packages/bindings",
 ]
 

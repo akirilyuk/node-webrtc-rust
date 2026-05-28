@@ -1,0 +1,26 @@
+{
+  "name": "@node-webrtc-rust/example-voice-agent-browser",
+  "private": true,
+  "version": "0.1.5",
+  "description": "Browser WebRTC client + Node VoiceAgent server with DataChannel speech events and TTS control",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "start:live:openai": "VOICE_VENDOR=openai tsx src/index.ts",
+    "start:live:deepgram": "VOICE_VENDOR=deepgram tsx src/index.ts",
+    "start:live:elevenlabs": "VOICE_VENDOR=elevenlabs tsx src/index.ts",
+    "start:live:cartesia": "VOICE_VENDOR=cartesia tsx src/index.ts",
+    "start:live:assemblyai": "VOICE_VENDOR=assemblyai tsx src/index.ts",
+    "start:live:google": "VOICE_VENDOR=google tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@node-webrtc-rust/sdk": "0.1.5",
+    "@node-webrtc-rust/signaling": "0.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  }
+}

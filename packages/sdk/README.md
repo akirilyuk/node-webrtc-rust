@@ -196,6 +196,26 @@ for await (const event of agent.speechEvents()) {
 
 Set `events.mode: 'both'` to use handlers and the iterator on the same session.
 
+### Browser client over DataChannel
+
+When the agent runs on Node and the user connects from a browser, mirror speech events and accept TTS requests on an `RTCDataChannel`:
+
+```typescript
+import { VOICE_CONTROL_CHANNEL_LABEL, wireVoiceAgentToDataChannel } from '@node-webrtc-rust/sdk/voice'
+
+const dc = pc.createDataChannel(VOICE_CONTROL_CHANNEL_LABEL, { ordered: true })
+dc.onopen = () => {
+  wireVoiceAgentToDataChannel(agent, dc)
+}
+```
+
+- **Server → client:** `{ type: 'speech_event', event: 'user_speech_final', text: '…' }` (STT, VAD, `barge_in`, …)
+- **Client → server:** `{ type: 'speak', text: 'Hello' }` → `agent.sendTextToTTS(text)`
+
+Full browser + Node demo: [`examples/voice-agent-browser`](../../examples/voice-agent-browser/README.md).
+
+**Live vendors:** default is mock. Set `VOICE_VENDOR=openai|deepgram|elevenlabs|cartesia|assemblyai|google` and the vendor’s API keys, then run `npm run start:live:<vendor> --workspace=@node-webrtc-rust/example-voice-agent-browser`. See that README for env vars and pairing notes.
+
 ### API summary
 
 | Method | Description |
@@ -207,6 +227,7 @@ Set `events.mode: 'both'` to use handlers and the iterator on the same session.
 | `flushTts()` | Clear pending TTS (also used when `bargeIn.flushTts: false`) |
 | `on(type, fn)` / `off` | Callback handlers |
 | `speechEvents()` | Async generator of all speech events |
+| `wireVoiceAgentToDataChannel(agent, dc)` | Forward speech events + handle `{ type: 'speak' }` on a data channel |
 
 ### Examples and live vendor testing
 
@@ -217,6 +238,9 @@ From the repo root (after `npm run setup`):
 | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | Mock vendors, `on()` handlers |
 | `npm run start:stream --workspace=...` | Mock vendors, `speechEvents()` |
 | `npm run start:barge-in --workspace=...` | VAD + `flushTts` |
+| `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser` | Browser mic + DataChannel events + TTS control |
+| `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent-browser` | Browser demo with live OpenAI STT/TTS |
+| `npm run start:live:deepgram` / `elevenlabs` / … `--workspace=@node-webrtc-rust/example-voice-agent-browser` | Live browser demo per vendor (see README) |
 | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=...` | Live OpenAI preset |
 | `npm run start:live:deepgram` / `elevenlabs` / … | Per-vendor manual tests |
 

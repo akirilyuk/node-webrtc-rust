@@ -251,7 +251,7 @@ Prioritized for **browser interop** and **your conference product**:
 1. ~~**`RTCRtpSender.replaceTrack()`**~~ — done (v0.2.x)
 2. ~~**`removeTrack()`**~~ — done (v0.2.x)
 3. ~~**`createOffer` / `createAnswer` options**~~ — `iceRestart` + `offerToReceiveAudio` done; video receive N/A
-4. **Remote audio decode in SDK** — `RemoteAudioTrack.readSample()` (in progress)
+4. ~~**Remote audio decode in SDK**~~ — `RemoteAudioTrack.readSample()` done
 
 ### P1 — operability
 

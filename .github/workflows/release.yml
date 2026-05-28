@@ -144,13 +144,14 @@ jobs:
           done
           npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/sdk
           npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/signaling
+          npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/helpers
           npm pkg set "dependencies.@node-webrtc-rust/bindings=${VERSION}" --workspace=@node-webrtc-rust/sdk
           npm pkg set "dependencies.@node-webrtc-rust/signaling=${VERSION}" --workspace=@node-webrtc-rust/sdk
+          npm pkg set "dependencies.@node-webrtc-rust/sdk=${VERSION}" --workspace=@node-webrtc-rust/helpers
+          npm pkg set "dependencies.@node-webrtc-rust/signaling=${VERSION}" --workspace=@node-webrtc-rust/helpers
 
       - name: Build TypeScript packages
-        run: |
-          npm run build --workspace=@node-webrtc-rust/sdk
-          npm run build --workspace=@node-webrtc-rust/signaling
+        run: bash scripts/ci/build-ts-workspace.sh
 
       # napi artifacts + napi version already stage per-platform packages.
       # Do not run `napi prepublish` here — it tries to npm publish and create a
@@ -227,15 +228,29 @@ jobs:
           publish_dir "packages/sdk/" "@node-webrtc-rust/sdk" --ignore-scripts
           verify_published "@node-webrtc-rust/sdk"
 
+          echo "==> @node-webrtc-rust/helpers"
+          publish_dir "packages/helpers/" "@node-webrtc-rust/helpers" --ignore-scripts
+          verify_published "@node-webrtc-rust/helpers"
+
           echo "==> Published @node-webrtc-rust/*@${VERSION} to npm"
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Prepare GitHub release notes from CHANGELOG
+        id: release_notes
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BODY_FILE="${RUNNER_TEMP}/release-notes.md"
+          bash scripts/changelog-release-body.sh "$VERSION" > "$BODY_FILE"
+          echo "body_file=$BODY_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ steps.version.outputs.version }}
-          generate_release_notes: true
+          body_path: ${{ steps.release_notes.outputs.body_file }}
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -304,16 +304,18 @@ cd "$ROOT"
 sync_bindings_optional_deps
 npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/sdk
 npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/signaling
+npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/helpers
 npm pkg set "dependencies.@node-webrtc-rust/bindings=${VERSION}" --workspace=@node-webrtc-rust/sdk
 npm pkg set "dependencies.@node-webrtc-rust/signaling=${VERSION}" --workspace=@node-webrtc-rust/sdk
+npm pkg set "dependencies.@node-webrtc-rust/sdk=${VERSION}" --workspace=@node-webrtc-rust/helpers
+npm pkg set "dependencies.@node-webrtc-rust/signaling=${VERSION}" --workspace=@node-webrtc-rust/helpers
 echo "==> link sdk for signaling build (devDependency; workspace only)"
 npm install --ignore-scripts --no-audit --no-fund \
   --workspace=@node-webrtc-rust/sdk \
   --workspace=@node-webrtc-rust/signaling
 
-echo "==> build TypeScript (sdk first — signaling imports sdk types)"
-npm run build --workspace=@node-webrtc-rust/sdk
-npm run build --workspace=@node-webrtc-rust/signaling
+echo "==> build TypeScript (sdk → signaling → full sdk → helpers)"
+bash scripts/ci/build-ts-workspace.sh
 
 echo "==> napi prepublish"
 cd "$BINDINGS"
@@ -377,6 +379,10 @@ verify_on_registry "@node-webrtc-rust/signaling"
 echo "==> Publish @node-webrtc-rust/sdk (requires bindings + signaling on npm)"
 publish_dir "$ROOT/packages/sdk" "@node-webrtc-rust/sdk" --ignore-scripts
 verify_on_registry "@node-webrtc-rust/sdk"
+
+echo "==> Publish @node-webrtc-rust/helpers (requires sdk + signaling on npm)"
+publish_dir "$ROOT/packages/helpers" "@node-webrtc-rust/helpers" --ignore-scripts
+verify_on_registry "@node-webrtc-rust/helpers"
 
 echo "==> Done: $VERSION"
 if [[ "$DRY_RUN" != true ]]; then

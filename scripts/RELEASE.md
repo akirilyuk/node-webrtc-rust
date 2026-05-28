@@ -9,9 +9,10 @@ How to publish `@node-webrtc-rust/*` packages to npm — from your machine or vi
 | `@node-webrtc-rust/bindings` | Main package; downloads platform-specific optional deps |
 | `@node-webrtc-rust/bindings-*` | One package per platform (darwin/linux/win `.node` binaries) |
 | `@node-webrtc-rust/signaling` | WebSocket signaling helpers |
-| `@node-webrtc-rust/sdk` | TypeScript WebRTC + conference API |
+| `@node-webrtc-rust/sdk` | TypeScript WebRTC + conference + voice API |
+| `@node-webrtc-rust/helpers` | Session pod, voice session host, PCM utilities |
 
-Publish order (enforced by all scripts and CI): **platform bindings → bindings → signaling → sdk**.
+Publish order (enforced by all scripts and CI): **platform bindings → bindings → signaling → sdk → helpers**.
 
 ---
 
@@ -51,6 +52,25 @@ PR and release workflows always pull `:latest`; they do not rebuild the image.
 
 ---
 
+## Changelog workflow
+
+User-facing release notes live in **[`CHANGELOG.md`](../CHANGELOG.md)** at the repo root ( [Keep a Changelog](https://keepachangelog.com/) style).
+
+| When | Action |
+| --- | --- |
+| **During development** | Add bullets under `[Unreleased]` as PRs merge |
+| **Before tagging** | Rename `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, add empty `[Unreleased]` at top, commit on `main` |
+| **On tag push** | CI publishes npm; GitHub Release body is extracted from the `[X.Y.Z]` section via [`scripts/changelog-release-body.sh`](changelog-release-body.sh) |
+| **After publish** | Commit version bumps on `main` (`chore(repo): release X.Y.Z`) |
+
+Preview release notes locally:
+
+```bash
+bash scripts/changelog-release-body.sh 0.3.0
+```
+
+---
+
 ## Release via GitHub Actions (recommended)
 
 Use this for **all six platform binaries** and a consistent CI run before publish.
@@ -62,13 +82,15 @@ Use this for **all six platform binaries** and a consistent CI run before publis
 
 ### Tag workflow (publish)
 
-Push a tag matching `release/<semver>`:
+1. Finalize [`CHANGELOG.md`](../CHANGELOG.md) for the version (see [Changelog workflow](#changelog-workflow)).
+2. Merge to **`main`** and confirm Build & Test is green.
+3. Push a tag matching `release/<semver>`:
 
 ```bash
 git checkout main
 git pull
-git tag release/0.2.0
-git push origin release/0.2.0
+git tag release/0.3.0
+git push origin release/0.3.0
 ```
 
 Supported tag forms:
@@ -87,8 +109,8 @@ The segment after `release/` becomes the npm version for all packages.
 
 1. **Build** — full matrix (3× Linux in CI container, macOS ×2, Windows ×1)
 2. **Test** — format, lint, typecheck, `cargo test`, `npm test` (with coturn)
-3. **Publish** — stage artifacts, bump versions, `napi prepublish`, publish to npm
-4. **GitHub Release** — creates a release with auto-generated notes
+3. **Publish** — stage artifacts, bump versions, `napi prepublish`, publish to npm (including `@node-webrtc-rust/helpers`)
+4. **GitHub Release** — creates a release with the matching section from `CHANGELOG.md`
 
 Required secrets: **`NPM_TOKEN`**, **`GITHUB_TOKEN`** (provided by Actions for the release step).
 

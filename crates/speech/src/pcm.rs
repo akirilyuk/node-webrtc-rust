@@ -83,6 +83,16 @@ pub fn mono_s16le_to_stereo(mono: &[u8]) -> Bytes {
     Bytes::from(stereo)
 }
 
+/// Convert mono s16le PCM bytes to normalized f32 samples in [-1.0, 1.0].
+pub fn mono_s16le_bytes_to_f32(pcm: &[u8]) -> Vec<f32> {
+    pcm.chunks_exact(2)
+        .map(|chunk| {
+            let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+            f32::from(sample) / 32768.0
+        })
+        .collect()
+}
+
 /// Convert mono i16 samples to little-endian bytes.
 pub fn i16_samples_to_bytes(samples: &[i16]) -> Bytes {
     let mut bytes = Vec::with_capacity(samples.len() * 2);
@@ -142,5 +152,13 @@ mod tests {
         let wav = mono16_le_to_wav(&pcm);
         assert!(wav.starts_with(b"RIFF"));
         assert!(wav.len() >= 44 + pcm.len());
+    }
+
+    #[test]
+    fn mono_s16le_bytes_to_f32_normalizes() {
+        let pcm = i16::MAX.to_le_bytes();
+        let samples = mono_s16le_bytes_to_f32(&pcm);
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0] - (f32::from(i16::MAX) / 32768.0)).abs() < 1e-6);
     }
 }

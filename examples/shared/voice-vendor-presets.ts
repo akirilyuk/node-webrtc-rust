@@ -29,6 +29,8 @@
  * Keep both in sync when adding a provider.
  *
  * Used by: `examples/voice-agent/src/live-vendor.ts` and npm `start:live:*` scripts.
+ *
+ * Official API docs for every provider: `examples/shared/VOICE_VENDOR_REFERENCE.md`
  */
 
 import type { SttConfig, TtsConfig, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'

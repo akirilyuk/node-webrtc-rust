@@ -139,6 +139,7 @@ export const enum JsSttVendor {
   Deepgram = 'deepgram',
   Google = 'google',
   Assemblyai = 'assemblyai',
+  LocalSherpa = 'local-sherpa',
   Mock = 'mock'
 }
 export const enum JsTtsVendor {
@@ -151,6 +152,7 @@ export const enum JsTtsVendor {
 export interface JsSttConfig {
   provider: JsSttVendor
   model?: string
+  modelPath?: string
   language?: string
   apiKey?: string
 }

@@ -56,6 +56,7 @@ function toJsSttConfig(stt: SttConfig): JsSttConfig {
   return {
     provider: sttVendorToJs(stt.provider),
     model: stt.model,
+    modelPath: stt.modelPath,
     language: stt.language,
     apiKey: stt.apiKey,
   }
@@ -80,6 +81,8 @@ function sttVendorToJs(vendor: SttConfig['provider']): JsSttVendor {
       return JsSttVendor.Google
     case 'assemblyai':
       return JsSttVendor.Assemblyai
+    case 'local-sherpa':
+      return JsSttVendor.LocalSherpa
     default:
       return JsSttVendor.Mock
   }

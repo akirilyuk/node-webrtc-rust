@@ -4,6 +4,8 @@ Runnable TypeScript demo applications for node-webrtc-rust.
 
 Each example is an npm workspace package under this directory, authored in **TypeScript** and run with `tsx` (no separate compile step).
 
+**Voice STT/TTS vendor API docs:** [`shared/VOICE_VENDOR_REFERENCE.md`](./shared/VOICE_VENDOR_REFERENCE.md)
+
 ## Available examples
 
 | Package | Type | Default port | Description |
@@ -21,6 +23,7 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | **voice-agent** `start:live:*` | CLI (exits on success) | 8080 | Per-vendor live manual test (API keys; see `voice-agent/README.md`) |
 | **voice-agent-browser** | Browser + Node server | 3001 | Browser mic → STT events via DataChannel; client triggers TTS + barge-in demo |
 | **voice-agent-browser** `start:live:*` | Browser + Node server | 3001 | Same UI with live cloud STT/TTS (`VOICE_VENDOR` + API keys; see README) |
+| **voice-agent-local-sherpa** | Browser + Node server | 3002 | **Local Sherpa-ONNX STT** — browser mic, no cloud keys; mock TTS; see README for model download |
 
 ## Run examples locally
 
@@ -86,6 +89,7 @@ WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-ro
 | voice-agent-browser | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser` | Open `http://localhost:3001`, connect, speak, use TTS form and barge-in button |
 | voice-agent-browser live OpenAI | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent-browser` | Live STT/TTS via browser mic + DataChannel; see `voice-agent-browser/README.md` |
 | voice-agent-browser live (any) | `start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google` | Set `VOICE_VENDOR` + vendor env vars; full table in README |
+| voice-agent-local-sherpa | `npm run download-model` then `export SHERPA_MODEL_PATH=…` then `npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa` | Open `http://localhost:3002`, connect, speak — partial/final Sherpa transcripts in log |
 
 ### Troubleshooting
 

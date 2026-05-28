@@ -13,6 +13,7 @@ members = [
     "crates/vendor-cartesia",
     "crates/vendor-assemblyai",
     "crates/vendor-mock",
+    "crates/vendor-sherpa-onnx",
     "packages/bindings",
 ]
 

@@ -81,6 +81,7 @@ mod tests {
         let mut stt = MockStt::new(&SttConfig {
             provider: node_webrtc_rust_speech::config::SttVendor::Mock,
             model: None,
+            model_path: None,
             language: Some("en".into()),
             api_key: None,
         });

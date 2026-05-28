@@ -123,6 +123,8 @@ pub enum JsSttVendor {
     Google,
     #[napi(value = "assemblyai")]
     Assemblyai,
+    #[napi(value = "local-sherpa")]
+    LocalSherpa,
     #[napi(value = "mock")]
     Mock,
 }
@@ -134,6 +136,7 @@ impl From<JsSttVendor> for SttVendor {
             JsSttVendor::Deepgram => Self::Deepgram,
             JsSttVendor::Google => Self::Google,
             JsSttVendor::Assemblyai => Self::Assemblyai,
+            JsSttVendor::LocalSherpa => Self::LocalSherpa,
             JsSttVendor::Mock => Self::Mock,
         }
     }
@@ -171,6 +174,7 @@ impl From<JsTtsVendor> for TtsVendor {
 pub struct JsSttConfig {
     pub provider: JsSttVendor,
     pub model: Option<String>,
+    pub model_path: Option<String>,
     pub language: Option<String>,
     pub api_key: Option<String>,
 }
@@ -180,6 +184,7 @@ impl From<JsSttConfig> for SttConfig {
         Self {
             provider: value.provider.into(),
             model: value.model,
+            model_path: value.model_path,
             language: value.language,
             api_key: value.api_key,
         }

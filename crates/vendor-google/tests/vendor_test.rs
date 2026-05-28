@@ -9,6 +9,7 @@ fn google_factory_creates_providers() {
         .create_stt(&SttConfig {
             provider: SttVendor::Google,
             model: None,
+            model_path: None,
             language: Some("en".into()),
             api_key: None,
         })

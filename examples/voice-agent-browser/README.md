@@ -45,6 +45,8 @@ By default the server uses **mock** STT/TTS (`provider: 'mock'`). To use real cl
 
 Presets live in [`examples/shared/voice-vendor-presets.ts`](../shared/voice-vendor-presets.ts) (same as `examples/voice-agent`).
 
+**Official STT/TTS API docs:** [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md)
+
 ### Supported vendors
 
 | Vendor | `VOICE_VENDOR` | STT | TTS | Required env | npm script |
@@ -57,6 +59,19 @@ Presets live in [`examples/shared/voice-vendor-presets.ts`](../shared/voice-vend
 | Google Cloud | `google` | Google | Google | `GOOGLE_APPLICATION_CREDENTIALS` | `start:live:google` |
 
 **Pairing note:** Not every vendor supports both STT and TTS in this SDK. Demos pair STT-only vendors with OpenAI TTS (or Google with Google). In production you can mix `VoiceAgentConfig.stt` and `.tts` freely.
+
+### Official API documentation
+
+| Vendor | STT | TTS |
+|--------|-----|-----|
+| OpenAI | [Docs](https://platform.openai.com/docs/guides/speech-to-text) | [Docs](https://platform.openai.com/docs/guides/text-to-speech) |
+| Deepgram | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) | — |
+| ElevenLabs | — | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) |
+| Cartesia | — | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
+| AssemblyAI | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming) | — |
+| Google Cloud | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs) | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs) |
+
+Local STT (no cloud): [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md) — [Sherpa-ONNX docs](https://k2-fsa.github.io/sherpa/onnx/)
 
 ### Live commands (all vendors)
 

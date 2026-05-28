@@ -30,13 +30,21 @@ export interface EventsConfig {
   mode?: EventDeliveryMode
 }
 
-export type SttVendor = 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'mock'
+export type SttVendor =
+  | 'openai'
+  | 'deepgram'
+  | 'google'
+  | 'assemblyai'
+  | 'local-sherpa'
+  | 'mock'
 
 export type TtsVendor = 'openai' | 'elevenlabs' | 'google' | 'cartesia' | 'mock'
 
 export interface SttConfig {
   provider: SttVendor
   model?: string
+  /** Directory with Sherpa ONNX weights (tokens.txt + encoder/decoder/joiner .onnx). */
+  modelPath?: string
   language?: string
   apiKey?: string
 }

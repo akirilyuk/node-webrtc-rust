@@ -8,6 +8,7 @@ fn openai_factory_creates_providers() {
     let stt = factory.create_stt(&SttConfig {
         provider: SttVendor::Openai,
         model: Some("whisper-1".into()),
+        model_path: None,
         language: Some("en".into()),
         api_key: Some("test-key".into()),
     });

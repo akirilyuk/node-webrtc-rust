@@ -113,8 +113,9 @@ interface VoiceAgentConfig {
     gateStt?: boolean              // only feed STT during detected speech
   }
   stt?: {
-    provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'mock'
+    provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'local-sherpa' | 'mock'
     model?: string
+    modelPath?: string               // local-sherpa: ONNX model directory
     language?: string
     apiKey?: string                // or env var — see vendor table
   }
@@ -132,17 +133,18 @@ interface VoiceAgentConfig {
 
 ### STT/TTS vendors
 
-Providers are **mix-and-match** per session:
+Providers are **mix-and-match** per session. **Official API docs:** [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md)
 
-| Provider | STT | TTS | Typical env var |
-| --- | --- | --- | --- |
-| `openai` | ✓ | ✓ | `OPENAI_API_KEY` |
-| `deepgram` | ✓ | — | `DEEPGRAM_API_KEY` |
-| `elevenlabs` | — | ✓ | `ELEVENLABS_API_KEY` |
-| `cartesia` | — | ✓ | `CARTESIA_API_KEY` |
-| `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` |
-| `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` |
-| `mock` | ✓ | ✓ | _(none — use for CI/local)_ |
+| Provider | STT | TTS | Typical env var | API docs |
+| --- | --- | --- | --- | --- |
+| `openai` | ✓ | ✓ | `OPENAI_API_KEY` | [STT](https://platform.openai.com/docs/guides/speech-to-text) · [TTS](https://platform.openai.com/docs/guides/text-to-speech) |
+| `deepgram` | ✓ | — | `DEEPGRAM_API_KEY` | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) |
+| `elevenlabs` | — | ✓ | `ELEVENLABS_API_KEY` | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) |
+| `cartesia` | — | ✓ | `CARTESIA_API_KEY` | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
+| `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming) |
+| `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs) |
+| `local-sherpa` | ✓ | — | `SHERPA_MODEL_PATH` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
+| `mock` | ✓ | ✓ | _(none — use for CI/local)_ | — |
 
 Example pairings when a vendor only supports one direction:
 

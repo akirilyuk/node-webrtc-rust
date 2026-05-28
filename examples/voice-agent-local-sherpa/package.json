@@ -1,0 +1,21 @@
+{
+  "name": "@node-webrtc-rust/example-voice-agent-local-sherpa",
+  "private": true,
+  "version": "0.1.5",
+  "description": "Browser WebRTC + local Sherpa-ONNX STT (no cloud keys) with model download helper",
+  "type": "module",
+  "scripts": {
+    "download-model": "node scripts/download-model.mjs",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@node-webrtc-rust/sdk": "0.1.5",
+    "@node-webrtc-rust/signaling": "0.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  }
+}

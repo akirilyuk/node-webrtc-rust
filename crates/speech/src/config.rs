@@ -149,6 +149,8 @@ pub enum SttVendor {
     Deepgram,
     Google,
     Assemblyai,
+    #[serde(rename = "local-sherpa")]
+    LocalSherpa,
     Mock,
 }
 
@@ -170,6 +172,8 @@ pub struct SttConfig {
     pub provider: SttVendor,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_path: Option<String>,
     #[serde(default)]
     pub language: Option<String>,
     #[serde(default)]
@@ -209,6 +213,7 @@ impl Default for VoiceAgentConfig {
             stt: Some(SttConfig {
                 provider: SttVendor::Mock,
                 model: None,
+                model_path: None,
                 language: Some("en".to_string()),
                 api_key: None,
             }),

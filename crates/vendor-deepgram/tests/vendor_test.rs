@@ -8,6 +8,7 @@ fn deepgram_factory_creates_stt() {
     let stt = factory.create_stt(&SttConfig {
         provider: SttVendor::Deepgram,
         model: None,
+        model_path: None,
         language: Some("en".into()),
         api_key: Some("test-key".into()),
     });

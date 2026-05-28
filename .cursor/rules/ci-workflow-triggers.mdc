@@ -17,7 +17,7 @@ alwaysApply: false
 |---|---|
 | Detect changes | path filters (`native`, `typescript`, `workflows`) |
 | Typecheck & lint | `run-pr-quality.sh` on `self-hosted` + Node 20 (no ci-build pull) |
-| Compile native | debug `.node` when `native`, **`typescript`**, or `workflows` paths change; always recompiles on PR (no stale `.node` cache skip) |
+| Compile native | debug `.node` when `native` or `workflows` change; cache key = sources + `index.d.ts`; verify NAPI surface before skip |
 | Build TypeScript | `npm run build:ts` — **only** when `typescript` or `workflows` paths change |
 | Test | restores native + TS dist caches; runs cargo + npm tests (fallback compile/build on cache miss) |
 

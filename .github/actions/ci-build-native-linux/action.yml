@@ -29,6 +29,10 @@ inputs:
     description: Value from native-binding-cache output
     required: false
     default: 'false'
+  binding_cache_key:
+    description: Exact cache key from native-binding-cache (enables save after compile)
+    required: false
+    default: ''
   upload_artifact:
     description: Upload bindings artifact
     required: false
@@ -105,6 +109,18 @@ runs:
           args+=(--zig)
         fi
         npx napi "${args[@]}"
+
+    - name: Verify native NAPI surface
+      if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
+      shell: bash
+      run: node scripts/ci/verify-native-binding-surface.mjs
+
+    - name: Save native binding cache
+      if: inputs.binding_cache_key != '' && inputs.native_cache_hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: packages/bindings/*.node
+        key: ${{ inputs.binding_cache_key }}
 
     - name: Require native artifact
       shell: bash

@@ -100,7 +100,6 @@ jobs:
       needs.quality.result == 'success' &&
       (
         needs.changes.outputs.native == 'true' ||
-        needs.changes.outputs.typescript == 'true' ||
         needs.changes.outputs.workflows == 'true'
       )
     runs-on: self-hosted
@@ -112,6 +111,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/native-binding-cache
+        id: native-cache
+        with:
+          target: x86_64-unknown-linux-gnu
+          profile: debug
+
       - uses: ./.github/actions/ci-build-native-linux
         with:
           target: x86_64-unknown-linux-gnu
@@ -119,9 +124,9 @@ jobs:
           cache_prefix: v1-pr-debug
           platform: 'false'
           zig: 'false'
-          # Always compile on PR — cached .node can lag SDK NAPI surface (skip caused Test failures).
-          skip_build_on_cache_hit: 'false'
-          native_cache_hit: 'false'
+          skip_build_on_cache_hit: 'true'
+          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
+          binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}
 
   build-ts:
     name: Build TypeScript
@@ -183,5 +188,5 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
-      require_binding_artifact: ${{ needs.changes.outputs.native == 'true' || needs.changes.outputs.typescript == 'true' || needs.changes.outputs.workflows == 'true' }}
+      require_binding_artifact: ${{ needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows == 'true' }}
     secrets: inherit

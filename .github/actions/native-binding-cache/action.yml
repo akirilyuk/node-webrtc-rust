@@ -1,5 +1,5 @@
 name: Native binding cache
-description: Restore/save per-target .node artifacts keyed by native source hash
+description: Restore per-target .node keyed by native inputs + index.d.ts; validate NAPI surface
 
 inputs:
   target:
@@ -12,17 +12,46 @@ inputs:
 
 outputs:
   cache-hit:
-    description: Whether the native .node cache matched
-    value: ${{ steps.native.outputs.cache-hit }}
+    description: Restored .node matches index.d.ts and is safe to reuse
+    value: ${{ steps.validate.outputs.cache-usable }}
+  cache-key:
+    description: Exact cache key (pass to cache/save after compile)
+    value: ${{ steps.key.outputs.cache-key }}
 
 runs:
   using: composite
   steps:
+    - name: Compute native binding cache key
+      id: key
+      shell: bash
+      run: |
+        hash="$(bash scripts/ci/native-binding-cache-key.sh)"
+        echo "cache-key=native-v2-${{ inputs.profile }}-${{ inputs.target }}-${hash}" >> "$GITHUB_OUTPUT"
+        echo "Native binding cache key hash=${hash}"
+
     - name: Restore native binding cache
-      id: native
-      uses: actions/cache@v4
+      id: restore
+      uses: actions/cache/restore@v4
       with:
         path: packages/bindings/*.node
-        key: native-${{ inputs.profile }}-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/src/**', 'packages/bindings/Cargo.toml', 'packages/bindings/build.rs', 'packages/bindings/package.json', 'packages/bindings/src/**') }}
-        restore-keys: |
-          native-${{ inputs.profile }}-${{ inputs.target }}-
+        key: ${{ steps.key.outputs.cache-key }}
+
+    - name: Validate restored .node against index.d.ts
+      id: validate
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        nodes=(packages/bindings/*.node)
+        if [[ ${#nodes[@]} -eq 0 ]]; then
+          echo "No .node to validate (cache miss)."
+          echo "cache-usable=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if node scripts/ci/verify-native-binding-surface.mjs; then
+          echo "cache-usable=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "Cached .node stale vs index.d.ts — removing and forcing compile."
+          rm -f packages/bindings/*.node
+          echo "cache-usable=false" >> "$GITHUB_OUTPUT"
+        fi

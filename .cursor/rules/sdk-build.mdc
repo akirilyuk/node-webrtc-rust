@@ -1,5 +1,6 @@
 ---
 description: Rebuild @node-webrtc-rust/sdk dist after SDK source changes
+globs: packages/sdk/**
 alwaysApply: true
 ---
 

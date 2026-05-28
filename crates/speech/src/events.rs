@@ -3,7 +3,7 @@
 use tokio::sync::broadcast;
 
 /// Speech lifecycle events emitted by the voice agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeechEventKind {
     UserSpeakingStart,
     UserSpeakingEnd,

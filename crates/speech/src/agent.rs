@@ -8,9 +8,11 @@ use tokio::sync::{broadcast, Mutex};
 use crate::config::{EventDeliveryMode, VoiceAgentConfig};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
-use crate::pipeline::{SttProvider, TtsProvider};
+use crate::pcm::i16_samples_to_bytes;
+use crate::pipeline::{SttProvider, SttTranscript, TtsProvider};
 use crate::registry::VendorRegistry;
 use crate::tts_buffer::TtsBuffer;
+use crate::vad::{handle_barge_in, VadEngine, VadTransition};
 
 /// Callback invoked when PCM should be written to the outbound track.
 pub type PcmWriter = Arc<dyn Fn(Bytes, u32) -> SpeechResult<()> + Send + Sync>;
@@ -24,6 +26,7 @@ struct AgentInner {
     running: bool,
     stt: Option<Box<dyn SttProvider>>,
     tts: Option<Box<dyn TtsProvider>>,
+    vad: Option<VadEngine>,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
 }
@@ -49,6 +52,12 @@ impl VoiceAgent {
             tts = Some(registry.create_tts(tts_cfg)?);
         }
 
+        let vad = if config.vad.enabled {
+            Some(VadEngine::new(config.vad.clone())?)
+        } else {
+            None
+        };
+
         Ok(Self {
             event_bus: SpeechEventBus::new(),
             tts_buffer: TtsBuffer::new(),
@@ -59,6 +68,7 @@ impl VoiceAgent {
                 running: false,
                 stt,
                 tts,
+                vad,
                 pcm_writer: None,
                 pcm_reader: None,
             }),
@@ -147,6 +157,83 @@ impl VoiceAgent {
 
     pub async fn pull_speech_event(&self) -> Option<SpeechEvent> {
         None
+    }
+
+    /// Process one inbound PCM frame through VAD, barge-in, and optional STT gating.
+    pub async fn process_inbound_pcm(&self, pcm: Bytes, duration_ms: u32) -> SpeechResult<()> {
+        let transitions = {
+            let mut inner = self.inner.lock().await;
+            if !inner.running {
+                return Ok(());
+            }
+            let Some(vad) = inner.vad.as_mut() else {
+                return Ok(());
+            };
+            vad.process_webrtc_pcm(pcm.as_ref(), duration_ms)?
+        };
+
+        for transition in transitions {
+            match transition {
+                VadTransition::SpeechStart => {
+                    let barge_in = {
+                        let inner = self.inner.lock().await;
+                        inner.config.vad.barge_in.clone()
+                    };
+                    handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+                    self.emit(SpeechEvent::user_speaking_start());
+                }
+                VadTransition::SpeechEnd => {
+                    self.emit(SpeechEvent::user_speaking_end());
+                }
+            }
+        }
+
+        let gate_stt = {
+            let inner = self.inner.lock().await;
+            inner.config.vad.gate_stt
+        };
+        if gate_stt {
+            let speaking = {
+                let inner = self.inner.lock().await;
+                inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(true)
+            };
+            if !speaking {
+                return Ok(());
+            }
+        }
+
+        self.push_stt_audio(pcm).await?;
+        self.poll_stt_transcripts().await
+    }
+
+    async fn push_stt_audio(&self, pcm: Bytes) -> SpeechResult<()> {
+        let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
+        let mono_bytes = i16_samples_to_bytes(&mono);
+        let mut inner = self.inner.lock().await;
+        if let Some(stt) = inner.stt.as_mut() {
+            stt.push_audio(mono_bytes).await?;
+        }
+        Ok(())
+    }
+
+    async fn poll_stt_transcripts(&self) -> SpeechResult<()> {
+        loop {
+            let transcript = {
+                let mut inner = self.inner.lock().await;
+                let Some(stt) = inner.stt.as_mut() else {
+                    return Ok(());
+                };
+                stt.poll_transcript().await?
+            };
+            let Some(transcript) = transcript else {
+                break;
+            };
+            match transcript {
+                SttTranscript::Partial(text) => self.emit(SpeechEvent::user_speech_partial(text)),
+                SttTranscript::Final(text) => self.emit(SpeechEvent::user_speech_final(text)),
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn emit(&self, event: SpeechEvent) {

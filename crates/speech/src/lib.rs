@@ -22,3 +22,7 @@ pub use pipeline::{SttProvider, SttTranscript, TtsAudioChunk, TtsProvider, Vendo
 pub use registry::VendorRegistry;
 pub use tts_buffer::TtsBuffer;
 pub use vad::{handle_barge_in, VadEngine, VadTransition, VoiceActivityDetector};
+
+pub fn version() -> &'static str {
+    agent::version()
+}

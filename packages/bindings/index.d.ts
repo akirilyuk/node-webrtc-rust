@@ -107,6 +107,80 @@ export interface JsRtcDataChannelInit {
 export interface JsRtcRtpTransceiverInit {
   direction?: string
 }
+export const enum JsEventDeliveryMode {
+  Callback = 'callback',
+  Stream = 'stream',
+  Both = 'both'
+}
+export interface JsEventsConfig {
+  mode?: JsEventDeliveryMode
+}
+export interface JsBargeInConfig {
+  enabled?: boolean
+  flushTts?: boolean
+}
+export const enum JsVadSampleRate {
+  Hz8000 = '8000',
+  Hz16000 = '16000'
+}
+export interface JsVadConfig {
+  enabled?: boolean
+  provider?: string
+  threshold?: number
+  minSpeechDurationMs?: number
+  minSilenceDurationMs?: number
+  speechPadMs?: number
+  sampleRate?: JsVadSampleRate
+  bargeIn?: JsBargeInConfig
+  gateStt?: boolean
+}
+export const enum JsSttVendor {
+  Openai = 'openai',
+  Deepgram = 'deepgram',
+  Google = 'google',
+  Assemblyai = 'assemblyai',
+  Mock = 'mock'
+}
+export const enum JsTtsVendor {
+  Openai = 'openai',
+  Elevenlabs = 'elevenlabs',
+  Google = 'google',
+  Cartesia = 'cartesia',
+  Mock = 'mock'
+}
+export interface JsSttConfig {
+  provider: JsSttVendor
+  model?: string
+  language?: string
+  apiKey?: string
+}
+export interface JsTtsConfig {
+  provider: JsTtsVendor
+  model?: string
+  voice?: string
+  apiKey?: string
+}
+export interface JsVoiceAgentConfig {
+  vad?: JsVadConfig
+  events?: JsEventsConfig
+  stt?: JsSttConfig
+  tts?: JsTtsConfig
+}
+export const enum JsSpeechEventType {
+  UserSpeakingStart = 'user_speaking_start',
+  UserSpeakingEnd = 'user_speaking_end',
+  UserSpeechPartial = 'user_speech_partial',
+  UserSpeechFinal = 'user_speech_final',
+  AgentSpeakingStart = 'agent_speaking_start',
+  AgentSpeakingEnd = 'agent_speaking_end',
+  BargeIn = 'barge_in',
+  Error = 'error'
+}
+export interface JsSpeechEvent {
+  eventType: JsSpeechEventType
+  text?: string
+  error?: string
+}
 export declare function version(): string
 /** One conference room with participant and mixing controls. */
 export declare class JsConferenceRoom {
@@ -252,4 +326,19 @@ export declare class JsRtpTransceiver {
   get receiver(): JsRtpReceiver
   setDirection(direction: string): Promise<void>
   stop(): Promise<void>
+}
+/** Voice agent with VAD, STT/TTS orchestration for one peer connection session. */
+export declare class JsVoiceAgent {
+  constructor(config?: JsVoiceAgentConfig | undefined | null)
+  /** Attaches outbound local audio track for TTS injection. */
+  attach(outboundTrack: JsLocalAudioTrack): Promise<void>
+  start(): Promise<void>
+  stop(): Promise<void>
+  sendTextToTts(text: string): Promise<void>
+  flushTts(): Promise<void>
+  /** Pull the next speech event for async stream consumption. */
+  pullSpeechEvent(): Promise<JsSpeechEvent | null>
+  setOnSpeechEvent(callback: (...args: any[]) => any): void
+  /** Processes one inbound PCM frame (48 kHz stereo) through VAD/STT. */
+  processInboundPcm(data: Buffer, durationMs: number): Promise<void>
 }

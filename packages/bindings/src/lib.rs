@@ -10,6 +10,7 @@ mod rtp_receiver;
 mod rtp_sender;
 mod rtp_transceiver;
 mod runtime;
+mod speech;
 
 use napi_derive::napi;
 
@@ -28,14 +29,20 @@ pub use peer_connection::JsPeerConnection;
 pub use rtp_receiver::JsRtpReceiver;
 pub use rtp_sender::JsRtpSender;
 pub use rtp_transceiver::{JsRTCRtpTransceiverInit, JsRtpTransceiver};
+pub use speech::{
+    JsBargeInConfig, JsEventDeliveryMode, JsSpeechEvent, JsSpeechEventType, JsSttConfig,
+    JsSttVendor, JsTtsConfig, JsTtsVendor, JsVadConfig, JsVadSampleRate, JsVoiceAgent,
+    JsVoiceAgentConfig,
+};
 
 #[napi]
 pub fn version() -> String {
     format!(
-        "bindings={} core={} mixer={} conference={}",
+        "bindings={} core={} mixer={} conference={} speech={}",
         env!("CARGO_PKG_VERSION"),
         node_webrtc_rust_core::version(),
         node_webrtc_rust_mixer::version(),
         node_webrtc_rust_conference::version(),
+        node_webrtc_rust_speech::version(),
     )
 }

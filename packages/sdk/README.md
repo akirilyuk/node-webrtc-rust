@@ -111,6 +111,7 @@ interface VoiceAgentConfig {
       flushTts?: boolean           // flush TTS buffer before event (default true)
     }
     gateStt?: boolean              // only feed STT during detected speech
+    sttGateHoldMs?: number         // keep feeding STT after speech end (default 2500)
   }
   stt?: {
     provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'local-sherpa' | 'mock'

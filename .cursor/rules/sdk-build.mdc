@@ -1,0 +1,49 @@
+---
+description: Rebuild @node-webrtc-rust/sdk dist after SDK source changes
+alwaysApply: true
+---
+
+# SDK build after source changes
+
+`@node-webrtc-rust/sdk` publishes **compiled** output from `packages/sdk/dist/`. TypeScript consumers (examples, tests, IDE) resolve types from `dist/cjs/`, not `src/`.
+
+`dist/` is gitignored — editing `packages/sdk/src/**` without rebuilding leaves stale `.d.ts` files (e.g. new `VadConfig` fields missing from typecheck).
+
+## When to rebuild
+
+Run after **any** change under:
+
+- `packages/sdk/src/**`
+- `packages/sdk/tsconfig*.json` (if export surface changes)
+
+If the change adds or renames fields on NAPI types (`packages/bindings/src/**`), rebuild **bindings first**, then SDK:
+
+```bash
+cd node-webrtc-rust
+npm run build:native
+npm run build --workspace=@node-webrtc-rust/sdk
+```
+
+## Default command (SDK only)
+
+From repo root `node-webrtc-rust/`:
+
+```bash
+npm run build --workspace=@node-webrtc-rust/sdk
+```
+
+Equivalent: `npm run build:ts` (also builds signaling).
+
+## Agent workflow
+
+1. Edit SDK source under `packages/sdk/src/`.
+2. **Before** running example typecheck, `npm test`, or telling the user types are ready — run the SDK build command above.
+3. If typecheck still fails on a new binding field, rebuild native + SDK.
+4. Do not hand-edit `packages/sdk/dist/`; always regenerate via `npm run build`.
+
+## Verify
+
+```bash
+npm run typecheck --workspace=@node-webrtc-rust/sdk
+# and any example that imports @node-webrtc-rust/sdk/voice
+```

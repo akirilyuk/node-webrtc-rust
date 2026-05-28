@@ -92,7 +92,7 @@ async function main(): Promise<void> {
     vad: {
       ...config.vad,
       gateStt: true,
-      minSpeechDurationMs: 150,
+      minSpeechDurationMs: 300,
       minSilenceDurationMs: 400,
       sttGateHoldMs: 3000,
       bargeIn: { enabled: false, flushTts: false },
@@ -104,6 +104,9 @@ async function main(): Promise<void> {
 
   await agent.attach({ inboundTrack: agentInbound, outboundTrack: agentOut })
   await agent.start()
+
+  // Prime the relay leg so the first VAD frames are not WebRTC/relay transients.
+  await streamSilence(userOut, 0.4)
 
   const recognizedPromise = collectSttTranscript(agent, userOut, TIMEOUT_MS)
 

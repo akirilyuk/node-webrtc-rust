@@ -34,6 +34,11 @@ pub trait SttProvider: Send + Sync {
 
     /// Poll for the next transcript update, if any.
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>>;
+
+    /// Signal end-of-utterance to streaming STT vendors (e.g. Sherpa `input_finished`).
+    async fn finalize_utterance(&mut self) -> SpeechResult<()> {
+        Ok(())
+    }
 }
 
 /// Text-to-speech provider trait.

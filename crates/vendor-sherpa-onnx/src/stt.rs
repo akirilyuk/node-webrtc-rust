@@ -72,6 +72,9 @@ impl SherpaStt {
             Some(path_to_string(&paths.joiner)?);
         recognizer_config.model_config.tokens = Some(path_to_string(&paths.tokens)?);
         recognizer_config.enable_endpoint = true;
+        recognizer_config.rule1_min_trailing_silence = 2.4;
+        recognizer_config.rule2_min_trailing_silence = 1.0;
+        recognizer_config.rule3_min_utterance_length = 20.0;
         recognizer_config.decoding_method = Some("greedy_search".into());
 
         let recognizer = OnlineRecognizer::create(&recognizer_config).ok_or_else(|| {
@@ -233,5 +236,49 @@ impl SttProvider for SherpaStt {
         })
         .await
         .map_err(|err| SpeechError::Internal(err.to_string()))?
+    }
+
+    async fn finalize_utterance(&mut self) -> SpeechResult<()> {
+        let state = Arc::clone(&self.state);
+
+        tokio::task::spawn_blocking(move || -> SpeechResult<()> {
+            let mut guard = state.blocking_lock();
+            if !guard.running {
+                return Ok(());
+            }
+            let Some(runtime) = guard.runtime.as_mut() else {
+                return Ok(());
+            };
+
+            runtime.stream.input_finished();
+            let mut decode_steps = 0u32;
+            while runtime.recognizer.is_ready(&runtime.stream) {
+                runtime.recognizer.decode(&runtime.stream);
+                decode_steps = decode_steps.saturating_add(1);
+                if decode_steps >= 64 {
+                    break;
+                }
+            }
+
+            let result = runtime.recognizer.get_result(&runtime.stream);
+            let text = result
+                .as_ref()
+                .map(|value| value.text.trim())
+                .unwrap_or("")
+                .to_string();
+
+            voice_debug(format!("sherpa finalize_utterance text={text:?}"));
+
+            if !text.is_empty() {
+                runtime.pending.push_back(SttTranscript::Final(text));
+            }
+            runtime.recognizer.reset(&runtime.stream);
+            runtime.last_emitted_text.clear();
+            Ok(())
+        })
+        .await
+        .map_err(|err| SpeechError::Internal(err.to_string()))??;
+
+        Ok(())
     }
 }

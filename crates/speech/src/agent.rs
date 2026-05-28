@@ -45,6 +45,8 @@ struct AgentInner {
     stt_pre_roll: Option<SttPreRollBuffer>,
     /// Milliseconds of inbound audio still forwarded to STT after VAD speech end.
     stt_gate_hold_ms: u32,
+    /// When true, finalize STT once gate hold drains (after trailing speech is relayed).
+    stt_finalize_pending: bool,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
 }
@@ -94,6 +96,7 @@ impl VoiceAgent {
                 vad,
                 stt_pre_roll,
                 stt_gate_hold_ms: 0,
+                stt_finalize_pending: false,
                 pcm_writer: None,
                 pcm_reader: None,
             }),
@@ -218,7 +221,7 @@ impl VoiceAgent {
         let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
         let mono_bytes = i16_samples_to_bytes(&mono);
 
-        let (transitions, gate_stt, pre_roll_flush, stt_gate_open) = {
+        let (transitions, gate_stt, pre_roll_flush, stt_gate_open, hold_just_expired) = {
             let mut inner = self.inner.lock().await;
             let was_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
             let gate_stt = inner.config.vad.gate_stt;
@@ -243,9 +246,11 @@ impl VoiceAgent {
             }
 
             let mut pre_roll_flush = None;
+            let mut hold_just_expired = false;
             if gate_stt {
                 if transitions.contains(&VadTransition::SpeechStart) {
                     inner.stt_gate_hold_ms = 0;
+                    inner.stt_finalize_pending = false;
                     if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                         let buffered = pre_roll.drain();
                         if !buffered.is_empty() {
@@ -263,13 +268,16 @@ impl VoiceAgent {
                 } else if transitions.contains(&VadTransition::SpeechEnd) {
                     inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
                     inner.stt_gate_hold_ms = inner.config.vad.stt_gate_hold_ms;
+                    inner.stt_finalize_pending = true;
                     voice_debug(format!(
                         "STT gate hold: {} ms after speech end",
                         inner.stt_gate_hold_ms
                     ));
                 } else if inner.stt_gate_hold_ms > 0 {
-                    inner.stt_gate_hold_ms =
-                        inner.stt_gate_hold_ms.saturating_sub(duration_ms);
+                    let before = inner.stt_gate_hold_ms;
+                    inner.stt_gate_hold_ms = before.saturating_sub(duration_ms);
+                    hold_just_expired =
+                        inner.stt_finalize_pending && before > 0 && inner.stt_gate_hold_ms == 0;
                 }
             }
 
@@ -280,7 +288,13 @@ impl VoiceAgent {
                 true
             };
 
-            (transitions, gate_stt, pre_roll_flush, stt_gate_open)
+            (
+                transitions,
+                gate_stt,
+                pre_roll_flush,
+                stt_gate_open,
+                hold_just_expired,
+            )
         };
 
         if let Some(buffered) = pre_roll_flush {
@@ -300,11 +314,6 @@ impl VoiceAgent {
                 }
                 VadTransition::SpeechEnd => {
                     self.emit(SpeechEvent::user_speaking_end());
-                    let tail_ms = {
-                        let inner = self.inner.lock().await;
-                        inner.config.vad.min_silence_duration_ms.max(600)
-                    };
-                    self.push_stt_endpoint_tail(tail_ms).await?;
                 }
             }
         }
@@ -331,7 +340,26 @@ impl VoiceAgent {
         } else {
             self.push_stt_audio_bytes(mono_bytes).await?;
         }
-        self.poll_stt_transcripts().await
+        self.poll_stt_transcripts().await?;
+
+        if hold_just_expired {
+            let tail_ms = {
+                let inner = self.inner.lock().await;
+                inner
+                    .config
+                    .vad
+                    .min_silence_duration_ms
+                    .max(800)
+            };
+            {
+                let mut inner = self.inner.lock().await;
+                inner.stt_finalize_pending = false;
+            }
+            self.push_stt_endpoint_tail(tail_ms).await?;
+            self.finalize_stt_utterance().await?;
+        }
+
+        Ok(())
     }
 
     async fn push_stt_audio_bytes(&self, mono_bytes: Bytes) -> SpeechResult<()> {
@@ -353,6 +381,16 @@ impl VoiceAgent {
             self.poll_stt_transcripts().await?;
         }
         Ok(())
+    }
+
+    async fn finalize_stt_utterance(&self) -> SpeechResult<()> {
+        {
+            let mut stt = self.stt.lock().await;
+            if let Some(stt) = stt.as_mut() {
+                stt.finalize_utterance().await?;
+            }
+        }
+        self.poll_stt_transcripts().await
     }
 
     async fn poll_stt_transcripts(&self) -> SpeechResult<()> {

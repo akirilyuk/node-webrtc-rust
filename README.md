@@ -370,7 +370,38 @@ After a local publish, commit version bumps and optionally push the same `releas
 
 The SDK mirrors browser **WebRTC 1.0** where it matters for Node↔browser audio and data channels. Full gap analysis (supported / partial / missing) lives in **[`docs/webrtc-api-parity.md`](docs/webrtc-api-parity.md)** — update that doc when adding or changing public APIs.
 
-High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceivers are in place for Node↔browser audio. **Video**, **simulcast**, **DTMF**, and **`MediaDevices`** are planned for **v0.4**; Voice AI pipelines (VAD, barge-in, TTS/STT) for **v0.3** — see roadmap below.
+High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceivers are in place for Node↔browser audio. **Video**, **simulcast**, **DTMF**, and **`MediaDevices`** are planned for **v0.4**; see roadmap below.
+
+## Voice AI (v0.3)
+
+The **`@node-webrtc-rust/sdk/voice`** module adds a native **VoiceAgent** with configurable VAD, barge-in, and pluggable STT/TTS vendors (OpenAI, Deepgram, ElevenLabs, Google, Cartesia, AssemblyAI, plus a deterministic **mock** for CI).
+
+```typescript
+import { LocalAudioTrack, RTCPeerConnection } from '@node-webrtc-rust/sdk'
+import { VoiceAgent } from '@node-webrtc-rust/sdk/voice'
+
+const agent = new VoiceAgent({
+  vad: { enabled: true, bargeIn: { enabled: true, flushTts: true } },
+  stt: { provider: 'mock', language: 'en' },
+  tts: { provider: 'mock' },
+  events: { mode: 'both' },
+})
+
+await agent.attach({ inboundTrack, outboundTrack: localTrack })
+await agent.start()
+agent.on('user_speech_final', (e) => console.log(e.text))
+await agent.sendTextToTTS('Hello from the agent')
+```
+
+**Speech events:** `user_speaking_start/end`, `user_speech_partial/final`, `agent_speaking_start/end`, `barge_in`, `error` — via callbacks (`on`), async stream (`speechEvents()`), or both.
+
+**VAD:** defaults to energy-based detection in CI; enable `--features silero-vad` on `node-webrtc-rust-speech` for Silero. Inbound PCM is resampled from 48 kHz stereo to mono 16 kHz.
+
+**Vendor API keys:** set in config (`apiKey`) or env vars (`OPENAI_API_KEY`, `DEEPGRAM_API_KEY`, etc.) — never logged.
+
+**Example:** `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` (also `start:stream`, `start:barge-in`).
+
+Live vendor HTTP/WebSocket wiring is stubbed behind optional crate features; use **mock** for local/CI runs.
 
 ## Roadmap
 
@@ -379,7 +410,7 @@ High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceiver
 | **v0.1.0** | PeerConnection, DataChannels, audio tracks, STUN/TURN, signaling helpers |
 | **v0.2.0** | Conference audio mixing (MCU), mute matrix, browser demos |
 | **v0.2.x** | Conference MCU, API parity P0–P1, `addTransceiver` / Unified Plan |
-| **v0.3.0** | Voice AI OS: Silero VAD, barge-in, TTS/STT vendor configs, Node middle-layer (`user_speech_final`, text injection) |
+| **v0.3.0** | Voice AI OS: Silero VAD (optional), barge-in, TTS/STT vendors, `VoiceAgent` SDK (`@node-webrtc-rust/sdk/voice`) |
 | **v0.4.0** | Video tracks, simulcast / encodings, DTMF, conference video compositing |
 
 ---

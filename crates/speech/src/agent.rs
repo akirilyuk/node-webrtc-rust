@@ -256,11 +256,36 @@ impl VoiceAgent {
         };
 
         while let Some(chunk) = self.tts_buffer.pop_chunk().await {
-            writer(chunk.pcm, chunk.duration_ms)?;
+            for (frame, duration_ms) in split_stereo_pcm_frames(&chunk.pcm, chunk.duration_ms) {
+                writer(frame, duration_ms)?;
+            }
         }
         self.emit(SpeechEvent::agent_speaking_end());
         Ok(())
     }
+}
+
+const STEREO_FRAME_20MS_BYTES: usize = 3840;
+
+fn split_stereo_pcm_frames(pcm: &Bytes, total_duration_ms: u32) -> Vec<(Bytes, u32)> {
+    if pcm.is_empty() {
+        return Vec::new();
+    }
+    if pcm.len() <= STEREO_FRAME_20MS_BYTES {
+        return vec![(pcm.clone(), total_duration_ms.max(1))];
+    }
+
+    let frame_count = pcm.len().div_ceil(STEREO_FRAME_20MS_BYTES);
+    let mut frames = Vec::with_capacity(frame_count);
+    for (index, frame) in pcm.chunks(STEREO_FRAME_20MS_BYTES).enumerate() {
+        let duration_ms = if index + 1 == frame_count {
+            total_duration_ms.saturating_sub(20 * index as u32).max(1)
+        } else {
+            20
+        };
+        frames.push((Bytes::copy_from_slice(frame), duration_ms));
+    }
+    frames
 }
 
 pub fn version() -> &'static str {

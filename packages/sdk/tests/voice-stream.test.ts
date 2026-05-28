@@ -1,23 +1,15 @@
 import { describe, expect, test } from 'vitest'
 
-import { LocalAudioTrack } from '../src'
 import { VoiceAgent } from '../src/voice'
 import type { SpeechEvent } from '../src/voice/types'
-
-const mockConfig = {
-  stt: { provider: 'mock' as const, language: 'en' },
-  tts: { provider: 'mock' as const },
-  events: { mode: 'stream' as const },
-}
+import { createVoiceLoopback, mockVoiceConfig } from './voice-helpers'
 
 describe('VoiceAgent speechEvents stream', () => {
   test('pullSpeechEvent yields agent speaking events', async () => {
-    const agent = new VoiceAgent(mockConfig)
-    const outbound = new LocalAudioTrack('stream-out', 'stream-1')
-    await agent.attach({
-      inboundTrack: { readSample: async () => Buffer.alloc(3840) } as never,
-      outboundTrack: outbound,
-    })
+    const { agentOut, userInbound, cleanup } = await createVoiceLoopback()
+    const agent = new VoiceAgent({ ...mockVoiceConfig, events: { mode: 'stream' } })
+
+    await agent.attach({ inboundTrack: userInbound, outboundTrack: agentOut })
     await agent.start()
 
     const collected: SpeechEvent[] = []
@@ -30,11 +22,12 @@ describe('VoiceAgent speechEvents stream', () => {
     })()
 
     await agent.sendTextToTTS('stream test')
-    await Promise.race([pump, new Promise((resolve) => setTimeout(resolve, 500))])
+    await Promise.race([pump, new Promise((resolve) => setTimeout(resolve, 1000))])
     await agent.stop()
+    await cleanup()
 
-    expect(collected.some((e) => e.type === 'agent_speaking_start' || e.type === 'agent_speaking_end')).toBe(
-      true,
-    )
+    expect(
+      collected.some((e) => e.type === 'agent_speaking_start' || e.type === 'agent_speaking_end'),
+    ).toBe(true)
   })
 })

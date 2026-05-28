@@ -8,6 +8,7 @@ Browser-compatible WebRTC APIs for Node.js, backed by the Rust native engine.
 | ----------- | ------- |
 | `@node-webrtc-rust/sdk` | W3C-style `RTCPeerConnection`, tracks, data channels |
 | `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing) |
+| `@node-webrtc-rust/sdk/voice` | VoiceAgent: VAD, barge-in, STT/TTS vendors, speech events |
 
 **API coverage vs browser WebRTC:** see [`docs/webrtc-api-parity.md`](../../docs/webrtc-api-parity.md) (supported, partial, and missing APIs).
 
@@ -105,6 +106,53 @@ Gate REST or RPC routes that call these methods before forwarding to `Conference
 - `error`
 
 Enable debug logging with `WEBRTC_DEBUG=1` to trace method calls and events.
+
+---
+
+## Voice agent (v0.3)
+
+Import **`@node-webrtc-rust/sdk/voice`** for conversational loops without reimplementing PCM timing or vendor HTTP/WebSocket clients in Node.
+
+```typescript
+import { VoiceAgent } from '@node-webrtc-rust/sdk/voice'
+
+const agent = new VoiceAgent({
+  vad: {
+    enabled: true,
+    threshold: 0.5,
+    bargeIn: { enabled: true, flushTts: true },
+    gateStt: false,
+  },
+  stt: { provider: 'mock', language: 'en' },
+  tts: { provider: 'mock', voice: 'demo' },
+  events: { mode: 'both' },
+})
+
+await agent.attach({ inboundTrack: remoteTrack, outboundTrack: localTrack })
+await agent.start()
+
+agent.on('user_speech_final', async (event) => {
+  await agent.sendTextToTTS(`You said: ${event.text}`)
+})
+
+for await (const event of agent.speechEvents()) {
+  console.log(event.type, event.text ?? '')
+}
+```
+
+| Method / API | Description |
+| --- | --- |
+| `attach({ inboundTrack, outboundTrack })` | Bind one PC session (inbound remote + outbound local track) |
+| `start()` / `stop()` | Run VAD/STT pipeline and inbound PCM loop |
+| `sendTextToTTS(text)` | Synthesize via configured TTS vendor → outbound track |
+| `flushTts()` | Clear pending TTS (also triggered by barge-in when `flushTts: true`) |
+| `on(type, fn)` / `off` | Callback delivery (`events.mode`: `callback` or `both`) |
+| `speechEvents()` | Async generator (`stream` or `both`) |
+
+**STT vendors:** `openai`, `deepgram`, `google`, `assemblyai`, `mock`  
+**TTS vendors:** `openai`, `elevenlabs`, `google`, `cartesia`, `mock`
+
+Use **`mock`** for CI and local demos. Live vendor adapters compile as stubs until optional `live` features are enabled on vendor crates.
 
 ## License
 

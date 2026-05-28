@@ -15,6 +15,9 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | **browser-cosine-chat** | Browser + Node server | 3000 | Browser tabs hear a server cosine tone and mesh chat via data channels |
 | **conference-room** | Browser + Node server | 8080 | Browser mic → Rust mixer → personalized mixed audio; mute/kick UI |
 | **conference-room-manual-signaling** | Browser + Node server | 8081 | Same as conference-room; hand-rolled WebSocket signaling |
+| **voice-agent** `start:callback` | CLI (exits on success) | 8080 (signaling) | Mock VoiceAgent with callback speech events |
+| **voice-agent** `start:stream` | CLI (exits on success) | 8080 | Mock VoiceAgent with `speechEvents()` stream |
+| **voice-agent** `start:barge-in` | CLI (exits on success) | 8080 | Barge-in flush when VAD detects inbound speech |
 
 ## Run examples locally
 
@@ -72,6 +75,9 @@ WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-ro
 | browser-cosine-chat | `npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat` | Open `http://localhost:3000`, same room in multiple tabs |
 | conference-room | `npm run start --workspace=@node-webrtc-rust/example-conference-room` | Open `http://localhost:8080`, join room, allow mic |
 | conference-room-manual-signaling | `npm run start --workspace=@node-webrtc-rust/example-conference-room-manual-signaling` | Open `http://localhost:8081` (see its README) |
+| voice-agent callback | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | Prints callback speech events and exits |
+| voice-agent stream | `npm run start:stream --workspace=@node-webrtc-rust/example-voice-agent` | Prints stream events from mock TTS |
+| voice-agent barge-in | `npm run start:barge-in --workspace=@node-webrtc-rust/example-voice-agent` | Logs barge-in after simulated user speech |
 
 ### Troubleshooting
 

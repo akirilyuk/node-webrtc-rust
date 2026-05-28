@@ -71,7 +71,16 @@ flowchart LR
 **What you implement in Node:** session config, LLM calls, tool use, persistence, auth.  
 **What Rust handles:** inbound PCM loop, speech detection, vendor STT/TTS I/O, outbound PCM at 20 ms cadence, barge-in buffer flush before your callback runs.
 
-One `VoiceAgent` instance binds to **one conversation** (one attached peer connection). Scale out with one agent per session/worker pod.
+One `VoiceAgent` binds to **one WebRTC conversation** (one inbound + one outbound track). Run **many agents in one Node process** via [`SessionPod`](packages/helpers/README.md#multi-session-pod-recommended-server-pattern) — one signaling entry point, one agent per connection, automatic cleanup on hangup.
+
+**Try it:**
+
+```bash
+npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod
+# Open http://localhost:3003 — use different session IDs in multiple tabs
+```
+
+See [`examples/voice-agent-multi-session-pod`](examples/voice-agent-multi-session-pod/README.md) and [`@node-webrtc-rust/helpers`](packages/helpers/README.md).
 
 ---
 
@@ -80,7 +89,7 @@ One `VoiceAgent` instance binds to **one conversation** (one attached peer conne
 Install the SDK (voice APIs are on the `/voice` subpath):
 
 ```bash
-npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling
+npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/helpers
 ```
 
 Minimal **Pipeline B** loop — STT text events up, your LLM, TTS text down:
@@ -229,6 +238,8 @@ npm run setup   # once: deps + native .node + TS build
 | Example | Command | Teaches |
 | --- | --- | --- |
 | **voice-agent-local-sherpa** | `download-stt` + `download-tts` + `start:roundtrip` | **Free on-device STT + TTS**; Node roundtrip or browser mic → Sherpa |
+| **voice-agent-browser** | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser` | Browser mic → STT events; client triggers TTS + barge-in |
+| **voice-agent-multi-session-pod** | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod` | **Many concurrent sessions on one server** — `SessionPod`, one agent per connection |
 | **voice-agent** callback | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | `agent.on()` handlers, mock vendors |
 | **voice-agent** stream | `npm run start:stream --workspace=...` | `for await … speechEvents()` |
 | **voice-agent** barge-in | `npm run start:barge-in --workspace=...` | VAD + `flushTts` |
@@ -263,7 +274,7 @@ Other WebRTC demos (peer connection, conference MCU): [`examples/README.md`](exa
 ### Quick start — peer connection
 
 ```bash
-npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling
+npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/helpers
 ```
 
 ```typescript
@@ -346,6 +357,7 @@ flowchart TB
 | [`@node-webrtc-rust/sdk`](packages/sdk) | TypeScript | WebRTC API + [`/voice`](packages/sdk/README.md#voice-agent-build-agentic-workloads) + [`/conference`](packages/sdk/README.md#conference-rooms) |
 | [`@node-webrtc-rust/bindings`](packages/bindings) | Native | NAPI addon — peer connections, tracks, VoiceAgent, conference |
 | [`@node-webrtc-rust/signaling`](packages/signaling) | TypeScript | WebSocket signaling server, client, auto-negotiate |
+| [`@node-webrtc-rust/helpers`](packages/helpers) | TypeScript | [`SessionPod`](packages/helpers/README.md), `VoiceAgentSessionHost`, PCM kick-frame helpers |
 
 Platform-specific binding packages (`@node-webrtc-rust/bindings-darwin-arm64`, etc.) ship with releases.
 

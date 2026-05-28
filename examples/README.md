@@ -26,6 +26,7 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | **voice-agent-browser** | Browser + Node server | 3001 | Browser mic → STT events via DataChannel; client triggers TTS + barge-in demo |
 | **voice-agent-browser** `start:live:*` | Browser + Node server | 3001 | Same UI with live cloud STT/TTS (`VOICE_VENDOR` + API keys; see README) |
 | **voice-agent-local-sherpa** | Browser + Node server | 3002 | Sherpa browser demo; [`start:roundtrip`](./voice-agent-local-sherpa/ROUNDTRIP.md) (TTS→STT); [`start:roundtrip-barge-in`](./voice-agent-local-sherpa/ROUNDTRIP.md#barge-in-e2e) (interrupt TTS) |
+| **voice-agent-multi-session-pod** | Browser + Node server | 3003 | One pod, many sessions via `@node-webrtc-rust/helpers` `SessionPod` |
 
 ## Run examples locally
 
@@ -92,6 +93,7 @@ WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-ro
 | voice-agent-browser live OpenAI | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent-browser` | Live STT/TTS via browser mic + DataChannel; see `voice-agent-browser/README.md` |
 | voice-agent-browser live (any) | `start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google` | Set `VOICE_VENDOR` + vendor env vars; full table in README |
 | voice-agent-local-sherpa | `download-stt:en` + `download-tts:en` then `start:roundtrip` | Summary table: 5 phrases, similarity ≥75%; see [ROUNDTRIP.md](./voice-agent-local-sherpa/ROUNDTRIP.md) |
+| voice-agent-multi-session-pod | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod` | Open `http://localhost:3003`, different session IDs in multiple tabs; `GET /api/sessions` for pod metrics |
 
 ### Troubleshooting
 

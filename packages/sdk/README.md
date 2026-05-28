@@ -5,7 +5,7 @@ TypeScript SDK for **agentic voice workloads** and WebRTC in Node.js — backed 
 Build phone bots, browser voice assistants, and session workers where **Node runs your LLM and tools**, and **Rust owns media timing** (VAD, barge-in, STT/TTS vendors, outbound PCM at 20 ms cadence).
 
 ```bash
-npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling
+npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/helpers
 ```
 
 ## Exports
@@ -87,7 +87,17 @@ agent.on('barge_in', () => {
 | `inboundTrack` | User → agent (`RemoteAudioTrack`) | VAD + STT (`readSample` loop) |
 | `outboundTrack` | Agent → user (`LocalAudioTrack`) | TTS PCM after `sendTextToTTS()` |
 
-Multiple concurrent callers = multiple `VoiceAgent` instances, each with its own attach context.
+Multiple concurrent callers = multiple `VoiceAgent` instances (one per WebRTC connection). Use [`@node-webrtc-rust/helpers`](../../helpers/README.md) `SessionPod` to run many sessions on one server process.
+
+### Server helpers (`@node-webrtc-rust/helpers`)
+
+| Helper | Use when |
+| --- | --- |
+| `SessionPod` | One signaling entry point, many concurrent sessions (orchestrator assigns `sessionId`) |
+| `VoiceAgentSessionHost` | One signaling room; auto-spawns one agent per `client-*` peer |
+| `createKickFrame` | Prime outbound RTP before TTS PCM |
+
+Runnable demo: [`examples/voice-agent-multi-session-pod`](../../examples/voice-agent-multi-session-pod/README.md).
 
 ### Configuration reference
 
@@ -320,7 +330,7 @@ import { SignalingServer, SignalingClient, autoNegotiate } from '@node-webrtc-ru
 
 Peer connection quick start: [root README](../../README.md#webrtc-core-and-conference).
 
-PCM conventions (kick frame, 20 ms frames): [`examples/shared/pcm-streaming.ts`](../../examples/shared/pcm-streaming.ts).
+PCM conventions (kick frame, 20 ms frames): [`@node-webrtc-rust/helpers/pcm`](../../packages/helpers/README.md#pcm-kick-frame) (also re-exported from [`examples/shared/pcm-streaming.ts`](../../examples/shared/pcm-streaming.ts)).
 
 ---
 

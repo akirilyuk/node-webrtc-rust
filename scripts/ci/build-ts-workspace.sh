@@ -26,4 +26,7 @@ npm run build --workspace=@node-webrtc-rust/signaling
 echo "==> build full sdk (includes conference/)"
 npm run build --workspace=@node-webrtc-rust/sdk
 
+echo "==> build helpers"
+npm run build --workspace=@node-webrtc-rust/helpers
+
 echo "==> TypeScript workspace build OK"

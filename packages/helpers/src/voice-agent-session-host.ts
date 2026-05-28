@@ -1,10 +1,13 @@
 /**
- * Node-side VoiceAgent host for one browser client per signaling room.
+ * Node-side VoiceAgent host for browser clients in one signaling room.
  *
  * Per client we negotiate:
  * - **Outbound** agent TTS track → browser `<audio>`
  * - **Inbound** browser mic → VAD + STT
  * - **`voice-control` DataChannel** → speech events down, `{ type: 'speak' }` up
+ *
+ * Each joining `client-*` peer gets its own `RTCPeerConnection` and `VoiceAgent`.
+ * Disconnect or PC failure stops the agent and closes the connection.
  */
 
 import {
@@ -26,12 +29,12 @@ import {
 } from '@node-webrtc-rust/sdk/voice'
 import type { SignalingClient } from '@node-webrtc-rust/signaling'
 
-import {
-  createKickFrame,
-  PCM_KICK_DURATION_MS,
-} from '../../shared/pcm-streaming.js'
+import { createKickFrame, PCM_KICK_DURATION_MS } from './pcm.js'
 
-export const SERVER_PEER_ID = 'voice-agent-server'
+export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
+
+/** @deprecated Use {@link VOICE_AGENT_SERVER_PEER_ID}. */
+export const SERVER_PEER_ID = VOICE_AGENT_SERVER_PEER_ID
 
 interface IceServerConfig {
   urls: string | string[]
@@ -54,6 +57,10 @@ interface ClientSession {
 
 export interface VoiceAgentSessionHostOptions {
   voiceConfig: VoiceAgentConfig
+  /** Peer id prefix for clients that receive an agent (default `client-`). */
+  clientPeerIdPrefix?: string
+  /** Log connection lifecycle when provided. */
+  log?: (message: string) => void
 }
 
 /**
@@ -61,15 +68,20 @@ export interface VoiceAgentSessionHostOptions {
  */
 export class VoiceAgentSessionHost {
   private readonly sessions = new Map<string, ClientSession>()
+  private readonly clientPeerIdPrefix: string
+  private readonly log: (message: string) => void
 
   constructor(
     private readonly signaling: SignalingClient,
     private readonly iceServers: IceServerConfig[],
     private readonly options: VoiceAgentSessionHostOptions,
   ) {
+    this.clientPeerIdPrefix = options.clientPeerIdPrefix ?? 'client-'
+    this.log = options.log ?? ((message) => console.log(message))
+
     this.signaling.on('peer-joined', (peerId) => {
-      if (peerId === SERVER_PEER_ID || this.sessions.has(peerId)) return
-      if (!peerId.startsWith('client-')) return
+      if (peerId === VOICE_AGENT_SERVER_PEER_ID || this.sessions.has(peerId)) return
+      if (!peerId.startsWith(this.clientPeerIdPrefix)) return
       void this.connectClient(peerId).catch((error: unknown) => {
         console.error(`Failed to connect client ${peerId}:`, error)
         this.closeClient(peerId)
@@ -89,6 +101,11 @@ export class VoiceAgentSessionHost {
     })
   }
 
+  /** Number of active browser clients (each owns one VoiceAgent + RTCPeerConnection). */
+  get activeClientCount(): number {
+    return this.sessions.size
+  }
+
   async close(): Promise<void> {
     for (const peerId of [...this.sessions.keys()]) {
       this.closeClient(peerId)
@@ -100,7 +117,6 @@ export class VoiceAgentSessionHost {
     const agentOut = new LocalAudioTrack(`agent-out-${peerId}`, 'voice-agent')
     const agent = new VoiceAgent(this.options.voiceConfig)
 
-    // Server creates the control channel before the offer (browser receives via ondatachannel).
     const controlChannel = pc.createDataChannel(VOICE_CONTROL_CHANNEL_LABEL, { ordered: true })
     await pc.addTrack(agentOut)
 
@@ -137,18 +153,18 @@ export class VoiceAgentSessionHost {
     }
 
     pc.onconnectionstatechange = () => {
-      console.log(`[voice ${peerId}] connectionState=${pc.connectionState}`)
+      this.log(`[voice ${peerId}] connectionState=${pc.connectionState}`)
       if (pc.connectionState === 'connected') {
         void this.startAgentSession(peerId, inboundPromise).catch((error: unknown) => {
           console.error(`Failed to start VoiceAgent for ${peerId}:`, error)
         })
-      } else if (pc.connectionState === 'failed') {
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.closeClient(peerId)
       }
     }
 
     controlChannel.onopen = () => {
-      console.log(`[voice ${peerId}] control channel open`)
+      this.log(`[voice ${peerId}] control channel open`)
       session.unwireControl?.()
       session.unwireControl = wireVoiceAgentToDataChannel(agent, controlChannel)
     }
@@ -158,7 +174,7 @@ export class VoiceAgentSessionHost {
     await pc.gatheringComplete()
     this.signaling.sendOffer(peerId, pc.localDescription!.toJSON())
     session.offerSent = true
-    console.log(`[voice ${peerId}] offer sent (audio + ${VOICE_CONTROL_CHANNEL_LABEL} DC)`)
+    this.log(`[voice ${peerId}] offer sent (audio + ${VOICE_CONTROL_CHANNEL_LABEL} DC)`)
 
     if (session.pendingAnswer) {
       const sdp = session.pendingAnswer
@@ -182,16 +198,14 @@ export class VoiceAgentSessionHost {
     })
     await session.agent.start()
 
-    // Pull stream is active only after start — forward STT/VAD events to the browser.
     session.unwireSpeechForward?.()
     session.unwireSpeechForward = forwardVoiceAgentSpeechToDataChannel(
       session.agent,
       session.controlChannel,
     )
 
-    // Prime outbound RTP so the browser decoder starts before TTS PCM arrives.
     await session.agentOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
-    console.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
+    this.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
   }
 
   private async onAnswerReceived(
@@ -220,9 +234,7 @@ export class VoiceAgentSessionHost {
         await session.pc.addIceCandidate(new RTCIceCandidate(candidate))
       }
       session.pendingIce = []
-      console.log(
-        `[voice ${peerId}] answer applied, connectionState=${session.pc.connectionState}`,
-      )
+      this.log(`[voice ${peerId}] answer applied, connectionState=${session.pc.connectionState}`)
     } catch (error: unknown) {
       console.error(`Failed to apply answer from ${peerId}:`, error)
       this.closeClient(peerId)
@@ -247,5 +259,6 @@ export class VoiceAgentSessionHost {
     void session.agent.stop().catch(() => undefined)
     session.pc.close()
     this.sessions.delete(peerId)
+    this.log(`[voice ${peerId}] VoiceAgent stopped, connection closed`)
   }
 }

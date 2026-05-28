@@ -1,5 +1,5 @@
 name: Cache TypeScript dist
-description: Restore/save sdk and signaling dist/ keyed by TS sources
+description: Restore/save sdk, signaling, and helpers dist/ keyed by TS sources
 
 inputs:
   profile:
@@ -22,6 +22,7 @@ runs:
         path: |
           packages/sdk/dist
           packages/signaling/dist
-        key: ts-dist-${{ inputs.profile }}-${{ hashFiles('packages/sdk/src/**', 'packages/signaling/src/**', 'packages/sdk/tsconfig*.json', 'packages/signaling/tsconfig*.json', 'tsconfig.base.json') }}
+          packages/helpers/dist
+        key: ts-dist-${{ inputs.profile }}-${{ hashFiles('packages/sdk/src/**', 'packages/signaling/src/**', 'packages/helpers/src/**', 'packages/sdk/tsconfig*.json', 'packages/signaling/tsconfig*.json', 'packages/helpers/tsconfig*.json', 'tsconfig.base.json') }}
         restore-keys: |
           ts-dist-${{ inputs.profile }}-

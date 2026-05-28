@@ -13,7 +13,7 @@
     "setup": "npm run install:all && npm run build:native && npm run build:ts",
     "build": "npm run build --workspaces --if-present",
     "build:native": "npm run build:debug:local --workspace=@node-webrtc-rust/bindings",
-    "build:ts": "npm run build --workspace=@node-webrtc-rust/sdk --workspace=@node-webrtc-rust/signaling",
+    "build:ts": "npm run build --workspace=@node-webrtc-rust/sdk --workspace=@node-webrtc-rust/signaling --workspace=@node-webrtc-rust/helpers",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

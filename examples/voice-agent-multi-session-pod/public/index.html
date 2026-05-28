@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-Session Voice Pod</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Multi-Session Voice Pod</h1>
+        <p>
+          One Node pod serves many concurrent calls. Each <strong>session ID</strong> is an
+          independent signaling room; the pod spawns one <strong>VoiceAgent</strong> per WebRTC
+          connection and tears it down when you disconnect.
+        </p>
+      </header>
+
+      <section class="panel hint-panel">
+        <h2>Try multiple sessions</h2>
+        <ol>
+          <li>Start the pod: <code>npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod</code></li>
+          <li>Open this page in tab A with session <code>call-1</code>, connect, speak.</li>
+          <li>Open tab B with session <code>call-2</code> — both run on the same pod.</li>
+          <li>Disconnect tab A — watch the server log tear down that session's agent.</li>
+        </ol>
+        <p class="hint">Pod metrics: <code>GET /api/sessions</code></p>
+      </section>
+
+      <section class="panel">
+        <label>
+          Session ID
+          <input id="session" type="text" maxlength="32" value="call-1" />
+        </label>
+        <button id="connect" type="button">Connect</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+        <p id="status" class="status">Disconnected</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Your microphone</h2>
+        <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform"></canvas>
+        <p id="mic-viz-status" class="viz-status">Connect and allow microphone to visualize input</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Agent audio (TTS)</h2>
+        <audio id="agent-audio" controls autoplay></audio>
+        <p id="audio-status">Connect to hear agent speech</p>
+      </section>
+
+      <section class="panel">
+        <h2>Request TTS</h2>
+        <form id="speak-form">
+          <label>
+            Text for the agent to speak
+            <input id="speak-text" type="text" placeholder="Hello from session call-1" disabled />
+          </label>
+          <button type="submit" disabled>Speak</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Speech events</h2>
+        <ul id="event-log"></ul>
+      </section>
+    </main>
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

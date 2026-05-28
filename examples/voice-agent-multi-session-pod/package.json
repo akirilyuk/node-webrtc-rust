@@ -1,12 +1,12 @@
 {
-  "name": "@node-webrtc-rust/example-peer-connection",
+  "name": "@node-webrtc-rust/example-voice-agent-multi-session-pod",
   "private": true,
   "version": "0.1.5",
-  "description": "Basic two-peer WebRTC connection demo",
+  "description": "One Node pod: single signaling entry point, many concurrent voice sessions (one VoiceAgent per WebRTC connection)",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "start:parity": "tsx src/parity-features.ts",
+    "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

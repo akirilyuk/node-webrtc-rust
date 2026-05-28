@@ -1,0 +1,60 @@
+{
+  "name": "@node-webrtc-rust/helpers",
+  "version": "0.1.5",
+  "description": "Reusable server-side helpers for voice agents, session pods, and PCM streaming",
+  "keywords": [
+    "webrtc",
+    "voice-agent",
+    "signaling",
+    "session",
+    "nodejs",
+    "typescript",
+    "voip",
+    "real-time"
+  ],
+  "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
+  "bugs": {
+    "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
+    "directory": "packages/helpers"
+  },
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cjs/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./pcm": {
+      "types": "./dist/cjs/pcm.d.ts",
+      "import": "./dist/esm/pcm.js",
+      "require": "./dist/cjs/pcm.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@node-webrtc-rust/sdk": "0.1.5",
+    "@node-webrtc-rust/signaling": "0.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

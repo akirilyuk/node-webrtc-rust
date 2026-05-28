@@ -27,6 +27,7 @@ import type {
   RTCSignalingState,
   RTCAnswerOptions,
   RTCOfferOptions,
+  RTCStatsReport,
   RTCTrackEvent,
 } from './types'
 
@@ -69,6 +70,7 @@ export class RTCPeerConnection extends EventEmitter {
   private readonly native: NativePeerConnection
   private _localDescription: RTCSessionDescription | null = null
   private _remoteDescription: RTCSessionDescription | null = null
+  private _configuration: RTCConfiguration
 
   /** Fired when a local ICE candidate is gathered; `candidate` is null when gathering completes. */
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null
@@ -99,6 +101,7 @@ export class RTCPeerConnection extends EventEmitter {
    */
   constructor(config?: RTCConfiguration) {
     super()
+    this._configuration = cloneConfiguration(config)
     debugFn('sdk::RTCPeerConnection', 'constructor', config?.debug !== undefined ? `debug=${config.debug}` : '')
     this.native = new NativePeerConnection(toNativeConfig(config))
 
@@ -280,6 +283,38 @@ export class RTCPeerConnection extends EventEmitter {
     await this.refreshLocalDescription()
   }
 
+  /**
+   * Updates ICE servers and transport policy without renegotiation where allowed.
+   * Use for mid-session TURN credential rotation.
+   */
+  async setConfiguration(config: RTCConfiguration): Promise<void> {
+    debugFn('sdk::RTCPeerConnection', 'setConfiguration')
+    await this.native.setConfiguration(toNativeConfig(config))
+    this._configuration = cloneConfiguration(config)
+  }
+
+  /** Returns a copy of the active configuration. */
+  getConfiguration(): RTCConfiguration {
+    return cloneConfiguration(this._configuration)
+  }
+
+  /** Triggers ICE restart; typically followed by a new offer with `iceRestart: true`. */
+  async restartIce(): Promise<void> {
+    debugFn('sdk::RTCPeerConnection', 'restartIce')
+    await this.native.restartIce()
+  }
+
+  /**
+   * Collects connection statistics (candidate pairs, inbound/outbound RTP, etc.).
+   * Returns a `Map` keyed by stat id, matching browser `RTCStatsReport`.
+   */
+  async getStats(): Promise<RTCStatsReport> {
+    debugFn('sdk::RTCPeerConnection', 'getStats')
+    const json = await this.native.getStats()
+    const parsed = JSON.parse(json) as Record<string, Record<string, unknown>>
+    return new Map(Object.entries(parsed))
+  }
+
   /** Closes the connection and releases native resources. */
   close(): void {
     debugFn('sdk::RTCPeerConnection', 'close')
@@ -334,4 +369,15 @@ function toNativeAnswerOptions(options?: RTCAnswerOptions) {
   }
 }
 
-export type { RTCAnswerOptions, RTCConfiguration, RTCOfferOptions } from './types'
+function cloneConfiguration(config?: RTCConfiguration): RTCConfiguration {
+  if (!config) return {}
+  return {
+    ...config,
+    iceServers: config.iceServers?.map((server) => ({
+      ...server,
+      urls: Array.isArray(server.urls) ? [...server.urls] : server.urls,
+    })),
+  }
+}
+
+export type { RTCAnswerOptions, RTCConfiguration, RTCOfferOptions, RTCStatsReport } from './types'

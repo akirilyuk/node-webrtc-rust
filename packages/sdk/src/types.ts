@@ -130,6 +130,12 @@ export interface MessageEvent<T = string | Buffer> {
   data: T
 }
 
+/** WebRTC statistics entry (W3C `RTCStats` dictionary subset). */
+export type RTCStats = Record<string, unknown>
+
+/** Map of stat id → stat object, matching browser `RTCStatsReport`. */
+export type RTCStatsReport = Map<string, RTCStats>
+
 /** Plain-object session description for signaling transport. */
 export interface RTCSessionDescriptionInit {
   type: RTCSdpType

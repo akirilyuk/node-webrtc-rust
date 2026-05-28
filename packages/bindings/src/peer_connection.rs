@@ -208,6 +208,33 @@ impl JsPeerConnection {
     }
 
     #[napi]
+    pub async fn set_configuration(&self, config: JsRTCConfiguration) -> Result<()> {
+        debug_call!("bindings::peer_connection", "set_configuration");
+        self.inner
+            .set_configuration(config.into())
+            .await
+            .map_err(core_err)
+    }
+
+    #[napi]
+    pub async fn get_configuration(&self) -> Result<JsRTCConfiguration> {
+        debug_call!("bindings::peer_connection", "get_configuration");
+        Ok(self.inner.get_configuration().await.into())
+    }
+
+    #[napi]
+    pub async fn restart_ice(&self) -> Result<()> {
+        debug_call!("bindings::peer_connection", "restart_ice");
+        self.inner.restart_ice().await.map_err(core_err)
+    }
+
+    #[napi]
+    pub async fn get_stats(&self) -> Result<String> {
+        debug_call!("bindings::peer_connection", "get_stats");
+        self.inner.get_stats_json().await.map_err(core_err)
+    }
+
+    #[napi]
     pub async fn local_description(&self) -> Result<Option<JsRTCSessionDescription>> {
         debug_call!("bindings::peer_connection", "local_description");
         Ok(self

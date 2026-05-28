@@ -34,6 +34,20 @@ impl From<JsRTCIceServer> for IceServer {
     }
 }
 
+impl From<IceServer> for JsRTCIceServer {
+    fn from(value: IceServer) -> Self {
+        Self {
+            urls: value.urls,
+            username: value.username,
+            credential: value.credential,
+            credential_type: Some(match value.credential_type {
+                node_webrtc_rust_core::IceCredentialType::Oauth => "oauth".to_string(),
+                node_webrtc_rust_core::IceCredentialType::Password => "password".to_string(),
+            }),
+        }
+    }
+}
+
 /// Peer connection configuration exposed to JavaScript.
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
@@ -62,6 +76,25 @@ impl From<JsRTCConfiguration> for PeerConnectionConfig {
                 .map(Into::into)
                 .collect(),
             ice_transport_policy,
+            debug: value.debug,
+        }
+    }
+}
+
+impl From<PeerConnectionConfig> for JsRTCConfiguration {
+    fn from(value: PeerConnectionConfig) -> Self {
+        Self {
+            ice_servers: Some(
+                value
+                    .ice_servers
+                    .into_iter()
+                    .map(JsRTCIceServer::from)
+                    .collect(),
+            ),
+            ice_transport_policy: Some(match value.ice_transport_policy {
+                IceTransportPolicy::Relay => "relay".to_string(),
+                IceTransportPolicy::All => "all".to_string(),
+            }),
             debug: value.debug,
         }
     }

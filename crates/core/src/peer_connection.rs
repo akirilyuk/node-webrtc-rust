@@ -434,6 +434,40 @@ impl PeerConnection {
         self.inner.signaling_state().into()
     }
 
+    /// Updates ICE servers and transport policy mid-session (W3C `setConfiguration`).
+    pub async fn set_configuration(&self, config: PeerConnectionConfig) -> Result<(), CoreError> {
+        debug_call!(
+            "core::peer_connection",
+            "set_configuration",
+            "ice_servers={}",
+            config.ice_servers.len()
+        );
+        config.apply_debug_override();
+        self.inner
+            .set_configuration(config.into_rtc_configuration())
+            .await?;
+        Ok(())
+    }
+
+    /// Returns the active configuration (copy of internal state).
+    pub async fn get_configuration(&self) -> PeerConnectionConfig {
+        PeerConnectionConfig::from(self.inner.get_configuration().await)
+    }
+
+    /// Triggers ICE restart and negotiation-needed (W3C `restartIce`).
+    pub async fn restart_ice(&self) -> Result<(), CoreError> {
+        debug_call!("core::peer_connection", "restart_ice");
+        self.inner.restart_ice().await?;
+        Ok(())
+    }
+
+    /// Collects WebRTC statistics as a JSON object keyed by stat id.
+    pub async fn get_stats_json(&self) -> Result<String, CoreError> {
+        let report = self.inner.get_stats().await;
+        serde_json::to_string(&report.reports)
+            .map_err(|e| CoreError::InvalidState(format!("stats serialization failed: {e}")))
+    }
+
     /// Registers a handler for local ICE candidates.
     pub fn on_ice_candidate(&self, handler: impl Fn(Option<IceCandidate>) + Send + Sync + 'static) {
         self.inner.on_ice_candidate(Box::new(move |candidate| {

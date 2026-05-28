@@ -207,6 +207,10 @@ export declare class JsPeerConnection {
   createDataChannel(label: string, options?: JsRtcDataChannelInit | undefined | null): Promise<JsRtcDataChannel>
   close(): Promise<void>
   gatheringComplete(): Promise<void>
+  setConfiguration(config: JsRtcConfiguration): Promise<void>
+  getConfiguration(): Promise<JsRtcConfiguration>
+  restartIce(): Promise<void>
+  getStats(): Promise<string>
   localDescription(): Promise<JsRtcSessionDescription | null>
   remoteDescription(): Promise<JsRtcSessionDescription | null>
   setOnIceCandidate(callback: (...args: any[]) => any): void

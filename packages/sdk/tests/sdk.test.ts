@@ -65,4 +65,21 @@ describe('SDK type surface', () => {
     pc.onsignalingstatechange = () => undefined
     pc.close()
   })
+
+  test('getConfiguration returns constructor config copy', () => {
+    const config = {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceTransportPolicy: 'relay' as const,
+    }
+    const pc = new RTCPeerConnection(config)
+    expect(pc.getConfiguration()).toEqual(config)
+    pc.close()
+  })
+
+  test('getStats returns a Map on a new peer connection', async () => {
+    const pc = new RTCPeerConnection()
+    const stats = await pc.getStats()
+    expect(stats).toBeInstanceOf(Map)
+    pc.close()
+  })
 })

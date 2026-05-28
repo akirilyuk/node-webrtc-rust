@@ -28,6 +28,7 @@ export type {
   RTCSessionDescriptionInit,
   RTCAnswerOptions,
   RTCOfferOptions,
+  RTCStatsReport,
   RTCPeerConnectionIceEvent,
   RTCTrackEvent,
   RTCDataChannelEvent,

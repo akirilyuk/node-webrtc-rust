@@ -370,7 +370,7 @@ After a local publish, commit version bumps and optionally push the same `releas
 
 The SDK mirrors browser **WebRTC 1.0** where it matters for Node↔browser audio and data channels. Full gap analysis (supported / partial / missing) lives in **[`docs/webrtc-api-parity.md`](docs/webrtc-api-parity.md)** — update that doc when adding or changing public APIs.
 
-High-level: ICE/SDP and data channels are largely usable; P0 parity items (`replaceTrack`, `removeTrack`, offer/answer options, remote PCM decode) are in place. **Video**, **transceivers**, **`getStats`**, and **`MediaDevices`** remain out of scope or on later milestones.
+High-level: ICE/SDP, data channels, and P0–P1 parity items are in place for Node↔browser audio. **Video**, **transceivers**, **`MediaDevices`**, and conference routing matrix remain on later milestones (see parity doc P2/P3).
 
 ## Roadmap
 

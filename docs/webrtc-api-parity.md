@@ -25,7 +25,7 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 | Audio receive | 🟡 ~65% | `ontrack` + `RemoteAudioTrack.readSample()` (Opus → PCM) |
 | Video | ❌ | Types exist; no local/remote video pipeline in SDK |
 | RTP transceivers / simulcast | ❌ | Plan-style `addTrack` only |
-| Statistics | ❌ | On roadmap (v0.3) |
+| Statistics | 🟡 ~70% | `getStats()` returns webrtc-rs report as `Map`; no per-sender selector yet |
 | `MediaDevices` | ❌ | Out of scope (Node has no device capture API) |
 | Conference MCU | ➕ | Rust-side mixing — extension, not W3C |
 
@@ -45,8 +45,8 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 | `config.iceCandidatePoolSize` | ❌ | |
 | `config.certificates` | ❌ | |
 | `config.debug` | ➕ | Enables `[webrtc-debug]` logging |
-| `setConfiguration()` | ❌ | |
-| `getConfiguration()` | ❌ | |
+| `setConfiguration()` | ✅ | ICE servers + `iceTransportPolicy` |
+| `getConfiguration()` | ✅ | Cached copy in SDK; updated on construct / `setConfiguration` |
 
 ### Session description & ICE
 
@@ -104,8 +104,8 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 | API | Status | Notes |
 |-----|--------|-------|
 | `close()` | ✅ | Fire-and-forget async native close |
-| `restartIce()` | ❌ | |
-| `getStats(selector?)` | ❌ | Roadmap v0.3 |
+| `restartIce()` | ✅ | Triggers native ICE restart + negotiation-needed |
+| `getStats(selector?)` | ✅ | `selector` ignored; returns `Map` like browser `RTCStatsReport` |
 | `sctp` / `iceTransport` / `dtlsTransport` | ❌ | No transport object exposure |
 | `addEventListener` / `removeEventListener` | ✅ | Via Node `EventEmitter` |
 
@@ -209,7 +209,7 @@ Browser: `ontrack` → attach to `<audio>` or WebAudio.
 
 | API | Status | Notes |
 |-----|--------|-------|
-| `RTCPeerConnection.getStats()` | ❌ | |
+| `RTCPeerConnection.getStats()` | ✅ | JSON stats from webrtc-rs → SDK `Map` |
 | `RTCStatsReport` types | ❌ | |
 | `WEBRTC_DEBUG` / `config.debug` | ➕ | Call/event tracing |
 
@@ -255,19 +255,19 @@ Prioritized for **browser interop** and **your conference product**:
 
 ### P1 — operability
 
-5. **`getStats()`** — RTT, packets lost, jitter (v0.3 roadmap)
+5. ~~**`getStats()`**~~ — RTT, packets lost, jitter via webrtc-rs collector
 6. ~~**`onicegatheringstatechange` / `onsignalingstatechange`**~~ — done
 7. ~~**Data channel `bufferedAmount` + `onbufferedamountlow`**~~ — done
-8. **`setConfiguration()`** for mid-session TURN rotation
+8. ~~**`setConfiguration()`**~~ — ICE servers + transport policy; `getConfiguration()` cached in SDK
 
-### P2 — advanced WebRTC
+### P2 — advanced WebRTC (deferred — v0.3+ / out of scope for audio-first Node peers)
 
-9. **`addTransceiver` / Unified Plan controls**
-10. **Simulcast / encodings** (v0.3 roadmap)
+9. **`addTransceiver` / Unified Plan controls** — requires `RTCRtpTransceiver` surface
+10. **Simulcast / encodings** — v0.3 roadmap
 11. **Video** — `LocalVideoTrack`, H.264/VP8 send, remote receive
-12. **DTMF** (if telephony-bound)
+12. **DTMF** — telephony milestone
 
-### P3 — conference-specific (extensions)
+### P3 — conference-specific (extensions, deferred)
 
 13. **Routing matrix API** on `MixGraph` (beyond mute)
 14. **Load / latency benchmarks** — criterion + simulated N-participant rooms (deferred)

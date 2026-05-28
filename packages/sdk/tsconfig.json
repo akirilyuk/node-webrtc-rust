@@ -4,7 +4,11 @@
     "module": "CommonJS",
     "lib": ["ES2022"],
     "outDir": "dist/cjs",
-    "rootDir": "src"
+    "rootDir": "src",
+    "baseUrl": "../..",
+    "paths": {
+      "@node-webrtc-rust/bindings": ["packages/bindings/index.d.ts"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "tests"]

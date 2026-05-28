@@ -25,6 +25,14 @@ npm run build:native
 npm run build --workspace=@node-webrtc-rust/sdk
 ```
 
+Release publish uses **`build-ts-workspace.sh`**, not `tsconfig.typecheck.json`. After changing SDK or bindings types, also run:
+
+```bash
+bash scripts/ci/build-ts-workspace.sh
+```
+
+See [`release-ts-build.mdc`](release-ts-build.mdc) — PR typecheck can pass while release fails if SDK tsc resolves stale registry bindings.
+
 ## Default command (SDK only)
 
 From repo root `node-webrtc-rust/`:

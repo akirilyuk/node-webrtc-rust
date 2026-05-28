@@ -208,7 +208,8 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 | Script | Used by | What it runs |
 |--------|---------|--------------|
-| [`run-pr-quality.sh`](run-pr-quality.sh) | PR quality job | `npm ci`, typecheck, lint |
+| [`run-pr-quality.sh`](run-pr-quality.sh) | PR quality job | `npm ci`, typecheck, **`build-ts-workspace.sh`**, lint |
+| [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh` |
 | [`build-ts-workspace.sh`](build-ts-workspace.sh) | PR build-ts + integration fallback | sdk core → signaling → full sdk |
 | [`run-pr-integration.sh`](run-pr-integration.sh) | PR test job | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test, optional build:ts, npm test |
 | [`run-pr-tests-full.sh`](run-pr-tests-full.sh) | local `ci:verify` | quality + integration |
@@ -223,12 +224,14 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 Run these **before pushing CI changes** (see [`.cursor/rules/ci-local-validation.mdc`](../../.cursor/rules/ci-local-validation.mdc)):
 
 ```bash
-bash scripts/ci/run-pr-quality.sh     # PR quality job
-bash scripts/ci/build-ts-workspace.sh # PR build-ts job (from clean dist/)
-npm run ci:verify:checks:docker       # quality + integration in ci-build image
-npm run ci:verify:linux               # release Linux cross-builds
-npm run ci:verify                     # both verify targets
-npm run ci:docker:build               # build ci-build image locally
+bash scripts/ci/run-pr-quality.sh              # PR quality job
+bash scripts/ci/verify-release-publish-ts.sh   # release publish TS path (host)
+npm run ci:verify:release-ts:docker            # release publish TS in ci-build image
+bash scripts/ci/build-ts-workspace.sh          # PR build-ts job (from clean dist/)
+npm run ci:verify:checks:docker                # quality + integration in ci-build image
+npm run ci:verify:linux                        # release Linux cross-builds
+npm run ci:verify                              # both verify targets
+npm run ci:docker:build                        # build ci-build image locally
 ```
 
 After changing `docker/ci/Dockerfile`, rebuild and push to the `ci` branch before expecting Linux CI jobs to pick up toolchain changes.

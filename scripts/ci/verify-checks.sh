@@ -38,13 +38,16 @@ run "npm run lint"
 echo "==> typecheck (sdk + signaling sources)"
 run "npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json"
 
+echo "==> build-ts-workspace (PR build-ts + release publish path)"
+run "bash scripts/ci/build-ts-workspace.sh"
+
+echo "==> release publish TS parity (npm ci --ignore-scripts + version bump)"
+run "bash scripts/ci/verify-release-publish-ts.sh"
+
 echo "==> cargo test (core, mixer, conference)"
 run "cargo test -p node-webrtc-rust-core"
 run "cargo test -p node-webrtc-rust-mixer"
 run "cargo test -p node-webrtc-rust-conference"
-
-echo "==> build:ts"
-run "npm run build:ts"
 
 echo "==> npm test"
 run "npm test"

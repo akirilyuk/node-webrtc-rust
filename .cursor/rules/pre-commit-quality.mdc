@@ -25,7 +25,7 @@ npm run ci:verify:checks:docker
 
 | Step | Mirrors CI job | Catches |
 |------|----------------|---------|
-| `run-pr-quality.sh` | Typecheck & lint | eslint, unified tsc (sdk + signaling sources) |
+| `run-pr-quality.sh` | Typecheck & lint | eslint, unified tsc (sdk + signaling sources), **`build-ts-workspace.sh`** (release publish compile path) |
 | `build:native` | Compile native | Stale `.node` missing new NAPI methods (e.g. `setOnIceGatheringStateChange`) |
 | `run-pr-tests-full.sh` | Quality + Test | `cargo test`, `npm test` (sdk e2e, signaling, vitest) |
 
@@ -42,7 +42,8 @@ npm run ci:verify:checks:docker
 
 ### Common mistakes
 
-- **`npm run typecheck` is not enough** — no eslint; no vitest/cargo tests.
+- **`npm run typecheck` is not enough** — no eslint; no vitest/cargo tests; no `build-ts-workspace.sh` (release publish compiles SDK against npm-installed bindings unless `paths` override).
+- **`run-pr-quality.sh` typecheck alone is not enough** — see [`release-ts-build.mdc`](release-ts-build.mdc); quality now runs `build-ts-workspace.sh` after typecheck.
 - **`run-pr-quality.sh` alone is not enough** — TS-only commits can pass quality but fail Test when CI loads a stale cached `.node` without new native exports.
 - **Rebuild native after changing `packages/bindings/` or `crates/`** before `npm test`.
 

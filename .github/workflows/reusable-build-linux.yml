@@ -17,7 +17,7 @@ on:
         default: true
 
 jobs:
-  build-linux:
+  build-linux-x64:
     name: Build - ${{ matrix.target }}
     runs-on: self-hosted
     container:
@@ -28,9 +28,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
+        include:
+          # Native gnu on x64: skip Zig — Sherpa/ONNX static libs need the host linker
+          # (Zig link drops __cpu_features2 and verify dlopen fails).
+          - target: x86_64-unknown-linux-gnu
+            zig: 'false'
+          - target: x86_64-unknown-linux-musl
+            zig: 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +50,33 @@ jobs:
           target: ${{ matrix.target }}
           profile: release
           cache_prefix: ${{ inputs.cache_prefix }}
+          cache_target_label: Linux-x64
           platform: 'true'
-          zig: 'true'
+          zig: ${{ matrix.zig }}
+          skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
+          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
+
+  build-linux-arm64:
+    name: Build - aarch64-unknown-linux-gnu
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/native-binding-cache
+        id: native-cache
+        if: inputs.use_native_cache
+        with:
+          target: aarch64-unknown-linux-gnu
+          profile: release
+
+      - uses: ./.github/actions/ci-build-native-linux
+        with:
+          target: aarch64-unknown-linux-gnu
+          profile: release
+          cache_prefix: ${{ inputs.cache_prefix }}
+          cache_target_label: Linux-arm64
+          setup_host_toolchain: 'true'
+          platform: 'true'
+          zig: 'false'
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}

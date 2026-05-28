@@ -1,0 +1,17 @@
+[package]
+name = "node-webrtc-rust-vendor-mock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic mock STT/TTS vendor for CI tests"
+
+[dependencies]
+async-trait = "0.1"
+bytes = { workspace = true }
+node-webrtc-rust-speech = { path = "../speech" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

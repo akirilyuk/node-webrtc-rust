@@ -38,6 +38,7 @@ When iterating on Rust bindings, core, or SDK integration tests:
 2. **Use** `build:local` before running release-sensitive tests
 3. **Never** run `build:all` or `napi build --platform` as part of routine dev/test loops
 4. After changing NAPI exports, rebuild bindings once locally, then run TS tests — do not rebuild all platforms
+5. After changing **`packages/sdk/src/**`**, run `npm run build --workspace=@node-webrtc-rust/sdk` so `dist/` types match source — see [`sdk-build.mdc`](sdk-build.mdc)
 
 ## CI vs local
 

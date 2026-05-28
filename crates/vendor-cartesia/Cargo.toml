@@ -1,0 +1,21 @@
+[package]
+name = "node-webrtc-rust-vendor-cartesia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cartesia TTS in-repo REST/WS client"
+
+[features]
+default = []
+live = ["dep:reqwest", "dep:serde_json"]
+
+[dependencies]
+async-trait = "0.1"
+bytes = { workspace = true }
+node-webrtc-rust-speech = { path = "../speech" }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

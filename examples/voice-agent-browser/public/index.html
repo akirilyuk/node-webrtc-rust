@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voice Agent (Browser + Node)</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Voice Agent — Browser Client</h1>
+        <p>
+          Your microphone is sent to a Node <strong>VoiceAgent</strong> over WebRTC. Speech
+          events (STT, VAD, barge-in) arrive on a <code>voice-control</code> data channel.
+          Send text from this page to trigger TTS playback on the agent audio track.
+        </p>
+      </header>
+
+      <section class="panel">
+        <label>
+          Room
+          <input id="room" type="text" maxlength="32" value="demo" />
+        </label>
+        <button id="connect" type="button">Connect</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+        <p id="status" class="status">Disconnected</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Your microphone</h2>
+        <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform and spectrum"></canvas>
+        <p id="mic-viz-status" class="viz-status">Connect and allow microphone to visualize input</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Agent audio (TTS)</h2>
+        <audio id="agent-audio" controls autoplay></audio>
+        <p id="audio-status">Connect to hear agent speech</p>
+      </section>
+
+      <section class="panel">
+        <h2>Request TTS</h2>
+        <form id="speak-form">
+          <label>
+            Text for the agent to speak
+            <input id="speak-text" type="text" placeholder="Hello from the browser" disabled />
+          </label>
+          <button type="submit" disabled>Speak</button>
+        </form>
+        <button id="speak-long" type="button" disabled>Speak long reply (barge-in test)</button>
+      </section>
+
+      <section class="panel hint-panel">
+        <h2>Test barge-in</h2>
+        <ol>
+          <li>Click <strong>Speak long reply</strong> and wait until you hear the agent talking.</li>
+          <li>While the agent is still speaking, talk into your microphone.</li>
+          <li>
+            Watch the event log for <code>barge_in</code> — the server flushes TTS and notifies
+            you over the data channel.
+          </li>
+        </ol>
+        <p class="hint">
+          Mock STT emits a final transcript after ~1 s of speech. Partial and VAD events appear
+          as you talk.
+        </p>
+      </section>
+
+      <section class="panel log-panel">
+        <h2>Speech events (from server)</h2>
+        <ul id="event-log"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

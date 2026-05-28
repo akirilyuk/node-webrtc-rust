@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Sherpa STT — Browser + Node</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Local Sherpa STT + TTS — Browser Client</h1>
+        <p>
+          Your microphone is sent to a Node <strong>VoiceAgent</strong> over WebRTC. Speech is
+          transcribed and synthesized on-device with <strong>Sherpa-ONNX</strong> (no cloud API keys).
+          Partial and final transcripts arrive on the <code>voice-control</code> data channel.
+          Use the Speak form for local Piper TTS and barge-in demos.
+        </p>
+      </header>
+
+      <section class="panel setup-panel">
+        <h2>Server setup (one time)</h2>
+        <ol>
+          <li>
+            Download STT weights:
+            <code>npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
+          </li>
+          <li>
+            Download TTS voice:
+            <code>npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
+          </li>
+          <li>
+            Export <code>SHERPA_STT_MODEL_PATH</code> and <code>SHERPA_TTS_MODEL_PATH</code> (printed by the scripts)
+          </li>
+          <li>
+            Start this server:
+            <code>npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
+          </li>
+        </ol>
+        <p class="hint">Full guide: <code>examples/voice-agent-local-sherpa/README.md</code></p>
+      </section>
+
+      <section class="panel">
+        <label>
+          Room
+          <input id="room" type="text" maxlength="32" value="demo" />
+        </label>
+        <button id="connect" type="button">Connect</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+        <p id="status" class="status">Disconnected</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Your microphone</h2>
+        <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform and spectrum"></canvas>
+        <p id="mic-viz-status" class="viz-status">Connect and allow microphone to visualize input</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Agent audio (TTS)</h2>
+        <audio id="agent-audio" controls autoplay></audio>
+        <p id="audio-status">Connect to hear agent speech</p>
+      </section>
+
+      <section class="panel">
+        <h2>Request TTS (mock)</h2>
+        <form id="speak-form">
+          <label>
+            Text for the agent to speak
+            <input id="speak-text" type="text" placeholder="Hello from the browser" disabled />
+          </label>
+          <button type="submit" disabled>Speak</button>
+        </form>
+        <button id="speak-long" type="button" disabled>Speak long reply (barge-in test)</button>
+      </section>
+
+      <section class="panel hint-panel">
+        <h2>Test local STT</h2>
+        <ol>
+          <li>Click <strong>Connect</strong> and allow microphone access.</li>
+          <li>Watch the <strong>Your microphone</strong> waveform — it should move when you speak.</li>
+          <li>Speak clearly — watch <code>user_speech_partial</code> update in the log.</li>
+          <li>Pause briefly — Sherpa endpointing emits <code>user_speech_final</code>.</li>
+        </ol>
+        <p class="hint">
+          Latency depends on CPU and model size. The default English Zipformer bundle is tuned for
+          streaming voice UI (~100–300 ms partials on modern laptops).
+        </p>
+      </section>
+
+      <section class="panel log-panel">
+        <h2>Speech events (from server)</h2>
+        <ul id="event-log"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

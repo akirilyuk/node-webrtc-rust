@@ -1,12 +1,15 @@
 /**
- * Browser WebRTC client for the voice-agent-browser example.
+ * Browser WebRTC client for the voice-agent browser examples.
  *
  * - Sends microphone audio to the Node VoiceAgent server
  * - Plays agent TTS on #agent-audio
+ * - Live mic waveform via shared audio-visualizer
  * - Exchanges JSON on the `voice-control` data channel:
  *     client → { type: 'speak', text }
  *     server → { type: 'speech_event', event, text?, error? }
  */
+
+import { attachAudioVisualizer } from '/shared/audio-visualizer.js'
 
 const SERVER_PEER_ID = 'voice-agent-server'
 const VOICE_CONTROL_CHANNEL_LABEL = 'voice-control'
@@ -28,6 +31,8 @@ const speakForm = document.getElementById('speak-form')
 const speakTextInput = document.getElementById('speak-text')
 const speakLongButton = document.getElementById('speak-long')
 const eventLogEl = document.getElementById('event-log')
+const micVizCanvas = document.getElementById('mic-viz')
+const micVizStatusEl = document.getElementById('mic-viz-status')
 
 /** @type {WebSocket | null} */
 let ws = null
@@ -43,6 +48,8 @@ let controlChannel = null
 let micStream = null
 /** @type {RTCIceCandidateInit[]} */
 let pendingIce = []
+/** @type {ReturnType<typeof attachAudioVisualizer> | null} */
+let micVisualizer = null
 
 connectButton.addEventListener('click', () => {
   void connect()
@@ -81,6 +88,37 @@ function appendEvent(eventName, detail) {
 function sendSignal(message) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(message))
+  }
+}
+
+/** Signaling server requires room + peerId on offer/answer/ICE forwards. */
+function sendToServer(payload) {
+  sendSignal({
+    room,
+    peerId: clientId,
+    ...payload,
+  })
+}
+
+function startMicVisualizer(stream) {
+  if (!micVizCanvas) return
+  micVisualizer?.stop()
+  micVisualizer = attachAudioVisualizer({
+    canvas: micVizCanvas,
+    mediaStream: stream,
+    waveColor: '#34d399',
+    barColor: '#10b981',
+  })
+  if (micVizStatusEl) {
+    micVizStatusEl.textContent = 'Live — waveform shows your mic input sent to the server'
+  }
+}
+
+function stopMicVisualizer() {
+  micVisualizer?.stop()
+  micVisualizer = null
+  if (micVizStatusEl) {
+    micVizStatusEl.textContent = 'Connect and allow microphone to visualize input'
   }
 }
 
@@ -139,6 +177,7 @@ async function connect() {
 
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    startMicVisualizer(micStream)
   } catch (error) {
     setStatus('Microphone permission denied')
     connectButton.disabled = false
@@ -168,6 +207,7 @@ async function connect() {
 }
 
 function disconnect() {
+  stopMicVisualizer()
   controlChannel?.close()
   controlChannel = null
   serverPc?.close()
@@ -231,7 +271,7 @@ async function onServerOffer(sdp) {
 
   serverPc.onicecandidate = (event) => {
     if (event.candidate) {
-      sendSignal({
+      sendToServer({
         type: 'ice-candidate',
         targetPeerId: SERVER_PEER_ID,
         candidate: event.candidate.toJSON(),
@@ -242,8 +282,12 @@ async function onServerOffer(sdp) {
   serverPc.onconnectionstatechange = () => {
     if (serverPc?.connectionState === 'connected') {
       setStatus(`WebRTC connected — speak into your mic`)
+      micVisualizer?.resume()
     }
   }
+
+  await serverPc.setRemoteDescription(sdp)
+  await flushPendingIce()
 
   if (micStream) {
     for (const track of micStream.getAudioTracks()) {
@@ -251,14 +295,11 @@ async function onServerOffer(sdp) {
     }
   }
 
-  await serverPc.setRemoteDescription(sdp)
-  await flushPendingIce()
-
   const answer = await serverPc.createAnswer()
   await serverPc.setLocalDescription(answer)
   await waitGatheringComplete(serverPc)
 
-  sendSignal({
+  sendToServer({
     type: 'answer',
     targetPeerId: SERVER_PEER_ID,
     sdp: serverPc.localDescription,

@@ -6,7 +6,21 @@
   "type": "module",
   "scripts": {
     "download-model": "node scripts/download-model.mjs",
+    "download-model:list": "node scripts/download-model.mjs --list",
+    "download-model:en": "node scripts/download-model.mjs --lang=en",
+    "download-model:es": "node scripts/download-model.mjs --lang=es",
+    "download-model:pt": "node scripts/download-model.mjs --lang=pt",
+    "download-model:ar": "node scripts/download-model.mjs --lang=ar",
+    "download-model:ru": "node scripts/download-model.mjs --lang=ru",
+    "download-model:hi": "node scripts/download-model.mjs --lang=hi",
+    "download-model:bn": "node scripts/download-model.mjs --lang=bn",
+    "download-model:de": "node scripts/download-model.mjs --lang=de",
+    "download-model:fr": "node scripts/download-model.mjs --lang=fr",
+    "download-model:ja": "node scripts/download-model.mjs --lang=ja",
+    "download-model:zh": "node scripts/download-model.mjs --lang=zh",
+    "download-model:it": "node scripts/download-model.mjs --lang=it",
     "start": "tsx src/index.ts",
+    "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,4 +1,5 @@
 import { copyFileSync, existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,4 +19,12 @@ if (!triple || !existsSync(src)) {
   process.exit(0)
 }
 
-copyFileSync(src, join(root, `node-webrtc-rust.${triple}.node`))
+const dest = join(root, `node-webrtc-rust.${triple}.node`)
+copyFileSync(src, dest)
+
+/** Re-sign after copy — linker adhoc sig covers old file size when Sherpa/ORT bloats the .node. */
+if (process.platform === 'darwin') {
+  for (const path of [src, dest]) {
+    execFileSync('codesign', ['--force', '--sign', '-', path], { stdio: 'inherit' })
+  }
+}

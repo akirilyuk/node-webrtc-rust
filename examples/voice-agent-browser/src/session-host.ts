@@ -20,6 +20,7 @@ import {
 import {
   VoiceAgent,
   VOICE_CONTROL_CHANNEL_LABEL,
+  forwardVoiceAgentSpeechToDataChannel,
   wireVoiceAgentToDataChannel,
   type VoiceAgentConfig,
 } from '@node-webrtc-rust/sdk/voice'
@@ -44,6 +45,7 @@ interface ClientSession {
   inboundTrack?: RemoteAudioTrack
   agentStarted: boolean
   unwireControl?: () => void
+  unwireSpeechForward?: () => void
   remoteDescriptionSet: boolean
   offerSent: boolean
   pendingAnswer: RTCSessionDescriptionInit | null
@@ -180,6 +182,13 @@ export class VoiceAgentSessionHost {
     })
     await session.agent.start()
 
+    // Pull stream is active only after start — forward STT/VAD events to the browser.
+    session.unwireSpeechForward?.()
+    session.unwireSpeechForward = forwardVoiceAgentSpeechToDataChannel(
+      session.agent,
+      session.controlChannel,
+    )
+
     // Prime outbound RTP so the browser decoder starts before TTS PCM arrives.
     await session.agentOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
     console.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
@@ -234,6 +243,7 @@ export class VoiceAgentSessionHost {
     const session = this.sessions.get(peerId)
     if (!session) return
     session.unwireControl?.()
+    session.unwireSpeechForward?.()
     void session.agent.stop().catch(() => undefined)
     session.pc.close()
     this.sessions.delete(peerId)

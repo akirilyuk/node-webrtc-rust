@@ -15,6 +15,13 @@ use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
 use crate::speech::types::{speech_err, JsSpeechEvent, JsVoiceAgentConfig};
 
+fn voice_debug_enabled() -> bool {
+    matches!(
+        std::env::var("VOICE_DEBUG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
 struct VoiceAgentState {
     pull_rx: Option<broadcast::Receiver<SpeechEvent>>,
     callback_wired: bool,
@@ -32,6 +39,9 @@ pub struct JsVoiceAgent {
 impl JsVoiceAgent {
     #[napi(constructor)]
     pub fn new(config: Option<JsVoiceAgentConfig>) -> Result<Self> {
+        if voice_debug_enabled() {
+            eprintln!("[voice-debug] JsVoiceAgent native module loaded (rebuild with npm run build:native if missing pipeline logs)");
+        }
         let config = config.unwrap_or_default().into();
         let registry = default_vendor_registry();
         let agent = VoiceAgent::new(config, registry).map_err(speech_err)?;
@@ -102,11 +112,13 @@ impl JsVoiceAgent {
             .pull_rx
             .as_mut()
             .ok_or_else(|| Error::from_reason("speech event stream unavailable"))?;
-        match rx.try_recv() {
-            Ok(event) => Ok(Some(speech_event_to_js(event))),
-            Err(broadcast::error::TryRecvError::Empty) => Ok(None),
-            Err(broadcast::error::TryRecvError::Closed) => Ok(None),
-            Err(broadcast::error::TryRecvError::Lagged(_)) => Ok(None),
+        loop {
+            match rx.try_recv() {
+                Ok(event) => return Ok(Some(speech_event_to_js(event))),
+                Err(broadcast::error::TryRecvError::Empty) => return Ok(None),
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Closed) => return Ok(None),
+            }
         }
     }
 

@@ -15,6 +15,7 @@ import {
 
 import type { RemoteAudioTrack } from '../RemoteAudioTrack'
 import { debugEvent, debugFn } from '../debug'
+import { isVoiceDebugEnabled, voiceDebugLog } from './debug'
 import type {
   EventDeliveryMode,
   SpeechEvent,
@@ -127,8 +128,11 @@ function eventModeToJs(mode: EventDeliveryMode): JsEventDeliveryMode {
 }
 
 function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
+  const rawType =
+    event.eventType ??
+    (event as JsSpeechEvent & { event_type?: JsSpeechEventType }).event_type
   return {
-    type: jsEventTypeToString(event.eventType),
+    type: jsEventTypeToString(rawType ?? JsSpeechEventType.Error),
     text: event.text ?? undefined,
     error: event.error ?? undefined,
   }
@@ -188,6 +192,7 @@ export class VoiceAgent {
     debugFn(MODULE, 'start')
     await this.native.start()
     this.running = true
+    voiceDebugLog(MODULE, 'native start() complete — starting inbound PCM loop')
     this.startInboundLoop()
   }
 
@@ -250,11 +255,25 @@ export class VoiceAgent {
     if (!track) return
 
     this.inboundLoop = (async () => {
+      let frameCount = 0
       while (this.running) {
         try {
           const pcm = await track.readSample()
+          frameCount += 1
+          if (isVoiceDebugEnabled() && (frameCount === 1 || frameCount % 50 === 0)) {
+            voiceDebugLog(MODULE, `readSample frame=${frameCount} bytes=${pcm.length}`)
+          }
+          if (isVoiceDebugEnabled() && (frameCount === 1 || frameCount % 50 === 0)) {
+            voiceDebugLog(MODULE, `processInboundPcm begin frame=${frameCount}`)
+          }
           await this.native.processInboundPcm(pcm, 20)
-        } catch {
+          if (isVoiceDebugEnabled() && (frameCount === 1 || frameCount % 50 === 0)) {
+            voiceDebugLog(MODULE, `processInboundPcm done frame=${frameCount}`)
+          }
+        } catch (error: unknown) {
+          if (isVoiceDebugEnabled()) {
+            voiceDebugLog(MODULE, `readSample/processInboundPcm error: ${String(error)}`)
+          }
           await new Promise((resolve) => setTimeout(resolve, 20))
         }
       }

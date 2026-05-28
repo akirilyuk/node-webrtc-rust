@@ -6,6 +6,10 @@
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import {
+  applyVoiceDebugOverrides,
+  logResolvedVoiceConfig,
+} from '../../shared/voice-debug-config.js'
+import {
   getLiveVendorPreset,
   listLiveVendorIds,
   missingEnvVars,
@@ -38,7 +42,9 @@ export interface ResolvedVoiceConfig {
 export function resolveVoiceConfig(): ResolvedVoiceConfig {
   const rawVendor = process.env.VOICE_VENDOR?.trim()
   if (!rawVendor) {
-    return { config: MOCK_VOICE_CONFIG, label: 'mock (no API keys)', mode: 'mock' }
+    const config = applyVoiceDebugOverrides(MOCK_VOICE_CONFIG)
+    logResolvedVoiceConfig('mock', config)
+    return { config, label: 'mock (no API keys)', mode: 'mock' }
   }
 
   const preset = getLiveVendorPreset(rawVendor)
@@ -57,8 +63,11 @@ export function resolveVoiceConfig(): ResolvedVoiceConfig {
     process.exit(1)
   }
 
+  const config = applyVoiceDebugOverrides(preset.config)
+  logResolvedVoiceConfig(preset.label, config)
+
   return {
-    config: preset.config,
+    config,
     label: preset.label,
     mode: 'live',
     vendorId: preset.id,

@@ -37,7 +37,20 @@ let stt = factory.create_stt(&SttConfig {
 
 ## Browser example
 
-See [`examples/voice-agent-local-sherpa`](../../examples/voice-agent-local-sherpa/README.md) — download script, `SHERPA_MODEL_PATH`, and WebRTC browser client.
+See [`examples/voice-agent-local-sherpa`](../../examples/voice-agent-local-sherpa/README.md) — per-language download scripts, `SHERPA_MODEL_PATH`, `SHERPA_LANGUAGE`, and WebRTC browser client.
+
+### Multilingual model downloads
+
+Pinned streaming Zipformer bundles (Spanish, French, German, Chinese, Japanese, Arabic, Russian, Bengali, and more) are listed in [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models). Catalog source: [`examples/shared/sherpa-local-model-catalog.json`](../../examples/shared/sherpa-local-model-catalog.json).
+
+```bash
+npm run download-model:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-model:de --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+export SHERPA_MODEL_PATH="…/.models/sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06"
+export SHERPA_LANGUAGE=de
+```
+
+Hindi, Portuguese, and Italian are not yet available as dedicated streaming Zipformer bundles in the official `asr-models` release set wired to this adapter — use cloud STT or see the vendor reference for alternatives.
 
 | Product | Docs |
 |---------|------|

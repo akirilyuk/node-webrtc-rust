@@ -6,11 +6,14 @@
  * reimplementing PCM timing or vendor HTTP/WebSocket plumbing.
  */
 export { VoiceAgent } from './VoiceAgent'
+export { isVoiceDebugEnabled, voiceDebugLog } from './debug'
 export {
   VOICE_CONTROL_CHANNEL_LABEL,
+  forwardVoiceAgentSpeechToDataChannel,
   parseVoiceControlClientMessage,
   speechEventToControlMessage,
   wireVoiceAgentToDataChannel,
+  wireVoiceControlSpeakHandler,
 } from './speech-event-bridge'
 export type {
   VoiceControlClientMessage,

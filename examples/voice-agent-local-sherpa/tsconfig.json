@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2022"],
+    "resolveJsonModule": true,
     "noEmit": true
   },
   "include": ["src/**/*", "../voice-agent-browser/src/session-host.ts", "../shared/**/*.ts"]

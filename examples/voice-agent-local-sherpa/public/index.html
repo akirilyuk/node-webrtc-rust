@@ -47,7 +47,13 @@
       </section>
 
       <section class="panel audio-panel">
-        <h2>Agent audio (mock TTS)</h2>
+        <h2>Your microphone</h2>
+        <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform and spectrum"></canvas>
+        <p id="mic-viz-status" class="viz-status">Connect and allow microphone to visualize input</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Agent audio (TTS)</h2>
         <audio id="agent-audio" controls autoplay></audio>
         <p id="audio-status">Connect to hear agent speech</p>
       </section>
@@ -68,6 +74,7 @@
         <h2>Test local STT</h2>
         <ol>
           <li>Click <strong>Connect</strong> and allow microphone access.</li>
+          <li>Watch the <strong>Your microphone</strong> waveform — it should move when you speak.</li>
           <li>Speak clearly — watch <code>user_speech_partial</code> update in the log.</li>
           <li>Pause briefly — Sherpa endpointing emits <code>user_speech_final</code>.</li>
         </ol>

@@ -1,5 +1,6 @@
 //! Voice agent orchestration (attach, start/stop, TTS injection).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -20,12 +21,25 @@ pub type PcmWriter = Arc<dyn Fn(Bytes, u32) -> SpeechResult<()> + Send + Sync>;
 /// Callback invoked to read inbound PCM from the attached remote track.
 pub type PcmReader = Arc<dyn Fn() -> SpeechResult<Option<(Bytes, u32)>> + Send + Sync>;
 
+static INBOUND_PCM_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+fn voice_debug_enabled() -> bool {
+    matches!(
+        std::env::var("VOICE_DEBUG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+fn voice_debug(message: impl AsRef<str>) {
+    if voice_debug_enabled() {
+        eprintln!("[voice-debug] {}", message.as_ref());
+    }
+}
+
 struct AgentInner {
     config: VoiceAgentConfig,
     attached: bool,
     running: bool,
-    stt: Option<Box<dyn SttProvider>>,
-    tts: Option<Box<dyn TtsProvider>>,
     vad: Option<VadEngine>,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
@@ -38,6 +52,8 @@ pub struct VoiceAgent {
     #[allow(dead_code)]
     registry: Arc<VendorRegistry>,
     inner: Mutex<AgentInner>,
+    stt: Mutex<Option<Box<dyn SttProvider>>>,
+    tts: Mutex<Option<Box<dyn TtsProvider>>>,
 }
 
 impl VoiceAgent {
@@ -66,12 +82,12 @@ impl VoiceAgent {
                 config,
                 attached: false,
                 running: false,
-                stt,
-                tts,
                 vad,
                 pcm_writer: None,
                 pcm_reader: None,
             }),
+            stt: Mutex::new(stt),
+            tts: Mutex::new(tts),
         })
     }
 
@@ -107,37 +123,47 @@ impl VoiceAgent {
     }
 
     pub async fn start(&self) -> SpeechResult<()> {
-        let mut inner = self.inner.lock().await;
-        if !inner.attached {
-            return Err(SpeechError::NotAttached);
+        {
+            let mut inner = self.inner.lock().await;
+            if !inner.attached {
+                return Err(SpeechError::NotAttached);
+            }
+            if inner.running {
+                return Err(SpeechError::AlreadyRunning);
+            }
+            inner.running = true;
         }
-        if inner.running {
-            return Err(SpeechError::AlreadyRunning);
-        }
-        if let Some(stt) = inner.stt.as_mut() {
+
+        voice_debug("VoiceAgent running=true");
+
+        let mut stt = self.stt.lock().await;
+        if let Some(stt) = stt.as_mut() {
             stt.start().await?;
+            voice_debug(format!("STT started ({})", stt.vendor_name()));
         }
-        inner.running = true;
         Ok(())
     }
 
     pub async fn stop(&self) -> SpeechResult<()> {
-        let mut inner = self.inner.lock().await;
-        if !inner.running {
-            return Err(SpeechError::NotRunning);
+        {
+            let mut inner = self.inner.lock().await;
+            if !inner.running {
+                return Err(SpeechError::NotRunning);
+            }
+            inner.running = false;
         }
-        if let Some(stt) = inner.stt.as_mut() {
+
+        let mut stt = self.stt.lock().await;
+        if let Some(stt) = stt.as_mut() {
             stt.stop().await?;
         }
-        inner.running = false;
         Ok(())
     }
 
     pub async fn send_text_to_tts(&self, text: &str) -> SpeechResult<()> {
         let chunks = {
-            let inner = self.inner.lock().await;
-            let tts = inner
-                .tts
+            let tts = self.tts.lock().await;
+            let tts = tts
                 .as_ref()
                 .ok_or_else(|| SpeechError::Config("TTS not configured".into()))?;
             tts.synthesize(text).await?
@@ -161,18 +187,33 @@ impl VoiceAgent {
 
     /// Process one inbound PCM frame through VAD, barge-in, and optional STT gating.
     pub async fn process_inbound_pcm(&self, pcm: Bytes, duration_ms: u32) -> SpeechResult<()> {
+        let call = INBOUND_PCM_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+        if call == 1 || call % 50 == 0 {
+            voice_debug(format!(
+                "process_inbound_pcm call={call} bytes={} duration_ms={duration_ms}",
+                pcm.len()
+            ));
+        }
+
+        let running = {
+            let inner = self.inner.lock().await;
+            inner.running
+        };
+        if !running {
+            voice_debug(format!("process_inbound_pcm call={call} skipped: agent not running"));
+            return Ok(());
+        }
+
         let transitions = {
             let mut inner = self.inner.lock().await;
-            if !inner.running {
-                return Ok(());
+            match inner.vad.as_mut() {
+                Some(vad) => vad.process_webrtc_pcm(pcm.as_ref(), duration_ms)?,
+                None => Vec::new(),
             }
-            let Some(vad) = inner.vad.as_mut() else {
-                return Ok(());
-            };
-            vad.process_webrtc_pcm(pcm.as_ref(), duration_ms)?
         };
 
-        for transition in transitions {
+        for transition in &transitions {
+            voice_debug(format!("VAD {transition:?}"));
             match transition {
                 VadTransition::SpeechStart => {
                     let barge_in = {
@@ -198,8 +239,18 @@ impl VoiceAgent {
                 inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(true)
             };
             if !speaking {
+                voice_debug(format!(
+                    "process_inbound_pcm call={call} skipped: gate_stt and VAD not speaking"
+                ));
                 return Ok(());
             }
+        }
+
+        if call == 1 || call % 50 == 0 {
+            voice_debug(format!(
+                "inbound PCM frame={call} bytes={} duration_ms={duration_ms}",
+                pcm.len()
+            ));
         }
 
         self.push_stt_audio(pcm).await?;
@@ -209,8 +260,8 @@ impl VoiceAgent {
     async fn push_stt_audio(&self, pcm: Bytes) -> SpeechResult<()> {
         let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
         let mono_bytes = i16_samples_to_bytes(&mono);
-        let mut inner = self.inner.lock().await;
-        if let Some(stt) = inner.stt.as_mut() {
+        let mut stt = self.stt.lock().await;
+        if let Some(stt) = stt.as_mut() {
             stt.push_audio(mono_bytes).await?;
         }
         Ok(())
@@ -219,8 +270,8 @@ impl VoiceAgent {
     async fn poll_stt_transcripts(&self) -> SpeechResult<()> {
         loop {
             let transcript = {
-                let mut inner = self.inner.lock().await;
-                let Some(stt) = inner.stt.as_mut() else {
+                let mut stt = self.stt.lock().await;
+                let Some(stt) = stt.as_mut() else {
                     return Ok(());
                 };
                 stt.poll_transcript().await?
@@ -229,8 +280,14 @@ impl VoiceAgent {
                 break;
             };
             match transcript {
-                SttTranscript::Partial(text) => self.emit(SpeechEvent::user_speech_partial(text)),
-                SttTranscript::Final(text) => self.emit(SpeechEvent::user_speech_final(text)),
+                SttTranscript::Partial(text) => {
+                    voice_debug(format!("STT partial: {text}"));
+                    self.emit(SpeechEvent::user_speech_partial(text));
+                }
+                SttTranscript::Final(text) => {
+                    voice_debug(format!("STT final: {text}"));
+                    self.emit(SpeechEvent::user_speech_final(text));
+                }
             }
         }
         Ok(())

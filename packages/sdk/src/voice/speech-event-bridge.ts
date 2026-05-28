@@ -8,6 +8,7 @@
 import type { RTCDataChannel } from '../RTCDataChannel'
 import type { MessageEvent } from '../types'
 import type { VoiceAgent } from './VoiceAgent'
+import { isVoiceDebugEnabled, voiceDebugLog } from './debug'
 import type { SpeechEvent, SpeechEventType } from './types'
 
 /** Data channel label used by `examples/voice-agent-browser` and recommended for apps. */
@@ -57,28 +58,55 @@ export interface WireVoiceAgentToDataChannelOptions {
   onSpeak?: (text: string) => void | Promise<void>
 }
 
+function sendSpeechEventToChannel(channel: RTCDataChannel, event: SpeechEvent): void {
+  if (channel.readyState !== 'open') {
+    if (isVoiceDebugEnabled()) {
+      voiceDebugLog(
+        'voice-control',
+        `drop ${event.type} (channel state=${channel.readyState})`,
+      )
+    }
+    return
+  }
+  if (isVoiceDebugEnabled()) {
+    const detail = event.text ? ` text=${JSON.stringify(event.text.slice(0, 120))}` : ''
+    voiceDebugLog('voice-control', `send ${event.type}${detail}`)
+  }
+  channel.send(JSON.stringify(speechEventToControlMessage(event)))
+}
+
 /**
- * Forwards all {@link VoiceAgent} speech events to the remote peer as JSON and
- * handles inbound `speak` messages by calling {@link VoiceAgent.sendTextToTTS}.
- *
- * Returns an unsubscribe function — call it before closing the channel or agent.
+ * Forwards speech events from {@link VoiceAgent.speechEvents} to a data channel.
+ * Call only **after** {@link VoiceAgent.start} — the pull stream is inactive until then.
  */
-export function wireVoiceAgentToDataChannel(
+export function forwardVoiceAgentSpeechToDataChannel(
+  agent: VoiceAgent,
+  channel: RTCDataChannel,
+): () => void {
+  let active = true
+
+  void (async () => {
+    for await (const event of agent.speechEvents()) {
+      if (!active) {
+        break
+      }
+      sendSpeechEventToChannel(channel, event)
+    }
+  })()
+
+  return () => {
+    active = false
+  }
+}
+
+/**
+ * Handles inbound `{ type: 'speak' }` on a voice-control data channel.
+ */
+export function wireVoiceControlSpeakHandler(
   agent: VoiceAgent,
   channel: RTCDataChannel,
   options?: WireVoiceAgentToDataChannelOptions,
 ): () => void {
-  const sendEvent = (event: SpeechEvent) => {
-    if (channel.readyState !== 'open') return
-    channel.send(JSON.stringify(speechEventToControlMessage(event)))
-  }
-
-  const onSpeech: (event: SpeechEvent) => void = (event) => {
-    sendEvent(event)
-  }
-
-  agent.on('speech', onSpeech)
-
   const previousOnMessage = channel.onmessage
   channel.onmessage = (event: MessageEvent) => {
     previousOnMessage?.(event)
@@ -100,7 +128,22 @@ export function wireVoiceAgentToDataChannel(
   }
 
   return () => {
-    agent.off('speech', onSpeech)
     channel.onmessage = previousOnMessage
   }
+}
+
+/**
+ * Wires inbound `speak` handling on the data channel.
+ *
+ * Speech events are **not** forwarded here — call
+ * {@link forwardVoiceAgentSpeechToDataChannel} after {@link VoiceAgent.start}.
+ *
+ * Returns an unsubscribe function — call it before closing the channel or agent.
+ */
+export function wireVoiceAgentToDataChannel(
+  agent: VoiceAgent,
+  channel: RTCDataChannel,
+  options?: WireVoiceAgentToDataChannelOptions,
+): () => void {
+  return wireVoiceControlSpeakHandler(agent, channel, options)
 }

@@ -1,0 +1,100 @@
+{
+  "releaseBase": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models",
+  "defaultModelId": "en",
+  "exampleWorkspace": "@node-webrtc-rust/example-voice-agent-local-sherpa",
+  "models": [
+    {
+      "id": "en",
+      "label": "English",
+      "bundle": "sherpa-onnx-streaming-zipformer-en-2023-06-26",
+      "language": "en",
+      "kind": "transducer",
+      "approxMb": "~296"
+    },
+    {
+      "id": "es",
+      "label": "Spanish",
+      "bundle": "sherpa-onnx-streaming-zipformer-es-kroko-2025-08-06",
+      "language": "es",
+      "kind": "transducer",
+      "approxMb": "~119"
+    },
+    {
+      "id": "fr",
+      "label": "French",
+      "bundle": "sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06",
+      "language": "fr",
+      "kind": "transducer",
+      "approxMb": "~55"
+    },
+    {
+      "id": "de",
+      "label": "German",
+      "bundle": "sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06",
+      "language": "de",
+      "kind": "transducer",
+      "approxMb": "~55"
+    },
+    {
+      "id": "zh",
+      "label": "Chinese (Mandarin)",
+      "bundle": "sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30",
+      "language": "zh",
+      "kind": "transducer",
+      "approxMb": "~126"
+    },
+    {
+      "id": "ja",
+      "label": "Japanese",
+      "bundle": "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10",
+      "language": "ja",
+      "kind": "transducer",
+      "note": "Multilingual streaming Zipformer (also covers ar, ru, vi, id, th, en, zh).",
+      "approxMb": "~247"
+    },
+    {
+      "id": "ar",
+      "label": "Arabic",
+      "bundle": "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10",
+      "language": "ar",
+      "kind": "transducer",
+      "note": "Same multilingual bundle as Japanese — set SHERPA_LANGUAGE to the language you speak.",
+      "approxMb": "~247"
+    },
+    {
+      "id": "ru",
+      "label": "Russian",
+      "bundle": "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16",
+      "language": "ru",
+      "kind": "transducer",
+      "approxMb": "~23"
+    },
+    {
+      "id": "hi",
+      "label": "Hindi",
+      "kind": "unavailable",
+      "note": "No dedicated Hindi streaming Zipformer transducer in official asr-models releases yet. Try cloud STT (voice-agent-browser) or Bengali (bn) for South Asian speech."
+    },
+    {
+      "id": "bn",
+      "label": "Bengali (South Asia)",
+      "bundle": "sherpa-onnx-streaming-zipformer-bn-vosk-2026-02-09",
+      "language": "bn",
+      "kind": "transducer",
+      "note": "Closest official South Asian streaming model; not Hindi-specific.",
+      "approxMb": "~83"
+    },
+    {
+      "id": "pt",
+      "label": "Portuguese",
+      "kind": "unavailable",
+      "note": "No dedicated Portuguese streaming Zipformer in asr-models. Sherpa ships pt in sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01 (different architecture — not wired to local-sherpa yet). Use cloud STT."
+    },
+    {
+      "id": "it",
+      "label": "Italian",
+      "kind": "unavailable",
+      "note": "No dedicated Italian streaming Zipformer in asr-models. Italian is in sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01 (not supported here yet). Use cloud STT."
+    }
+  ]
+}

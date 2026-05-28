@@ -57,7 +57,49 @@ decoder-epoch-99-avg-1.onnx
 joiner-epoch-99-avg-1.onnx
 ```
 
+### Other languages (automatic download)
+
+List all entries (including ones without a dedicated streaming bundle):
+
+```bash
+npm run download-model:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Per-language shortcuts (from repo root) — full table also in [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models):
+
+| Language | npm script | Sherpa bundle |
+|----------|------------|---------------|
+| English (default) | `download-model` or `download-model:en` | `…-en-2023-06-26` |
+| Spanish | `download-model:es` | `…-es-kroko-2025-08-06` |
+| French | `download-model:fr` | `…-fr-kroko-2025-08-06` |
+| German | `download-model:de` | `…-de-kroko-2025-08-06` |
+| Chinese | `download-model:zh` | `…-zh-int8-2025-06-30` |
+| Japanese | `download-model:ja` | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual) |
+| Arabic | `download-model:ar` | same multilingual bundle — set `SHERPA_LANGUAGE=ar` |
+| Russian | `download-model:ru` | `…-small-ru-vosk-int8-2025-08-16` |
+| Bengali (South Asia) | `download-model:bn` | `…-bn-vosk-2026-02-09` |
+| Hindi | `download-model:hi` | *No streaming Zipformer transducer in official releases yet* |
+| Portuguese | `download-model:pt` | *Not available for this example yet* |
+| Italian | `download-model:it` | *Not available for this example yet* |
+
+Generic form:
+
+```bash
+npm run download-model --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa -- --lang=de
+```
+
+After download, export both path and language (the script prints them):
+
+```bash
+export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06"
+export SHERPA_LANGUAGE=de
+```
+
+For the **multilingual** Japanese/Arabic bundle, always set `SHERPA_LANGUAGE` to the language you are speaking (`ja`, `ar`, `ru`, `vi`, `id`, `th`, `zh`, or `en`).
+
 ### 2. Point the server at the model directory
+
+From **`node-webrtc-rust`** repo root:
 
 ```bash
 export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
@@ -70,6 +112,22 @@ You can also set `stt.modelPath` in code instead of the env var (see [Configurat
 ```bash
 npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
+
+**Debug pipeline (VAD, PCM, Sherpa, DataChannel):**
+
+```bash
+npm run build:native   # required — Rust logs live in the .node binary
+npm run start:debug --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+On startup you should see `[voice-debug] JsVoiceAgent native module loaded`. If that line is **missing**, the native addon is stale — rerun `npm run build:native`.
+
+Logs go to **stderr** with `[voice-debug]` and `[webrtc-debug]` prefixes. Debug mode also relaxes VAD (`threshold=0.01`, `gateStt=false`). Optional overrides:
+
+| Variable | Effect |
+|----------|--------|
+| `VOICE_VAD_THRESHOLD=0.005` | Lower energy threshold |
+| `VOICE_VAD_DISABLED=1` | Skip VAD (STT still receives all PCM) |
 
 Startup logs show the active pipeline and model path:
 
@@ -111,6 +169,7 @@ Other **streaming transducer** bundles work if they include `tokens.txt` + encod
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `SHERPA_MODEL_PATH` | **Yes** | Directory with Sherpa ONNX weights |
+| `SHERPA_LANGUAGE` | No | BCP-47-ish tag for `stt.language` (inferred from path when omitted) |
 | `PORT` | No | HTTP + WebSocket port (default `3002`) |
 
 ### VoiceAgent config (TypeScript)
@@ -172,8 +231,9 @@ Sherpa runs in Rust via `crates/vendor-sherpa-onnx` — included in the **defaul
 |---------|-----|
 | `SHERPA_MODEL_PATH is not set` on startup | Run `download-model` and export the path |
 | `no encoder .onnx model found` | Point `SHERPA_MODEL_PATH` at the **extracted** folder, not the `.tar.bz2` |
-| Empty partials / no finals | Check mic permission; speak louder; lower VAD threshold in config |
+| Empty partials / no finals | Run `start:debug` and check `[voice-debug]` — confirm inbound PCM bytes, Sherpa hypotheses, and `voice-control send` lines; try `VOICE_VAD_DISABLED=1` |
 | Native load error / missing symbol | Rebuild: `npm run build:native` from repo root |
+| **`npm` exit code 137** (process killed silently) | macOS stale code signature on `.node` after Sherpa rebuild — from repo root: `npm run build:native`, or `codesign --force --sign - packages/bindings/node-webrtc-rust.node packages/bindings/node-webrtc-rust.darwin-arm64.node` |
 | Slow on older CPU | Use a smaller/int8 model; expect higher latency |
 | Port in use | `PORT=3003 npm run start --workspace=...` |
 
@@ -193,7 +253,7 @@ Same as [`voice-agent-browser`](../voice-agent-browser/README.md):
 ## Related
 
 - Cloud vendor browser demo: [`voice-agent-browser`](../voice-agent-browser/README.md)
-- **Official STT/TTS API reference:** [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md)
+- **Official STT/TTS API reference:** [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md) (multilingual Sherpa table)
 - Rust adapter: [`crates/vendor-sherpa-onnx`](../../crates/vendor-sherpa-onnx/README.md)
 - SDK bridge: [`packages/sdk/src/voice/speech-event-bridge.ts`](../../packages/sdk/src/voice/speech-event-bridge.ts)
 - Plan / design notes: `development/node-webrtc-rust/plans/2026-05-28-vendor-sherpa-onnx.md`

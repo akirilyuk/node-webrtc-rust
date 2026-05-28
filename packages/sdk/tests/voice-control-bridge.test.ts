@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest'
 import type { RTCDataChannel } from '../src/RTCDataChannel'
 import { VoiceAgent, type SpeechEvent } from '../src/voice'
 import {
+  forwardVoiceAgentSpeechToDataChannel,
   parseVoiceControlClientMessage,
   speechEventToControlMessage,
   wireVoiceAgentToDataChannel,
@@ -28,7 +29,7 @@ describe('voice control DataChannel bridge', () => {
     expect(parseVoiceControlClientMessage(JSON.stringify({ type: 'speak', text: '' }))).toBeNull()
   })
 
-  test('wireVoiceAgentToDataChannel forwards speech events when channel is open', () => {
+  test('forwardVoiceAgentSpeechToDataChannel sends when channel is open', () => {
     const sent: string[] = []
     const channel = {
       readyState: 'open',
@@ -38,34 +39,30 @@ describe('voice control DataChannel bridge', () => {
       },
     } as unknown as RTCDataChannel
 
-    const listeners = new Map<string, Set<(event: SpeechEvent) => void>>()
     const agent = {
-      on(event: string, fn: (event: SpeechEvent) => void) {
-        if (!listeners.has(event)) listeners.set(event, new Set())
-        listeners.get(event)!.add(fn)
-        return this
-      },
-      off(event: string, fn: (event: SpeechEvent) => void) {
-        listeners.get(event)?.delete(fn)
-        return this
-      },
-      async sendTextToTTS() {},
-      emit(event: SpeechEvent) {
-        listeners.get('speech')?.forEach((fn) => fn(event))
+      async *speechEvents() {
+        yield { type: 'user_speech_final', text: 'testing' } as SpeechEvent
       },
     } as unknown as VoiceAgent
 
-    const unwire = wireVoiceAgentToDataChannel(agent, channel)
-    agent.emit({ type: 'user_speech_final', text: 'testing' })
+    const unforward = forwardVoiceAgentSpeechToDataChannel(agent, channel)
 
-    expect(sent).toHaveLength(1)
-    expect(JSON.parse(sent[0]!)).toMatchObject({
-      type: 'speech_event',
-      event: 'user_speech_final',
-      text: 'testing',
+    return new Promise<void>((resolve, reject) => {
+      setTimeout(() => {
+        try {
+          expect(sent).toHaveLength(1)
+          expect(JSON.parse(sent[0]!)).toMatchObject({
+            type: 'speech_event',
+            event: 'user_speech_final',
+            text: 'testing',
+          })
+          unforward()
+          resolve()
+        } catch (error) {
+          reject(error)
+        }
+      }, 20)
     })
-
-    unwire()
   })
 
   test('wireVoiceAgentToDataChannel invokes onSpeak for inbound speak messages', () => {

@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
+    "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
     "start:live:openai": "VOICE_VENDOR=openai tsx src/index.ts",
     "start:live:deepgram": "VOICE_VENDOR=deepgram tsx src/index.ts",
     "start:live:elevenlabs": "VOICE_VENDOR=elevenlabs tsx src/index.ts",

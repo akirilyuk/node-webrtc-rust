@@ -28,6 +28,12 @@
       </section>
 
       <section class="panel audio-panel">
+        <h2>Your microphone</h2>
+        <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform and spectrum"></canvas>
+        <p id="mic-viz-status" class="viz-status">Connect and allow microphone to visualize input</p>
+      </section>
+
+      <section class="panel audio-panel">
         <h2>Agent audio (TTS)</h2>
         <audio id="agent-audio" controls autoplay></audio>
         <p id="audio-status">Connect to hear agent speech</p>

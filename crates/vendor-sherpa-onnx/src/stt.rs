@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,6 +14,21 @@ use tokio::sync::Mutex;
 use crate::model_paths::resolve_model_paths;
 
 const SAMPLE_RATE: i32 = 16_000;
+
+static SHERPA_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+
+fn voice_debug_enabled() -> bool {
+    matches!(
+        std::env::var("VOICE_DEBUG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+fn voice_debug(message: impl AsRef<str>) {
+    if voice_debug_enabled() {
+        eprintln!("[voice-debug] {}", message.as_ref());
+    }
+}
 
 struct SherpaRuntime {
     recognizer: OnlineRecognizer,
@@ -98,6 +114,7 @@ impl SttProvider for SherpaStt {
 
         tokio::task::spawn_blocking(move || -> SpeechResult<()> {
             let runtime = SherpaStt::build_runtime(&config)?;
+            voice_debug("sherpa OnlineRecognizer ready");
             let mut guard = state.blocking_lock();
             guard.running = true;
             guard.runtime = Some(runtime);
@@ -148,8 +165,19 @@ impl SttProvider for SherpaStt {
             runtime
                 .stream
                 .accept_waveform(SAMPLE_RATE, &samples);
+            let mut decode_steps = 0u32;
             while runtime.recognizer.is_ready(&runtime.stream) {
                 runtime.recognizer.decode(&runtime.stream);
+                decode_steps = decode_steps.saturating_add(1);
+                if decode_steps >= 64 {
+                    voice_debug("sherpa decode loop capped at 64 steps (possible is_ready stuck)");
+                    break;
+                }
+            }
+
+            let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if push == 1 || push % 50 == 0 {
+                voice_debug(format!("sherpa push_audio samples={}", samples.len()));
             }
 
             Ok(())
@@ -187,7 +215,10 @@ impl SttProvider for SherpaStt {
                 return Ok(None);
             }
 
-            if runtime.recognizer.is_endpoint(&runtime.stream) {
+            let endpoint = runtime.recognizer.is_endpoint(&runtime.stream);
+            voice_debug(format!("sherpa hypothesis={text:?} endpoint={endpoint}"));
+
+            if endpoint {
                 runtime.recognizer.reset(&runtime.stream);
                 runtime.last_emitted_text.clear();
                 return Ok(Some(SttTranscript::Final(text)));

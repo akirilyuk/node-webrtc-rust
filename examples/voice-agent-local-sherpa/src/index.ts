@@ -22,6 +22,7 @@ import { SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import { SERVER_PEER_ID, VoiceAgentSessionHost } from '../../voice-agent-browser/src/session-host.js'
+import { isVoiceDebugEnabled } from '@node-webrtc-rust/sdk/voice'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PUBLIC_DIR = join(__dirname, '../public')
@@ -35,7 +36,7 @@ const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
 }
 
-const { config: voiceConfig, label: voiceLabel, modelPath } = resolveVoiceConfig()
+  const { config: voiceConfig, label: voiceLabel, modelPath, language } = resolveVoiceConfig()
 
 interface ActiveRoom {
   signaling: SignalingClient
@@ -123,10 +124,16 @@ async function main(): Promise<void> {
   console.log(`Local Sherpa voice demo at http://localhost:${PORT}`)
   console.log(`Signaling: ws://localhost:${PORT}/ws`)
   console.log(`Voice pipeline: ${voiceLabel}`)
-  console.log(`STT=local-sherpa  TTS=mock`)
+  console.log(`STT=local-sherpa (${language})  TTS=mock`)
   console.log(`SHERPA_MODEL_PATH=${modelPath}`)
   console.log('Allow microphone, connect, speak — watch partial/final STT in the event log.')
   console.log('Use the TTS form to test mock agent playback and barge-in.')
+  if (isVoiceDebugEnabled()) {
+    console.error('[voice-debug] VOICE_DEBUG=1 — verbose pipeline logs on stderr')
+    console.error('[voice-debug] WEBRTC_DEBUG=' + (process.env.WEBRTC_DEBUG ?? '0'))
+    console.error('[voice-debug] Optional: VOICE_VAD_THRESHOLD=0.01  VOICE_VAD_DISABLED=1')
+    console.error('[voice-debug] Start with: npm run start:debug --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa')
+  }
 
   const shutdown = async () => {
     for (const active of rooms.values()) {

@@ -143,7 +143,7 @@ Providers are **mix-and-match** per session. **Official API docs:** [`examples/s
 | `cartesia` | — | ✓ | `CARTESIA_API_KEY` | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
 | `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming) |
 | `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs) |
-| `local-sherpa` | ✓ | — | `SHERPA_MODEL_PATH` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
+| `local-sherpa` | ✓ | — | `SHERPA_MODEL_PATH`, `SHERPA_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
 | `mock` | ✓ | ✓ | _(none — use for CI/local)_ | — |
 
 Example pairings when a vendor only supports one direction:
@@ -159,6 +159,32 @@ tts: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice: '...' },
 ```
 
 API keys via `apiKey` in config or env vars. Never logged or returned in speech events.
+
+#### Local Sherpa-ONNX (`local-sherpa`)
+
+On-device streaming STT — no API key. Requires a downloaded **Zipformer transducer** directory (`tokens.txt` + encoder/decoder/joiner `.onnx`).
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `SHERPA_MODEL_PATH` | **Yes** | Path to extracted model directory |
+| `SHERPA_LANGUAGE` | No | `stt.language` tag (inferred from path when omitted; required for multilingual bundles) |
+
+Automatic downloads (from repo root):
+
+```bash
+npm run download-model:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-model:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa   # es, fr, de, zh, ja, ar, ru, bn, …
+```
+
+Supported languages, bundle names, and unavailable locales (Hindi, Portuguese, Italian): [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models). Full walkthrough: [`examples/voice-agent-local-sherpa/README.md`](../../examples/voice-agent-local-sherpa/README.md).
+
+```typescript
+stt: {
+  provider: 'local-sherpa',
+  language: process.env.SHERPA_LANGUAGE ?? 'en',
+  modelPath: process.env.SHERPA_MODEL_PATH,
+},
+```
 
 ### Speech events
 

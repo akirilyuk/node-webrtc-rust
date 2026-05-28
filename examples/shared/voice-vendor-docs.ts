@@ -3,7 +3,11 @@
  *
  * Single source of truth — referenced from example READMEs and presets.
  * Update here when adding a vendor or changing default models.
+ *
+ * Sherpa local model list: `sherpa-local-model-catalog.json` (shared with download scripts).
  */
+
+import sherpaCatalog from './sherpa-local-model-catalog.json'
 
 export type VoiceVendorId =
   | 'openai'
@@ -32,6 +36,24 @@ export interface VendorDocLinks {
   /** Model zoo / voice catalog when separate from API docs */
   modelsDocs?: string
 }
+
+export type SherpaLocalModelKind = 'transducer' | 'unavailable'
+
+/** One row in `sherpa-local-model-catalog.json` — streaming Zipformer bundles for `local-sherpa`. */
+export interface SherpaLocalModelEntry {
+  id: string
+  label: string
+  bundle?: string
+  language?: string
+  kind: SherpaLocalModelKind
+  note?: string
+  approxMb?: string
+}
+
+export const SHERPA_ASR_RELEASE_BASE = sherpaCatalog.releaseBase
+export const SHERPA_DEFAULT_MODEL_ID = sherpaCatalog.defaultModelId
+export const SHERPA_LOCAL_MODEL_CATALOG = sherpaCatalog.models as SherpaLocalModelEntry[]
+export const SHERPA_EXAMPLE_WORKSPACE = sherpaCatalog.exampleWorkspace
 
 /** All supported providers — cloud + local + mock. */
 export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
@@ -140,4 +162,50 @@ export function formatTtsDocsTable(): string {
       return `| ${v.label} | \`${v.id}\` | ${model} | [API docs](${link}) |`
     })
     .join('\n')
+}
+
+function sherpaDownloadScript(entry: SherpaLocalModelEntry): string {
+  if (entry.id === 'en') {
+    return '`download-model` or `download-model:en`'
+  }
+  return `\`download-model:${entry.id}\``
+}
+
+/** Markdown table: Sherpa local STT languages + npm download scripts (see voice-agent-local-sherpa). */
+export function formatSherpaLocalModelsTable(): string {
+  return SHERPA_LOCAL_MODEL_CATALOG.map((entry) => {
+    const bundle =
+      entry.kind === 'transducer' && entry.bundle
+        ? `\`…${entry.bundle.replace(/^sherpa-onnx-streaming-zipformer-/, '')}\``
+        : '*unavailable*'
+    const script = sherpaDownloadScript(entry)
+    return `| ${entry.label} | \`${entry.id}\` | ${script} | ${bundle} |`
+  }).join('\n')
+}
+
+/** Short usage block for Sherpa env vars and download commands. */
+export function formatSherpaLocalModelsUsage(): string {
+  const ws = SHERPA_EXAMPLE_WORKSPACE
+  return `List all languages (including unavailable):
+
+\`\`\`bash
+npm run download-model:list --workspace=${ws}
+\`\`\`
+
+Per-language download (examples):
+
+\`\`\`bash
+npm run download-model:es --workspace=${ws}
+npm run download-model:de --workspace=${ws}
+npm run download-model --workspace=${ws} -- --lang=zh
+\`\`\`
+
+After download, export path and language (printed by the script):
+
+\`\`\`bash
+export SHERPA_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/<bundle-name>"
+export SHERPA_LANGUAGE=de   # optional — inferred from path when omitted
+\`\`\`
+
+For the **multilingual** Japanese/Arabic bundle (\`…-ar_en_id_ja_ru_th_vi_zh-2025-02-10\`), set \`SHERPA_LANGUAGE\` to the language you speak: \`ja\`, \`ar\`, \`ru\`, \`vi\`, \`id\`, \`th\`, \`zh\`, or \`en\`.`
 }

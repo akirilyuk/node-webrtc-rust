@@ -71,7 +71,7 @@ Presets live in [`examples/shared/voice-vendor-presets.ts`](../shared/voice-vend
 | AssemblyAI | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming) | — |
 | Google Cloud | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs) | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs) |
 
-Local STT (no cloud): [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md) — [Sherpa-ONNX docs](https://k2-fsa.github.io/sherpa/onnx/)
+Local STT (no cloud): [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md) — per-language `download-model:es|fr|de|zh|…`; full list in [`VOICE_VENDOR_REFERENCE`](../shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models) · [Sherpa-ONNX docs](https://k2-fsa.github.io/sherpa/onnx/)
 
 ### Live commands (all vendors)
 

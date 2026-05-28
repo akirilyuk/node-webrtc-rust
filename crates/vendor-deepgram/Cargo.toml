@@ -1,0 +1,19 @@
+[package]
+name = "node-webrtc-rust-vendor-deepgram"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deepgram STT vendor adapter"
+
+[features]
+default = []
+live = ["dep:deepgram"]
+
+[dependencies]
+deepgram = { version = "0.6", optional = true }
+async-trait = "0.1"
+bytes = { workspace = true }
+node-webrtc-rust-speech = { path = "../speech" }
+thiserror = { workspace = true }
+tokio = { workspace = true }

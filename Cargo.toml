@@ -6,6 +6,13 @@ members = [
     "crates/conference",
     "crates/signaling",
     "crates/speech",
+    "crates/vendor-openai",
+    "crates/vendor-deepgram",
+    "crates/vendor-elevenlabs",
+    "crates/vendor-google",
+    "crates/vendor-cartesia",
+    "crates/vendor-assemblyai",
+    "crates/vendor-mock",
     "packages/bindings",
 ]
 

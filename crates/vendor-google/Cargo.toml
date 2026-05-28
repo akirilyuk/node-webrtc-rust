@@ -1,0 +1,18 @@
+[package]
+name = "node-webrtc-rust-vendor-google"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Google Cloud Speech/TTS vendor adapter"
+
+[features]
+default = []
+live = []
+
+[dependencies]
+async-trait = "0.1"
+bytes = { workspace = true }
+node-webrtc-rust-speech = { path = "../speech" }
+thiserror = { workspace = true }
+tokio = { workspace = true }

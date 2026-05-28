@@ -157,6 +157,8 @@ export declare class JsRtcDataChannel {
   bufferedAmount(): Promise<number>
   send(data: string | Buffer): Promise<void>
   close(): Promise<void>
+  setBufferedAmountLowThreshold(threshold: number): void
+  setOnBufferedAmountLow(callback: (...args: any[]) => any): void
   setOnOpen(callback: (...args: any[]) => any): void
   setOnMessage(callback: (...args: any[]) => any): void
   setOnClose(callback: (...args: any[]) => any): void
@@ -212,6 +214,8 @@ export declare class JsPeerConnection {
   setOnDataChannel(callback: (...args: any[]) => any): void
   setOnConnectionStateChange(callback: (...args: any[]) => any): void
   setOnIceConnectionStateChange(callback: (...args: any[]) => any): void
+  setOnIceGatheringStateChange(callback: (...args: any[]) => any): void
+  setOnSignalingStateChange(callback: (...args: any[]) => any): void
   setOnNegotiationNeeded(callback: (...args: any[]) => any): void
 }
 /** RTP sender returned from {@link RTCPeerConnection.addTrack}. */

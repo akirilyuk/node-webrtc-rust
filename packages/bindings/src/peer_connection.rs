@@ -6,8 +6,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use napi::JsFunction;
 use node_webrtc_rust_core::{
-    ConnectionState, IceConnectionState, IceCandidate, PeerConnection, RemoteTrack,
-    SessionDescription, debug_call,
+    ConnectionState, IceConnectionState, IceCandidate, IceGatheringState, PeerConnection,
+    RemoteTrack, SessionDescription, SignalingState, debug_call,
 };
 use tokio::sync::{mpsc, Mutex};
 
@@ -26,6 +26,8 @@ struct EventState {
     data_channels: Option<mpsc::UnboundedReceiver<node_webrtc_rust_core::DataChannel>>,
     connection_state: Option<mpsc::UnboundedReceiver<ConnectionState>>,
     ice_connection_state: Option<mpsc::UnboundedReceiver<IceConnectionState>>,
+    ice_gathering_state: Option<mpsc::UnboundedReceiver<IceGatheringState>>,
+    signaling_state: Option<mpsc::UnboundedReceiver<SignalingState>>,
     negotiation_needed: Option<mpsc::UnboundedReceiver<()>>,
 }
 
@@ -37,6 +39,8 @@ impl EventState {
             data_channels: None,
             connection_state: None,
             ice_connection_state: None,
+            ice_gathering_state: None,
+            signaling_state: None,
             negotiation_needed: None,
         }
     }
@@ -52,6 +56,8 @@ impl EventState {
         self.data_channels = Some(events.data_channels);
         self.connection_state = Some(events.connection_state);
         self.ice_connection_state = Some(events.ice_connection_state);
+        self.ice_gathering_state = Some(events.ice_gathering_state);
+        self.signaling_state = Some(events.signaling_state);
         self.negotiation_needed = Some(events.negotiation_needed);
     }
 }
@@ -303,6 +309,44 @@ impl JsPeerConnection {
             Ok(vec![
                 ctx.env
                     .create_string(&ice_connection_state_to_string(ctx.value))?,
+            ])
+        })?;
+        wire_event_channel(rx, tsfn);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_on_ice_gathering_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!("bindings::peer_connection", "set_on_ice_gathering_state_change");
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .ice_gathering_state
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| {
+            Ok(vec![
+                ctx.env
+                    .create_string(&ice_gathering_state_to_string(ctx.value))?,
+            ])
+        })?;
+        wire_event_channel(rx, tsfn);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_on_signaling_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
+        debug_call!("bindings::peer_connection", "set_on_signaling_state_change");
+        let mut events = self.events.blocking_lock();
+        events.subscribe(&self.inner);
+        let rx = events
+            .signaling_state
+            .take()
+            .expect("event receivers initialized");
+        let tsfn = create_event_callback(&env, callback, |ctx| {
+            Ok(vec![
+                ctx.env
+                    .create_string(&signaling_state_to_string(ctx.value))?,
             ])
         })?;
         wire_event_channel(rx, tsfn);

@@ -9,6 +9,7 @@ use webrtc::api::API;
 use webrtc::interceptor::registry::Registry;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+use webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState;
 use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
 use webrtc::peer_connection::signaling_state::RTCSignalingState;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -190,6 +191,16 @@ impl From<RTCIceGatheringState> for IceGatheringState {
         match state {
             RTCIceGatheringState::Gathering => Self::Gathering,
             RTCIceGatheringState::Complete => Self::Complete,
+            _ => Self::New,
+        }
+    }
+}
+
+impl From<RTCIceGathererState> for IceGatheringState {
+    fn from(state: RTCIceGathererState) -> Self {
+        match state {
+            RTCIceGathererState::Gathering => Self::Gathering,
+            RTCIceGathererState::Complete => Self::Complete,
             _ => Self::New,
         }
     }
@@ -493,6 +504,35 @@ impl PeerConnection {
             }));
     }
 
+    /// Registers a handler for ICE gathering state changes.
+    pub fn on_ice_gathering_state_change(
+        &self,
+        handler: impl Fn(IceGatheringState) + Send + Sync + 'static,
+    ) {
+        self.inner
+            .on_ice_gathering_state_change(Box::new(move |state| {
+                debug_evt!(
+                    "core::peer_connection",
+                    "icegatheringstatechange",
+                    "{state:?}"
+                );
+                handler(state.into());
+                Box::pin(async {})
+            }));
+    }
+
+    /// Registers a handler for signaling state changes.
+    pub fn on_signaling_state_change(
+        &self,
+        handler: impl Fn(SignalingState) + Send + Sync + 'static,
+    ) {
+        self.inner.on_signaling_state_change(Box::new(move |state| {
+            debug_evt!("core::peer_connection", "signalingstatechange", "{state:?}");
+            handler(state.into());
+            Box::pin(async {})
+        }));
+    }
+
     /// Subscribes to all peer connection events via async channels.
     pub fn subscribe_events(&self) -> PeerConnectionEvents {
         let (senders, events) = PeerConnectionEventSenders::new();
@@ -554,6 +594,25 @@ impl PeerConnection {
                 let _ = ice_conn_tx.send(state.into());
                 Box::pin(async {})
             }));
+
+        let ice_gather_tx = senders.ice_gathering_state;
+        self.inner
+            .on_ice_gathering_state_change(Box::new(move |state| {
+                debug_evt!(
+                    "core::peer_connection",
+                    "icegatheringstatechange",
+                    "{state:?}"
+                );
+                let _ = ice_gather_tx.send(state.into());
+                Box::pin(async {})
+            }));
+
+        let signaling_tx = senders.signaling_state;
+        self.inner.on_signaling_state_change(Box::new(move |state| {
+            debug_evt!("core::peer_connection", "signalingstatechange", "{state:?}");
+            let _ = signaling_tx.send(state.into());
+            Box::pin(async {})
+        }));
 
         let neg_tx = senders.negotiation_needed;
         self.inner.on_negotiation_needed(Box::new(move || {

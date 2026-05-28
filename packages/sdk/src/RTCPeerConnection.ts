@@ -86,6 +86,10 @@ export class RTCPeerConnection extends EventEmitter {
   onconnectionstatechange: ((event: Event) => void) | null = null
   /** Fired when {@link iceConnectionState} changes. */
   oniceconnectionstatechange: ((event: Event) => void) | null = null
+  /** Fired when {@link iceGatheringState} changes. */
+  onicegatheringstatechange: ((event: Event) => void) | null = null
+  /** Fired when {@link signalingState} changes. */
+  onsignalingstatechange: ((event: Event) => void) | null = null
   /** Fired when negotiation is required (e.g. after {@link addTrack}). */
   onnegotiationneeded: ((event: Event) => void) | null = null
 
@@ -146,6 +150,20 @@ export class RTCPeerConnection extends EventEmitter {
       const event = new Event('iceconnectionstatechange')
       this.oniceconnectionstatechange?.(event)
       this.emit('iceconnectionstatechange', event)
+    })
+
+    this.native.setOnIceGatheringStateChange((_err, state) => {
+      debugEvent('sdk::RTCPeerConnection', 'icegatheringstatechange', String(state))
+      const event = new Event('icegatheringstatechange')
+      this.onicegatheringstatechange?.(event)
+      this.emit('icegatheringstatechange', event)
+    })
+
+    this.native.setOnSignalingStateChange((_err, state) => {
+      debugEvent('sdk::RTCPeerConnection', 'signalingstatechange', String(state))
+      const event = new Event('signalingstatechange')
+      this.onsignalingstatechange?.(event)
+      this.emit('signalingstatechange', event)
     })
 
     this.native.setOnNegotiationNeeded((_err) => {

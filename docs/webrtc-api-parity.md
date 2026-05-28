@@ -22,7 +22,7 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 | ICE / SDP negotiation | 🟡 ~80% | Offer/answer, trickle ICE, STUN/TURN; several config/offer options missing |
 | Data channels | 🟡 ~70% | Send/receive; limited init options and backpressure events |
 | Audio send | 🟡 ~60% | PCM push model, not `MediaStreamTrack` capture |
-| Audio receive | 🟡 ~50% | `ontrack` fires; no decode-to-PCM in TS SDK |
+| Audio receive | 🟡 ~65% | `ontrack` + `RemoteAudioTrack.readSample()` (Opus → PCM) |
 | Video | ❌ | Types exist; no local/remote video pipeline in SDK |
 | RTP transceivers / simulcast | ❌ | Plan-style `addTrack` only |
 | Statistics | ❌ | On roadmap (v0.3) |
@@ -73,8 +73,8 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 | `iceGatheringState` | ✅ | |
 | `onconnectionstatechange` | ✅ | EventEmitter + property handler |
 | `oniceconnectionstatechange` | ✅ | |
-| `onicegatheringstatechange` | ❌ | State readable; no dedicated event |
-| `onsignalingstatechange` | ❌ | State readable; no dedicated event |
+| `onicegatheringstatechange` | ✅ | |
+| `onsignalingstatechange` | ✅ | |
 | `onicecandidate` | ✅ | |
 | `onicecandidateerror` | ❌ | |
 | `canTrickleIceCandidates` | ❌ | |
@@ -169,7 +169,7 @@ Browser: `ontrack` → attach to `<audio>` or WebAudio.
 **node-webrtc-rust:**
 
 1. **`ontrack` fires only after the remote sender calls `writeSample` at least once** (first RTP packet). Negotiation alone is insufficient.
-2. SDK does not decode remote Opus to PCM for apps — conference crate decodes internally for mixing; peer examples use native/Rust paths or signaling demos.
+2. **`RemoteAudioTrack.readSample()`** decodes inbound Opus to 48 kHz stereo PCM for app-level processing. The conference crate also decodes internally for MCU mixing.
 
 ---
 
@@ -197,10 +197,10 @@ Browser: `ontrack` → attach to `<audio>` or WebAudio.
 | `send(string \| Buffer)` | ✅ | `ArrayBuffer` / `Uint8Array` coerced |
 | `close()` | ✅ | |
 | `binaryType` | 🟡 | Property only; incoming binary as `Buffer` |
-| `bufferedAmount` | 🟡 | Property on SDK; native `bufferedAmount()` async not wired to getter |
-| `bufferedAmountLowThreshold` | 🟡 | Not enforced |
+| `bufferedAmount` | ✅ | Cached property synced from native after send and on low events |
+| `bufferedAmountLowThreshold` | ✅ | Forwarded to SCTP stack |
 | `onopen` / `onmessage` / `onclose` / `onerror` | ✅ | |
-| `onbufferedamountlow` | ❌ | |
+| `onbufferedamountlow` | ✅ | |
 | `send()` before open | ➕ | Queued until native channel ready |
 
 ---
@@ -256,8 +256,8 @@ Prioritized for **browser interop** and **your conference product**:
 ### P1 — operability
 
 5. **`getStats()`** — RTT, packets lost, jitter (v0.3 roadmap)
-6. **`onicegatheringstatechange` / `onsignalingstatechange`**
-7. **Data channel `bufferedAmount` + `onbufferedamountlow`**
+6. ~~**`onicegatheringstatechange` / `onsignalingstatechange`**~~ — done
+7. ~~**Data channel `bufferedAmount` + `onbufferedamountlow`**~~ — done
 8. **`setConfiguration()`** for mid-session TURN rotation
 
 ### P2 — advanced WebRTC
@@ -270,7 +270,7 @@ Prioritized for **browser interop** and **your conference product**:
 ### P3 — conference-specific (extensions)
 
 13. **Routing matrix API** on `MixGraph` (beyond mute)
-14. **Load / latency benchmarks** — criterion + simulated N-participant rooms (see branch `feature/mixer-load-and-parity-docs`)
+14. **Load / latency benchmarks** — criterion + simulated N-participant rooms (deferred)
 
 ---
 

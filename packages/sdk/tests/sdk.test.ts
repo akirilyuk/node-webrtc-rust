@@ -56,4 +56,13 @@ describe('SDK type surface', () => {
     await expect(fired).resolves.toBeUndefined()
     pc.close()
   })
+
+  test('RTCPeerConnection exposes ice gathering and signaling state change handlers', () => {
+    const pc = new RTCPeerConnection()
+    expect(pc.onicegatheringstatechange).toBeNull()
+    expect(pc.onsignalingstatechange).toBeNull()
+    pc.onicegatheringstatechange = () => undefined
+    pc.onsignalingstatechange = () => undefined
+    pc.close()
+  })
 })

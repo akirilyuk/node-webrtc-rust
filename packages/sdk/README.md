@@ -1,49 +1,268 @@
 # @node-webrtc-rust/sdk
 
-Browser-compatible WebRTC APIs for Node.js, backed by the Rust native engine.
+TypeScript SDK for **agentic voice workloads** and WebRTC in Node.js — backed by a Rust native engine ([NAPI-RS](https://napi.rs) + [webrtc-rs](https://github.com/webrtc-rs/webrtc)).
 
-## Exports
-
-| Import path | Purpose |
-| ----------- | ------- |
-| `@node-webrtc-rust/sdk` | W3C-style `RTCPeerConnection`, tracks, data channels |
-| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing) |
-| `@node-webrtc-rust/sdk/voice` | VoiceAgent: VAD, barge-in, STT/TTS vendors, speech events |
-
-**API coverage vs browser WebRTC:** see [`docs/webrtc-api-parity.md`](../../docs/webrtc-api-parity.md) (supported, partial, and missing APIs).
-
-**Recent APIs:** `addTransceiver`, `getTransceivers` / `getSenders` / `getReceivers`, `RTCRtpSender.replaceTrack`, `removeTrack`, `RemoteAudioTrack.readSample`, `getStats`, `setConfiguration`.
-
-Install once:
+Build phone bots, browser voice assistants, and session workers where **Node runs your LLM and tools**, and **Rust owns media timing** (VAD, barge-in, STT/TTS vendors, outbound PCM at 20 ms cadence).
 
 ```bash
 npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling
 ```
 
+## Exports
+
+| Import path | Purpose |
+| ----------- | ------- |
+| **`@node-webrtc-rust/sdk/voice`** | **VoiceAgent** — VAD, barge-in, STT/TTS vendors, speech events |
+| `@node-webrtc-rust/sdk` | W3C-style `RTCPeerConnection`, tracks, data channels |
+| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing) |
+
+**WebRTC parity vs browser:** [`docs/webrtc-api-parity.md`](../../docs/webrtc-api-parity.md)
+
+---
+
+## Voice agent — build agentic workloads
+
+Import **`@node-webrtc-rust/sdk/voice`** when you need a conversational loop without reimplementing PCM timing or vendor HTTP/WebSocket clients in Node.
+
+### Problem this solves
+
+| Without VoiceAgent | With VoiceAgent |
+| --- | --- |
+| Manual Opus decode + frame alignment | Inbound loop via `RemoteAudioTrack.readSample()` |
+| Roll your own VAD / interrupt handling | Configurable VAD + atomic TTS flush on barge-in |
+| STT/TTS SDK calls in Node + glue to WebRTC | Rust vendor adapters; Node gets text events + `sendTextToTTS()` |
+| Race between user speech and agent playback | Native buffer flush **before** `barge_in` reaches JS |
+
+### Pipeline B (recommended)
+
+STT final text **up** to Node → your LLM → TTS text **down** to Rust → outbound WebRTC track:
+
+```typescript
+import { LocalAudioTrack, RTCPeerConnection } from '@node-webrtc-rust/sdk'
+import { VoiceAgent } from '@node-webrtc-rust/sdk/voice'
+
+// 1. Connect WebRTC (browser, SIP gateway, or another Node peer)
+const pc = new RTCPeerConnection({ iceServers: [...] })
+const agentTrack = new LocalAudioTrack('agent', 'session-1')
+await pc.addTrack(agentTrack)
+
+// Resolve tracks after negotiation (see examples/voice-agent/)
+let userTrack: RemoteAudioTrack
+pc.ontrack = (e) => { if (e.track.kind === 'audio') userTrack = e.track as RemoteAudioTrack }
+
+// 2. Configure one VoiceAgent per conversation
+const agent = new VoiceAgent({
+  vad: {
+    enabled: true,
+    threshold: 0.5,
+    minSpeechDurationMs: 250,
+    minSilenceDurationMs: 100,
+    bargeIn: { enabled: true, flushTts: true },
+    gateStt: false, // set true to only send PCM to STT during detected speech
+  },
+  stt: { provider: 'deepgram', model: 'nova-2', language: 'en' },
+  tts: { provider: 'openai', model: 'tts-1', voice: 'alloy' },
+  events: { mode: 'both' },
+})
+
+// 3. Bind tracks — one attach() = one session
+await agent.attach({ inboundTrack: userTrack, outboundTrack: agentTrack })
+await agent.start()
+
+// 4. Agent loop — your business logic stays in TypeScript
+agent.on('user_speech_final', async (event) => {
+  const stream = await myLLM.chat(event.text!)
+  for await (const token of stream) {
+    await agent.sendTextToTTS(token)
+  }
+})
+
+agent.on('barge_in', () => {
+  cancelLLMStream()
+  // flushTts already ran in Rust if bargeIn.flushTts === true
+})
+```
+
+### Attach model
+
+`attach({ inboundTrack, outboundTrack })` binds **one peer connection session**:
+
+| Track | Direction | Used for |
+| --- | --- | --- |
+| `inboundTrack` | User → agent (`RemoteAudioTrack`) | VAD + STT (`readSample` loop) |
+| `outboundTrack` | Agent → user (`LocalAudioTrack`) | TTS PCM after `sendTextToTTS()` |
+
+Multiple concurrent callers = multiple `VoiceAgent` instances, each with its own attach context.
+
+### Configuration reference
+
+```typescript
+interface VoiceAgentConfig {
+  vad?: {
+    enabled?: boolean              // default true
+    provider?: 'silero'            // Silero when native built with silero-vad feature
+    threshold?: number             // 0.0–1.0, default 0.5
+    minSpeechDurationMs?: number
+    minSilenceDurationMs?: number
+    speechPadMs?: number
+    sampleRate?: 8000 | 16000
+    bargeIn?: {
+      enabled?: boolean            // emit barge_in on user speech start
+      flushTts?: boolean           // flush TTS buffer before event (default true)
+    }
+    gateStt?: boolean              // only feed STT during detected speech
+  }
+  stt?: {
+    provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'mock'
+    model?: string
+    language?: string
+    apiKey?: string                // or env var — see vendor table
+  }
+  tts?: {
+    provider: 'openai' | 'elevenlabs' | 'google' | 'cartesia' | 'mock'
+    model?: string
+    voice?: string
+    apiKey?: string
+  }
+  events?: {
+    mode?: 'callback' | 'stream' | 'both'  // default 'both'
+  }
+}
+```
+
+### STT/TTS vendors
+
+Providers are **mix-and-match** per session:
+
+| Provider | STT | TTS | Typical env var |
+| --- | --- | --- | --- |
+| `openai` | ✓ | ✓ | `OPENAI_API_KEY` |
+| `deepgram` | ✓ | — | `DEEPGRAM_API_KEY` |
+| `elevenlabs` | — | ✓ | `ELEVENLABS_API_KEY` |
+| `cartesia` | — | ✓ | `CARTESIA_API_KEY` |
+| `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` |
+| `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` |
+| `mock` | ✓ | ✓ | _(none — use for CI/local)_ |
+
+Example pairings when a vendor only supports one direction:
+
+```typescript
+// Deepgram listen + OpenAI speech
+stt: { provider: 'deepgram', model: 'nova-2', language: 'en' },
+tts: { provider: 'openai', model: 'tts-1', voice: 'alloy' },
+
+// AssemblyAI STT + ElevenLabs TTS
+stt: { provider: 'assemblyai', model: 'universal-streaming-english' },
+tts: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice: '...' },
+```
+
+API keys via `apiKey` in config or env vars. Never logged or returned in speech events.
+
+### Speech events
+
+Two layers — **fast VAD** vs **text-bearing STT**:
+
+| Event | Source | Use in your agent |
+| --- | --- | --- |
+| `user_speaking_start` | VAD | Early interrupt; triggers barge-in |
+| `user_speaking_end` | VAD | End-of-utterance hint |
+| `user_speech_partial` | STT | Live captions, prefetch |
+| `user_speech_final` | STT | **Primary LLM turn trigger** |
+| `agent_speaking_start` / `end` | TTS playback | UI / state machine |
+| `barge_in` | VAD + config | Cancel LLM/TTS pipeline |
+| `error` | Any | Vendor or pipeline failure |
+
+**Callback delivery:**
+
+```typescript
+agent.on('user_speech_final', (event) => { /* event.text */ })
+agent.off('user_speech_final', handler)
+```
+
+**Stream delivery:**
+
+```typescript
+for await (const event of agent.speechEvents()) {
+  switch (event.type) {
+    case 'user_speech_final':
+      await handleTurn(event.text!)
+      break
+    case 'barge_in':
+      await cancelTurn()
+      break
+  }
+}
+```
+
+Set `events.mode: 'both'` to use handlers and the iterator on the same session.
+
+### API summary
+
+| Method | Description |
+| --- | --- |
+| `attach({ inboundTrack, outboundTrack })` | Bind one PC session |
+| `start()` | Start VAD/STT pipeline and inbound PCM loop |
+| `stop()` | Stop pipeline; ends `speechEvents()` iterator |
+| `sendTextToTTS(text)` | Synthesize via TTS vendor → outbound track |
+| `flushTts()` | Clear pending TTS (also used when `bargeIn.flushTts: false`) |
+| `on(type, fn)` / `off` | Callback handlers |
+| `speechEvents()` | Async generator of all speech events |
+
+### Examples and live vendor testing
+
+From the repo root (after `npm run setup`):
+
+| Command | Purpose |
+| --- | --- |
+| `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | Mock vendors, `on()` handlers |
+| `npm run start:stream --workspace=...` | Mock vendors, `speechEvents()` |
+| `npm run start:barge-in --workspace=...` | VAD + `flushTts` |
+| `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=...` | Live OpenAI preset |
+| `npm run start:live:deepgram` / `elevenlabs` / … | Per-vendor manual tests |
+
+See [`examples/voice-agent/README.md`](../../examples/voice-agent/README.md) for env vars and track-direction notes.
+
+**SDK live tests** (opt-in):
+
+```bash
+VOICE_LIVE_TEST=1 VOICE_LIVE_OPENAI=1 OPENAI_API_KEY=sk-... \
+  npm run test --workspace=@node-webrtc-rust/sdk -- voice-live
+```
+
+Use **`mock`** providers for CI and learning the API. Live vendor HTTP/WebSocket runs in Rust `vendor-*` crates; default builds use stubs until optional `live` features are enabled.
+
 ---
 
 ## WebRTC core
 
+Low-level transport for attaching `VoiceAgent` to browsers, telephony gateways, or Node peers:
+
 ```typescript
-import { RTCPeerConnection } from '@node-webrtc-rust/sdk'
+import { RTCPeerConnection, LocalAudioTrack, RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 import { SignalingServer, SignalingClient, autoNegotiate } from '@node-webrtc-rust/signaling'
 ```
 
-See the [root README](../../README.md) for a full peer-connection quick start.
+**Recent APIs:** `addTransceiver`, `getTransceivers` / `getSenders` / `getReceivers`, `RTCRtpSender.replaceTrack`, `removeTrack`, `RemoteAudioTrack.readSample`, `getStats`, `setConfiguration`.
+
+Peer connection quick start: [root README](../../README.md#webrtc-core-and-conference).
+
+PCM conventions (kick frame, 20 ms frames): [`examples/shared/pcm-streaming.ts`](../../examples/shared/pcm-streaming.ts).
 
 ---
 
 ## Conference rooms
 
-Conference APIs live under the `/conference` subpath. They manage **who** is in a room, **mute state**, and **signaling wiring**. Audio capture, decode, mix, and encode run in the native `crates/conference` data plane — TypeScript never handles PCM or Opus buffers.
+Multi-participant MCU mixing — separate from single-session `VoiceAgent`, but useful for group voice apps.
+
+Conference APIs live under **`@node-webrtc-rust/sdk/conference`**. TypeScript manages room lifecycle and mute policy; Rust mixes Opus/PCM in `crates/conference`.
 
 ### Control plane vs data plane
 
 | Layer | Package / crate | Responsibility |
 | ----- | ---------------- | -------------- |
-| Control plane | `@node-webrtc-rust/sdk/conference` | Room lifecycle, mute/kick admin APIs, signaling bridge |
-| Signaling | `@node-webrtc-rust/signaling` | WebSocket SDP/ICE relay between browsers and Node |
-| Data plane | `@node-webrtc-rust/bindings` → `crates/conference` | Peer connections, mixer graph, personalized output |
+| Control plane | `sdk/conference` | Room lifecycle, mute/kick, signaling bridge |
+| Signaling | `@node-webrtc-rust/signaling` | WebSocket SDP/ICE relay |
+| Data plane | `bindings` → `crates/conference` | Peer connections, mixer graph |
 
 ### Quick start
 
@@ -71,88 +290,40 @@ await conference.createRoom('demo', {
 })
 ```
 
-See [`examples/conference-room`](../../examples/conference-room/) for a full browser demo.
+See [`examples/conference-room`](../../examples/conference-room/) for a browser demo.
 
 ### Mute modes
 
 | Mode | API | Effect |
 | ---- | --- | ------ |
-| **Global mute** | `muteParticipant(id, { scope: 'global' })` | Target is excluded from **all** listeners' mixes |
-| **Listener mute** | `muteParticipant(id, { scope: 'listener', listenerId })` | Only `listenerId` stops hearing `id`; others unchanged |
-| **Room-wide silence** | `setMixingEnabled(false)` | Mixer outputs silence for everyone; per-participant mute state is preserved |
-
-Use `unmuteParticipant` with the same scope to reverse a mute.
+| **Global mute** | `muteParticipant(id, { scope: 'global' })` | Target excluded from **all** listeners' mixes |
+| **Listener mute** | `muteParticipant(id, { scope: 'listener', listenerId })` | Only `listenerId` stops hearing `id` |
+| **Room-wide silence** | `setMixingEnabled(false)` | Mixer outputs silence; mute state preserved |
 
 ### Authentication (production)
 
-v1 does not enforce roles in the library. Document and enforce policy in your app:
+The library does not enforce roles. Gate admin actions in your app:
 
 | Action | Recommended policy |
 | ------ | ------------------- |
-| `muteParticipant` with `scope: 'global'` | Admin / moderator only |
-| `setMixingEnabled(false)` | Admin / moderator only |
-| `kickParticipant` | Admin / moderator only |
-| `muteParticipant` with `scope: 'listener'` | Owning client (local preference) |
-
-Gate REST or RPC routes that call these methods before forwarding to `ConferenceRoom`.
+| Global mute / kick / mixing off | Admin / moderator only |
+| Listener-scoped mute | Owning client (preference) |
 
 ### Events
 
-`ConferenceServer` extends `EventEmitter` and emits:
-
-- `room-created`, `room-destroyed`
-- `participant-joined`, `participant-left`, `participant-kicked`, `participant-muted`
-- `mixing-enabled-changed`
-- `error`
-
-Enable debug logging with `WEBRTC_DEBUG=1` to trace method calls and events.
+`ConferenceServer` emits: `room-created`, `room-destroyed`, `participant-joined`, `participant-left`, `participant-kicked`, `participant-muted`, `mixing-enabled-changed`, `error`.
 
 ---
 
-## Voice agent (v0.3)
+## Debug logging
 
-Import **`@node-webrtc-rust/sdk/voice`** for conversational loops without reimplementing PCM timing or vendor HTTP/WebSocket clients in Node.
-
-```typescript
-import { VoiceAgent } from '@node-webrtc-rust/sdk/voice'
-
-const agent = new VoiceAgent({
-  vad: {
-    enabled: true,
-    threshold: 0.5,
-    bargeIn: { enabled: true, flushTts: true },
-    gateStt: false,
-  },
-  stt: { provider: 'mock', language: 'en' },
-  tts: { provider: 'mock', voice: 'demo' },
-  events: { mode: 'both' },
-})
-
-await agent.attach({ inboundTrack: remoteTrack, outboundTrack: localTrack })
-await agent.start()
-
-agent.on('user_speech_final', async (event) => {
-  await agent.sendTextToTTS(`You said: ${event.text}`)
-})
-
-for await (const event of agent.speechEvents()) {
-  console.log(event.type, event.text ?? '')
-}
+```bash
+WEBRTC_DEBUG=1 node your-agent.js
 ```
 
-| Method / API | Description |
-| --- | --- |
-| `attach({ inboundTrack, outboundTrack })` | Bind one PC session (inbound remote + outbound local track) |
-| `start()` / `stop()` | Run VAD/STT pipeline and inbound PCM loop |
-| `sendTextToTTS(text)` | Synthesize via configured TTS vendor → outbound track |
-| `flushTts()` | Clear pending TTS (also triggered by barge-in when `flushTts: true`) |
-| `on(type, fn)` / `off` | Callback delivery (`events.mode`: `callback` or `both`) |
-| `speechEvents()` | Async generator (`stream` or `both`) |
+Traces SDK, bindings, and Rust core on stderr with `[webrtc-debug]` prefix.
 
-**STT vendors:** `openai`, `deepgram`, `google`, `assemblyai`, `mock`  
-**TTS vendors:** `openai`, `elevenlabs`, `google`, `cartesia`, `mock`
-
-Use **`mock`** for CI and local demos. Live vendor adapters compile as stubs until optional `live` features are enabled on vendor crates.
+---
 
 ## License
 

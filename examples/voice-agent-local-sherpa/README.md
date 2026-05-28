@@ -11,7 +11,7 @@ This example mirrors [`voice-agent-browser`](../voice-agent-browser/README.md) b
 
 Your **browser microphone** → WebRTC → Node **VoiceAgent** → Sherpa `OnlineRecognizer` → partial/final events on the `voice-control` DataChannel.
 
-**VAD / barge-in:** configured in [`resolve-voice-config.ts`](./src/resolve-voice-config.ts) from `VOICE_AGENT_VAD_PRESET` (good defaults; only `threshold: 0.05` for energy VAD). Guide: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md).
+**VAD / barge-in:** **energy VAD** via `VOICE_AGENT_VAD_PRESET` (`provider: 'energy'`, `threshold: 0.05`). Silero is optional and not in the shipped `.node` — see [`VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#vad-providers-energy-vs-silero).
 
 ---
 

@@ -99,8 +99,10 @@ impl Default for VadSampleRate {
 pub struct VadConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_silero_provider")]
+    /// `"energy"` (RMS, shipped in default native build) or `"silero"` (needs `silero-vad` feature).
+    #[serde(default = "default_vad_provider")]
     pub provider: String,
+    /// Energy: RMS level (~0.05–0.2 typical). Silero: speech probability (~0.5 typical).
     #[serde(default = "default_vad_threshold")]
     pub threshold: f32,
     #[serde(default = "default_min_speech_ms")]
@@ -126,12 +128,12 @@ pub struct VadConfig {
     pub stt_gate_hold_ms: u32,
 }
 
-fn default_silero_provider() -> String {
-    "silero".to_string()
+fn default_vad_provider() -> String {
+    "energy".to_string()
 }
 
 fn default_vad_threshold() -> f32 {
-    0.5
+    0.15
 }
 
 fn default_min_speech_ms() -> u32 {
@@ -155,7 +157,7 @@ impl Default for VadConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            provider: default_silero_provider(),
+            provider: default_vad_provider(),
             threshold: default_vad_threshold(),
             min_speech_duration_ms: default_min_speech_ms(),
             min_silence_duration_ms: default_min_silence_ms(),

@@ -95,8 +95,8 @@ Multiple concurrent callers = multiple `VoiceAgent` instances, each with its own
 interface VoiceAgentConfig {
   vad?: {
     enabled?: boolean              // default true
-    provider?: 'silero'            // Silero when native built with silero-vad feature
-    threshold?: number             // 0.0–1.0, default 0.5
+    provider?: 'energy' | 'silero'   // default energy; silero errors at attach if silero-vad not compiled in
+    threshold?: number             // energy ~0.05–0.2; silero probability ~0.5
     minSpeechDurationMs?: number
     minSilenceDurationMs?: number
     speechPadMs?: number           // pre-roll ring capacity (ms), default 300
@@ -211,7 +211,7 @@ Two layers — **fast VAD** vs **text-bearing STT**:
 
 ### VAD and barge-in
 
-**Full guide:** [`VOICE-VAD-AND-BARGE-IN.md`](./VOICE-VAD-AND-BARGE-IN.md) — use cases, defaults, when to tune, two-peer layouts.
+**Full guide:** [`VOICE-VAD-AND-BARGE-IN.md`](./VOICE-VAD-AND-BARGE-IN.md) — **energy vs Silero**, weight/comparison, use cases, defaults, when to tune.
 
 **Quick start:** use `VOICE_AGENT_VAD_PRESET` (or omit `vad` and only set `gateStt: true` if you stream STT). Defaults are aimed at phone bots: 250 ms min speech, 300 ms min silence (no split on TTS word gaps), barge-in on VAD `SpeechStart`, `sttGateHoldMs` 2500.
 

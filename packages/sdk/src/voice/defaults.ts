@@ -10,7 +10,8 @@ import type { VadConfig } from './types.js'
 /** Library defaults (omit `vad` in VoiceAgentConfig to use the same in Rust). */
 export const DEFAULT_VOICE_AGENT_VAD: VadConfig = {
   enabled: true,
-  threshold: 0.5,
+  provider: 'energy',
+  threshold: 0.15,
   minSpeechDurationMs: 250,
   minSilenceDurationMs: 300,
   speechPadMs: 300,

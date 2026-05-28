@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 description = "NAPI-RS bindings exposing WebRTC and mixing APIs to Node.js"
 
+[features]
+default = []
+# Opt-in Silero ONNX VAD (requires ONNX Runtime at runtime). Default npm build uses energy VAD only.
+silero-vad = ["node-webrtc-rust-speech/silero-vad"]
+
 [lib]
 crate-type = ["cdylib"]
 

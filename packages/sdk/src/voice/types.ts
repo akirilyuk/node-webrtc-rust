@@ -24,7 +24,9 @@ export interface BargeInConfig {
 /** See VOICE-VAD-AND-BARGE-IN.md — prefer VOICE_AGENT_VAD_PRESET for voice bots. */
 export interface VadConfig {
   enabled?: boolean
-  provider?: 'silero'
+  /** `energy` = RMS VAD (shipped in default `.node`). `silero` = neural VAD if native built with `silero-vad`. */
+  provider?: 'energy' | 'silero'
+  /** Energy: ~0.05–0.2. Silero: speech probability ~0.3–0.6. */
   threshold?: number
   minSpeechDurationMs?: number
   minSilenceDurationMs?: number

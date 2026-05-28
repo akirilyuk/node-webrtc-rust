@@ -40,31 +40,64 @@ impl VoiceActivityDetector for EnergyVad {
 
 #[cfg(feature = "silero-vad")]
 pub struct SileroVad {
-    inner: silero_vad_rust::SileroVad,
+    model: silero_vad_rust::silero_vad::model::OnnxModel,
     threshold: f32,
+    sample_rate: u32,
+    pending: Vec<f32>,
+    last_prob: f32,
 }
 
 #[cfg(feature = "silero-vad")]
 impl SileroVad {
     pub fn new(threshold: f32, sample_rate: crate::config::VadSampleRate) -> SpeechResult<Self> {
-        let inner = silero_vad_rust::SileroVad::new(sample_rate.as_u32())
+        let sample_rate = sample_rate.as_u32();
+        let model = silero_vad_rust::load_silero_vad()
             .map_err(|e| crate::error::SpeechError::Vad(e.to_string()))?;
-        Ok(Self { inner, threshold })
+        Ok(Self {
+            model,
+            threshold,
+            sample_rate,
+            pending: Vec::new(),
+            last_prob: 0.0,
+        })
+    }
+
+    fn chunk_size(&self) -> usize {
+        if self.sample_rate == 8_000 {
+            256
+        } else {
+            512
+        }
     }
 }
 
 #[cfg(feature = "silero-vad")]
 impl VoiceActivityDetector for SileroVad {
     fn reset(&mut self) {
-        self.inner.reset();
+        self.model.reset_states();
+        self.pending.clear();
+        self.last_prob = 0.0;
     }
 
     fn process_mono_frame(&mut self, mono_i16: &[i16], sample_rate: u32) -> SpeechResult<bool> {
-        let prob = self
-            .inner
-            .predict(mono_i16, sample_rate)
-            .map_err(|e| crate::error::SpeechError::Vad(e.to_string()))?;
-        Ok(prob >= self.threshold)
+        const I16_SCALE: f32 = 1.0 / i16::MAX as f32;
+        self.pending.extend(
+            mono_i16
+                .iter()
+                .map(|&s| f32::from(s) * I16_SCALE),
+        );
+
+        let chunk = self.chunk_size();
+        while self.pending.len() >= chunk {
+            let frame: Vec<f32> = self.pending.drain(..chunk).collect();
+            let output = self
+                .model
+                .forward_chunk(&frame, sample_rate)
+                .map_err(|e| crate::error::SpeechError::Vad(e.to_string()))?;
+            self.last_prob = output.get((0, 0)).copied().unwrap_or(0.0);
+        }
+
+        Ok(self.last_prob >= self.threshold)
     }
 }
 
@@ -93,10 +126,21 @@ impl VadEngine {
             }
             #[cfg(not(feature = "silero-vad"))]
             {
-                VadBackend::Energy(EnergyVad::new(config.threshold))
+                return Err(crate::error::SpeechError::Config(
+                    "vad.provider is \"silero\" but this native build was compiled without \
+                     the silero-vad feature (only energy VAD is available). Use \
+                     vad.provider \"energy\" or rebuild with \
+                     node-webrtc-rust-speech features = [\"silero-vad\"] on the bindings crate."
+                        .into(),
+                ));
             }
-        } else {
+        } else if config.provider == "energy" || config.provider.is_empty() {
             VadBackend::Energy(EnergyVad::new(config.threshold))
+        } else {
+            return Err(crate::error::SpeechError::Config(format!(
+                "unsupported vad.provider \"{}\" (use \"energy\" or \"silero\")",
+                config.provider
+            )));
         };
 
         Ok(Self {

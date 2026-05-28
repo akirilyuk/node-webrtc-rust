@@ -8,7 +8,8 @@ description = "Voice agent orchestration: VAD, STT/TTS pipeline, and speech even
 
 [features]
 default = ["energy-vad"]
-silero-vad = ["dep:silero-vad-rust"]
+# Pin ort =2.0.0-rc.10 (matches silero-vad-rust); rc.12 breaks ndarray alignment.
+silero-vad = ["dep:silero-vad-rust", "dep:ort"]
 energy-vad = []
 
 [dependencies]
@@ -18,7 +19,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-silero-vad-rust = { version = "6.2", optional = true }
+silero-vad-rust = { version = "6.2.1", optional = true, default-features = false }
+ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["ndarray"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

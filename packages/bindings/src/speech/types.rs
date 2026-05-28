@@ -101,8 +101,8 @@ impl From<JsVadConfig> for VadConfig {
     fn from(value: JsVadConfig) -> Self {
         Self {
             enabled: value.enabled.unwrap_or(true),
-            provider: value.provider.unwrap_or_else(|| "silero".to_string()),
-            threshold: value.threshold.unwrap_or(0.5) as f32,
+            provider: value.provider.unwrap_or_else(|| "energy".to_string()),
+            threshold: value.threshold.unwrap_or(0.15) as f32,
             min_speech_duration_ms: value.min_speech_duration_ms.unwrap_or(250),
             min_silence_duration_ms: value.min_silence_duration_ms.unwrap_or(300),
             speech_pad_ms: value.speech_pad_ms.unwrap_or(300),

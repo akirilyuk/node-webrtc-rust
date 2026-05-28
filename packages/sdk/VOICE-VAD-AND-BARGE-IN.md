@@ -30,7 +30,8 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | Field | Default | Role |
 |-------|---------|------|
 | `vad.enabled` | `true` | Inbound VAD on |
-| `vad.threshold` | `0.5` | Silero-style sensitivity (see energy VAD note below) |
+| `vad.provider` | `energy` | RMS VAD in default native build |
+| `vad.threshold` | `0.15` | Energy RMS default (not Silero 0.5) |
 | `vad.minSpeechDurationMs` | `250` | Min voiced time before `user_speaking_start` |
 | `vad.minSilenceDurationMs` | `300` | Min silence before `user_speaking_end` (avoids TTS word-gap splits) |
 | `vad.speechPadMs` | `300` | Pre-roll ring size for `gateStt` (not subtracted from speech start) |
@@ -41,7 +42,81 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | `vad.bargeIn.useVad` | `true` | Auto barge on VAD `SpeechStart` |
 | `vad.bargeIn.flushTts` | `true` | Clear pending TTS PCM on barge-in |
 
-**Energy VAD fallback** (no Silero feature): the Sherpa example uses `threshold: 0.05` because RMS energy scores differ from Silero probabilities. See [Local Sherpa example](#local-sherpa-on-device).
+**Shipped native build** uses **energy VAD** only (`provider: "energy"`). See [VAD providers](#vad-providers-energy-vs-silero) below.
+
+---
+
+## VAD providers (energy vs Silero)
+
+Two backends share the same `VadConfig` timing fields (`minSpeechDurationMs`, `minSilenceDurationMs`, `speechPadMs`, barge-in, `gateStt`). Only **detection** differs.
+
+### How to choose
+
+| `vad.provider` | When to use |
+|----------------|-------------|
+| **`energy`** (default) | **npm `build:native` / published binaries** — no extra deps, tune `threshold` for your mic/noise floor |
+| **`silero`** | Custom native build with `silero-vad` Cargo feature **and** `provider: "silero"` — better speech vs noise, heavier binary |
+
+```typescript
+// Shipped binary (energy) — recommended default
+vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'energy', threshold: 0.15 }
+
+// Custom Silero build only
+vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'silero', threshold: 0.5 }
+```
+
+If you set `provider: 'silero'` on the **stock** `.node` without rebuilding, `VoiceAgent` / `attach` fails with a config error (no silent fallback). Use `provider: 'energy'` or rebuild with `silero-vad`.
+
+### Comparison
+
+| | **Energy** | **Silero** |
+|---|------------|------------|
+| **In shipped `.node`** | Yes (default Cargo feature `energy-vad`) | No |
+| **Algorithm** | RMS of mono PCM vs `threshold` | Small ONNX model (~309k params), probability vs `threshold` |
+| **Model / runtime size** | None (inline math) | Model ~**1–2 MB** + **ONNX Runtime** (`ort`) linked into native — typically **tens of MB** extra on the `.node` vs energy |
+| **CPU per 20 ms frame** | Negligible (one RMS) | ~**&lt;1 ms** per ~30 ms chunk (upstream Silero docs; plus ORT overhead) |
+| **Threshold scale** | RMS ~**0.05–0.2** (Sherpa example uses `0.05`) | Probability ~**0.3–0.6** (default config uses `0.5` when you opt into Silero) |
+| **False triggers** | Tones, keyboard, loud noise can look like “speech” | Generally fewer false starts in noise |
+| **Tuning** | `threshold`, `minSpeechDurationMs` | Same timing fields + Silero `threshold` |
+| **Sample rate** | 8 / 16 kHz via `vad.sampleRate` | 8 / 16 kHz (Silero backend) |
+
+### Weight (how heavy is Silero?)
+
+Rough breakdown for planning — exact numbers depend on platform and static vs dynamic linking:
+
+| Component | Energy | Silero |
+|-----------|--------|--------|
+| Extra Rust code | A few KB | `silero-vad-rust` + **`ort` (ONNX Runtime)** |
+| Embedded model | — | ~**1.2–2.2 MB** (v5/v6 ONNX; upstream cites &lt;2 MB JIT) |
+| **Typical `.node` delta** | **0** (baseline) | Often **+20–50 MB** or more when ORT is linked statically (WebRTC + Sherpa already dominate total size; Silero still adds a large step) |
+
+Published macOS arm64 `.node` today is ~**90 MB** (WebRTC, vendors, Sherpa optional paths, etc.) — energy VAD does not move that needle. Silero is optional precisely because of ORT + model cost.
+
+**Status:** `silero-vad` is an optional feature on `node-webrtc-rust-speech` and `node-webrtc-rust-bindings`. Default npm / CI builds use **energy only**. Silero is **documented, opt-in, not CI-shipped** (ORT + model size).
+
+### Enabling Silero (maintainers / custom builds)
+
+1. Build native with the bindings feature (speech pins `ort = 2.0.0-rc.10` for `silero-vad-rust` compatibility):
+
+   ```bash
+   cd node-webrtc-rust
+   npm run build:native -- --features silero-vad
+   ```
+
+   Or enable `features = ["silero-vad"]` on the bindings crate / `node-webrtc-rust-speech` dependency in `packages/bindings/Cargo.toml`, then `npm run build:native`.
+
+2. Run with `vad: { provider: 'silero', threshold: 0.5, sampleRate: 16000 }`.
+
+There is **no** runtime toggle: one backend per compiled `.node`.
+
+### Which should I use?
+
+| Situation | Recommendation |
+|-----------|----------------|
+| Default npm package, demos, Sherpa local example | **`energy`** + `VOICE_AGENT_VAD_PRESET`; tune `threshold` (Sherpa uses `0.05`) |
+| Noisy office, fan, music bleed, false barge-in | Try higher `minSpeechDurationMs` first; then consider a **Silero custom build** |
+| Maximum simplicity, CI, edge devices | **Energy** |
+| You control native builds and want best VAD quality | **Silero** (once feature build is green) |
 
 ---
 
@@ -229,7 +304,7 @@ Pre-roll buffer capacity for `gateStt` only. Rarely change; does **not** delay `
 | **No false interrupts from beeps** | Keep defaults; raise `minSpeechDurationMs` to 300 first |
 | **No auto interrupt** | `bargeIn: { useVad: false }` + `flushTts()` |
 | **STT-only leg** | `gateStt: true`, `bargeIn.enabled: false` |
-| **Local Sherpa** | Use example `resolve-voice-config` (`threshold: 0.05` for energy VAD) |
+| **Local Sherpa** | `VOICE_AGENT_VAD_PRESET` + `threshold: 0.05` for energy VAD on quiet RMS scale |
 
 ---
 

@@ -64,7 +64,8 @@ const LOCAL_SHERPA_VOICE_CONFIG = (
   events: { mode: 'both' },
   vad: {
     ...VOICE_AGENT_VAD_PRESET,
-    // Energy VAD (when Silero feature off): RMS scale — not Silero's 0.5 default.
+    provider: 'energy',
+    // Energy RMS scale on loopback — lower than default 0.15 for reliable Sherpa demos.
     threshold: 0.05,
   },
 })

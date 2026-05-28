@@ -13,6 +13,33 @@ fn stereo_frame(samples_per_channel: usize, amplitude: i16) -> Vec<u8> {
     pcm
 }
 
+#[cfg(not(feature = "silero-vad"))]
+#[test]
+fn silero_provider_errors_when_feature_not_compiled() {
+    let mut config = VadConfig::default();
+    config.provider = "silero".to_string();
+    match VadEngine::new(config) {
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("silero") && msg.contains("silero-vad"),
+                "unexpected error: {msg}"
+            );
+        }
+        Ok(_) => panic!("silero must fail without silero-vad feature"),
+    }
+}
+
+#[test]
+fn unsupported_vad_provider_errors() {
+    let mut config = VadConfig::default();
+    config.provider = "webrtc".to_string();
+    match VadEngine::new(config) {
+        Err(e) => assert!(e.to_string().contains("webrtc")),
+        Ok(_) => panic!("unknown provider must fail"),
+    }
+}
+
 #[test]
 fn energy_vad_detects_loud_frame() {
     let mut config = VadConfig::default();

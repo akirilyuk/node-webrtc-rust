@@ -355,10 +355,7 @@ publish_dir() {
 verify_on_registry() {
   local pkg="$1"
   [[ "$DRY_RUN" == true ]] && return 0
-  if ! npm view "${pkg}@${VERSION}" version &>/dev/null; then
-    echo "Not on npm registry after publish: ${pkg}@${VERSION}" >&2
-    exit 1
-  fi
+  bash "$ROOT/scripts/ci/wait-for-npm-package.sh" "$pkg" "$VERSION"
 }
 
 echo "==> Publish platform binding packages (must go first)"

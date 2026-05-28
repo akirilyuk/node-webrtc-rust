@@ -1,0 +1,18 @@
+[package]
+name = "node-webrtc-rust-vendor-assemblyai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AssemblyAI STT in-repo WebSocket client"
+
+[dependencies]
+async-trait = "0.1"
+bytes = { workspace = true }
+node-webrtc-rust-speech = { path = "../speech" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["rustls-tls-webpki-roots"] }

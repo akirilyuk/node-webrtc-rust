@@ -24,7 +24,7 @@ Commit frequently in small, logical units. Each commit should represent one cohe
 - Never bundle unrelated changes into a single commit
 - A single task may produce multiple commits if it has distinct logical steps (e.g., "add types" then "add implementation" then "add tests")
 - Never commit broken intermediate states
-- **Before commit:** run [`pre-commit-quality.mdc`](pre-commit-quality.mdc) (`bash scripts/ci/run-pr-quality.sh`)
+- **Before commit:** run [`pre-commit-quality.mdc`](pre-commit-quality.mdc) — `run-pr-quality.sh`, `npm run build:native`, `run-pr-tests-full.sh`
 - **New SDK APIs:** extend examples per [`examples-workflow.mdc`](examples-workflow.mdc)
 
 ## Commit order within a task

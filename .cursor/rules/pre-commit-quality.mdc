@@ -5,33 +5,46 @@ alwaysApply: true
 
 # Pre-commit quality gates
 
-**Before creating any commit**, run the checks that CI will run. Do not rely on partial checks (e.g. typecheck alone).
+**Before creating any commit**, run the checks that CI will run. Do not rely on partial checks (e.g. typecheck or quality alone).
 
 From repo root:
 
 ```bash
 bash scripts/ci/run-pr-quality.sh
+npm run build:native
+bash scripts/ci/run-pr-tests-full.sh
 ```
 
-This mirrors the PR **Typecheck & lint** job:
+Or the all-in-one local mirror (when Docker is available):
 
-1. `npm ci`
-2. `npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json` (sdk + signaling **sources**, not workspace dist)
-3. `npm run lint` (eslint — catches unused imports, `import type`, etc.)
+```bash
+npm run ci:verify:checks:docker
+```
+
+## What each step covers
+
+| Step | Mirrors CI job | Catches |
+|------|----------------|---------|
+| `run-pr-quality.sh` | Typecheck & lint | eslint, unified tsc (sdk + signaling sources) |
+| `build:native` | Compile native | Stale `.node` missing new NAPI methods (e.g. `setOnIceGatheringStateChange`) |
+| `run-pr-tests-full.sh` | Quality + Test | `cargo test`, `npm test` (sdk e2e, signaling, vitest) |
+
+`run-pr-tests-full.sh` = `run-pr-quality.sh` + `run-pr-integration.sh`. On macOS, `build:native` produces the host debug `.node` that `npm test` loads.
 
 ### When to run
 
 | Changed paths | Required before commit |
 |---------------|------------------------|
-| `packages/sdk/`, `packages/signaling/`, `examples/`, `scripts/ci/`, `.github/`, `eslint*`, `tsconfig*` | **`run-pr-quality.sh`** |
-| `packages/bindings/` (`.rs` or `index.d.ts`) | **`run-pr-quality.sh`** + rebuild bindings if TS surface changed |
-| `crates/` only (Rust) | `cargo test` for affected crates; run **`run-pr-quality.sh`** if any TS or workflow files also changed |
+| `packages/sdk/`, `packages/signaling/`, `examples/` | **quality + build:native + tests** |
+| `packages/bindings/`, `crates/` | **quality + build:native + tests** (rebuild native after bindings changes) |
+| `scripts/ci/`, `.github/` | `run-pr-tests-full.sh` or `ci:verify:checks:docker` |
 
 ### Common mistakes
 
-- **`npm run typecheck` is not enough** — it typechecks workspaces/examples but does not run eslint. CI fails on lint even when typecheck passes.
-- **Do not skip lint** because a local typecheck succeeded.
+- **`npm run typecheck` is not enough** — no eslint; no vitest/cargo tests.
+- **`run-pr-quality.sh` alone is not enough** — TS-only commits can pass quality but fail Test when CI loads a stale cached `.node` without new native exports.
+- **Rebuild native after changing `packages/bindings/` or `crates/`** before `npm test`.
 
 ### Before push / PR
 
-Re-run `bash scripts/ci/run-pr-quality.sh` if the last commit touched TS/JS or CI config. For native changes, also run `bash scripts/ci/run-pr-integration.sh` when feasible (needs Linux `.node` or Docker — see `scripts/ci/README.md`).
+Re-run the full sequence above if the commit touched TS, Rust, bindings, examples, or CI config.

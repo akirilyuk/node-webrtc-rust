@@ -29,9 +29,12 @@ Composite actions live in [`.github/actions/`](../../.github/actions/).
 
 | Platform | `runs-on` | Workflows |
 |----------|-----------|-----------|
-| Linux x64 | `self-hosted` | PR pipeline, Linux release matrix, integration tests, CI image build, release publish |
+| Linux x64 (gnu + musl) | `self-hosted` + `ci-build` container | PR compile-native, Linux x64 release matrix, integration tests, CI image build, release publish |
+| Linux arm64 (gnu) | `ubuntu-24.04-arm` (GitHub-hosted, native) | Linux release matrix only |
 | macOS | `macos-latest` | Release host matrix (darwin x64 + arm64) |
 | Windows | `windows-latest` | Release host matrix (x64) |
+
+**Linux gnu x64** builds natively on the self-hosted runner without `napi --zig` so Sherpa/ONNX static objects link correctly (`__cpu_features2`). **Linux arm64 gnu** builds on GitHub-hosted ARM runners (native compile, no Zig cross) to avoid build-script `ring` arch mismatches. **Linux musl** still cross-compiles with Zig on self-hosted x64.
 
 The self-hosted runner must have **Docker** (runner user in the `docker` group). Container jobs and test `docker run` leave root-owned files; host jobs run an inline **Docker `chown`** prepare step before checkout (no passwordless sudo required).
 
@@ -128,19 +131,22 @@ Triggered on every push to `main`.
 ```mermaid
 flowchart TD
   quality[Typecheck and lint]
-  buildLinux[build-linux matrix]
+  buildLinuxX64[build-linux-x64 matrix]
+  buildLinuxArm64[build-linux-arm64 native]
   buildHost[build-host matrix]
   test[Integration tests]
 
-  quality --> buildLinux
+  quality --> buildLinuxX64
+  quality --> buildLinuxArm64
   quality --> buildHost
-  buildLinux --> test
+  buildLinuxX64 --> test
+  buildLinuxArm64 --> test
   buildHost --> test
   quality --> test
 ```
 
 1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh) (must pass before native compile)
-2. **build-linux** / **build-host** — release matrix; skip `napi build` per target on native cache hit
+2. **build-linux-x64** / **build-linux-arm64** / **build-host** — release matrix; skip `napi build` per target on native cache hit
 3. **test** — [`run-pr-integration.sh`](run-pr-integration.sh) only (quality already ran)
 
 No path filtering — always validates the full release surface after merge.
@@ -154,21 +160,24 @@ Triggered by `git push origin release/x.y.z`.
 ```mermaid
 flowchart TD
   quality[Typecheck and lint]
-  buildLinux[build-linux matrix]
+  buildLinuxX64[build-linux-x64 matrix]
+  buildLinuxArm64[build-linux-arm64 native]
   buildHost[build-host matrix]
   test[Integration tests]
   publish[Publish npm + GitHub Release]
 
-  quality --> buildLinux
+  quality --> buildLinuxX64
+  quality --> buildLinuxArm64
   quality --> buildHost
-  buildLinux --> test
+  buildLinuxX64 --> test
+  buildLinuxArm64 --> test
   buildHost --> test
   quality --> test
   test --> publish
 ```
 
 1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh) (must pass before any native compile)
-2. **build-linux** / **build-host** — same reusable workflows (`cache_prefix: v1-release`); per-target compile skipped on native cache hit
+2. **build-linux-x64** / **build-linux-arm64** / **build-host** — same reusable workflows (`cache_prefix: v1-release`); per-target compile skipped on native cache hit
 3. **test** — [`run-pr-integration.sh`](run-pr-integration.sh) only (quality already ran)
 4. **publish** — runs only when quality, both build workflows, and test all **succeeded**; stage artifacts, `npm publish`, poll registry via [`wait-for-npm-package.sh`](wait-for-npm-package.sh), GitHub Release
 

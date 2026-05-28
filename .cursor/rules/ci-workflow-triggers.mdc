@@ -27,11 +27,11 @@ Runs on **pull_request → `main`** only. Linux x64 jobs use **`self-hosted`**; 
 
 ## Build & Test — main (`.github/workflows/build-main.yml`)
 
-Runs on **push → `main`**: reusable release matrix (`reusable-build-linux`, `reusable-build-host`) → `reusable-test`.
+Runs on **push → `main`**: **quality** → reusable release matrix (skip compile on native cache hit) → integration tests.
 
 ## Release (`.github/workflows/release.yml`)
 
-Runs on **`release/*` tag push**: same reusable build/test workflows → npm publish → GitHub Release.
+Runs on **`release/*` tag push**: **quality** → reusable build matrix (skip compile on native cache hit) → integration tests → **publish** (only if quality, builds, and test all succeeded).
 
 ## Reusable workflows & composite actions
 
@@ -41,7 +41,7 @@ Runs on **`release/*` tag push**: same reusable build/test workflows → npm pub
 | `reusable-build-host.yml` | macOS + Windows release matrix |
 | `reusable-test.yml` | Download binding artifact, cache fallback, host Docker tests |
 | `actions/ci-build-native-linux` | Cache, compile, verify, upload (Linux) |
-| `actions/ci-build-native-host` | Toolchain setup + compile (host OS) |
+| `actions/ci-build-native-host` | Toolchain setup + compile; skip on native cache hit (host OS) |
 | `actions/ci-cache-ts-dist` | sdk/signaling `dist/` cache restore/save |
 | `actions/ci-run-integration-tests` | coturn sidecar + ci-build test run |
 | `actions/native-binding-cache` | Per-target `.node` cache restore/save |

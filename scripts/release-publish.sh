@@ -296,6 +296,9 @@ echo "==> Set version $VERSION"
 cd "$BINDINGS"
 npm version "$VERSION" --no-git-tag-version --allow-same-version
 # --allow-same-version skips the version lifecycle; run napi version explicitly.
+if git rev-parse --is-inside-work-tree &>/dev/null; then
+  git config --global --add safe.directory "$ROOT" 2>/dev/null || true
+fi
 npx napi version
 cd "$ROOT"
 sync_bindings_optional_deps

@@ -16,20 +16,50 @@ env:
   OPUS_STATIC: "1"
 
 jobs:
+  quality:
+    name: Typecheck & lint
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: bash scripts/ci/run-pr-quality.sh
+
   build-linux:
+    needs: quality
     uses: ./.github/workflows/reusable-build-linux.yml
     secrets: inherit
 
   build-host:
+    needs: quality
     uses: ./.github/workflows/reusable-build-host.yml
     secrets: inherit
 
   test:
     name: Test
-    needs: [build-linux, build-host]
+    needs: [quality, build-linux, build-host]
+    if: |
+      !cancelled() &&
+      needs.quality.result == 'success' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-host.result == 'success'
     uses: ./.github/workflows/reusable-test.yml
     with:
-      test_script: scripts/ci/run-pr-tests-full.sh
+      test_script: scripts/ci/run-pr-integration.sh
       binding_profile: release
       require_binding_artifact: true
     secrets: inherit

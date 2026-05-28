@@ -177,8 +177,8 @@ Browser: `ontrack` → attach to `<audio>` or WebAudio.
 
 | API | Status | Notes |
 |-----|--------|-------|
-| `RTCRtpSender.track` | 🟡 | Set at `addTrack`; no dynamic updates |
-| `RTCRtpSender.replaceTrack(track)` | ❌ | **High priority** for client-side source swap |
+| `RTCRtpSender.track` | ✅ | Updated by `replaceTrack` |
+| `RTCRtpSender.replaceTrack(track)` | ✅ | Audio only; `null` detaches send |
 | `RTCRtpSender.transport` | ❌ | |
 | `RTCRtpSender.getParameters()` / `setParameters()` | ❌ | Simulcast/bitrate — roadmap v0.3 |
 | `RTCRtpReceiver.track` | ❌ | No receiver objects; use `ontrack` |
@@ -248,7 +248,7 @@ Prioritized for **browser interop** and **your conference product**:
 
 ### P0 — interoperability
 
-1. **`RTCRtpSender.replaceTrack()`** — swap mic/screen/file without renegotiation where codec compatible
+1. ~~**`RTCRtpSender.replaceTrack()`**~~ — done (v0.2.x)
 2. **`removeTrack()`** — stop sending a m-line
 3. **`createOffer` / `createAnswer` options** — at least `iceRestart`, receive audio/video hints
 4. **Remote audio decode in SDK** — optional `RemoteAudioTrack.readSamples()` or Opus→PCM callback for non-conference peers

@@ -16,6 +16,19 @@ describe('SDK type surface', () => {
     pc.close()
   })
 
+  test('RTCRtpSender.replaceTrack updates sender track reference', async () => {
+    const pc = new RTCPeerConnection()
+    const trackA = new LocalAudioTrack('a1', 's1')
+    const trackB = new LocalAudioTrack('a2', 's1')
+    const sender = await pc.addTrack(trackA)
+    expect(sender.track?.id).toBe('a1')
+    await sender.replaceTrack(trackB)
+    expect(sender.track?.id).toBe('a2')
+    await sender.replaceTrack(null)
+    expect(sender.track).toBeNull()
+    pc.close()
+  })
+
   test('RTCPeerConnection fires negotiationneeded when adding a track', async () => {
     const pc = new RTCPeerConnection()
     const fired = new Promise<void>((resolve) => {

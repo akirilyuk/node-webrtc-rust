@@ -234,8 +234,8 @@ export class RTCPeerConnection extends EventEmitter {
    */
   async addTrack(track: LocalAudioTrack): Promise<RTCRtpSender> {
     debugFn('sdk::RTCPeerConnection', 'addTrack', `id=${track.id}`)
-    await this.native.addTrack(track.native)
-    return new RTCRtpSender(track)
+    const sender = await this.native.addTrack(track.native)
+    return new RTCRtpSender(sender, track)
   }
 
   /**

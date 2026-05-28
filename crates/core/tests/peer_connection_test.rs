@@ -261,6 +261,59 @@ async fn test_ice_candidate_generation() {
 }
 
 #[tokio::test]
+async fn test_replace_track_swaps_outbound_audio() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    let mut pc2_events = pc2.subscribe_events();
+
+    let track_a = LocalAudioTrack::new("audio-a", "stream-a");
+    let sender = pc1
+        .add_track(track_a.as_track_local())
+        .await
+        .expect("add track a");
+
+    signal_pair(&pc1, &pc2).await;
+    wait_for_connection(&pc1).await;
+    wait_for_connection(&pc2).await;
+
+    track_a
+        .write_sample_slice(&[0u8; 960], Duration::from_millis(5))
+        .await
+        .expect("prime track a");
+
+    let remote_a = timeout(Duration::from_secs(10), pc2_events.tracks.recv())
+        .await
+        .expect("timed out waiting for remote track")
+        .expect("no remote track");
+    assert_eq!(remote_a.id(), "audio-a");
+
+    let track_b = LocalAudioTrack::new("audio-b", "stream-b");
+    sender
+        .replace_track(Some(track_b.as_track_local()))
+        .await
+        .expect("replace track");
+
+    track_b
+        .write_sample_slice(&[0u8; 960], Duration::from_millis(5))
+        .await
+        .expect("prime track b");
+
+    // Same transceiver — track id on the wire stays the initial id; remote still receives RTP.
+    let packet = timeout(Duration::from_secs(10), remote_a.read_rtp())
+        .await
+        .expect("timed out waiting for rtp after replace")
+        .expect("read rtp");
+    assert!(!packet.payload.is_empty());
+
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
 async fn test_connection_close() {
     let config = test_config();
     let pc1 = PeerConnection::new(config.clone())

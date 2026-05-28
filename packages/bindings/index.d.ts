@@ -187,7 +187,7 @@ export declare class JsPeerConnection {
   setLocalDescription(desc: JsRtcSessionDescription): Promise<void>
   setRemoteDescription(desc: JsRtcSessionDescription): Promise<void>
   addIceCandidate(candidate: JsRtcIceCandidate): Promise<void>
-  addTrack(track: JsLocalAudioTrack): Promise<void>
+  addTrack(track: JsLocalAudioTrack): Promise<JsRtpSender>
   createDataChannel(label: string, options?: JsRtcDataChannelInit | undefined | null): Promise<JsRtcDataChannel>
   close(): Promise<void>
   gatheringComplete(): Promise<void>
@@ -199,4 +199,10 @@ export declare class JsPeerConnection {
   setOnConnectionStateChange(callback: (...args: any[]) => any): void
   setOnIceConnectionStateChange(callback: (...args: any[]) => any): void
   setOnNegotiationNeeded(callback: (...args: any[]) => any): void
+}
+/** RTP sender returned from {@link RTCPeerConnection.addTrack}. */
+export declare class JsRtpSender {
+  get id(): string
+  /** Replaces the outbound audio track without renegotiation. */
+  replaceTrack(track?: JsLocalAudioTrack | undefined | null): Promise<void>
 }

@@ -44,7 +44,8 @@ impl Participant {
             &format!("{id}-mix-out"),
             &format!("{id}-mix-stream"),
         );
-        pc.add_track(outbound_track.as_track_local())
+        let _ = pc
+            .add_track(outbound_track.as_track_local())
             .await?;
 
         let participant_id = id.clone();

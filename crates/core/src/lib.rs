@@ -11,6 +11,7 @@ pub mod media;
 pub mod pcm_audio_track;
 pub mod pcm_encoder;
 pub mod peer_connection;
+pub mod rtp_sender;
 
 pub use config::*;
 pub use data_channel::*;
@@ -19,6 +20,7 @@ pub use error::CoreError;
 pub use events::*;
 pub use media::*;
 pub use peer_connection::*;
+pub use rtp_sender::RtpSender;
 
 pub use bytes::Bytes;
 

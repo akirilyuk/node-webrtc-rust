@@ -24,6 +24,7 @@ use crate::debug_evt;
 use crate::error::CoreError;
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
 use crate::media::RemoteTrack;
+use crate::rtp_sender::RtpSender;
 
 /// SDP session description type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,15 +334,10 @@ impl PeerConnection {
     pub async fn add_track(
         &self,
         track: Arc<dyn TrackLocal + Send + Sync>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<RtpSender, CoreError> {
         debug_call!("core::peer_connection", "add_track");
         let sender = self.inner.add_track(track).await?;
-        // webrtc-rs requires reading RTCP from the sender for media to flow correctly.
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 1500];
-            while sender.read(&mut buf).await.is_ok() {}
-        });
-        Ok(())
+        Ok(RtpSender::from_webrtc(sender))
     }
 
     /// Closes the peer connection.

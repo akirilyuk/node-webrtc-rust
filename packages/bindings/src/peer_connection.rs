@@ -17,6 +17,7 @@ use crate::config::{
 use crate::data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
 use crate::events::{create_event_callback, create_void_callback, wire_event_channel, wire_void_channel};
 use crate::media::{JsLocalAudioTrack, JsMediaStreamTrack};
+use crate::rtp_sender::JsRtpSender;
 
 struct EventState {
     ice_candidates: Option<mpsc::UnboundedReceiver<Option<IceCandidate>>>,
@@ -149,12 +150,15 @@ impl JsPeerConnection {
     }
 
     #[napi]
-    pub async fn add_track(&self, track: &JsLocalAudioTrack) -> Result<()> {
+    pub async fn add_track(&self, track: &JsLocalAudioTrack) -> Result<JsRtpSender> {
         debug_call!("bindings::peer_connection", "add_track");
-        self.inner
-            .add_track(track.inner().as_track_local())
+        let inner_track = track.inner();
+        let sender = self
+            .inner
+            .add_track(inner_track.as_track_local())
             .await
-            .map_err(core_err)
+            .map_err(core_err)?;
+        Ok(JsRtpSender::new(sender, inner_track))
     }
 
     #[napi]

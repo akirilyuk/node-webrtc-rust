@@ -227,7 +227,7 @@ Not part of W3C WebRTC — **server-side MCU** for multi-participant audio.
 | Global / per-listener mute | ➕ ✅ | |
 | `setMixingEnabled` | ➕ ✅ | |
 | `kickParticipant` | ➕ ✅ | |
-| Explicit routing matrix (who hears whom) | ❌ | Mute matrix only; routing graph is a follow-up |
+| Explicit routing matrix (who hears whom) | ✅ | `MixGraph::set_listener_sources` allow-list per listener |
 | Video compositing | ❌ | Roadmap v0.2.x |
 
 ---
@@ -269,7 +269,7 @@ Prioritized for **browser interop** and **your conference product**:
 
 ### P3 — conference-specific (extensions, deferred)
 
-13. **Routing matrix API** on `MixGraph` (beyond mute)
+13. ~~**Routing matrix API** on `MixGraph`~~ — `set_listener_sources` / `clear_listener_routes`
 14. **Load / latency benchmarks** — criterion + simulated N-participant rooms (deferred)
 
 ---

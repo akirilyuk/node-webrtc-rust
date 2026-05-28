@@ -15,6 +15,8 @@ pub struct MixGraph {
     mixing_enabled: bool,
     global_mute: HashSet<ParticipantId>,
     listener_mute: HashMap<(ParticipantId, ParticipantId), bool>,
+    /// When set for a listener, only these participants are mixed (allow-list).
+    listener_routes: HashMap<ParticipantId, HashSet<ParticipantId>>,
 }
 
 impl MixGraph {
@@ -38,6 +40,13 @@ impl MixGraph {
         self.global_mute.remove(participant_id);
         self.listener_mute
             .retain(|(listener, target), _| listener != participant_id && target != participant_id);
+        self.listener_routes.retain(|listener, sources| {
+            sources.remove(participant_id);
+            if sources.is_empty() {
+                return false;
+            }
+            listener != participant_id
+        });
     }
 
     /// When `false`, every [`Self::render_output`] returns silence (room-wide bypass).
@@ -88,6 +97,34 @@ impl MixGraph {
         }
     }
 
+    /// Restricts `listener` to hear only `sources` (allow-list routing matrix).
+    ///
+    /// When unset, the listener hears all active participants except self (subject to mutes).
+    /// Pass an empty slice to clear explicit routing for `listener`.
+    pub fn set_listener_sources(
+        &mut self,
+        listener: impl Into<ParticipantId>,
+        sources: &[ParticipantId],
+    ) {
+        let listener = listener.into();
+        if sources.is_empty() {
+            self.listener_routes.remove(&listener);
+            return;
+        }
+        self.listener_routes
+            .insert(listener, sources.iter().cloned().collect());
+    }
+
+    /// Returns explicit allow-list sources for `listener`, if any.
+    pub fn listener_sources(&self, listener: &str) -> Option<&HashSet<ParticipantId>> {
+        self.listener_routes.get(listener)
+    }
+
+    /// Clears explicit routing for `listener` (revert to hear-all-except-self).
+    pub fn clear_listener_routes(&mut self, listener: &str) {
+        self.listener_routes.remove(listener);
+    }
+
     /// Stores the latest PCM frame for a participant.
     pub fn push_frame(&mut self, participant_id: impl Into<ParticipantId>, frame: Frame) {
         let id = participant_id.into();
@@ -110,6 +147,11 @@ impl MixGraph {
         for (participant_id, buffer) in &self.inputs {
             if participant_id == listener_id {
                 continue;
+            }
+            if let Some(allowed) = self.listener_routes.get(listener_id) {
+                if !allowed.contains(participant_id) {
+                    continue;
+                }
             }
             if self.global_mute.contains(participant_id) {
                 continue;
@@ -227,5 +269,31 @@ mod tests {
 
         assert_eq!(graph.render_output("alice"), frame::silence_frame());
         assert_eq!(graph.render_output("bob"), frame::silence_frame());
+    }
+
+    #[test]
+    fn listener_route_allow_list_limits_mix_sources() {
+        let mut graph = MixGraph::new();
+        graph.add_input("alice");
+        graph.add_input("bob");
+        graph.add_input("carol");
+        graph.push_frame("alice", tone_frame(1, 1_000));
+        graph.push_frame("bob", tone_frame(2, 1_000));
+        graph.push_frame("carol", tone_frame(3, 1_000));
+
+        graph.set_listener_sources("bob", &["alice".to_string()]);
+
+        let bob_sample = i16::from_le_bytes([
+            graph.render_output("bob").pcm[0],
+            graph.render_output("bob").pcm[1],
+        ]);
+        assert_eq!(bob_sample, 1_000);
+
+        graph.clear_listener_routes("bob");
+        let bob_all = i16::from_le_bytes([
+            graph.render_output("bob").pcm[0],
+            graph.render_output("bob").pcm[1],
+        ]);
+        assert_eq!(bob_all, 4_000);
     }
 }

@@ -1,3 +1,12 @@
+/**
+ * Stream a cosine tone over WebRTC audio (`addTrack` + PCM `writeSample`).
+ *
+ * Receiver logs `ontrack` when the remote {@link LocalAudioTrack} arrives.
+ * For `replaceTrack` + {@link RemoteAudioTrack.readSample}, run:
+ *   npm run start:replace-track --workspace=@node-webrtc-rust/example-audio-cosine
+ *
+ * PCM framing: see `examples/shared/pcm-streaming.ts`.
+ */
 import { LocalAudioTrack, RTCPeerConnection } from '@node-webrtc-rust/sdk'
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 

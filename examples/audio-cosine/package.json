@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
+    "start:replace-track": "tsx src/replace-track-read-sample.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

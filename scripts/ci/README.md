@@ -74,7 +74,7 @@ If none match, the whole workflow is skipped.
 
 Must pass before compile / TS build / test.
 
-**Compile native** runs when `native` or `workflows` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs` checks the `.node` implements every `JsPeerConnection` method in `index.d.ts`; stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
+**Compile native** runs when `native` or `workflows` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
 
 ### 3. Compile native
 

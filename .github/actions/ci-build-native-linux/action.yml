@@ -119,7 +119,7 @@ runs:
     - name: Verify native NAPI surface
       if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
       shell: bash
-      run: node scripts/ci/verify-native-binding-surface.mjs
+      run: node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"
 
     - name: Save native binding cache
       if: inputs.binding_cache_key != '' && inputs.native_cache_hit != 'true'

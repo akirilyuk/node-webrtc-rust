@@ -278,20 +278,6 @@ echo "==> napi artifacts"
 cd "$BINDINGS"
 npx napi artifacts --dir artifacts
 
-sync_bindings_optional_deps() {
-  local opt
-  for opt in \
-    bindings-darwin-arm64 \
-    bindings-darwin-x64 \
-    bindings-linux-x64-gnu \
-    bindings-linux-x64-musl \
-    bindings-linux-arm64-gnu \
-    bindings-win32-x64-msvc; do
-    npm pkg set "optionalDependencies.@node-webrtc-rust/${opt}=${VERSION}" \
-      --workspace=@node-webrtc-rust/bindings
-  done
-}
-
 echo "==> Set version $VERSION"
 cd "$BINDINGS"
 npm version "$VERSION" --no-git-tag-version --allow-same-version
@@ -301,14 +287,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
 fi
 npx napi version
 cd "$ROOT"
-sync_bindings_optional_deps
-npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/sdk
-npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/signaling
-npm version "$VERSION" --no-git-tag-version --allow-same-version --workspace=@node-webrtc-rust/helpers
-npm pkg set "dependencies.@node-webrtc-rust/bindings=${VERSION}" --workspace=@node-webrtc-rust/sdk
-npm pkg set "dependencies.@node-webrtc-rust/signaling=${VERSION}" --workspace=@node-webrtc-rust/sdk
-npm pkg set "dependencies.@node-webrtc-rust/sdk=${VERSION}" --workspace=@node-webrtc-rust/helpers
-npm pkg set "dependencies.@node-webrtc-rust/signaling=${VERSION}" --workspace=@node-webrtc-rust/helpers
+bash scripts/ci/set-release-deps.sh "$VERSION"
 echo "==> link sdk for signaling build (devDependency; workspace only)"
 npm install --ignore-scripts --no-audit --no-fund \
   --workspace=@node-webrtc-rust/sdk \

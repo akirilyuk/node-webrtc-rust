@@ -48,7 +48,7 @@ runs:
           echo "cache-usable=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        if node scripts/ci/verify-native-binding-surface.mjs; then
+        if node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"; then
           echo "cache-usable=true" >> "$GITHUB_OUTPUT"
         else
           echo "Cached .node stale vs index.d.ts — removing and forcing compile."

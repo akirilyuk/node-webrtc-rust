@@ -176,10 +176,15 @@ bump_versions() {
   set_json_field "$BINDINGS/package.json" "version" "$VERSION"
   set_json_field "$ROOT/packages/sdk/package.json" "version" "$VERSION"
   set_json_field "$ROOT/packages/signaling/package.json" "version" "$VERSION"
+  set_json_field "$ROOT/packages/helpers/package.json" "version" "$VERSION"
 
   # Cross-references in sdk
   set_json_field "$ROOT/packages/sdk/package.json" "dependencies.@node-webrtc-rust/bindings" "$VERSION"
   set_json_field "$ROOT/packages/sdk/package.json" "dependencies.@node-webrtc-rust/signaling" "$VERSION"
+
+  # Cross-references in helpers
+  set_json_field "$ROOT/packages/helpers/package.json" "dependencies.@node-webrtc-rust/sdk" "$VERSION"
+  set_json_field "$ROOT/packages/helpers/package.json" "dependencies.@node-webrtc-rust/signaling" "$VERSION"
 
   # Optional deps in bindings
   for opt in \
@@ -228,9 +233,7 @@ bump_versions() {
 build_typescript() {
   echo "==> Building TypeScript packages"
   cd "$ROOT"
-  # Use workspace symlinks already in place — no npm install (avoids registry lookups)
-  npm run build --workspace=@node-webrtc-rust/sdk
-  npm run build --workspace=@node-webrtc-rust/signaling
+  bash scripts/ci/build-ts-workspace.sh
 }
 
 # ─── Publish ──────────────────────────────────────────────────────────────────
@@ -321,7 +324,7 @@ for dir in "$BINDINGS"/npm/*/; do
   fi
 done
 
-echo "==> Publishing packages (order: platform bindings → bindings → signaling → sdk)"
+echo "==> Publishing packages (order: platform bindings → bindings → signaling → sdk → helpers)"
 
 if [[ "$DRY_RUN" == true ]]; then
   echo "  [DRY RUN MODE]"
@@ -351,6 +354,10 @@ verify_published "@node-webrtc-rust/signaling"
 # 4. SDK (depends on bindings + signaling)
 publish_pkg_with_extra "$ROOT/packages/sdk" "@node-webrtc-rust/sdk" --ignore-scripts
 verify_published "@node-webrtc-rust/sdk"
+
+# 5. Helpers (depends on sdk + signaling)
+publish_pkg_with_extra "$ROOT/packages/helpers" "@node-webrtc-rust/helpers" --ignore-scripts
+verify_published "@node-webrtc-rust/helpers"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"

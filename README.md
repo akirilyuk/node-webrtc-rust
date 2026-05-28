@@ -471,7 +471,8 @@ When `debug` is set on the config object, it overrides the `WEBRTC_DEBUG` enviro
 
 ## Releases
 
-Full guide: [`scripts/RELEASE.md`](scripts/RELEASE.md)
+Full guide: [`scripts/RELEASE.md`](scripts/RELEASE.md)  
+Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 
 ### CI release (all platforms)
 

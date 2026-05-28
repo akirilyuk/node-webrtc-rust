@@ -15,9 +15,14 @@ export class RTCRtpSender {
   readonly native: JsRtpSender
   private _track: MediaStreamTrack | null
 
-  constructor(native: JsRtpSender, track: LocalAudioTrack) {
+  constructor(native: JsRtpSender, track: LocalAudioTrack | null) {
     this.native = native
     this._track = track
+  }
+
+  /** Wraps a native sender from {@link RTCPeerConnection.getSenders} or transceivers. */
+  static fromNative(native: JsRtpSender, track: LocalAudioTrack | null = null): RTCRtpSender {
+    return new RTCRtpSender(native, track)
   }
 
   /** Stable sender id for this media line. */

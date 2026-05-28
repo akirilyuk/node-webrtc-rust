@@ -82,4 +82,36 @@ describe('SDK type surface', () => {
     expect(stats).toBeInstanceOf(Map)
     pc.close()
   })
+
+  test('addTransceiver recvonly audio appears in getTransceivers', async () => {
+    const pc = new RTCPeerConnection()
+    const transceiver = await pc.addTransceiver('audio', { direction: 'recvonly' })
+    expect(transceiver.kind).toBe('audio')
+    expect(transceiver.direction).toBe('recvonly')
+    expect(transceiver.sender).toBeDefined()
+    expect(transceiver.receiver).toBeDefined()
+
+    const listed = await pc.getTransceivers()
+    expect(listed).toHaveLength(1)
+    expect(listed[0]?.direction).toBe('recvonly')
+
+    const senders = await pc.getSenders()
+    expect(senders).toHaveLength(1)
+    const receivers = await pc.getReceivers()
+    expect(receivers).toHaveLength(1)
+
+    const offer = await pc.createOffer()
+    expect(offer.sdp).toContain('m=audio')
+    pc.close()
+  })
+
+  test('addTransceiver with LocalAudioTrack sets sendrecv', async () => {
+    const pc = new RTCPeerConnection()
+    const track = new LocalAudioTrack('tx1', 's1')
+    const transceiver = await pc.addTransceiver(track)
+    expect(transceiver.kind).toBe('audio')
+    expect(transceiver.direction).toBe('sendrecv')
+    expect(transceiver.sender.track?.id).toBe('tx1')
+    pc.close()
+  })
 })

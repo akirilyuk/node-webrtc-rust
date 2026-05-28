@@ -13,7 +13,9 @@ import type { LocalAudioTrack } from './LocalAudioTrack'
 import { RemoteAudioTrack } from './RemoteAudioTrack'
 import { RTCDataChannel } from './RTCDataChannel'
 import { RTCIceCandidate } from './RTCIceCandidate'
+import { RTCRtpReceiver } from './RTCRtpReceiver'
 import { RTCRtpSender } from './RTCRtpSender'
+import { RTCRtpTransceiver } from './RTCRtpTransceiver'
 import { RTCSessionDescription } from './RTCSessionDescription'
 import type {
   RTCConfiguration,
@@ -27,8 +29,11 @@ import type {
   RTCSignalingState,
   RTCAnswerOptions,
   RTCOfferOptions,
+  RTCRtpTransceiverDirection,
+  RTCRtpTransceiverInit,
   RTCStatsReport,
   RTCTrackEvent,
+  TrackKind,
 } from './types'
 
 function toNativeConfig(config?: RTCConfiguration) {
@@ -262,7 +267,49 @@ export class RTCPeerConnection extends EventEmitter {
   async addTrack(track: LocalAudioTrack): Promise<RTCRtpSender> {
     debugFn('sdk::RTCPeerConnection', 'addTrack', `id=${track.id}`)
     const sender = await this.native.addTrack(track.native)
-    return new RTCRtpSender(sender, track)
+    return RTCRtpSender.fromNative(sender, track)
+  }
+
+  /**
+   * Creates a Unified Plan transceiver from a media kind or local audio track.
+   *
+   * @param trackOrKind - `'audio'`, `'video'`, or a {@link LocalAudioTrack}.
+   * @param init - Optional direction (defaults to `sendrecv` for tracks, `sendrecv` for kinds).
+   */
+  async addTransceiver(
+    trackOrKind: LocalAudioTrack | TrackKind,
+    init?: RTCRtpTransceiverInit,
+  ): Promise<RTCRtpTransceiver> {
+    const initArg = init ? { direction: init.direction } : undefined
+    if (typeof trackOrKind === 'string') {
+      debugFn('sdk::RTCPeerConnection', 'addTransceiver', `kind=${trackOrKind}`)
+      const native = await this.native.addTransceiver(trackOrKind, undefined, initArg)
+      return new RTCRtpTransceiver(native)
+    }
+    debugFn('sdk::RTCPeerConnection', 'addTransceiver', `track=${trackOrKind.id}`)
+    const native = await this.native.addTransceiver(undefined, trackOrKind.native, initArg)
+    return new RTCRtpTransceiver(native, trackOrKind)
+  }
+
+  /** Returns all transceivers on this connection. */
+  async getTransceivers(): Promise<RTCRtpTransceiver[]> {
+    debugFn('sdk::RTCPeerConnection', 'getTransceivers')
+    const native = await this.native.getTransceivers()
+    return native.map((t) => new RTCRtpTransceiver(t))
+  }
+
+  /** Returns all RTP senders (including those without an attached track). */
+  async getSenders(): Promise<RTCRtpSender[]> {
+    debugFn('sdk::RTCPeerConnection', 'getSenders')
+    const native = await this.native.getSenders()
+    return native.map((s) => RTCRtpSender.fromNative(s))
+  }
+
+  /** Returns all RTP receivers. */
+  async getReceivers(): Promise<RTCRtpReceiver[]> {
+    debugFn('sdk::RTCPeerConnection', 'getReceivers')
+    const native = await this.native.getReceivers()
+    return native.map((r) => new RTCRtpReceiver(r))
   }
 
   /**

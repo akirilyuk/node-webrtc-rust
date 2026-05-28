@@ -6,7 +6,9 @@ mod data_channel;
 mod events;
 mod media;
 mod peer_connection;
+mod rtp_receiver;
 mod rtp_sender;
+mod rtp_transceiver;
 mod runtime;
 
 use napi_derive::napi;
@@ -23,7 +25,9 @@ pub use config::{
 pub use data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
 pub use media::{JsLocalAudioTrack, JsMediaStream, JsMediaStreamTrack};
 pub use peer_connection::JsPeerConnection;
+pub use rtp_receiver::JsRtpReceiver;
 pub use rtp_sender::JsRtpSender;
+pub use rtp_transceiver::{JsRTCRtpTransceiverInit, JsRtpTransceiver};
 
 #[napi]
 pub fn version() -> String {

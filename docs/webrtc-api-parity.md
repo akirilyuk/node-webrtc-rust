@@ -24,7 +24,7 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 | Audio send | 🟡 ~60% | PCM push model, not `MediaStreamTrack` capture |
 | Audio receive | 🟡 ~65% | `ontrack` + `RemoteAudioTrack.readSample()` (Opus → PCM) |
 | Video | ❌ | Types exist; no local/remote video pipeline in SDK |
-| RTP transceivers / simulcast | ❌ | Plan-style `addTrack` only |
+| RTP transceivers / simulcast | 🟡 ~75% | `addTransceiver`, `getTransceivers` / `getSenders` / `getReceivers`; simulcast deferred v0.4 |
 | Statistics | 🟡 ~70% | `getStats()` returns webrtc-rs report as `Map`; no per-sender selector yet |
 | `MediaDevices` | ❌ | Out of scope (Node has no device capture API) |
 | Conference MCU | ➕ | Rust-side mixing — extension, not W3C |
@@ -85,10 +85,10 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 |-----|--------|-------|
 | `addTrack(track, ...streams)` | 🟡 | **`LocalAudioTrack` only**; stream args ignored |
 | `removeTrack(sender)` | ✅ | Detaches send on the given {@link RTCRtpSender} |
-| `addTransceiver(...)` | ❌ | |
-| `getSenders()` | ❌ | Only handle returned from `addTrack` |
-| `getReceivers()` | ❌ | |
-| `getTransceivers()` | ❌ | |
+| `addTransceiver(...)` | ✅ | Kind (`audio`/`video`) or {@link LocalAudioTrack}; {@link RTCRtpTransceiverInit.direction} |
+| `getSenders()` | ✅ | Async in SDK (native query); returns all sender legs |
+| `getReceivers()` | ✅ | Async in SDK |
+| `getTransceivers()` | ✅ | Async in SDK; includes {@link RTCRtpTransceiver.sender} / {@link receiver} |
 | `ontrack` | 🟡 | See [Media tracks](#media-streams-and-tracks) |
 | `onnegotiationneeded` | ✅ | |
 
@@ -173,6 +173,21 @@ Browser: `ontrack` → attach to `<audio>` or WebAudio.
 
 ---
 
+---
+
+## `RTCRtpTransceiver`
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `direction` / `currentDirection` | ✅ | |
+| `mid` | ✅ | `null` before negotiation |
+| `stopped` | ✅ | Set on handle after {@link RTCRtpTransceiver.stop} |
+| `setDirection()` | ✅ | |
+| `stop()` | ✅ | |
+| `sender` / `receiver` | ✅ | |
+
+---
+
 ## `RTCRtpSender` & `RTCRtpReceiver`
 
 | API | Status | Notes |
@@ -181,7 +196,7 @@ Browser: `ontrack` → attach to `<audio>` or WebAudio.
 | `RTCRtpSender.replaceTrack(track)` | ✅ | Audio only; `null` detaches send |
 | `RTCRtpSender.transport` | ❌ | |
 | `RTCRtpSender.getParameters()` / `setParameters()` | ❌ | Simulcast/bitrate — roadmap v0.3 |
-| `RTCRtpReceiver.track` | ❌ | No receiver objects; use `ontrack` |
+| `RTCRtpReceiver.track` | 🟡 | Use {@link RTCPeerConnection.ontrack}; `receiver.track` reserved (null today) |
 | `RTCRtpReceiver.getStats()` | ❌ | |
 
 ---
@@ -260,12 +275,12 @@ Prioritized for **browser interop** and **your conference product**:
 7. ~~**Data channel `bufferedAmount` + `onbufferedamountlow`**~~ — done
 8. ~~**`setConfiguration()`**~~ — ICE servers + transport policy; `getConfiguration()` cached in SDK
 
-### P2 — advanced WebRTC (deferred — v0.3+ / out of scope for audio-first Node peers)
+### P2 — advanced WebRTC
 
-9. **`addTransceiver` / Unified Plan controls** — requires `RTCRtpTransceiver` surface
-10. **Simulcast / encodings** — v0.3 roadmap
-11. **Video** — `LocalVideoTrack`, H.264/VP8 send, remote receive
-12. **DTMF** — telephony milestone
+9. ~~**`addTransceiver` / Unified Plan controls**~~ — done (v0.2.x); `RTCRtpTransceiver.setDirection` / `stop`
+10. **Simulcast / encodings** — v0.4 (`getParameters` / `setParameters`)
+11. **Video** — v0.4 (`LocalVideoTrack`, H.264/VP8 send, remote receive)
+12. **DTMF** — v0.4 (telephony); or SIP-side via Jambonz
 
 ### P3 — conference-specific (extensions, deferred)
 

@@ -55,6 +55,14 @@ export interface RTCIceServer {
   credentialType?: 'password' | 'oauth'
 }
 
+/** Unified Plan transceiver direction. */
+export type RTCRtpTransceiverDirection = 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive'
+
+/** Options for {@link RTCPeerConnection.addTransceiver}. */
+export interface RTCRtpTransceiverInit {
+  direction?: RTCRtpTransceiverDirection
+}
+
 /** Peer connection ICE and transport settings. */
 export interface RTCConfiguration {
   iceServers?: RTCIceServer[]

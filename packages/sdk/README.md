@@ -11,7 +11,7 @@ Browser-compatible WebRTC APIs for Node.js, backed by the Rust native engine.
 
 **API coverage vs browser WebRTC:** see [`docs/webrtc-api-parity.md`](../../docs/webrtc-api-parity.md) (supported, partial, and missing APIs).
 
-**Recent P0 APIs:** `RTCRtpSender.replaceTrack`, `removeTrack`, `createOffer`/`createAnswer` options, `RemoteAudioTrack.readSample`.
+**Recent APIs:** `addTransceiver`, `getTransceivers` / `getSenders` / `getReceivers`, `RTCRtpSender.replaceTrack`, `removeTrack`, `RemoteAudioTrack.readSample`, `getStats`, `setConfiguration`.
 
 Install once:
 

@@ -31,6 +31,9 @@ use crate::error::CoreError;
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
 use crate::media::RemoteTrack;
 use crate::rtp_sender::RtpSender;
+use crate::rtp_transceiver::{
+    track_kind_to_rtp, RtpReceiver, RtpTransceiver, RtpTransceiverInit, TransceiverSource,
+};
 
 /// SDP session description type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +408,57 @@ impl PeerConnection {
             .remove_track(&sender.inner())
             .await
             .map_err(|e| CoreError::Track(e.to_string()))
+    }
+
+    /// Adds a transceiver for a media kind or local track (Unified Plan).
+    pub async fn add_transceiver(
+        &self,
+        source: TransceiverSource,
+        init: Option<RtpTransceiverInit>,
+    ) -> Result<RtpTransceiver, CoreError> {
+        debug_call!("core::peer_connection", "add_transceiver");
+        let rtc_init = init.map(Into::into);
+        let transceiver = match source {
+            TransceiverSource::Kind(kind) => {
+                self.inner
+                    .add_transceiver_from_kind(track_kind_to_rtp(kind), rtc_init)
+                    .await?
+            }
+            TransceiverSource::Track(track) => {
+                self.inner
+                    .add_transceiver_from_track(track, rtc_init)
+                    .await?
+            }
+        };
+        Ok(RtpTransceiver::from_webrtc(transceiver))
+    }
+
+    /// Returns all RTP transceivers on this connection.
+    pub async fn get_transceivers(&self) -> Vec<RtpTransceiver> {
+        self.inner
+            .get_transceivers()
+            .await
+            .into_iter()
+            .map(RtpTransceiver::from_webrtc)
+            .collect()
+    }
+
+    /// Returns all RTP senders (one per transceiver sender leg).
+    pub async fn get_senders(&self) -> Vec<RtpSender> {
+        let mut senders = Vec::new();
+        for transceiver in self.inner.get_transceivers().await {
+            senders.push(RtpSender::from_webrtc(transceiver.sender().await));
+        }
+        senders
+    }
+
+    /// Returns all RTP receivers (one per transceiver receiver leg).
+    pub async fn get_receivers(&self) -> Vec<RtpReceiver> {
+        let mut receivers = Vec::new();
+        for transceiver in self.inner.get_transceivers().await {
+            receivers.push(RtpReceiver::from_webrtc(transceiver.receiver().await));
+        }
+        receivers
     }
 
     /// Closes the peer connection.

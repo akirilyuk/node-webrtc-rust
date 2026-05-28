@@ -5,7 +5,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use node_webrtc_rust_core::{
     ConnectionState, DataChannelState, IceServer, LocalAudioTrack, OfferOptions, PeerConnection,
-    PeerConnectionConfig,
+    PeerConnectionConfig, RtpTransceiverDirection, RtpTransceiverInit, TrackKind, TransceiverSource,
 };
 use tokio::time::{sleep, timeout};
 
@@ -377,6 +377,82 @@ async fn test_remove_track_detaches_sender() {
 
     pc1.close().await.expect("close pc1");
     pc2.close().await.expect("close pc2");
+}
+
+#[tokio::test]
+async fn test_add_transceiver_recvonly_audio() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let transceiver = pc
+        .add_transceiver(
+            TransceiverSource::Kind(TrackKind::Audio),
+            Some(RtpTransceiverInit {
+                direction: RtpTransceiverDirection::Recvonly,
+            }),
+        )
+        .await
+        .expect("add transceiver");
+
+    assert_eq!(transceiver.kind(), TrackKind::Audio);
+    assert_eq!(transceiver.direction(), RtpTransceiverDirection::Recvonly);
+    assert!(!transceiver.stopped());
+
+    let listed = pc.get_transceivers().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(pc.get_senders().await.len(), 1);
+    assert_eq!(pc.get_receivers().await.len(), 1);
+
+    let offer = pc.create_offer(None).await.expect("create offer");
+    assert!(offer.sdp.contains("m=audio"));
+
+    pc.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn test_add_transceiver_from_local_track() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let track = LocalAudioTrack::new("tx-a1", "stream-1");
+    let transceiver = pc
+        .add_transceiver(
+            TransceiverSource::Track(track.as_track_local()),
+            None,
+        )
+        .await
+        .expect("add transceiver from track");
+
+    assert_eq!(transceiver.kind(), TrackKind::Audio);
+    assert_eq!(transceiver.direction(), RtpTransceiverDirection::Sendrecv);
+
+    pc.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn test_transceiver_set_direction_and_stop() {
+    let pc = PeerConnection::new(test_config())
+        .await
+        .expect("create pc");
+    let transceiver = pc
+        .add_transceiver(
+            TransceiverSource::Kind(TrackKind::Audio),
+            Some(RtpTransceiverInit {
+                direction: RtpTransceiverDirection::Recvonly,
+            }),
+        )
+        .await
+        .expect("add transceiver");
+
+    transceiver
+        .set_direction(RtpTransceiverDirection::Inactive)
+        .await;
+    assert_eq!(transceiver.direction(), RtpTransceiverDirection::Inactive);
+
+    transceiver.stop().await.expect("stop transceiver");
+    assert!(transceiver.stopped());
+
+    pc.close().await.expect("close");
 }
 
 #[tokio::test]

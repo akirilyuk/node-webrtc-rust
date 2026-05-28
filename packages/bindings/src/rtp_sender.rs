@@ -15,7 +15,7 @@ use crate::media::JsLocalAudioTrack;
 #[napi]
 pub struct JsRtpSender {
     inner: RtpSender,
-    track: Mutex<Arc<LocalAudioTrack>>,
+    track: Mutex<Option<Arc<LocalAudioTrack>>>,
 }
 
 #[napi]
@@ -30,9 +30,7 @@ impl JsRtpSender {
     pub async fn replace_track(&self, track: Option<&JsLocalAudioTrack>) -> Result<()> {
         debug_call!("bindings::rtp_sender", "replace_track", "has_track={}", track.is_some());
         let local = track.map(|t| t.inner().as_track_local());
-        if let Some(t) = track {
-            *self.track.lock().expect("sender track lock") = t.inner();
-        }
+        *self.track.lock().expect("sender track lock") = track.map(|t| t.inner());
         self.inner
             .replace_track(local)
             .await
@@ -40,11 +38,27 @@ impl JsRtpSender {
     }
 }
 
+impl Clone for JsRtpSender {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            track: Mutex::new(self.track.lock().expect("sender track lock").clone()),
+        }
+    }
+}
+
 impl JsRtpSender {
     pub(crate) fn new(sender: RtpSender, track: Arc<LocalAudioTrack>) -> Self {
         Self {
             inner: sender,
-            track: Mutex::new(track),
+            track: Mutex::new(Some(track)),
+        }
+    }
+
+    pub(crate) fn from_sender(sender: RtpSender) -> Self {
+        Self {
+            inner: sender,
+            track: Mutex::new(None),
         }
     }
 

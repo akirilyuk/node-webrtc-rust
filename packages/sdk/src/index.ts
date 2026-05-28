@@ -9,7 +9,9 @@ export { RTCPeerConnection } from './RTCPeerConnection'
 export { RTCSessionDescription } from './RTCSessionDescription'
 export { RTCIceCandidate } from './RTCIceCandidate'
 export { RTCDataChannel } from './RTCDataChannel'
+export { RTCRtpReceiver } from './RTCRtpReceiver'
 export { RTCRtpSender } from './RTCRtpSender'
+export { RTCRtpTransceiver } from './RTCRtpTransceiver'
 export { MediaStream } from './MediaStream'
 export { MediaStreamTrack } from './MediaStreamTrack'
 export { LocalAudioTrack } from './LocalAudioTrack'
@@ -28,6 +30,8 @@ export type {
   RTCSessionDescriptionInit,
   RTCAnswerOptions,
   RTCOfferOptions,
+  RTCRtpTransceiverDirection,
+  RTCRtpTransceiverInit,
   RTCStatsReport,
   RTCPeerConnectionIceEvent,
   RTCTrackEvent,

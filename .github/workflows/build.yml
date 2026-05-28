@@ -112,12 +112,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/native-binding-cache
-        id: native-cache
-        with:
-          target: x86_64-unknown-linux-gnu
-          profile: debug
-
       - uses: ./.github/actions/ci-build-native-linux
         with:
           target: x86_64-unknown-linux-gnu
@@ -125,8 +119,9 @@ jobs:
           cache_prefix: v1-pr-debug
           platform: 'false'
           zig: 'false'
-          skip_build_on_cache_hit: 'true'
-          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
+          # Always compile on PR — cached .node can lag SDK NAPI surface (skip caused Test failures).
+          skip_build_on_cache_hit: 'false'
+          native_cache_hit: 'false'
 
   build-ts:
     name: Build TypeScript

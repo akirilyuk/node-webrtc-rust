@@ -74,7 +74,7 @@ If none match, the whole workflow is skipped.
 
 Must pass before compile / TS build / test.
 
-**Compile native** also runs when **TypeScript** changes (`packages/sdk`, `packages/signaling`) so the Test job always gets a fresh `.node` artifact — TS-only commits must not reuse a stale binding missing new NAPI exports.
+**Compile native** also runs when **TypeScript** changes (`packages/sdk`, `packages/signaling`) so the Test job always gets a fresh `.node` artifact. On PR, native compile **never skips on `.node` cache hit** — a stale cached binding missing new NAPI exports caused Test failures when only SDK changed.
 
 ### 3. Compile native
 

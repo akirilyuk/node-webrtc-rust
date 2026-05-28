@@ -1,0 +1,46 @@
+---
+description: Validate release TS build path before release fixes or publish workflow changes
+globs:
+  - packages/sdk/**
+  - packages/bindings/**
+  - scripts/ci/build-ts-workspace.sh
+  - scripts/ci/run-pr-quality.sh
+  - .github/workflows/release.yml
+  - scripts/release-*.sh
+alwaysApply: false
+---
+
+# Release TypeScript build validation
+
+PR quality typecheck (`scripts/ci/tsconfig.typecheck.json`) maps `@node-webrtc-rust/bindings` to **`packages/bindings/index.d.ts`** (workspace contract).
+
+Release publish runs **`scripts/ci/build-ts-workspace.sh`**, which compiles SDK sources with the same module graph npm uses after `npm ci`. A stale **registry** copy of `@node-webrtc-rust/bindings` under `packages/sdk/node_modules/` can shadow the workspace package and make release fail with errors like:
+
+- `Property 'addTransceiver' does not exist on type 'JsPeerConnection'`
+- `Module '"@node-webrtc-rust/bindings"' has no exported member 'JsVoiceAgent'`
+
+`run-pr-quality.sh` alone (typecheck only) will **not** catch this.
+
+## Required before commit (release / SDK / bindings / CI changes)
+
+From `node-webrtc-rust/`:
+
+```bash
+bash scripts/ci/run-pr-quality.sh
+bash scripts/ci/verify-release-publish-ts.sh
+```
+
+When Docker is available (matches remote ci-build container):
+
+```bash
+npm run ci:verify:release-ts:docker
+```
+
+That script runs **`build-ts-workspace.sh`** after typecheck. Do not skip it when touching release publish, SDK tsconfig, or workspace dependency pins.
+
+## SDK tsconfig
+
+`packages/sdk/tsconfig.json` maps `@node-webrtc-rust/bindings` to `packages/bindings/index.d.ts` so release publish does not typecheck against a stale registry copy under `packages/sdk/node_modules/`.
+
+- SDK workspace deps use semver pins in package.json; `set-release-deps.sh` rewrites them at publish time.
+- `packages/sdk/tsconfig.json` keeps a `paths` entry for `@node-webrtc-rust/bindings` → `packages/bindings/index.d.ts` so tsc always uses the committed NAPI contract (not a stale registry copy under `packages/sdk/node_modules/`).

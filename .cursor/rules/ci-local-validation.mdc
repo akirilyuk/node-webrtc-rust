@@ -1,5 +1,5 @@
 ---
-description: Run CI steps locally before commit and push
+description: Run CI steps locally before commit and push — match remote job conditions
 globs:
   - .github/workflows/**
   - .github/actions/**
@@ -10,40 +10,56 @@ alwaysApply: false
 
 # Validate CI Locally Before Push
 
-**Never commit and push CI changes until the affected steps pass locally.**
+**Never commit and push CI changes until the affected steps pass locally in the same conditions as the remote job.**
 
 See [`scripts/ci/README.md`](../../scripts/ci/README.md) for pipeline layout.
+
+## Remote parity matrix
+
+| Remote job | Local mirror | Notes |
+|------------|--------------|-------|
+| PR quality (`build.yml`) | `bash scripts/ci/run-pr-quality.sh` | `npm ci`, typecheck, **`build-ts-workspace.sh`**, lint |
+| PR test (`build.yml`) | `bash scripts/ci/run-pr-integration.sh` | needs linux-gnu `.node` |
+| Release publish TS (`release.yml`) | `bash scripts/ci/verify-release-publish-ts.sh` | **`npm ci --ignore-scripts`** + version bump + `build-ts-workspace.sh` |
+| PR + release checks in ci-build image | `npm run ci:verify:checks:docker` | runs inside `docker/ci` (same base as self-hosted compile/test) |
+| Release publish TS in ci-build image | `npm run ci:verify:release-ts:docker` | **required** when editing release publish or TS build scripts |
+
+PR typecheck alone is **not** equivalent to release publish — see [`release-ts-build.mdc`](release-ts-build.mdc).
 
 ## Minimum checks by change type
 
 | You changed | Run locally before push |
 |-------------|-------------------------|
 | Quality / typecheck / lint | `bash scripts/ci/run-pr-quality.sh` |
-| TS build (`build-ts`, `build-ts-workspace.sh`) | `bash scripts/ci/build-ts-workspace.sh` (from clean `dist/`) |
-| Native compile / bindings | `npm run build:debug:local` in `packages/bindings/` (or `npm run ci:verify:linux` for full matrix) |
+| TS build (`build-ts-workspace.sh`, sdk tsconfig) | `bash scripts/ci/verify-release-publish-ts.sh` |
+| Native compile / bindings | `npm run build:debug:local` in `packages/bindings/` (or `npm run ci:verify:linux`) |
 | Integration / test scripts | `bash scripts/ci/run-pr-integration.sh` (needs linux-gnu `.node`) |
-| Any CI script or workflow | At least `bash scripts/ci/run-pr-quality.sh`; prefer `npm run ci:verify:checks:docker` when Docker is available |
-| Release / main workflows | Also confirm reusable workflow callers still match (`build-main.yml`, `release.yml`) |
+| **Any CI script or workflow** | `npm run ci:verify:checks:docker` **and** `npm run ci:verify:release-ts:docker` when Docker is available |
+| Release / main workflows | Above + confirm reusable callers (`build-main.yml`, `release.yml`) |
 
 ## Full local mirrors
 
 ```bash
-bash scripts/ci/run-pr-quality.sh          # PR quality job
-bash scripts/ci/build-ts-workspace.sh        # PR build-ts job
-npm run ci:verify:checks:docker              # quality + integration in ci-build image
-npm run ci:verify:linux                      # release Linux cross-builds
-npm run ci:verify                            # both
+bash scripts/ci/run-pr-quality.sh              # PR quality job
+bash scripts/ci/verify-release-publish-ts.sh   # release publish TS path (host)
+npm run ci:verify:release-ts:docker            # release publish TS path (ci-build container)
+npm run ci:verify:checks:docker                # quality + integration in ci-build image
+npm run ci:verify:linux                          # release Linux cross-builds
+npm run ci:verify                                # linux builds + checks docker
 ```
 
-## Workflow
+## Agent workflow (CI script changes)
 
-1. Make CI change
-2. Run the matching local command(s) above — fix failures **before** commit
-3. Update [`scripts/ci/README.md`](../../scripts/ci/README.md) if behavior changed
-4. Commit → ask user if push confirmation is required → push → watch GitHub Actions
+1. Identify **every** remote workflow/job that calls the changed script (grep + read callers).
+2. Run the **matching local mirror** from the table above — host is not enough when the remote job uses the **ci-build container**; use `:docker` variants.
+3. For release/publish paths, always run `npm run ci:verify:release-ts:docker` before push.
+4. Update [`scripts/ci/README.md`](../../scripts/ci/README.md) if behavior changed.
+5. Do not push until all required commands exit 0.
 
 ## Do not push when
 
 - Local script exits non-zero
-- You only fixed one pipeline without checking callers (see `ci-validation.mdc`)
+- You only fixed one pipeline without checking callers (see [`ci-validation.mdc`](ci-validation.mdc))
+- TS build was not tested with **`npm ci --ignore-scripts`** (release publish layout)
 - TS build was not tested from **clean** `packages/*/dist` (catches sdk↔signaling cycle bugs)
+- Docker parity was skipped for CI changes when Docker is available on the machine

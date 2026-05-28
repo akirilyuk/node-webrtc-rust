@@ -11,6 +11,9 @@ npm ci
 echo "==> typecheck (sdk + signaling sources)"
 npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json
 
+echo "==> build-ts-workspace (release publish path; catches stale npm bindings types)"
+bash scripts/ci/build-ts-workspace.sh
+
 echo "==> lint"
 npm run lint
 

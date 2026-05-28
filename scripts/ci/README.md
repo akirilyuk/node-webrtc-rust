@@ -81,8 +81,8 @@ Must pass before compile / TS build / test.
 - **When:** `native` OR `workflows` (skipped on TS-only PRs)
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
-- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) — skips `napi build` on cache hit
-- **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux)
+- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) — exact key from [`native-binding-cache-key.sh`](native-binding-cache-key.sh) + [`verify-native-binding-surface.mjs`](verify-native-binding-surface.mjs); skips `napi build` only when valid
+- **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) — host-style build runs `copy:local-node` so `index.js` loads the fresh `.node` instead of stale optional npm packages
 
 Populates the shared native cache used by the test job.
 
@@ -243,7 +243,7 @@ PR native cache profile: **debug**. Main/release: **release**.
 
 | Action | Purpose |
 |--------|---------|
-| [`native-binding-cache`](../../.github/actions/native-binding-cache) | Per-target `.node` restore/save |
+| [`native-binding-cache`](../../.github/actions/native-binding-cache) | Restore + validate `.node`; [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) saves after compile |
 | [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) | Cache, npm, napi build, upload artifact |
 | [`ci-build-native-host`](../../.github/actions/ci-build-native-host) | Node + Rust setup, napi build, upload |
 | [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) | sdk/signaling `dist/` cache |

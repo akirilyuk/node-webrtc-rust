@@ -98,6 +98,7 @@ runs:
         OPUS_STATIC: "1"
       run: |
         set -euo pipefail
+        rm -f *.node
         args=(build --target "${{ inputs.target }}")
         if [[ "${{ inputs.profile }}" == "release" ]]; then
           args+=(--release)
@@ -109,6 +110,11 @@ runs:
           args+=(--zig)
         fi
         npx napi "${args[@]}"
+        # Host-style build emits node-webrtc-rust.node; index.js loads *.linux-x64-gnu.node
+        # (or falls back to published optional deps). Mirror local build:debug:local.
+        if [[ "${{ inputs.platform }}" != "true" ]]; then
+          npm run copy:local-node
+        fi
 
     - name: Verify native NAPI surface
       if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'

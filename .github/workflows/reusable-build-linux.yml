@@ -15,10 +15,19 @@ on:
         description: Restore/save per-target .node cache before compile
         type: boolean
         default: true
+      linux_x64_matrix:
+        description: JSON array of {target,zig} to compile on linux x64
+        type: string
+        default: '[{"target":"x86_64-unknown-linux-gnu","zig":"false"},{"target":"x86_64-unknown-linux-musl","zig":"true"}]'
+      build_linux_arm64:
+        description: Compile aarch64-unknown-linux-gnu when true
+        type: boolean
+        default: true
 
 jobs:
   build-linux-x64:
     name: Build - ${{ matrix.target }}
+    if: inputs.linux_x64_matrix != '[]' && inputs.linux_x64_matrix != ''
     runs-on: self-hosted
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -28,13 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Native gnu on x64: skip Zig — Sherpa/ONNX static libs need the host linker
-          # (Zig link drops __cpu_features2 and verify dlopen fails).
-          - target: x86_64-unknown-linux-gnu
-            zig: 'false'
-          - target: x86_64-unknown-linux-musl
-            zig: 'true'
+        include: ${{ fromJson(inputs.linux_x64_matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +61,7 @@ jobs:
 
   build-linux-arm64:
     name: Build - aarch64-unknown-linux-gnu
+    if: inputs.build_linux_arm64
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4

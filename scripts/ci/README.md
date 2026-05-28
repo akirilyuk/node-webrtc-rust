@@ -131,25 +131,29 @@ Triggered on every push to `main`.
 ```mermaid
 flowchart TD
   quality[Typecheck and lint]
-  buildLinuxX64[build-linux-x64 matrix]
-  buildLinuxArm64[build-linux-arm64 native]
-  buildHost[build-host matrix]
+  plan[Plan native builds per cache hash]
+  buildLinux[build-linux partial matrix]
+  buildHost[build-host partial matrix]
+  stage[stage-cached-bindings]
   test[Integration tests]
 
-  quality --> buildLinuxX64
-  quality --> buildLinuxArm64
-  quality --> buildHost
-  buildLinuxX64 --> test
-  buildLinuxArm64 --> test
+  quality --> plan
+  plan --> buildLinux
+  plan --> buildHost
+  plan --> stage
+  buildLinux --> test
   buildHost --> test
+  stage --> test
   quality --> test
 ```
 
-1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh) (must pass before native compile)
-2. **build-linux-x64** / **build-linux-arm64** / **build-host** — release matrix; skip `napi build` per target on native cache hit
-3. **test** — [`run-pr-integration.sh`](run-pr-integration.sh) only (quality already ran)
+1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh)
+2. **plan** — [`plan-native-builds`](../../.github/actions/plan-native-builds) queries GitHub Actions cache for exact `native-v2-release-{target}-{hash}` keys; outputs build matrices only for **missing** targets
+3. **build-linux-x64 / build-linux-arm64 / build-host** — compile **only** targets without cache (skipped when matrix empty)
+4. **stage-cached-bindings** — restore `.node` from cache and upload `bindings-*` artifacts for cached targets (so release publish can download all six)
+5. **test** — [`run-pr-integration.sh`](run-pr-integration.sh)
 
-No path filtering — always validates the full release surface after merge.
+No path filtering — always validates release surface after merge, but skips compile for warm per-target caches.
 
 ---
 
@@ -160,26 +164,33 @@ Triggered by `git push origin release/x.y.z`.
 ```mermaid
 flowchart TD
   quality[Typecheck and lint]
-  buildLinuxX64[build-linux-x64 matrix]
-  buildLinuxArm64[build-linux-arm64 native]
-  buildHost[build-host matrix]
-  test[Integration tests]
+  plan[Plan + check main CI]
+  buildLinux[build-linux if not all cached]
+  buildHost[build-host if not all cached]
+  stage[stage-cached-bindings]
+  test[Integration tests unless main validated + all cached]
   publish[Publish npm + GitHub Release]
 
-  quality --> buildLinuxX64
-  quality --> buildLinuxArm64
-  quality --> buildHost
-  buildLinuxX64 --> test
-  buildLinuxArm64 --> test
+  quality --> plan
+  plan --> buildLinux
+  plan --> buildHost
+  plan --> stage
+  buildLinux --> test
   buildHost --> test
-  quality --> test
+  stage --> test
+  buildLinux --> publish
+  buildHost --> publish
+  stage --> publish
   test --> publish
+  quality --> publish
 ```
 
-1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh) (must pass before any native compile)
-2. **build-linux-x64** / **build-linux-arm64** / **build-host** — same reusable workflows (`cache_prefix: v1-release`); per-target compile skipped on native cache hit
-3. **test** — [`run-pr-integration.sh`](run-pr-integration.sh) only (quality already ran)
-4. **publish** — runs only when quality, both build workflows, and test all **succeeded**; stage artifacts, `npm publish`, poll registry via [`wait-for-npm-package.sh`](wait-for-npm-package.sh), GitHub Release
+1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh)
+2. **plan** — per-target cache check + [`check-main-ci-success.sh`](check-main-ci-success.sh) (successful `build-main.yml` for this SHA)
+3. **build-linux / build-host** — skipped when **all** targets cached; otherwise compile **only missing** targets
+4. **stage-cached-bindings** — upload artifacts for cached targets
+5. **test** — **skipped** when `all_cached && main_validated` (A1); otherwise [`run-pr-integration.sh`](run-pr-integration.sh)
+6. **publish** — stage artifacts, `npm publish`, GitHub Release
 
 See [`scripts/RELEASE.md`](../RELEASE.md) for tagging and secrets.
 
@@ -209,6 +220,9 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 | Script | Used by | What it runs |
 |--------|---------|--------------|
 | [`run-pr-quality.sh`](run-pr-quality.sh) | PR quality job | `npm ci`, typecheck, **`build-ts-workspace.sh`**, lint |
+| [`plan-native-builds.sh`](plan-native-builds.sh) | main + release plan job | Per-target cache hash check → dynamic build matrices |
+| [`check-main-ci-success.sh`](check-main-ci-success.sh) | release plan job | Skip release test when main validated same SHA |
+| [`list-release-targets.sh`](list-release-targets.sh) | plan / stage scripts | Canonical six release triples |
 | [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh` |
 | [`build-ts-workspace.sh`](build-ts-workspace.sh) | PR build-ts + integration fallback | sdk core → signaling → full sdk |
 | [`run-pr-integration.sh`](run-pr-integration.sh) | PR test job | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test, optional build:ts, npm test |

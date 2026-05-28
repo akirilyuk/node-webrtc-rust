@@ -20,8 +20,10 @@ When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix on
 | PR TS build | `build.yml` → `build-ts` (if sdk/signaling changed) | `build-ts-workspace.sh` + `ci-cache-ts-dist` |
 | PR integration | `build.yml` → `test` | restores both caches → `run-pr-integration.sh` |
 | Main push build + test | `build-main.yml` | `reusable-build-*` → `run-pr-tests-full.sh` |
-| Release build + test | `release.yml` | `reusable-build-*` → `run-pr-tests-full.sh` |
+| Release build + test | `release.yml` | plan → partial matrix → `run-pr-integration.sh` (skipped when main validated + all cached) |
 | Release publish TS | `release.yml` → `publish` | `npm ci --ignore-scripts` → `build-ts-workspace.sh` |
+| Native build plan | `build-main.yml`, `release.yml` | [`plan-native-builds`](../../.github/actions/plan-native-builds) |
+| Stage cached bindings | `reusable-stage-cached-bindings.yml` | Upload `bindings-*` from cache for skipped targets |
 | Local mirror | developer | `scripts/ci/verify-checks.sh`, `npm run ci:verify*` |
 | Release publish TS mirror | developer | `scripts/ci/verify-release-publish-ts.sh`, `npm run ci:verify:release-ts:docker` |
 

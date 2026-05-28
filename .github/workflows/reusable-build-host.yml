@@ -15,24 +15,20 @@ on:
         description: Restore/save per-target .node cache before compile
         type: boolean
         default: true
+      host_matrix:
+        description: JSON array of {target,os,build-args} to compile
+        type: string
+        default: '[{"target":"x86_64-apple-darwin","os":"macos-latest","build-args":"--target x86_64-apple-darwin"},{"target":"aarch64-apple-darwin","os":"macos-latest","build-args":"--target aarch64-apple-darwin"},{"target":"x86_64-pc-windows-msvc","os":"windows-latest","build-args":"--target x86_64-pc-windows-msvc"}]'
 
 jobs:
   build-host:
     name: Build - ${{ matrix.target }}
+    if: inputs.host_matrix != '[]' && inputs.host_matrix != ''
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            build-args: --target x86_64-apple-darwin
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            build-args: --target aarch64-apple-darwin
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            build-args: --target x86_64-pc-windows-msvc
+        include: ${{ fromJson(inputs.host_matrix) }}
     steps:
       - uses: actions/checkout@v4
 

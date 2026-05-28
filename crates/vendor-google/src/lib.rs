@@ -1,4 +1,6 @@
 mod factory;
+#[cfg(feature = "live")]
+mod auth;
 mod stt;
 mod tts;
 

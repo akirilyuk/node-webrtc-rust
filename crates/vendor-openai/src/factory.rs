@@ -1,12 +1,8 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::pipeline::{
-    SttProvider, SttTranscript, TtsAudioChunk, TtsProvider, VendorFactory,
-};
+use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider, VendorFactory};
 
 use crate::stt::OpenAiStt;
 use crate::tts::OpenAiTts;
@@ -34,28 +30,10 @@ pub(crate) fn api_key_from(config_key: &Option<String>, env: &str) -> SpeechResu
     })
 }
 
-pub(crate) fn stub_pcm(duration_ms: u32) -> TtsAudioChunk {
-    let sample_rate = 48_000_u32;
-    let samples = (sample_rate * duration_ms / 1000) as usize * 2;
-    TtsAudioChunk {
-        pcm: Bytes::from(vec![0_u8; samples * 2]),
-        duration_ms,
-    }
-}
-
 pub(crate) type SharedSttState = Arc<tokio::sync::Mutex<OpenAiSttState>>;
 
 pub(crate) struct OpenAiSttState {
     pub buffered: Vec<u8>,
     pub running: bool,
-}
-
-#[async_trait]
-pub(crate) trait LiveStt: Send + Sync {
-    async fn transcribe(&self, pcm: Bytes, api_key: &str) -> SpeechResult<String>;
-}
-
-#[async_trait]
-pub(crate) trait LiveTts: Send + Sync {
-    async fn synthesize(&self, text: &str, api_key: &str) -> SpeechResult<Vec<TtsAudioChunk>>;
+    pub pending: Option<node_webrtc_rust_speech::pipeline::SttTranscript>,
 }

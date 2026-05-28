@@ -8,11 +8,16 @@ description = "Google Cloud Speech/TTS vendor adapter"
 
 [features]
 default = []
-live = []
+live = ["dep:base64", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:yup-oauth2"]
 
 [dependencies]
 async-trait = "0.1"
+base64 = { version = "0.22", optional = true }
 bytes = { workspace = true }
 node-webrtc-rust-speech = { path = "../speech" }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+yup-oauth2 = { version = "11", optional = true }

@@ -25,7 +25,9 @@ impl AssemblyAiStt {
     }
 }
 
-pub fn unsupported_tts(_config: &TtsConfig) -> SpeechResult<Box<dyn node_webrtc_rust_speech::pipeline::TtsProvider>> {
+pub fn unsupported_tts(
+    _config: &TtsConfig,
+) -> SpeechResult<Box<dyn node_webrtc_rust_speech::pipeline::TtsProvider>> {
     Err(SpeechError::Config("AssemblyAI does not provide TTS".into()))
 }
 
@@ -43,17 +45,21 @@ impl SttProvider for AssemblyAiStt {
 
     async fn stop(&mut self) -> SpeechResult<()> {
         self.running = false;
+        self.client.disconnect().await?;
         Ok(())
     }
 
-    async fn push_audio(&mut self, _pcm: Bytes) -> SpeechResult<()> {
-        Ok(())
+    async fn push_audio(&mut self, pcm: Bytes) -> SpeechResult<()> {
+        if !self.running {
+            return Ok(());
+        }
+        self.client.push_audio(pcm).await
     }
 
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
         if !self.running {
             return Ok(None);
         }
-        Ok(None)
+        self.client.poll_transcript().await
     }
 }

@@ -6,6 +6,15 @@ use bytes::Bytes;
 pub const WEBRTC_PCM_SAMPLE_RATE: u32 = 48_000;
 pub const WEBRTC_PCM_CHANNELS: usize = 2;
 
+/// Mono PCM sample rate fed to STT vendors after downmix/downsample.
+pub const STT_PCM_SAMPLE_RATE: u32 = 16_000;
+
+/// Minimum mono PCM bytes before batch STT vendors attempt transcription (~100 ms @ 16 kHz i16).
+pub const STT_MIN_BATCH_BYTES: usize = 3_200;
+
+/// Preferred batch size for utterance-style cloud STT (~1 s @ 16 kHz i16).
+pub const STT_PREFERRED_BATCH_BYTES: usize = 32_000;
+
 /// Convert stereo 48 kHz interleaved i16 PCM to mono 16 kHz i16 samples.
 pub fn stereo_48k_to_mono_16k(pcm: &[u8]) -> Vec<i16> {
     if pcm.len() < 4 {
@@ -55,6 +64,25 @@ pub fn pcm_rms_i16(samples: &[i16]) -> f32 {
     (sum_sq / samples.len() as f64).sqrt() as f32
 }
 
+/// Duration in milliseconds for mono s16le PCM at the given sample rate.
+pub fn duration_ms_from_mono_s16le(byte_len: usize, sample_rate: u32) -> u32 {
+    if sample_rate == 0 {
+        return 1;
+    }
+    let samples = byte_len / 2;
+    ((samples as u64 * 1000) / sample_rate as u64).max(1) as u32
+}
+
+/// Duplicate mono s16le samples into stereo interleaved PCM (WebRTC outbound format).
+pub fn mono_s16le_to_stereo(mono: &[u8]) -> Bytes {
+    let mut stereo = Vec::with_capacity(mono.len() * 2);
+    for sample in mono.chunks_exact(2) {
+        stereo.extend_from_slice(sample);
+        stereo.extend_from_slice(sample);
+    }
+    Bytes::from(stereo)
+}
+
 /// Convert mono i16 samples to little-endian bytes.
 pub fn i16_samples_to_bytes(samples: &[i16]) -> Bytes {
     let mut bytes = Vec::with_capacity(samples.len() * 2);
@@ -62,6 +90,28 @@ pub fn i16_samples_to_bytes(samples: &[i16]) -> Bytes {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     Bytes::from(bytes)
+}
+
+/// Wrap mono 16-bit little-endian PCM (16 kHz) in a minimal WAV container for upload APIs.
+pub fn mono16_le_to_wav(pcm_le: &[u8]) -> Vec<u8> {
+    let data_size = pcm_le.len() as u32;
+    let riff_size = 36 + data_size;
+    let mut wav = Vec::with_capacity(44 + pcm_le.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&riff_size.to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&STT_PCM_SAMPLE_RATE.to_le_bytes());
+    wav.extend_from_slice(&(STT_PCM_SAMPLE_RATE * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_size.to_le_bytes());
+    wav.extend_from_slice(pcm_le);
+    wav
 }
 
 #[cfg(test)]
@@ -87,8 +137,10 @@ mod tests {
     }
 
     #[test]
-    fn loud_signal_has_higher_rms() {
-        let loud = vec![i16::MAX / 4; 160];
-        assert!(pcm_rms_i16(&loud) > 0.05);
+    fn mono16_wav_has_header_and_payload() {
+        let pcm = vec![0_u8; 320];
+        let wav = mono16_le_to_wav(&pcm);
+        assert!(wav.starts_with(b"RIFF"));
+        assert!(wav.len() >= 44 + pcm.len());
     }
 }

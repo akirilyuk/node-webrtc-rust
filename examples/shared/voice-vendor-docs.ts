@@ -106,7 +106,8 @@ export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
     defaultModels: { stt: 'universal-streaming-english' },
     home: 'https://www.assemblyai.com/docs',
     sttDocs: 'https://www.assemblyai.com/docs/speech-to-text/streaming',
-    modelsDocs: 'https://www.assemblyai.com/docs/speech-to-text/pre-recorded-audio/select-the-speech-model',
+    modelsDocs:
+      'https://www.assemblyai.com/docs/speech-to-text/pre-recorded-audio/select-the-speech-model',
   },
   {
     id: 'google',

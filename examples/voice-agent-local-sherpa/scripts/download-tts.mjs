@@ -77,9 +77,7 @@ function verifyBundle(dir) {
   const hasOnnx = names.some((name) => name.endsWith('.onnx'))
   const hasEspeak = existsSync(join(dir, 'espeak-ng-data'))
   if (!hasTokens || !hasOnnx || !hasEspeak) {
-    throw new Error(
-      `Missing TTS artifacts in ${dir} (need tokens.txt, *.onnx, espeak-ng-data/)`,
-    )
+    throw new Error(`Missing TTS artifacts in ${dir} (need tokens.txt, *.onnx, espeak-ng-data/)`)
   }
 }
 

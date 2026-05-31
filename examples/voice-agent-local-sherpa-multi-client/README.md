@@ -11,12 +11,12 @@ Demonstrates the **reusable multi-client server pattern** for local Sherpa STT/T
 
 Edit **`src/voice-handler.ts`** only:
 
-| Handler | When it runs | Typical use |
-| -------- | ------------- | ------------- |
-| `onSpeechEvent` | VAD, STT partial/final, TTS lifecycle, barge-in | LLM on `user_speech_final`, then `ctx.speak(reply)` |
-| `onSpeakRequest` | Browser Speak form (`{ type: 'speak' }`) | Custom TTS routing or echo |
+| Handler          | When it runs                                    | Typical use                                         |
+| ---------------- | ----------------------------------------------- | --------------------------------------------------- |
+| `onSpeechEvent`  | VAD, STT partial/final, TTS lifecycle, barge-in | LLM on `user_speech_final`, then `ctx.speak(reply)` |
+| `onSpeakRequest` | Browser Speak form (`{ type: 'speak' }`)        | Custom TTS routing or echo                          |
 
-The example echoes finals: *"You said: …"* via TTS. Events are still mirrored to each tab’s browser event log.
+The example echoes finals: _"You said: …"_ via TTS. Events are still mirrored to each tab’s browser event log.
 
 `src/index.ts` only boots HTTP/signaling and passes `voiceHandler` into `startMultiClientVoiceServer`.
 
@@ -37,12 +37,12 @@ For **many independent calls** (different room ids per customer), use [`voice-ag
 
 ## Reusable library API
 
-| Export | Use when |
-| ------ | -------- |
-| [`startMultiClientVoiceServer`](../../packages/helpers/src/multi-client-voice-server.ts) | One room, N browser clients |
-| [`VoiceSessionHandler`](../../packages/helpers/src/voice-session-handler.ts) | Per-tab STT/TTS app logic |
-| [`VoiceSessionBudget`](../../packages/helpers/src/voice-session-budget.ts) | Cap connections per process |
-| [`SessionPod`](../../packages/helpers/src/session-pod.ts) | Many rooms / session ids in one pod |
+| Export                                                                                   | Use when                            |
+| ---------------------------------------------------------------------------------------- | ----------------------------------- |
+| [`startMultiClientVoiceServer`](../../packages/helpers/src/multi-client-voice-server.ts) | One room, N browser clients         |
+| [`VoiceSessionHandler`](../../packages/helpers/src/voice-session-handler.ts)             | Per-tab STT/TTS app logic           |
+| [`VoiceSessionBudget`](../../packages/helpers/src/voice-session-budget.ts)               | Cap connections per process         |
+| [`SessionPod`](../../packages/helpers/src/session-pod.ts)                                | Many rooms / session ids in one pod |
 
 ## Prerequisites
 
@@ -92,12 +92,12 @@ npm run test --workspace=@node-webrtc-rust/helpers
 
 ## Environment
 
-| Variable | Default | Purpose |
-| -------- | ------- | ------- |
-| `PORT` | `3004` | HTTP + WebSocket |
-| `VOICE_ROOM` | `sherpa-multi` | Signaling room |
+| Variable                        | Default         | Purpose                     |
+| ------------------------------- | --------------- | --------------------------- |
+| `PORT`                          | `3004`          | HTTP + WebSocket            |
+| `VOICE_ROOM`                    | `sherpa-multi`  | Signaling room              |
 | `VOICE_MAX_CONCURRENT_SESSIONS` | `0` (unlimited) | Process-wide connection cap |
-| `SHERPA_STT_MODEL_PATH` | — | Required |
-| `SHERPA_TTS_MODEL_PATH` | — | Required |
+| `SHERPA_STT_MODEL_PATH`         | —               | Required                    |
+| `SHERPA_TTS_MODEL_PATH`         | —               | Required                    |
 
 See also [`development/node-webrtc-rust/plans/2026-05-31-voice-session-budget.md`](../../development/node-webrtc-rust/plans/2026-05-31-voice-session-budget.md) and [`2026-05-31-sherpa-shared-model-pool.md`](../../development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md).

@@ -141,10 +141,7 @@ export async function createBidirectionalLoopback(): Promise<{
   await agentOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
   await userOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
 
-  const [agentInbound, userInbound] = await Promise.all([
-    agentInboundPromise,
-    userInboundPromise,
-  ])
+  const [agentInbound, userInbound] = await Promise.all([agentInboundPromise, userInboundPromise])
 
   return {
     server,
@@ -170,10 +167,7 @@ export async function createBidirectionalLoopback(): Promise<{
  * Live vendor demos call this before `sendTextToTTS()` so VAD/STT have something to process
  * without requiring a real microphone. Mock STT uses byte thresholds, not frequency detection.
  */
-export async function streamUserTone(
-  userOut: LocalAudioTrack,
-  seconds: number,
-): Promise<void> {
+export async function streamUserTone(userOut: LocalAudioTrack, seconds: number): Promise<void> {
   const frameCount = Math.ceil((seconds * 1000) / PCM_FRAME_DURATION_MS)
   for (let i = 0; i < frameCount; i++) {
     await userOut.writeSample(createToneFrame(440), PCM_FRAME_DURATION_MS)

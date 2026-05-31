@@ -10,7 +10,11 @@
 import type { Server as HttpServer } from 'http'
 
 import type { RTCIceCandidateInit, RTCSessionDescriptionInit } from '@node-webrtc-rust/sdk'
-import type { ConferenceRoom, ConferenceServer, RoomOptions } from '@node-webrtc-rust/sdk/conference'
+import type {
+  ConferenceRoom,
+  ConferenceServer,
+  RoomOptions,
+} from '@node-webrtc-rust/sdk/conference'
 import type { ConferenceSignalingResponse } from '@node-webrtc-rust/sdk/conference'
 import { WebSocket, WebSocketServer } from 'ws'
 

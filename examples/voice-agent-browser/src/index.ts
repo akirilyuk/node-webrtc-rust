@@ -128,9 +128,7 @@ async function main(): Promise<void> {
     `Voice pipeline: ${voiceLabel} — STT=${voiceConfig.stt?.provider}, TTS=${voiceConfig.tts?.provider}`,
   )
   if (voiceMode === 'mock') {
-    console.log(
-      'Using mock STT/TTS. Set VOICE_VENDOR and API keys for live vendors — see README.',
-    )
+    console.log('Using mock STT/TTS. Set VOICE_VENDOR and API keys for live vendors — see README.')
   }
   console.log('Allow microphone access, connect, speak, and watch STT events in the log.')
   console.log('Use the TTS form or "Speak long reply" to test barge-in while talking.')

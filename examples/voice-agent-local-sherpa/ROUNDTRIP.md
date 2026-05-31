@@ -8,12 +8,12 @@ Implementation: [`src/roundtrip.ts`](./src/roundtrip.ts).
 
 **Yes — for timing inside and after an utterance.** **No — `minSilenceDurationMs` is not a “pause between batch phrases” knob.**
 
-| Source | What it does |
-|--------|----------------|
+| Source                                      | What it does                                                                                                                                                                         |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **`minSilenceDurationMs` (300 ms default)** | How long silence must last **during** one utterance before VAD emits `user_speaking_end`. Short Piper gaps between words should stay under this so one TTS phrase stays one segment. |
-| **`sttGateHoldMs` (2500 ms default)** | After `user_speaking_end`, keep feeding STT for this much **audio duration** (sum of inbound PCM frame lengths). With real-time trailing silence, that aligns with wall-clock time. |
-| **Endpoint tail** | `max(minSilenceDurationMs, 800)` ms of silence pushed to STT after hold reaches zero, then `finalize_utterance`. |
-| **`speechPadMs` / `minSpeechDurationMs`** | Pre-roll and minimum voiced time before `user_speaking_start` — not inter-phrase gaps. |
+| **`sttGateHoldMs` (2500 ms default)**       | After `user_speaking_end`, keep feeding STT for this much **audio duration** (sum of inbound PCM frame lengths). With real-time trailing silence, that aligns with wall-clock time.  |
+| **Endpoint tail**                           | `max(minSilenceDurationMs, 800)` ms of silence pushed to STT after hold reaches zero, then `finalize_utterance`.                                                                     |
+| **`speechPadMs` / `minSpeechDurationMs`**   | Pre-roll and minimum voiced time before `user_speaking_start` — not inter-phrase gaps.                                                                                               |
 
 **Between batch phrases**, separation is:
 
@@ -60,11 +60,11 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 
 ## Run modes
 
-| Mode | Command |
-|------|---------|
+| Mode                | Command                                                             |
+| ------------------- | ------------------------------------------------------------------- |
 | **Batch (default)** | `npm run start:roundtrip` — 5 built-in sentences + similarity table |
-| **Single phrase** | `npm run start:roundtrip -- "I love America"` |
-| **Single via env** | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip` |
+| **Single phrase**   | `npm run start:roundtrip -- "I love America"`                       |
+| **Single via env**  | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`     |
 
 ### Default batch sentences
 
@@ -84,11 +84,11 @@ After each phrase, input and STT output are compared:
 
 Examples:
 
-| Input (normalized) | Recognized (normalized) | Similarity |
-|--------------------|-------------------------|------------|
-| `i love america` | `i love america` | 100% |
-| `i love america` | `thy love america` | 67% (fails at 75% threshold) |
-| `the weather is nice today` | `the weather weather is nice to day` | 80% |
+| Input (normalized)          | Recognized (normalized)              | Similarity                   |
+| --------------------------- | ------------------------------------ | ---------------------------- |
+| `i love america`            | `i love america`                     | 100%                         |
+| `i love america`            | `thy love america`                   | 67% (fails at 75% threshold) |
+| `the weather is nice today` | `the weather weather is nice to day` | 80%                          |
 
 Exact character match is not required; STT may split or repeat words (`to day` vs `today`).
 
@@ -98,15 +98,15 @@ Gaps and pauses come from **two layers**: the **VoiceAgent VAD/STT pipeline** (l
 
 ### Within one phrase (listener VAD + gateStt)
 
-| Setting | Default | Role |
-|---------|---------|------|
-| `minSpeechDurationMs` | 250 | Voice must be present this long before `user_speaking_start` |
-| `minSilenceDurationMs` | 300 | Silence this long ends the utterance (`user_speaking_end`) — avoids splitting on short TTS word gaps |
-| `speechPadMs` | 300 | Pre-roll ring size only (`speechPadMs + minSpeechDurationMs` ≈ 550 ms buffered before `SpeechStart`) |
-| `gateStt` | true | STT only while gate is open |
-| `gateSttOpenOnPending` | true | Gate opens during VAD **pending** speech (before `SpeechStart`) — covers WebRTC lead-in |
-| `sttGateHoldMs` | 2500 | After `SpeechEnd`, keep feeding STT for this many ms (trailing phonemes + relay) |
-| Endpoint tail | max(`minSilenceDurationMs`, 800) | Extra silence pushed to STT after hold expires, then `finalize_utterance` |
+| Setting                | Default                          | Role                                                                                                 |
+| ---------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `minSpeechDurationMs`  | 250                              | Voice must be present this long before `user_speaking_start`                                         |
+| `minSilenceDurationMs` | 300                              | Silence this long ends the utterance (`user_speaking_end`) — avoids splitting on short TTS word gaps |
+| `speechPadMs`          | 300                              | Pre-roll ring size only (`speechPadMs + minSpeechDurationMs` ≈ 550 ms buffered before `SpeechStart`) |
+| `gateStt`              | true                             | STT only while gate is open                                                                          |
+| `gateSttOpenOnPending` | true                             | Gate opens during VAD **pending** speech (before `SpeechStart`) — covers WebRTC lead-in              |
+| `sttGateHoldMs`        | 2500                             | After `SpeechEnd`, keep feeding STT for this many ms (trailing phonemes + relay)                     |
+| Endpoint tail          | max(`minSilenceDurationMs`, 800) | Extra silence pushed to STT after hold expires, then `finalize_utterance`                            |
 
 **`minSilenceDurationMs` is not a gap between batch phrases.** It only controls how long silence must last **inside** an utterance before VAD declares speech ended. Piper TTS short pauses between words should stay below 300 ms so one phrase stays one segment.
 
@@ -131,11 +131,11 @@ Defaults ≈ **3.8 s wall time** (2500 + 800 + 500 ms of 20 ms frames). Duration
 
 ### Between phrases (batch)
 
-| Mechanism | Default | Purpose |
-|-----------|---------|---------|
-| Wait for `user_speech_final` | always | Next TTS starts only after previous utterance finalized |
-| Trailing silence (above) | ~3.8 s from VAD timings | Lets hold + finalize complete on the listener |
-| `SHERPA_ROUNDTRIP_GAP_S` | **0** | Extra explicit silence between phrases; **off by default** |
+| Mechanism                    | Default                 | Purpose                                                    |
+| ---------------------------- | ----------------------- | ---------------------------------------------------------- |
+| Wait for `user_speech_final` | always                  | Next TTS starts only after previous utterance finalized    |
+| Trailing silence (above)     | ~3.8 s from VAD timings | Lets hold + finalize complete on the listener              |
+| `SHERPA_ROUNDTRIP_GAP_S`     | **0**                   | Extra explicit silence between phrases; **off by default** |
 
 With `SHERPA_ROUNDTRIP_GAP_S=0` (default), **inter-phrase gaps come from VAD-driven finalize timing plus VAD-aligned trailing silence**, not from a separate fixed 1 s gap. The harness **must** stream that trailing PCM at real time (in parallel with waiting for `user_speech_final`) so `sttGateHoldMs` can count down on the wire; without it, the next phrase can start before finalize and STT can bleed across phrases.
 
@@ -143,20 +143,20 @@ Set `SHERPA_ROUNDTRIP_GAP_S=1` (or higher) only if you need extra separation bey
 
 ### Before the first phrase
 
-| Mechanism | Default | Purpose |
-|-----------|---------|---------|
-| `SHERPA_ROUNDTRIP_WARMUP_S` | 0.6 s | Explicit silence on speaker outbound to prime WebRTC before first TTS (not VAD) |
+| Mechanism                   | Default | Purpose                                                                         |
+| --------------------------- | ------- | ------------------------------------------------------------------------------- |
+| `SHERPA_ROUNDTRIP_WARMUP_S` | 0.6 s   | Explicit silence on speaker outbound to prime WebRTC before first TTS (not VAD) |
 
 ## Environment variables
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `SHERPA_ROUNDTRIP_PHRASE` | — | Single phrase (skips 5-sentence batch) |
-| `SHERPA_ROUNDTRIP_MIN_SIMILARITY` | `0.75` | Min word-match ratio to pass |
-| `SHERPA_ROUNDTRIP_TIMEOUT_MS` | `45000` | Per-phrase STT timeout |
-| `SHERPA_ROUNDTRIP_WARMUP_S` | `0.6` | Speaker warmup silence (seconds) before first TTS |
-| `SHERPA_ROUNDTRIP_GAP_S` | `0` | **Extra** silence between phrases (seconds); VAD trailing usually enough |
-| `SHERPA_ROUNDTRIP_VERBOSE` | unset | Set to `1` for per-frame VAD/STT logs |
+| Variable                          | Default | Purpose                                                                  |
+| --------------------------------- | ------- | ------------------------------------------------------------------------ |
+| `SHERPA_ROUNDTRIP_PHRASE`         | —       | Single phrase (skips 5-sentence batch)                                   |
+| `SHERPA_ROUNDTRIP_MIN_SIMILARITY` | `0.75`  | Min word-match ratio to pass                                             |
+| `SHERPA_ROUNDTRIP_TIMEOUT_MS`     | `45000` | Per-phrase STT timeout                                                   |
+| `SHERPA_ROUNDTRIP_WARMUP_S`       | `0.6`   | Speaker warmup silence (seconds) before first TTS                        |
+| `SHERPA_ROUNDTRIP_GAP_S`          | `0`     | **Extra** silence between phrases (seconds); VAD trailing usually enough |
+| `SHERPA_ROUNDTRIP_VERBOSE`        | unset   | Set to `1` for per-frame VAD/STT logs                                    |
 
 Model paths: `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH` (see main [README](./README.md)).
 
@@ -204,19 +204,19 @@ Exit code `1` if any phrase is empty or below the similarity threshold.
 bargeIn: { enabled: true, useVad: true, flushTts: true }
 ```
 
-| Setting | Behavior |
-|---------|----------|
-| `enabled` | Master switch for flush + `barge_in`. |
+| Setting                  | Behavior                                                                   |
+| ------------------------ | -------------------------------------------------------------------------- |
+| `enabled`                | Master switch for flush + `barge_in`.                                      |
 | `useVad: true` (default) | Automatic interrupt on inbound VAD `SpeechStart` (`vad.enabled` required). |
-| `useVad: false` | No auto interrupt on voice; call `flushTts()` from your app only. |
+| `useVad: false`          | No auto interrupt on voice; call `flushTts()` from your app only.          |
 
 Avoid false interrupts from short tones/noise when `useVad: true` by raising `vad.minSpeechDurationMs` (e.g. 200–300 ms) or `vad.threshold` on the **speaker** agent.
 
-| Requirement | Why |
-|-------------|-----|
-| `vad.enabled: true` on the **speaker** | Needed for `useVad` auto barge-in |
-| `vad.bargeIn.useVad: true` | E2E test uses this; tone on `agentInbound` triggers `SpeechStart` |
-| Interrupt audio on speaker **inbound** (`agentInbound`) | User leg tone simulates the user talking over the agent |
+| Requirement                                             | Why                                                               |
+| ------------------------------------------------------- | ----------------------------------------------------------------- |
+| `vad.enabled: true` on the **speaker**                  | Needed for `useVad` auto barge-in                                 |
+| `vad.bargeIn.useVad: true`                              | E2E test uses this; tone on `agentInbound` triggers `SpeechStart` |
+| Interrupt audio on speaker **inbound** (`agentInbound`) | User leg tone simulates the user talking over the agent           |
 
 ```text
 Speaker (agent PC)                    User leg
@@ -226,22 +226,22 @@ VAD on agentInbound                   voice activity → SpeechStart → barge_i
 
 The STT roundtrip **listener** has VAD for `gateStt` but does not play TTS — barge-in there would not cut the speaker’s playback. This test puts VAD + barge-in on the **speaker**.
 
-| Phase | What happens |
-|-------|----------------|
-| 1 | Long phrase, no interrupt → measure full received audio (ms) on `userInbound` |
-| 2 | Same phrase; after `SHERPA_BARGE_IN_DELAY_MS`, stream user tone at real time → expect `barge_in` and received audio **&lt; 65%** of phase 1 (configurable) |
+| Phase | What happens                                                                                                                                               |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | Long phrase, no interrupt → measure full received audio (ms) on `userInbound`                                                                              |
+| 2     | Same phrase; after `SHERPA_BARGE_IN_DELAY_MS`, stream user tone at real time → expect `barge_in` and received audio **&lt; 65%** of phase 1 (configurable) |
 
 ```bash
 npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `SHERPA_BARGE_IN_PHRASE` | long built-in sentence | TTS text |
-| `SHERPA_BARGE_IN_DELAY_MS` | `400` | Wait before injecting user tone (must be before TTS finishes) |
-| `SHERPA_BARGE_IN_INTERRUPT_S` | `1.2` | User tone duration (real-time frames) |
-| `SHERPA_BARGE_IN_MAX_RATIO` | `0.65` | Max allowed `cutMs / fullMs` |
-| `SHERPA_BARGE_IN_VERBOSE` | off | Log speaker speech events |
+| Variable                      | Default                | Purpose                                                       |
+| ----------------------------- | ---------------------- | ------------------------------------------------------------- |
+| `SHERPA_BARGE_IN_PHRASE`      | long built-in sentence | TTS text                                                      |
+| `SHERPA_BARGE_IN_DELAY_MS`    | `400`                  | Wait before injecting user tone (must be before TTS finishes) |
+| `SHERPA_BARGE_IN_INTERRUPT_S` | `1.2`                  | User tone duration (real-time frames)                         |
+| `SHERPA_BARGE_IN_MAX_RATIO`   | `0.65`                 | Max allowed `cutMs / fullMs`                                  |
+| `SHERPA_BARGE_IN_VERBOSE`     | off                    | Log speaker speech events                                     |
 
 Success ends with `Barge-in E2E OK — TTS playback was truncated after user interrupt.`
 

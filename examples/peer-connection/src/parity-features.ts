@@ -13,11 +13,7 @@
  * Requires port 8080 free (signaling). Set `WEBRTC_DEBUG=1` for SDK trace logs.
  */
 
-import {
-  LocalAudioTrack,
-  RemoteAudioTrack,
-  RTCPeerConnection,
-} from '@node-webrtc-rust/sdk'
+import { LocalAudioTrack, RemoteAudioTrack, RTCPeerConnection } from '@node-webrtc-rust/sdk'
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
 import {
@@ -63,8 +59,14 @@ function connectPair(
   sigB: SignalingClient
   cleanup: () => void
 } {
-  const pcA = new RTCPeerConnection({ iceServers: DEMO_ICE_SERVERS, debug: process.env.WEBRTC_DEBUG === '1' })
-  const pcB = new RTCPeerConnection({ iceServers: DEMO_ICE_SERVERS, debug: process.env.WEBRTC_DEBUG === '1' })
+  const pcA = new RTCPeerConnection({
+    iceServers: DEMO_ICE_SERVERS,
+    debug: process.env.WEBRTC_DEBUG === '1',
+  })
+  const pcB = new RTCPeerConnection({
+    iceServers: DEMO_ICE_SERVERS,
+    debug: process.env.WEBRTC_DEBUG === '1',
+  })
 
   attachPeerStateLoggers(pcA, ids[0])
   attachPeerStateLoggers(pcB, ids[1])
@@ -98,7 +100,10 @@ async function demoTransceivers(): Promise<void> {
   logSection('addTransceiver (recvonly) + transceiver getters')
 
   await withSignaling('parity-transceiver', async (server) => {
-    const { pcA, pcB, sigA, sigB, cleanup } = connectPair(server, 'parity-transceiver', ['sender', 'receiver'])
+    const { pcA, pcB, sigA, sigB, cleanup } = connectPair(server, 'parity-transceiver', [
+      'sender',
+      'receiver',
+    ])
 
     const tone = new LocalAudioTrack('tone-a', 'stream-1')
     await pcA.addTrack(tone)
@@ -134,7 +139,9 @@ async function demoTransceivers(): Promise<void> {
     console.log(
       `getTransceivers=${transceivers.length} getSenders=${senders.length} getReceivers=${receivers.length}`,
     )
-    console.log(`transceiver[0].mid=${transceivers[0]?.mid ?? '(pending)'} direction=${transceivers[0]?.direction}`)
+    console.log(
+      `transceiver[0].mid=${transceivers[0]?.mid ?? '(pending)'} direction=${transceivers[0]?.direction}`,
+    )
 
     await logConnectionStats(pcB, 'receiver')
     cleanup()
@@ -146,7 +153,10 @@ async function demoConfigurationAndRestartIce(): Promise<void> {
   logSection('setConfiguration / getConfiguration / restartIce')
 
   await withSignaling('parity-config', async (server) => {
-    const { pcA, pcB, sigA, sigB, cleanup } = connectPair(server, 'parity-config', ['cfg-a', 'cfg-b'])
+    const { pcA, pcB, sigA, sigB, cleanup } = connectPair(server, 'parity-config', [
+      'cfg-a',
+      'cfg-b',
+    ])
 
     const dcA = pcA.createDataChannel('ping')
     const dcBPromise = new Promise<typeof dcA>((resolve) => {
@@ -189,7 +199,10 @@ async function demoReplaceRemoveAndReadSample(): Promise<void> {
   logSection('replaceTrack + readSample + removeTrack')
 
   await withSignaling('parity-media', async (server) => {
-    const { pcA, pcB, sigA, sigB, cleanup } = connectPair(server, 'parity-media', ['media-a', 'media-b'])
+    const { pcA, pcB, sigA, sigB, cleanup } = connectPair(server, 'parity-media', [
+      'media-a',
+      'media-b',
+    ])
 
     const trackA = new LocalAudioTrack('track-a', 'stream-media')
     const trackB = new LocalAudioTrack('track-b', 'stream-media')

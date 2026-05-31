@@ -35,10 +35,7 @@ export function attachPeerStateLoggers(pc: RTCPeerConnection, label: string): vo
   }
 }
 
-export async function waitForConnection(
-  pc: RTCPeerConnection,
-  timeoutMs = 20_000,
-): Promise<void> {
+export async function waitForConnection(pc: RTCPeerConnection, timeoutMs = 20_000): Promise<void> {
   if (pc.connectionState === 'connected') return
 
   await new Promise<void>((resolve, reject) => {
@@ -83,10 +80,7 @@ export async function waitForDataChannelOpen(
 }
 
 /** Summarize {@link RTCPeerConnection.getStats} for demo logging. */
-export async function logConnectionStats(
-  pc: RTCPeerConnection,
-  label: string,
-): Promise<void> {
+export async function logConnectionStats(pc: RTCPeerConnection, label: string): Promise<void> {
   const stats = await pc.getStats()
   let candidatePairs = 0
   let inboundAudio = 0

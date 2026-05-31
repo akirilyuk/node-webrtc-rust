@@ -111,7 +111,8 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
       { provider: 'deepgram', model: 'nova-2', language: 'en', apiKey: env('DEEPGRAM_API_KEY') },
       { provider: 'openai', model: 'tts-1', voice: 'alloy' },
     ),
-    ttsPhrase: 'Deepgram STT with OpenAI TTS pairing. Speak into the user leg to test transcription.',
+    ttsPhrase:
+      'Deepgram STT with OpenAI TTS pairing. Speak into the user leg to test transcription.',
     notes: 'Deepgram is STT-only in this SDK; TTS uses OpenAI for the demo pairing.',
   },
   elevenlabs: {

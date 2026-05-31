@@ -49,27 +49,27 @@ Presets live in [`examples/shared/voice-vendor-presets.ts`](../shared/voice-vend
 
 ### Supported vendors
 
-| Vendor | `VOICE_VENDOR` | STT | TTS | Required env | npm script |
-|--------|----------------|-----|-----|--------------|------------|
-| OpenAI | `openai` | OpenAI | OpenAI | `OPENAI_API_KEY` | `start:live:openai` |
-| Deepgram | `deepgram` | Deepgram | OpenAI (pairing) | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY` | `start:live:deepgram` |
-| ElevenLabs | `elevenlabs` | OpenAI (pairing) | ElevenLabs | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` | `start:live:elevenlabs` |
-| Cartesia | `cartesia` | OpenAI (pairing) | Cartesia | `CARTESIA_API_KEY`, `OPENAI_API_KEY` | `start:live:cartesia` |
-| AssemblyAI | `assemblyai` | AssemblyAI | OpenAI (pairing) | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY` | `start:live:assemblyai` |
-| Google Cloud | `google` | Google | Google | `GOOGLE_APPLICATION_CREDENTIALS` | `start:live:google` |
+| Vendor       | `VOICE_VENDOR` | STT              | TTS              | Required env                           | npm script              |
+| ------------ | -------------- | ---------------- | ---------------- | -------------------------------------- | ----------------------- |
+| OpenAI       | `openai`       | OpenAI           | OpenAI           | `OPENAI_API_KEY`                       | `start:live:openai`     |
+| Deepgram     | `deepgram`     | Deepgram         | OpenAI (pairing) | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`   | `start:live:deepgram`   |
+| ElevenLabs   | `elevenlabs`   | OpenAI (pairing) | ElevenLabs       | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` | `start:live:elevenlabs` |
+| Cartesia     | `cartesia`     | OpenAI (pairing) | Cartesia         | `CARTESIA_API_KEY`, `OPENAI_API_KEY`   | `start:live:cartesia`   |
+| AssemblyAI   | `assemblyai`   | AssemblyAI       | OpenAI (pairing) | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY` | `start:live:assemblyai` |
+| Google Cloud | `google`       | Google           | Google           | `GOOGLE_APPLICATION_CREDENTIALS`       | `start:live:google`     |
 
 **Pairing note:** Not every vendor supports both STT and TTS in this SDK. Demos pair STT-only vendors with OpenAI TTS (or Google with Google). In production you can mix `VoiceAgentConfig.stt` and `.tts` freely.
 
 ### Official API documentation
 
-| Vendor | STT | TTS |
-|--------|-----|-----|
-| OpenAI | [Docs](https://platform.openai.com/docs/guides/speech-to-text) | [Docs](https://platform.openai.com/docs/guides/text-to-speech) |
-| Deepgram | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) | — |
-| ElevenLabs | — | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) |
-| Cartesia | — | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
-| AssemblyAI | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming) | — |
-| Google Cloud | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs) | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs) |
+| Vendor       | STT                                                                         | TTS                                                                        |
+| ------------ | --------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| OpenAI       | [Docs](https://platform.openai.com/docs/guides/speech-to-text)              | [Docs](https://platform.openai.com/docs/guides/text-to-speech)             |
+| Deepgram     | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) | —                                                                          |
+| ElevenLabs   | —                                                                           | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) |
+| Cartesia     | —                                                                           | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes)              |
+| AssemblyAI   | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)   | —                                                                          |
+| Google Cloud | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs)              | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs)             |
 
 Local STT (no cloud): [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md) — **free on-device Sherpa STT** (privacy-friendly: mic audio stays off third-party STT APIs; lower latency); per-language `download-stt:es|fr|de|zh|…`; full list in [`VOICE_VENDOR_REFERENCE`](../shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--free-on-device-stt-recommended) · [Sherpa-ONNX docs](https://k2-fsa.github.io/sherpa/onnx/)
 
@@ -112,11 +112,11 @@ VOICE_VENDOR=openai OPENAI_API_KEY=sk-... \
 
 ### Optional voice overrides
 
-| Env | Used when |
-|-----|-----------|
+| Env                   | Used when                                   |
+| --------------------- | ------------------------------------------- |
 | `ELEVENLABS_VOICE_ID` | `VOICE_VENDOR=elevenlabs` (default: Rachel) |
-| `CARTESIA_VOICE_ID` | `VOICE_VENDOR=cartesia` |
-| `GOOGLE_API_KEY` | Alternative to ADC for some Google setups |
+| `CARTESIA_VOICE_ID`   | `VOICE_VENDOR=cartesia`                     |
+| `GOOGLE_API_KEY`      | Alternative to ADC for some Google setups   |
 
 ### Verify live mode
 
@@ -143,9 +143,9 @@ To use a config not covered by presets, edit `src/resolve-voice-config.ts` or pa
 
 ## Data channel protocol
 
-| Direction | Payload |
-|-----------|---------|
-| Client → server | `{ "type": "speak", "text": "Hello" }` |
+| Direction       | Payload                                                                 |
+| --------------- | ----------------------------------------------------------------------- |
+| Client → server | `{ "type": "speak", "text": "Hello" }`                                  |
 | Server → client | `{ "type": "speech_event", "event": "user_speech_final", "text": "…" }` |
 
 Server events mirror `SpeechEvent` types: `user_speaking_start`, `user_speech_partial`, `user_speech_final`, `agent_speaking_start`, `agent_speaking_end`, `barge_in`, `error`.

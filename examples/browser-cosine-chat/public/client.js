@@ -46,9 +46,7 @@ if (DEBUG && debugPanelEl && debugLogEl) {
 
 function debugLog(...args) {
   if (!DEBUG) return
-  const line = args
-    .map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg)))
-    .join(' ')
+  const line = args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ')
   console.log('[browser-cosine-chat]', ...args)
   if (debugLogEl) {
     debugLogEl.textContent += `${new Date().toISOString().slice(11, 23)} ${line}\n`
@@ -294,84 +292,84 @@ async function onOffer(fromPeerId, sdp) {
       attachPeerStateDebug(pc, 'server-audio')
       startInboundRtpDebug(pc, 'server-audio')
 
-    const attachServerAudio = (track, stream, source) => {
-      if (toneEl.srcObject) {
-        debugLog(`attach skipped (already have srcObject) source=${source}`)
-        return
-      }
-      debugLog(`attach audio track id=${track.id} muted=${track.muted} source=${source}`)
-      track.onunmute = () => {
-        debugLog(`track unmuted id=${track.id}`)
+      const attachServerAudio = (track, stream, source) => {
+        if (toneEl.srcObject) {
+          debugLog(`attach skipped (already have srcObject) source=${source}`)
+          return
+        }
+        debugLog(`attach audio track id=${track.id} muted=${track.muted} source=${source}`)
+        track.onunmute = () => {
+          debugLog(`track unmuted id=${track.id}`)
+          void toneEl.play().catch(() => undefined)
+        }
+        track.onmute = () => debugLog(`track muted id=${track.id}`)
+        track.onended = () => debugLog(`track ended id=${track.id}`)
+        const playStream = stream ?? new MediaStream([track])
+        toneEl.srcObject = playStream
         void toneEl.play().catch(() => undefined)
+        incomingVisualizer?.stop()
+        incomingVisualizer = attachAudioVisualizer({
+          canvas: incomingVizCanvas,
+          mediaStream: playStream,
+          waveColor: '#fbbf24',
+          barColor: '#f59e0b',
+        })
+        incomingVisualizer.resume()
+        audioStatusEl.textContent = 'Playing 440 Hz cosine tone from Node server'
+        vizStatusEl.textContent = 'Live waveform of incoming server audio track'
       }
-      track.onmute = () => debugLog(`track muted id=${track.id}`)
-      track.onended = () => debugLog(`track ended id=${track.id}`)
-      const playStream = stream ?? new MediaStream([track])
-      toneEl.srcObject = playStream
-      void toneEl.play().catch(() => undefined)
-      incomingVisualizer?.stop()
-      incomingVisualizer = attachAudioVisualizer({
-        canvas: incomingVizCanvas,
-        mediaStream: playStream,
-        waveColor: '#fbbf24',
-        barColor: '#f59e0b',
-      })
-      incomingVisualizer.resume()
-      audioStatusEl.textContent = 'Playing 440 Hz cosine tone from Node server'
-      vizStatusEl.textContent = 'Live waveform of incoming server audio track'
-    }
 
-    pc.ontrack = (event) => {
-      debugLog(`ontrack kind=${event.track.kind} id=${event.track.id}`)
-      attachServerAudio(event.track, event.streams[0], 'ontrack')
-    }
+      pc.ontrack = (event) => {
+        debugLog(`ontrack kind=${event.track.kind} id=${event.track.id}`)
+        attachServerAudio(event.track, event.streams[0], 'ontrack')
+      }
 
-    pc.onconnectionstatechange = () => {
-      debugLog(`server pc connectionState=${pc.connectionState}`)
-      if (pc.connectionState !== 'connected' || toneEl.srcObject) return
+      pc.onconnectionstatechange = () => {
+        debugLog(`server pc connectionState=${pc.connectionState}`)
+        if (pc.connectionState !== 'connected' || toneEl.srcObject) return
+        for (const receiver of pc.getReceivers()) {
+          if (receiver.track?.kind === 'audio') {
+            attachServerAudio(receiver.track, null, 'getReceivers')
+            break
+          }
+        }
+      }
+
+      pc.oniceconnectionstatechange = () => {
+        debugLog(`server pc iceConnectionState=${pc.iceConnectionState}`)
+      }
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          debugLog(`server pc local ice → cosine-server`)
+          sendSignal({
+            type: 'ice-candidate',
+            targetPeerId: fromPeerId,
+            candidate: event.candidate.toJSON(),
+          })
+        }
+      }
+
+      await pc.setRemoteDescription(sdp)
+      await flushPendingIce(fromPeerId)
+      debugLog(`server pc remoteDescription set, receivers=${pc.getReceivers().length}`)
+
       for (const receiver of pc.getReceivers()) {
         if (receiver.track?.kind === 'audio') {
-          attachServerAudio(receiver.track, null, 'getReceivers')
+          attachServerAudio(receiver.track, null, 'post-setRemoteDescription')
           break
         }
       }
-    }
 
-    pc.oniceconnectionstatechange = () => {
-      debugLog(`server pc iceConnectionState=${pc.iceConnectionState}`)
-    }
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        debugLog(`server pc local ice → cosine-server`)
-        sendSignal({
-          type: 'ice-candidate',
-          targetPeerId: fromPeerId,
-          candidate: event.candidate.toJSON(),
-        })
-      }
-    }
-
-    await pc.setRemoteDescription(sdp)
-    await flushPendingIce(fromPeerId)
-    debugLog(`server pc remoteDescription set, receivers=${pc.getReceivers().length}`)
-
-    for (const receiver of pc.getReceivers()) {
-      if (receiver.track?.kind === 'audio') {
-        attachServerAudio(receiver.track, null, 'post-setRemoteDescription')
-        break
-      }
-    }
-
-    const answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    await waitGatheringComplete(pc)
-    debugLog('server answer sent → cosine-server')
-    sendSignal({
-      type: 'answer',
-      targetPeerId: fromPeerId,
-      sdp: pc.localDescription,
-    })
+      const answer = await pc.createAnswer()
+      await pc.setLocalDescription(answer)
+      await waitGatheringComplete(pc)
+      debugLog('server answer sent → cosine-server')
+      sendSignal({
+        type: 'answer',
+        targetPeerId: fromPeerId,
+        sdp: pc.localDescription,
+      })
     } catch (error) {
       debugLog(`server offer handling FAILED: ${error}`)
       console.error(error)

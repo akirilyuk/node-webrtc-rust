@@ -189,7 +189,9 @@ async function runBargeInPlayback(params: {
 
 async function main(): Promise<void> {
   const phrase =
-    process.env.SHERPA_BARGE_IN_PHRASE?.trim() || process.argv.slice(2).join(' ').trim() || DEFAULT_PHRASE
+    process.env.SHERPA_BARGE_IN_PHRASE?.trim() ||
+    process.argv.slice(2).join(' ').trim() ||
+    DEFAULT_PHRASE
   const bargeDelayMs = Number(process.env.SHERPA_BARGE_IN_DELAY_MS ?? DEFAULT_BARGE_DELAY_MS)
   const interruptS = Number(process.env.SHERPA_BARGE_IN_INTERRUPT_S ?? DEFAULT_INTERRUPT_S)
   const maxRatio = Number(process.env.SHERPA_BARGE_IN_MAX_RATIO ?? DEFAULT_MAX_RATIO)
@@ -201,9 +203,7 @@ async function main(): Promise<void> {
   console.log('=== Sherpa barge-in E2E (two VoiceAgents) ===')
   console.log(`Pipeline: ${label}`)
   console.log(`Phrase length: ${phrase.length} chars`)
-  console.log(
-    `Interrupt: delay=${bargeDelayMs}ms  tone=${interruptS}s  maxCutRatio=${maxRatio}`,
-  )
+  console.log(`Interrupt: delay=${bargeDelayMs}ms  tone=${interruptS}s  maxCutRatio=${maxRatio}`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log('')
@@ -254,7 +254,9 @@ async function main(): Promise<void> {
 
   const ratio = cutMs / fullMs
   console.log(`Received on userInbound before barge_in: ${cutMs} ms`)
-  console.log(`Pre-barge/full ratio: ${(ratio * 100).toFixed(0)}% (must be < ${(maxRatio * 100).toFixed(0)}%)`)
+  console.log(
+    `Pre-barge/full ratio: ${(ratio * 100).toFixed(0)}% (must be < ${(maxRatio * 100).toFixed(0)}%)`,
+  )
   console.log('user_speaking_start → barge_in: yes (VAD voice activity)')
 
   await speaker.stop().catch(() => undefined)

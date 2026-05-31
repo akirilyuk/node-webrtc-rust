@@ -6,11 +6,11 @@ Use it when you already have a signaling stack (Socket.IO, Redis pub/sub, your o
 
 ## What is manual here?
 
-| Piece | Standard `conference-room` | This example |
-| ----- | -------------------------- | ------------ |
-| WebSocket room relay | `SignalingServer` from `@node-webrtc-rust/signaling` | `ManualSignalingServer` in [`src/manual-signaling.ts`](src/manual-signaling.ts) |
-| Conference bridge | `ConferenceServer.attachSignaling()` + SDK bridge | Inline in `ManualSignalingServer` — calls `ConferenceRoom.handleSignalingMessage()` directly |
-| Browser client | Same wire protocol | Same `public/client.js` (unchanged) |
+| Piece                | Standard `conference-room`                           | This example                                                                                 |
+| -------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| WebSocket room relay | `SignalingServer` from `@node-webrtc-rust/signaling` | `ManualSignalingServer` in [`src/manual-signaling.ts`](src/manual-signaling.ts)              |
+| Conference bridge    | `ConferenceServer.attachSignaling()` + SDK bridge    | Inline in `ManualSignalingServer` — calls `ConferenceRoom.handleSignalingMessage()` directly |
+| Browser client       | Same wire protocol                                   | Same `public/client.js` (unchanged)                                                          |
 
 The wire protocol matches `@node-webrtc-rust/signaling`:
 

@@ -14,6 +14,11 @@ pub struct ResolvedTtsModelPaths {
     pub data_dir: PathBuf,
 }
 
+/// Model directory from config/env only (no ONNX file validation).
+pub fn resolve_tts_model_dir_path(config: &TtsConfig) -> SpeechResult<PathBuf> {
+    resolve_tts_model_dir(config)
+}
+
 pub fn resolve_tts_model_paths(config: &TtsConfig) -> SpeechResult<ResolvedTtsModelPaths> {
     let model_dir = resolve_tts_model_dir(config)?;
     if !model_dir.is_dir() {

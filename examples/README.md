@@ -10,23 +10,24 @@ Each example is an npm workspace package under this directory, authored in **Typ
 
 ## Available examples
 
-| Package | Type | Default port | Description |
-| --- | --- | --- | --- |
-| **peer-connection** | CLI (exits on success) | 8080 (signaling) | Two Node peers, DataChannel over WebSocket signaling |
-| **peer-connection** `start:parity` | CLI (exits on success) | 8080 | Transceivers, `getStats`, `setConfiguration`, `replaceTrack`, `readSample` tour |
-| **audio-cosine** | CLI (runs ~5s) | 8080 (signaling) | Local audio track streaming a 440 Hz cosine tone in PCM |
-| **audio-cosine** `start:replace-track` | CLI (runs ~4s) | 8080 | `replaceTrack` + `RemoteAudioTrack.readSample` with 440→880 Hz swap |
-| **browser-cosine-chat** | Browser + Node server | 3000 | Browser tabs hear a server cosine tone and mesh chat via data channels |
-| **conference-room** | Browser + Node server | 8080 | Browser mic → Rust mixer → personalized mixed audio; mute/kick UI |
-| **conference-room-manual-signaling** | Browser + Node server | 8081 | Same as conference-room; hand-rolled WebSocket signaling |
-| **voice-agent** `start:callback` | CLI (exits on success) | 8080 (signaling) | Mock VoiceAgent with callback speech events |
-| **voice-agent** `start:stream` | CLI (exits on success) | 8080 | Mock VoiceAgent with `speechEvents()` stream |
-| **voice-agent** `start:barge-in` | CLI (exits on success) | 8080 | Barge-in flush when VAD detects inbound speech |
-| **voice-agent** `start:live:*` | CLI (exits on success) | 8080 | Per-vendor live manual test (API keys; see `voice-agent/README.md`) |
-| **voice-agent-browser** | Browser + Node server | 3001 | Browser mic → STT events via DataChannel; client triggers TTS + barge-in demo |
-| **voice-agent-browser** `start:live:*` | Browser + Node server | 3001 | Same UI with live cloud STT/TTS (`VOICE_VENDOR` + API keys; see README) |
-| **voice-agent-local-sherpa** | Browser + Node server | 3002 | Sherpa browser demo; [`start:roundtrip`](./voice-agent-local-sherpa/ROUNDTRIP.md) (TTS→STT); [`start:roundtrip-barge-in`](./voice-agent-local-sherpa/ROUNDTRIP.md#barge-in-e2e) (interrupt TTS) |
-| **voice-agent-multi-session-pod** | Browser + Node server | 3003 | One pod, many sessions via `@node-webrtc-rust/helpers` `SessionPod` |
+| Package                                   | Type                    | Default port     | Description                                                                                                                                                                                     |
+| ----------------------------------------- | ----------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **peer-connection**                       | CLI (exits on success)  | 8080 (signaling) | Two Node peers, DataChannel over WebSocket signaling                                                                                                                                            |
+| **peer-connection** `start:parity`        | CLI (exits on success)  | 8080             | Transceivers, `getStats`, `setConfiguration`, `replaceTrack`, `readSample` tour                                                                                                                 |
+| **audio-cosine**                          | CLI (runs ~5s)          | 8080 (signaling) | Local audio track streaming a 440 Hz cosine tone in PCM                                                                                                                                         |
+| **audio-cosine** `start:replace-track`    | CLI (runs ~4s)          | 8080             | `replaceTrack` + `RemoteAudioTrack.readSample` with 440→880 Hz swap                                                                                                                             |
+| **browser-cosine-chat**                   | Browser + Node server   | 3000             | Browser tabs hear a server cosine tone and mesh chat via data channels                                                                                                                          |
+| **conference-room**                       | Browser + Node server   | 8080             | Browser mic → Rust mixer → personalized mixed audio; mute/kick UI                                                                                                                               |
+| **conference-room-manual-signaling**      | Browser + Node server   | 8081             | Same as conference-room; hand-rolled WebSocket signaling                                                                                                                                        |
+| **voice-agent** `start:callback`          | CLI (exits on success)  | 8080 (signaling) | Mock VoiceAgent with callback speech events                                                                                                                                                     |
+| **voice-agent** `start:stream`            | CLI (exits on success)  | 8080             | Mock VoiceAgent with `speechEvents()` stream                                                                                                                                                    |
+| **voice-agent** `start:barge-in`          | CLI (exits on success)  | 8080             | Barge-in flush when VAD detects inbound speech                                                                                                                                                  |
+| **voice-agent** `start:live:*`            | CLI (exits on success)  | 8080             | Per-vendor live manual test (API keys; see `voice-agent/README.md`)                                                                                                                             |
+| **voice-agent-browser**                   | Browser + Node server   | 3001             | Browser mic → STT events via DataChannel; client triggers TTS + barge-in demo                                                                                                                   |
+| **voice-agent-browser** `start:live:*`    | Browser + Node server   | 3001             | Same UI with live cloud STT/TTS (`VOICE_VENDOR` + API keys; see README)                                                                                                                         |
+| **voice-agent-local-sherpa**              | Browser + Node server   | 3002             | Sherpa browser demo; [`start:roundtrip`](./voice-agent-local-sherpa/ROUNDTRIP.md) (TTS→STT); [`start:roundtrip-barge-in`](./voice-agent-local-sherpa/ROUNDTRIP.md#barge-in-e2e) (interrupt TTS) |
+| **voice-agent-local-sherpa-multi-client** | Browser + Node (3 tabs) | 3004             | **Three clients, one room**; edit `src/voice-handler.ts` for STT/TTS logic; shared Sherpa pool + session budget — [README](./voice-agent-local-sherpa-multi-client/README.md) |
+| **voice-agent-multi-session-pod**         | Browser + Node server   | 3003             | One pod, many sessions via `@node-webrtc-rust/helpers` `SessionPod`                                                                                                                             |
 
 ## Run examples locally
 
@@ -75,34 +76,34 @@ WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-ro
 
 ### Quick reference
 
-| Example | Command | How to verify |
-| --- | --- | --- |
-| peer-connection | `npm run start --workspace=@node-webrtc-rust/example-peer-connection` | Prints `Received: Hello from peer 1!` and exits |
-| peer-connection parity | `npm run start:parity --workspace=@node-webrtc-rust/example-peer-connection` | Runs three parity scenarios; prints `All parity scenarios completed` |
-| audio-cosine | `npm run start --workspace=@node-webrtc-rust/example-audio-cosine` | Logs remote track + streams tone for ~5s, then exits |
-| audio-cosine replace | `npm run start:replace-track --workspace=@node-webrtc-rust/example-audio-cosine` | Swaps 440→880 Hz via `replaceTrack`; logs `readSample` byte lengths |
-| browser-cosine-chat | `npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat` | Open `http://localhost:3000`, same room in multiple tabs |
-| conference-room | `npm run start --workspace=@node-webrtc-rust/example-conference-room` | Open `http://localhost:8080`, join room, allow mic |
-| conference-room-manual-signaling | `npm run start --workspace=@node-webrtc-rust/example-conference-room-manual-signaling` | Open `http://localhost:8081` (see its README) |
-| voice-agent callback | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | Prints callback speech events and exits |
-| voice-agent stream | `npm run start:stream --workspace=@node-webrtc-rust/example-voice-agent` | Prints stream events from mock TTS |
-| voice-agent barge-in | `npm run start:barge-in --workspace=@node-webrtc-rust/example-voice-agent` | Logs barge-in after simulated user speech |
-| voice-agent live OpenAI | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent` | Live vendor demo; see `examples/voice-agent/README.md` |
-| voice-agent live (any) | `npm run start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google` | Same pattern with vendor env vars |
-| voice-agent-browser | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser` | Open `http://localhost:3001`, connect, speak, use TTS form and barge-in button |
-| voice-agent-browser live OpenAI | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent-browser` | Live STT/TTS via browser mic + DataChannel; see `voice-agent-browser/README.md` |
-| voice-agent-browser live (any) | `start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google` | Set `VOICE_VENDOR` + vendor env vars; full table in README |
-| voice-agent-local-sherpa | `download-stt:en` + `download-tts:en` then `start:roundtrip` | Summary table: 5 phrases, similarity ≥75%; see [ROUNDTRIP.md](./voice-agent-local-sherpa/ROUNDTRIP.md) |
-| voice-agent-multi-session-pod | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod` | Open `http://localhost:3003`, different session IDs in multiple tabs; `GET /api/sessions` for pod metrics |
+| Example                          | Command                                                                                                     | How to verify                                                                                             |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| peer-connection                  | `npm run start --workspace=@node-webrtc-rust/example-peer-connection`                                       | Prints `Received: Hello from peer 1!` and exits                                                           |
+| peer-connection parity           | `npm run start:parity --workspace=@node-webrtc-rust/example-peer-connection`                                | Runs three parity scenarios; prints `All parity scenarios completed`                                      |
+| audio-cosine                     | `npm run start --workspace=@node-webrtc-rust/example-audio-cosine`                                          | Logs remote track + streams tone for ~5s, then exits                                                      |
+| audio-cosine replace             | `npm run start:replace-track --workspace=@node-webrtc-rust/example-audio-cosine`                            | Swaps 440→880 Hz via `replaceTrack`; logs `readSample` byte lengths                                       |
+| browser-cosine-chat              | `npm run start --workspace=@node-webrtc-rust/example-browser-cosine-chat`                                   | Open `http://localhost:3000`, same room in multiple tabs                                                  |
+| conference-room                  | `npm run start --workspace=@node-webrtc-rust/example-conference-room`                                       | Open `http://localhost:8080`, join room, allow mic                                                        |
+| conference-room-manual-signaling | `npm run start --workspace=@node-webrtc-rust/example-conference-room-manual-signaling`                      | Open `http://localhost:8081` (see its README)                                                             |
+| voice-agent callback             | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent`                                  | Prints callback speech events and exits                                                                   |
+| voice-agent stream               | `npm run start:stream --workspace=@node-webrtc-rust/example-voice-agent`                                    | Prints stream events from mock TTS                                                                        |
+| voice-agent barge-in             | `npm run start:barge-in --workspace=@node-webrtc-rust/example-voice-agent`                                  | Logs barge-in after simulated user speech                                                                 |
+| voice-agent live OpenAI          | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent`         | Live vendor demo; see `examples/voice-agent/README.md`                                                    |
+| voice-agent live (any)           | `npm run start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google`                         | Same pattern with vendor env vars                                                                         |
+| voice-agent-browser              | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser`                                   | Open `http://localhost:3001`, connect, speak, use TTS form and barge-in button                            |
+| voice-agent-browser live OpenAI  | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent-browser` | Live STT/TTS via browser mic + DataChannel; see `voice-agent-browser/README.md`                           |
+| voice-agent-browser live (any)   | `start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google`                                 | Set `VOICE_VENDOR` + vendor env vars; full table in README                                                |
+| voice-agent-local-sherpa         | `download-stt:en` + `download-tts:en` then `start:roundtrip`                                                | Summary table: 5 phrases, similarity ≥75%; see [ROUNDTRIP.md](./voice-agent-local-sherpa/ROUNDTRIP.md)    |
+| voice-agent-multi-session-pod    | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod`                         | Open `http://localhost:3003`, different session IDs in multiple tabs; `GET /api/sessions` for pod metrics |
 
 ### Troubleshooting
 
-| Problem | Fix |
-| --- | --- |
-| `Failed to load native binding` | Run `npm run build:native` from repo root |
-| `EADDRINUSE` on 8080 / 3000 / 8081 | Stop the other example or `lsof -i :8080` and kill the stale process |
-| Browser page loads but no audio | Allow microphone (conference demos); check browser console; try `WEBRTC_DEBUG=1` |
-| After changing Rust or TS packages | `npm run build:native && npm run build:ts` then restart the example |
+| Problem                            | Fix                                                                              |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| `Failed to load native binding`    | Run `npm run build:native` from repo root                                        |
+| `EADDRINUSE` on 8080 / 3000 / 8081 | Stop the other example or `lsof -i :8080` and kill the stale process             |
+| Browser page loads but no audio    | Allow microphone (conference demos); check browser console; try `WEBRTC_DEBUG=1` |
+| After changing Rust or TS packages | `npm run build:native && npm run build:ts` then restart the example              |
 
 ---
 

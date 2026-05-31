@@ -16,8 +16,30 @@ export {
 } from './voice-agent-session-host.js'
 
 export {
+  type VoiceSessionContext,
+  type VoiceSessionHandler,
+} from './voice-session-handler.js'
+
+export {
   SessionPod,
   type SessionPodChangeEvent,
   type SessionPodOptions,
   type SessionPodSessionInfo,
 } from './session-pod.js'
+
+export {
+  VoiceSessionBudget,
+  VoiceSessionBudgetFullError,
+  getProcessVoiceSessionBudget,
+  resetProcessVoiceSessionBudget,
+  resolveMaxVoiceSessionsFromEnv,
+  type VoiceSessionBudgetOptions,
+  type VoiceSessionBudgetSnapshot,
+} from './voice-session-budget.js'
+
+export {
+  startMultiClientVoiceServer,
+  formatBudget,
+  type MultiClientVoiceServerHandle,
+  type MultiClientVoiceServerOptions,
+} from './multi-client-voice-server.js'

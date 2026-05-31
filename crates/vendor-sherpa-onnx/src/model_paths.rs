@@ -15,6 +15,11 @@ pub struct ResolvedModelPaths {
     pub joiner: PathBuf,
 }
 
+/// Model directory from config/env only (no ONNX file validation).
+pub fn resolve_stt_model_dir(config: &SttConfig) -> SpeechResult<PathBuf> {
+    resolve_model_dir(config)
+}
+
 pub fn resolve_model_paths(config: &SttConfig) -> SpeechResult<ResolvedModelPaths> {
     let model_dir = resolve_model_dir(config)?;
     if !model_dir.is_dir() {

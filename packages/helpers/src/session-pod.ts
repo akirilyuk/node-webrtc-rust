@@ -12,9 +12,12 @@ import { SignalingClient } from '@node-webrtc-rust/signaling'
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import {
-  VOICE_AGENT_SERVER_PEER_ID,
-  VoiceAgentSessionHost,
-} from './voice-agent-session-host.js'
+  getProcessVoiceSessionBudget,
+  type VoiceSessionBudget,
+  type VoiceSessionBudgetSnapshot,
+} from './voice-session-budget.js'
+import { VOICE_AGENT_SERVER_PEER_ID, VoiceAgentSessionHost } from './voice-agent-session-host.js'
+import type { VoiceSessionHandler } from './voice-session-handler.js'
 
 interface IceServerConfig {
   urls: string | string[]
@@ -31,6 +34,10 @@ export interface SessionPodOptions {
   onSessionChange?: (event: SessionPodChangeEvent) => void
   /** Server-side signaling peer id (default {@link VOICE_AGENT_SERVER_PEER_ID}). */
   serverPeerId?: string
+  /** Shared across all rooms in this pod (default: process env budget). */
+  sessionBudget?: VoiceSessionBudget
+  /** Per-tab STT/TTS logic (same handler instance for every room in this pod). */
+  voiceHandler?: VoiceSessionHandler
   log?: (message: string) => void
 }
 
@@ -58,6 +65,7 @@ export class SessionPod {
   private readonly slots = new Map<string, SessionSlot>()
   private readonly teardownIdle: boolean
   private readonly log: (message: string) => void
+  private readonly sessionBudget: VoiceSessionBudget
 
   constructor(
     private readonly signalingServer: SignalingServer,
@@ -65,6 +73,11 @@ export class SessionPod {
   ) {
     this.teardownIdle = options.teardownIdleSessions ?? true
     this.log = options.log ?? ((message) => console.log(message))
+    this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
+  }
+
+  get sessionBudgetSnapshot(): VoiceSessionBudgetSnapshot {
+    return this.sessionBudget.snapshot()
   }
 
   get activeSessionCount(): number {
@@ -99,6 +112,8 @@ export class SessionPod {
 
     const host = new VoiceAgentSessionHost(signaling, this.options.iceServers, {
       voiceConfig: this.options.voiceConfig,
+      sessionBudget: this.sessionBudget,
+      voiceHandler: this.options.voiceHandler,
       log: this.options.log,
     })
 

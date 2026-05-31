@@ -79,6 +79,21 @@ Hindi, Portuguese, and Italian are not yet available as dedicated streaming Zipf
 
 See also [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md).
 
+## Multi-session scaling (current vs planned)
+
+**Pooled (default):** a process-wide **`SherpaModelPool`** shares one `OnlineRecognizer` per STT `model_path` and one `OfflineTts` per TTS model directory. Each `VoiceAgent` / `SherpaStt` session still owns its own `OnlineStream`; TTS uses a shared engine with a synthesis mutex and optional concurrency limits.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SHERPA_POOL_MAX_CONCURRENT_DECODE` | CPU count (min 1) | Cap parallel STT decode work |
+| `SHERPA_POOL_MAX_CONCURRENT_TTS` | `2` | Cap parallel TTS generations |
+| `SHERPA_STT_NUM_THREADS` | ORT default | `OnlineRecognizer` intra-op threads (`0` = default) |
+| `SHERPA_TTS_NUM_THREADS` | `2` | `OfflineTts` intra-op threads |
+
+Design notes and RAM/CPU tables: `development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md`
+
+Integration tests (require downloaded weights): `cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test pool_sharing -- --ignored`
+
 ## Threading
 
 Sherpa C API calls run inside `tokio::task::spawn_blocking`. Do not invoke `OnlineRecognizer` directly from async tasks.

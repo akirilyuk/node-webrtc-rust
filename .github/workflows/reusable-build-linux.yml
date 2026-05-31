@@ -1,8 +1,8 @@
 name: Reusable — build Linux native targets
 
 env:
-  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-  OPUS_STATIC: "1"
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+  OPUS_STATIC: '1'
 
 on:
   workflow_call:

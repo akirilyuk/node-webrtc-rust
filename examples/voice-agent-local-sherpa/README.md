@@ -49,6 +49,14 @@ Event log ◄── DataChannel ◄── user_speech_partial / user_speech_fina
 - **Control channel:** label `voice-control` — see `wireVoiceAgentToDataChannel` in `@node-webrtc-rust/sdk/voice`
 - **Model weights:** downloaded separately — **not** bundled in npm
 
+### Multi-session / RAM (local Sherpa)
+
+Each connected browser client gets its own `VoiceAgent` (see [`VoiceAgentSessionHost`](../../packages/helpers/src/voice-agent-session-host.ts)). Sherpa **model weights** are shared process-wide via `SherpaModelPool` (one `OnlineRecognizer` per `SHERPA_STT_MODEL_PATH`, one `OfflineTts` per TTS model dir); each session still has its own `OnlineStream` and VAD state.
+
+Capacity planning, env limits (`SHERPA_POOL_MAX_CONCURRENT_DECODE`, `SHERPA_POOL_MAX_CONCURRENT_TTS`), and RAM/CPU tables:
+
+`development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md`
+
 ---
 
 ## Quick start

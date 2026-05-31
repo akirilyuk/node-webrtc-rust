@@ -4,93 +4,48 @@ use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProvider};
-use sherpa_onnx::{
-    GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig, OfflineTtsVitsModelConfig,
-};
+use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
 use crate::audio::f32_mono_to_stereo_48k_s16le;
-use crate::tts_model_paths::resolve_tts_model_paths;
-
-struct SherpaTtsEngine {
-    tts: OfflineTts,
-    speaker_id: i32,
-    speed: f32,
-}
-
+use crate::pool::{SharedTtsEngine, SherpaModelPool};
 pub struct SherpaTts {
     config: TtsConfig,
-    engine: Arc<Mutex<Option<SherpaTtsEngine>>>,
+    pool: Arc<crate::pool::SherpaModelPool>,
+    shared: Arc<Mutex<Option<Arc<SharedTtsEngine>>>>,
+    speaker_id: i32,
+    speed: f32,
 }
 
 impl SherpaTts {
     pub fn new(config: &TtsConfig) -> Self {
         Self {
             config: config.clone(),
-            engine: Arc::new(Mutex::new(None)),
+            pool: SherpaModelPool::global(),
+            shared: Arc::new(Mutex::new(None)),
+            speaker_id: parse_speaker_id(config),
+            speed: parse_speed(config),
         }
     }
 
-    fn build_engine(config: &TtsConfig) -> SpeechResult<SherpaTtsEngine> {
-        let paths = resolve_tts_model_paths(config)?;
-
-        let mut model_config = OfflineTtsModelConfig::default();
-        model_config.num_threads = 2;
-        model_config.vits = OfflineTtsVitsModelConfig {
-            model: Some(path_to_string(&paths.vits_model)?),
-            tokens: Some(path_to_string(&paths.tokens)?),
-            data_dir: Some(path_to_string(&paths.data_dir)?),
-            noise_scale: 0.667,
-            noise_scale_w: 0.8,
-            length_scale: 1.0,
-            ..Default::default()
-        };
-
-        let tts_config = OfflineTtsConfig {
-            model: model_config,
-            ..Default::default()
-        };
-
-        let tts = OfflineTts::create(&tts_config).ok_or_else(|| SpeechError::Vendor {
-            vendor: "local-sherpa".into(),
-            message: "failed to create OfflineTts — check SHERPA_TTS_MODEL_PATH and espeak-ng-data"
-                .into(),
-        })?;
-
-        Ok(SherpaTtsEngine {
-            tts,
-            speaker_id: parse_speaker_id(config),
-            speed: parse_speed(config),
-        })
-    }
-
-    async fn ensure_engine(&self) -> SpeechResult<()> {
-        let mut guard = self.engine.lock().await;
-        if guard.is_some() {
-            return Ok(());
+    async fn ensure_engine(&self) -> SpeechResult<Arc<SharedTtsEngine>> {
+        let mut guard = self.shared.lock().await;
+        if let Some(shared) = guard.as_ref() {
+            return Ok(Arc::clone(shared));
         }
 
         let config = self.config.clone();
-        let built = tokio::task::spawn_blocking(move || SherpaTts::build_engine(&config))
+        let pool = Arc::clone(&self.pool);
+        let shared = tokio::task::spawn_blocking(move || pool.get_or_create_tts(&config))
             .await
             .map_err(|err| SpeechError::Internal(err.to_string()))??;
-        *guard = Some(built);
-        Ok(())
+        shared.session_started();
+        *guard = Some(Arc::clone(&shared));
+        Ok(shared)
     }
 }
 
-fn path_to_string(path: &std::path::Path) -> SpeechResult<String> {
-    path.to_str()
-        .map(str::to_string)
-        .ok_or_else(|| {
-            SpeechError::Config(format!(
-                "model path is not valid UTF-8: {}",
-                path.display()
-            ))
-        })
-}
-
-fn parse_speaker_id(config: &TtsConfig) -> i32 {
+pub(crate) fn parse_speaker_id(config: &TtsConfig) -> i32 {
     config
         .voice
         .as_deref()
@@ -98,7 +53,7 @@ fn parse_speaker_id(config: &TtsConfig) -> i32 {
         .unwrap_or(0)
 }
 
-fn parse_speed(config: &TtsConfig) -> f32 {
+pub(crate) fn parse_speed(config: &TtsConfig) -> f32 {
     config
         .model
         .as_deref()
@@ -124,25 +79,34 @@ impl TtsProvider for SherpaTts {
             return Ok(Vec::new());
         }
 
-        self.ensure_engine().await?;
-
+        let shared = self.ensure_engine().await?;
         let input = trimmed.to_string();
-        let engine = Arc::clone(&self.engine);
+        let speaker_id = self.speaker_id;
+        let speed = self.speed;
+        let tts_semaphore = shared.tts_semaphore();
+        let _permit = tts_semaphore
+            .acquire()
+            .await
+            .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
 
         let chunk = tokio::task::spawn_blocking(move || -> SpeechResult<TtsAudioChunk> {
-            let mut guard = engine.blocking_lock();
-            let engine = guard.as_mut().ok_or_else(|| {
-                SpeechError::Internal("Sherpa TTS engine missing after init".into())
-            })?;
+            let _synthesis_guard = shared
+                .synthesis_mutex()
+                .lock()
+                .map_err(|_| SpeechError::Internal("sherpa TTS synthesis lock poisoned".into()))?;
 
             let gen_config = GenerationConfig {
-                sid: engine.speaker_id,
-                speed: engine.speed,
+                sid: speaker_id,
+                speed,
                 ..Default::default()
             };
 
-            let audio = engine
+            let tts = shared
                 .tts
+                .lock()
+                .map_err(|_| SpeechError::Internal("sherpa TTS engine lock poisoned".into()))?;
+
+            let audio = tts
                 .generate_with_config(&input, &gen_config, None::<fn(&[f32], f32) -> bool>)
                 .ok_or_else(|| SpeechError::Vendor {
                     vendor: "local-sherpa".into(),
@@ -158,5 +122,15 @@ impl TtsProvider for SherpaTts {
         .map_err(|err| SpeechError::Internal(err.to_string()))??;
 
         Ok(vec![chunk])
+    }
+}
+
+impl Drop for SherpaTts {
+    fn drop(&mut self) {
+        if let Ok(guard) = self.shared.try_lock() {
+            if let Some(shared) = guard.as_ref() {
+                shared.session_ended();
+            }
+        }
     }
 }

@@ -15,6 +15,8 @@ Implementation lives in [`@node-webrtc-rust/helpers`](../../packages/helpers/REA
 
 Scale horizontally by running more pods when CPU/memory warrants it — not because the library requires one process per call.
 
+**Local Sherpa (`local-sherpa`):** STT/TTS ONNX weights are **pooled per model path** in the native layer (one recognizer + one TTS engine per bundle per process). Session count still drives CPU (decode/TTS work) and per-session stream state — see `development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md`.
+
 ## Architecture
 
 ```

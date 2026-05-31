@@ -17,6 +17,7 @@ import {
   type VoiceSessionBudgetSnapshot,
 } from './voice-session-budget.js'
 import { VOICE_AGENT_SERVER_PEER_ID, VoiceAgentSessionHost } from './voice-agent-session-host.js'
+import type { VoiceSessionHandler } from './voice-session-handler.js'
 
 interface IceServerConfig {
   urls: string | string[]
@@ -35,6 +36,8 @@ export interface SessionPodOptions {
   serverPeerId?: string
   /** Shared across all rooms in this pod (default: process env budget). */
   sessionBudget?: VoiceSessionBudget
+  /** Per-tab STT/TTS logic (same handler instance for every room in this pod). */
+  voiceHandler?: VoiceSessionHandler
   log?: (message: string) => void
 }
 
@@ -110,6 +113,7 @@ export class SessionPod {
     const host = new VoiceAgentSessionHost(signaling, this.options.iceServers, {
       voiceConfig: this.options.voiceConfig,
       sessionBudget: this.sessionBudget,
+      voiceHandler: this.options.voiceHandler,
       log: this.options.log,
     })
 

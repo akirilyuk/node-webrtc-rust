@@ -1,10 +1,10 @@
 /**
  * Local Sherpa — **three clients, one room**, shared native models.
  *
- * Demonstrates the reusable {@link startMultiClientVoiceServer} pattern from
- * `@node-webrtc-rust/helpers`: one Node process, one signaling room, up to N
- * concurrent `VoiceAgent` instances (one per browser tab), with Sherpa STT/TTS
- * weights pooled in Rust.
+ * **Your app logic:** edit `src/voice-handler.ts` (`onSpeechEvent`, `onSpeakRequest`).
+ *
+ * Demonstrates {@link startMultiClientVoiceServer}: one process, one room, one
+ * `VoiceAgent` per browser tab; Sherpa weights pooled in Rust.
  *
  * Prerequisites (same as voice-agent-local-sherpa):
  *   npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
@@ -36,6 +36,8 @@ import {
 
 import { resolveVoiceConfig } from '../../voice-agent-local-sherpa/src/resolve-voice-config.js'
 import { isVoiceDebugEnabled } from '@node-webrtc-rust/sdk/voice'
+
+import { voiceHandler } from './voice-handler.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PUBLIC_DIR = join(__dirname, '../public')
@@ -98,6 +100,7 @@ async function main(): Promise<void> {
     voiceConfig,
     iceServers: ICE_SERVERS,
     sessionBudget,
+    voiceHandler,
     serveHttp: serveStatic,
     hostOptions: {
       log: (message) => console.log(message),
@@ -114,7 +117,8 @@ async function main(): Promise<void> {
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log(`Session budget: ${formatBudget(server.budget)}`)
   console.log('')
-  console.log('Open three tabs → Connect in each → speak / use Speak form.')
+  console.log('Open three tabs → Connect in each → speak (STT) or use Speak form (TTS).')
+  console.log('Edit src/voice-handler.ts to customize onSpeechEvent / onSpeakRequest.')
   console.log('Each tab = one client-* peer = one VoiceAgent; Sherpa models are shared in Rust.')
   if (sessionBudget.max > 0) {
     console.log(`Set VOICE_MAX_CONCURRENT_SESSIONS=${sessionBudget.max} — extra tabs are rejected.`)

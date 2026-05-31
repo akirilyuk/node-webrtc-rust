@@ -24,7 +24,9 @@ import {
   VoiceAgent,
   VOICE_CONTROL_CHANNEL_LABEL,
   forwardVoiceAgentSpeechToDataChannel,
+  speechEventToControlMessage,
   wireVoiceAgentToDataChannel,
+  type SpeechEvent,
   type VoiceAgentConfig,
 } from '@node-webrtc-rust/sdk/voice'
 import type { SignalingClient } from '@node-webrtc-rust/signaling'
@@ -35,6 +37,7 @@ import {
   type VoiceSessionBudget,
   type VoiceSessionBudgetSnapshot,
 } from './voice-session-budget.js'
+import type { VoiceSessionContext, VoiceSessionHandler } from './voice-session-handler.js'
 
 export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
 
@@ -66,6 +69,11 @@ export interface VoiceAgentSessionHostOptions {
   clientPeerIdPrefix?: string
   /** Log connection lifecycle when provided. */
   log?: (message: string) => void
+  /**
+   * Your app logic: react to STT/VAD events and send TTS replies.
+   * See `examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`.
+   */
+  voiceHandler?: VoiceSessionHandler
   /**
    * Process-wide connection cap (`VOICE_MAX_CONCURRENT_SESSIONS` when omitted).
    * Shared across rooms when using {@link SessionPod}.
@@ -200,7 +208,15 @@ export class VoiceAgentSessionHost {
     controlChannel.onopen = () => {
       this.log(`[voice ${peerId}] control channel open`)
       session.unwireControl?.()
-      session.unwireControl = wireVoiceAgentToDataChannel(agent, controlChannel)
+      const ctx = this.createSessionContext(peerId, agent)
+      const onSpeakRequest = this.options.voiceHandler?.onSpeakRequest
+      session.unwireControl = wireVoiceAgentToDataChannel(agent, controlChannel, {
+        onSpeak: onSpeakRequest
+          ? (text) => {
+              void onSpeakRequest(ctx, text)
+            }
+          : undefined,
+      })
     }
 
     const offer = await pc.createOffer()
@@ -233,13 +249,55 @@ export class VoiceAgentSessionHost {
     await session.agent.start()
 
     session.unwireSpeechForward?.()
-    session.unwireSpeechForward = forwardVoiceAgentSpeechToDataChannel(
-      session.agent,
-      session.controlChannel,
-    )
+    session.unwireSpeechForward = this.wireSpeechEvents(peerId, session)
 
     await session.agentOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
     this.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
+  }
+
+  private createSessionContext(peerId: string, agent: VoiceAgent): VoiceSessionContext {
+    return {
+      peerId,
+      agent,
+      speak: (text: string) => agent.sendTextToTTS(text),
+    }
+  }
+
+  /**
+   * Forwards speech events to the browser and invokes {@link VoiceAgentSessionHostOptions.voiceHandler}.
+   */
+  private wireSpeechEvents(peerId: string, session: ClientSession): () => void {
+    const voiceHandler = this.options.voiceHandler
+    if (!voiceHandler?.onSpeechEvent) {
+      return forwardVoiceAgentSpeechToDataChannel(session.agent, session.controlChannel)
+    }
+
+    const ctx = this.createSessionContext(peerId, session.agent)
+    let active = true
+
+    void (async () => {
+      for await (const event of session.agent.speechEvents()) {
+        if (!active) break
+        try {
+          await voiceHandler.onSpeechEvent!(ctx, event)
+        } catch (error: unknown) {
+          console.error(`[voice ${peerId}] voiceHandler.onSpeechEvent failed:`, error)
+        }
+        this.sendSpeechEventToControlChannel(session.controlChannel, event)
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }
+
+  private sendSpeechEventToControlChannel(
+    channel: RTCDataChannel,
+    event: SpeechEvent,
+  ): void {
+    if (channel.readyState !== 'open') return
+    channel.send(JSON.stringify(speechEventToControlMessage(event)))
   }
 
   private async onAnswerReceived(peerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {

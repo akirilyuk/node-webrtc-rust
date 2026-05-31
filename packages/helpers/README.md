@@ -15,6 +15,7 @@ npm install @node-webrtc-rust/helpers @node-webrtc-rust/sdk @node-webrtc-rust/si
 | `SessionPod`                     | One Node process, one signaling entry point, many concurrent sessions |
 | `VoiceAgentSessionHost`          | One signaling room; spawns one `VoiceAgent` + PC per browser client   |
 | `startMultiClientVoiceServer`    | One room, many tabs — wraps signaling + host + `/api/capacity`        |
+| `VoiceSessionHandler`            | Per-tab hooks: `onSpeechEvent` (STT/VAD) and `onSpeakRequest` (TTS)   |
 | `VoiceSessionBudget`             | Process-wide cap (`VOICE_MAX_CONCURRENT_SESSIONS`)                    |
 | `VOICE_AGENT_SERVER_PEER_ID`     | Stable server peer id for signaling joins                             |
 | `createKickFrame`, PCM constants | RTP prime / 20 ms frame conventions                                   |
@@ -98,6 +99,32 @@ const server = await startMultiClientVoiceServer({
 ```
 
 Each browser tab = one `VoiceAgent`; Sherpa ONNX weights are pooled in the native layer.
+
+### Custom STT / TTS logic
+
+Pass a `VoiceSessionHandler` (or set `hostOptions.voiceHandler` on the host). Use `ctx.speak(text)` to play TTS on that tab's outbound track.
+
+```typescript
+import {
+  startMultiClientVoiceServer,
+  type VoiceSessionHandler,
+} from '@node-webrtc-rust/helpers'
+
+const voiceHandler: VoiceSessionHandler = {
+  async onSpeechEvent(ctx, event) {
+    if (event.type === 'user_speech_final' && event.text) {
+      await ctx.speak(`You said: ${event.text}`)
+    }
+  },
+  async onSpeakRequest(ctx, text) {
+    await ctx.speak(text)
+  },
+}
+
+await startMultiClientVoiceServer({ port: 3004, room: 'demo', voiceConfig, iceServers, voiceHandler })
+```
+
+Runnable template: edit **`examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`** only — see that example's README.
 
 ## PCM kick frame
 

@@ -22,6 +22,7 @@ import {
   VoiceAgentSessionHost,
   type VoiceAgentSessionHostOptions,
 } from './voice-agent-session-host.js'
+import type { VoiceSessionHandler } from './voice-session-handler.js'
 
 export interface IceServerConfig {
   urls: string | string[]
@@ -43,7 +44,15 @@ export interface MultiClientVoiceServerOptions {
    */
   sessionBudget?: VoiceSessionBudget
   /** Passed through to {@link VoiceAgentSessionHost}. */
-  hostOptions?: Pick<VoiceAgentSessionHostOptions, 'clientPeerIdPrefix' | 'log'>
+  hostOptions?: Pick<
+    VoiceAgentSessionHostOptions,
+    'clientPeerIdPrefix' | 'log' | 'voiceHandler'
+  >
+  /**
+   * Shorthand for `hostOptions.voiceHandler` — your STT/TTS app logic.
+   * See `examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`.
+   */
+  voiceHandler?: VoiceSessionHandler
   /** Serve static pages and other routes after the built-in `/api/capacity` handler. */
   serveHttp?: (req: IncomingMessage, res: ServerResponse) => Promise<void>
 }
@@ -73,28 +82,25 @@ export async function startMultiClientVoiceServer(
   const room = options.room ?? 'demo'
   const sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
 
-  let host: VoiceAgentSessionHost | undefined
-  let signalingServer: SignalingServer | undefined
-  let serverSignaling: SignalingClient | undefined
-
   const httpServer = createServer((req, res) => {
     void handleHttp(req, res, sessionBudget, options.serveHttp)
   })
 
-  signalingServer = new SignalingServer({ server: httpServer, path: signalingPath })
+  const signalingServer = new SignalingServer({ server: httpServer, path: signalingPath })
   await signalingServer.listen(port)
 
-  serverSignaling = new SignalingClient({
+  const serverSignaling = new SignalingClient({
     url: `ws://127.0.0.1:${port}${signalingPath}`,
     room,
     peerId: VOICE_AGENT_SERVER_PEER_ID,
   })
   await serverSignaling.connect()
 
-  host = new VoiceAgentSessionHost(serverSignaling, options.iceServers, {
+  const host = new VoiceAgentSessionHost(serverSignaling, options.iceServers, {
     voiceConfig: options.voiceConfig,
     sessionBudget,
     ...options.hostOptions,
+    voiceHandler: options.voiceHandler ?? options.hostOptions?.voiceHandler,
   })
 
   const log = options.hostOptions?.log ?? ((message: string) => console.log(message))

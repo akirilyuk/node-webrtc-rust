@@ -14,7 +14,8 @@
           Open <strong>three browser tabs</strong> to this URL (add <code>?slot=1</code>,
           <code>?slot=2</code>, <code>?slot=3</code> to label logs). Each tab is one
           <code>client-*</code> peer → one <strong>VoiceAgent</strong> → shared Sherpa STT/TTS
-          models in the Node process.
+          models in the Node process. Server logic lives in
+          <code>src/voice-handler.ts</code> (<code>onSpeechEvent</code>, <code>onSpeakRequest</code>).
         </p>
       </header>
 

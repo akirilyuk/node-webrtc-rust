@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { VoiceSessionBudget } from '../../../packages/helpers/src/voice-session-budget.ts'
+import { VoiceSessionBudget } from '../../../packages/helpers/src/voice-session-budget.js'
 
 describe('three clients in one room (session budget)', () => {
   it('accepts three peers when unlimited', () => {

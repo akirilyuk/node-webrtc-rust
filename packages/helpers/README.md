@@ -105,10 +105,7 @@ Each browser tab = one `VoiceAgent`; Sherpa ONNX weights are pooled in the nativ
 Pass a `VoiceSessionHandler` (or set `hostOptions.voiceHandler` on the host). Use `ctx.speak(text)` to play TTS on that tab's outbound track.
 
 ```typescript
-import {
-  startMultiClientVoiceServer,
-  type VoiceSessionHandler,
-} from '@node-webrtc-rust/helpers'
+import { startMultiClientVoiceServer, type VoiceSessionHandler } from '@node-webrtc-rust/helpers'
 
 const voiceHandler: VoiceSessionHandler = {
   async onSpeechEvent(ctx, event) {
@@ -121,7 +118,13 @@ const voiceHandler: VoiceSessionHandler = {
   },
 }
 
-await startMultiClientVoiceServer({ port: 3004, room: 'demo', voiceConfig, iceServers, voiceHandler })
+await startMultiClientVoiceServer({
+  port: 3004,
+  room: 'demo',
+  voiceConfig,
+  iceServers,
+  voiceHandler,
+})
 ```
 
 Runnable template: edit **`examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`** only — see that example's README.

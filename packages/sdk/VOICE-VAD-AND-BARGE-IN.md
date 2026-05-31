@@ -12,8 +12,8 @@ Most phone-bot / voice-assistant apps only need:
 import { VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 
 const agent = new VoiceAgent({
-  stt: { provider: 'deepgram', /* … */ },
-  tts: { provider: 'openai', /* … */ },
+  stt: { provider: 'deepgram' /* … */ },
+  tts: { provider: 'openai' /* … */ },
   vad: VOICE_AGENT_VAD_PRESET,
   events: { mode: 'both' },
 })
@@ -27,20 +27,20 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 
 ## Defaults at a glance
 
-| Field | Default | Role |
-|-------|---------|------|
-| `vad.enabled` | `true` | Inbound VAD on |
-| `vad.provider` | `energy` | RMS VAD in default native build |
-| `vad.threshold` | `0.15` | Energy RMS default (not Silero 0.5) |
-| `vad.minSpeechDurationMs` | `250` | Min voiced time before `user_speaking_start` |
-| `vad.minSilenceDurationMs` | `300` | Min silence before `user_speaking_end` (avoids TTS word-gap splits) |
-| `vad.speechPadMs` | `300` | Pre-roll ring size for `gateStt` (not subtracted from speech start) |
-| `vad.gateStt` | `false` | If `true`, STT only while gate is open |
-| `vad.gateSttOpenOnPending` | `true` | Include VAD “pending” speech in gate (WebRTC lead-in) |
-| `vad.sttGateHoldMs` | `2500` | Keep feeding STT after `user_speaking_end` |
-| `vad.bargeIn.enabled` | `true` | Allow barge-in flush + event |
-| `vad.bargeIn.useVad` | `true` | Auto barge on VAD `SpeechStart` |
-| `vad.bargeIn.flushTts` | `true` | Clear pending TTS PCM on barge-in |
+| Field                      | Default  | Role                                                                |
+| -------------------------- | -------- | ------------------------------------------------------------------- |
+| `vad.enabled`              | `true`   | Inbound VAD on                                                      |
+| `vad.provider`             | `energy` | RMS VAD in default native build                                     |
+| `vad.threshold`            | `0.15`   | Energy RMS default (not Silero 0.5)                                 |
+| `vad.minSpeechDurationMs`  | `250`    | Min voiced time before `user_speaking_start`                        |
+| `vad.minSilenceDurationMs` | `300`    | Min silence before `user_speaking_end` (avoids TTS word-gap splits) |
+| `vad.speechPadMs`          | `300`    | Pre-roll ring size for `gateStt` (not subtracted from speech start) |
+| `vad.gateStt`              | `false`  | If `true`, STT only while gate is open                              |
+| `vad.gateSttOpenOnPending` | `true`   | Include VAD “pending” speech in gate (WebRTC lead-in)               |
+| `vad.sttGateHoldMs`        | `2500`   | Keep feeding STT after `user_speaking_end`                          |
+| `vad.bargeIn.enabled`      | `true`   | Allow barge-in flush + event                                        |
+| `vad.bargeIn.useVad`       | `true`   | Auto barge on VAD `SpeechStart`                                     |
+| `vad.bargeIn.flushTts`     | `true`   | Clear pending TTS PCM on barge-in                                   |
 
 **Shipped native build** uses **energy VAD** only (`provider: "energy"`). See [VAD providers](#vad-providers-energy-vs-silero) below.
 
@@ -52,10 +52,10 @@ Two backends share the same `VadConfig` timing fields (`minSpeechDurationMs`, `m
 
 ### How to choose
 
-| `vad.provider` | When to use |
-|----------------|-------------|
-| **`energy`** (default) | **npm `build:native` / published binaries** — no extra deps, tune `threshold` for your mic/noise floor |
-| **`silero`** | Custom native build with `silero-vad` Cargo feature **and** `provider: "silero"` — better speech vs noise, heavier binary |
+| `vad.provider`         | When to use                                                                                                               |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **`energy`** (default) | **npm `build:native` / published binaries** — no extra deps, tune `threshold` for your mic/noise floor                    |
+| **`silero`**           | Custom native build with `silero-vad` Cargo feature **and** `provider: "silero"` — better speech vs noise, heavier binary |
 
 ```typescript
 // Shipped binary (energy) — recommended default
@@ -69,25 +69,25 @@ If you set `provider: 'silero'` on the **stock** `.node` without rebuilding, `Vo
 
 ### Comparison
 
-| | **Energy** | **Silero** |
-|---|------------|------------|
-| **In shipped `.node`** | Yes (default Cargo feature `energy-vad`) | No |
-| **Algorithm** | RMS of mono PCM vs `threshold` | Small ONNX model (~309k params), probability vs `threshold` |
-| **Model / runtime size** | None (inline math) | Model ~**1–2 MB** embedded in `silero-vad-rust`; **ONNX Runtime loaded dynamically** at runtime (not in the `.node`) — install ORT separately (see below) |
-| **CPU per 20 ms frame** | Negligible (one RMS) | ~**&lt;1 ms** per ~30 ms chunk (upstream Silero docs; plus ORT overhead) |
-| **Threshold scale** | RMS ~**0.05–0.2** (Sherpa example uses `0.05`) | Probability ~**0.3–0.6** (default config uses `0.5` when you opt into Silero) |
-| **False triggers** | Tones, keyboard, loud noise can look like “speech” | Generally fewer false starts in noise |
-| **Tuning** | `threshold`, `minSpeechDurationMs` | Same timing fields + Silero `threshold` |
-| **Sample rate** | 8 / 16 kHz via `vad.sampleRate` | 8 / 16 kHz (Silero backend) |
+|                          | **Energy**                                         | **Silero**                                                                                                                                                |
+| ------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **In shipped `.node`**   | Yes (default Cargo feature `energy-vad`)           | No                                                                                                                                                        |
+| **Algorithm**            | RMS of mono PCM vs `threshold`                     | Small ONNX model (~309k params), probability vs `threshold`                                                                                               |
+| **Model / runtime size** | None (inline math)                                 | Model ~**1–2 MB** embedded in `silero-vad-rust`; **ONNX Runtime loaded dynamically** at runtime (not in the `.node`) — install ORT separately (see below) |
+| **CPU per 20 ms frame**  | Negligible (one RMS)                               | ~**&lt;1 ms** per ~30 ms chunk (upstream Silero docs; plus ORT overhead)                                                                                  |
+| **Threshold scale**      | RMS ~**0.05–0.2** (Sherpa example uses `0.05`)     | Probability ~**0.3–0.6** (default config uses `0.5` when you opt into Silero)                                                                             |
+| **False triggers**       | Tones, keyboard, loud noise can look like “speech” | Generally fewer false starts in noise                                                                                                                     |
+| **Tuning**               | `threshold`, `minSpeechDurationMs`                 | Same timing fields + Silero `threshold`                                                                                                                   |
+| **Sample rate**          | 8 / 16 kHz via `vad.sampleRate`                    | 8 / 16 kHz (Silero backend)                                                                                                                               |
 
 ### Weight (how heavy is Silero?)
 
-| Component | Energy | Silero (this repo) |
-|-----------|--------|---------------------|
-| Extra Rust code | A few KB | `silero-vad-rust` + `ort` crate (dynamic load only) |
-| Embedded model | — | ~**1.2–2.2 MB** (v5/v6 ONNX inside `silero-vad-rust`) |
-| **`.node` size delta** | **0** | Modest (Rust + model bytes); **ORT is not linked into the addon** |
-| **Runtime on disk** | — | **ONNX Runtime** you install yourself (~**15–50 MB** depending on platform/build) |
+| Component              | Energy   | Silero (this repo)                                                                |
+| ---------------------- | -------- | --------------------------------------------------------------------------------- |
+| Extra Rust code        | A few KB | `silero-vad-rust` + `ort` crate (dynamic load only)                               |
+| Embedded model         | —        | ~**1.2–2.2 MB** (v5/v6 ONNX inside `silero-vad-rust`)                             |
+| **`.node` size delta** | **0**    | Modest (Rust + model bytes); **ORT is not linked into the addon**                 |
+| **Runtime on disk**    | —        | **ONNX Runtime** you install yourself (~**15–50 MB** depending on platform/build) |
 
 Published macOS arm64 `.node` today is ~**90 MB** (WebRTC, vendors, Sherpa, etc.). Sherpa already ships **its own** ONNX stack for STT/TTS; Silero VAD uses a **second** ONNX Runtime via `ort` — we do **not** bundle that into npm artifacts.
 
@@ -152,12 +152,12 @@ vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'silero', threshold: 0.5, sampleRate
 
 ### Which should I use?
 
-| Situation | Recommendation |
-|-----------|----------------|
-| Default npm package, demos, Sherpa local example | **`energy`** + `VOICE_AGENT_VAD_PRESET`; tune `threshold` (Sherpa uses `0.05`) |
-| Noisy office, fan, music bleed, false barge-in | Try higher `minSpeechDurationMs` first; then consider a **Silero custom build** |
-| Maximum simplicity, CI, edge devices | **Energy** |
-| You control native builds, can install ORT locally, and want best VAD quality | **Silero** custom build |
+| Situation                                                                     | Recommendation                                                                  |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Default npm package, demos, Sherpa local example                              | **`energy`** + `VOICE_AGENT_VAD_PRESET`; tune `threshold` (Sherpa uses `0.05`)  |
+| Noisy office, fan, music bleed, false barge-in                                | Try higher `minSpeechDurationMs` first; then consider a **Silero custom build** |
+| Maximum simplicity, CI, edge devices                                          | **Energy**                                                                      |
+| You control native builds, can install ORT locally, and want best VAD quality | **Silero** custom build                                                         |
 
 ---
 
@@ -176,12 +176,12 @@ vad: VOICE_AGENT_VAD_PRESET
 // or: { gateStt: true }  // everything else default
 ```
 
-| Piece | Setting | Why |
-|-------|---------|-----|
-| VAD | `enabled: true` (default) | Utterance boundaries, barge-in |
-| `gateStt` | `true` | Don’t stream silence/noise to STT |
-| `bargeIn` | defaults (`useVad: true`) | User can talk over TTS |
-| `sttGateHoldMs` | default `2500` | Trailing phonemes after user stops |
+| Piece           | Setting                   | Why                                |
+| --------------- | ------------------------- | ---------------------------------- |
+| VAD             | `enabled: true` (default) | Utterance boundaries, barge-in     |
+| `gateStt`       | `true`                    | Don’t stream silence/noise to STT  |
+| `bargeIn`       | defaults (`useVad: true`) | User can talk over TTS             |
+| `sttGateHoldMs` | default `2500`            | Trailing phonemes after user stops |
 
 **App wiring:**
 
@@ -205,10 +205,10 @@ vad: {
 }
 ```
 
-| Piece | Setting | Why |
-|-------|---------|-----|
+| Piece             | Setting | Why                                      |
+| ----------------- | ------- | ---------------------------------------- |
 | `bargeIn.enabled` | `false` | No outbound TTS → barge-in has no effect |
-| `gateStt` | `true` | STT only during speech |
+| `gateStt`         | `true`  | STT only during speech                   |
 
 Example: [`examples/voice-agent-local-sherpa` roundtrip](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md) — **speaker** has `vad.enabled: false`; **listener** uses `VOICE_AGENT_VAD_PRESET`.
 
@@ -218,10 +218,10 @@ Example: [`examples/voice-agent-local-sherpa` roundtrip](../../examples/voice-ag
 
 Used in tests and some pipelines:
 
-| Peer | VAD | Barge-in | Notes |
-|------|-----|----------|-------|
-| **Speaker** (plays TTS) | `enabled: true`, `gateStt: false` | `useVad: true` | Inbound = interrupt audio (user leg) |
-| **Listener** (STT only) | `gateStt: true` | `enabled: false` | Does **not** stop speaker TTS |
+| Peer                    | VAD                               | Barge-in         | Notes                                |
+| ----------------------- | --------------------------------- | ---------------- | ------------------------------------ |
+| **Speaker** (plays TTS) | `enabled: true`, `gateStt: false` | `useVad: true`   | Inbound = interrupt audio (user leg) |
+| **Listener** (STT only) | `gateStt: true`                   | `enabled: false` | Does **not** stop speaker TTS        |
 
 Barge-in only cuts TTS on the agent that **plays** audio and **hears** the interrupt on **inbound**.
 
@@ -262,7 +262,9 @@ vad: {
 Always-on STT (rare, higher cost):
 
 ```typescript
-vad: { enabled: false }
+vad: {
+  enabled: false
+}
 ```
 
 No `user_speaking_*`, no `barge_in`. STT receives all inbound PCM (vendor permitting).
@@ -281,11 +283,11 @@ bargeIn: {
 }
 ```
 
-| `enabled` | `useVad` | What happens |
-|-----------|----------|----------------|
-| `false` | — | No `barge_in`, no TTS flush from barge path |
-| `true` | `true` | **Automatic** on VAD `SpeechStart` (`vad.enabled` required) |
-| `true` | `false` | **Manual** via `flushTts()` only |
+| `enabled` | `useVad` | What happens                                                |
+| --------- | -------- | ----------------------------------------------------------- |
+| `false`   | —        | No `barge_in`, no TTS flush from barge path                 |
+| `true`    | `true`   | **Automatic** on VAD `SpeechStart` (`vad.enabled` required) |
+| `true`    | `false`  | **Manual** via `flushTts()` only                            |
 
 Event order on auto barge: optional TTS flush → `barge_in` → `user_speaking_start`.
 
@@ -303,28 +305,28 @@ Event order on auto barge: optional TTS flush → `barge_in` → `user_speaking_
 
 Time inbound audio must look “voiced” before `user_speaking_start` / auto barge.
 
-| Symptom | Direction |
-|---------|-----------|
-| Coughs / clicks trigger barge-in | **Increase** (300–400) |
+| Symptom                            | Direction                         |
+| ---------------------------------- | --------------------------------- |
+| Coughs / clicks trigger barge-in   | **Increase** (300–400)            |
 | User feels lag before agent reacts | **Decrease** (150–200) cautiously |
 
 ### `minSilenceDurationMs` (default 300)
 
 Silence needed **inside** one utterance to emit `user_speaking_end`.
 
-| Symptom | Direction |
-|---------|-----------|
+| Symptom                                | Direction              |
+| -------------------------------------- | ---------------------- |
 | One sentence split into two STT finals | **Increase** (400–500) |
-| Agent waits too long after user stops | **Decrease** (200–250) |
+| Agent waits too long after user stops  | **Decrease** (200–250) |
 
 Keeps short TTS word gaps (&lt; 300 ms) inside a single utterance when the agent is speaking.
 
 ### `threshold` (default 0.5)
 
-| Symptom | Direction |
-|---------|-----------|
+| Symptom                     | Direction    |
+| --------------------------- | ------------ |
 | Noise floor triggers speech | **Increase** |
-| Quiet speakers never start | **Decrease** |
+| Quiet speakers never start  | **Decrease** |
 
 ### `sttGateHoldMs` (default 2500)
 
@@ -338,14 +340,14 @@ Pre-roll buffer capacity for `gateStt` only. Rarely change; does **not** delay `
 
 ## Recommendations (quick)
 
-| Goal | Suggested config |
-|------|------------------|
-| **Default voice bot** | `vad: VOICE_AGENT_VAD_PRESET` + `on('barge_in')` / `on('user_speech_final')` |
-| **Minimal config** | Omit `vad` or `{}` — add `gateStt: true` for real STT |
-| **No false interrupts from beeps** | Keep defaults; raise `minSpeechDurationMs` to 300 first |
-| **No auto interrupt** | `bargeIn: { useVad: false }` + `flushTts()` |
-| **STT-only leg** | `gateStt: true`, `bargeIn.enabled: false` |
-| **Local Sherpa** | `VOICE_AGENT_VAD_PRESET` + `threshold: 0.05` for energy VAD on quiet RMS scale |
+| Goal                               | Suggested config                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------ |
+| **Default voice bot**              | `vad: VOICE_AGENT_VAD_PRESET` + `on('barge_in')` / `on('user_speech_final')`   |
+| **Minimal config**                 | Omit `vad` or `{}` — add `gateStt: true` for real STT                          |
+| **No false interrupts from beeps** | Keep defaults; raise `minSpeechDurationMs` to 300 first                        |
+| **No auto interrupt**              | `bargeIn: { useVad: false }` + `flushTts()`                                    |
+| **STT-only leg**                   | `gateStt: true`, `bargeIn.enabled: false`                                      |
+| **Local Sherpa**                   | `VOICE_AGENT_VAD_PRESET` + `threshold: 0.05` for energy VAD on quiet RMS scale |
 
 ---
 

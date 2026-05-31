@@ -292,10 +292,7 @@ export class VoiceAgentSessionHost {
     }
   }
 
-  private sendSpeechEventToControlChannel(
-    channel: RTCDataChannel,
-    event: SpeechEvent,
-  ): void {
+  private sendSpeechEventToControlChannel(channel: RTCDataChannel, event: SpeechEvent): void {
     if (channel.readyState !== 'open') return
     channel.send(JSON.stringify(speechEventToControlMessage(event)))
   }

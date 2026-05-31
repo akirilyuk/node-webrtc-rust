@@ -47,7 +47,11 @@ export class LocalAudioTrack extends MediaStreamTrack {
    * @param durationMs - Sample duration in milliseconds; defaults to 20.
    */
   async writeSample(data: Buffer | Uint8Array, durationMs = 20): Promise<void> {
-    debugFn('sdk::LocalAudioTrack', 'writeSample', `bytes=${data.byteLength}, durationMs=${durationMs}`)
+    debugFn(
+      'sdk::LocalAudioTrack',
+      'writeSample',
+      `bytes=${data.byteLength}, durationMs=${durationMs}`,
+    )
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
     await this.native.writeSample(buffer, durationMs)
   }

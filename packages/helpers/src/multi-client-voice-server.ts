@@ -44,10 +44,7 @@ export interface MultiClientVoiceServerOptions {
    */
   sessionBudget?: VoiceSessionBudget
   /** Passed through to {@link VoiceAgentSessionHost}. */
-  hostOptions?: Pick<
-    VoiceAgentSessionHostOptions,
-    'clientPeerIdPrefix' | 'log' | 'voiceHandler'
-  >
+  hostOptions?: Pick<VoiceAgentSessionHostOptions, 'clientPeerIdPrefix' | 'log' | 'voiceHandler'>
   /**
    * Shorthand for `hostOptions.voiceHandler` — your STT/TTS app logic.
    * See `examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`.

@@ -1,11 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import { VoiceAgent } from '../src/voice'
-import {
-  LIVE_VENDOR_METAS,
-  type LiveVendorId,
-  voiceConfigForVendor,
-} from './voice-vendor-presets'
+import { LIVE_VENDOR_METAS, type LiveVendorId, voiceConfigForVendor } from './voice-vendor-presets'
 
 describe('VoiceAgent vendor config surface', () => {
   test.each(LIVE_VENDOR_METAS.map((m) => [m.id, m.sttProvider, m.ttsProvider] as const))(

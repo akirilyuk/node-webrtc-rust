@@ -62,9 +62,7 @@ switch (platform) {
   case 'win32':
     switch (arch) {
       case 'x64':
-        localFileExisted = existsSync(
-          join(__dirname, 'node-webrtc-rust.win32-x64-msvc.node')
-        )
+        localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.win32-x64-msvc.node'))
         try {
           if (localFileExisted) {
             nativeBinding = require('./node-webrtc-rust.win32-x64-msvc.node')
@@ -76,9 +74,7 @@ switch (platform) {
         }
         break
       case 'ia32':
-        localFileExisted = existsSync(
-          join(__dirname, 'node-webrtc-rust.win32-ia32-msvc.node')
-        )
+        localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.win32-ia32-msvc.node'))
         try {
           if (localFileExisted) {
             nativeBinding = require('./node-webrtc-rust.win32-ia32-msvc.node')
@@ -90,9 +86,7 @@ switch (platform) {
         }
         break
       case 'arm64':
-        localFileExisted = existsSync(
-          join(__dirname, 'node-webrtc-rust.win32-arm64-msvc.node')
-        )
+        localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.win32-arm64-msvc.node'))
         try {
           if (localFileExisted) {
             nativeBinding = require('./node-webrtc-rust.win32-arm64-msvc.node')
@@ -131,9 +125,7 @@ switch (platform) {
         }
         break
       case 'arm64':
-        localFileExisted = existsSync(
-          join(__dirname, 'node-webrtc-rust.darwin-arm64.node')
-        )
+        localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.darwin-arm64.node'))
         try {
           if (localFileExisted) {
             nativeBinding = require('./node-webrtc-rust.darwin-arm64.node')
@@ -167,9 +159,7 @@ switch (platform) {
     switch (arch) {
       case 'x64':
         if (isMusl()) {
-          localFileExisted = existsSync(
-            join(__dirname, 'node-webrtc-rust.linux-x64-musl.node')
-          )
+          localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.linux-x64-musl.node'))
           try {
             if (localFileExisted) {
               nativeBinding = require('./node-webrtc-rust.linux-x64-musl.node')
@@ -180,9 +170,7 @@ switch (platform) {
             loadError = e
           }
         } else {
-          localFileExisted = existsSync(
-            join(__dirname, 'node-webrtc-rust.linux-x64-gnu.node')
-          )
+          localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.linux-x64-gnu.node'))
           try {
             if (localFileExisted) {
               nativeBinding = require('./node-webrtc-rust.linux-x64-gnu.node')
@@ -196,9 +184,7 @@ switch (platform) {
         break
       case 'arm64':
         if (isMusl()) {
-          localFileExisted = existsSync(
-            join(__dirname, 'node-webrtc-rust.linux-arm64-musl.node')
-          )
+          localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.linux-arm64-musl.node'))
           try {
             if (localFileExisted) {
               nativeBinding = require('./node-webrtc-rust.linux-arm64-musl.node')
@@ -209,9 +195,7 @@ switch (platform) {
             loadError = e
           }
         } else {
-          localFileExisted = existsSync(
-            join(__dirname, 'node-webrtc-rust.linux-arm64-gnu.node')
-          )
+          localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.linux-arm64-gnu.node'))
           try {
             if (localFileExisted) {
               nativeBinding = require('./node-webrtc-rust.linux-arm64-gnu.node')
@@ -226,7 +210,7 @@ switch (platform) {
       case 'arm':
         if (isMusl()) {
           localFileExisted = existsSync(
-            join(__dirname, 'node-webrtc-rust.linux-arm-musleabihf.node')
+            join(__dirname, 'node-webrtc-rust.linux-arm-musleabihf.node'),
           )
           try {
             if (localFileExisted) {
@@ -239,7 +223,7 @@ switch (platform) {
           }
         } else {
           localFileExisted = existsSync(
-            join(__dirname, 'node-webrtc-rust.linux-arm-gnueabihf.node')
+            join(__dirname, 'node-webrtc-rust.linux-arm-gnueabihf.node'),
           )
           try {
             if (localFileExisted) {
@@ -254,9 +238,7 @@ switch (platform) {
         break
       case 'riscv64':
         if (isMusl()) {
-          localFileExisted = existsSync(
-            join(__dirname, 'node-webrtc-rust.linux-riscv64-musl.node')
-          )
+          localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.linux-riscv64-musl.node'))
           try {
             if (localFileExisted) {
               nativeBinding = require('./node-webrtc-rust.linux-riscv64-musl.node')
@@ -267,9 +249,7 @@ switch (platform) {
             loadError = e
           }
         } else {
-          localFileExisted = existsSync(
-            join(__dirname, 'node-webrtc-rust.linux-riscv64-gnu.node')
-          )
+          localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.linux-riscv64-gnu.node'))
           try {
             if (localFileExisted) {
               nativeBinding = require('./node-webrtc-rust.linux-riscv64-gnu.node')
@@ -282,9 +262,7 @@ switch (platform) {
         }
         break
       case 's390x':
-        localFileExisted = existsSync(
-          join(__dirname, 'node-webrtc-rust.linux-s390x-gnu.node')
-        )
+        localFileExisted = existsSync(join(__dirname, 'node-webrtc-rust.linux-s390x-gnu.node'))
         try {
           if (localFileExisted) {
             nativeBinding = require('./node-webrtc-rust.linux-s390x-gnu.node')

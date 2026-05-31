@@ -1,10 +1,6 @@
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
-import {
-  LocalAudioTrack,
-  RTCPeerConnection,
-  type RemoteAudioTrack,
-} from '../src'
+import { LocalAudioTrack, RTCPeerConnection, type RemoteAudioTrack } from '../src'
 
 const STUN = { urls: 'stun:stun.l.google.com:19302' }
 

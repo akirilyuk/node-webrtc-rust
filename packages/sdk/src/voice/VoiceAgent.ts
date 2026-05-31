@@ -117,9 +117,7 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
   if (!config) return undefined
   return {
     vad: toJsVadConfig(config.vad),
-    events: config.events?.mode
-      ? { mode: eventModeToJs(config.events.mode) }
-      : undefined,
+    events: config.events?.mode ? { mode: eventModeToJs(config.events.mode) } : undefined,
     stt: config.stt ? toJsSttConfig(config.stt) : undefined,
     tts: config.tts ? toJsTtsConfig(config.tts) : undefined,
   }
@@ -138,8 +136,7 @@ function eventModeToJs(mode: EventDeliveryMode): JsEventDeliveryMode {
 
 function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
   const rawType =
-    event.eventType ??
-    (event as JsSpeechEvent & { event_type?: JsSpeechEventType }).event_type
+    event.eventType ?? (event as JsSpeechEvent & { event_type?: JsSpeechEventType }).event_type
   return {
     type: jsEventTypeToString(rawType ?? JsSpeechEventType.Error),
     text: event.text ?? undefined,

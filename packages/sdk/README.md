@@ -10,11 +10,11 @@ npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/
 
 ## Exports
 
-| Import path | Purpose |
-| ----------- | ------- |
-| **`@node-webrtc-rust/sdk/voice`** | **VoiceAgent** — VAD, barge-in, STT/TTS vendors, speech events |
-| `@node-webrtc-rust/sdk` | W3C-style `RTCPeerConnection`, tracks, data channels |
-| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing) |
+| Import path                        | Purpose                                                        |
+| ---------------------------------- | -------------------------------------------------------------- |
+| **`@node-webrtc-rust/sdk/voice`**  | **VoiceAgent** — VAD, barge-in, STT/TTS vendors, speech events |
+| `@node-webrtc-rust/sdk`            | W3C-style `RTCPeerConnection`, tracks, data channels           |
+| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing)                     |
 
 **WebRTC parity vs browser:** [`docs/webrtc-api-parity.md`](../../docs/webrtc-api-parity.md)
 
@@ -26,12 +26,12 @@ Import **`@node-webrtc-rust/sdk/voice`** when you need a conversational loop wit
 
 ### Problem this solves
 
-| Without VoiceAgent | With VoiceAgent |
-| --- | --- |
-| Manual Opus decode + frame alignment | Inbound loop via `RemoteAudioTrack.readSample()` |
-| Roll your own VAD / interrupt handling | Configurable VAD + atomic TTS flush on barge-in |
-| STT/TTS SDK calls in Node + glue to WebRTC | Rust vendor adapters; Node gets text events + `sendTextToTTS()` |
-| Race between user speech and agent playback | Native buffer flush **before** `barge_in` reaches JS |
+| Without VoiceAgent                          | With VoiceAgent                                                 |
+| ------------------------------------------- | --------------------------------------------------------------- |
+| Manual Opus decode + frame alignment        | Inbound loop via `RemoteAudioTrack.readSample()`                |
+| Roll your own VAD / interrupt handling      | Configurable VAD + atomic TTS flush on barge-in                 |
+| STT/TTS SDK calls in Node + glue to WebRTC  | Rust vendor adapters; Node gets text events + `sendTextToTTS()` |
+| Race between user speech and agent playback | Native buffer flush **before** `barge_in` reaches JS            |
 
 ### Pipeline B (recommended)
 
@@ -82,20 +82,20 @@ agent.on('barge_in', () => {
 
 `attach({ inboundTrack, outboundTrack })` binds **one peer connection session**:
 
-| Track | Direction | Used for |
-| --- | --- | --- |
-| `inboundTrack` | User → agent (`RemoteAudioTrack`) | VAD + STT (`readSample` loop) |
-| `outboundTrack` | Agent → user (`LocalAudioTrack`) | TTS PCM after `sendTextToTTS()` |
+| Track           | Direction                         | Used for                        |
+| --------------- | --------------------------------- | ------------------------------- |
+| `inboundTrack`  | User → agent (`RemoteAudioTrack`) | VAD + STT (`readSample` loop)   |
+| `outboundTrack` | Agent → user (`LocalAudioTrack`)  | TTS PCM after `sendTextToTTS()` |
 
 Multiple concurrent callers = multiple `VoiceAgent` instances (one per WebRTC connection). Use [`@node-webrtc-rust/helpers`](../../helpers/README.md) `SessionPod` to run many sessions on one server process.
 
 ### Server helpers (`@node-webrtc-rust/helpers`)
 
-| Helper | Use when |
-| --- | --- |
-| `SessionPod` | One signaling entry point, many concurrent sessions (orchestrator assigns `sessionId`) |
-| `VoiceAgentSessionHost` | One signaling room; auto-spawns one agent per `client-*` peer |
-| `createKickFrame` | Prime outbound RTP before TTS PCM |
+| Helper                  | Use when                                                                               |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `SessionPod`            | One signaling entry point, many concurrent sessions (orchestrator assigns `sessionId`) |
+| `VoiceAgentSessionHost` | One signaling room; auto-spawns one agent per `client-*` peer                          |
+| `createKickFrame`       | Prime outbound RTP before TTS PCM                                                      |
 
 Runnable demo: [`examples/voice-agent-multi-session-pod`](../../examples/voice-agent-multi-session-pod/README.md).
 
@@ -104,38 +104,38 @@ Runnable demo: [`examples/voice-agent-multi-session-pod`](../../examples/voice-a
 ```typescript
 interface VoiceAgentConfig {
   vad?: {
-    enabled?: boolean              // default true
-    provider?: 'energy' | 'silero'   // default energy; silero needs custom build + local ONNX Runtime — see VOICE-VAD-AND-BARGE-IN.md
-    threshold?: number             // energy ~0.05–0.2; silero probability ~0.5
+    enabled?: boolean // default true
+    provider?: 'energy' | 'silero' // default energy; silero needs custom build + local ONNX Runtime — see VOICE-VAD-AND-BARGE-IN.md
+    threshold?: number // energy ~0.05–0.2; silero probability ~0.5
     minSpeechDurationMs?: number
     minSilenceDurationMs?: number
-    speechPadMs?: number           // pre-roll ring capacity (ms), default 300
+    speechPadMs?: number // pre-roll ring capacity (ms), default 300
     sampleRate?: 8000 | 16000
     bargeIn?: {
-      enabled?: boolean            // master switch (default true)
-      useVad?: boolean             // auto barge on VAD SpeechStart (default true); false = flushTts() only
-      flushTts?: boolean           // clear TTS buffer when barge-in runs (default true)
+      enabled?: boolean // master switch (default true)
+      useVad?: boolean // auto barge on VAD SpeechStart (default true); false = flushTts() only
+      flushTts?: boolean // clear TTS buffer when barge-in runs (default true)
     }
-    gateStt?: boolean              // only feed STT while gate is open (default false)
+    gateStt?: boolean // only feed STT while gate is open (default false)
     gateSttOpenOnPending?: boolean // also open gate during VAD pending speech (default true)
-    sttGateHoldMs?: number         // keep feeding STT after speech end (default 2500)
+    sttGateHoldMs?: number // keep feeding STT after speech end (default 2500)
   }
   stt?: {
     provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'local-sherpa' | 'mock'
     model?: string
-    modelPath?: string               // local-sherpa: ONNX model directory
+    modelPath?: string // local-sherpa: ONNX model directory
     language?: string
-    apiKey?: string                // or env var — see vendor table
+    apiKey?: string // or env var — see vendor table
   }
   tts?: {
     provider: 'openai' | 'elevenlabs' | 'google' | 'cartesia' | 'local-sherpa' | 'mock'
     model?: string
-    modelPath?: string               // local-sherpa: Piper/VITS directory
+    modelPath?: string // local-sherpa: Piper/VITS directory
     voice?: string
     apiKey?: string
   }
   events?: {
-    mode?: 'callback' | 'stream' | 'both'  // default 'both'
+    mode?: 'callback' | 'stream' | 'both' // default 'both'
   }
 }
 ```
@@ -144,16 +144,16 @@ interface VoiceAgentConfig {
 
 Providers are **mix-and-match** per session. **Official API docs:** [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md)
 
-| Provider | STT | TTS | Typical env var | API docs |
-| --- | --- | --- | --- | --- |
-| `openai` | ✓ | ✓ | `OPENAI_API_KEY` | [STT](https://platform.openai.com/docs/guides/speech-to-text) · [TTS](https://platform.openai.com/docs/guides/text-to-speech) |
-| `deepgram` | ✓ | — | `DEEPGRAM_API_KEY` | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) |
-| `elevenlabs` | — | ✓ | `ELEVENLABS_API_KEY` | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) |
-| `cartesia` | — | ✓ | `CARTESIA_API_KEY` | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
-| `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming) |
-| `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs) |
-| `local-sherpa` | ✓ | ✓ | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
-| `mock` | ✓ | ✓ | _(none — use for CI/local)_ | — |
+| Provider       | STT | TTS | Typical env var                                                         | API docs                                                                                                                       |
+| -------------- | --- | --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `openai`       | ✓   | ✓   | `OPENAI_API_KEY`                                                        | [STT](https://platform.openai.com/docs/guides/speech-to-text) · [TTS](https://platform.openai.com/docs/guides/text-to-speech)  |
+| `deepgram`     | ✓   | —   | `DEEPGRAM_API_KEY`                                                      | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio)                                                    |
+| `elevenlabs`   | —   | ✓   | `ELEVENLABS_API_KEY`                                                    | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)                                                     |
+| `cartesia`     | —   | ✓   | `CARTESIA_API_KEY`                                                      | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes)                                                                  |
+| `assemblyai`   | ✓   | —   | `ASSEMBLYAI_API_KEY`                                                    | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                      |
+| `google`       | ✓   | ✓   | `GOOGLE_APPLICATION_CREDENTIALS`                                        | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs)                      |
+| `local-sherpa` | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
+| `mock`         | ✓   | ✓   | _(none — use for CI/local)_                                             | —                                                                                                                              |
 
 Example pairings when a vendor only supports one direction:
 
@@ -175,12 +175,12 @@ API keys via `apiKey` in config or env vars. Never logged or returned in speech 
 
 Requires downloaded **Zipformer transducer** (STT) and **Piper/VITS** (TTS) directories.
 
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `SHERPA_STT_MODEL_PATH` | **Yes** (STT) | Path to extracted Zipformer STT directory |
+| Variable                | Required      | Purpose                                                                  |
+| ----------------------- | ------------- | ------------------------------------------------------------------------ |
+| `SHERPA_STT_MODEL_PATH` | **Yes** (STT) | Path to extracted Zipformer STT directory                                |
 | `SHERPA_TTS_MODEL_PATH` | **Yes** (TTS) | Path to Piper/VITS directory (`tokens.txt`, `*.onnx`, `espeak-ng-data/`) |
-| `SHERPA_STT_LANGUAGE` | No | `stt.language` tag (inferred from path when omitted) |
-| `SHERPA_TTS_SPEAKER` | No | Piper speaker id for `tts.voice` (default `0`) |
+| `SHERPA_STT_LANGUAGE`   | No            | `stt.language` tag (inferred from path when omitted)                     |
+| `SHERPA_TTS_SPEAKER`    | No            | Piper speaker id for `tts.voice` (default `0`)                           |
 
 Automatic downloads (from repo root):
 
@@ -209,15 +209,15 @@ tts: {
 
 Two layers — **fast VAD** vs **text-bearing STT**:
 
-| Event | Source | Use in your agent |
-| --- | --- | --- |
-| `user_speaking_start` | VAD `SpeechStart` | User began talking (inbound voice activity) |
-| `user_speaking_end` | VAD `SpeechEnd` | End-of-utterance hint |
-| `user_speech_partial` | STT | Live captions, prefetch |
-| `user_speech_final` | STT | **Primary LLM turn trigger** |
-| `agent_speaking_start` / `end` | TTS playback | UI / state machine |
-| `barge_in` | VAD `SpeechStart` + `bargeIn.enabled` | Cancel agent TTS (after optional flush) |
-| `error` | Any | Vendor or pipeline failure |
+| Event                          | Source                                | Use in your agent                           |
+| ------------------------------ | ------------------------------------- | ------------------------------------------- |
+| `user_speaking_start`          | VAD `SpeechStart`                     | User began talking (inbound voice activity) |
+| `user_speaking_end`            | VAD `SpeechEnd`                       | End-of-utterance hint                       |
+| `user_speech_partial`          | STT                                   | Live captions, prefetch                     |
+| `user_speech_final`            | STT                                   | **Primary LLM turn trigger**                |
+| `agent_speaking_start` / `end` | TTS playback                          | UI / state machine                          |
+| `barge_in`                     | VAD `SpeechStart` + `bargeIn.enabled` | Cancel agent TTS (after optional flush)     |
+| `error`                        | Any                                   | Vendor or pipeline failure                  |
 
 ### VAD and barge-in
 
@@ -225,17 +225,19 @@ Two layers — **fast VAD** vs **text-bearing STT**:
 
 **Quick start:** use `VOICE_AGENT_VAD_PRESET` (or omit `vad` and only set `gateStt: true` if you stream STT). Defaults are aimed at phone bots: 250 ms min speech, 300 ms min silence (no split on TTS word gaps), barge-in on VAD `SpeechStart`, `sttGateHoldMs` 2500.
 
-| Export | Use |
-| --- | --- |
-| `VOICE_AGENT_VAD_PRESET` | Recommended — `gateStt: true` + default barge-in |
-| `DEFAULT_VOICE_AGENT_VAD` | Rust defaults (`gateStt: false`) |
+| Export                    | Use                                              |
+| ------------------------- | ------------------------------------------------ |
+| `VOICE_AGENT_VAD_PRESET`  | Recommended — `gateStt: true` + default barge-in |
+| `DEFAULT_VOICE_AGENT_VAD` | Rust defaults (`gateStt: false`)                 |
 
 Barge-in auto-fires only when `vad.enabled` and `bargeIn.useVad` (both default `true`). Set `useVad: false` and call `flushTts()` for manual interrupt only.
 
 **Callback delivery:**
 
 ```typescript
-agent.on('user_speech_final', (event) => { /* event.text */ })
+agent.on('user_speech_final', (event) => {
+  /* event.text */
+})
 agent.off('user_speech_final', handler)
 ```
 
@@ -261,7 +263,10 @@ Set `events.mode: 'both'` to use handlers and the iterator on the same session.
 When the agent runs on Node and the user connects from a browser, mirror speech events and accept TTS requests on an `RTCDataChannel`:
 
 ```typescript
-import { VOICE_CONTROL_CHANNEL_LABEL, wireVoiceAgentToDataChannel } from '@node-webrtc-rust/sdk/voice'
+import {
+  VOICE_CONTROL_CHANNEL_LABEL,
+  wireVoiceAgentToDataChannel,
+} from '@node-webrtc-rust/sdk/voice'
 
 const dc = pc.createDataChannel(VOICE_CONTROL_CHANNEL_LABEL, { ordered: true })
 dc.onopen = () => {
@@ -278,31 +283,31 @@ Full browser + Node demo: [`examples/voice-agent-browser`](../../examples/voice-
 
 ### API summary
 
-| Method | Description |
-| --- | --- |
-| `attach({ inboundTrack, outboundTrack })` | Bind one PC session |
-| `start()` | Start VAD/STT pipeline and inbound PCM loop |
-| `stop()` | Stop pipeline; ends `speechEvents()` iterator |
-| `sendTextToTTS(text)` | Synthesize via TTS vendor → outbound track |
-| `flushTts()` | Clear pending TTS (also used when `bargeIn.flushTts: false`) |
-| `on(type, fn)` / `off` | Callback handlers |
-| `speechEvents()` | Async generator of all speech events |
-| `wireVoiceAgentToDataChannel(agent, dc)` | Forward speech events + handle `{ type: 'speak' }` on a data channel |
+| Method                                    | Description                                                          |
+| ----------------------------------------- | -------------------------------------------------------------------- |
+| `attach({ inboundTrack, outboundTrack })` | Bind one PC session                                                  |
+| `start()`                                 | Start VAD/STT pipeline and inbound PCM loop                          |
+| `stop()`                                  | Stop pipeline; ends `speechEvents()` iterator                        |
+| `sendTextToTTS(text)`                     | Synthesize via TTS vendor → outbound track                           |
+| `flushTts()`                              | Clear pending TTS (also used when `bargeIn.flushTts: false`)         |
+| `on(type, fn)` / `off`                    | Callback handlers                                                    |
+| `speechEvents()`                          | Async generator of all speech events                                 |
+| `wireVoiceAgentToDataChannel(agent, dc)`  | Forward speech events + handle `{ type: 'speak' }` on a data channel |
 
 ### Examples and live vendor testing
 
 From the repo root (after `npm run setup`):
 
-| Command | Purpose |
-| --- | --- |
-| `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | Mock vendors, `on()` handlers |
-| `npm run start:stream --workspace=...` | Mock vendors, `speechEvents()` |
-| `npm run start:barge-in --workspace=...` | VAD + `flushTts` |
-| `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser` | Browser mic + DataChannel events + TTS control |
-| `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent-browser` | Browser demo with live OpenAI STT/TTS |
-| `npm run start:live:deepgram` / `elevenlabs` / … `--workspace=@node-webrtc-rust/example-voice-agent-browser` | Live browser demo per vendor (see README) |
-| `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=...` | Live OpenAI preset |
-| `npm run start:live:deepgram` / `elevenlabs` / … | Per-vendor manual tests |
+| Command                                                                                                      | Purpose                                        |
+| ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent`                                   | Mock vendors, `on()` handlers                  |
+| `npm run start:stream --workspace=...`                                                                       | Mock vendors, `speechEvents()`                 |
+| `npm run start:barge-in --workspace=...`                                                                     | VAD + `flushTts`                               |
+| `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser`                                    | Browser mic + DataChannel events + TTS control |
+| `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent-browser`  | Browser demo with live OpenAI STT/TTS          |
+| `npm run start:live:deepgram` / `elevenlabs` / … `--workspace=@node-webrtc-rust/example-voice-agent-browser` | Live browser demo per vendor (see README)      |
+| `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=...`                                            | Live OpenAI preset                             |
+| `npm run start:live:deepgram` / `elevenlabs` / …                                                             | Per-vendor manual tests                        |
 
 See [`examples/voice-agent/README.md`](../../examples/voice-agent/README.md) for env vars and track-direction notes.
 
@@ -342,11 +347,11 @@ Conference APIs live under **`@node-webrtc-rust/sdk/conference`**. TypeScript ma
 
 ### Control plane vs data plane
 
-| Layer | Package / crate | Responsibility |
-| ----- | ---------------- | -------------- |
-| Control plane | `sdk/conference` | Room lifecycle, mute/kick, signaling bridge |
-| Signaling | `@node-webrtc-rust/signaling` | WebSocket SDP/ICE relay |
-| Data plane | `bindings` → `crates/conference` | Peer connections, mixer graph |
+| Layer         | Package / crate                  | Responsibility                              |
+| ------------- | -------------------------------- | ------------------------------------------- |
+| Control plane | `sdk/conference`                 | Room lifecycle, mute/kick, signaling bridge |
+| Signaling     | `@node-webrtc-rust/signaling`    | WebSocket SDP/ICE relay                     |
+| Data plane    | `bindings` → `crates/conference` | Peer connections, mixer graph               |
 
 ### Quick start
 
@@ -378,20 +383,20 @@ See [`examples/conference-room`](../../examples/conference-room/) for a browser 
 
 ### Mute modes
 
-| Mode | API | Effect |
-| ---- | --- | ------ |
-| **Global mute** | `muteParticipant(id, { scope: 'global' })` | Target excluded from **all** listeners' mixes |
-| **Listener mute** | `muteParticipant(id, { scope: 'listener', listenerId })` | Only `listenerId` stops hearing `id` |
-| **Room-wide silence** | `setMixingEnabled(false)` | Mixer outputs silence; mute state preserved |
+| Mode                  | API                                                      | Effect                                        |
+| --------------------- | -------------------------------------------------------- | --------------------------------------------- |
+| **Global mute**       | `muteParticipant(id, { scope: 'global' })`               | Target excluded from **all** listeners' mixes |
+| **Listener mute**     | `muteParticipant(id, { scope: 'listener', listenerId })` | Only `listenerId` stops hearing `id`          |
+| **Room-wide silence** | `setMixingEnabled(false)`                                | Mixer outputs silence; mute state preserved   |
 
 ### Authentication (production)
 
 The library does not enforce roles. Gate admin actions in your app:
 
-| Action | Recommended policy |
-| ------ | ------------------- |
-| Global mute / kick / mixing off | Admin / moderator only |
-| Listener-scoped mute | Owning client (preference) |
+| Action                          | Recommended policy         |
+| ------------------------------- | -------------------------- |
+| Global mute / kick / mixing off | Admin / moderator only     |
+| Listener-scoped mute            | Owning client (preference) |
 
 ### Events
 

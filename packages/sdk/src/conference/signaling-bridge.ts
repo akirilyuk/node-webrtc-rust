@@ -244,7 +244,10 @@ export async function attachSignalingBridge(
  * @param server - Parent conference server.
  * @param roomId - Room whose bridge client should be torn down.
  */
-export async function detachSignalingBridge(server: ConferenceServer, roomId: string): Promise<void> {
+export async function detachSignalingBridge(
+  server: ConferenceServer,
+  roomId: string,
+): Promise<void> {
   const bridgeMap = bridges.get(server)
   const state = bridgeMap?.get(roomId)
   if (!state) {

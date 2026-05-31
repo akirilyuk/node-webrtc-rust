@@ -70,12 +70,12 @@ export SHERPA_STT_LANGUAGE=de
 
 Hindi, Portuguese, and Italian are not yet available as dedicated streaming Zipformer bundles in the official `asr-models` release set wired to this adapter — use cloud STT or see the vendor reference for alternatives.
 
-| Product | Docs |
-|---------|------|
-| Sherpa-ONNX project | [GitHub](https://github.com/k2-fsa/sherpa-onnx) |
-| Streaming ASR guide | [k2-fsa.github.io/sherpa/onnx](https://k2-fsa.github.io/sherpa/onnx/) |
-| Pre-trained models | [ASR model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
-| Rust crate | [docs.rs/sherpa-onnx](https://docs.rs/sherpa-onnx/) |
+| Product             | Docs                                                                                |
+| ------------------- | ----------------------------------------------------------------------------------- |
+| Sherpa-ONNX project | [GitHub](https://github.com/k2-fsa/sherpa-onnx)                                     |
+| Streaming ASR guide | [k2-fsa.github.io/sherpa/onnx](https://k2-fsa.github.io/sherpa/onnx/)               |
+| Pre-trained models  | [ASR model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
+| Rust crate          | [docs.rs/sherpa-onnx](https://docs.rs/sherpa-onnx/)                                 |
 
 See also [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md).
 
@@ -83,12 +83,12 @@ See also [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_RE
 
 **Pooled (default):** a process-wide **`SherpaModelPool`** shares one `OnlineRecognizer` per STT `model_path` and one `OfflineTts` per TTS model directory. Each `VoiceAgent` / `SherpaStt` session still owns its own `OnlineStream`; TTS uses a shared engine with a synthesis mutex and optional concurrency limits.
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `SHERPA_POOL_MAX_CONCURRENT_DECODE` | CPU count (min 1) | Cap parallel STT decode work |
-| `SHERPA_POOL_MAX_CONCURRENT_TTS` | `2` | Cap parallel TTS generations |
-| `SHERPA_STT_NUM_THREADS` | ORT default | `OnlineRecognizer` intra-op threads (`0` = default) |
-| `SHERPA_TTS_NUM_THREADS` | `2` | `OfflineTts` intra-op threads |
+| Variable                            | Default           | Purpose                                             |
+| ----------------------------------- | ----------------- | --------------------------------------------------- |
+| `SHERPA_POOL_MAX_CONCURRENT_DECODE` | CPU count (min 1) | Cap parallel STT decode work                        |
+| `SHERPA_POOL_MAX_CONCURRENT_TTS`    | `2`               | Cap parallel TTS generations                        |
+| `SHERPA_STT_NUM_THREADS`            | ORT default       | `OnlineRecognizer` intra-op threads (`0` = default) |
+| `SHERPA_TTS_NUM_THREADS`            | `2`               | `OfflineTts` intra-op threads                       |
 
 Design notes and RAM/CPU tables: `development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md`
 

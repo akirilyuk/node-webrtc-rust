@@ -8,31 +8,31 @@ Human-readable reference for GitHub Actions workflows, reusable jobs, caches, an
 
 ## Overview
 
-| Workflow | File | Trigger | Purpose |
-|----------|------|---------|---------|
-| **Build & Test (PR)** | [`.github/workflows/build.yml`](../../.github/workflows/build.yml) | PR → `main` | Path-filtered quality, native compile, TS build, integration tests |
-| **Build & Test (main)** | [`.github/workflows/build-main.yml`](../../.github/workflows/build-main.yml) | Push → `main` | Full release native matrix + full test suite |
-| **Release** | [`.github/workflows/release.yml`](../../.github/workflows/release.yml) | Tag `release/*` | Release matrix → tests → npm publish → GitHub Release |
-| **CI Docker image** | [`.github/workflows/ci-image.yml`](../../.github/workflows/ci-image.yml) | Push → `ci`, `workflow_dispatch` | Publish `ghcr.io/.../ci-build:latest` |
+| Workflow                | File                                                                         | Trigger                          | Purpose                                                            |
+| ----------------------- | ---------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------ |
+| **Build & Test (PR)**   | [`.github/workflows/build.yml`](../../.github/workflows/build.yml)           | PR → `main`                      | Path-filtered quality, native compile, TS build, integration tests |
+| **Build & Test (main)** | [`.github/workflows/build-main.yml`](../../.github/workflows/build-main.yml) | Push → `main`                    | Full release native matrix + full test suite                       |
+| **Release**             | [`.github/workflows/release.yml`](../../.github/workflows/release.yml)       | Tag `release/*`                  | Release matrix → tests → npm publish → GitHub Release              |
+| **CI Docker image**     | [`.github/workflows/ci-image.yml`](../../.github/workflows/ci-image.yml)     | Push → `ci`, `workflow_dispatch` | Publish `ghcr.io/.../ci-build:latest`                              |
 
 Reusable workflows (called via `workflow_call`, not triggered directly):
 
-| File | Role |
-|------|------|
-| [`reusable-build-linux.yml`](../../.github/workflows/reusable-build-linux.yml) | Linux release matrix (gnu, musl, arm64) |
-| [`reusable-build-host.yml`](../../.github/workflows/reusable-build-host.yml) | macOS + Windows release matrix |
-| [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) | Download binding artifact → cache fallback → host Docker tests |
+| File                                                                           | Role                                                           |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| [`reusable-build-linux.yml`](../../.github/workflows/reusable-build-linux.yml) | Linux release matrix (gnu, musl, arm64)                        |
+| [`reusable-build-host.yml`](../../.github/workflows/reusable-build-host.yml)   | macOS + Windows release matrix                                 |
+| [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)               | Download binding artifact → cache fallback → host Docker tests |
 
 Composite actions live in [`.github/actions/`](../../.github/actions/).
 
 ## Runners
 
-| Platform | `runs-on` | Workflows |
-|----------|-----------|-----------|
-| Linux x64 (gnu + musl) | `self-hosted` + `ci-build` container | PR compile-native, Linux x64 release matrix, integration tests, CI image build, release publish |
-| Linux arm64 (gnu) | `ubuntu-24.04-arm` (GitHub-hosted, native) | Linux release matrix only |
-| macOS | `macos-latest` | Release host matrix (darwin x64 + arm64) |
-| Windows | `windows-latest` | Release host matrix (x64) |
+| Platform               | `runs-on`                                  | Workflows                                                                                       |
+| ---------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| Linux x64 (gnu + musl) | `self-hosted` + `ci-build` container       | PR compile-native, Linux x64 release matrix, integration tests, CI image build, release publish |
+| Linux arm64 (gnu)      | `ubuntu-24.04-arm` (GitHub-hosted, native) | Linux release matrix only                                                                       |
+| macOS                  | `macos-latest`                             | Release host matrix (darwin x64 + arm64)                                                        |
+| Windows                | `windows-latest`                           | Release host matrix (x64)                                                                       |
 
 **Linux gnu x64** builds natively on the self-hosted runner without `napi --zig` so Sherpa/ONNX static objects link correctly (`__cpu_features2`). **Linux arm64 gnu** builds on GitHub-hosted ARM runners (native compile, no Zig cross) to avoid build-script `ring` arch mismatches. **Linux musl** still cross-compiles with Zig on self-hosted x64.
 
@@ -61,11 +61,11 @@ flowchart TD
 
 Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with three outputs:
 
-| Output | Paths (summary) |
-|--------|-----------------|
-| `native` | `Cargo.*`, `crates/**`, `packages/bindings/**` (excluding generated `.node` / loader) |
-| `typescript` | `packages/sdk/**`, `packages/signaling/**`, lockfile, tsconfigs, eslint, prettier |
-| `workflows` | `.github/**`, `docker/ci/**` |
+| Output       | Paths (summary)                                                                       |
+| ------------ | ------------------------------------------------------------------------------------- |
+| `native`     | `Cargo.*`, `crates/**`, `packages/bindings/**` (excluding generated `.node` / loader) |
+| `typescript` | `packages/sdk/**`, `packages/signaling/**`, lockfile, tsconfigs, eslint, prettier     |
+| `workflows`  | `.github/**`, `docker/ci/**`                                                          |
 
 If none match, the whole workflow is skipped.
 
@@ -217,19 +217,19 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 ## Scripts reference
 
-| Script | Used by | What it runs |
-|--------|---------|--------------|
-| [`run-pr-quality.sh`](run-pr-quality.sh) | PR quality job | `npm ci`, typecheck, **`build-ts-workspace.sh`**, lint |
-| [`plan-native-builds.sh`](plan-native-builds.sh) | main + release plan job | Per-target cache hash check → dynamic build matrices |
-| [`check-main-ci-success.sh`](check-main-ci-success.sh) | release plan job | Skip release test when main validated same SHA |
-| [`list-release-targets.sh`](list-release-targets.sh) | plan / stage scripts | Canonical six release triples |
-| [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh` |
-| [`build-ts-workspace.sh`](build-ts-workspace.sh) | PR build-ts + integration fallback | sdk core → signaling → full sdk |
-| [`run-pr-integration.sh`](run-pr-integration.sh) | PR test job | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test, optional build:ts, npm test |
-| [`run-pr-tests-full.sh`](run-pr-tests-full.sh) | local `ci:verify` | quality + integration |
-| [`run-pr-integration.sh`](run-pr-integration.sh) | main + release test | integration only (after quality job) |
-| [`verify-checks.sh`](verify-checks.sh) | `npm run ci:verify:checks*` | Local mirror of quality + integration |
-| [`verify-linux.sh`](verify-linux.sh) | `npm run ci:verify:linux` | Local release cross-builds in Docker |
+| Script                                                         | Used by                            | What it runs                                                                          |
+| -------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, typecheck, **`build-ts-workspace.sh`**, lint                                |
+| [`plan-native-builds.sh`](plan-native-builds.sh)               | main + release plan job            | Per-target cache hash check → dynamic build matrices                                  |
+| [`check-main-ci-success.sh`](check-main-ci-success.sh)         | release plan job                   | Skip release test when main validated same SHA                                        |
+| [`list-release-targets.sh`](list-release-targets.sh)           | plan / stage scripts               | Canonical six release triples                                                         |
+| [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity    | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh`                      |
+| [`build-ts-workspace.sh`](build-ts-workspace.sh)               | PR build-ts + integration fallback | sdk core → signaling → full sdk                                                       |
+| [`run-pr-integration.sh`](run-pr-integration.sh)               | PR test job                        | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test, optional build:ts, npm test |
+| [`run-pr-tests-full.sh`](run-pr-tests-full.sh)                 | local `ci:verify`                  | quality + integration                                                                 |
+| [`run-pr-integration.sh`](run-pr-integration.sh)               | main + release test                | integration only (after quality job)                                                  |
+| [`verify-checks.sh`](verify-checks.sh)                         | `npm run ci:verify:checks*`        | Local mirror of quality + integration                                                 |
+| [`verify-linux.sh`](verify-linux.sh)                           | `npm run ci:verify:linux`          | Local release cross-builds in Docker                                                  |
 
 ---
 
@@ -254,12 +254,12 @@ After changing `docker/ci/Dockerfile`, rebuild and push to the `ci` branch befor
 
 ## Caching summary
 
-| Cache | Key inputs | Paths | Used in |
-|-------|------------|-------|---------|
-| Native binding | `Cargo.lock`, crates, bindings sources | `packages/bindings/*.node` | compile-native, release/main/host matrix, test |
-| TS dist | sdk/signaling sources + tsconfigs | `packages/*/dist` | build-ts, test |
-| npm | `package-lock.json` | `node_modules` | setup-node jobs |
-| Rust target (restore-only) | `Cargo.lock`, workspace | `target/` | compile/build-linux warm start only |
+| Cache                      | Key inputs                             | Paths                      | Used in                                        |
+| -------------------------- | -------------------------------------- | -------------------------- | ---------------------------------------------- |
+| Native binding             | `Cargo.lock`, crates, bindings sources | `packages/bindings/*.node` | compile-native, release/main/host matrix, test |
+| TS dist                    | sdk/signaling sources + tsconfigs      | `packages/*/dist`          | build-ts, test                                 |
+| npm                        | `package-lock.json`                    | `node_modules`             | setup-node jobs                                |
+| Rust target (restore-only) | `Cargo.lock`, workspace                | `target/`                  | compile/build-linux warm start only            |
 
 PR native cache profile: **debug**. Main/release: **release**.
 
@@ -267,10 +267,10 @@ PR native cache profile: **debug**. Main/release: **release**.
 
 ## Composite actions
 
-| Action | Purpose |
-|--------|---------|
-| [`native-binding-cache`](../../.github/actions/native-binding-cache) | Restore + validate `.node`; [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) saves after compile |
-| [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) | Cache, npm, napi build, upload artifact |
-| [`ci-build-native-host`](../../.github/actions/ci-build-native-host) | Node + Rust setup, napi build, upload |
-| [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) | sdk/signaling `dist/` cache |
-| [`ci-run-integration-tests`](../../.github/actions/ci-run-integration-tests) | GHCR login, coturn sidecar, ci-build test run |
+| Action                                                                       | Purpose                                                                                                                |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| [`native-binding-cache`](../../.github/actions/native-binding-cache)         | Restore + validate `.node`; [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) saves after compile |
+| [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux)       | Cache, npm, napi build, upload artifact                                                                                |
+| [`ci-build-native-host`](../../.github/actions/ci-build-native-host)         | Node + Rust setup, napi build, upload                                                                                  |
+| [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist)                 | sdk/signaling `dist/` cache                                                                                            |
+| [`ci-run-integration-tests`](../../.github/actions/ci-run-integration-tests) | GHCR login, coturn sidecar, ci-build test run                                                                          |

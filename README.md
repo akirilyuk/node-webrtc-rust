@@ -1,12 +1,13 @@
 # node-webrtc-rust
 
 [![Build](https://github.com/akirilyuk/node-webrtc-rust/actions/workflows/build.yml/badge.svg)](https://github.com/akirilyuk/node-webrtc-rust/actions/workflows/build.yml)
+[![npm version](https://img.shields.io/npm/v/@node-webrtc-rust/sdk.svg)](https://www.npmjs.com/package/@node-webrtc-rust/sdk)
 
 **Real-time voice agents in Node.js — WebRTC transport, Rust media timing, your LLM logic.**
 
 [node-webrtc-rust](https://github.com/akirilyuk/node-webrtc-rust) is a native WebRTC stack for building **agentic voice workloads**: phone bots, browser voice assistants, and multi-tenant worker pods where Node runs business logic and Rust owns audio timing, VAD, barge-in, and TTS playback.
 
-Install an npm package, load a prebuilt `.node` binary, attach a `VoiceAgent` to a peer connection, and wire `user_speech_final` → your LLM → `sendTextToTTS()` — without reimplementing PCM frame cadence, Opus decode, or vendor HTTP/WebSocket clients in TypeScript.
+Install [`@node-webrtc-rust/sdk`](https://www.npmjs.com/package/@node-webrtc-rust/sdk) from npm, load a prebuilt `.node` binary, attach a `VoiceAgent` to a peer connection, and wire `user_speech_final` → your LLM → `sendTextToTTS()` — without reimplementing PCM frame cadence, Opus decode, or vendor HTTP/WebSocket clients in TypeScript.
 
 Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate SFU cluster** — WebRTC, mixing, and voice pipelines run **in-process** beside your agent code.
 
@@ -36,11 +37,11 @@ Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate SFU
 
 Building a production voice agent means solving three problems at once:
 
-| Problem | Typical pain | node-webrtc-rust approach |
-| --- | --- | --- |
-| **Transport** | WebRTC ICE/SDP, Opus, jitter in Node | Browser-compatible `RTCPeerConnection` + native Rust RTP |
-| **Media timing** | TTS/STT frame alignment, barge-in latency | `VoiceAgent` in Rust: VAD, TTS buffer, atomic flush |
-| **Agent logic** | LLM, tools, RAG, billing | Stay in **your** TypeScript — events up, text down |
+| Problem          | Typical pain                              | node-webrtc-rust approach                                |
+| ---------------- | ----------------------------------------- | -------------------------------------------------------- |
+| **Transport**    | WebRTC ICE/SDP, Opus, jitter in Node      | Browser-compatible `RTCPeerConnection` + native Rust RTP |
+| **Media timing** | TTS/STT frame alignment, barge-in latency | `VoiceAgent` in Rust: VAD, TTS buffer, atomic flush      |
+| **Agent logic**  | LLM, tools, RAG, billing                  | Stay in **your** TypeScript — events up, text down       |
 
 ```mermaid
 flowchart LR
@@ -86,7 +87,7 @@ See [`examples/voice-agent-multi-session-pod`](examples/voice-agent-multi-sessio
 
 ## Agentic voice quick start
 
-Install the SDK (voice APIs are on the `/voice` subpath):
+Install the [SDK on npm](https://www.npmjs.com/package/@node-webrtc-rust/sdk) (voice APIs are on the `/voice` subpath):
 
 ```bash
 npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/helpers
@@ -111,7 +112,7 @@ const agent = new VoiceAgent({
 })
 
 await agent.attach({
-  inboundTrack: remoteUserTrack,   // user speech → VAD/STT
+  inboundTrack: remoteUserTrack, // user speech → VAD/STT
   outboundTrack: agentLocalTrack, // TTS → remote hears agent
 })
 await agent.start()
@@ -159,12 +160,12 @@ sendTextToTTS(text) ──► TTS vendor adapter ──► TtsPlaybackBuffer
                               LocalAudioTrack.writeSample() ──► Outbound RTP (agent)
 ```
 
-| Layer | Location | Role |
-| --- | --- | --- |
-| Orchestration | `crates/speech` | Config, event bus, VAD, barge-in, TTS queue |
-| Vendors | `crates/vendor-*` | OpenAI, Deepgram, ElevenLabs, Google, Cartesia, AssemblyAI, mock |
-| Node API | `@node-webrtc-rust/sdk/voice` | `VoiceAgent`, typed config, callbacks + `speechEvents()` |
-| Transport | `@node-webrtc-rust/sdk` | `RTCPeerConnection`, `LocalAudioTrack`, `RemoteAudioTrack` |
+| Layer         | Location                      | Role                                                             |
+| ------------- | ----------------------------- | ---------------------------------------------------------------- |
+| Orchestration | `crates/speech`               | Config, event bus, VAD, barge-in, TTS queue                      |
+| Vendors       | `crates/vendor-*`             | OpenAI, Deepgram, ElevenLabs, Google, Cartesia, AssemblyAI, mock |
+| Node API      | `@node-webrtc-rust/sdk/voice` | `VoiceAgent`, typed config, callbacks + `speechEvents()`         |
+| Transport     | `@node-webrtc-rust/sdk`       | `RTCPeerConnection`, `LocalAudioTrack`, `RemoteAudioTrack`       |
 
 **Frame format:** 48 kHz stereo, 16-bit PCM, 20 ms frames (3 840 bytes) on the WebRTC track path. VAD resamples to mono 16 kHz internally.
 
@@ -174,16 +175,16 @@ sendTextToTTS(text) ──► TTS vendor adapter ──► TtsPlaybackBuffer
 
 STT and TTS providers are **independently configurable** — mix vendors per session:
 
-| Provider | STT | TTS | Env var(s) |
-| --- | --- | --- | --- |
-| `openai` | ✓ | ✓ | `OPENAI_API_KEY` |
-| `deepgram` | ✓ | — | `DEEPGRAM_API_KEY` |
-| `elevenlabs` | — | ✓ | `ELEVENLABS_API_KEY` |
-| `cartesia` | — | ✓ | `CARTESIA_API_KEY` |
-| `assemblyai` | ✓ | — | `ASSEMBLYAI_API_KEY` |
-| `google` | ✓ | ✓ | `GOOGLE_APPLICATION_CREDENTIALS` |
-| **`local-sherpa`** | ✓ | ✓ | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` |
-| `mock` | ✓ | ✓ | _(none — CI/local)_ |
+| Provider           | STT | TTS | Env var(s)                                                              |
+| ------------------ | --- | --- | ----------------------------------------------------------------------- |
+| `openai`           | ✓   | ✓   | `OPENAI_API_KEY`                                                        |
+| `deepgram`         | ✓   | —   | `DEEPGRAM_API_KEY`                                                      |
+| `elevenlabs`       | —   | ✓   | `ELEVENLABS_API_KEY`                                                    |
+| `cartesia`         | —   | ✓   | `CARTESIA_API_KEY`                                                      |
+| `assemblyai`       | ✓   | —   | `ASSEMBLYAI_API_KEY`                                                    |
+| `google`           | ✓   | ✓   | `GOOGLE_APPLICATION_CREDENTIALS`                                        |
+| **`local-sherpa`** | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` |
+| `mock`             | ✓   | ✓   | _(none — CI/local)_                                                     |
 
 Pass `apiKey` in config or rely on env vars. Keys are never logged or returned in events.
 
@@ -207,23 +208,23 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 
 ## Speech events and barge-in
 
-| Event | Source | When to use in your agent |
-| --- | --- | --- |
-| `user_speaking_start` | VAD | Fast interrupt signal; pairs with barge-in |
-| `user_speaking_end` | VAD | End-of-utterance hint before STT final |
-| `user_speech_partial` | STT | Live captions, early LLM prefetch |
-| `user_speech_final` | STT | **Primary turn trigger** for LLM |
-| `agent_speaking_start` / `end` | TTS playback | UI/state machine |
-| `barge_in` | VAD + config | User interrupted agent — cancel LLM/TTS |
-| `error` | Any | Vendor or pipeline failure |
+| Event                          | Source       | When to use in your agent                  |
+| ------------------------------ | ------------ | ------------------------------------------ |
+| `user_speaking_start`          | VAD          | Fast interrupt signal; pairs with barge-in |
+| `user_speaking_end`            | VAD          | End-of-utterance hint before STT final     |
+| `user_speech_partial`          | STT          | Live captions, early LLM prefetch          |
+| `user_speech_final`            | STT          | **Primary turn trigger** for LLM           |
+| `agent_speaking_start` / `end` | TTS playback | UI/state machine                           |
+| `barge_in`                     | VAD + config | User interrupted agent — cancel LLM/TTS    |
+| `error`                        | Any          | Vendor or pipeline failure                 |
 
 **Barge-in** is two independent toggles under `vad.bargeIn`:
 
-| `enabled` | `flushTts` | Behavior |
-| --- | --- | --- |
-| `true` | `true` (default) | Native TTS buffer flush **first**, then `barge_in` event |
-| `true` | `false` | Emit `barge_in` only — TTS keeps playing until you call `flushTts()` |
-| `false` | * | No barge-in event, no native flush |
+| `enabled` | `flushTts`       | Behavior                                                             |
+| --------- | ---------------- | -------------------------------------------------------------------- |
+| `true`    | `true` (default) | Native TTS buffer flush **first**, then `barge_in` event             |
+| `true`    | `false`          | Emit `barge_in` only — TTS keeps playing until you call `flushTts()` |
+| `false`   | \*               | No barge-in event, no native flush                                   |
 
 **Delivery:** `events.mode` = `callback` | `stream` | `both` (handlers + `speechEvents()` async iterator).
 
@@ -235,16 +236,16 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 npm run setup   # once: deps + native .node + TS build
 ```
 
-| Example | Command | Teaches |
-| --- | --- | --- |
-| **voice-agent-local-sherpa** | `download-stt` + `download-tts` + `start:roundtrip` | **Free on-device STT + TTS**; Node roundtrip or browser mic → Sherpa |
-| **voice-agent-browser** | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser` | Browser mic → STT events; client triggers TTS + barge-in |
+| Example                           | Command                                                                             | Teaches                                                                             |
+| --------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| **voice-agent-local-sherpa**      | `download-stt` + `download-tts` + `start:roundtrip`                                 | **Free on-device STT + TTS**; Node roundtrip or browser mic → Sherpa                |
+| **voice-agent-browser**           | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-browser`           | Browser mic → STT events; client triggers TTS + barge-in                            |
 | **voice-agent-multi-session-pod** | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod` | **Many concurrent sessions on one server** — `SessionPod`, one agent per connection |
-| **voice-agent** callback | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent` | `agent.on()` handlers, mock vendors |
-| **voice-agent** stream | `npm run start:stream --workspace=...` | `for await … speechEvents()` |
-| **voice-agent** barge-in | `npm run start:barge-in --workspace=...` | VAD + `flushTts` |
-| **voice-agent** live OpenAI | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=...` | Real vendor config + loopback |
-| **voice-agent** live * | `start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google` | Per-vendor credentials |
+| **voice-agent** callback          | `npm run start:callback --workspace=@node-webrtc-rust/example-voice-agent`          | `agent.on()` handlers, mock vendors                                                 |
+| **voice-agent** stream            | `npm run start:stream --workspace=...`                                              | `for await … speechEvents()`                                                        |
+| **voice-agent** barge-in          | `npm run start:barge-in --workspace=...`                                            | VAD + `flushTts`                                                                    |
+| **voice-agent** live OpenAI       | `OPENAI_API_KEY=sk-... npm run start:live:openai --workspace=...`                   | Real vendor config + loopback                                                       |
+| **voice-agent** live \*           | `start:live:deepgram` / `elevenlabs` / `cartesia` / `assemblyai` / `google`         | Per-vendor credentials                                                              |
 
 Inline comments in [`examples/voice-agent/`](examples/voice-agent/) explain track directions (`agentInbound` vs `agentOut`), event modes, and vendor pairing. See [`examples/voice-agent/README.md`](examples/voice-agent/README.md).
 
@@ -263,13 +264,13 @@ Other WebRTC demos (peer connection, conference MCU): [`examples/README.md`](exa
 
 ### Why node-webrtc-rust vs standalone SFU?
 
-| | node-webrtc-rust | Standalone SFU/MCU |
-|---|---|---|
-| **Deployment** | npm install | Separate server cluster |
-| **Voice agents** | In-process `VoiceAgent` + your Node loop | Custom bridge to media server |
-| **API surface** | W3C-style `RTCPeerConnection` | Proprietary client SDK |
-| **Conference mixing** | In-process Rust MCU | Remote media server |
-| **Best for** | Embedded agents, session workers | Large hosted rooms |
+|                       | node-webrtc-rust                         | Standalone SFU/MCU            |
+| --------------------- | ---------------------------------------- | ----------------------------- |
+| **Deployment**        | npm install                              | Separate server cluster       |
+| **Voice agents**      | In-process `VoiceAgent` + your Node loop | Custom bridge to media server |
+| **API surface**       | W3C-style `RTCPeerConnection`            | Proprietary client SDK        |
+| **Conference mixing** | In-process Rust MCU                      | Remote media server           |
+| **Best for**          | Embedded agents, session workers         | Large hosted rooms            |
 
 ### Quick start — peer connection
 
@@ -352,12 +353,12 @@ flowchart TB
 
 ## Packages
 
-| Package | npm | Role |
-| --- | --- | --- |
-| [`@node-webrtc-rust/sdk`](packages/sdk) | TypeScript | WebRTC API + [`/voice`](packages/sdk/README.md#voice-agent-build-agentic-workloads) + [`/conference`](packages/sdk/README.md#conference-rooms) |
-| [`@node-webrtc-rust/bindings`](packages/bindings) | Native | NAPI addon — peer connections, tracks, VoiceAgent, conference |
-| [`@node-webrtc-rust/signaling`](packages/signaling) | TypeScript | WebSocket signaling server, client, auto-negotiate |
-| [`@node-webrtc-rust/helpers`](packages/helpers) | TypeScript | [`SessionPod`](packages/helpers/README.md), `VoiceAgentSessionHost`, PCM kick-frame helpers |
+| Package                                                                                              | npm        | Role                                                                                                                                           |
+| ---------------------------------------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@node-webrtc-rust/sdk`](packages/sdk) · [npm](https://www.npmjs.com/package/@node-webrtc-rust/sdk) | TypeScript | WebRTC API + [`/voice`](packages/sdk/README.md#voice-agent-build-agentic-workloads) + [`/conference`](packages/sdk/README.md#conference-rooms) |
+| [`@node-webrtc-rust/bindings`](packages/bindings)                                                    | Native     | NAPI addon — peer connections, tracks, VoiceAgent, conference                                                                                  |
+| [`@node-webrtc-rust/signaling`](packages/signaling)                                                  | TypeScript | WebSocket signaling server, client, auto-negotiate                                                                                             |
+| [`@node-webrtc-rust/helpers`](packages/helpers)                                                      | TypeScript | [`SessionPod`](packages/helpers/README.md), `VoiceAgentSessionHost`, PCM kick-frame helpers                                                    |
 
 Platform-specific binding packages (`@node-webrtc-rust/bindings-darwin-arm64`, etc.) ship with releases.
 
@@ -367,14 +368,14 @@ Platform-specific binding packages (`@node-webrtc-rust/bindings-darwin-arm64`, e
 
 Prebuilt `.node` binaries are published for:
 
-| OS | Architecture | Triple |
-| --- | --- | --- |
-| macOS | Apple Silicon (M1+) | `aarch64-apple-darwin` |
-| macOS | Intel | `x86_64-apple-darwin` |
-| Linux | x64 glibc | `x86_64-unknown-linux-gnu` |
-| Linux | x64 musl (Alpine) | `x86_64-unknown-linux-musl` |
-| Linux | arm64 glibc | `aarch64-unknown-linux-gnu` |
-| Windows | x64 MSVC | `x86_64-pc-windows-msvc` |
+| OS      | Architecture        | Triple                      |
+| ------- | ------------------- | --------------------------- |
+| macOS   | Apple Silicon (M1+) | `aarch64-apple-darwin`      |
+| macOS   | Intel               | `x86_64-apple-darwin`       |
+| Linux   | x64 glibc           | `x86_64-unknown-linux-gnu`  |
+| Linux   | x64 musl (Alpine)   | `x86_64-unknown-linux-musl` |
+| Linux   | arm64 glibc         | `aarch64-unknown-linux-gnu` |
+| Windows | x64 MSVC            | `x86_64-pc-windows-msvc`    |
 
 Node.js **≥ 18** required.
 
@@ -490,9 +491,9 @@ Requires repository secret **`NPM_TOKEN`**. Linux jobs use the CI image built fr
 
 ### Local release
 
-| Script | Use when |
-| --- | --- |
-| [`scripts/release-local.sh`](scripts/release-local.sh) | Publish from your machine for **one platform** (host `.node` only) |
+| Script                                                     | Use when                                                               |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| [`scripts/release-local.sh`](scripts/release-local.sh)     | Publish from your machine for **one platform** (host `.node` only)     |
 | [`scripts/release-publish.sh`](scripts/release-publish.sh) | macOS: build Linux + Darwin locally; supply Windows `.node` separately |
 
 ```bash
@@ -518,13 +519,13 @@ High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceiver
 
 ## Roadmap
 
-| Version | Focus |
-| --- | --- |
-| **v0.1.0** | PeerConnection, DataChannels, audio tracks, STUN/TURN |
-| **v0.2.x** | Conference MCU, API parity P0–P1, Unified Plan transceivers |
+| Version    | Focus                                                                                   |
+| ---------- | --------------------------------------------------------------------------------------- |
+| **v0.1.0** | PeerConnection, DataChannels, audio tracks, STUN/TURN                                   |
+| **v0.2.x** | Conference MCU, API parity P0–P1, Unified Plan transceivers                             |
 | **v0.3.0** | **Voice agents:** `VoiceAgent`, VAD, barge-in, six STT/TTS vendors, speech event stream |
-| **v0.3.x** | Live vendor HTTP/WS, Silero VAD default, Pipeline A (realtime vendor WS) |
-| **v0.4.0** | Video, simulcast, DTMF, conference video compositing |
+| **v0.3.x** | Live vendor HTTP/WS, Silero VAD default, Pipeline A (realtime vendor WS)                |
+| **v0.4.0** | Video, simulcast, DTMF, conference video compositing                                    |
 
 ---
 

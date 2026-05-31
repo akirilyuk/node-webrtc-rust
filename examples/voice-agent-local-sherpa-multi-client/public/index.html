@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Sherpa — 3 clients, one room</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Local Sherpa — three clients, one room</h1>
+        <p>
+          Open <strong>three browser tabs</strong> to this URL (add <code>?slot=1</code>,
+          <code>?slot=2</code>, <code>?slot=3</code> to label logs). Each tab is one
+          <code>client-*</code> peer → one <strong>VoiceAgent</strong> → shared Sherpa STT/TTS
+          models in the Node process.
+        </p>
+      </header>
+
+      <section class="panel setup-panel">
+        <h2>Server setup</h2>
+        <ol>
+          <li>
+            Download models via <code>voice-agent-local-sherpa</code> (<code>download-stt</code>,
+            <code>download-tts</code>)
+          </li>
+          <li>Export <code>SHERPA_STT_MODEL_PATH</code> and <code>SHERPA_TTS_MODEL_PATH</code></li>
+          <li>
+            Start:
+            <code
+              >npm run start
+              --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client</code
+            >
+          </li>
+          <li>
+            Optional cap:
+            <code
+              >npm run start:cap-2
+              --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client</code
+            >
+          </li>
+        </ol>
+        <p class="hint">
+          Guide:
+          <code>examples/voice-agent-local-sherpa-multi-client/README.md</code>
+        </p>
+      </section>
+
+      <section class="panel">
+        <label>
+          Room (fixed for this demo)
+          <input id="room" type="text" maxlength="32" value="sherpa-multi" readonly />
+        </label>
+        <p id="capacity-status">Capacity: loading…</p>
+        <button id="connect" type="button">Connect</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+        <p id="status" class="status">Disconnected</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Your microphone</h2>
+        <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform"></canvas>
+        <p id="mic-viz-status" class="viz-status">Connect and allow microphone</p>
+      </section>
+
+      <section class="panel audio-panel">
+        <h2>Agent audio (TTS)</h2>
+        <audio id="agent-audio" controls autoplay></audio>
+        <p id="audio-status">Connect to hear agent speech</p>
+      </section>
+
+      <section class="panel">
+        <h2>Request TTS</h2>
+        <form id="speak-form">
+          <label>
+            Text
+            <input id="speak-text" type="text" placeholder="Hello from this tab" disabled />
+          </label>
+          <button type="submit" disabled>Speak</button>
+        </form>
+      </section>
+
+      <section class="panel hint-panel">
+        <h2>Three-server-session pattern</h2>
+        <ol>
+          <li>Tab 1, 2, 3 — same room <code>sherpa-multi</code>, click Connect in each.</li>
+          <li>
+            Server log shows <code>[voice client-tabN]</code> — three VoiceAgents, one Sherpa model
+            load.
+          </li>
+          <li>
+            With <code>VOICE_MAX_CONCURRENT_SESSIONS=2</code>, the third tab should not get an
+            offer.
+          </li>
+          <li>Check <code>GET /api/capacity</code> for active/max/rejected counts.</li>
+        </ol>
+      </section>
+
+      <section class="panel log-panel">
+        <h2>Speech events</h2>
+        <ul id="event-log"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

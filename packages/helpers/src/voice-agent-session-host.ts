@@ -30,6 +30,11 @@ import {
 import type { SignalingClient } from '@node-webrtc-rust/signaling'
 
 import { createKickFrame, PCM_KICK_DURATION_MS } from './pcm.js'
+import {
+  getProcessVoiceSessionBudget,
+  type VoiceSessionBudget,
+  type VoiceSessionBudgetSnapshot,
+} from './voice-session-budget.js'
 
 export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
 
@@ -61,6 +66,11 @@ export interface VoiceAgentSessionHostOptions {
   clientPeerIdPrefix?: string
   /** Log connection lifecycle when provided. */
   log?: (message: string) => void
+  /**
+   * Process-wide connection cap (`VOICE_MAX_CONCURRENT_SESSIONS` when omitted).
+   * Shared across rooms when using {@link SessionPod}.
+   */
+  sessionBudget?: VoiceSessionBudget
 }
 
 /**
@@ -70,6 +80,7 @@ export class VoiceAgentSessionHost {
   private readonly sessions = new Map<string, ClientSession>()
   private readonly clientPeerIdPrefix: string
   private readonly log: (message: string) => void
+  private readonly sessionBudget: VoiceSessionBudget
 
   constructor(
     private readonly signaling: SignalingClient,
@@ -78,6 +89,7 @@ export class VoiceAgentSessionHost {
   ) {
     this.clientPeerIdPrefix = options.clientPeerIdPrefix ?? 'client-'
     this.log = options.log ?? ((message) => console.log(message))
+    this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
 
     this.signaling.on('peer-joined', (peerId) => {
       if (peerId === VOICE_AGENT_SERVER_PEER_ID || this.sessions.has(peerId)) return
@@ -106,6 +118,11 @@ export class VoiceAgentSessionHost {
     return this.sessions.size
   }
 
+  /** Current process session budget (active / max / rejected). */
+  get sessionBudgetSnapshot(): VoiceSessionBudgetSnapshot {
+    return this.sessionBudget.snapshot()
+  }
+
   async close(): Promise<void> {
     for (const peerId of [...this.sessions.keys()]) {
       this.closeClient(peerId)
@@ -113,6 +130,23 @@ export class VoiceAgentSessionHost {
   }
 
   private async connectClient(peerId: string): Promise<void> {
+    if (!this.sessionBudget.tryAcquire(peerId)) {
+      const snap = this.sessionBudget.snapshot()
+      this.log(
+        `[voice ${peerId}] rejected — session budget full (${snap.active}/${snap.max}, rejectedTotal=${snap.rejectedTotal})`,
+      )
+      return
+    }
+
+    try {
+      await this.connectClientInner(peerId)
+    } catch (error: unknown) {
+      this.closeClient(peerId)
+      throw error
+    }
+  }
+
+  private async connectClientInner(peerId: string): Promise<void> {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers })
     const agentOut = new LocalAudioTrack(`agent-out-${peerId}`, 'voice-agent')
     const agent = new VoiceAgent(this.options.voiceConfig)
@@ -208,10 +242,7 @@ export class VoiceAgentSessionHost {
     this.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
   }
 
-  private async onAnswerReceived(
-    peerId: string,
-    sdp: RTCSessionDescriptionInit,
-  ): Promise<void> {
+  private async onAnswerReceived(peerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
     const session = this.sessions.get(peerId)
     if (!session) {
       console.warn(`[voice ${peerId}] answer received but no session yet`)
@@ -253,12 +284,16 @@ export class VoiceAgentSessionHost {
 
   private closeClient(peerId: string): void {
     const session = this.sessions.get(peerId)
-    if (!session) return
+    if (!session) {
+      this.sessionBudget.release(peerId)
+      return
+    }
     session.unwireControl?.()
     session.unwireSpeechForward?.()
     void session.agent.stop().catch(() => undefined)
     session.pc.close()
     this.sessions.delete(peerId)
+    this.sessionBudget.release(peerId)
     this.log(`[voice ${peerId}] VoiceAgent stopped, connection closed`)
   }
 }

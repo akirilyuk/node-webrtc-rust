@@ -1,0 +1,25 @@
+{
+  "name": "@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client",
+  "private": true,
+  "version": "0.1.5",
+  "description": "Three browser clients, one room, shared local Sherpa STT/TTS + session budget demo",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "start:cap-2": "VOICE_MAX_CONCURRENT_SESSIONS=2 tsx src/index.ts",
+    "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@node-webrtc-rust/helpers": "0.1.5",
+    "@node-webrtc-rust/sdk": "0.1.5",
+    "@node-webrtc-rust/signaling": "0.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  }
+}

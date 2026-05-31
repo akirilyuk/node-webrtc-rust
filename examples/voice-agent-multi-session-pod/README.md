@@ -6,12 +6,12 @@ Implementation lives in [`@node-webrtc-rust/helpers`](../../packages/helpers/REA
 
 ## Why this pattern
 
-| Idea | Detail |
-| --- | --- |
-| **One pod, many sessions** | A single process runs one `SignalingServer` and handles N independent calls. |
+| Idea                         | Detail                                                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| **One pod, many sessions**   | A single process runs one `SignalingServer` and handles N independent calls.                           |
 | **One agent per connection** | Each WebRTC client gets its own `RTCPeerConnection` + `VoiceAgent`. No routing logic inside the agent. |
-| **Disconnect = cleanup** | `VoiceAgent.stop()`, PC close, tracks released — no leaked STT/TTS/VAD state. |
-| **Idle session teardown** | When the last client leaves a session room, the pod drops that session slot. |
+| **Disconnect = cleanup**     | `VoiceAgent.stop()`, PC close, tracks released — no leaked STT/TTS/VAD state.                          |
+| **Idle session teardown**    | When the last client leaves a session room, the pod drops that session slot.                           |
 
 Scale horizontally by running more pods when CPU/memory warrants it — not because the library requires one process per call.
 
@@ -43,10 +43,10 @@ Mock STT/TTS by default (no API keys). Same `VOICE_VENDOR` env vars as [`voice-a
 
 ## Pod API (demo HTTP)
 
-| Method | Path | Purpose |
-| --- | --- | --- |
+| Method | Path            | Purpose                                               |
+| ------ | --------------- | ----------------------------------------------------- |
 | `POST` | `/api/sessions` | `{ "sessionId": "call-1" }` — allocate session on pod |
-| `GET` | `/api/sessions` | `{ activeSessions, activeConnections, sessions[] }` |
+| `GET`  | `/api/sessions` | `{ activeSessions, activeConnections, sessions[] }`   |
 
 In production, call `SessionPod.ensureSession()` from your orchestrator instead of this demo route.
 
@@ -64,8 +64,8 @@ Full API docs: [`packages/helpers/README.md`](../../packages/helpers/README.md).
 
 ## Related examples
 
-| Example | Focus |
-| --- | --- |
+| Example                                          | Focus                                                  |
+| ------------------------------------------------ | ------------------------------------------------------ |
 | [`voice-agent-browser`](../voice-agent-browser/) | Single-room browser demo using `VoiceAgentSessionHost` |
-| [`voice-agent`](../voice-agent/) | CLI loopback — one agent, one loop |
-| [`conference-room`](../conference-room/) | Multi-party MCU mixing — different problem |
+| [`voice-agent`](../voice-agent/)                 | CLI loopback — one agent, one loop                     |
+| [`conference-room`](../conference-room/)         | Multi-party MCU mixing — different problem             |

@@ -21,3 +21,20 @@ export {
   type SessionPodOptions,
   type SessionPodSessionInfo,
 } from './session-pod.js'
+
+export {
+  VoiceSessionBudget,
+  VoiceSessionBudgetFullError,
+  getProcessVoiceSessionBudget,
+  resetProcessVoiceSessionBudget,
+  resolveMaxVoiceSessionsFromEnv,
+  type VoiceSessionBudgetOptions,
+  type VoiceSessionBudgetSnapshot,
+} from './voice-session-budget.js'
+
+export {
+  startMultiClientVoiceServer,
+  formatBudget,
+  type MultiClientVoiceServerHandle,
+  type MultiClientVoiceServerOptions,
+} from './multi-client-voice-server.js'

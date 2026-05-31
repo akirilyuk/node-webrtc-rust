@@ -4,10 +4,10 @@
 
 This example mirrors [`voice-agent-browser`](../voice-agent-browser/README.md) but uses:
 
-| Component | Provider |
-|-----------|----------|
-| STT | `local-sherpa` (Sherpa-ONNX Zipformer on CPU) |
-| TTS | `local-sherpa` (Sherpa-ONNX Piper/VITS offline synthesis) |
+| Component | Provider                                                  |
+| --------- | --------------------------------------------------------- |
+| STT       | `local-sherpa` (Sherpa-ONNX Zipformer on CPU)             |
+| TTS       | `local-sherpa` (Sherpa-ONNX Piper/VITS offline synthesis) |
 
 Your **browser microphone** → WebRTC → Node **VoiceAgent** → Sherpa `OnlineRecognizer` → partial/final events on the `voice-control` DataChannel.
 
@@ -19,12 +19,12 @@ Your **browser microphone** → WebRTC → Node **VoiceAgent** → Sherpa `Onlin
 
 We **explicitly support and recommend** the `local-sherpa` flow when you can run inference on your own hardware:
 
-| Benefit | What it means |
-|---------|----------------|
-| **Privacy** | User speech is decoded **on your server** — raw audio is **not** sent to OpenAI, Deepgram, Google, or other cloud STT APIs. |
-| **Lower latency** | No network round-trip to a third-party STT service; transcripts come from in-process Sherpa inference after WebRTC delivery. |
-| **No API keys or usage fees** | Download open-weight models once (`download-stt:*` scripts); run without STT cloud credentials. |
-| **Offline-capable** | After models are cached, STT works without outbound calls to speech vendors (WebRTC signaling still needs your network). |
+| Benefit                       | What it means                                                                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Privacy**                   | User speech is decoded **on your server** — raw audio is **not** sent to OpenAI, Deepgram, Google, or other cloud STT APIs.  |
+| **Lower latency**             | No network round-trip to a third-party STT service; transcripts come from in-process Sherpa inference after WebRTC delivery. |
+| **No API keys or usage fees** | Download open-weight models once (`download-stt:*` scripts); run without STT cloud credentials.                              |
+| **Offline-capable**           | After models are cached, STT works without outbound calls to speech vendors (WebRTC signaling still needs your network).     |
 
 Cloud STT remains available via [`voice-agent-browser`](../voice-agent-browser/README.md) when you need vendor-specific features or languages without a local bundle. For agent loops that handle sensitive audio or care about tail latency, **start with this example**.
 
@@ -108,20 +108,20 @@ npm run download-stt:list --workspace=@node-webrtc-rust/example-voice-agent-loca
 
 Per-language shortcuts (from repo root) — full table also in [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models):
 
-| Language | npm script | Sherpa bundle |
-|----------|------------|---------------|
-| English (default) | `download-stt` or `download-stt:en` | `…-en-2023-06-26` |
-| Spanish | `download-stt:es` | `…-es-kroko-2025-08-06` |
-| French | `download-stt:fr` | `…-fr-kroko-2025-08-06` |
-| German | `download-stt:de` | `…-de-kroko-2025-08-06` |
-| Chinese | `download-stt:zh` | `…-zh-int8-2025-06-30` |
-| Japanese | `download-stt:ja` | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual) |
-| Arabic | `download-stt:ar` | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar` |
-| Russian | `download-stt:ru` | `…-small-ru-vosk-int8-2025-08-16` |
-| Bengali (South Asia) | `download-stt:bn` | `…-bn-vosk-2026-02-09` |
-| Hindi | `download-stt:hi` | *No streaming Zipformer transducer in official releases yet* |
-| Portuguese | `download-stt:pt` | *Not available for this example yet* |
-| Italian | `download-stt:it` | *Not available for this example yet* |
+| Language             | npm script                          | Sherpa bundle                                                |
+| -------------------- | ----------------------------------- | ------------------------------------------------------------ |
+| English (default)    | `download-stt` or `download-stt:en` | `…-en-2023-06-26`                                            |
+| Spanish              | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                      |
+| French               | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                      |
+| German               | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                      |
+| Chinese              | `download-stt:zh`                   | `…-zh-int8-2025-06-30`                                       |
+| Japanese             | `download-stt:ja`                   | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual)        |
+| Arabic               | `download-stt:ar`                   | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar`      |
+| Russian              | `download-stt:ru`                   | `…-small-ru-vosk-int8-2025-08-16`                            |
+| Bengali (South Asia) | `download-stt:bn`                   | `…-bn-vosk-2026-02-09`                                       |
+| Hindi                | `download-stt:hi`                   | _No streaming Zipformer transducer in official releases yet_ |
+| Portuguese           | `download-stt:pt`                   | _Not available for this example yet_                         |
+| Italian              | `download-stt:it`                   | _Not available for this example yet_                         |
 
 Generic form:
 
@@ -172,14 +172,14 @@ Default (no args) runs **5 built-in phrases** and checks **word similarity** (lo
 
 Quick reference:
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `SHERPA_ROUNDTRIP_PHRASE` | — | Single phrase instead of the 5-sentence batch |
-| `SHERPA_ROUNDTRIP_MIN_SIMILARITY` | `0.75` | Min fraction of input words matched in recognition |
-| `SHERPA_ROUNDTRIP_TIMEOUT_MS` | `45000` | Per-phrase STT timeout |
-| `SHERPA_ROUNDTRIP_WARMUP_S` | `0.6` | Speaker warmup silence before first TTS (WebRTC priming) |
-| `SHERPA_ROUNDTRIP_GAP_S` | `0` | **Extra** silence between phrases; off by default (VAD hold + trailing silence suffice) |
-| `SHERPA_ROUNDTRIP_VERBOSE` | off | Log every VAD/STT event |
+| Variable                          | Default | Purpose                                                                                 |
+| --------------------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `SHERPA_ROUNDTRIP_PHRASE`         | —       | Single phrase instead of the 5-sentence batch                                           |
+| `SHERPA_ROUNDTRIP_MIN_SIMILARITY` | `0.75`  | Min fraction of input words matched in recognition                                      |
+| `SHERPA_ROUNDTRIP_TIMEOUT_MS`     | `45000` | Per-phrase STT timeout                                                                  |
+| `SHERPA_ROUNDTRIP_WARMUP_S`       | `0.6`   | Speaker warmup silence before first TTS (WebRTC priming)                                |
+| `SHERPA_ROUNDTRIP_GAP_S`          | `0`     | **Extra** silence between phrases; off by default (VAD hold + trailing silence suffice) |
+| `SHERPA_ROUNDTRIP_VERBOSE`        | off     | Log every VAD/STT event                                                                 |
 
 Inter-phrase separation comes from **listener VAD** (`sttGateHoldMs`, endpoint tail, wait for `user_speech_final`) plus **post-TTS trailing silence** on the speaker track (duration derived from those VAD timings). See [ROUNDTRIP.md § Timing](./ROUNDTRIP.md#timing-vad-vs-explicit-silence).
 
@@ -206,10 +206,10 @@ On startup you should see `[voice-debug] JsVoiceAgent native module loaded`. If 
 
 Logs go to **stderr** with `[voice-debug]` and `[webrtc-debug]` prefixes. Debug mode also relaxes VAD (`threshold=0.01`, `gateStt=false`). Optional overrides:
 
-| Variable | Effect |
-|----------|--------|
-| `VOICE_VAD_THRESHOLD=0.005` | Lower energy threshold |
-| `VOICE_VAD_DISABLED=1` | Skip VAD (STT still receives all PCM) |
+| Variable                    | Effect                                |
+| --------------------------- | ------------------------------------- |
+| `VOICE_VAD_THRESHOLD=0.005` | Lower energy threshold                |
+| `VOICE_VAD_DISABLED=1`      | Skip VAD (STT still receives all PCM) |
 
 Startup logs show the active pipeline and model path:
 
@@ -249,14 +249,14 @@ Other **streaming transducer** bundles work if they include `tokens.txt` + encod
 
 ### Environment variables
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `SHERPA_STT_MODEL_PATH` | **Yes** | STT directory with Sherpa ONNX Zipformer weights |
-| `SHERPA_TTS_MODEL_PATH` | **Yes** | TTS directory with Piper/VITS `.onnx`, `tokens.txt`, `espeak-ng-data/` |
-| `SHERPA_STT_LANGUAGE` | No | BCP-47-ish tag for `stt.language` (inferred from path when omitted) |
-| `SHERPA_TTS_SPEAKER` | No | Piper speaker id for `tts.voice` (default `0`) |
-| `SHERPA_TTS_SPEED` | No | Speech speed multiplier passed via `tts.model` or env (default `1.0`) |
-| `PORT` | No | HTTP + WebSocket port (default `3002`) |
+| Variable                | Required | Purpose                                                                |
+| ----------------------- | -------- | ---------------------------------------------------------------------- |
+| `SHERPA_STT_MODEL_PATH` | **Yes**  | STT directory with Sherpa ONNX Zipformer weights                       |
+| `SHERPA_TTS_MODEL_PATH` | **Yes**  | TTS directory with Piper/VITS `.onnx`, `tokens.txt`, `espeak-ng-data/` |
+| `SHERPA_STT_LANGUAGE`   | No       | BCP-47-ish tag for `stt.language` (inferred from path when omitted)    |
+| `SHERPA_TTS_SPEAKER`    | No       | Piper speaker id for `tts.voice` (default `0`)                         |
+| `SHERPA_TTS_SPEED`      | No       | Speech speed multiplier passed via `tts.model` or env (default `1.0`)  |
+| `PORT`                  | No       | HTTP + WebSocket port (default `3002`)                                 |
 
 ### VoiceAgent config (TypeScript)
 
@@ -314,16 +314,16 @@ Sherpa runs in Rust via `crates/vendor-sherpa-onnx` — included in the **defaul
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---------|-----|
-| `SHERPA_STT_MODEL_PATH is not set` on startup | Run `download-stt` and export the path |
-| `SHERPA_TTS_MODEL_PATH is not set` on startup | Run `download-tts` and export the path |
-| `no encoder .onnx model found` | Point `SHERPA_STT_MODEL_PATH` at the **extracted** folder, not the `.tar.bz2` |
-| Empty partials / no finals | Run `start:debug` and check `[voice-debug]` — confirm inbound PCM bytes, Sherpa hypotheses, and `voice-control send` lines; try `VOICE_VAD_DISABLED=1` |
-| Native load error / missing symbol | Rebuild: `npm run build:native` from repo root |
+| Symptom                                           | Fix                                                                                                                                                                                                                              |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SHERPA_STT_MODEL_PATH is not set` on startup     | Run `download-stt` and export the path                                                                                                                                                                                           |
+| `SHERPA_TTS_MODEL_PATH is not set` on startup     | Run `download-tts` and export the path                                                                                                                                                                                           |
+| `no encoder .onnx model found`                    | Point `SHERPA_STT_MODEL_PATH` at the **extracted** folder, not the `.tar.bz2`                                                                                                                                                    |
+| Empty partials / no finals                        | Run `start:debug` and check `[voice-debug]` — confirm inbound PCM bytes, Sherpa hypotheses, and `voice-control send` lines; try `VOICE_VAD_DISABLED=1`                                                                           |
+| Native load error / missing symbol                | Rebuild: `npm run build:native` from repo root                                                                                                                                                                                   |
 | **`npm` exit code 137** (process killed silently) | macOS stale code signature on `.node` after Sherpa rebuild — from repo root: `npm run build:native`, or `codesign --force --sign - packages/bindings/node-webrtc-rust.node packages/bindings/node-webrtc-rust.darwin-arm64.node` |
-| Slow on older CPU | Use a smaller/int8 model; expect higher latency |
-| Port in use | `PORT=3003 npm run start --workspace=...` |
+| Slow on older CPU                                 | Use a smaller/int8 model; expect higher latency                                                                                                                                                                                  |
+| Port in use                                       | `PORT=3003 npm run start --workspace=...`                                                                                                                                                                                        |
 
 ---
 
@@ -331,9 +331,9 @@ Sherpa runs in Rust via `crates/vendor-sherpa-onnx` — included in the **defaul
 
 Same as [`voice-agent-browser`](../voice-agent-browser/README.md):
 
-| Direction | Payload |
-|-----------|---------|
-| Client → server | `{ "type": "speak", "text": "Hello" }` |
+| Direction       | Payload                                                                 |
+| --------------- | ----------------------------------------------------------------------- |
+| Client → server | `{ "type": "speak", "text": "Hello" }`                                  |
 | Server → client | `{ "type": "speech_event", "event": "user_speech_final", "text": "…" }` |
 
 ---

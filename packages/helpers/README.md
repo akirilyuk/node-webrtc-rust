@@ -10,12 +10,14 @@ npm install @node-webrtc-rust/helpers @node-webrtc-rust/sdk @node-webrtc-rust/si
 
 ## What's included
 
-| Export | Purpose |
-| --- | --- |
-| `SessionPod` | One Node process, one signaling entry point, many concurrent sessions |
-| `VoiceAgentSessionHost` | One signaling room; spawns one `VoiceAgent` + PC per browser client |
-| `VOICE_AGENT_SERVER_PEER_ID` | Stable server peer id for signaling joins |
-| `createKickFrame`, PCM constants | RTP prime / 20 ms frame conventions |
+| Export                           | Purpose                                                               |
+| -------------------------------- | --------------------------------------------------------------------- |
+| `SessionPod`                     | One Node process, one signaling entry point, many concurrent sessions |
+| `VoiceAgentSessionHost`          | One signaling room; spawns one `VoiceAgent` + PC per browser client   |
+| `startMultiClientVoiceServer`    | One room, many tabs — wraps signaling + host + `/api/capacity`        |
+| `VoiceSessionBudget`             | Process-wide cap (`VOICE_MAX_CONCURRENT_SESSIONS`)                    |
+| `VOICE_AGENT_SERVER_PEER_ID`     | Stable server peer id for signaling joins                             |
+| `createKickFrame`, PCM constants | RTP prime / 20 ms frame conventions                                   |
 
 ## Multi-session pod (recommended server pattern)
 
@@ -66,6 +68,36 @@ const host = new VoiceAgentSessionHost(signaling, iceServers, { voiceConfig })
 ```
 
 See [`examples/voice-agent-browser`](../../examples/voice-agent-browser/).
+
+## Session budget (deployment sizing)
+
+```bash
+export VOICE_MAX_CONCURRENT_SESSIONS=8
+```
+
+`VoiceAgentSessionHost` and `SessionPod` share one process-wide budget. When full, new `client-*` peers are rejected (no WebRTC offer). Expose metrics via `GET /api/capacity` when using `startMultiClientVoiceServer`.
+
+Demo: [`examples/voice-agent-local-sherpa-multi-client`](../../examples/voice-agent-local-sherpa-multi-client/) (three tabs, one room, local Sherpa).
+
+## Multi-client room (three agents, shared Sherpa)
+
+```typescript
+import { startMultiClientVoiceServer } from '@node-webrtc-rust/helpers'
+
+const server = await startMultiClientVoiceServer({
+  port: 3004,
+  room: 'sherpa-multi',
+  voiceConfig: {
+    stt: { provider: 'local-sherpa', modelPath },
+    tts: { provider: 'local-sherpa', modelPath },
+  },
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  serveHttp: myStaticHandler,
+})
+// server.budget → { active, max, available, rejectedTotal }
+```
+
+Each browser tab = one `VoiceAgent`; Sherpa ONNX weights are pooled in the native layer.
 
 ## PCM kick frame
 

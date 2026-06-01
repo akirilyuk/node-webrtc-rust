@@ -16,9 +16,9 @@
  * See ROUNDTRIP.md § Semantic barge-in E2E.
  */
 
-import type { LocalAudioTrack, RemoteAudioTrack } from '@node-webrtc-rust/sdk'
+import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
-import type { SpeechEvent, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
+import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import {
   evaluateSemanticBargeEventOrder,

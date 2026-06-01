@@ -17,7 +17,6 @@
  *   SHERPA_COUNTING_VERBOSE             set to 1 for per-event logs
  */
 
-import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 import type { SpeechEvent, SpeechEventType, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
@@ -60,7 +59,6 @@ export const NUMBER_WORDS_ONE_TO_TEN = NUMBER_WORDS_ONE_TO_TWENTY.slice(0, 10)
 
 const DEFAULT_TIMEOUT_MS = 90_000
 const DEFAULT_MIN_NUMBER_WORDS = 16
-const DEFAULT_MIN_NUMBER_WORDS_ONE_TO_TEN = 8
 const FINALIZE_MARGIN_MS = 500
 const DEFAULT_WARMUP_S = 0.6
 

@@ -8,6 +8,7 @@
  *   npm run start:roundtrip-two-phrases --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  */
 
+import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
@@ -29,7 +30,7 @@ const DEFAULT_WARMUP_S = 0.6
 
 async function speakPhrase(params: {
   speaker: VoiceAgent
-  speakerOut: import('@node-webrtc-rust/sdk').LocalAudioTrack
+  speakerOut: LocalAudioTrack
   text: string
   postTtsSilenceS: number
   logLabel: string

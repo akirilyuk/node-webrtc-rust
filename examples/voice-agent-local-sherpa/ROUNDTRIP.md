@@ -401,18 +401,23 @@ Path filter: changes under `examples/**` trigger the **examples** filter and run
 
 ## Debug logging (E2E failures)
 
-Every `start:roundtrip*` script calls `installRoundtripWallClockTimeout()` at startup, which enables:
+Every `start:roundtrip*` script calls `installRoundtripWallClockTimeout()` at startup.
+
+| Context | `[speech]` events | `[voice-debug]` / topology |
+| ------- | ----------------- | -------------------------- |
+| **Local** (`npm run start:roundtrip*`) | **On** (browser `speech_event` parity) | **On** by default |
+| **CI** ([`run-sherpa-roundtrip-e2e.sh`](../../scripts/ci/run-sherpa-roundtrip-e2e.sh)) | **On** (streamed to CI log) | **Off** on first pass; **re-run with `VOICE_DEBUG=1`** on failure |
 
 | Output                                                          | Env                                 | Meaning                                                                                            |
 | --------------------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `[ci-step] START/OK/FAIL (N/M)`                                 | CI scripts                          | Which integration step is running (see `scripts/ci/ci-step.sh`)                                    |
-| `[topology] [signaling\|agent-pc\|user-pc\|listener\|user-sim]` | default on                          | Loopback attach + ICE — [`roundtrip-topology-log.ts`](./src/roundtrip-topology-log.ts)             |
+| `[topology] [signaling\|agent-pc\|user-pc\|listener\|user-sim]` | default on locally; `=0` in CI quiet | Loopback attach + ICE — [`roundtrip-topology-log.ts`](./src/roundtrip-topology-log.ts)             |
 | `[e2e-phase]`                                                   | default on                          | Phase boundaries in multi-phase scripts (e.g. barge-in)                                            |
-| `[voice-debug]` on **stderr**                                   | `VOICE_DEBUG=1` (set automatically) | Rust VAD/STT/gate-hold in `crates/speech`                                                          |
-| `[speech] [Phase N] +Nms <event>` on **stderr**                 | enabled via roundtrip harness       | Every speech event (like multi-client `speech_event` → browser log)                                |
+| `[voice-debug]` on **stderr**                                   | `VOICE_DEBUG=1`                     | Rust VAD/STT/gate-hold in `crates/speech`                                                          |
+| `[speech] [Phase N] +Nms <event>` on **stderr**                 | `SHERPA_COUNTING_VERBOSE=1`         | Every speech event (like multi-client `speech_event` → browser log)                                |
 | Structured failure dump                                         | on `exit 1`                         | Leg stats, finals, re-run hints — [`roundtrip-failure-debug.ts`](./src/roundtrip-failure-debug.ts) |
 
-Opt out: `SHERPA_ROUNDTRIP_DEBUG=0` or `VOICE_DEBUG=0`; topology banners `SHERPA_ROUNDTRIP_TOPOLOGY_LOG=0`. Extra TS events: `SHERPA_COUNTING_VERBOSE=1` (also set by default during roundtrips). Wall-clock cap: `SHERPA_ROUNDTRIP_WALL_MS` (invalid/zero values fall back to per-script default). **Local CI parity:** `npm run ci:verify:pr-full` (host) or `npm run ci:verify:pr-test:docker` (optional Docker) — see [`scripts/ci/README.md`](../../scripts/ci/README.md).
+Opt out of speech events: `SHERPA_ROUNDTRIP_EVENT_LOG=0`. Opt out of rust debug locally: `VOICE_DEBUG=0` or `SHERPA_ROUNDTRIP_DEBUG=0`; topology banners `SHERPA_ROUNDTRIP_TOPOLOGY_LOG=0`. Wall-clock cap: `SHERPA_ROUNDTRIP_WALL_MS` (invalid/zero values fall back to per-script default). **Local CI parity:** `npm run ci:verify:pr-full` (host) or `npm run ci:verify:pr-test:docker` (optional Docker) — see [`scripts/ci/README.md`](../../scripts/ci/README.md).
 
 ## Related docs
 

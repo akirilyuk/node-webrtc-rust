@@ -94,7 +94,7 @@ run_e2e() {
     idx=$((idx + 1))
     CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
       bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC" \
-        "sherpa e2e $script" -- npm run "$script" --workspace="$WORKSPACE"
+        "sherpa e2e $script" -- bash "$ROOT/scripts/ci/run-sherpa-roundtrip-e2e.sh" "$script"
   done
 }
 

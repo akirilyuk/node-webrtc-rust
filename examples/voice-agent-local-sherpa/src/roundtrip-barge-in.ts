@@ -17,7 +17,12 @@
  */
 
 import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
-import { VoiceAgent, VOICE_AGENT_VAD_PRESET, SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
+import {
+  VoiceAgent,
+  VOICE_AGENT_VAD_PRESET,
+  SPEECH_EVENT_TYPE,
+  type SpeechEventType,
+} from '@node-webrtc-rust/sdk/voice'
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import {
@@ -69,10 +74,46 @@ class ListenerSpeechCollector {
     phaseLabel: string
     until: (events: RecordedSpeechEvent[]) => boolean
     finish: () => void
+    waiters: Array<{ type: SpeechEventType; resolve: () => void }>
   } | null = null
 
   constructor(agent: VoiceAgent) {
     void this.pump(agent)
+  }
+
+  private notifyWaiters(collected: RecordedSpeechEvent[]): void {
+    const phase = this.phase
+    if (phase == null) return
+    for (const waiter of phase.waiters) {
+      if (collected.some((e) => e.type === waiter.type)) {
+        waiter.resolve()
+      }
+    }
+    phase.waiters = phase.waiters.filter((w) => !collected.some((e) => e.type === w.type))
+  }
+
+  /** Wait for an event in the active phase (e.g. agent_speaking_start before mid-playback barge). */
+  waitForEvent(type: SpeechEventType, maxMs: number): Promise<void> {
+    const phase = this.phase
+    if (phase == null) {
+      return Promise.reject(new Error('speech collector has no active phase'))
+    }
+    if (phase.collected.some((e) => e.type === type)) {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`timed out waiting for ${type} after ${maxMs} ms`)),
+        maxMs,
+      )
+      phase.waiters.push({
+        type,
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+      })
+    })
   }
 
   private async pump(agent: VoiceAgent): Promise<void> {
@@ -84,6 +125,7 @@ class ListenerSpeechCollector {
         logRoundtripSpeechEvent(active.phaseLabel, event)
         const recorded = recordSpeechEvent(active.collected, event, active.phaseStartMs)
         console.log(`[${active.phaseLabel}] event ${formatRecordedSpeechEvent(recorded)}`)
+        this.notifyWaiters(active.collected)
         if (active.until(active.collected)) {
           console.log(`[${active.phaseLabel}] terminal event sequence reached`)
           active.finish()
@@ -132,6 +174,7 @@ class ListenerSpeechCollector {
         phaseLabel: params.phaseLabel,
         until: params.until,
         finish: () => done('terminal'),
+        waiters: [],
       }
       wallTimer = setTimeout(() => done('wall'), params.maxMs)
     })
@@ -221,8 +264,9 @@ async function runMidPlaybackInterrupt(params: {
   console.log(`[${params.phaseLabel}] agent TTS queued (${params.agentPhrase.length} chars)`)
   const ttsDone = params.listener.sendTextToTTS(params.agentPhrase)
 
+  await params.collector.waitForEvent(SPEECH_EVENT_TYPE.agentSpeakingStart, params.maxPhaseMs)
   await sleep(params.delayMs)
-  console.log(`[${params.phaseLabel}] interrupt at +${params.delayMs} ms`)
+  console.log(`[${params.phaseLabel}] interrupt at agent_speaking_start + ${params.delayMs} ms`)
   await params.interrupt()
 
   const events = await eventsPromise
@@ -398,7 +442,7 @@ async function main(): Promise<void> {
     interrupt: async () => {
       console.log(`[Phase 3] user Sherpa TTS barge: "${bargePhrase}"`)
       await userSpeaker.sendTextToTTS(bargePhrase)
-      void streamSilence(userOut, 1.0)
+      await streamSilence(userOut, 1.5)
     },
     maxPhaseMs,
     untilEvents: phase3EventsTerminal,

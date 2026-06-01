@@ -26,9 +26,9 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-counting
   start:roundtrip-utterance-timing
   start:roundtrip-two-phrases
+  start:roundtrip-barge-in
   start:roundtrip-counting-echo
   start:roundtrip-counting-barge-recovery
-  start:roundtrip-barge-in
   start:roundtrip
 )
 

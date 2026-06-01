@@ -395,7 +395,7 @@ Sherpa roundtrips run on every PR and on `main` when the **Test** job executes [
 | **Quality** | [`run-pr-quality.sh`](../../scripts/ci/run-pr-quality.sh) → [`run-sherpa-example-ci.sh typecheck`](../../scripts/ci/run-sherpa-example-ci.sh) + `vitest` | Typecheck + **Vitest evaluators** (`test:roundtrip-counting`) — no model download              |
 | **Test**    | [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh) → [`run-sherpa-example-ci.sh e2e`](../../scripts/ci/run-sherpa-example-ci.sh)          | Downloads EN Kroko STT + Piper TTS, then runs **all** `start:roundtrip*` entry points in order |
 
-E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh)): counting → utterance-timing → two-phrases → counting-echo → counting-barge-recovery → barge-in → batch roundtrip.
+E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh)): counting → utterance-timing → two-phrases → **barge-in** → counting-echo → counting-barge-recovery → batch roundtrip.
 
 Path filter: changes under `examples/**` trigger the **examples** filter and run quality + test when other filters also match — see [`scripts/ci/README.md`](../../scripts/ci/README.md#sherpa-roundtrip-e2e-integration-job).
 

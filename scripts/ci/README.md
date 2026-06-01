@@ -144,9 +144,9 @@ After `cargo test` and `npm test`, [`run-pr-integration.sh`](run-pr-integration.
 | 1   | `start:roundtrip-counting`                | One long count 1–20 → **1×** `user_speech_final`         |
 | 2   | `start:roundtrip-utterance-timing`        | `user_speaking_end` → `user_speech_final` within 500 ms  |
 | 3   | `start:roundtrip-two-phrases`             | Two phrases → **2×** finals (multi-turn)                 |
-| 4   | `start:roundtrip-counting-echo`           | Agent1↔Agent2 “You said” echo (counting + long sentence) |
-| 5   | `start:roundtrip-counting-barge-recovery` | Full echo → barge truncate → recovery                    |
-| 6   | `start:roundtrip-barge-in`                | Semantic barge-in (tone vs spoken interrupt)             |
+| 4   | `start:roundtrip-barge-in`                | Semantic barge-in (tone vs spoken interrupt)             |
+| 5   | `start:roundtrip-counting-echo`           | Agent1↔Agent2 “You said” echo (counting + long sentence) |
+| 6   | `start:roundtrip-counting-barge-recovery` | Full echo → barge truncate → recovery                    |
 | 7   | `start:roundtrip`                         | Five default phrases + word similarity                   |
 
 **Local mirror (models + `npm run build:native` first):**

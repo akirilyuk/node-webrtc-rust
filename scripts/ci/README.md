@@ -223,9 +223,9 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 | Script                                                         | Used by                            | What it runs                                                                          |
 | -------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
-| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`** (no dist build) |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest** |
 | [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers` | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)              |
-| [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`              | **eslint** + **build-ts-workspace** + helpers vitest when sdk/signaling/helpers changed |
+| [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`              | eslint + build-ts + helpers vitest when scoped; Sherpa **typecheck + Vitest + E2E** when example/speech changes |
 | [`install-pre-push-hook.sh`](install-pre-push-hook.sh)         | one-time per clone                 | installs `.git/hooks/pre-push` → `npm run ci:pre-push`                              |
 | [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)       | alias                              | → `run-pre-push-gates.sh`                                                           |
 | [`plan-native-builds.sh`](plan-native-builds.sh)               | main + release plan job            | Per-target cache hash check → dynamic build matrices                                  |
@@ -234,7 +234,7 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 | [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity    | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh`                      |
 | [`build-ts-workspace.sh`](build-ts-workspace.sh)               | PR build-ts + integration fallback | sdk core → signaling → full sdk                                                       |
 | [`run-pr-integration.sh`](run-pr-integration.sh)               | PR test job                        | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test (incl. speech), optional build:ts, npm test, [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh) |
-| [`run-sherpa-example-ci.sh`](run-sherpa-example-ci.sh)         | quality (`typecheck`) + test (`e2e`) | Sherpa example `tsc`; `start:roundtrip-barge-in` after `download-stt:en` + `download-tts:en` |
+| [`run-sherpa-example-ci.sh`](run-sherpa-example-ci.sh)         | quality (`typecheck`, `vitest`) + test (`e2e`) | Sherpa `tsc`; **all** `test:roundtrip-counting` Vitest; **all** `start:roundtrip-*` E2E after model download |
 | [`run-pr-tests-full.sh`](run-pr-tests-full.sh)                 | local `ci:verify`                  | quality + integration                                                                 |
 | [`run-pr-integration.sh`](run-pr-integration.sh)               | main + release test                | integration only (after quality job)                                                  |
 | [`verify-checks.sh`](verify-checks.sh)                         | `npm run ci:verify:checks*`        | Local mirror of quality + integration                                                 |

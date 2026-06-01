@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Sherpa local example CI — typecheck and/or semantic barge-in E2E (downloads models on demand).
+# Sherpa local example CI — typecheck, roundtrip Vitest evaluators, and/or Sherpa E2E.
 #
 # Usage (from repo root):
 #   bash scripts/ci/run-sherpa-example-ci.sh typecheck
-#   bash scripts/ci/run-sherpa-example-ci.sh e2e      # requires linux-gnu/host .node in packages/bindings/
-#   bash scripts/ci/run-sherpa-example-ci.sh all
+#   bash scripts/ci/run-sherpa-example-ci.sh vitest    # no models / .node
+#   bash scripts/ci/run-sherpa-example-ci.sh e2e       # all start:roundtrip-* (models + .node)
+#   bash scripts/ci/run-sherpa-example-ci.sh all       # typecheck + vitest + e2e
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -15,6 +16,17 @@ EXAMPLE_ROOT="$ROOT/examples/voice-agent-local-sherpa"
 STT_BUNDLE="sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
 TTS_BUNDLE="vits-piper-en_US-amy-low"
 
+# Sherpa roundtrip E2E entry points (see examples/voice-agent-local-sherpa/ROUNDTRIP.md).
+SHERPA_ROUNDTRIP_E2E=(
+  start:roundtrip-counting
+  start:roundtrip-utterance-timing
+  start:roundtrip-two-phrases
+  start:roundtrip-counting-echo
+  start:roundtrip-counting-barge-recovery
+  start:roundtrip-barge-in
+  start:roundtrip
+)
+
 ensure_ts_dist() {
   if [[ ! -f packages/sdk/dist/cjs/index.js ]] \
     || [[ ! -f packages/signaling/dist/cjs/index.js ]] \
@@ -24,10 +36,26 @@ ensure_ts_dist() {
   fi
 }
 
+ensure_native_node() {
+  shopt -s nullglob
+  local nodes=(packages/bindings/*.node)
+  if [[ ${#nodes[@]} -eq 0 ]]; then
+    echo "No native .node in packages/bindings — required for Sherpa E2E." >&2
+    echo "Run: npm run build:native" >&2
+    exit 1
+  fi
+}
+
 run_typecheck() {
   ensure_ts_dist
   echo "==> typecheck ($WORKSPACE)"
   npm run typecheck --workspace="$WORKSPACE"
+}
+
+run_vitest() {
+  ensure_ts_dist
+  echo "==> roundtrip Vitest evaluators ($WORKSPACE)"
+  npm run test:roundtrip-counting --workspace="$WORKSPACE"
 }
 
 ensure_sherpa_models() {
@@ -48,30 +76,28 @@ ensure_sherpa_models() {
 }
 
 run_e2e() {
-  shopt -s nullglob
-  local nodes=(packages/bindings/*.node)
-  if [[ ${#nodes[@]} -eq 0 ]]; then
-    echo "No native .node in packages/bindings — required for Sherpa E2E." >&2
-    exit 1
-  fi
-
+  ensure_native_node
   ensure_ts_dist
   ensure_sherpa_models
 
-  echo "==> semantic barge-in E2E ($WORKSPACE)"
-  npm run start:roundtrip-barge-in --workspace="$WORKSPACE"
+  for script in "${SHERPA_ROUNDTRIP_E2E[@]}"; do
+    echo "==> Sherpa roundtrip E2E: npm run $script ($WORKSPACE)"
+    npm run "$script" --workspace="$WORKSPACE"
+  done
 }
 
 mode="${1:-all}"
 case "$mode" in
   typecheck) run_typecheck ;;
+  vitest) run_vitest ;;
   e2e) run_e2e ;;
   all)
     run_typecheck
+    run_vitest
     run_e2e
     ;;
   *)
-    echo "Usage: $0 {typecheck|e2e|all}" >&2
+    echo "Usage: $0 {typecheck|vitest|e2e|all}" >&2
     exit 2
     ;;
 esac

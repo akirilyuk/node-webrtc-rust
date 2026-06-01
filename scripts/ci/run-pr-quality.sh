@@ -27,4 +27,7 @@ bash scripts/ci/run-helpers-unit-tests.sh
 echo "==> Sherpa example typecheck"
 bash scripts/ci/run-sherpa-example-ci.sh typecheck
 
+echo "==> Sherpa roundtrip Vitest evaluators"
+bash scripts/ci/run-sherpa-example-ci.sh vitest
+
 echo "==> Quality checks OK"

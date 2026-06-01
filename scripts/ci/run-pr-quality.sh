@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Fast TS quality gates — no native .node required (workspace npm ci only).
+#
+# Does NOT run build-ts-workspace.sh — that runs once in CI "Build TypeScript"
+# (ci-cache-ts-dist) and again in run-pr-integration.sh only on cache miss.
+# For release-publish compile parity locally: bash scripts/ci/verify-release-publish-ts.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -11,11 +15,8 @@ npm ci
 echo "==> rollup native binary (Linux CI — npm optional-deps bug)"
 bash scripts/fix-rollup-native.sh
 
-echo "==> typecheck (sdk + signaling sources)"
+echo "==> typecheck (sdk + signaling + helpers sources)"
 npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json
-
-echo "==> build-ts-workspace (release publish path; catches stale npm bindings types)"
-bash scripts/ci/build-ts-workspace.sh
 
 echo "==> lint"
 npm run lint

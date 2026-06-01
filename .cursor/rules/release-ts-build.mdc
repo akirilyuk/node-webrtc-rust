@@ -19,7 +19,7 @@ Release publish runs **`scripts/ci/build-ts-workspace.sh`**, which compiles SDK 
 - `Property 'addTransceiver' does not exist on type 'JsPeerConnection'`
 - `Module '"@node-webrtc-rust/bindings"' has no exported member 'JsVoiceAgent'`
 
-`run-pr-quality.sh` alone (typecheck only) will **not** catch this.
+`run-pr-quality.sh` (typecheck + lint only) will **not** catch this — PR CI runs **`build-ts-workspace.sh`** in the **Build TypeScript** job instead.
 
 ## Required before commit (release / SDK / bindings / CI changes)
 
@@ -27,6 +27,7 @@ From `node-webrtc-rust/`:
 
 ```bash
 bash scripts/ci/run-pr-quality.sh
+bash scripts/ci/build-ts-workspace.sh   # or verify-release-publish-ts.sh
 bash scripts/ci/verify-release-publish-ts.sh
 ```
 

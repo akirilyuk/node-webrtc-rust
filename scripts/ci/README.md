@@ -71,11 +71,12 @@ If none match, the whole workflow is skipped.
 
 ### 2. Typecheck & lint
 
-- **When:** `native` OR `typescript` OR `workflows`
+- **When:** `native` OR `typescript` OR `helpers` OR `workflows`
 - **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
-- **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → `npm ci`, unified typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`
+- **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest
+- **Does not** run [`build-ts-workspace.sh`](build-ts-workspace.sh) (see job 4 — avoids building sdk/signaling/helpers twice)
 
-Must pass before compile / TS build / test.
+Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
 
 **Compile native** runs when `native` or `workflows` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
 
@@ -91,12 +92,13 @@ Populates the shared native cache used by the test job.
 
 ### 4. Build TypeScript
 
-- **When:** `typescript` OR `workflows` (skipped on Rust-only PRs)
+- **When:** `typescript` OR `helpers` OR `workflows` (skipped on Rust-only PRs)
+- **Needs:** quality only (runs **in parallel** with compile-native — TS build does not need `.node`)
 - **Runner:** `self-hosted` + `setup-node`
-- **Cache:** [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) → `packages/sdk/dist`, `packages/signaling/dist`
-- **Build:** `npm run build:ts` only on cache miss via [`build-ts-workspace.sh`](build-ts-workspace.sh) (3-phase: sdk core → signaling → full sdk)
+- **Cache:** [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) → `packages/sdk/dist`, `packages/signaling/dist`, `packages/helpers/dist`
+- **On cache miss:** `npm ci`, `fix-rollup-native.sh`, [`build-ts-workspace.sh`](build-ts-workspace.sh) (sdk core → signaling → full sdk → helpers)
 
-Vitest tests import from `src/`, but this step validates publishable `dist/` output when TS changes. The sdk↔signaling cycle (`conference/signaling-bridge.ts`) requires bootstrapping sdk without `conference/` before signaling can build.
+Single CI build of publishable `dist/` for the Test job. Release-publish compile parity: [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) locally or `release.yml` publish job.
 
 ### 5. Test
 
@@ -219,7 +221,7 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 | Script                                                         | Used by                            | What it runs                                                                          |
 | -------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
-| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, **`fix-rollup-native.sh`**, typecheck, **`build-ts-workspace.sh`**, lint, **`run-helpers-unit-tests.sh`** |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`** (no dist build) |
 | [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers` | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)              |
 | [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`              | **eslint** + helpers vitest when scoped paths changed (before push)                 |
 | [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)       | alias                              | → `run-pre-push-gates.sh`                                                           |

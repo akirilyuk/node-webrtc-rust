@@ -99,6 +99,18 @@ export type SpeechEventType =
   | 'barge_in'
   | 'error'
 
+/** Runtime names for {@link SpeechEventType} — use in tests and harnesses instead of string literals. */
+export const SPEECH_EVENT_TYPE = {
+  userSpeakingStart: 'user_speaking_start',
+  userSpeakingEnd: 'user_speaking_end',
+  userSpeechPartial: 'user_speech_partial',
+  userSpeechFinal: 'user_speech_final',
+  agentSpeakingStart: 'agent_speaking_start',
+  agentSpeakingEnd: 'agent_speaking_end',
+  bargeIn: 'barge_in',
+  error: 'error',
+} as const satisfies Record<string, SpeechEventType>
+
 export interface SpeechEvent {
   type: SpeechEventType
   text?: string

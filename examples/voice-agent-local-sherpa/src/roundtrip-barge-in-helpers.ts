@@ -3,7 +3,11 @@
  * Unit-tested without Sherpa; used by roundtrip-barge-in.ts E2E.
  */
 
-import type { SpeechEvent, SpeechEventType } from '@node-webrtc-rust/sdk/voice'
+import {
+  SPEECH_EVENT_TYPE,
+  type SpeechEvent,
+  type SpeechEventType,
+} from '@node-webrtc-rust/sdk/voice'
 
 export interface RecordedSpeechEvent {
   type: SpeechEventType
@@ -21,12 +25,86 @@ export function recordSpeechEvent(
   events: RecordedSpeechEvent[],
   event: SpeechEvent,
   startedAtMs: number,
-): void {
-  events.push({
+): RecordedSpeechEvent {
+  const recorded: RecordedSpeechEvent = {
     type: event.type,
     atMs: Date.now() - startedAtMs,
     text: event.text,
-  })
+  }
+  events.push(recorded)
+  return recorded
+}
+
+/** One-line event for E2E logs: `+1234ms user_speech_partial "stop now"`. */
+export function formatRecordedSpeechEvent(event: RecordedSpeechEvent): string {
+  const text = event.text != null && event.text.length > 0 ? ` ${JSON.stringify(event.text)}` : ''
+  return `+${event.atMs}ms ${event.type}${text}`
+}
+
+/** Phase 2 done when agent TTS finishes without barge. */
+export function phase2EventsComplete(events: RecordedSpeechEvent[]): boolean {
+  const agentStart = events.findIndex((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart)
+  if (agentStart < 0) return false
+  return events.slice(agentStart + 1).some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+}
+
+/** Phase 3 done when semantic barge sequence includes agent_speaking_end after barge_in. */
+export function phase3EventsComplete(events: RecordedSpeechEvent[]): boolean {
+  const agentStart = events.findIndex((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart)
+  if (agentStart < 0) return false
+  const afterStart = events.slice(agentStart + 1)
+  const bargeIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  if (bargeIdx < 0) return false
+  return afterStart.slice(bargeIdx + 1).some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+}
+
+function qualifyingPartialAfter(
+  events: RecordedSpeechEvent[],
+  agentStart: number,
+  minChars = 2,
+): boolean {
+  for (let i = agentStart + 1; i < events.length; i++) {
+    const e = events[i]!
+    if (e.type !== SPEECH_EVENT_TYPE.userSpeechPartial) continue
+    if ((e.text?.trim().length ?? 0) >= minChars) return true
+  }
+  return false
+}
+
+/**
+ * Phase 3 collection stop: success, or fail-fast when the outcome is clear.
+ * Keeps waiting after agent_speaking_end if the user spoke but STT partial has not arrived yet.
+ */
+export function phase3EventsTerminal(events: RecordedSpeechEvent[]): boolean {
+  if (phase3EventsComplete(events)) return true
+  const agentStart = events.findIndex((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart)
+  if (agentStart < 0) return false
+  const afterStart = events.slice(agentStart + 1)
+  const hadBarge = afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  const userSpoke = afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart)
+  const agentEnded = afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+  const hasPartial = qualifyingPartialAfter(events, agentStart)
+
+  if (agentEnded && !userSpoke && !hadBarge) return true
+  if (agentEnded && userSpoke && hasPartial && !hadBarge) return true
+  return false
+}
+
+/** Phase 1 baseline: full agent playback from start through end. */
+export function phase1BaselineComplete(events: RecordedSpeechEvent[]): boolean {
+  return phase2EventsComplete(events)
+}
+
+/** Print the full event timeline for a phase (empty phases still log a header). */
+export function logRecordedSpeechEvents(events: RecordedSpeechEvent[], label: string): void {
+  console.log(`[${label}] event timeline (${events.length} events):`)
+  if (events.length === 0) {
+    console.log(`[${label}]   (none)`)
+    return
+  }
+  for (const event of events) {
+    console.log(`[${label}]   ${formatRecordedSpeechEvent(event)}`)
+  }
 }
 
 function indexOfType(events: RecordedSpeechEvent[], type: SpeechEventType): number {
@@ -47,7 +125,7 @@ function qualifyingPartialIndex(
 ): number {
   for (let i = afterIndex + 1; i < events.length; i++) {
     const e = events[i]!
-    if (e.type !== 'user_speech_partial') continue
+    if (e.type !== SPEECH_EVENT_TYPE.userSpeechPartial) continue
     const t = e.text?.trim() ?? ''
     if (t.length >= minChars) return i
   }
@@ -80,7 +158,7 @@ export function evaluateSemanticBargeEventOrder(params: {
   const maxBargeToEnd = params.maxBargeToAgentEndMs ?? DEFAULT_MAX_BARGE_TO_AGENT_END_MS
   const failures: string[] = []
 
-  const agentStartIdx = indexOfType(params.events, 'agent_speaking_start')
+  const agentStartIdx = indexOfType(params.events, SPEECH_EVENT_TYPE.agentSpeakingStart)
   if (agentStartIdx < 0) {
     failures.push(`${who}missing agent_speaking_start in event stream`)
     return {
@@ -98,10 +176,10 @@ export function evaluateSemanticBargeEventOrder(params: {
     failures.push(`${who}missing qualifying user_speech_partial after agent_speaking_start`)
   }
 
-  const bargeIdx = indexOfType(params.events.slice(agentStartIdx + 1), 'barge_in')
+  const bargeIdx = indexOfType(params.events.slice(agentStartIdx + 1), SPEECH_EVENT_TYPE.bargeIn)
   const bargeAbsIdx = bargeIdx >= 0 ? agentStartIdx + 1 + bargeIdx : -1
 
-  const agentEndIdx = lastIndexOfType(params.events, 'agent_speaking_end')
+  const agentEndIdx = lastIndexOfType(params.events, SPEECH_EVENT_TYPE.agentSpeakingEnd)
   const agentEndAfterStart = agentEndIdx > agentStartIdx
 
   const agentStartAtMs = params.events[agentStartIdx]!.atMs
@@ -141,7 +219,7 @@ export function evaluateSemanticBargeEventOrder(params: {
   }
 
   const earlyBarge = params.events.findIndex(
-    (e, i) => i < partialIdx && e.type === 'barge_in' && i > agentStartIdx,
+    (e, i) => i < partialIdx && e.type === SPEECH_EVENT_TYPE.bargeIn && i > agentStartIdx,
   )
   if (partialIdx >= 0 && earlyBarge >= 0) {
     failures.push(
@@ -167,8 +245,10 @@ export function evaluateToneMustNotBarge(params: {
   if (params.bargeCount > 0) {
     failures.push(`tone phase must not emit barge_in (saw ${params.bargeCount})`)
   }
-  const partialBeforeBarge = params.events.some((e) => e.type === 'user_speech_partial')
-  const barge = params.events.some((e) => e.type === 'barge_in')
+  const partialBeforeBarge = params.events.some(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechPartial,
+  )
+  const barge = params.events.some((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
   if (partialBeforeBarge && barge) {
     failures.push('tone phase must not barge even if a stray partial appears')
   }

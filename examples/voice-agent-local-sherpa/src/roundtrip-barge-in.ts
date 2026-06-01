@@ -13,16 +13,21 @@
  *   npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *
  * Env: SHERPA_BARGE_IN_PHRASE, SHERPA_BARGE_IN_BARGE_PHRASE, SHERPA_BARGE_IN_DELAY_MS, …
- * See ROUNDTRIP.md § Semantic barge-in E2E.
+ * Logs every speech event with phase-relative timestamps; see ROUNDTRIP.md § Semantic barge-in E2E.
  */
 
 import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
-import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+import { VoiceAgent, VOICE_AGENT_VAD_PRESET, SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import {
   evaluateSemanticBargeEventOrder,
   evaluateToneMustNotBarge,
+  formatRecordedSpeechEvent,
+  logRecordedSpeechEvents,
+  phase1BaselineComplete,
+  phase2EventsComplete,
+  phase3EventsTerminal,
   recordSpeechEvent,
   type RecordedSpeechEvent,
 } from './roundtrip-barge-in-helpers.js'
@@ -40,7 +45,38 @@ const DEFAULT_BARGE_DELAY_MS = 700
 const DEFAULT_TONE_INTERRUPT_S = 1.0
 const DEFAULT_MAX_CUT_RATIO = 0.65
 const DEFAULT_MIN_FULL_RATIO_AFTER_NOISE = 0.75
+const DEFAULT_MAX_PHASE_MS = 25_000
 const DEFAULT_WARMUP_S = 0.6
+
+/**
+ * Collect listener speech events until `until(events)` or `maxMs` (safety cap).
+ * Only one `speechEvents()` consumer may run per VoiceAgent at a time.
+ */
+function collectSpeechEventsUntil(params: {
+  agent: VoiceAgent
+  phaseLabel: string
+  maxMs: number
+  until: (events: RecordedSpeechEvent[]) => boolean
+}): Promise<RecordedSpeechEvent[]> {
+  const collected: RecordedSpeechEvent[] = []
+  const startedAtMs = Date.now()
+  const doneAt = startedAtMs + params.maxMs
+
+  console.log(`[${params.phaseLabel}] collecting speech events (max ${params.maxMs} ms)`)
+
+  return (async () => {
+    for await (const event of params.agent.speechEvents()) {
+      if (Date.now() > doneAt) break
+      const recorded = recordSpeechEvent(collected, event, startedAtMs)
+      console.log(`[${params.phaseLabel}] event ${formatRecordedSpeechEvent(recorded)}`)
+      if (params.until(collected)) {
+        console.log(`[${params.phaseLabel}] terminal event sequence reached`)
+        break
+      }
+    }
+    return collected
+  })()
+}
 
 function listenerVadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
   return {
@@ -102,55 +138,43 @@ class InboundAudioMeter {
   }
 }
 
-async function collectSpeechEventsDuring(
-  agent: VoiceAgent,
-  durationMs: number,
-  verbose: boolean,
-): Promise<RecordedSpeechEvent[]> {
-  const collected: RecordedSpeechEvent[] = []
-  const startedAtMs = Date.now()
-  const doneAt = startedAtMs + durationMs
-
-  void (async () => {
-    for await (const event of agent.speechEvents()) {
-      if (Date.now() > doneAt) break
-      recordSpeechEvent(collected, event, startedAtMs)
-      if (verbose) {
-        const extra = event.text ? ` ${JSON.stringify(event.text)}` : ''
-        console.log(`[listener] ${event.type}${extra}`)
-      }
-    }
-  })()
-
-  await sleep(durationMs)
-  return collected
-}
-
 async function runMidPlaybackInterrupt(params: {
   listener: VoiceAgent
   agentPhrase: string
   userInbound: RemoteAudioTrack
   delayMs: number
   interrupt: () => Promise<void>
-  eventWindowMs: number
-  verbose: boolean
+  maxPhaseMs: number
+  untilEvents: (events: RecordedSpeechEvent[]) => boolean
+  phaseLabel: string
 }): Promise<{ receivedMs: number; events: RecordedSpeechEvent[] }> {
   const meter = new InboundAudioMeter()
   meter.start(params.userInbound)
 
-  const eventCollectMs = params.eventWindowMs
-  const eventsPromise = collectSpeechEventsDuring(params.listener, eventCollectMs, params.verbose)
+  const eventsPromise = collectSpeechEventsUntil({
+    agent: params.listener,
+    phaseLabel: params.phaseLabel,
+    maxMs: params.maxPhaseMs,
+    until: params.untilEvents,
+  })
 
+  console.log(`[${params.phaseLabel}] agent TTS queued (${params.agentPhrase.length} chars)`)
   const ttsDone = params.listener.sendTextToTTS(params.agentPhrase)
 
   await sleep(params.delayMs)
+  console.log(`[${params.phaseLabel}] interrupt at +${params.delayMs} ms`)
   await params.interrupt()
 
   const events = await eventsPromise
   meter.stop()
   const receivedMs = meter.getTotalMs()
   await ttsDone
-  await sleep(500)
+  await sleep(200)
+
+  console.log(
+    `[${params.phaseLabel}] done: userInbound=${receivedMs} ms audio, ${events.length} events`,
+  )
+  logRecordedSpeechEvents(events, params.phaseLabel)
 
   return { receivedMs, events }
 }
@@ -167,8 +191,7 @@ async function main(): Promise<void> {
   const minFullAfterNoise = Number(
     process.env.SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE ?? DEFAULT_MIN_FULL_RATIO_AFTER_NOISE,
   )
-  const verbose = process.env.SHERPA_BARGE_IN_VERBOSE === '1'
-  const timeoutMs = Number(process.env.SHERPA_BARGE_IN_TIMEOUT_MS ?? 90_000)
+  const maxPhaseMs = Number(process.env.SHERPA_BARGE_IN_TIMEOUT_MS ?? DEFAULT_MAX_PHASE_MS)
 
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
 
@@ -179,6 +202,10 @@ async function main(): Promise<void> {
   console.log(`Barge phrase (TTS): "${bargePhrase}"`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
+  console.log(`bargeDelayMs=${bargeDelayMs} toneInterruptS=${toneInterruptS}`)
+  console.log(
+    `maxCutRatio=${maxCutRatio} minFullAfterNoise=${minFullAfterNoise} maxPhaseMs=${maxPhaseMs}`,
+  )
   console.log('')
 
   const { agentOut, userInbound, userOut, agentInbound, cleanup } =
@@ -199,7 +226,7 @@ async function main(): Promise<void> {
 
   await listener.attach({ inboundTrack: agentInbound, outboundTrack: agentOut })
   await userSpeaker.attach({
-    inboundTrack: agentInbound,
+    inboundTrack: userInbound,
     outboundTrack: userOut,
   })
   await listener.start()
@@ -211,14 +238,26 @@ async function main(): Promise<void> {
   const failures: string[] = []
 
   console.log('--- Phase 1: full playback (no interrupt) ---')
+  const phase1Label = 'Phase 1'
   const meterFull = new InboundAudioMeter()
   meterFull.start(userInbound)
+  console.log(`[${phase1Label}] agent TTS queued (${agentPhrase.length} chars)`)
+  const phase1EventsPromise = collectSpeechEventsUntil({
+    agent: listener,
+    phaseLabel: phase1Label,
+    maxMs: maxPhaseMs,
+    until: phase1BaselineComplete,
+  })
   await listener.sendTextToTTS(agentPhrase)
-  await sleep(2)
+  const phase1Events = await phase1EventsPromise
   meterFull.stop()
   const fullMs = meterFull.getTotalMs()
-  console.log(`Received on userInbound: ${fullMs} ms (full)`)
+  console.log(`[${phase1Label}] userInbound=${fullMs} ms (full baseline)`)
+  logRecordedSpeechEvents(phase1Events, phase1Label)
 
+  if (!phase1BaselineComplete(phase1Events)) {
+    failures.push('Phase 1: missing agent_speaking_start → agent_speaking_end baseline')
+  }
   if (fullMs < 500) {
     failures.push('Phase 1: full playback too short — check loopback / TTS')
   }
@@ -234,14 +273,15 @@ async function main(): Promise<void> {
     userInbound,
     delayMs: bargeDelayMs,
     interrupt: async () => {
-      console.log(`[user] Tone ${toneInterruptS}s (non-speech)…`)
+      console.log(`[Phase 2] user tone ${toneInterruptS}s @ 440 Hz (non-speech)`)
       await streamTone(userOut, toneInterruptS, 440)
     },
-    eventWindowMs: timeoutMs,
-    verbose,
+    maxPhaseMs,
+    untilEvents: phase2EventsComplete,
+    phaseLabel: 'Phase 2',
   })
   const noiseRatio = noiseResult.receivedMs / fullMs
-  const noiseBarges = noiseResult.events.filter((e) => e.type === 'barge_in').length
+  const noiseBarges = noiseResult.events.filter((e) => e.type === SPEECH_EVENT_TYPE.bargeIn).length
   const toneEval = evaluateToneMustNotBarge({ events: noiseResult.events, bargeCount: noiseBarges })
   console.log(
     `Pre-interrupt received: ${noiseResult.receivedMs} ms (${(noiseRatio * 100).toFixed(0)}% of full)`,
@@ -268,11 +308,13 @@ async function main(): Promise<void> {
     userInbound,
     delayMs: bargeDelayMs,
     interrupt: async () => {
-      console.log(`[user] Sherpa TTS barge: "${bargePhrase}"`)
+      console.log(`[Phase 3] user Sherpa TTS barge: "${bargePhrase}"`)
       await userSpeaker.sendTextToTTS(bargePhrase)
+      void streamSilence(userOut, 1.0)
     },
-    eventWindowMs: timeoutMs,
-    verbose,
+    maxPhaseMs,
+    untilEvents: phase3EventsTerminal,
+    phaseLabel: 'Phase 3',
   })
   const speechRatio = speechResult.receivedMs / fullMs
   const orderEval = evaluateSemanticBargeEventOrder({

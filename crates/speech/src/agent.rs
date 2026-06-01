@@ -340,14 +340,10 @@ impl VoiceAgent {
         ));
         handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
         if barge_in.flush_tts {
-            let was_agent_speaking = {
-                let inner = self.inner.lock().await;
-                inner.agent_speaking
-            };
+            // Always end agent playback after a successful STT-gated barge — do not gate on
+            // `was_agent_speaking` (drain worker may clear the flag before we observe it).
             self.end_agent_speaking(false).await;
-            if was_agent_speaking {
-                self.emit(SpeechEvent::agent_speaking_end());
-            }
+            self.emit(SpeechEvent::agent_speaking_end());
         }
         Ok(())
     }
@@ -717,6 +713,25 @@ impl VoiceAgent {
         }
 
         if speech_end_transition {
+            let nudge_semantic_barge = {
+                let inner = self.inner.lock().await;
+                inner.agent_speaking
+                    && inner.config.vad.barge_in.require_stt_partial
+                    && inner.config.stt.is_some()
+                    && inner.stt_finalize_pending
+                    && !inner.stt_final_emitted_this_utterance
+            };
+            if nudge_semantic_barge {
+                let tail_ms = {
+                    let inner = self.inner.lock().await;
+                    inner.config.vad.min_silence_duration_ms.max(400).min(800)
+                };
+                voice_debug(format!(
+                    "STT semantic barge nudge: {tail_ms} ms tail after user SpeechEnd during agent TTS"
+                ));
+                self.push_stt_endpoint_tail(tail_ms).await?;
+            }
+
             let mut inner = self.inner.lock().await;
             // Defer clearing until after STT poll — same-frame partials must still trigger barge.
             // While agent TTS plays, brief VAD gaps must not cancel a pending semantic barge.
@@ -804,11 +819,13 @@ impl VoiceAgent {
             match transcript {
                 SttTranscript::Partial(text) => {
                     voice_debug(format!("STT partial: {text}"));
+                    // Partial must precede barge_in in the event stream (semantic roundtrip E2E).
+                    self.emit(SpeechEvent::user_speech_partial(text.clone()));
                     self.try_stt_gated_barge_in(&text).await?;
-                    self.emit(SpeechEvent::user_speech_partial(text));
                 }
                 SttTranscript::Final(text) => {
                     voice_debug(format!("STT final: {text}"));
+                    self.try_stt_gated_barge_in(&text).await?;
                     let emit_speaking_end = {
                         let mut inner = self.inner.lock().await;
                         inner.stt_final_emitted_this_utterance = true;

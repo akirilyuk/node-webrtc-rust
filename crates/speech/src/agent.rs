@@ -205,14 +205,19 @@ impl VoiceAgent {
 
     /// Wait until outbound TTS playback finishes (for tests and explicit synchronization).
     pub async fn wait_tts_playback_idle(&self) -> SpeechResult<()> {
-        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        voice_debug("wait_tts_playback_idle: waiting for agent_speaking=false and TTS queue drained");
+        let deadline = Instant::now() + std::time::Duration::from_secs(45);
         loop {
             let agent_speaking = self.inner.lock().await.agent_speaking;
             let queued = self.tts_buffer.is_speaking().await;
             if !agent_speaking && !queued {
+                voice_debug("wait_tts_playback_idle: playback idle");
                 return Ok(());
             }
             if Instant::now() >= deadline {
+                voice_debug(format!(
+                    "wait_tts_playback_idle: TIMEOUT agent_speaking={agent_speaking} tts_queued={queued}"
+                ));
                 return Err(SpeechError::Internal(
                     "timed out waiting for TTS playback to finish".into(),
                 ));
@@ -473,7 +478,7 @@ impl VoiceAgent {
             gate_stt,
             speech_start,
             complete_previous_utterance,
-            frame_active,
+            _frame_active,
             vad_pending,
             vad_speaking,
         ) = {
@@ -526,7 +531,8 @@ impl VoiceAgent {
                 }
             } else if inner.stt_gate_hold_ms > 0 && !speech_start {
                 // Brief gap (counting): cancel hold. Long pause then new speech: finish prior phrase.
-                let user_voice_active = frame_active || vad_speaking;
+                // Use declared VAD speech only — `frame_active` can flicker on TTS tail / echo during hold.
+                let user_voice_active = vad_speaking;
                 if user_voice_active && !inner.stt_endpoint_closing_started {
                     let hold_total = inner.config.vad.stt_gate_hold_ms;
                     let hold_elapsed = hold_total.saturating_sub(inner.stt_gate_hold_ms);
@@ -548,9 +554,19 @@ impl VoiceAgent {
                         );
                     }
                 } else {
-                    inner.stt_gate_hold_ms = inner
-                        .stt_gate_hold_ms
-                        .saturating_sub(duration_ms);
+                    let before = inner.stt_gate_hold_ms;
+                    inner.stt_gate_hold_ms = before.saturating_sub(duration_ms);
+                    let after = inner.stt_gate_hold_ms;
+                    if before > 0 && after == 0 {
+                        voice_debug(
+                            "STT gate hold expired — utterance may finalize on next inbound frame",
+                        );
+                    } else if before > 0
+                        && after > 0
+                        && (before / 500) != (after / 500)
+                    {
+                        voice_debug(format!("STT gate hold: {after} ms remaining"));
+                    }
                 }
             }
 
@@ -596,8 +612,7 @@ impl VoiceAgent {
                 && !inner.agent_speaking
                 && !inner.stt_endpoint_closing_started
                 && inner.stt_gate_hold_ms == 0
-                && !vad_speaking
-                && !frame_active;
+                && !vad_speaking;
             (stt_audio_open, stt_poll_open, should_finalize_utterance)
         };
 
@@ -692,9 +707,11 @@ impl VoiceAgent {
 
         // Skip frame only when not streaming audio and not waiting on a pending STT final.
         if gate_stt && !stt_poll_open && !should_finalize_utterance {
-            voice_debug(format!(
-                "process_inbound_pcm call={call} skipped: gate_stt closed (not speaking, hold expired)"
-            ));
+            if call == 1 || call % 50 == 0 {
+                voice_debug(format!(
+                    "process_inbound_pcm call={call} skipped: gate_stt closed (not speaking, hold expired)"
+                ));
+            }
             return Ok(());
         }
 
@@ -741,6 +758,9 @@ impl VoiceAgent {
         }
 
         if should_finalize_utterance {
+            voice_debug(
+                "STT should_finalize_utterance=true (gate hold done, agent idle, VAD not speaking)",
+            );
             {
                 let mut inner = self.inner.lock().await;
                 inner.stt_endpoint_closing_started = true;
@@ -795,6 +815,7 @@ impl VoiceAgent {
     }
 
     async fn finalize_stt_utterance(&self) -> SpeechResult<()> {
+        voice_debug("STT finalize_utterance: vendor finalize + poll");
         {
             let mut stt = self.stt.lock().await;
             if let Some(stt) = stt.as_mut() {
@@ -838,8 +859,17 @@ impl VoiceAgent {
                         emit_end
                     };
                     if emit_speaking_end {
+                        voice_debug("emit user_speaking_end (paired with STT final)");
                         self.emit(SpeechEvent::user_speaking_end());
                     }
+                    voice_debug(format!(
+                        "emit user_speech_final: {}",
+                        if text.len() > 80 {
+                            format!("{}…", &text[..80])
+                        } else {
+                            text.clone()
+                        }
+                    ));
                     self.emit(SpeechEvent::user_speech_final(text));
                 }
             }

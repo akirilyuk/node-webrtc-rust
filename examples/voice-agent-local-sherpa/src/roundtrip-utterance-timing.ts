@@ -17,16 +17,20 @@ import {
   DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
   DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS,
   evaluateSpeakingEndFinalTiming,
+  installRoundtripWallClockTimeout,
   ListenerUtteranceCollector,
   postTtsSilenceSeconds,
   sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
 import { playTtsAndCollect } from './roundtrip-counting-echo.js'
+import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
-const DEFAULT_TIMEOUT_MS = 90_000
+const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_WARMUP_S = 0.6
 
 async function main(): Promise<void> {
+  installRoundtripWallClockTimeout(50_000)
+
   const phrase =
     process.env.SHERPA_UTTERANCE_TIMING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
   const maxGapMs = Number(
@@ -102,9 +106,17 @@ async function main(): Promise<void> {
   await cleanup().catch(() => undefined)
 
   if (!timing.passed) {
-    console.error('\nUtterance timing roundtrip FAILED:')
-    for (const msg of timing.failures) console.error(`  - ${msg}`)
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'speaking_end / final timing assertions failed',
+      failures: timing.failures,
+      legs: [
+        {
+          label: 'listener',
+          recognized,
+          stats: collector.stats,
+        },
+      ],
+    })
   }
 
   console.log('\nUtterance timing roundtrip OK — speaking_end and final are paired.')
@@ -115,7 +127,9 @@ const isMain = process.argv[1]?.endsWith('roundtrip-utterance-timing.ts') === tr
 
 if (isMain) {
   main().catch((error: unknown) => {
-    console.error(error)
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'uncaught error',
+      error,
+    })
   })
 }

@@ -6,6 +6,10 @@
  *
  * Run:
  *   npm run start:roundtrip-two-phrases --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+ *
+ * Env:
+ *   SHERPA_ROUNDTRIP_WALL_MS           hard process exit (default 70_000)
+ *   SHERPA_COUNTING_TIMEOUT_MS         per-phrase STT wait (default 30_000)
  */
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
@@ -17,14 +21,21 @@ import { resolveVoiceConfig } from './resolve-voice-config.js'
 import {
   DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
   DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS,
+  DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
   evaluateFinalSequence,
-  FinalSequenceCollector,
+  finalRecordFromStats,
+  installRoundtripWallClockTimeout,
   interPhraseSilenceSeconds,
+  ListenerUtteranceCollector,
+  playSpeakerTtsWithPostSilence,
   postTtsSilenceSeconds,
+  sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
+import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
 const DEFAULT_PHRASE_TWO = 'I am done speaking'
-const DEFAULT_TIMEOUT_MS = 120_000
+/** Per-phrase STT wait — keep low; wall clock is the backstop. */
+const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MIN_NUMBER_WORDS = 8
 const DEFAULT_WARMUP_S = 0.6
 
@@ -36,11 +47,18 @@ async function speakPhrase(params: {
   logLabel: string
 }): Promise<void> {
   console.log(`[${params.logLabel}] TTS: "${params.text}"`)
-  await params.speaker.sendTextToTTS(params.text)
-  await streamSilence(params.speakerOut, params.postTtsSilenceS)
+  await playSpeakerTtsWithPostSilence({
+    speaker: params.speaker,
+    speakerOut: params.speakerOut,
+    phrase: params.text,
+    postTtsSilenceS: params.postTtsSilenceS,
+    playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+  })
 }
 
 async function main(): Promise<void> {
+  installRoundtripWallClockTimeout(70_000)
+
   const phrase1 =
     process.env.SHERPA_TWO_PHRASE_FIRST?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
   const phrase2 = process.env.SHERPA_TWO_PHRASE_SECOND?.trim() || DEFAULT_PHRASE_TWO
@@ -50,6 +68,7 @@ async function main(): Promise<void> {
 
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
+  const finalizeWaitMs = sttFinalizeWaitMs(config)
   const postTtsSilenceS = postTtsSilenceSeconds(config)
   const betweenPhrasesS = interPhraseSilenceSeconds(config)
   const minNumberWords = Number(
@@ -65,7 +84,7 @@ async function main(): Promise<void> {
   console.log(`Phrase 1: "${phrase1}"`)
   console.log(`Phrase 2: "${phrase2}"`)
   console.log(
-    `Timing: postTts=${postTtsSilenceS.toFixed(1)}s  betweenPhrases=${betweenPhrasesS.toFixed(1)}s  maxEnd→Final=${maxGapMs}ms`,
+    `Timing: postTts=${postTtsSilenceS.toFixed(1)}s  betweenPhrases=${betweenPhrasesS.toFixed(1)}s  sttTimeout=${timeoutMs}ms  maxEnd→Final=${maxGapMs}ms`,
   )
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
@@ -91,12 +110,14 @@ async function main(): Promise<void> {
   await listener.start()
 
   const warmupS = Number(process.env.SHERPA_ROUNDTRIP_WARMUP_S ?? DEFAULT_WARMUP_S)
-  await Promise.all([streamSilence(agentOut, warmupS), streamSilence(userOut, warmupS)])
+  await streamSilence(agentOut, warmupS)
 
-  const collector = new FinalSequenceCollector(listener, { value: false }, verbose)
+  const pumpStarted = { value: false }
+  const collector = new ListenerUtteranceCollector(listener, pumpStarted, verbose)
   collector.startPump()
 
-  const wait1 = collector.waitForFinalCount(1, timeoutMs)
+  console.log('[phrase 1] waiting for user_speech_final…')
+  const text1Promise = collector.waitForNext(timeoutMs, finalizeWaitMs)
   await speakPhrase({
     speaker,
     speakerOut: agentOut,
@@ -104,14 +125,16 @@ async function main(): Promise<void> {
     postTtsSilenceS,
     logLabel: 'phrase 1',
   })
-  await wait1
-  console.log(`✓ Final 1: "${collector.records[0]?.text ?? ''}"`)
+  const text1 = await text1Promise
+  console.log(`✓ Final 1: "${text1}"`)
+  const records = [finalRecordFromStats(text1, collector.stats)]
 
   console.log(`Between phrases: ${betweenPhrasesS.toFixed(1)}s silence (end turn 1 before turn 2)`)
   await streamSilence(agentOut, betweenPhrasesS)
   await streamSilence(userOut, betweenPhrasesS)
 
-  const wait2 = collector.waitForFinalCount(2, timeoutMs)
+  console.log('[phrase 2] waiting for user_speech_final…')
+  const text2Promise = collector.waitForNext(timeoutMs, finalizeWaitMs)
   await speakPhrase({
     speaker,
     speakerOut: agentOut,
@@ -119,11 +142,12 @@ async function main(): Promise<void> {
     postTtsSilenceS,
     logLabel: 'phrase 2',
   })
-  await wait2
-  console.log(`✓ Final 2: "${collector.records[1]?.text ?? ''}"`)
+  const text2 = await text2Promise
+  console.log(`✓ Final 2: "${text2}"`)
+  records.push(finalRecordFromStats(text2, collector.stats))
 
   const evaluation = evaluateFinalSequence({
-    records: collector.records,
+    records,
     expectedCount: 2,
     maxGapMs,
     minNumberWordsFirst: minNumberWords,
@@ -136,15 +160,14 @@ async function main(): Promise<void> {
   await cleanup().catch(() => undefined)
 
   if (!evaluation.passed) {
-    console.error('\nTwo-phrase roundtrip FAILED:')
-    for (const msg of evaluation.failures) console.error(`  - ${msg}`)
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'two-phrase sequence assertions failed',
+      failures: evaluation.failures,
+      legs: [{ label: 'listener', stats: collector.stats }],
+    })
   }
 
   console.log('\nTwo-phrase roundtrip OK — 2 finals, each with paired speaking_end.')
-  console.log(
-    '(In multi-client, each final triggers voice-handler → You said: … — 2 replies expected.)',
-  )
   process.exit(0)
 }
 
@@ -152,7 +175,9 @@ const isMain = process.argv[1]?.endsWith('roundtrip-two-phrases.ts') === true
 
 if (isMain) {
   main().catch((error: unknown) => {
-    console.error(error)
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'uncaught error',
+      error,
+    })
   })
 }

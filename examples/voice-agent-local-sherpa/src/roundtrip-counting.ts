@@ -17,10 +17,18 @@
  *   SHERPA_COUNTING_VERBOSE             set to 1 for per-event logs
  */
 
+import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 import type { SpeechEvent, SpeechEventType, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
+import {
+  currentRoundtripScript,
+  enableSherpaRoundtripRustDebug,
+  exitSherpaRoundtripFailure,
+  rememberRoundtripEntryScript,
+} from './roundtrip-failure-debug.js'
+import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import { streamSilence } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 
@@ -57,10 +65,83 @@ export const NUMBER_WORDS_ONE_TO_TWENTY = [
 
 export const NUMBER_WORDS_ONE_TO_TEN = NUMBER_WORDS_ONE_TO_TWENTY.slice(0, 10)
 
-const DEFAULT_TIMEOUT_MS = 90_000
+/** STT / final wait (gate hold + Sherpa finalize). Override with SHERPA_COUNTING_TIMEOUT_MS. */
+const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_MIN_NUMBER_WORDS = 16
 const FINALIZE_MARGIN_MS = 500
 const DEFAULT_WARMUP_S = 0.6
+/** Outbound TTS drain cap — wall-clock estimate, always bounded. */
+export const DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS = 45_000
+
+/**
+ * Hard process kill for E2E scripts — overrides hung STT/native waits so CI/local runs fail fast.
+ * Override with `SHERPA_ROUNDTRIP_WALL_MS` (applies to all roundtrip `start:*` scripts).
+ */
+export function installRoundtripWallClockTimeout(defaultWallMs = 90_000): void {
+  rememberRoundtripEntryScript()
+  const scriptName = currentRoundtripScript()
+  enableSherpaRoundtripRustDebug()
+  const rawWall = process.env.SHERPA_ROUNDTRIP_WALL_MS
+  let wallMs =
+    rawWall != null && rawWall !== '' ? Number(rawWall) : defaultWallMs
+  if (!Number.isFinite(wallMs) || wallMs <= 0) {
+    console.warn(
+      `[${scriptName}] invalid SHERPA_ROUNDTRIP_WALL_MS=${String(rawWall)} — using default ${defaultWallMs} ms`,
+    )
+    wallMs = defaultWallMs
+  }
+  console.log(`[${scriptName}] wall-clock limit ${wallMs} ms (SHERPA_ROUNDTRIP_WALL_MS)`)
+  setTimeout(() => {
+    exitSherpaRoundtripFailure({
+      reason: `wall-clock timeout after ${wallMs} ms (SHERPA_ROUNDTRIP_WALL_MS)`,
+    })
+  }, wallMs)
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Real-time TTS drain ~900 ms/word + 3 s base (capped). Long echo phrases need the headroom. */
+export function estimateTtsPlaybackMs(phrase: string, capMs: number): number {
+  const words = phrase.split(/\s+/).filter((w) => w.length > 0).length
+  return Math.min(capMs, Math.max(3000, words * 900 + 3000))
+}
+
+/**
+ * Wait for outbound TTS playback (wall-clock estimate).
+ * Does not call native `waitTtsPlaybackIdle` — that can block the Node loop and ignore JS timeouts.
+ */
+export async function waitAgentTtsPlaybackEnd(
+  phrase: string,
+  timeoutMs = DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+): Promise<void> {
+  const waitMs = estimateTtsPlaybackMs(phrase, timeoutMs)
+  console.log(
+    `[speaker] playback wait ${(waitMs / 1000).toFixed(1)}s (estimate, cap ${(timeoutMs / 1000).toFixed(0)}s)`,
+  )
+  await sleepMs(waitMs)
+}
+
+/**
+ * Play TTS on a speaker agent, wait for real-time outbound drain, then stream post-utterance silence.
+ * Required for gate-hold STT: trailing silence must arrive after playback ends, not in parallel with it.
+ */
+export async function playSpeakerTtsWithPostSilence(params: {
+  speaker: VoiceAgent
+  speakerOut: LocalAudioTrack
+  phrase: string
+  postTtsSilenceS: number
+  playbackTimeoutMs?: number
+}): Promise<void> {
+  const playbackTimeoutMs =
+    params.playbackTimeoutMs ?? DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS
+  console.log(`[speaker] TTS synthesize (${params.phrase.length} chars)…`)
+  await params.speaker.sendTextToTTS(params.phrase)
+  await waitAgentTtsPlaybackEnd(params.phrase, playbackTimeoutMs)
+  console.log(`[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s`)
+  await streamSilence(params.speakerOut, params.postTtsSilenceS)
+}
 
 export interface UtteranceEventStats {
   finals: string[]
@@ -140,6 +221,20 @@ export interface FinalEventRecord {
   gapMs: number
 }
 
+export function finalRecordFromStats(
+  text: string,
+  stats: UtteranceEventStats,
+): FinalEventRecord {
+  const speakingEndAtMs = stats.speakingEndAtMs ?? 0
+  const finalAtMs = stats.speechFinalAtMs ?? 0
+  return {
+    text,
+    speakingEndAtMs,
+    finalAtMs,
+    gapMs: finalAtMs - speakingEndAtMs,
+  }
+}
+
 export interface FinalSequenceEvaluation {
   passed: boolean
   failures: string[]
@@ -217,6 +312,7 @@ export class FinalSequenceCollector {
     private readonly listener: VoiceAgent,
     private readonly pumpStarted: { value: boolean },
     private readonly verbose: boolean,
+    private readonly agentLabel = 'listener',
   ) {}
 
   startPump(): void {
@@ -228,13 +324,7 @@ export class FinalSequenceCollector {
   private async pump(): Promise<void> {
     try {
       for await (const event of this.listener.speechEvents()) {
-        if (this.verbose) {
-          const detail =
-            event.type === 'user_speech_partial' || event.type === 'user_speech_final'
-              ? ` ${JSON.stringify(event.text ?? '')}`
-              : ''
-          console.log(`[listener] ${event.type}${detail}`)
-        }
+        logRoundtripSpeechEvent(this.agentLabel, event)
         if (event.type === 'user_speaking_end') {
           this.pendingSpeakingEndAt = Date.now()
         }
@@ -288,6 +378,9 @@ export class FinalSequenceCollector {
       this.waitResolve = resolve
       this.waitReject = reject
       this.waitTimer = setTimeout(() => {
+        console.error(
+          `[listener] TIMEOUT after ${timeoutMs} ms waiting for user_speech_final #${count} (have ${this.records.length})`,
+        )
         this.fail(
           new Error(
             `Timed out after ${timeoutMs} ms waiting for final #${count} (have ${this.records.length})`,
@@ -407,15 +500,6 @@ export function evaluateCountingRoundtrip(params: {
   }
 }
 
-function logEvent(verbose: boolean, event: SpeechEvent): void {
-  if (!verbose) return
-  const detail =
-    event.type === 'user_speech_partial' || event.type === 'user_speech_final'
-      ? ` ${JSON.stringify(event.text ?? '')}`
-      : ''
-  console.log(`[listener] ${event.type}${detail}`)
-}
-
 /**
  * Records listener speech events and resolves the next final transcript (roundtrip pattern).
  */
@@ -423,6 +507,7 @@ export class ListenerUtteranceCollector {
   private lastPartial = ''
   private settled = true
   private postSpeechTimer: ReturnType<typeof setTimeout> | undefined
+  private progressTimer: ReturnType<typeof setInterval> | undefined
   private resolve: ((text: string) => void) | null = null
   private reject: ((error: Error) => void) | null = null
   private overallTimer: ReturnType<typeof setTimeout> | undefined
@@ -441,6 +526,7 @@ export class ListenerUtteranceCollector {
     private readonly listener: VoiceAgent,
     private readonly pumpStarted: { value: boolean },
     private readonly verbose: boolean,
+    private readonly agentLabel = 'listener',
   ) {}
 
   startPump(): void {
@@ -490,7 +576,7 @@ export class ListenerUtteranceCollector {
   private async pump(): Promise<void> {
     try {
       for await (const event of this.listener.speechEvents()) {
-        logEvent(this.verbose, event)
+        logRoundtripSpeechEvent(this.agentLabel, event)
         this.recordEvent(event)
         if (this.settled) continue
 
@@ -520,6 +606,19 @@ export class ListenerUtteranceCollector {
     this.lastPartial = ''
     this.finalizeWaitMs = finalizeWaitMs
     if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
+    if (this.progressTimer) clearInterval(this.progressTimer)
+
+    const waitStartedAt = Date.now()
+    this.progressTimer = setInterval(() => {
+      if (this.settled) return
+      const elapsed = Date.now() - waitStartedAt
+      console.error(
+        `[listener] still waiting for transcript (${(elapsed / 1000).toFixed(0)}s): ` +
+          `partials=${this.stats.partialCount} finals=${this.stats.finals.length} ` +
+          `speaking_end=${this.stats.speakingEndCount} lastPartial=${JSON.stringify(this.lastPartial.slice(0, 60))}`,
+      )
+    }, 10_000)
+    this.progressTimer.unref()
 
     return new Promise((resolve, reject) => {
       this.resolve = resolve
@@ -530,6 +629,9 @@ export class ListenerUtteranceCollector {
           this.finish(fallback, 'timeout — using last partial')
           return
         }
+        console.error(
+          `[listener] TIMEOUT after ${timeoutMs} ms waiting for STT transcript (last partial: ${JSON.stringify(this.lastPartial.slice(0, 80))})`,
+        )
         this.fail(new Error(`Timed out after ${timeoutMs} ms waiting for STT transcript`))
       }, timeoutMs)
     })
@@ -549,6 +651,7 @@ export class ListenerUtteranceCollector {
     this.settled = true
     if (this.overallTimer) clearTimeout(this.overallTimer)
     if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
+    if (this.progressTimer) clearInterval(this.progressTimer)
     if (reason !== 'final' && this.verbose) {
       console.log(`[listener] [STT] ${reason}: "${text.trim()}"`)
     }
@@ -562,6 +665,7 @@ export class ListenerUtteranceCollector {
     this.settled = true
     if (this.overallTimer) clearTimeout(this.overallTimer)
     if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
+    if (this.progressTimer) clearInterval(this.progressTimer)
     this.reject?.(error)
     this.resolve = null
     this.reject = null
@@ -569,6 +673,7 @@ export class ListenerUtteranceCollector {
 }
 
 async function main(): Promise<void> {
+  installRoundtripWallClockTimeout(55_000)
   const phrase = process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
@@ -620,11 +725,14 @@ async function main(): Promise<void> {
 
   console.log('[speaker] Synthesizing long counting phrase…')
   const recognizedPromise = collector.waitForNext(timeoutMs, finalizeWaitMs)
-  await speaker.sendTextToTTS(phrase)
-  const recognized = await Promise.all([
-    streamSilence(agentOut, postTtsSilenceS),
-    recognizedPromise,
-  ]).then(([, text]) => text)
+  await playSpeakerTtsWithPostSilence({
+    speaker,
+    speakerOut: agentOut,
+    phrase,
+    postTtsSilenceS,
+    playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+  })
+  const recognized = await recognizedPromise
 
   const evaluation = evaluateCountingRoundtrip({
     phrase,
@@ -646,11 +754,18 @@ async function main(): Promise<void> {
   await cleanup().catch(() => undefined)
 
   if (!evaluation.passed) {
-    console.error('\nCounting roundtrip FAILED:')
-    for (const msg of evaluation.failures) {
-      console.error(`  - ${msg}`)
-    }
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'counting leg assertions failed',
+      failures: evaluation.failures,
+      legs: [
+        {
+          label: 'listener',
+          phrase,
+          recognized: evaluation.recognized,
+          stats: evaluation.stats,
+        },
+      ],
+    })
   }
 
   console.log('\nCounting roundtrip OK — one final, one speaking_end, numbers captured.')
@@ -661,7 +776,9 @@ const isMain = process.argv[1]?.endsWith('roundtrip-counting.ts') === true
 
 if (isMain) {
   main().catch((error: unknown) => {
-    console.error(error)
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'uncaught error',
+      error,
+    })
   })
 }

@@ -221,6 +221,12 @@ export class VoiceAgent {
     await this.native.flushTts()
   }
 
+  /** Wait until TTS synthesis and real-time outbound drain complete. */
+  async waitTtsPlaybackIdle(): Promise<void> {
+    debugFn(MODULE, 'waitTtsPlaybackIdle')
+    await this.native.waitTtsPlaybackIdle()
+  }
+
   on(event: SpeechEventName, listener: SpeechEventListener): this {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set())

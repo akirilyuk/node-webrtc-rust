@@ -104,6 +104,15 @@ impl JsVoiceAgent {
         self.inner.flush_tts().await.map_err(speech_err)
     }
 
+    /// Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking).
+    #[napi]
+    pub async fn wait_tts_playback_idle(&self) -> Result<()> {
+        self.inner
+            .wait_tts_playback_idle()
+            .await
+            .map_err(speech_err)
+    }
+
     /// Pull the next speech event for async stream consumption.
     #[napi]
     pub async fn pull_speech_event(&self) -> Result<Option<JsSpeechEvent>> {

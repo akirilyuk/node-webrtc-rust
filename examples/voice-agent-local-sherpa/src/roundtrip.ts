@@ -25,11 +25,17 @@
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
-import type { SpeechEvent, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
+import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { streamSilence } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
+import {
+  installRoundtripWallClockTimeout,
+  playSpeakerTtsWithPostSilence,
+} from './roundtrip-counting.js'
+import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
+import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 
 /** Default batch when no argv / SHERPA_ROUNDTRIP_PHRASE. */
 const DEFAULT_SENTENCES = [
@@ -110,39 +116,6 @@ function wordSimilarity(input: string, recognized: string): number {
   return hits / words.length
 }
 
-function logSpeechEvent(role: 'speaker' | 'listener', event: SpeechEvent, verbose: boolean): void {
-  if (!verbose) return
-  const tag = role === 'speaker' ? '[speaker]' : '[listener]'
-  switch (event.type) {
-    case 'user_speech_partial':
-      console.log(`${tag} [STT partial] ${event.text ?? ''}`)
-      break
-    case 'user_speech_final':
-      console.log(`${tag} [STT final] ${event.text ?? ''}`)
-      break
-    case 'user_speaking_start':
-      console.log(`${tag} [VAD] speech start`)
-      break
-    case 'user_speaking_end':
-      console.log(`${tag} [VAD] speech end`)
-      break
-    case 'agent_speaking_start':
-      console.log(`${tag} [TTS] playback start`)
-      break
-    case 'agent_speaking_end':
-      console.log(`${tag} [TTS] playback end`)
-      break
-    case 'barge_in':
-      console.log(`${tag} [barge-in]`)
-      break
-    case 'error':
-      console.error(`${tag} [error]`, event.error ?? event)
-      break
-    default:
-      break
-  }
-}
-
 /** One-shot wait for the next listener transcript (reused across batch phrases). */
 class ListenerTranscriptCollector {
   private lastPartial = ''
@@ -152,14 +125,11 @@ class ListenerTranscriptCollector {
   private reject: ((error: Error) => void) | null = null
   private overallTimer: ReturnType<typeof setTimeout> | undefined
   private finalizeWaitMs = 3800
-  private readonly verbose: boolean
-
   constructor(
     private readonly listener: VoiceAgent,
     private readonly pumpStarted: { value: boolean },
-  ) {
-    this.verbose = process.env.SHERPA_ROUNDTRIP_VERBOSE === '1'
-  }
+    private readonly verbose: boolean = process.env.SHERPA_COUNTING_VERBOSE === '1',
+  ) {}
 
   startPump(): void {
     if (this.pumpStarted.value) return
@@ -170,8 +140,8 @@ class ListenerTranscriptCollector {
   private async pump(): Promise<void> {
     try {
       for await (const event of this.listener.speechEvents()) {
+        logRoundtripSpeechEvent('listener', event)
         if (this.settled) continue
-        logSpeechEvent('listener', event, this.verbose)
 
         if (event.type === 'user_speech_partial' && event.text?.trim()) {
           this.lastPartial = event.text.trim()
@@ -280,12 +250,14 @@ async function runPhrase(params: {
   const recognizedPromise = collector.waitForNext(timeoutMs, finalizeWaitMs)
 
   console.log('[speaker] Synthesizing…')
-  await speaker.sendTextToTTS(phrase)
-  // Trailing silence at real-time frame rate, in parallel with STT finalize (like post-utterance quiet on a call).
-  const recognized = await Promise.all([
-    streamSilence(speakerOut, postTtsSilenceS),
-    recognizedPromise,
-  ]).then(([, text]) => text)
+  await playSpeakerTtsWithPostSilence({
+    speaker,
+    speakerOut,
+    phrase,
+    postTtsSilenceS,
+    playbackTimeoutMs: Math.min(timeoutMs, 45_000),
+  })
+  const recognized = await recognizedPromise
   const normalizedInput = normalizeForCompare(phrase)
   const normalizedRecognized = normalizeForCompare(recognized)
   const similarity = wordSimilarity(phrase, recognized)
@@ -313,6 +285,8 @@ async function runPhrase(params: {
 }
 
 async function main(): Promise<void> {
+  installRoundtripWallClockTimeout(120_000)
+
   const phrases = resolvePhrases()
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_ROUNDTRIP_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
@@ -322,7 +296,6 @@ async function main(): Promise<void> {
     process.env.SHERPA_ROUNDTRIP_MIN_SIMILARITY ?? DEFAULT_MIN_SIMILARITY,
   )
   const gapS = Number(process.env.SHERPA_ROUNDTRIP_GAP_S ?? DEFAULT_GAP_S)
-  const verbose = process.env.SHERPA_ROUNDTRIP_VERBOSE === '1'
 
   console.log('=== Sherpa TTS → STT roundtrip (two VoiceAgents) ===')
   console.log(`Pipeline: ${label}`)
@@ -364,13 +337,11 @@ async function main(): Promise<void> {
   const collector = new ListenerTranscriptCollector(listener, pumpStarted)
   collector.startPump()
 
-  if (verbose) {
-    void (async () => {
-      for await (const event of speaker.speechEvents()) {
-        logSpeechEvent('speaker', event, true)
-      }
-    })()
-  }
+  void (async () => {
+    for await (const event of speaker.speechEvents()) {
+      logRoundtripSpeechEvent('speaker', event)
+    }
+  })()
 
   const results: RoundtripPhraseResult[] = []
   for (let i = 0; i < phrases.length; i += 1) {
@@ -408,10 +379,17 @@ async function main(): Promise<void> {
   await cleanup().catch(() => undefined)
 
   if (failed.length > 0) {
-    console.error(
-      `\nRoundtrip failed: ${failed.length}/${results.length} phrase(s) below similarity threshold.`,
-    )
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: `${failed.length}/${results.length} phrase(s) below similarity threshold`,
+      failures: failed.map(
+        (r) => `${r.input}: similarity ${(r.similarity * 100).toFixed(0)}% — "${r.recognized}"`,
+      ),
+      legs: failed.map((r) => ({
+        label: r.input,
+        phrase: r.input,
+        recognized: r.recognized,
+      })),
+    })
   }
 
   console.log(`\nRoundtrip OK — ${results.length} phrase(s) passed similarity check.`)
@@ -419,6 +397,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error(error)
-  process.exit(1)
+  exitSherpaRoundtripFailure({
+    reason: 'uncaught error',
+    error,
+  })
 })

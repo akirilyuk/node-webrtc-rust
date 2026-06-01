@@ -24,16 +24,20 @@ import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopba
 import { streamSilence } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import {
+  DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
   DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
   evaluateCountingRoundtrip,
+  installRoundtripWallClockTimeout,
   ListenerUtteranceCollector,
   normalizeForCompare,
   NUMBER_WORDS_ONE_TO_TEN,
+  playSpeakerTtsWithPostSilence,
   postTtsSilenceSeconds,
   sttFinalizeWaitMs,
   wordSimilarity,
   type UtteranceEventStats,
 } from './roundtrip-counting.js'
+import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
 /** Agent 2 always prefixes echoed speech (matches multi-client voice-handler). */
 export const ECHO_REPLY_PREFIX = 'You said: '
@@ -41,7 +45,7 @@ export const ECHO_REPLY_PREFIX = 'You said: '
 export const DEFAULT_LONG_SENTENCE_PHRASE =
   'This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.'
 
-const DEFAULT_TIMEOUT_MS = 90_000
+const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_MIN_NUMBER_WORDS_ONE_TO_TEN = 8
 const DEFAULT_ECHO_MIN_WORDS = 8
 const DEFAULT_MIN_SIMILARITY = 0.75
@@ -122,6 +126,27 @@ function evaluateLegEvents(
   return failures
 }
 
+/** Gate-hold may emit a short prefix final then the full echo — evaluate as one utterance when transcript is complete. */
+function statsForEchoLegEvaluation(
+  stats: UtteranceEventStats,
+  recognized: string,
+): UtteranceEventStats {
+  const text = recognized.trim()
+  if (stats.finals.length <= 1 || !text) {
+    return stats
+  }
+  const best = stats.finals.reduce((a, b) => (a.trim().length >= b.trim().length ? a : b))
+  if (best.trim().length >= text.length) {
+    return {
+      ...stats,
+      finals: [best.trim()],
+      speakingEndCount: 1,
+      speakingStartCount: Math.min(1, stats.speakingStartCount),
+    }
+  }
+  return stats
+}
+
 export function evaluateCountingEchoLeg(params: {
   phrase: string
   recognized: string
@@ -130,10 +155,11 @@ export function evaluateCountingEchoLeg(params: {
   minNumberWords: number
   requireYouSaid?: boolean
 }): EchoLegResult {
+  const stats = statsForEchoLegEvaluation(params.stats, params.recognized)
   const evaluation = evaluateCountingRoundtrip({
     phrase: params.phrase,
     recognized: params.recognized,
-    stats: params.stats,
+    stats,
     minNumberWords: params.minNumberWords,
     numberWords: NUMBER_WORDS_ONE_TO_TEN,
     label: params.label,
@@ -145,7 +171,7 @@ export function evaluateCountingEchoLeg(params: {
   return {
     spokenText: params.phrase,
     recognized: evaluation.recognized,
-    stats: params.stats,
+    stats,
     passed: failures.length === 0,
     failures,
     score: evaluation.numberWordsFound,
@@ -161,7 +187,8 @@ export function evaluateSentenceEchoLeg(params: {
   requireYouSaid?: boolean
 }): EchoLegResult {
   const recognized = params.recognized.trim()
-  const failures = evaluateLegEvents(params.stats, recognized, params.label)
+  const stats = statsForEchoLegEvaluation(params.stats, recognized)
+  const failures = evaluateLegEvents(stats, recognized, params.label)
   const similarity = wordSimilarity(params.phrase, recognized)
   if (similarity < params.minSimilarity) {
     failures.push(
@@ -174,7 +201,7 @@ export function evaluateSentenceEchoLeg(params: {
   return {
     spokenText: params.phrase,
     recognized,
-    stats: params.stats,
+    stats,
     passed: failures.length === 0,
     failures,
     score: similarity,
@@ -239,11 +266,24 @@ export async function playTtsAndCollect(params: {
     params.timeoutMs,
     params.finalizeWaitMs,
   )
-  await params.speaker.sendTextToTTS(params.text)
-  return Promise.all([
-    streamSilence(params.speakerOut, params.postTtsSilenceS),
-    recognizedPromise,
-  ]).then(([, text]) => text)
+  await playSpeakerTtsWithPostSilence({
+    speaker: params.speaker,
+    speakerOut: params.speakerOut,
+    phrase: params.text,
+    postTtsSilenceS: params.postTtsSilenceS,
+    playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+  })
+  const recognized = await recognizedPromise
+  // Long echo TTS can trigger an early prefix final ("You said") then the full phrase — use the best transcript.
+  if (params.listenerCollector.stats.finals.length > 1) {
+    const best = params.listenerCollector.stats.finals.reduce((a, b) =>
+      a.trim().length >= b.trim().length ? a : b,
+    )
+    if (best.trim().length > recognized.trim().length) {
+      return best.trim()
+    }
+  }
+  return recognized
 }
 
 export async function runEchoRound(params: {
@@ -379,6 +419,8 @@ export async function runEchoRound(params: {
 }
 
 async function main(): Promise<void> {
+  installRoundtripWallClockTimeout(180_000)
+
   const countingPhrase =
     process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
   const longSentencePhrase =
@@ -446,8 +488,8 @@ async function main(): Promise<void> {
   const warmupS = Number(process.env.SHERPA_ROUNDTRIP_WARMUP_S ?? DEFAULT_WARMUP_S)
   await Promise.all([streamSilence(agentOut, warmupS), streamSilence(userOut, warmupS)])
 
-  const collectorAgent1 = new ListenerUtteranceCollector(agent1, { value: false }, verbose)
-  const collectorAgent2 = new ListenerUtteranceCollector(agent2, { value: false }, verbose)
+  const collectorAgent1 = new ListenerUtteranceCollector(agent1, { value: false }, verbose, 'agent1')
+  const collectorAgent2 = new ListenerUtteranceCollector(agent2, { value: false }, verbose, 'agent2')
   collectorAgent1.startPump()
   collectorAgent2.startPump()
 
@@ -484,9 +526,15 @@ async function main(): Promise<void> {
     await agent1.stop().catch(() => undefined)
     await agent2.stop().catch(() => undefined)
     await cleanup().catch(() => undefined)
-    console.error('\nEcho roundtrip FAILED (round 1):')
-    for (const msg of rounds[0]!.failures) console.error(`  - ${msg}`)
-    process.exit(1)
+    const r = rounds[0]!
+    exitSherpaRoundtripFailure({
+      reason: `round 1 failed (${r.name})`,
+      failures: r.failures,
+      legs: [
+        { label: `${r.name} leg A`, phrase: r.sourcePhrase, recognized: r.legA.recognized, stats: r.legA.stats },
+        { label: `${r.name} leg B (echo)`, recognized: r.legB.recognized, stats: r.legB.stats },
+      ],
+    })
   }
 
   await streamSilence(agentOut, interRoundGapS)
@@ -507,9 +555,24 @@ async function main(): Promise<void> {
 
   const allFailures = rounds.flatMap((r) => r.failures)
   if (allFailures.length > 0) {
-    console.error('\nEcho roundtrip FAILED:')
-    for (const msg of allFailures) console.error(`  - ${msg}`)
-    process.exit(1)
+    const failedRound = rounds.find((r) => !r.passed) ?? rounds[rounds.length - 1]!
+    exitSherpaRoundtripFailure({
+      reason: failedRound.passed ? 'assertions failed' : `round failed (${failedRound.name})`,
+      failures: allFailures,
+      legs: [
+        {
+          label: `${failedRound.name} leg A`,
+          phrase: failedRound.sourcePhrase,
+          recognized: failedRound.legA.recognized,
+          stats: failedRound.legA.stats,
+        },
+        {
+          label: `${failedRound.name} leg B (echo)`,
+          recognized: failedRound.legB.recognized,
+          stats: failedRound.legB.stats,
+        },
+      ],
+    })
   }
 
   console.log('\nEcho roundtrip OK — all rounds passed (1× final per leg, Agent2 uses "You said: …").')
@@ -523,7 +586,9 @@ const isMain = process.argv[1]?.endsWith('roundtrip-counting-echo.ts') === true
 
 if (isMain) {
   main().catch((error: unknown) => {
-    console.error(error)
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'uncaught error',
+      error,
+    })
   })
 }

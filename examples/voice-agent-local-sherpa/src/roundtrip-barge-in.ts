@@ -33,8 +33,11 @@ import {
 } from './roundtrip-barge-in-helpers.js'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
+import { installRoundtripWallClockTimeout } from './roundtrip-counting.js'
 import { stereoPcmDurationMs, streamSilence, streamTone } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
+import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 
 const DEFAULT_AGENT_PHRASE =
   'The quick brown fox jumps over the lazy dog and then continues speaking for several more seconds so we can interrupt playback.'
@@ -67,6 +70,7 @@ function collectSpeechEventsUntil(params: {
   return (async () => {
     for await (const event of params.agent.speechEvents()) {
       if (Date.now() > doneAt) break
+      logRoundtripSpeechEvent(params.phaseLabel, event)
       const recorded = recordSpeechEvent(collected, event, startedAtMs)
       console.log(`[${params.phaseLabel}] event ${formatRecordedSpeechEvent(recorded)}`)
       if (params.until(collected)) {
@@ -180,6 +184,8 @@ async function runMidPlaybackInterrupt(params: {
 }
 
 async function main(): Promise<void> {
+  installRoundtripWallClockTimeout(120_000)
+
   const agentPhrase =
     process.env.SHERPA_BARGE_IN_PHRASE?.trim() ||
     process.argv.slice(2).join(' ').trim() ||
@@ -349,9 +355,10 @@ async function main(): Promise<void> {
   await cleanup().catch(() => undefined)
 
   if (failures.length > 0) {
-    console.error('\nSemantic barge-in E2E FAILED:')
-    for (const f of failures) console.error(`  - ${f}`)
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'semantic barge-in assertions failed',
+      failures,
+    })
   }
 
   console.log('\nSemantic barge-in E2E OK — tone ignored, spoken phrase interrupted agent TTS.')
@@ -359,6 +366,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error(error)
-  process.exit(1)
+  exitSherpaRoundtripFailure({
+    reason: 'uncaught error',
+    error,
+  })
 })

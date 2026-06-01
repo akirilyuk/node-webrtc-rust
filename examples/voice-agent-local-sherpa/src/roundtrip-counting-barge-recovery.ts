@@ -26,6 +26,9 @@ import {
   NUMBER_WORDS_ONE_TO_TEN,
   postTtsSilenceSeconds,
   sttFinalizeWaitMs,
+  DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+  installRoundtripWallClockTimeout,
+  waitAgentTtsPlaybackEnd,
   wordSimilarity,
 } from './roundtrip-counting.js'
 import {
@@ -35,10 +38,11 @@ import {
   runEchoRound,
   transcriptIncludesYouSaid,
 } from './roundtrip-counting-echo.js'
+import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
 export const DEFAULT_RECOVERY_PHRASE = 'hello testing recovery one two three'
 
-const DEFAULT_TIMEOUT_MS = 120_000
+const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_MIN_NUMBER_WORDS = 8
 const DEFAULT_ECHO_MIN_WORDS = 8
 const DEFAULT_MIN_ECHO_RETENTION = 0.6
@@ -131,6 +135,10 @@ export async function playEchoLegBWithBargeIn(params: {
     params.finalizeWaitMs,
   )
 
+  const playbackDone = waitAgentTtsPlaybackEnd(
+    params.echoText,
+    DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+  )
   const speakPromise = params.agent2.sendTextToTTS(params.echoText)
 
   await sleep(params.bargeDelayMs)
@@ -143,13 +151,14 @@ export async function playEchoLegBWithBargeIn(params: {
   await streamSilence(params.agentOut, params.bargeToneS)
 
   await speakPromise
-  return Promise.all([
-    streamSilence(params.userOut, params.postTtsSilenceS),
-    recognizedPromise,
-  ]).then(([, text]) => text)
+  await playbackDone
+  await streamSilence(params.userOut, params.postTtsSilenceS)
+  return recognizedPromise
 }
 
 async function main(): Promise<void> {
+  installRoundtripWallClockTimeout(240_000)
+
   const countingPhrase =
     process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
   const recoveryPhrase =
@@ -221,8 +230,8 @@ async function main(): Promise<void> {
   const warmupS = Number(process.env.SHERPA_ROUNDTRIP_WARMUP_S ?? DEFAULT_WARMUP_S)
   await Promise.all([streamSilence(agentOut, warmupS), streamSilence(userOut, warmupS)])
 
-  const collectorAgent1 = new ListenerUtteranceCollector(agent1, { value: false }, verbose)
-  const collectorAgent2 = new ListenerUtteranceCollector(agent2, { value: false }, verbose)
+  const collectorAgent1 = new ListenerUtteranceCollector(agent1, { value: false }, verbose, 'agent1')
+  const collectorAgent2 = new ListenerUtteranceCollector(agent2, { value: false }, verbose, 'agent2')
   collectorAgent1.startPump()
   collectorAgent2.startPump()
 
@@ -338,9 +347,55 @@ async function main(): Promise<void> {
   await cleanup().catch(() => undefined)
 
   if (failures.length > 0) {
-    console.error('\nBarge-in recovery roundtrip FAILED:')
-    for (const msg of failures) console.error(`  - ${msg}`)
-    process.exit(1)
+    const legs = [
+      round1
+        ? {
+            label: `${round1.name} leg A`,
+            phrase: round1.sourcePhrase,
+            recognized: round1.legA.recognized,
+            stats: round1.legA.stats,
+          }
+        : undefined,
+      round1
+        ? {
+            label: `${round1.name} leg B`,
+            recognized: round1.legB.recognized,
+            stats: round1.legB.stats,
+          }
+        : undefined,
+      {
+        label: 'counting 2 Agent2 heard Agent1',
+        phrase: countingPhrase,
+        recognized: legA2Recognized,
+        stats: collectorAgent2.stats,
+      },
+      {
+        label: 'counting 2 leg B (barge interrupt)',
+        recognized: legB2Recognized,
+        stats: collectorAgent1.stats,
+      },
+      round3
+        ? {
+            label: `${round3.name} leg A`,
+            phrase: round3.sourcePhrase,
+            recognized: round3.legA.recognized,
+            stats: round3.legA.stats,
+          }
+        : undefined,
+      round3
+        ? {
+            label: `${round3.name} leg B`,
+            recognized: round3.legB.recognized,
+            stats: round3.legB.stats,
+          }
+        : undefined,
+    ].filter((leg): leg is NonNullable<typeof leg> => leg !== undefined)
+
+    exitSherpaRoundtripFailure({
+      reason: 'barge-in recovery assertions failed',
+      failures,
+      legs,
+    })
   }
 
   console.log('\nBarge-in recovery roundtrip OK — full echo, truncated barge, recovery echo.')
@@ -351,7 +406,9 @@ const isMain = process.argv[1]?.endsWith('roundtrip-counting-barge-recovery.ts')
 
 if (isMain) {
   main().catch((error: unknown) => {
-    console.error(error)
-    process.exit(1)
+    exitSherpaRoundtripFailure({
+      reason: 'uncaught error',
+      error,
+    })
   })
 }

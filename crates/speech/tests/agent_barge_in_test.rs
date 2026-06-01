@@ -33,6 +33,7 @@ fn speaker_config() -> VoiceAgentConfig {
     vad.barge_in.enabled = true;
     vad.barge_in.use_vad = true;
     vad.barge_in.flush_tts = true;
+    vad.barge_in.agent_playback_guard_ms = 0;
 
     VoiceAgentConfig {
         stt: None,
@@ -161,12 +162,104 @@ async fn barge_in_during_tts_drain_truncates_outbound_pcm() {
     assert!(played_ms > 0, "some TTS should play before barge-in");
 
     let mut saw_barge_in = false;
+    let mut saw_agent_end = false;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == SpeechEventKind::BargeIn {
+            saw_barge_in = true;
+        }
+        if event.kind == SpeechEventKind::AgentSpeakingEnd {
+            saw_agent_end = true;
+        }
+    }
+    assert!(saw_barge_in, "expected BargeIn event on user SpeechStart");
+    assert!(
+        saw_agent_end,
+        "barge-in flush must emit agent_speaking_end so app state can accept the next reply"
+    );
+}
+
+#[tokio::test]
+async fn agent_playback_guard_suppresses_early_barge_in() {
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::new(MockFactory));
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.gate_stt = false;
+    vad.barge_in.enabled = true;
+    vad.barge_in.use_vad = true;
+    vad.barge_in.flush_tts = true;
+    vad.barge_in.agent_playback_guard_ms = 500;
+
+    let config = VoiceAgentConfig {
+        stt: None,
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut events = agent.subscribe_events();
+    let written_ms: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    let written_clone = Arc::clone(&written_ms);
+    let writer: PcmWriter = Arc::new(move |_pcm, ms| {
+        *written_clone.lock().unwrap() += ms;
+        Ok(())
+    });
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let long_text = "guard should protect this playback ".repeat(6);
+    let expected_ms = mock_tts_duration_ms(&long_text);
+    let loud = loud_stereo_frame();
+
+    let agent_arc = Arc::new(agent);
+    let agent_tts = Arc::clone(&agent_arc);
+    let text = long_text.clone();
+    let tts_task = tokio::spawn(async move {
+        agent_tts.send_text_to_tts(&text).await
+    });
+
+    sleep(Duration::from_millis(80)).await;
+    for _ in 0..6 {
+        agent_arc
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    tts_task.await.unwrap().unwrap();
+    agent_arc.stop().await.unwrap();
+
+    let played_ms = *written_ms.lock().unwrap();
+    assert!(
+        played_ms > expected_ms * 80 / 100,
+        "playback guard should allow most of TTS: played {played_ms} ms, expected ~{expected_ms} ms"
+    );
+
+    let mut saw_barge_in = false;
     while let Ok(event) = events.try_recv() {
         if event.kind == SpeechEventKind::BargeIn {
             saw_barge_in = true;
         }
     }
-    assert!(saw_barge_in, "expected BargeIn event on user SpeechStart");
+    assert!(
+        !saw_barge_in,
+        "VAD speech during guard window must not emit BargeIn"
+    );
 }
 
 #[tokio::test]

@@ -29,8 +29,12 @@
     "download-tts:zh": "node scripts/download-tts.mjs --lang=zh",
     "start": "tsx src/index.ts",
     "start:roundtrip": "tsx src/roundtrip.ts",
+    "start:roundtrip-counting": "tsx src/roundtrip-counting.ts",
+    "start:roundtrip-counting-echo": "tsx src/roundtrip-counting-echo.ts",
     "start:roundtrip-barge-in": "tsx src/roundtrip-barge-in.ts",
     "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
+    "test": "vitest run",
+    "test:roundtrip-counting": "vitest run src/roundtrip-counting.test.ts src/roundtrip-counting-echo.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -41,6 +45,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
   }
 }

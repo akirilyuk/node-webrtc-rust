@@ -51,6 +51,7 @@ pub struct JsBargeInConfig {
     pub enabled: Option<bool>,
     pub use_vad: Option<bool>,
     pub flush_tts: Option<bool>,
+    pub agent_playback_guard_ms: Option<u32>,
 }
 
 impl From<JsBargeInConfig> for BargeInConfig {
@@ -59,8 +60,15 @@ impl From<JsBargeInConfig> for BargeInConfig {
             enabled: value.enabled.unwrap_or(true),
             use_vad: value.use_vad.unwrap_or(true),
             flush_tts: value.flush_tts.unwrap_or(true),
+            agent_playback_guard_ms: value
+                .agent_playback_guard_ms
+                .unwrap_or_else(default_agent_playback_guard_ms),
         }
     }
+}
+
+fn default_agent_playback_guard_ms() -> u32 {
+    1200
 }
 
 #[napi(string_enum)]
@@ -113,7 +121,7 @@ impl From<JsVadConfig> for VadConfig {
             barge_in: value.barge_in.map(Into::into).unwrap_or_default(),
             gate_stt: value.gate_stt.unwrap_or(false),
             gate_stt_open_on_pending: value.gate_stt_open_on_pending.unwrap_or(true),
-            stt_gate_hold_ms: value.stt_gate_hold_ms.unwrap_or(2500),
+            stt_gate_hold_ms: value.stt_gate_hold_ms.unwrap_or(1000),
         }
     }
 }

@@ -33,11 +33,11 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | `vad.provider`             | `energy` | RMS VAD in default native build                                     |
 | `vad.threshold`            | `0.15`   | Energy RMS default (not Silero 0.5)                                 |
 | `vad.minSpeechDurationMs`  | `250`    | Min voiced time before `user_speaking_start`                        |
-| `vad.minSilenceDurationMs` | `300`    | Min silence before `user_speaking_end` (avoids TTS word-gap splits) |
+| `vad.minSilenceDurationMs` | `500`    | Min silence before VAD internal `SpeechEnd` (starts STT gate hold when `gateStt`) |
 | `vad.speechPadMs`          | `300`    | Pre-roll ring size for `gateStt` (not subtracted from speech start) |
 | `vad.gateStt`              | `false`  | If `true`, STT only while gate is open                              |
 | `vad.gateSttOpenOnPending` | `true`   | Include VAD “pending” speech in gate (WebRTC lead-in)               |
-| `vad.sttGateHoldMs`        | `2500`   | Keep feeding STT after `user_speaking_end`                          |
+| `vad.sttGateHoldMs`        | `1000`   | After internal `SpeechEnd`, keep STT open this long; with `gateStt`, `user_speaking_end` fires when hold expires (resume speech during hold → no end event) |
 | `vad.bargeIn.enabled`      | `true`   | Allow barge-in flush + event                                        |
 | `vad.bargeIn.useVad`       | `true`   | Auto barge on VAD `SpeechStart`                                     |
 | `vad.bargeIn.flushTts`     | `true`   | Clear pending TTS PCM on barge-in                                   |
@@ -181,7 +181,7 @@ vad: VOICE_AGENT_VAD_PRESET
 | VAD             | `enabled: true` (default) | Utterance boundaries, barge-in     |
 | `gateStt`       | `true`                    | Don’t stream silence/noise to STT  |
 | `bargeIn`       | defaults (`useVad: true`) | User can talk over TTS             |
-| `sttGateHoldMs` | default `2500`            | Trailing phonemes after user stops |
+| `sttGateHoldMs` | default `1000`            | Bridge word gaps; see [STT flow fine-tuning](#stt-flow-fine-tuning-gatestt) |
 
 **App wiring:**
 
@@ -299,38 +299,78 @@ Event order on auto barge: optional TTS flush → `barge_in` → `user_speaking_
 
 ---
 
-## VAD timing (when to tune)
+## STT flow fine-tuning (`gateStt`)
 
-### `minSpeechDurationMs` (default 250)
+Use this when you stream STT through `VoiceAgent` with **`gateStt: true`** (`VOICE_AGENT_VAD_PRESET`). The agent does not send every PCM frame to STT — only while the **gate** is open.
 
-Time inbound audio must look “voiced” before `user_speaking_start` / auto barge.
+### End-to-end timeline (one user utterance)
 
-| Symptom                            | Direction                         |
-| ---------------------------------- | --------------------------------- |
-| Coughs / clicks trigger barge-in   | **Increase** (300–400)            |
-| User feels lag before agent reacts | **Decrease** (150–200) cautiously |
+1. **`minSpeechDurationMs`** — voiced audio must exceed this before VAD `SpeechStart` → `user_speaking_start` (+ optional `barge_in`).
+2. User speaks; STT receives audio (plus **`speechPadMs`** pre-roll on `SpeechStart`).
+3. **`minSilenceDurationMs`** — continuous silence triggers VAD `SpeechEnd` **internally** (not necessarily the UI event yet).
+4. **`sttGateHoldMs`** — gate stays open; STT still receives frames. If the user speaks again, hold **resets** and the utterance continues.
+5. When hold reaches **0** → **`user_speaking_end`** (with `gateStt`) → **endpoint tail** (~`max(minSilenceDurationMs, 800)` ms synthetic silence) → **`finalize_utterance`** → **`user_speech_final`**.
+6. Your app runs LLM/TTS on `user_speech_final`.
 
-### `minSilenceDurationMs` (default 300)
+**Rough reply latency after the user stops** (no resume during hold):
 
-Silence needed **inside** one utterance to emit `user_speaking_end`.
+`minSilenceDurationMs` + `sttGateHoldMs` + endpoint tail (~800 ms) + STT/TTS work.
 
-| Symptom                                | Direction              |
-| -------------------------------------- | ---------------------- |
-| One sentence split into two STT finals | **Increase** (400–500) |
-| Agent waits too long after user stops  | **Decrease** (200–250) |
+With defaults: ~300 + 1000 + 800 ≈ **2.1 s** before finalize, plus synthesis.
 
-Keeps short TTS word gaps (&lt; 300 ms) inside a single utterance when the agent is speaking.
+### Knobs and what they affect
 
-### `threshold` (default 0.5)
+| Field | Default | Primary effect | ↑ increase tends to… | ↓ decrease tends to… |
+| ----- | ------- | -------------- | -------------------- | -------------------- |
+| **`threshold`** | `0.15` (energy) | What counts as “speech” vs noise | Fewer false starts in noise; may miss quiet talkers | More sensitive mic; more false STT/barge-in |
+| **`minSpeechDurationMs`** | `250` | Ignore short blips before `SpeechStart` | Fewer cough/click triggers; slightly slower barge-in | Faster barge-in; more noise triggers |
+| **`minSilenceDurationMs`** | `500` | Pause length before internal `SpeechEnd` / hold starts | Fewer splits on word gaps & counting; slower “maybe done” | Faster turn end; risk splitting one sentence |
+| **`sttGateHoldMs`** | `1000` | How long STT stays open after that pause; when `user_speaking_end` fires (`gateStt`) | Capture slow talkers & long digit gaps; **more dead air** | **Snappier** bot; risk cutting trailing syllables |
+| **`speechPadMs`** | `300` | Pre-roll bytes fed at `SpeechStart` (`gateStt`) | More lead-in audio to STT; slightly more memory | Risk clipping first syllable |
+| **`gateSttOpenOnPending`** | `true` | STT during VAD “pending” before `SpeechStart` | Better first-word capture on WebRTC | Slightly more noise to STT before confirmed speech |
+| **`gateStt`** | `false` in lib default; **`true` in preset** | Master STT gating | Less noise to STT; deferred `user_speaking_end` | STT always on; immediate `user_speaking_end` on VAD |
 
-| Symptom                     | Direction    |
-| --------------------------- | ------------ |
-| Noise floor triggers speech | **Increase** |
-| Quiet speakers never start  | **Decrease** |
+**While agent TTS is playing:** inbound VAD `SpeechEnd` does **not** arm gate hold (avoids splitting on TTS word gaps in the mic path). Barge-in still uses `SpeechStart` on the user mic.
 
-### `sttGateHoldMs` (default 2500)
+### Symptom → tune (quick)
 
-Audio time fed to STT **after** `user_speaking_end`. Usually leave default; see [ROUNDTRIP.md](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md) for harness timing.
+| Symptom | Try first |
+| ------- | --------- |
+| Bot silent too long after user stops | Lower **`sttGateHoldMs`** (600–800), then **`minSilenceDurationMs`** (200–250) |
+| One sentence → two `user_speech_final` | Raise **`minSilenceDurationMs`** (400–500) or **`sttGateHoldMs`** (1200–1500) |
+| Counting / “one, two, three…” splits or early `user_speaking_end` | Raise **`minSilenceDurationMs`** (400–600); keep **`sttGateHoldMs`** ~800–1200 so digit gaps don’t end the turn |
+| Last word clipped in transcript | Raise **`sttGateHoldMs`** (1200–1500) or endpoint tail (via higher **`minSilenceDurationMs`**) |
+| Call center / floor noise triggers STT | Raise **`threshold`** and **`minSpeechDurationMs`**; consider Silero build; **avoid** debug `threshold: 0.01` |
+| Quiet mic, never starts | Lower **`threshold`** (energy: try `0.05`–`0.08` on Sherpa demos only) |
+
+### Example presets (starting points)
+
+| Deployment | `threshold` | `minSpeech` | `minSilence` | `sttGateHold` | Notes |
+| ---------- | ----------- | ----------- | ------------ | ------------- | ----- |
+| **Interactive bot** (preset) | `0.15` | `250` | `500` | `1000` | `VOICE_AGENT_VAD_PRESET` |
+| **Low-latency** | `0.15` | `200` | `250` | `600–800` | Snappier; test clipping |
+| **Deliberate speech / counting** | `0.15` | `250` | `450–600` | `800–1200` | Wider word gaps OK |
+| **Noisy line / call center** | `0.10–0.20` | `300–400` | `400–500` | `1000–1500` | Tune threshold on real audio; AEC/headset |
+| **Sherpa local demo (quiet room)** | `0.05` | `250` | `300` | `1000` | See [local Sherpa](#local-sherpa-on-device) |
+| **Roundtrip harness** (strict) | `0.05` | `250` | `300` | `1000–2000` | May need longer hold for loopback; see [ROUNDTRIP.md](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md) |
+
+### Env overrides (Sherpa examples)
+
+[`resolve-voice-config.ts`](../../examples/voice-agent-local-sherpa/src/resolve-voice-config.ts) reads:
+
+| Variable | Maps to |
+| -------- | ------- |
+| `VOICE_VAD_THRESHOLD` | `vad.threshold` |
+| `VOICE_VAD_MIN_SPEECH_MS` | `vad.minSpeechDurationMs` |
+| `VOICE_VAD_MIN_SILENCE_MS` | `vad.minSilenceDurationMs` |
+| `VOICE_VAD_STT_GATE_HOLD_MS` | `vad.sttGateHoldMs` |
+
+Example (interactive multi-client):
+
+```bash
+VOICE_VAD_MIN_SILENCE_MS=450 VOICE_VAD_STT_GATE_HOLD_MS=900 \
+  npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
+```
 
 ### `speechPadMs` (default 300)
 
@@ -348,6 +388,7 @@ Pre-roll buffer capacity for `gateStt` only. Rarely change; does **not** delay `
 | **No auto interrupt**              | `bargeIn: { useVad: false }` + `flushTts()`                                    |
 | **STT-only leg**                   | `gateStt: true`, `bargeIn.enabled: false`                                      |
 | **Local Sherpa**                   | `VOICE_AGENT_VAD_PRESET` + `threshold: 0.05` for energy VAD on quiet RMS scale |
+| **Tune STT latency vs accuracy**   | [STT flow fine-tuning](#stt-flow-fine-tuning-gatestt) + env vars above           |
 
 ---
 
@@ -356,7 +397,7 @@ Pre-roll buffer capacity for `gateStt` only. Rarely change; does **not** delay `
 [`examples/voice-agent-local-sherpa`](../../examples/voice-agent-local-sherpa/README.md) sets:
 
 - `threshold: 0.05` — energy VAD RMS scale, not Silero 0.5
-- Otherwise aligned with `VOICE_AGENT_VAD_PRESET` (250 / 300 ms speech/silence, `gateStt`, barge-in defaults)
+- Otherwise aligned with `VOICE_AGENT_VAD_PRESET` (250 / 300 ms speech/silence, `sttGateHoldMs` 1000, `gateStt`, barge-in defaults)
 
 Do not copy `0.05` into cloud Silero deployments.
 

@@ -132,5 +132,9 @@ npm run test:helpers
 | `VOICE_MAX_CONCURRENT_SESSIONS` | `0` (unlimited) | Process-wide connection cap |
 | `SHERPA_STT_MODEL_PATH`         | —               | Required                    |
 | `SHERPA_TTS_MODEL_PATH`         | —               | Required                    |
+| `VOICE_VAD_MIN_SILENCE_MS`      | preset `300`    | Pause before STT hold starts  |
+| `VOICE_VAD_STT_GATE_HOLD_MS`    | preset `1000`   | STT tail + `user_speaking_end` timing |
+
+VAD/STT flow tuning: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).
 
 See also [`development/node-webrtc-rust/plans/2026-05-31-voice-session-budget.md`](../../development/node-webrtc-rust/plans/2026-05-31-voice-session-budget.md) and [`2026-05-31-sherpa-shared-model-pool.md`](../../development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md).

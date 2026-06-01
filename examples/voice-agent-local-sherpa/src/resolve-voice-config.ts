@@ -39,9 +39,10 @@ function parseThreshold(raw: string | undefined): number | undefined {
 }
 
 /** Optional VAD tuning via env (see packages/sdk/VOICE-VAD-AND-BARGE-IN.md). */
-function applyVadEnvOverrides(vad: VoiceAgentConfig['vad']): VoiceAgentConfig['vad'] {
+function applyVadEnvOverrides(config: VoiceAgentConfig): VoiceAgentConfig {
   const minSilenceDurationMs = parsePositiveInt(process.env.VOICE_VAD_MIN_SILENCE_MS)
   const sttGateHoldMs = parsePositiveInt(process.env.VOICE_VAD_STT_GATE_HOLD_MS)
+  const agentPlaybackGuardMs = parsePositiveInt(process.env.VOICE_BARGE_IN_PLAYBACK_GUARD_MS)
   const minSpeechDurationMs = parsePositiveInt(process.env.VOICE_VAD_MIN_SPEECH_MS)
   const threshold = parseThreshold(process.env.VOICE_VAD_THRESHOLD)
 
@@ -49,17 +50,29 @@ function applyVadEnvOverrides(vad: VoiceAgentConfig['vad']): VoiceAgentConfig['v
     minSilenceDurationMs === undefined &&
     sttGateHoldMs === undefined &&
     minSpeechDurationMs === undefined &&
-    threshold === undefined
+    threshold === undefined &&
+    agentPlaybackGuardMs === undefined
   ) {
-    return vad
+    return config
   }
 
   return {
-    ...vad,
-    ...(minSilenceDurationMs !== undefined ? { minSilenceDurationMs } : {}),
-    ...(sttGateHoldMs !== undefined ? { sttGateHoldMs } : {}),
-    ...(minSpeechDurationMs !== undefined ? { minSpeechDurationMs } : {}),
-    ...(threshold !== undefined ? { threshold } : {}),
+    ...config,
+    vad: {
+      ...config.vad,
+      ...(minSilenceDurationMs !== undefined ? { minSilenceDurationMs } : {}),
+      ...(sttGateHoldMs !== undefined ? { sttGateHoldMs } : {}),
+      ...(minSpeechDurationMs !== undefined ? { minSpeechDurationMs } : {}),
+      ...(threshold !== undefined ? { threshold } : {}),
+      ...(agentPlaybackGuardMs !== undefined
+        ? {
+            bargeIn: {
+              ...config.vad?.bargeIn,
+              agentPlaybackGuardMs,
+            },
+          }
+        : {}),
+    },
   }
 }
 

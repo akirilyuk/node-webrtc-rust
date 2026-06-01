@@ -12,6 +12,9 @@
 
 import type { VoiceSessionHandler } from '@node-webrtc-rust/helpers'
 
+/** Per-tab: ignore STT finals while agent TTS is playing (echo into Sherpa). */
+const agentSpeakingByPeer = new Map<string, boolean>()
+
 export const voiceHandler: VoiceSessionHandler = {
   /**
    * Per-tab pipeline events. Always reply with `ctx.speak` — never broadcast here.
@@ -21,7 +24,21 @@ export const voiceHandler: VoiceSessionHandler = {
       case 'user_speech_partial':
         break
 
+      case 'agent_speaking_start':
+        agentSpeakingByPeer.set(ctx.peerId, true)
+        break
+
+      case 'agent_speaking_end':
+        agentSpeakingByPeer.set(ctx.peerId, false)
+        break
+
       case 'user_speech_final': {
+        if (agentSpeakingByPeer.get(ctx.peerId)) {
+          console.log(
+            `[${ctx.peerId}] ignored user_speech_final during agent TTS (likely echo): ${event.text?.slice(0, 60)}`,
+          )
+          break
+        }
         const heard = event.text?.trim()
         if (!heard) break
         console.log(`[${ctx.peerId}] user said: ${heard}`)
@@ -31,9 +48,11 @@ export const voiceHandler: VoiceSessionHandler = {
 
       case 'user_speaking_start':
       case 'user_speaking_end':
-      case 'agent_speaking_start':
-      case 'agent_speaking_end':
       case 'barge_in':
+        // Rust clears playback on barge-in; ensure we accept the next user_speech_final.
+        agentSpeakingByPeer.set(ctx.peerId, false)
+        break
+
       case 'error':
         break
     }

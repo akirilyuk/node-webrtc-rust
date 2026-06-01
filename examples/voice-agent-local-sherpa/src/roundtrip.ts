@@ -24,7 +24,7 @@
  */
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
-import { VoiceAgent } from '@node-webrtc-rust/sdk/voice'
+import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 import type { SpeechEvent, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
@@ -71,7 +71,7 @@ function endpointTailMs(config: VoiceAgentConfig): number {
 
 /** Ms to wait after VAD speech end before accepting a partial (aligns with hold + tail + margin). */
 function sttFinalizeWaitMs(config: VoiceAgentConfig): number {
-  const hold = config.vad?.sttGateHoldMs ?? 2500
+  const hold = config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000
   return hold + endpointTailMs(config) + FINALIZE_MARGIN_MS
 }
 
@@ -80,7 +80,7 @@ function sttFinalizeWaitMs(config: VoiceAgentConfig): number {
  * Duration matches listener `sttGateHoldMs` + endpoint tail so hold can drain on the wire.
  */
 function postTtsSilenceSeconds(config: VoiceAgentConfig): number {
-  const hold = config.vad?.sttGateHoldMs ?? 2500
+  const hold = config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000
   return (hold + endpointTailMs(config) + FINALIZE_MARGIN_MS) / 1000
 }
 
@@ -327,7 +327,7 @@ async function main(): Promise<void> {
   console.log('=== Sherpa TTS → STT roundtrip (two VoiceAgents) ===')
   console.log(`Pipeline: ${label}`)
   console.log(
-    `Listener: gateStt=${config.vad?.gateStt !== false}  minSilence=${config.vad?.minSilenceDurationMs ?? 300}ms  sttGateHold=${config.vad?.sttGateHoldMs ?? 2500}ms  bargeIn=${config.vad?.bargeIn?.enabled !== false}`,
+    `Listener: gateStt=${config.vad?.gateStt !== false}  minSilence=${config.vad?.minSilenceDurationMs ?? 300}ms  sttGateHold=${config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000}ms  bargeIn=${config.vad?.bargeIn?.enabled !== false}`,
   )
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)

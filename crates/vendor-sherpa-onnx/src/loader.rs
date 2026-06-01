@@ -35,6 +35,14 @@ fn parse_f32_env(name: &str) -> Option<f32> {
         .filter(|value| value.is_finite() && *value >= 0.0)
 }
 
+fn parse_bool_env(name: &str) -> Option<bool> {
+    match std::env::var(name).ok()?.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 static STT_RECOGNIZER_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static TTS_ENGINE_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -53,13 +61,19 @@ pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecogn
     recognizer_config.model_config.transducer.joiner =
         Some(path_to_string(&paths.joiner)?);
     recognizer_config.model_config.tokens = Some(path_to_string(&paths.tokens)?);
-    recognizer_config.enable_endpoint = true;
-    recognizer_config.rule1_min_trailing_silence =
-        parse_f32_env("SHERPA_STT_RULE1_MIN_TRAILING_SILENCE").unwrap_or(2.4);
-    recognizer_config.rule2_min_trailing_silence =
-        parse_f32_env("SHERPA_STT_RULE2_MIN_TRAILING_SILENCE").unwrap_or(1.0);
-    recognizer_config.rule3_min_utterance_length =
-        parse_f32_env("SHERPA_STT_RULE3_MIN_UTTERANCE_LENGTH").unwrap_or(20.0);
+    // VoiceAgent drives utterance boundaries via VAD + finalize_utterance(). Sherpa's
+    // built-in endpoint during gate-hold silence caused duplicate finals and repeated
+    // words when combined with our endpoint tail. Opt in with SHERPA_STT_ENABLE_ENDPOINT=1.
+    let enable_endpoint = parse_bool_env("SHERPA_STT_ENABLE_ENDPOINT").unwrap_or(false);
+    recognizer_config.enable_endpoint = enable_endpoint;
+    if enable_endpoint {
+        recognizer_config.rule1_min_trailing_silence =
+            parse_f32_env("SHERPA_STT_RULE1_MIN_TRAILING_SILENCE").unwrap_or(2.4);
+        recognizer_config.rule2_min_trailing_silence =
+            parse_f32_env("SHERPA_STT_RULE2_MIN_TRAILING_SILENCE").unwrap_or(1.0);
+        recognizer_config.rule3_min_utterance_length =
+            parse_f32_env("SHERPA_STT_RULE3_MIN_UTTERANCE_LENGTH").unwrap_or(20.0);
+    }
     recognizer_config.decoding_method = Some("greedy_search".into());
 
     let recognizer = OnlineRecognizer::create(&recognizer_config).ok_or_else(|| {

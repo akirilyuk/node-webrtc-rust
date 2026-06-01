@@ -1,0 +1,527 @@
+/**
+ * Bidirectional Sherpa echo roundtrip — multiple rounds on one loopback.
+ *
+ *   Agent 1 (agent PC)  ──TTS──► agentOut ──► userInbound ──► Agent 2 STT
+ *   Agent 2 (user PC)   ──TTS──► userOut  ──► agentInbound ──► Agent 1 STT
+ *
+ * Each round:
+ *   A — Agent 1 speaks the source phrase; Agent 2 must hear **one** final.
+ *   B — Agent 2 TTS: `You said: {recognized from A}`; Agent 1 must hear **one** final
+ *       that includes "you said" and preserves the content.
+ *
+ * Default rounds:
+ *   1. Count *one* … *ten*
+ *   2. Long sentence (stress-test length + VAD)
+ *
+ * Run:
+ *   npm run start:roundtrip-counting-echo --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+ */
+
+import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
+import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+
+import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
+import { streamSilence } from './pcm-relay.js'
+import { resolveVoiceConfig } from './resolve-voice-config.js'
+import {
+  DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
+  evaluateCountingRoundtrip,
+  ListenerUtteranceCollector,
+  normalizeForCompare,
+  NUMBER_WORDS_ONE_TO_TEN,
+  postTtsSilenceSeconds,
+  sttFinalizeWaitMs,
+  wordSimilarity,
+  type UtteranceEventStats,
+} from './roundtrip-counting.js'
+
+/** Agent 2 always prefixes echoed speech (matches multi-client voice-handler). */
+export const ECHO_REPLY_PREFIX = 'You said: '
+
+export const DEFAULT_LONG_SENTENCE_PHRASE =
+  'This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.'
+
+const DEFAULT_TIMEOUT_MS = 90_000
+const DEFAULT_MIN_NUMBER_WORDS_ONE_TO_TEN = 8
+const DEFAULT_ECHO_MIN_WORDS = 8
+const DEFAULT_MIN_SIMILARITY = 0.75
+const DEFAULT_ECHO_MIN_SIMILARITY = 0.6
+const DEFAULT_MIN_ECHO_RETENTION = 0.6
+const DEFAULT_WARMUP_S = 0.6
+const DEFAULT_INTER_LEG_GAP_S = 0.5
+const DEFAULT_INTER_ROUND_GAP_S = 1.0
+
+export type EchoRoundKind = 'counting' | 'sentence'
+
+export interface EchoLegResult {
+  spokenText: string
+  recognized: string
+  stats: UtteranceEventStats
+  passed: boolean
+  failures: string[]
+  /** counting: number words hit; sentence: word similarity vs spoken phrase */
+  score: number
+}
+
+export interface EchoRoundResult {
+  name: string
+  kind: EchoRoundKind
+  sourcePhrase: string
+  legA: EchoLegResult
+  legB: EchoLegResult
+  passed: boolean
+  failures: string[]
+}
+
+export function formatAgent2EchoReply(recognized: string): string {
+  const trimmed = recognized.trim()
+  if (!trimmed) return ECHO_REPLY_PREFIX.trim()
+  return `${ECHO_REPLY_PREFIX}${trimmed}`
+}
+
+export function transcriptIncludesYouSaid(recognized: string): boolean {
+  const norm = normalizeForCompare(recognized)
+  return norm.includes('you said') || (norm.includes('you') && norm.includes('said'))
+}
+
+/** Share of leg-A number words that also appear in leg-B transcript. */
+export function echoNumberWordRetention(
+  legARecognized: string,
+  legBRecognized: string,
+  numberWords: readonly string[] = NUMBER_WORDS_ONE_TO_TEN,
+): number {
+  const haystackA = ` ${normalizeForCompare(legARecognized)} `
+  const foundInA = numberWords.filter((word) => haystackA.includes(` ${word} `))
+  if (foundInA.length === 0) return 0
+  const haystackB = ` ${normalizeForCompare(legBRecognized)} `
+  const retained = foundInA.filter((word) => haystackB.includes(` ${word} `)).length
+  return retained / foundInA.length
+}
+
+function evaluateLegEvents(
+  stats: UtteranceEventStats,
+  recognized: string,
+  label: string,
+): string[] {
+  const failures: string[] = []
+  const who = `${label}: `
+  if (stats.finals.length !== 1) {
+    failures.push(
+      `${who}expected exactly 1 user_speech_final, got ${stats.finals.length}: ${stats.finals.map((t) => JSON.stringify(t)).join(', ')}`,
+    )
+  }
+  if (stats.speakingEndCount !== 1) {
+    failures.push(`${who}expected exactly 1 user_speaking_end, got ${stats.speakingEndCount}`)
+  }
+  if (stats.speakingStartCount < 1) {
+    failures.push(`${who}expected at least 1 user_speaking_start, got ${stats.speakingStartCount}`)
+  }
+  if (!recognized.trim()) {
+    failures.push(`${who}recognized transcript is empty`)
+  }
+  return failures
+}
+
+export function evaluateCountingEchoLeg(params: {
+  phrase: string
+  recognized: string
+  stats: UtteranceEventStats
+  label: string
+  minNumberWords: number
+  requireYouSaid?: boolean
+}): EchoLegResult {
+  const evaluation = evaluateCountingRoundtrip({
+    phrase: params.phrase,
+    recognized: params.recognized,
+    stats: params.stats,
+    minNumberWords: params.minNumberWords,
+    numberWords: NUMBER_WORDS_ONE_TO_TEN,
+    label: params.label,
+  })
+  const failures = [...evaluation.failures]
+  if (params.requireYouSaid && !transcriptIncludesYouSaid(params.recognized)) {
+    failures.push(`${params.label}: expected "you said" in echo leg transcript`)
+  }
+  return {
+    spokenText: params.phrase,
+    recognized: evaluation.recognized,
+    stats: params.stats,
+    passed: failures.length === 0,
+    failures,
+    score: evaluation.numberWordsFound,
+  }
+}
+
+export function evaluateSentenceEchoLeg(params: {
+  phrase: string
+  recognized: string
+  stats: UtteranceEventStats
+  label: string
+  minSimilarity: number
+  requireYouSaid?: boolean
+}): EchoLegResult {
+  const recognized = params.recognized.trim()
+  const failures = evaluateLegEvents(params.stats, recognized, params.label)
+  const similarity = wordSimilarity(params.phrase, recognized)
+  if (similarity < params.minSimilarity) {
+    failures.push(
+      `${params.label}: word similarity ${(similarity * 100).toFixed(0)}% < ${(params.minSimilarity * 100).toFixed(0)}%`,
+    )
+  }
+  if (params.requireYouSaid && !transcriptIncludesYouSaid(recognized)) {
+    failures.push(`${params.label}: expected "you said" in echo leg transcript`)
+  }
+  return {
+    spokenText: params.phrase,
+    recognized,
+    stats: params.stats,
+    passed: failures.length === 0,
+    failures,
+    score: similarity,
+  }
+}
+
+export function evaluateEchoRound(params: {
+  name: string
+  kind: EchoRoundKind
+  sourcePhrase: string
+  legA: EchoLegResult
+  legB: EchoLegResult
+  minEchoRetention?: number
+}): EchoRoundResult {
+  const failures: string[] = []
+  if (!params.legA.passed) failures.push(...params.legA.failures)
+  if (!params.legB.passed) failures.push(...params.legB.failures)
+
+  if (params.kind === 'counting') {
+    const retention = echoNumberWordRetention(params.legA.recognized, params.legB.recognized)
+    const minRetention = params.minEchoRetention ?? DEFAULT_MIN_ECHO_RETENTION
+    if (retention < minRetention) {
+      failures.push(
+        `${params.name}: echo number retention ${(retention * 100).toFixed(0)}% < ${(minRetention * 100).toFixed(0)}%`,
+      )
+    }
+  } else {
+    const contentSim = wordSimilarity(params.legA.recognized, params.legB.recognized)
+    const minContent = params.minEchoRetention ?? DEFAULT_MIN_ECHO_RETENTION
+    if (contentSim < minContent) {
+      failures.push(
+        `${params.name}: echo content similarity ${(contentSim * 100).toFixed(0)}% < ${(minContent * 100).toFixed(0)}%`,
+      )
+    }
+  }
+
+  return {
+    name: params.name,
+    kind: params.kind,
+    sourcePhrase: params.sourcePhrase,
+    legA: params.legA,
+    legB: params.legB,
+    passed: failures.length === 0,
+    failures,
+  }
+}
+
+async function playTtsAndCollect(params: {
+  speaker: VoiceAgent
+  speakerOut: LocalAudioTrack
+  listenerCollector: ListenerUtteranceCollector
+  text: string
+  postTtsSilenceS: number
+  timeoutMs: number
+  finalizeWaitMs: number
+  logLabel: string
+}): Promise<string> {
+  const preview =
+    params.text.length > 100 ? `${params.text.slice(0, 100)}…` : params.text
+  console.log(`[${params.logLabel}] TTS: "${preview}"`)
+  const recognizedPromise = params.listenerCollector.waitForNext(
+    params.timeoutMs,
+    params.finalizeWaitMs,
+  )
+  await params.speaker.sendTextToTTS(params.text)
+  return Promise.all([
+    streamSilence(params.speakerOut, params.postTtsSilenceS),
+    recognizedPromise,
+  ]).then(([, text]) => text)
+}
+
+async function runEchoRound(params: {
+  name: string
+  kind: EchoRoundKind
+  sourcePhrase: string
+  agent1: VoiceAgent
+  agent2: VoiceAgent
+  agentOut: LocalAudioTrack
+  userOut: LocalAudioTrack
+  collectorAgent1: ListenerUtteranceCollector
+  collectorAgent2: ListenerUtteranceCollector
+  postTtsSilenceS: number
+  timeoutMs: number
+  finalizeWaitMs: number
+  interLegGapS: number
+  minNumberWords: number
+  minEchoNumberWords: number
+  minSimilarity: number
+  minEchoSimilarity: number
+  minEchoRetention: number
+}): Promise<EchoRoundResult> {
+  console.log('')
+  console.log(`=== Round: ${params.name} (${params.kind}) ===`)
+  console.log(`Agent1 speaks: "${params.sourcePhrase.slice(0, 90)}${params.sourcePhrase.length > 90 ? '…' : ''}"`)
+
+  const legARecognized = await playTtsAndCollect({
+    speaker: params.agent1,
+    speakerOut: params.agentOut,
+    listenerCollector: params.collectorAgent2,
+    text: params.sourcePhrase,
+    postTtsSilenceS: params.postTtsSilenceS,
+    timeoutMs: params.timeoutMs,
+    finalizeWaitMs: params.finalizeWaitMs,
+    logLabel: `${params.name} agent1→agent2`,
+  })
+
+  const legA =
+    params.kind === 'counting'
+      ? evaluateCountingEchoLeg({
+          phrase: params.sourcePhrase,
+          recognized: legARecognized,
+          stats: params.collectorAgent2.stats,
+          label: `${params.name} Agent2 heard Agent1`,
+          minNumberWords: params.minNumberWords,
+        })
+      : evaluateSentenceEchoLeg({
+          phrase: params.sourcePhrase,
+          recognized: legARecognized,
+          stats: params.collectorAgent2.stats,
+          label: `${params.name} Agent2 heard Agent1`,
+          minSimilarity: params.minSimilarity,
+        })
+
+  console.log(`Leg A recognized: "${legA.recognized}"`)
+  console.log(
+    `Leg A events: finals=${legA.stats.finals.length} speaking_end=${legA.stats.speakingEndCount} score=${legA.score}`,
+  )
+
+  if (!legA.passed) {
+    return evaluateEchoRound({
+      name: params.name,
+      kind: params.kind,
+      sourcePhrase: params.sourcePhrase,
+      legA,
+      legB: {
+        spokenText: '',
+        recognized: '',
+        stats: {
+          finals: [],
+          speakingEndCount: 0,
+          speakingStartCount: 0,
+          partialCount: 0,
+          bargeInCount: 0,
+        },
+        passed: false,
+        failures: [`${params.name}: skipped leg B — leg A failed`],
+        score: 0,
+      },
+    })
+  }
+
+  await streamSilence(params.agentOut, params.interLegGapS)
+  await streamSilence(params.userOut, params.interLegGapS)
+
+  const echoText = formatAgent2EchoReply(legA.recognized)
+  const legBRecognized = await playTtsAndCollect({
+    speaker: params.agent2,
+    speakerOut: params.userOut,
+    listenerCollector: params.collectorAgent1,
+    text: echoText,
+    postTtsSilenceS: params.postTtsSilenceS,
+    timeoutMs: params.timeoutMs,
+    finalizeWaitMs: params.finalizeWaitMs,
+    logLabel: `${params.name} agent2→agent1 (You said: …)`,
+  })
+
+  const legB =
+    params.kind === 'counting'
+      ? evaluateCountingEchoLeg({
+          phrase: echoText,
+          recognized: legBRecognized,
+          stats: params.collectorAgent1.stats,
+          label: `${params.name} Agent1 heard Agent2`,
+          minNumberWords: params.minEchoNumberWords,
+          requireYouSaid: true,
+        })
+      : evaluateSentenceEchoLeg({
+          phrase: echoText,
+          recognized: legBRecognized,
+          stats: params.collectorAgent1.stats,
+          label: `${params.name} Agent1 heard Agent2`,
+          minSimilarity: params.minEchoSimilarity,
+          requireYouSaid: true,
+        })
+
+  console.log(`Leg B TTS: "${echoText.slice(0, 90)}${echoText.length > 90 ? '…' : ''}"`)
+  console.log(`Leg B recognized: "${legB.recognized}"`)
+  console.log(
+    `Leg B events: finals=${legB.stats.finals.length} speaking_end=${legB.stats.speakingEndCount} score=${(legB.score * 100).toFixed(0)}%`,
+  )
+
+  return evaluateEchoRound({
+    name: params.name,
+    kind: params.kind,
+    sourcePhrase: params.sourcePhrase,
+    legA,
+    legB,
+    minEchoRetention: params.minEchoRetention,
+  })
+}
+
+async function main(): Promise<void> {
+  const countingPhrase =
+    process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
+  const longSentencePhrase =
+    process.env.SHERPA_ECHO_LONG_SENTENCE?.trim() || DEFAULT_LONG_SENTENCE_PHRASE
+
+  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
+  const minNumberWords = Number(
+    process.env.SHERPA_COUNTING_MIN_NUMBER_WORDS ?? DEFAULT_MIN_NUMBER_WORDS_ONE_TO_TEN,
+  )
+  const minEchoWords = Number(
+    process.env.SHERPA_COUNTING_ECHO_MIN_WORDS ?? DEFAULT_ECHO_MIN_WORDS,
+  )
+  const minSimilarity = Number(
+    process.env.SHERPA_ECHO_MIN_SIMILARITY ?? DEFAULT_MIN_SIMILARITY,
+  )
+  const minEchoSimilarity = Number(
+    process.env.SHERPA_ECHO_LEG_MIN_SIMILARITY ?? DEFAULT_ECHO_MIN_SIMILARITY,
+  )
+  const minEchoRetention = Number(
+    process.env.SHERPA_ECHO_MIN_RETENTION ?? DEFAULT_MIN_ECHO_RETENTION,
+  )
+  const finalizeWaitMs = sttFinalizeWaitMs(config)
+  const postTtsSilenceS = postTtsSilenceSeconds(config)
+  const interLegGapS = Number(process.env.SHERPA_COUNTING_INTER_LEG_GAP_S ?? DEFAULT_INTER_LEG_GAP_S)
+  const interRoundGapS = Number(
+    process.env.SHERPA_COUNTING_INTER_ROUND_GAP_S ?? DEFAULT_INTER_ROUND_GAP_S,
+  )
+  const verbose = process.env.SHERPA_COUNTING_VERBOSE === '1'
+
+  console.log('=== Sherpa echo roundtrip (Agent1 ↔ Agent2, multi-round) ===')
+  console.log(`Pipeline: ${label}`)
+  console.log(
+    `VAD: gateStt=${config.vad?.gateStt !== false}  minSilence=${config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs}ms  sttGateHold=${config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs}ms`,
+  )
+  console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
+  console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
+  console.log(`Agent2 echo prefix: "${ECHO_REPLY_PREFIX}"`)
+  console.log(`Round 1 (counting): "${countingPhrase}"`)
+  console.log(`Round 2 (long sentence): "${longSentencePhrase.slice(0, 70)}…"`)
+  console.log(`Timing: postTtsSilence=${postTtsSilenceS.toFixed(1)}s  timeout=${timeoutMs}ms`)
+  console.log('')
+
+  const { agentOut, userInbound, userOut, agentInbound, cleanup } =
+    await createBidirectionalLoopback()
+
+  const agent1 = new VoiceAgent({
+    stt: config.stt,
+    tts: config.tts,
+    events: { mode: 'stream' },
+    vad: config.vad,
+  })
+  const agent2 = new VoiceAgent({
+    stt: config.stt,
+    tts: config.tts,
+    events: { mode: 'stream' },
+    vad: config.vad,
+  })
+
+  await agent1.attach({ inboundTrack: agentInbound, outboundTrack: agentOut })
+  await agent2.attach({ inboundTrack: userInbound, outboundTrack: userOut })
+  await agent1.start()
+  await agent2.start()
+
+  const warmupS = Number(process.env.SHERPA_ROUNDTRIP_WARMUP_S ?? DEFAULT_WARMUP_S)
+  await Promise.all([streamSilence(agentOut, warmupS), streamSilence(userOut, warmupS)])
+
+  const collectorAgent1 = new ListenerUtteranceCollector(agent1, { value: false }, verbose)
+  const collectorAgent2 = new ListenerUtteranceCollector(agent2, { value: false }, verbose)
+  collectorAgent1.startPump()
+  collectorAgent2.startPump()
+
+  const roundParams = {
+    agent1,
+    agent2,
+    agentOut,
+    userOut,
+    collectorAgent1,
+    collectorAgent2,
+    postTtsSilenceS,
+    timeoutMs,
+    finalizeWaitMs,
+    interLegGapS,
+    minNumberWords,
+    minEchoNumberWords: minEchoWords,
+    minSimilarity,
+    minEchoSimilarity,
+    minEchoRetention,
+  }
+
+  const rounds: EchoRoundResult[] = []
+
+  rounds.push(
+    await runEchoRound({
+      ...roundParams,
+      name: 'counting one–ten',
+      kind: 'counting',
+      sourcePhrase: countingPhrase,
+    }),
+  )
+
+  if (!rounds[0]!.passed) {
+    await agent1.stop().catch(() => undefined)
+    await agent2.stop().catch(() => undefined)
+    await cleanup().catch(() => undefined)
+    console.error('\nEcho roundtrip FAILED (round 1):')
+    for (const msg of rounds[0]!.failures) console.error(`  - ${msg}`)
+    process.exit(1)
+  }
+
+  await streamSilence(agentOut, interRoundGapS)
+  await streamSilence(userOut, interRoundGapS)
+
+  rounds.push(
+    await runEchoRound({
+      ...roundParams,
+      name: 'long sentence',
+      kind: 'sentence',
+      sourcePhrase: longSentencePhrase,
+    }),
+  )
+
+  await agent1.stop().catch(() => undefined)
+  await agent2.stop().catch(() => undefined)
+  await cleanup().catch(() => undefined)
+
+  const allFailures = rounds.flatMap((r) => r.failures)
+  if (allFailures.length > 0) {
+    console.error('\nEcho roundtrip FAILED:')
+    for (const msg of allFailures) console.error(`  - ${msg}`)
+    process.exit(1)
+  }
+
+  console.log('\nEcho roundtrip OK — all rounds passed (1× final per leg, Agent2 uses "You said: …").')
+  for (const r of rounds) {
+    console.log(`  ✓ ${r.name}`)
+  }
+  process.exit(0)
+}
+
+const isMain = process.argv[1]?.endsWith('roundtrip-counting-echo.ts') === true
+
+if (isMain) {
+  main().catch((error: unknown) => {
+    console.error(error)
+    process.exit(1)
+  })
+}

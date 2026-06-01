@@ -119,6 +119,7 @@ export interface JsBargeInConfig {
   enabled?: boolean
   useVad?: boolean
   flushTts?: boolean
+  agentPlaybackGuardMs?: number
 }
 export const enum JsVadSampleRate {
   Hz8000 = '8000',

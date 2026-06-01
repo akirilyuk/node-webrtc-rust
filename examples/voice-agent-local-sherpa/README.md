@@ -207,10 +207,15 @@ On startup you should see `[voice-debug] JsVoiceAgent native module loaded`. If 
 
 Logs go to **stderr** with `[voice-debug]` and `[webrtc-debug]` prefixes. Debug mode also relaxes VAD (`threshold=0.01`, `gateStt=false`). Optional overrides:
 
-| Variable                    | Effect                                |
-| --------------------------- | ------------------------------------- |
+| Variable                      | Effect                                |
+| ----------------------------- | ------------------------------------- |
 | `VOICE_VAD_THRESHOLD=0.005` | Lower energy threshold                |
-| `VOICE_VAD_DISABLED=1`      | Skip VAD (STT still receives all PCM) |
+| `VOICE_VAD_MIN_SPEECH_MS`     | `minSpeechDurationMs`                 |
+| `VOICE_VAD_MIN_SILENCE_MS`    | `minSilenceDurationMs`                |
+| `VOICE_VAD_STT_GATE_HOLD_MS`  | `sttGateHoldMs` (default **1000**)    |
+| `VOICE_VAD_DISABLED=1`        | Skip VAD (STT still receives all PCM) |
+
+STT/VAD tuning guide: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).
 
 Startup logs show the active pipeline and model path:
 

@@ -19,6 +19,11 @@ export interface BargeInConfig {
   useVad?: boolean
   /** Clear pending TTS PCM when barge-in runs. Default true. */
   flushTts?: boolean
+  /**
+   * After agent TTS starts, ignore VAD barge-in (no flush) for this many ms.
+   * Prevents speaker→mic echo from cutting off "You said: …" replies. Default 1200.
+   */
+  agentPlaybackGuardMs?: number
 }
 
 /** See VOICE-VAD-AND-BARGE-IN.md — prefer VOICE_AGENT_VAD_PRESET for voice bots. */
@@ -38,7 +43,7 @@ export interface VadConfig {
   gateStt?: boolean
   /** When gateStt is true, feed STT during VAD pending speech. Default true. */
   gateSttOpenOnPending?: boolean
-  /** Keep feeding STT after VAD speech end (ms). Default 2500. */
+  /** Keep feeding STT after VAD speech end (ms). Default 1000. */
   sttGateHoldMs?: number
 }
 

@@ -10,8 +10,8 @@ Implementation: [`src/roundtrip.ts`](./src/roundtrip.ts).
 
 | Source                                      | What it does                                                                                                                                                                         |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **`minSilenceDurationMs` (300 ms default)** | How long silence must last **during** one utterance before VAD emits `user_speaking_end`. Short Piper gaps between words should stay under this so one TTS phrase stays one segment. |
-| **`sttGateHoldMs` (2500 ms default)**       | After `user_speaking_end`, keep feeding STT for this much **audio duration** (sum of inbound PCM frame lengths). With real-time trailing silence, that aligns with wall-clock time.  |
+| **`minSilenceDurationMs` (300 ms default)** | How long silence must last **during** one utterance before VAD sees `SpeechEnd` internally. Short Piper gaps between words should stay under this so one TTS phrase stays one segment. |
+| **`sttGateHoldMs` (1000 ms default)**       | With **`gateStt: true`**, keep feeding STT after that internal speech end; **`user_speaking_end` is emitted when this hold expires** (not on the first short gap). If the user speaks again during hold, the utterance continues and no end event fires. |
 | **Endpoint tail**                           | `max(minSilenceDurationMs, 800)` ms of silence pushed to STT after hold reaches zero, then `finalize_utterance`.                                                                     |
 | **`speechPadMs` / `minSpeechDurationMs`**   | Pre-roll and minimum voiced time before `user_speaking_start` — not inter-phrase gaps.                                                                                               |
 
@@ -63,8 +63,65 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | Mode                | Command                                                             |
 | ------------------- | ------------------------------------------------------------------- |
 | **Batch (default)** | `npm run start:roundtrip` — 5 built-in sentences + similarity table |
+| **Counting 1–20**   | `npm run start:roundtrip-counting` — one long utterance, single final (see below) |
+| **Counting echo**   | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below) |
 | **Single phrase**   | `npm run start:roundtrip -- "I love America"`                       |
 | **Single via env**  | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`     |
+
+## Counting roundtrip (one utterance, one final)
+
+[`src/roundtrip-counting.ts`](./src/roundtrip-counting.ts) plays **one** long TTS phrase — the words *one* through *twenty* — and asserts the listener does **not** split it into multiple STT finals or extra `user_speaking_end` events (regression for mid-utterance VAD gaps while counting).
+
+| Check | Requirement |
+| ----- | ----------- |
+| `user_speech_final` | **Exactly 1** |
+| `user_speaking_end` | **Exactly 1** |
+| Transcript | At least **16/20** number words in the final text (configurable) |
+
+```bash
+npm run build:native
+# models + SHERPA_*_MODEL_PATH as in Quick start
+npm run start:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Unit tests (no Sherpa models): `npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`
+
+## Counting echo roundtrip (Agent1 ↔ Agent2, multi-round)
+
+[`src/roundtrip-counting-echo.ts`](./src/roundtrip-counting-echo.ts) uses **two** full VoiceAgents on one loopback. **Agent 2** always replies with `You said: {recognized utterance}` (same as the multi-client `voice-handler`).
+
+Each **round** is two legs (both must be **one** `user_speech_final` and **one** `user_speaking_end`):
+
+| Round | Agent 1 speaks | Checks |
+| ----- | -------------- | ------ |
+| **1 — counting** | *one* … *ten* | ≥8/10 number words; echo leg includes “you said” + ≥60% number retention |
+| **2 — long sentence** | *This is a very long sentence…* (built-in) | ≥75% word similarity; echo leg ≥60% similarity + “you said” |
+
+```bash
+npm run build:native
+# models + SHERPA_*_MODEL_PATH as in Quick start
+npm run start:roundtrip-counting-echo --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+| Env | Default | Purpose |
+| --- | ------- | ------- |
+| `SHERPA_COUNTING_PHRASE` | `one two … ten` | Round 1 source phrase |
+| `SHERPA_ECHO_LONG_SENTENCE` | built-in long sentence | Round 2 source phrase |
+| `SHERPA_COUNTING_ECHO_MIN_WORDS` | `8` | Min number tokens on echo leg (round 1) |
+| `SHERPA_ECHO_MIN_SIMILARITY` | `0.75` | Min word match round 2 leg A |
+| `SHERPA_ECHO_LEG_MIN_SIMILARITY` | `0.6` | Min word match round 2 echo leg B |
+| `SHERPA_ECHO_MIN_RETENTION` | `0.6` | Echo content retention (both rounds) |
+| `SHERPA_COUNTING_INTER_LEG_GAP_S` | `0.5` | Silence between A and B within a round |
+| `SHERPA_COUNTING_INTER_ROUND_GAP_S` | `1.0` | Silence between round 1 and round 2 |
+
+Other `SHERPA_COUNTING_*` vars apply (`TIMEOUT_MS`, `VERBOSE`, etc.).
+
+| Env | Default | Purpose |
+| --- | ------- | ------- |
+| `SHERPA_COUNTING_PHRASE` | `one two … twenty` | Override spoken text |
+| `SHERPA_COUNTING_TIMEOUT_MS` | `90000` | Wait for transcript |
+| `SHERPA_COUNTING_MIN_NUMBER_WORDS` | `16` | Min number tokens in final |
+| `SHERPA_COUNTING_VERBOSE` | off | Log each speech event |
 
 ### Default batch sentences
 
@@ -105,7 +162,7 @@ Gaps and pauses come from **two layers**: the **VoiceAgent VAD/STT pipeline** (l
 | `speechPadMs`          | 300                              | Pre-roll ring size only (`speechPadMs + minSpeechDurationMs` ≈ 550 ms buffered before `SpeechStart`) |
 | `gateStt`              | true                             | STT only while gate is open                                                                          |
 | `gateSttOpenOnPending` | true                             | Gate opens during VAD **pending** speech (before `SpeechStart`) — covers WebRTC lead-in              |
-| `sttGateHoldMs`        | 2500                             | After `SpeechEnd`, keep feeding STT for this many ms (trailing phonemes + relay)                     |
+| `sttGateHoldMs`        | 1000                             | After `SpeechEnd`, keep feeding STT for this many ms (trailing phonemes + relay)                     |
 | Endpoint tail          | max(`minSilenceDurationMs`, 800) | Extra silence pushed to STT after hold expires, then `finalize_utterance`                            |
 
 **`minSilenceDurationMs` is not a gap between batch phrases.** It only controls how long silence must last **inside** an utterance before VAD declares speech ended. Piper TTS short pauses between words should stay below 300 ms so one phrase stays one segment.
@@ -127,7 +184,7 @@ After each `sendTextToTTS`, the harness streams trailing silence on the speaker 
 postTtsSilenceS = (sttGateHoldMs + endpointTailMs + margin) / 1000
 ```
 
-Defaults ≈ **3.8 s wall time** (2500 + 800 + 500 ms of 20 ms frames). Duration is **derived from listener VAD config** so hold and endpoint tail see silence paced like a quiet mic after the user stops talking.
+Defaults ≈ **2.3 s wall time** (1000 + 800 + 500 ms of 20 ms frames). Duration is **derived from listener VAD config** so hold and endpoint tail see silence paced like a quiet mic after the user stops talking. For stricter harness timing, raise `sttGateHoldMs` via config (e.g. 2000).
 
 ### Between phrases (batch)
 
@@ -171,7 +228,7 @@ vad: {
   minSpeechDurationMs: 250,
   speechPadMs: 300,
   gateStt: true,
-  sttGateHoldMs: 2500,
+  sttGateHoldMs: 1000,
   bargeIn: { enabled: true, flushTts: true },
 }
 ```

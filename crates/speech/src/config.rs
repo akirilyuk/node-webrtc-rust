@@ -43,6 +43,9 @@ impl Default for EventsConfig {
 ///
 /// Tune `vad.threshold` and `vad.minSpeechDurationMs` to avoid brief sounds triggering
 /// interrupt when `use_vad` is true.
+///
+/// `agent_playback_guard_ms` — after agent TTS starts, VAD barge-in does not flush playback
+/// for this long (stops speaker→mic echo from cutting off "You said: …" replies).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BargeInConfig {
@@ -52,6 +55,12 @@ pub struct BargeInConfig {
     pub use_vad: bool,
     #[serde(default = "default_true")]
     pub flush_tts: bool,
+    #[serde(default = "default_agent_playback_guard_ms")]
+    pub agent_playback_guard_ms: u32,
+}
+
+fn default_agent_playback_guard_ms() -> u32 {
+    1200
 }
 
 impl Default for BargeInConfig {
@@ -60,6 +69,7 @@ impl Default for BargeInConfig {
             enabled: true,
             use_vad: true,
             flush_tts: true,
+            agent_playback_guard_ms: default_agent_playback_guard_ms(),
         }
     }
 }
@@ -123,7 +133,8 @@ pub struct VadConfig {
     /// When `gate_stt` is true, also feed STT during VAD pending speech (before `SpeechStart`).
     #[serde(default = "default_true")]
     pub gate_stt_open_on_pending: bool,
-    /// After VAD speech end, keep passing inbound audio to STT for this long (covers relay lag / trailing phonemes).
+    /// After VAD speech end, keep passing inbound audio to STT for this long (trailing phonemes / word gaps).
+    /// With `gate_stt`, `user_speaking_end` is emitted when this hold expires (default 1000 ms).
     #[serde(default = "default_stt_gate_hold_ms")]
     pub stt_gate_hold_ms: u32,
 }
@@ -142,7 +153,7 @@ fn default_min_speech_ms() -> u32 {
 
 // Brief gaps inside a phrase (TTS word pauses, natural speech) should not split VAD.
 fn default_min_silence_ms() -> u32 {
-    300
+    500
 }
 
 fn default_speech_pad_ms() -> u32 {
@@ -150,7 +161,7 @@ fn default_speech_pad_ms() -> u32 {
 }
 
 fn default_stt_gate_hold_ms() -> u32 {
-    2500
+    1000
 }
 
 impl Default for VadConfig {

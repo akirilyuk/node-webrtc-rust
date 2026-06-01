@@ -211,7 +211,7 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 | Event                          | Source       | When to use in your agent                  |
 | ------------------------------ | ------------ | ------------------------------------------ |
 | `user_speaking_start`          | VAD          | Fast interrupt signal; pairs with barge-in |
-| `user_speaking_end`            | VAD          | End-of-utterance hint before STT final     |
+| `user_speaking_end`            | VAD + hold   | End-of-utterance hint (`gateStt`: after `sttGateHoldMs`, not first pause) |
 | `user_speech_partial`          | STT          | Live captions, early LLM prefetch          |
 | `user_speech_final`            | STT          | **Primary turn trigger** for LLM           |
 | `agent_speaking_start` / `end` | TTS playback | UI/state machine                           |

@@ -15,10 +15,10 @@ From the **repo root** (not inside `packages/helpers/`):
 npm run test:helpers
 ```
 
-CI runs the same via [`scripts/ci/run-helpers-unit-tests.sh`](../../scripts/ci/run-helpers-unit-tests.sh) in the **Typecheck & lint** job (`build.yml` on PRs, `build-main.yml` on push to `main`). Before push, if you only changed helpers:
+CI runs the same via [`scripts/ci/run-helpers-unit-tests.sh`](../../scripts/ci/run-helpers-unit-tests.sh) in the **Typecheck & lint** job (`build.yml` on PRs, `build-main.yml` on push to `main`). Before push (lint + helpers vitest when those paths changed):
 
 ```bash
-bash scripts/ci/run-if-helpers-changed.sh
+npm run ci:pre-push
 ```
 ```
 

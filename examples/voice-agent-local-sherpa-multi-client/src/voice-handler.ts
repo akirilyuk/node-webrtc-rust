@@ -3,14 +3,14 @@
  *  YOUR VOICE AGENT LOGIC — edit this file only
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Each browser tab gets its own {@link VoiceSessionContext} (`peerId` like `client-tab1`).
+ * Each browser tab gets its own `VoiceSessionContext` (`peerId` like `client-tab1`) from helpers.
  *
  * **Routing rules (multi-client demo):**
  * - STT / per-tab Speak form → `ctx.speak(...)` only (that tab hears TTS).
  * - Page “Speak to all” / `POST /api/broadcast-speak` → {@link onBroadcastSpeak} only.
  */
 
-import type { VoiceSessionContext, VoiceSessionHandler } from '@node-webrtc-rust/helpers'
+import type { VoiceSessionHandler } from '@node-webrtc-rust/helpers'
 
 export const voiceHandler: VoiceSessionHandler = {
   /**

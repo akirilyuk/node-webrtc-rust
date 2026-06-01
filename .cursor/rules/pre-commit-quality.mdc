@@ -36,7 +36,7 @@ npm run ci:verify:checks:docker
 | Changed paths | Required before commit |
 |---------------|------------------------|
 | `packages/sdk/`, `packages/signaling/`, `examples/` | **quality + build:native + tests** |
-| `packages/helpers/`, `examples/voice-agent-local-sherpa-multi-client/` | **`npm run test:helpers`** (also in `run-pr-quality.sh` / CI quality job) |
+| `packages/helpers/`, `examples/voice-agent-local-sherpa-multi-client/` | **`npm run ci:pre-push`** or **`npm run test:helpers`** (lint + vitest; CI runs via `run-pr-quality.sh`) |
 | `packages/sdk/src/**` (types/exports) | Also run **`npm run build --workspace=@node-webrtc-rust/sdk`** — see [`sdk-build.mdc`](sdk-build.mdc) |
 | `packages/bindings/`, `crates/` | **quality + build:native + tests** (rebuild native after bindings changes) |
 | `scripts/ci/`, `.github/` | `run-pr-tests-full.sh` or `ci:verify:checks:docker` |
@@ -50,4 +50,12 @@ npm run ci:verify:checks:docker
 
 ### Before push / PR
 
-Re-run the full sequence above if the commit touched TS, Rust, bindings, examples, or CI config.
+**Fast gate (catches unused imports, helpers tests):**
+
+```bash
+npm run ci:pre-push
+```
+
+Runs **`npm run lint`** when `packages/`, `examples/*.ts`, or CI/eslint config changed; runs **`test:helpers`** when helpers or multi-client example changed. Same eslint step that failed CI (`run-pr-quality.sh`).
+
+Re-run the **full** sequence (`run-pr-quality.sh`, `build:native`, `run-pr-tests-full.sh`) if the commit touched Rust, bindings, or you need integration parity.

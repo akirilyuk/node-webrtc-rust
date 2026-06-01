@@ -8,6 +8,9 @@ cd "$ROOT"
 echo "==> npm ci"
 npm ci
 
+echo "==> rollup native binary (Linux CI — npm optional-deps bug)"
+bash scripts/fix-rollup-native.sh
+
 echo "==> typecheck (sdk + signaling sources)"
 npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json
 

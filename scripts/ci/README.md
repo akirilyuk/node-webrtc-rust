@@ -219,7 +219,7 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 | Script                                                         | Used by                            | What it runs                                                                          |
 | -------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
-| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, typecheck, **`build-ts-workspace.sh`**, lint, **`run-helpers-unit-tests.sh`** |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, **`fix-rollup-native.sh`**, typecheck, **`build-ts-workspace.sh`**, lint, **`run-helpers-unit-tests.sh`** |
 | [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers` | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)              |
 | [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`              | **eslint** + helpers vitest when scoped paths changed (before push)                 |
 | [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)       | alias                              | → `run-pre-push-gates.sh`                                                           |

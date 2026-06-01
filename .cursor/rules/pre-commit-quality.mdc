@@ -25,7 +25,7 @@ npm run ci:verify:checks:docker
 
 | Step | Mirrors CI job | Catches |
 |------|----------------|---------|
-| `run-pr-quality.sh` | Typecheck & lint | eslint, unified tsc (sdk + signaling + **helpers** sources), **`build-ts-workspace.sh`**, **`run-helpers-unit-tests.sh`** (vitest) |
+| `run-pr-quality.sh` | Typecheck & lint | `npm ci` + **`fix-rollup-native.sh`**, eslint, tsc, **`build-ts-workspace.sh`**, **`run-helpers-unit-tests.sh`** (vitest) |
 | `build:native` | Compile native | Stale `.node` missing new NAPI methods (e.g. `setOnIceGatheringStateChange`) |
 | `run-pr-tests-full.sh` | Quality + Test | `cargo test`, `npm test` (sdk e2e, signaling, vitest) |
 

@@ -299,7 +299,7 @@ While **agent TTS is playing** and STT is configured:
 
 1. VAD `SpeechStart` → `user_speaking_start` (mic gate opens for STT).
 2. **No flush yet** — coughs, keyboard bumps, and pure tones usually produce no Sherpa partial.
-3. First qualifying **`user_speech_partial`** → flush TTS → `barge_in` → `agent_speaking_end`.
+3. First qualifying **`user_speech_partial` while agent TTS is playing** → flush TTS → `barge_in` → `agent_speaking_end` (once per playback).
 
 When the agent is **not** speaking, or STT is disabled, behavior matches immediate VAD barge (flush on `SpeechStart`).
 

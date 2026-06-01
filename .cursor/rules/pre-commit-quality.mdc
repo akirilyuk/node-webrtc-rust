@@ -25,7 +25,7 @@ npm run ci:verify:checks:docker
 
 | Step | Mirrors CI job | Catches |
 |------|----------------|---------|
-| `run-pr-quality.sh` | Typecheck & lint | `npm ci` + **`fix-rollup-native.sh`**, eslint, tsc, **`run-helpers-unit-tests.sh`** (vitest; **no** dist build) |
+| `run-pr-quality.sh` | Typecheck & lint | `npm ci` + **`fix-rollup-native.sh`**, eslint, tsc, **`run-helpers-unit-tests.sh`** (build-ts-workspace when dist missing, then vitest) |
 | `build:native` | Compile native | Stale `.node` missing new NAPI methods (e.g. `setOnIceGatheringStateChange`) |
 | `run-pr-tests-full.sh` | Quality + Test | `cargo test`, `npm test` (sdk e2e, signaling, vitest) |
 
@@ -36,7 +36,7 @@ npm run ci:verify:checks:docker
 | Changed paths | Required before commit |
 |---------------|------------------------|
 | `packages/sdk/`, `packages/signaling/`, `examples/` | **quality + build:native + tests**; SDK/bindings: also **`bash scripts/ci/build-ts-workspace.sh`** or **`verify-release-publish-ts.sh`** |
-| `packages/helpers/`, `examples/voice-agent-local-sherpa-multi-client/` | **`npm run ci:pre-push`** or **`npm run test:helpers`** (lint + vitest; CI dist build is **Build TypeScript** job) |
+| `packages/helpers/`, `packages/sdk/`, `packages/signaling/`, multi-client example | **`npm run ci:pre-push`** (lint + **build-ts-workspace** + vitest) or full **`npm run ci:quality`** |
 | `packages/sdk/src/**` (types/exports) | Also run **`bash scripts/ci/build-ts-workspace.sh`** — see [`sdk-build.mdc`](sdk-build.mdc) |
 | `packages/bindings/`, `crates/` | **quality + build:native + tests** (rebuild native after bindings changes) |
 | `scripts/ci/`, `.github/` | `run-pr-tests-full.sh` or `ci:verify:checks:docker` |
@@ -46,16 +46,25 @@ npm run ci:verify:checks:docker
 - **`npm run typecheck` is not enough** — no eslint; no vitest/cargo tests; no `build-ts-workspace.sh` (release publish compiles SDK against npm-installed bindings unless `paths` override).
 - **`run-pr-quality.sh` alone is not enough for SDK/bindings** — see [`release-ts-build.mdc`](release-ts-build.mdc); run **`build-ts-workspace.sh`** or **`verify-release-publish-ts.sh`** (CI **Build TypeScript** job does this once).
 - **`run-pr-quality.sh` alone is not enough** — TS-only commits can pass quality but fail Test when CI loads a stale cached `.node` without new native exports.
+- **`ci:pre-push` without `build-ts-workspace` used to miss CI failures** — helpers vitest skipped compile when local `dist/` existed; quality job runs on a clean tree. Always run `ci:pre-push` or `ci:quality` before push when touching helpers/sdk/signaling.
 - **Rebuild native after changing `packages/bindings/` or `crates/`** before `npm test`.
 
 ### Before push / PR
 
-**Fast gate (catches unused imports, helpers tests):**
+**Required for helpers/sdk/signaling changes** (matches CI Typecheck & lint on a fresh checkout):
 
 ```bash
-npm run ci:pre-push
+npm run ci:pre-push          # scoped: lint + build-ts-workspace + vitest
+# or full CI quality job:
+npm run ci:quality           # bash scripts/ci/run-pr-quality.sh
 ```
 
-Runs **`npm run lint`** when `packages/`, `examples/*.ts`, or CI/eslint config changed; runs **`test:helpers`** when helpers or multi-client example changed. Same eslint step that failed CI (`run-pr-quality.sh`).
+Install once so pushes cannot skip this accidentally:
+
+```bash
+bash scripts/ci/install-pre-push-hook.sh
+```
+
+`ci:pre-push` rebuilds the TS workspace when `packages/helpers|sdk|signaling/` changed — stale local `dist/` alone used to pass while CI failed.
 
 Re-run the **full** sequence (`run-pr-quality.sh`, `build:native`, `run-pr-tests-full.sh`) if the commit touched Rust, bindings, or you need integration parity.

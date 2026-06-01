@@ -74,7 +74,7 @@ If none match, the whole workflow is skipped.
 - **When:** `native` OR `typescript` OR `helpers` OR `workflows`
 - **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
 - **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest
-- **Does not** run [`build-ts-workspace.sh`](build-ts-workspace.sh) (see job 4 — avoids building sdk/signaling/helpers twice)
+- Runs [`build-ts-workspace.sh`](build-ts-workspace.sh) inside [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh) when sdk/signaling/helpers `dist/` is missing (fresh CI checkout). Job 4 still builds once for Test cache.
 
 Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
 
@@ -223,7 +223,8 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 | -------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
 | [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`** (no dist build) |
 | [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers` | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)              |
-| [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`              | **eslint** + helpers vitest when scoped paths changed (before push)                 |
+| [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`              | **eslint** + **build-ts-workspace** + helpers vitest when sdk/signaling/helpers changed |
+| [`install-pre-push-hook.sh`](install-pre-push-hook.sh)         | one-time per clone                 | installs `.git/hooks/pre-push` → `npm run ci:pre-push`                              |
 | [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)       | alias                              | → `run-pre-push-gates.sh`                                                           |
 | [`plan-native-builds.sh`](plan-native-builds.sh)               | main + release plan job            | Per-target cache hash check → dynamic build matrices                                  |
 | [`check-main-ci-success.sh`](check-main-ci-success.sh)         | release plan job                   | Skip release test when main validated same SHA                                        |

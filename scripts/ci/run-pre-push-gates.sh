@@ -24,6 +24,7 @@ fi
 
 NEED_LINT=false
 NEED_HELPERS=false
+NEED_TS_BUILD=false
 
 if echo "$FILES" | grep -qE \
   '^(packages/|examples/.*\.ts$|eslint\.config|tsconfig\.eslint|scripts/ci/|\.github/workflows/)'; then
@@ -34,7 +35,14 @@ if echo "$FILES" | grep -qE '^packages/helpers/|^examples/voice-agent-local-sher
   NEED_HELPERS=true
 fi
 
-if ! $NEED_LINT && ! $NEED_HELPERS; then
+# Rebuild workspace when sdk/signaling/helpers sources change — catches failures that
+# only show up on CI (fresh npm ci, no dist) if local stale dist would skip the build.
+if echo "$FILES" | grep -qE '^packages/(helpers|sdk|signaling)/'; then
+  NEED_TS_BUILD=true
+  NEED_HELPERS=true
+fi
+
+if ! $NEED_LINT && ! $NEED_HELPERS && ! $NEED_TS_BUILD; then
   echo "==> no eslint/helpers-scoped changes in range ($RANGE) — skip"
   exit 0
 fi
@@ -42,6 +50,11 @@ fi
 if $NEED_LINT; then
   echo "==> eslint (same as run-pr-quality.sh lint step)"
   npm run lint
+fi
+
+if $NEED_TS_BUILD; then
+  echo "==> build TypeScript workspace (changed sdk/signaling/helpers — match CI)"
+  bash "$ROOT/scripts/ci/build-ts-workspace.sh"
 fi
 
 if $NEED_HELPERS; then

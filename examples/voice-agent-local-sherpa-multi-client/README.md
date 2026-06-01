@@ -117,9 +117,10 @@ curl -s http://localhost:3004/api/capacity | jq .
 
 ## Tests (no Sherpa models)
 
+From repo root (CI runs this in the quality job):
+
 ```bash
-npm run test --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
-npm run test --workspace=@node-webrtc-rust/helpers
+npm run test:helpers
 ```
 
 ## Environment

@@ -17,4 +17,7 @@ bash scripts/ci/build-ts-workspace.sh
 echo "==> lint"
 npm run lint
 
+echo "==> helpers unit tests (vitest, no native .node)"
+bash scripts/ci/run-helpers-unit-tests.sh
+
 echo "==> Quality checks OK"

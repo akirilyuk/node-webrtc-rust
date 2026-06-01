@@ -219,7 +219,9 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 | Script                                                         | Used by                            | What it runs                                                                          |
 | -------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
-| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, typecheck, **`build-ts-workspace.sh`**, lint                                |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, typecheck, **`build-ts-workspace.sh`**, lint, **`run-helpers-unit-tests.sh`** |
+| [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers` | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)              |
+| [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)       | local before push                  | runs helpers vitest only when diff touches helpers / multi-client example           |
 | [`plan-native-builds.sh`](plan-native-builds.sh)               | main + release plan job            | Per-target cache hash check → dynamic build matrices                                  |
 | [`check-main-ci-success.sh`](check-main-ci-success.sh)         | release plan job                   | Skip release test when main validated same SHA                                        |
 | [`list-release-targets.sh`](list-release-targets.sh)           | plan / stage scripts               | Canonical six release triples                                                         |

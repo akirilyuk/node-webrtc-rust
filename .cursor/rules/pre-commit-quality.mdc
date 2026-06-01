@@ -25,7 +25,7 @@ npm run ci:verify:checks:docker
 
 | Step | Mirrors CI job | Catches |
 |------|----------------|---------|
-| `run-pr-quality.sh` | Typecheck & lint | eslint, unified tsc (sdk + signaling sources), **`build-ts-workspace.sh`** (release publish compile path) |
+| `run-pr-quality.sh` | Typecheck & lint | eslint, unified tsc (sdk + signaling + **helpers** sources), **`build-ts-workspace.sh`**, **`run-helpers-unit-tests.sh`** (vitest) |
 | `build:native` | Compile native | Stale `.node` missing new NAPI methods (e.g. `setOnIceGatheringStateChange`) |
 | `run-pr-tests-full.sh` | Quality + Test | `cargo test`, `npm test` (sdk e2e, signaling, vitest) |
 
@@ -36,6 +36,7 @@ npm run ci:verify:checks:docker
 | Changed paths | Required before commit |
 |---------------|------------------------|
 | `packages/sdk/`, `packages/signaling/`, `examples/` | **quality + build:native + tests** |
+| `packages/helpers/`, `examples/voice-agent-local-sherpa-multi-client/` | **`npm run test:helpers`** (also in `run-pr-quality.sh` / CI quality job) |
 | `packages/sdk/src/**` (types/exports) | Also run **`npm run build --workspace=@node-webrtc-rust/sdk`** — see [`sdk-build.mdc`](sdk-build.mdc) |
 | `packages/bindings/`, `crates/` | **quality + build:native + tests** (rebuild native after bindings changes) |
 | `scripts/ci/`, `.github/` | `run-pr-tests-full.sh` or `ci:verify:checks:docker` |

@@ -20,6 +20,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run test --workspaces --if-present",
+    "test:helpers": "bash scripts/ci/run-helpers-unit-tests.sh",
     "test:rust": "cargo test --workspace",
     "test:ts": "npm run test --workspaces --if-present",
     "test:all": "bash scripts/run-all-tests.sh",

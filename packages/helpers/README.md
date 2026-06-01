@@ -6,6 +6,20 @@ Reusable **server-side** TypeScript helpers for voice agent apps — the same ab
 
 ```bash
 npm install @node-webrtc-rust/helpers @node-webrtc-rust/sdk @node-webrtc-rust/signaling
+
+## Tests
+
+From the **repo root** (not inside `packages/helpers/`):
+
+```bash
+npm run test:helpers
+```
+
+CI runs the same via [`scripts/ci/run-helpers-unit-tests.sh`](../../scripts/ci/run-helpers-unit-tests.sh) in the **Typecheck & lint** job (`build.yml` on PRs, `build-main.yml` on push to `main`). Before push, if you only changed helpers:
+
+```bash
+bash scripts/ci/run-if-helpers-changed.sh
+```
 ```
 
 ## What's included

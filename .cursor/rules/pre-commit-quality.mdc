@@ -15,10 +15,11 @@ npm run build:native
 bash scripts/ci/run-pr-tests-full.sh
 ```
 
-Or the all-in-one local mirror (when Docker is available):
+Or the all-in-one local mirror:
 
 ```bash
-npm run ci:verify:checks:docker
+npm run build:native
+npm run ci:verify:checks
 ```
 
 ## What each step covers
@@ -40,7 +41,7 @@ npm run ci:verify:checks:docker
 | `packages/helpers/`, `packages/sdk/`, `packages/signaling/`, multi-client example | **`npm run ci:pre-push`** (lint + **build-ts-workspace** + vitest) or full **`npm run ci:quality`** |
 | `packages/sdk/src/**` (types/exports) | Also run **`bash scripts/ci/build-ts-workspace.sh`** — see [`sdk-build.mdc`](sdk-build.mdc) |
 | `packages/bindings/`, `crates/` | **quality + build:native + tests** (rebuild native after bindings changes) |
-| `scripts/ci/`, `.github/` | `run-pr-tests-full.sh` or `ci:verify:checks:docker` |
+| `scripts/ci/`, `.github/` | `npm run ci:verify:checks` |
 
 ### Common mistakes
 

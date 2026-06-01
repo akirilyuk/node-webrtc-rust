@@ -23,7 +23,7 @@ run_inner() {
   cd "$root"
 
   restore_versions() {
-    git checkout -- \
+    git restore --source=HEAD --staged --worktree \
       packages/bindings/package.json \
       packages/bindings/npm/darwin-arm64/package.json \
       packages/bindings/npm/darwin-x64/package.json \

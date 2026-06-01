@@ -108,21 +108,21 @@ npm run download-stt:list --workspace=@node-webrtc-rust/example-voice-agent-loca
 
 Per-language shortcuts (from repo root) — full table also in [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models):
 
-| Language             | npm script                          | Sherpa bundle                                                |
-| -------------------- | ----------------------------------- | ------------------------------------------------------------ |
-| English (default)    | `download-stt` or `download-stt:en` | `…-en-kroko-2025-08-06`                                      |
-| English (2023 legacy) | `download-stt:en-legacy`           | `…-en-2023-06-26`                                            |
-| Spanish              | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                      |
-| French               | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                      |
-| German               | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                      |
-| Chinese              | `download-stt:zh`                   | `…-zh-int8-2025-06-30`                                       |
-| Japanese             | `download-stt:ja`                   | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual)        |
-| Arabic               | `download-stt:ar`                   | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar`      |
-| Russian              | `download-stt:ru`                   | `…-small-ru-vosk-int8-2025-08-16`                            |
-| Bengali (South Asia) | `download-stt:bn`                   | `…-bn-vosk-2026-02-09`                                       |
-| Hindi                | `download-stt:hi`                   | _No streaming Zipformer transducer in official releases yet_ |
-| Portuguese           | `download-stt:pt`                   | _Not available for this example yet_                         |
-| Italian              | `download-stt:it`                   | _Not available for this example yet_                         |
+| Language              | npm script                          | Sherpa bundle                                                |
+| --------------------- | ----------------------------------- | ------------------------------------------------------------ |
+| English (default)     | `download-stt` or `download-stt:en` | `…-en-kroko-2025-08-06`                                      |
+| English (2023 legacy) | `download-stt:en-legacy`            | `…-en-2023-06-26`                                            |
+| Spanish               | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                      |
+| French                | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                      |
+| German                | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                      |
+| Chinese               | `download-stt:zh`                   | `…-zh-int8-2025-06-30`                                       |
+| Japanese              | `download-stt:ja`                   | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual)        |
+| Arabic                | `download-stt:ar`                   | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar`      |
+| Russian               | `download-stt:ru`                   | `…-small-ru-vosk-int8-2025-08-16`                            |
+| Bengali (South Asia)  | `download-stt:bn`                   | `…-bn-vosk-2026-02-09`                                       |
+| Hindi                 | `download-stt:hi`                   | _No streaming Zipformer transducer in official releases yet_ |
+| Portuguese            | `download-stt:pt`                   | _Not available for this example yet_                         |
+| Italian               | `download-stt:it`                   | _Not available for this example yet_                         |
 
 Generic form:
 
@@ -215,13 +215,13 @@ On startup you should see `[voice-debug] JsVoiceAgent native module loaded`. If 
 
 Logs go to **stderr** with `[voice-debug]` and `[webrtc-debug]` prefixes. Debug mode also relaxes VAD (`threshold=0.01`, `gateStt=false`). Optional overrides:
 
-| Variable                      | Effect                                |
-| ----------------------------- | ------------------------------------- |
-| `VOICE_VAD_THRESHOLD=0.005` | Lower energy threshold                |
-| `VOICE_VAD_MIN_SPEECH_MS`     | `minSpeechDurationMs`                 |
-| `VOICE_VAD_MIN_SILENCE_MS`    | `minSilenceDurationMs`                |
-| `VOICE_VAD_STT_GATE_HOLD_MS`  | `sttGateHoldMs` (default **1000**)    |
-| `VOICE_VAD_DISABLED=1`        | Skip VAD (STT still receives all PCM) |
+| Variable                     | Effect                                |
+| ---------------------------- | ------------------------------------- |
+| `VOICE_VAD_THRESHOLD=0.005`  | Lower energy threshold                |
+| `VOICE_VAD_MIN_SPEECH_MS`    | `minSpeechDurationMs`                 |
+| `VOICE_VAD_MIN_SILENCE_MS`   | `minSilenceDurationMs`                |
+| `VOICE_VAD_STT_GATE_HOLD_MS` | `sttGateHoldMs` (default **1000**)    |
+| `VOICE_VAD_DISABLED=1`       | Skip VAD (STT still receives all PCM) |
 
 STT/VAD tuning guide: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).
 

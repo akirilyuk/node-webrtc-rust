@@ -13,6 +13,7 @@ function stats(overrides: Partial<UtteranceEventStats>): UtteranceEventStats {
     speakingStartCount: 0,
     partialCount: 0,
     bargeInCount: 0,
+    agentSpeakingStartCount: 0,
     speakingEndAtMs: null,
     speechFinalAtMs: null,
     ...overrides,

@@ -25,7 +25,7 @@ When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix on
 | Native build plan | `build-main.yml`, `release.yml` | [`plan-native-builds`](../../.github/actions/plan-native-builds) |
 | Stage cached bindings | `reusable-stage-cached-bindings.yml` | Upload `bindings-*` from cache for skipped targets |
 | Local mirror | developer | `scripts/ci/verify-checks.sh`, `npm run ci:verify*` |
-| Release publish TS mirror | developer | `scripts/ci/verify-release-publish-ts.sh`, `npm run ci:verify:release-ts:docker` |
+| Release publish TS mirror | developer | `scripts/ci/verify-release-publish-ts.sh`, `npm run ci:verify:release-ts` |
 
 Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github/actions/ci-*` — update those and **[`scripts/ci/README.md`](../../scripts/ci/README.md)** when changing compile or test steps.
 
@@ -37,8 +37,8 @@ Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github
    ```bash
    bash scripts/ci/run-pr-quality.sh
    bash scripts/ci/verify-release-publish-ts.sh   # release publish TS path
-   npm run ci:verify:checks:docker                # when Docker is available
-   npm run ci:verify:release-ts:docker            # release publish in ci-build image
+   npm run ci:verify:checks                         # full PR check suite on host
+   npm run ci:verify:release-ts                     # release publish TS path
    ```
    Do not push until local commands exit 0.
 4. **If you change a script used by multiple workflows**, grep for references (`run-pr-quality`, `run-pr-integration`, `run-pr-tests-full`, `verify-checks`) and update every caller.
@@ -51,4 +51,4 @@ Shared build/test logic lives in `.github/workflows/reusable-*.yml` and `.github
 - Updating `run-pr-quality.sh` but leaving `verify-checks.sh` on the old command
 - Adding workflow-only steps that diverge from local `ci:verify` scripts
 - Testing CI changes only with `npm ci` (with scripts) when release publish uses `npm ci --ignore-scripts`
-- Skipping `ci:verify:release-ts:docker` for release/publish workflow edits
+- Skipping `ci:verify:release-ts` for release/publish workflow edits

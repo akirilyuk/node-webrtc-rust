@@ -4,7 +4,7 @@ Reusable **server-side** TypeScript helpers for voice agent apps — the same ab
 
 ## Install
 
-```bash
+````bash
 npm install @node-webrtc-rust/helpers @node-webrtc-rust/sdk @node-webrtc-rust/signaling
 
 ## Tests
@@ -13,14 +13,15 @@ From the **repo root** (not inside `packages/helpers/`):
 
 ```bash
 npm run test:helpers
-```
+````
 
 CI runs the same via [`scripts/ci/run-helpers-unit-tests.sh`](../../scripts/ci/run-helpers-unit-tests.sh) in the **Typecheck & lint** job (`build.yml` on PRs, `build-main.yml` on push to `main`). Before push (lint + helpers vitest when those paths changed):
 
 ```bash
 npm run ci:pre-push
 ```
-```
+
+````
 
 ## What's included
 
@@ -60,7 +61,7 @@ await pod.ensureSession('call-abc123')
 // Browser client joins signaling room `call-abc123` as `client-*`
 // → pod creates RTCPeerConnection + VoiceAgent
 // → on hangup: agent.stop(), PC close, optional idle session teardown
-```
+````
 
 Runnable demo: [`examples/voice-agent-multi-session-pod`](../../examples/voice-agent-multi-session-pod/).
 

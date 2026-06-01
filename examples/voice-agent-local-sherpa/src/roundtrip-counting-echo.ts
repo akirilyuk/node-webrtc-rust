@@ -371,6 +371,7 @@ export async function runEchoRound(params: {
           speakingStartCount: 0,
           partialCount: 0,
           bargeInCount: 0,
+          agentSpeakingStartCount: 0,
           speakingEndAtMs: null,
           speechFinalAtMs: null,
         },

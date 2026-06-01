@@ -14,7 +14,11 @@
  */
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
-import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+import {
+  VoiceAgent,
+  VOICE_AGENT_VAD_PRESET,
+  type VoiceAgentConfig,
+} from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { streamSilence } from './pcm-relay.js'
@@ -40,6 +44,26 @@ import {
 } from './roundtrip-counting-echo.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
+/** Agent2 plays TTS and must honor STT-gated barge-in (same as roundtrip-barge-in listener). */
+function agent2VadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
+  return {
+    ...VOICE_AGENT_VAD_PRESET,
+    ...base.vad,
+    provider: 'energy',
+    threshold: 0.05,
+    gateStt: true,
+    bargeIn: {
+      ...VOICE_AGENT_VAD_PRESET.bargeIn,
+      ...base.vad?.bargeIn,
+      enabled: true,
+      useVad: true,
+      flushTts: true,
+      requireSttPartial: true,
+      agentPlaybackGuardMs: 0,
+    },
+  }
+}
+
 export const DEFAULT_RECOVERY_PHRASE = 'hello testing recovery one two three'
 
 const DEFAULT_TIMEOUT_MS = 45_000
@@ -49,8 +73,8 @@ const DEFAULT_MIN_ECHO_RETENTION = 0.6
 const DEFAULT_WARMUP_S = 0.6
 const DEFAULT_INTER_LEG_GAP_S = 0.5
 const DEFAULT_INTER_ROUND_GAP_S = 1.0
-/** Ms after Agent2 TTS starts before user-tone barge-in (mid-playback). */
-const DEFAULT_BARGE_DELAY_MS = 400
+/** Ms after agent2 TTS playback starts before barge TTS (mid-playback). */
+const DEFAULT_BARGE_DELAY_MS = 700
 const DEFAULT_BARGE_TONE_S = 1.0
 /** Interrupted leg B must retain fewer number words than this. */
 const DEFAULT_MAX_INTERRUPT_NUMBER_WORDS = 6
@@ -118,6 +142,7 @@ export async function playEchoLegBWithBargeIn(params: {
   agentOut: LocalAudioTrack
   userOut: LocalAudioTrack
   collectorAgent1: ListenerUtteranceCollector
+  collectorAgent2: ListenerUtteranceCollector
   echoText: string
   bargeDelayMs: number
   bargeToneS: number
@@ -139,11 +164,12 @@ export async function playEchoLegBWithBargeIn(params: {
     params.echoText,
     DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
   )
+  const speakingStarted = params.collectorAgent2.waitForAgentSpeakingStart(params.timeoutMs)
   const speakPromise = params.agent2.sendTextToTTS(params.echoText)
 
+  await speakingStarted
   await sleep(params.bargeDelayMs)
-  const bargePhrase =
-    process.env.SHERPA_BARGE_RECOVERY_BARGE_PHRASE?.trim() || 'stop now please'
+  const bargePhrase = process.env.SHERPA_BARGE_RECOVERY_BARGE_PHRASE?.trim() || 'stop now please'
   console.log(
     `[${params.logLabel}] Barge via Sherpa TTS on agentOut: "${bargePhrase}" (${params.bargeToneS}s tail)…`,
   )
@@ -161,23 +187,18 @@ async function main(): Promise<void> {
 
   const countingPhrase =
     process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
-  const recoveryPhrase =
-    process.env.SHERPA_BARGE_RECOVERY_PHRASE?.trim() || DEFAULT_RECOVERY_PHRASE
+  const recoveryPhrase = process.env.SHERPA_BARGE_RECOVERY_PHRASE?.trim() || DEFAULT_RECOVERY_PHRASE
 
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
   const minNumberWords = Number(
     process.env.SHERPA_COUNTING_MIN_NUMBER_WORDS ?? DEFAULT_MIN_NUMBER_WORDS,
   )
-  const minEchoWords = Number(
-    process.env.SHERPA_COUNTING_ECHO_MIN_WORDS ?? DEFAULT_ECHO_MIN_WORDS,
-  )
+  const minEchoWords = Number(process.env.SHERPA_COUNTING_ECHO_MIN_WORDS ?? DEFAULT_ECHO_MIN_WORDS)
   const minEchoRetention = Number(
     process.env.SHERPA_ECHO_MIN_RETENTION ?? DEFAULT_MIN_ECHO_RETENTION,
   )
-  const bargeDelayMs = Number(
-    process.env.SHERPA_BARGE_RECOVERY_DELAY_MS ?? DEFAULT_BARGE_DELAY_MS,
-  )
+  const bargeDelayMs = Number(process.env.SHERPA_BARGE_RECOVERY_DELAY_MS ?? DEFAULT_BARGE_DELAY_MS)
   const bargeToneS = Number(process.env.SHERPA_BARGE_RECOVERY_TONE_S ?? DEFAULT_BARGE_TONE_S)
   const maxInterruptWords = Number(
     process.env.SHERPA_BARGE_RECOVERY_MAX_NUMBER_WORDS ?? DEFAULT_MAX_INTERRUPT_NUMBER_WORDS,
@@ -189,7 +210,9 @@ async function main(): Promise<void> {
 
   const finalizeWaitMs = sttFinalizeWaitMs(config)
   const postTtsSilenceS = postTtsSilenceSeconds(config)
-  const interLegGapS = Number(process.env.SHERPA_COUNTING_INTER_LEG_GAP_S ?? DEFAULT_INTER_LEG_GAP_S)
+  const interLegGapS = Number(
+    process.env.SHERPA_COUNTING_INTER_LEG_GAP_S ?? DEFAULT_INTER_LEG_GAP_S,
+  )
   const interRoundGapS = Number(
     process.env.SHERPA_COUNTING_INTER_ROUND_GAP_S ?? DEFAULT_INTER_ROUND_GAP_S,
   )
@@ -203,7 +226,9 @@ async function main(): Promise<void> {
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log(`Steps: (1) count→You said OK  (2) count→barge→partial  (3) recovery→You said OK`)
-  console.log(`Barge: delay=${bargeDelayMs}ms  tone=${bargeToneS}s  maxWords=${maxInterruptWords}  maxSim=${maxInterruptSimilarity}`)
+  console.log(
+    `Barge: delay=${bargeDelayMs}ms  tone=${bargeToneS}s  maxWords=${maxInterruptWords}  maxSim=${maxInterruptSimilarity}`,
+  )
   console.log('')
 
   const { agentOut, userInbound, userOut, agentInbound, cleanup } =
@@ -219,7 +244,7 @@ async function main(): Promise<void> {
     stt: config.stt,
     tts: config.tts,
     events: { mode: 'stream' },
-    vad: config.vad,
+    vad: agent2VadConfig(config),
   })
 
   await agent1.attach({ inboundTrack: agentInbound, outboundTrack: agentOut })
@@ -230,8 +255,18 @@ async function main(): Promise<void> {
   const warmupS = Number(process.env.SHERPA_ROUNDTRIP_WARMUP_S ?? DEFAULT_WARMUP_S)
   await Promise.all([streamSilence(agentOut, warmupS), streamSilence(userOut, warmupS)])
 
-  const collectorAgent1 = new ListenerUtteranceCollector(agent1, { value: false }, verbose, 'agent1')
-  const collectorAgent2 = new ListenerUtteranceCollector(agent2, { value: false }, verbose, 'agent2')
+  const collectorAgent1 = new ListenerUtteranceCollector(
+    agent1,
+    { value: false },
+    verbose,
+    'agent1',
+  )
+  const collectorAgent2 = new ListenerUtteranceCollector(
+    agent2,
+    { value: false },
+    verbose,
+    'agent2',
+  )
   collectorAgent1.startPump()
   collectorAgent2.startPump()
 
@@ -300,6 +335,7 @@ async function main(): Promise<void> {
     agentOut,
     userOut,
     collectorAgent1,
+    collectorAgent2,
     echoText: echoText2,
     bargeDelayMs,
     bargeToneS,
@@ -336,7 +372,9 @@ async function main(): Promise<void> {
   if (!round3.passed) failures.push(...round3.failures)
   else {
     const retention = wordSimilarity(legA2.recognized, round3.legB.recognized)
-    console.log(`✓ Round 3: recovery You said OK (retention vs count2: ${(retention * 100).toFixed(0)}%)`)
+    console.log(
+      `✓ Round 3: recovery You said OK (retention vs count2: ${(retention * 100).toFixed(0)}%)`,
+    )
     if (!transcriptIncludesYouSaid(round3.legB.recognized)) {
       failures.push('recovery leg B: missing "you said" in transcript')
     }

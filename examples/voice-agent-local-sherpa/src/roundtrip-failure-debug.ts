@@ -148,9 +148,7 @@ export function reportSherpaRoundtripFailure(ctx: SherpaRoundtripFailureContext)
     )
   }
   if (countingVerbose !== '1') {
-    console.error(
-      'For TS speech events add SHERPA_COUNTING_VERBOSE=1 (or set at start of script).',
-    )
+    console.error('For TS speech events add SHERPA_COUNTING_VERBOSE=1 (or set at start of script).')
   }
   console.error('Re-run example:')
   console.error(

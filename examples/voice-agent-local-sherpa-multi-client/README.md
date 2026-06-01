@@ -127,14 +127,14 @@ npm run test:helpers
 
 ## Environment
 
-| Variable                        | Default         | Purpose                     |
-| ------------------------------- | --------------- | --------------------------- |
-| `PORT`                          | `3004`          | HTTP + WebSocket            |
-| `VOICE_ROOM`                    | `sherpa-multi`  | Signaling room              |
-| `VOICE_MAX_CONCURRENT_SESSIONS` | `0` (unlimited) | Process-wide connection cap |
-| `SHERPA_STT_MODEL_PATH`         | —               | Required                    |
-| `SHERPA_TTS_MODEL_PATH`         | —               | Required                    |
-| `VOICE_VAD_MIN_SILENCE_MS`      | preset `300`    | Pause before STT hold starts  |
+| Variable                        | Default         | Purpose                               |
+| ------------------------------- | --------------- | ------------------------------------- |
+| `PORT`                          | `3004`          | HTTP + WebSocket                      |
+| `VOICE_ROOM`                    | `sherpa-multi`  | Signaling room                        |
+| `VOICE_MAX_CONCURRENT_SESSIONS` | `0` (unlimited) | Process-wide connection cap           |
+| `SHERPA_STT_MODEL_PATH`         | —               | Required                              |
+| `SHERPA_TTS_MODEL_PATH`         | —               | Required                              |
+| `VOICE_VAD_MIN_SILENCE_MS`      | preset `300`    | Pause before STT hold starts          |
 | `VOICE_VAD_STT_GATE_HOLD_MS`    | preset `1000`   | STT tail + `user_speaking_end` timing |
 
 VAD/STT flow tuning: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).

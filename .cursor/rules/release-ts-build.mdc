@@ -28,13 +28,7 @@ From `node-webrtc-rust/`:
 ```bash
 bash scripts/ci/run-pr-quality.sh
 bash scripts/ci/build-ts-workspace.sh   # or verify-release-publish-ts.sh
-bash scripts/ci/verify-release-publish-ts.sh
-```
-
-When Docker is available (matches remote ci-build container):
-
-```bash
-npm run ci:verify:release-ts:docker
+npm run ci:verify:release-ts
 ```
 
 That script runs **`build-ts-workspace.sh`** after typecheck. Do not skip it when touching release publish, SDK tsconfig, or workspace dependency pins.

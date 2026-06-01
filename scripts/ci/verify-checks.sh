@@ -45,6 +45,10 @@ run "bash scripts/ci/build-ts-workspace.sh"
 echo "==> release publish TS parity (npm ci --ignore-scripts + version bump)"
 run "bash scripts/ci/verify-release-publish-ts.sh"
 
+echo "==> restore workspace install after release publish simulation"
+run "bash scripts/ci/npm-ci-workspace.sh"
+run "npm run build:native"
+
 echo "==> cargo test (core, mixer, conference, speech)"
 run "cargo test -p node-webrtc-rust-core --lib"
 run "cargo test -p node-webrtc-rust-core --test peer_connection_test -- --test-threads=1"

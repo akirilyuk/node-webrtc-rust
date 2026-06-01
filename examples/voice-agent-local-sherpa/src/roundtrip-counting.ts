@@ -37,8 +37,7 @@ export const DEFAULT_COUNTING_PHRASE =
   'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty'
 
 /** Shorter phrase for bidirectional echo roundtrip (one … ten). */
-export const DEFAULT_COUNTING_PHRASE_ONE_TO_TEN =
-  'one two three four five six seven eight nine ten'
+export const DEFAULT_COUNTING_PHRASE_ONE_TO_TEN = 'one two three four five six seven eight nine ten'
 
 export const NUMBER_WORDS_ONE_TO_TWENTY = [
   'one',
@@ -82,8 +81,7 @@ export function installRoundtripWallClockTimeout(defaultWallMs = 90_000): void {
   const scriptName = currentRoundtripScript()
   enableSherpaRoundtripRustDebug()
   const rawWall = process.env.SHERPA_ROUNDTRIP_WALL_MS
-  let wallMs =
-    rawWall != null && rawWall !== '' ? Number(rawWall) : defaultWallMs
+  let wallMs = rawWall != null && rawWall !== '' ? Number(rawWall) : defaultWallMs
   if (!Number.isFinite(wallMs) || wallMs <= 0) {
     console.warn(
       `[${scriptName}] invalid SHERPA_ROUNDTRIP_WALL_MS=${String(rawWall)} — using default ${defaultWallMs} ms`,
@@ -134,8 +132,7 @@ export async function playSpeakerTtsWithPostSilence(params: {
   postTtsSilenceS: number
   playbackTimeoutMs?: number
 }): Promise<void> {
-  const playbackTimeoutMs =
-    params.playbackTimeoutMs ?? DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS
+  const playbackTimeoutMs = params.playbackTimeoutMs ?? DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS
   console.log(`[speaker] TTS synthesize (${params.phrase.length} chars)…`)
   await params.speaker.sendTextToTTS(params.phrase)
   await waitAgentTtsPlaybackEnd(params.phrase, playbackTimeoutMs)
@@ -149,6 +146,7 @@ export interface UtteranceEventStats {
   speakingStartCount: number
   partialCount: number
   bargeInCount: number
+  agentSpeakingStartCount: number
   /** Wall-clock ms when the first `user_speaking_end` of the current wait was recorded. */
   speakingEndAtMs: number | null
   /** Wall-clock ms when the first `user_speech_final` of the current wait was recorded. */
@@ -221,10 +219,7 @@ export interface FinalEventRecord {
   gapMs: number
 }
 
-export function finalRecordFromStats(
-  text: string,
-  stats: UtteranceEventStats,
-): FinalEventRecord {
+export function finalRecordFromStats(text: string, stats: UtteranceEventStats): FinalEventRecord {
   const speakingEndAtMs = stats.speakingEndAtMs ?? 0
   const finalAtMs = stats.speechFinalAtMs ?? 0
   return {
@@ -280,8 +275,7 @@ export function evaluateFinalSequence(params: {
   if (
     params.minNumberWordsFirst != null &&
     params.records[0] &&
-    countNumberWordsInTranscript(params.records[0].text, numberWords) <
-      params.minNumberWordsFirst
+    countNumberWordsInTranscript(params.records[0].text, numberWords) < params.minNumberWordsFirst
   ) {
     failures.push(
       `${who}final 1: expected at least ${params.minNumberWordsFirst} number words in "${params.records[0].text}"`,
@@ -518,9 +512,11 @@ export class ListenerUtteranceCollector {
     speakingStartCount: 0,
     partialCount: 0,
     bargeInCount: 0,
+    agentSpeakingStartCount: 0,
     speakingEndAtMs: null,
     speechFinalAtMs: null,
   }
+  private agentSpeakingWaiters: Array<() => void> = []
 
   constructor(
     private readonly listener: VoiceAgent,
@@ -541,8 +537,28 @@ export class ListenerUtteranceCollector {
     this.stats.speakingStartCount = 0
     this.stats.partialCount = 0
     this.stats.bargeInCount = 0
+    this.stats.agentSpeakingStartCount = 0
     this.stats.speakingEndAtMs = null
     this.stats.speechFinalAtMs = null
+  }
+
+  /** Resolve when the listener emits `agent_speaking_start` (TTS playback actually started). */
+  waitForAgentSpeakingStart(timeoutMs: number): Promise<void> {
+    if (this.stats.agentSpeakingStartCount > 0) {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = this.agentSpeakingWaiters.indexOf(onStart)
+        if (idx >= 0) this.agentSpeakingWaiters.splice(idx, 1)
+        reject(new Error(`timed out waiting for agent_speaking_start (${timeoutMs} ms)`))
+      }, timeoutMs)
+      const onStart = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+      this.agentSpeakingWaiters.push(onStart)
+    })
   }
 
   private recordEvent(event: SpeechEvent): void {
@@ -567,6 +583,12 @@ export class ListenerUtteranceCollector {
         break
       case 'barge_in':
         this.stats.bargeInCount += 1
+        break
+      case 'agent_speaking_start':
+        this.stats.agentSpeakingStartCount += 1
+        for (const resolve of this.agentSpeakingWaiters.splice(0)) {
+          resolve()
+        }
         break
       default:
         break
@@ -692,7 +714,9 @@ async function main(): Promise<void> {
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log(`Phrase length: ${phrase.split(/\s+/).length} words`)
-  console.log(`Assertions: 1× user_speech_final, 1× user_speaking_end, ≥${minNumberWords}/20 number words`)
+  console.log(
+    `Assertions: 1× user_speech_final, 1× user_speaking_end, ≥${minNumberWords}/20 number words`,
+  )
   console.log(`Timing: postTtsSilence=${postTtsSilenceS.toFixed(1)}s  timeout=${timeoutMs}ms`)
   console.log('')
 

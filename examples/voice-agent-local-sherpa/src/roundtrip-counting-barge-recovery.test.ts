@@ -13,9 +13,7 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
   })
 
   it('evaluateInterruptedEchoLeg passes when transcript is a short tail', () => {
-    const echoText = formatAgent2EchoReply(
-      'one two three four five six seven eight nine ten',
-    )
+    const echoText = formatAgent2EchoReply('one two three four five six seven eight nine ten')
     const result = evaluateInterruptedEchoLeg({
       echoText,
       recognized: 'you said one two three four',

@@ -59,8 +59,7 @@ async function speakPhrase(params: {
 async function main(): Promise<void> {
   installRoundtripWallClockTimeout(70_000)
 
-  const phrase1 =
-    process.env.SHERPA_TWO_PHRASE_FIRST?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
+  const phrase1 = process.env.SHERPA_TWO_PHRASE_FIRST?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
   const phrase2 = process.env.SHERPA_TWO_PHRASE_SECOND?.trim() || DEFAULT_PHRASE_TWO
   const maxGapMs = Number(
     process.env.SHERPA_MAX_SPEAKING_END_TO_FINAL_MS ?? DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS,

@@ -208,15 +208,15 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 
 ## Speech events and barge-in
 
-| Event                          | Source       | When to use in your agent                  |
-| ------------------------------ | ------------ | ------------------------------------------ |
-| `user_speaking_start`          | VAD          | Fast interrupt signal; pairs with barge-in |
+| Event                          | Source       | When to use in your agent                                                 |
+| ------------------------------ | ------------ | ------------------------------------------------------------------------- |
+| `user_speaking_start`          | VAD          | Fast interrupt signal; pairs with barge-in                                |
 | `user_speaking_end`            | VAD + hold   | End-of-utterance hint (`gateStt`: after `sttGateHoldMs`, not first pause) |
-| `user_speech_partial`          | STT          | Live captions, early LLM prefetch          |
-| `user_speech_final`            | STT          | **Primary turn trigger** for LLM           |
-| `agent_speaking_start` / `end` | TTS playback | UI/state machine                           |
-| `barge_in`                     | VAD + config | User interrupted agent — cancel LLM/TTS    |
-| `error`                        | Any          | Vendor or pipeline failure                 |
+| `user_speech_partial`          | STT          | Live captions, early LLM prefetch                                         |
+| `user_speech_final`            | STT          | **Primary turn trigger** for LLM                                          |
+| `agent_speaking_start` / `end` | TTS playback | UI/state machine                                                          |
+| `barge_in`                     | VAD + config | User interrupted agent — cancel LLM/TTS                                   |
+| `error`                        | Any          | Vendor or pipeline failure                                                |
 
 **Barge-in** is two independent toggles under `vad.bargeIn`:
 
@@ -436,9 +436,10 @@ Linux builds and tests use a prebuilt container image (`ghcr.io/akirilyuk/node-w
 Before opening a PR, mirror CI locally to save Actions minutes:
 
 ```bash
-npm run ci:verify:linux          # Linux napi cross-builds (Docker, same as CI)
-npm run ci:verify:checks:docker  # format, lint, typecheck, cargo test, npm test
-npm run ci:verify                # both
+npm run build:native             # host .node for npm test
+npm run ci:verify:checks         # format, lint, typecheck, cargo test, npm test, Sherpa E2E
+npm run ci:verify                # alias for ci:verify:checks
+npm run ci:verify:linux          # optional: Linux napi cross-builds in Docker
 ```
 
 ---

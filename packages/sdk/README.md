@@ -210,15 +210,15 @@ tts: {
 
 Two layers — **fast VAD** vs **text-bearing STT**:
 
-| Event                          | Source                                | Use in your agent                           |
-| ------------------------------ | ------------------------------------- | ------------------------------------------- |
-| `user_speaking_start`          | VAD `SpeechStart`                     | User began talking (inbound voice activity) |
+| Event                          | Source                                | Use in your agent                             |
+| ------------------------------ | ------------------------------------- | --------------------------------------------- |
+| `user_speaking_start`          | VAD `SpeechStart`                     | User began talking (inbound voice activity)   |
 | `user_speaking_end`            | VAD + `sttGateHoldMs` (`gateStt`)     | End-of-utterance hint (not first short pause) |
-| `user_speech_partial`          | STT                                   | Live captions, prefetch                     |
-| `user_speech_final`            | STT                                   | **Primary LLM turn trigger**                |
-| `agent_speaking_start` / `end` | TTS playback                          | UI / state machine                          |
-| `barge_in`                     | VAD `SpeechStart` + `bargeIn.enabled` | Cancel agent TTS (after optional flush)     |
-| `error`                        | Any                                   | Vendor or pipeline failure                  |
+| `user_speech_partial`          | STT                                   | Live captions, prefetch                       |
+| `user_speech_final`            | STT                                   | **Primary LLM turn trigger**                  |
+| `agent_speaking_start` / `end` | TTS playback                          | UI / state machine                            |
+| `barge_in`                     | VAD `SpeechStart` + `bargeIn.enabled` | Cancel agent TTS (after optional flush)       |
+| `error`                        | Any                                   | Vendor or pipeline failure                    |
 
 ### VAD and barge-in
 

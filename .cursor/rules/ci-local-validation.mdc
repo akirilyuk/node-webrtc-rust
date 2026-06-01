@@ -20,7 +20,8 @@ See [`scripts/ci/README.md`](../../scripts/ci/README.md) for pipeline layout.
 |------------|--------------|-------|
 | PR quality (`build.yml`) | `bash scripts/ci/run-pr-quality.sh` | `npm ci`, typecheck, lint, helpers vitest (no dist build) |
 | PR TS build (`build.yml`) | `bash scripts/ci/build-ts-workspace.sh` | once per CI run; cached for Test |
-| PR test (`build.yml`) | `bash scripts/ci/run-pr-integration.sh` | needs linux-gnu `.node` |
+| PR test (`build.yml`) | `bash scripts/ci/run-pr-integration.sh` | needs linux-gnu `.node`; Sherpa barge-in E2E + model download |
+| Sherpa example only | `bash scripts/ci/run-sherpa-example-ci.sh typecheck` / `e2e` | `e2e` needs `.node` + ~160 MB models (cached under `examples/voice-agent-local-sherpa/.models/`) |
 | Release publish TS (`release.yml`) | `bash scripts/ci/verify-release-publish-ts.sh` | **`npm ci --ignore-scripts`** + version bump + `build-ts-workspace.sh` |
 | PR + release checks in ci-build image | `npm run ci:verify:checks:docker` | runs inside `docker/ci` (same base as self-hosted compile/test) |
 | Release publish TS in ci-build image | `npm run ci:verify:release-ts:docker` | **required** when editing release publish or TS build scripts |

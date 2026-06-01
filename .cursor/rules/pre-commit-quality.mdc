@@ -25,9 +25,9 @@ npm run ci:verify:checks:docker
 
 | Step | Mirrors CI job | Catches |
 |------|----------------|---------|
-| `run-pr-quality.sh` | Typecheck & lint | `npm ci` + **`fix-rollup-native.sh`**, eslint, tsc, **`run-helpers-unit-tests.sh`** (build-ts-workspace when dist missing, then vitest) |
+| `run-pr-quality.sh` | Typecheck & lint | `npm ci` + **`fix-rollup-native.sh`**, eslint, tsc, **`run-helpers-unit-tests.sh`**, **Sherpa example `tsc`** ([`run-sherpa-example-ci.sh typecheck`](../../scripts/ci/run-sherpa-example-ci.sh)) |
 | `build:native` | Compile native | Stale `.node` missing new NAPI methods (e.g. `setOnIceGatheringStateChange`) |
-| `run-pr-tests-full.sh` | Quality + Test | `cargo test`, `npm test` (sdk e2e, signaling, vitest) |
+| `run-pr-tests-full.sh` | Quality + Test | `cargo test`, `npm test`, **Sherpa `start:roundtrip-barge-in`** (downloads EN models on first run) |
 
 `run-pr-tests-full.sh` = `run-pr-quality.sh` + `run-pr-integration.sh`. On macOS, `build:native` produces the host debug `.node` that `npm test` loads.
 
@@ -35,7 +35,8 @@ npm run ci:verify:checks:docker
 
 | Changed paths | Required before commit |
 |---------------|------------------------|
-| `packages/sdk/`, `packages/signaling/`, `examples/` | **quality + build:native + tests**; SDK/bindings: also **`bash scripts/ci/build-ts-workspace.sh`** or **`verify-release-publish-ts.sh`** |
+| `packages/sdk/`, `packages/signaling/`, `examples/` | **`run-pr-quality.sh`** + **`build:native`** + **`run-pr-tests-full.sh`** (includes Sherpa typecheck + barge-in E2E); SDK/bindings: also **`build-ts-workspace.sh`** / **`verify-release-publish-ts.sh`** |
+| `examples/voice-agent-local-sherpa/` only | **`run-pr-quality.sh`** at minimum (eslint + Sherpa typecheck); full parity needs **`run-pr-tests-full.sh`** + models |
 | `packages/helpers/`, `packages/sdk/`, `packages/signaling/`, multi-client example | **`npm run ci:pre-push`** (lint + **build-ts-workspace** + vitest) or full **`npm run ci:quality`** |
 | `packages/sdk/src/**` (types/exports) | Also run **`bash scripts/ci/build-ts-workspace.sh`** — see [`sdk-build.mdc`](sdk-build.mdc) |
 | `packages/bindings/`, `crates/` | **quality + build:native + tests** (rebuild native after bindings changes) |

@@ -47,4 +47,7 @@ fi
 echo "==> npm test"
 npm test
 
+echo "==> Sherpa example E2E (semantic barge-in roundtrip)"
+bash scripts/ci/run-sherpa-example-ci.sh e2e
+
 echo "==> Integration tests OK"

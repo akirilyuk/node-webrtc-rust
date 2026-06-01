@@ -24,4 +24,7 @@ npm run lint
 echo "==> helpers unit tests (vitest, no native .node)"
 bash scripts/ci/run-helpers-unit-tests.sh
 
+echo "==> Sherpa example typecheck"
+bash scripts/ci/run-sherpa-example-ci.sh typecheck
+
 echo "==> Quality checks OK"

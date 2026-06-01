@@ -65,15 +65,17 @@ Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with three
 | ------------ | ------------------------------------------------------------------------------------- |
 | `native`     | `Cargo.*`, `crates/**`, `packages/bindings/**` (excluding generated `.node` / loader) |
 | `typescript` | `packages/sdk/**`, `packages/signaling/**`, lockfile, tsconfigs, eslint, prettier     |
+| `helpers`    | `packages/helpers/**`, `examples/voice-agent-local-sherpa-multi-client/**`          |
+| `examples`   | `examples/**` (Sherpa roundtrip scripts, eslint on example TS, typecheck + E2E)       |
 | `workflows`  | `.github/**`, `docker/ci/**`                                                          |
 
 If none match, the whole workflow is skipped.
 
 ### 2. Typecheck & lint
 
-- **When:** `native` OR `typescript` OR `helpers` OR `workflows`
+- **When:** `native` OR `typescript` OR `helpers` OR `examples` OR `workflows`
 - **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
-- **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest
+- **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
 - Runs [`build-ts-workspace.sh`](build-ts-workspace.sh) inside [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh) when sdk/signaling/helpers `dist/` is missing (fresh CI checkout). Job 4 still builds once for Test cache.
 
 Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
@@ -231,7 +233,8 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 | [`list-release-targets.sh`](list-release-targets.sh)           | plan / stage scripts               | Canonical six release triples                                                         |
 | [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity    | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh`                      |
 | [`build-ts-workspace.sh`](build-ts-workspace.sh)               | PR build-ts + integration fallback | sdk core → signaling → full sdk                                                       |
-| [`run-pr-integration.sh`](run-pr-integration.sh)               | PR test job                        | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test, optional build:ts, npm test |
+| [`run-pr-integration.sh`](run-pr-integration.sh)               | PR test job                        | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test (incl. speech), optional build:ts, npm test, [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh) |
+| [`run-sherpa-example-ci.sh`](run-sherpa-example-ci.sh)         | quality (`typecheck`) + test (`e2e`) | Sherpa example `tsc`; `start:roundtrip-barge-in` after `download-stt:en` + `download-tts:en` |
 | [`run-pr-tests-full.sh`](run-pr-tests-full.sh)                 | local `ci:verify`                  | quality + integration                                                                 |
 | [`run-pr-integration.sh`](run-pr-integration.sh)               | main + release test                | integration only (after quality job)                                                  |
 | [`verify-checks.sh`](verify-checks.sh)                         | `npm run ci:verify:checks*`        | Local mirror of quality + integration                                                 |

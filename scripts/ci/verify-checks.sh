@@ -53,4 +53,7 @@ run "cargo test -p node-webrtc-rust-speech"
 echo "==> npm test"
 run "npm test"
 
+echo "==> Sherpa example typecheck + semantic barge-in E2E"
+run "bash scripts/ci/run-sherpa-example-ci.sh all"
+
 echo "==> PR checks OK"

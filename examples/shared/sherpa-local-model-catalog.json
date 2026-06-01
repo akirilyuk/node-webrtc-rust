@@ -5,10 +5,20 @@
   "models": [
     {
       "id": "en",
-      "label": "English",
+      "label": "English (Kroko)",
+      "bundle": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
+      "language": "en",
+      "kind": "transducer",
+      "note": "Kroko Zipformer — better accuracy than the 2023 LibriSpeech baseline; ~119 MB compressed.",
+      "approxMb": "~119"
+    },
+    {
+      "id": "en-legacy",
+      "label": "English (2023 baseline)",
       "bundle": "sherpa-onnx-streaming-zipformer-en-2023-06-26",
       "language": "en",
       "kind": "transducer",
+      "note": "Older LibriSpeech Zipformer; use en (Kroko) unless you need this exact bundle.",
       "approxMb": "~296"
     },
     {

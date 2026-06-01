@@ -8,6 +8,7 @@
     "download-stt": "node scripts/download-stt.mjs",
     "download-stt:list": "node scripts/download-stt.mjs --list",
     "download-stt:en": "node scripts/download-stt.mjs --lang=en",
+    "download-stt:en-legacy": "node scripts/download-stt.mjs --lang=en-legacy",
     "download-stt:es": "node scripts/download-stt.mjs --lang=es",
     "download-stt:pt": "node scripts/download-stt.mjs --lang=pt",
     "download-stt:ar": "node scripts/download-stt.mjs --lang=ar",

@@ -83,10 +83,10 @@ npm run download-tts:es --workspace=@node-webrtc-rust/example-voice-agent-local-
 npm run download-tts:de --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-This fetches **English streaming Zipformer** STT (`sherpa-onnx-streaming-zipformer-en-2023-06-26`, ~70 MB compressed) from the official Sherpa-ONNX releases and extracts it to:
+This fetches **English streaming Zipformer (Kroko)** STT (`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`, ~119 MB compressed) from the official Sherpa-ONNX releases and extracts it to:
 
 ```text
-examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26/
+examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/
 ```
 
 Expected files inside:
@@ -110,7 +110,8 @@ Per-language shortcuts (from repo root) — full table also in [`examples/shared
 
 | Language             | npm script                          | Sherpa bundle                                                |
 | -------------------- | ----------------------------------- | ------------------------------------------------------------ |
-| English (default)    | `download-stt` or `download-stt:en` | `…-en-2023-06-26`                                            |
+| English (default)    | `download-stt` or `download-stt:en` | `…-en-kroko-2025-08-06`                                      |
+| English (2023 legacy) | `download-stt:en-legacy`           | `…-en-2023-06-26`                                            |
 | Spanish              | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                      |
 | French               | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                      |
 | German               | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                      |
@@ -143,7 +144,7 @@ For the **multilingual** Japanese/Arabic bundle, always set `SHERPA_STT_LANGUAGE
 From **`node-webrtc-rust`** repo root (paths printed by the download scripts):
 
 ```bash
-export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
 export SHERPA_TTS_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low"
 export SHERPA_TTS_SPEAKER=0   # optional — Piper speaker id for multi-speaker models
 ```
@@ -217,7 +218,7 @@ Startup logs show the active pipeline and model path:
 Local Sherpa voice demo at http://localhost:3002
 Voice pipeline: local Sherpa-ONNX (browser mic → on-device STT)
 STT=local-sherpa  TTS=local-sherpa
-SHERPA_STT_MODEL_PATH=.../sherpa-onnx-streaming-zipformer-en-2023-06-26
+SHERPA_STT_MODEL_PATH=.../sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
 SHERPA_TTS_MODEL_PATH=.../vits-piper-en_US-amy-low
 ```
 
@@ -237,7 +238,7 @@ Visit [http://localhost:3002](http://localhost:3002) (override with `PORT=`).
 If the download script fails (no `tar`, firewall, etc.):
 
 1. Open [Sherpa-ONNX ASR model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)
-2. Download `sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2`
+2. Download `sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2` (or `npm run download-stt:en`)
 3. Extract anywhere on disk
 4. Set `SHERPA_STT_MODEL_PATH` to the extracted folder containing `tokens.txt` and the three ONNX files
 

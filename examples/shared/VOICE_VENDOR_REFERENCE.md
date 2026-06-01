@@ -15,7 +15,7 @@ Sherpa local model catalog (download scripts): [`sherpa-local-model-catalog.json
 | Deepgram            | `deepgram`     | `nova-2`                                        | [Live streaming audio](https://developers.deepgram.com/docs/live-streaming-audio) · [Models](https://developers.deepgram.com/docs/models)  |
 | Google Cloud        | `google`       | `latest_long`                                   | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs)                                                                             |
 | AssemblyAI          | `assemblyai`   | `universal-streaming-english`                   | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                                  |
-| Sherpa-ONNX (local) | `local-sherpa` | `sherpa-onnx-streaming-zipformer-en-2023-06-26` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Pre-trained models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
+| Sherpa-ONNX (local) | `local-sherpa` | `sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Pre-trained models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
 | Mock                | `mock`         | _(deterministic test harness)_                  | [`crates/vendor-mock`](../../crates/vendor-mock/)                                                                                          |
 
 ### Local Sherpa-ONNX — free on-device STT (recommended)
@@ -32,7 +32,8 @@ On-device STT uses **streaming Zipformer transducer** bundles (encoder + decoder
 
 | Language             | Lang id | npm download script                 | Sherpa bundle                                           |
 | -------------------- | ------- | ----------------------------------- | ------------------------------------------------------- |
-| English              | `en`    | `download-stt` or `download-stt:en` | `…-en-2023-06-26`                                       |
+| English (default)    | `en`    | `download-stt` or `download-stt:en` | `…-en-kroko-2025-08-06`                                 |
+| English (2023 legacy) | `en-legacy` | `download-stt:en-legacy`        | `…-en-2023-06-26`                                       |
 | Spanish              | `es`    | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                 |
 | French               | `fr`    | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                 |
 | German               | `de`    | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                 |

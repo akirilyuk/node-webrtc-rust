@@ -187,7 +187,8 @@ Automatic downloads (from repo root):
 ```bash
 npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-npm run download-tts:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
+export SHERPA_TTS_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low"
 ```
 
 Supported languages, bundle names, and unavailable locales (Hindi, Portuguese, Italian): [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models). Full walkthrough: [`examples/voice-agent-local-sherpa/README.md`](../../examples/voice-agent-local-sherpa/README.md).

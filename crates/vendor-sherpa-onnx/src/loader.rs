@@ -28,6 +28,13 @@ fn parse_thread_env(name: &str) -> Option<i32> {
         .map(|value| value.min(i32::MAX as usize) as i32)
 }
 
+fn parse_f32_env(name: &str) -> Option<f32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
 static STT_RECOGNIZER_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static TTS_ENGINE_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -47,9 +54,12 @@ pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecogn
         Some(path_to_string(&paths.joiner)?);
     recognizer_config.model_config.tokens = Some(path_to_string(&paths.tokens)?);
     recognizer_config.enable_endpoint = true;
-    recognizer_config.rule1_min_trailing_silence = 2.4;
-    recognizer_config.rule2_min_trailing_silence = 1.0;
-    recognizer_config.rule3_min_utterance_length = 20.0;
+    recognizer_config.rule1_min_trailing_silence =
+        parse_f32_env("SHERPA_STT_RULE1_MIN_TRAILING_SILENCE").unwrap_or(2.4);
+    recognizer_config.rule2_min_trailing_silence =
+        parse_f32_env("SHERPA_STT_RULE2_MIN_TRAILING_SILENCE").unwrap_or(1.0);
+    recognizer_config.rule3_min_utterance_length =
+        parse_f32_env("SHERPA_STT_RULE3_MIN_UTTERANCE_LENGTH").unwrap_or(20.0);
     recognizer_config.decoding_method = Some("greedy_search".into());
 
     let recognizer = OnlineRecognizer::create(&recognizer_config).ok_or_else(|| {

@@ -4,8 +4,8 @@
  * Prerequisites:
  *   npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *   npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
- *   export SHERPA_STT_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/<stt-bundle>
- *   export SHERPA_TTS_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/<tts-bundle>
+ *   export SHERPA_STT_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
+ *   export SHERPA_TTS_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
  *
  * Run:
  *   npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa

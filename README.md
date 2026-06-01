@@ -195,7 +195,7 @@ For production voice agents that handle **sensitive audio** or need **lower STT 
 ```bash
 npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
 export SHERPA_TTS_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low"
 npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```

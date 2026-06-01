@@ -52,7 +52,7 @@ npm run build:native   # after Rust changes
 npm run download-stt:en --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run download-tts:en --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 
-export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
 export SHERPA_TTS_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low"
 
 npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa

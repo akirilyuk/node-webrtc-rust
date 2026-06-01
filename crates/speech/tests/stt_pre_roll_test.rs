@@ -21,6 +21,62 @@ struct CountingStt {
     bytes: Arc<Mutex<usize>>,
 }
 
+struct FinalizingStt {
+    finalize_calls: Arc<Mutex<usize>>,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for FinalizingStt {
+    fn vendor_name(&self) -> &'static str {
+        "finalizing"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, _pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        Ok(None)
+    }
+
+    async fn finalize_utterance(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.finalize_calls.lock().unwrap() += 1;
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
+struct FinalizingFactory {
+    finalize_calls: Arc<Mutex<usize>>,
+}
+
+impl VendorFactory for FinalizingFactory {
+    fn create_stt(
+        &self,
+        _config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        Ok(Box::new(FinalizingStt {
+            finalize_calls: Arc::clone(&self.finalize_calls),
+        }))
+    }
+
+    fn create_tts(
+        &self,
+        _config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(_config)
+    }
+}
+
 #[async_trait::async_trait]
 impl SttProvider for CountingStt {
     fn vendor_name(&self) -> &'static str {
@@ -403,4 +459,70 @@ async fn min_silence_default_300_requires_fifteen_silent_frames_to_end() {
         }
     }
     assert!(saw_end, "expected user_speaking_end after sustained silence");
+}
+
+#[tokio::test]
+async fn gate_stt_hold_expiry_finalizes_on_same_frame_without_new_speech() {
+    let finalize_calls = Arc::new(Mutex::new(0_usize));
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::new(FinalizingFactory {
+            finalize_calls: Arc::clone(&finalize_calls),
+        }),
+    );
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 60;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: None,
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    for _ in 0..3 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    // Speech end (20 ms silence) + hold drain (60 ms) = 4 silent frames at 20 ms.
+    for _ in 0..4 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(
+        *finalize_calls.lock().unwrap(),
+        1,
+        "STT finalize must run when gate hold expires — not only after the next SpeechStart"
+    );
 }

@@ -384,7 +384,10 @@ impl VoiceAgent {
             }
         }
 
-        if gate_stt && !stt_gate_open {
+        // Hold expiry must still run endpoint tail + finalize even though the gate closes on
+        // the same frame (hold_ms reaches 0). Skipping here caused user_speech_final to fire
+        // only after the next SpeechStart opened the gate again.
+        if gate_stt && !stt_gate_open && !hold_just_expired {
             voice_debug(format!(
                 "process_inbound_pcm call={call} skipped: gate_stt closed (not speaking, hold expired)"
             ));

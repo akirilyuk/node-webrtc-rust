@@ -20,6 +20,13 @@ import type { LocalAudioTrack, RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 import type { SpeechEvent, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
+import {
+  evaluateSemanticBargeEventOrder,
+  evaluateToneMustNotBarge,
+  recordSpeechEvent,
+  type RecordedSpeechEvent,
+} from './roundtrip-barge-in-helpers.js'
+
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { stereoPcmDurationMs, streamSilence, streamTone } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
@@ -95,22 +102,19 @@ class InboundAudioMeter {
   }
 }
 
-function countBargeInEvents(events: SpeechEvent[]): number {
-  return events.filter((e) => e.type === 'barge_in').length
-}
-
 async function collectSpeechEventsDuring(
   agent: VoiceAgent,
   durationMs: number,
   verbose: boolean,
-): Promise<SpeechEvent[]> {
-  const collected: SpeechEvent[] = []
-  const doneAt = Date.now() + durationMs
+): Promise<RecordedSpeechEvent[]> {
+  const collected: RecordedSpeechEvent[] = []
+  const startedAtMs = Date.now()
+  const doneAt = startedAtMs + durationMs
 
-  const pump = (async () => {
+  void (async () => {
     for await (const event of agent.speechEvents()) {
       if (Date.now() > doneAt) break
-      collected.push(event)
+      recordSpeechEvent(collected, event, startedAtMs)
       if (verbose) {
         const extra = event.text ? ` ${JSON.stringify(event.text)}` : ''
         console.log(`[listener] ${event.type}${extra}`)
@@ -130,16 +134,12 @@ async function runMidPlaybackInterrupt(params: {
   interrupt: () => Promise<void>
   eventWindowMs: number
   verbose: boolean
-}): Promise<{ receivedMs: number; events: SpeechEvent[] }> {
+}): Promise<{ receivedMs: number; events: RecordedSpeechEvent[] }> {
   const meter = new InboundAudioMeter()
   meter.start(params.userInbound)
 
   const eventCollectMs = params.eventWindowMs
-  const eventsPromise = collectSpeechEventsDuring(
-    params.listener,
-    eventCollectMs,
-    params.verbose,
-  )
+  const eventsPromise = collectSpeechEventsDuring(params.listener, eventCollectMs, params.verbose)
 
   const ttsDone = params.listener.sendTextToTTS(params.agentPhrase)
 
@@ -160,12 +160,9 @@ async function main(): Promise<void> {
     process.env.SHERPA_BARGE_IN_PHRASE?.trim() ||
     process.argv.slice(2).join(' ').trim() ||
     DEFAULT_AGENT_PHRASE
-  const bargePhrase =
-    process.env.SHERPA_BARGE_IN_BARGE_PHRASE?.trim() || DEFAULT_BARGE_TTS_PHRASE
+  const bargePhrase = process.env.SHERPA_BARGE_IN_BARGE_PHRASE?.trim() || DEFAULT_BARGE_TTS_PHRASE
   const bargeDelayMs = Number(process.env.SHERPA_BARGE_IN_DELAY_MS ?? DEFAULT_BARGE_DELAY_MS)
-  const toneInterruptS = Number(
-    process.env.SHERPA_BARGE_IN_TONE_S ?? DEFAULT_TONE_INTERRUPT_S,
-  )
+  const toneInterruptS = Number(process.env.SHERPA_BARGE_IN_TONE_S ?? DEFAULT_TONE_INTERRUPT_S)
   const maxCutRatio = Number(process.env.SHERPA_BARGE_IN_MAX_RATIO ?? DEFAULT_MAX_CUT_RATIO)
   const minFullAfterNoise = Number(
     process.env.SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE ?? DEFAULT_MIN_FULL_RATIO_AFTER_NOISE,
@@ -244,12 +241,15 @@ async function main(): Promise<void> {
     verbose,
   })
   const noiseRatio = noiseResult.receivedMs / fullMs
-  const noiseBarges = countBargeInEvents(noiseResult.events)
-  console.log(`Pre-interrupt received: ${noiseResult.receivedMs} ms (${(noiseRatio * 100).toFixed(0)}% of full)`)
+  const noiseBarges = noiseResult.events.filter((e) => e.type === 'barge_in').length
+  const toneEval = evaluateToneMustNotBarge({ events: noiseResult.events, bargeCount: noiseBarges })
+  console.log(
+    `Pre-interrupt received: ${noiseResult.receivedMs} ms (${(noiseRatio * 100).toFixed(0)}% of full)`,
+  )
   console.log(`barge_in count during tone: ${noiseBarges}`)
 
-  if (noiseBarges > 0) {
-    failures.push(`Phase 2: tone must not emit barge_in (saw ${noiseBarges})`)
+  if (!toneEval.passed) {
+    failures.push(...toneEval.failures.map((f) => `Phase 2: ${f}`))
   }
   if (noiseRatio < minFullAfterNoise) {
     failures.push(
@@ -275,15 +275,26 @@ async function main(): Promise<void> {
     verbose,
   })
   const speechRatio = speechResult.receivedMs / fullMs
-  const speechBarges = countBargeInEvents(speechResult.events)
-  const sawPartial = speechResult.events.some(
-    (e) => e.type === 'user_speech_partial' && (e.text?.trim().length ?? 0) >= 2,
+  const orderEval = evaluateSemanticBargeEventOrder({
+    events: speechResult.events,
+    label: 'Phase 3',
+  })
+  console.log(
+    `Pre-barge received: ${speechResult.receivedMs} ms (${(speechRatio * 100).toFixed(0)}% of full)`,
   )
-  console.log(`Pre-barge received: ${speechResult.receivedMs} ms (${(speechRatio * 100).toFixed(0)}% of full)`)
-  console.log(`barge_in=${speechBarges}  user_speech_partial=${sawPartial}`)
+  if (
+    orderEval.partialAtMs != null &&
+    orderEval.bargeAtMs != null &&
+    orderEval.agentEndAtMs != null
+  ) {
+    console.log(
+      `Event order (ms from phase start): agent_speaking_start=${orderEval.agentStartAtMs} → ` +
+        `partial=${orderEval.partialAtMs} → barge_in=${orderEval.bargeAtMs} → agent_speaking_end=${orderEval.agentEndAtMs}`,
+    )
+  }
 
-  if (speechBarges < 1) {
-    failures.push('Phase 3: expected barge_in after STT partial from user TTS phrase')
+  if (!orderEval.passed) {
+    failures.push(...orderEval.failures)
   }
   if (speechRatio >= maxCutRatio) {
     failures.push(

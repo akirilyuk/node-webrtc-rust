@@ -37,7 +37,8 @@
     "start:roundtrip-barge-in": "tsx src/roundtrip-barge-in.ts",
     "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
     "test": "vitest run",
-    "test:roundtrip-counting": "vitest run src/roundtrip-counting.test.ts src/roundtrip-counting-echo.test.ts src/roundtrip-counting-barge-recovery.test.ts src/roundtrip-utterance-timing.test.ts src/roundtrip-two-phrases.test.ts",
+    "test:roundtrip-counting": "vitest run src/roundtrip-counting.test.ts src/roundtrip-counting-echo.test.ts src/roundtrip-counting-barge-recovery.test.ts src/roundtrip-utterance-timing.test.ts src/roundtrip-two-phrases.test.ts src/roundtrip-barge-in.test.ts",
+    "test:roundtrip-barge-in": "vitest run src/roundtrip-barge-in.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

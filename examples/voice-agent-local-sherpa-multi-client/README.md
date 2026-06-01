@@ -81,6 +81,8 @@ export SHERPA_TTS_MODEL_PATH=.../voice-agent-local-sherpa/.models/vits-piper-en_
 npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
 ```
 
+If port **3004** was left in use, `npm run start` stops the previous listener automatically ([`shared/free-port.ts`](../shared/free-port.ts)). Disable with `VOICE_SKIP_FREE_PORT=1`.
+
 Open **three tabs** to [http://localhost:3004](http://localhost:3004):
 
 - `http://localhost:3004/?slot=1`

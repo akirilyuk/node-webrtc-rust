@@ -23,6 +23,7 @@ import { fileURLToPath } from 'url'
 import { SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 import { SERVER_PEER_ID, VoiceAgentSessionHost } from '@node-webrtc-rust/helpers'
 
+import { freePort } from '../../shared/free-port.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import { isVoiceDebugEnabled } from '@node-webrtc-rust/sdk/voice'
 
@@ -125,6 +126,8 @@ async function main(): Promise<void> {
 
     await serveStatic(req, res)
   })
+
+  freePort(PORT, 'voice-agent-local-sherpa')
 
   const signaling = new SignalingServer({ server: httpServer, path: '/ws' })
   await signaling.listen(PORT)

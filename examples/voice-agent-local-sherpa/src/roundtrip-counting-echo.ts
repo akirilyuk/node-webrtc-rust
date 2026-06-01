@@ -222,7 +222,7 @@ export function evaluateEchoRound(params: {
   }
 }
 
-async function playTtsAndCollect(params: {
+export async function playTtsAndCollect(params: {
   speaker: VoiceAgent
   speakerOut: LocalAudioTrack
   listenerCollector: ListenerUtteranceCollector
@@ -246,7 +246,7 @@ async function playTtsAndCollect(params: {
   ]).then(([, text]) => text)
 }
 
-async function runEchoRound(params: {
+export async function runEchoRound(params: {
   name: string
   kind: EchoRoundKind
   sourcePhrase: string
@@ -318,6 +318,8 @@ async function runEchoRound(params: {
           speakingStartCount: 0,
           partialCount: 0,
           bargeInCount: 0,
+          speakingEndAtMs: null,
+          speechFinalAtMs: null,
         },
         passed: false,
         failures: [`${params.name}: skipped leg B — leg A failed`],

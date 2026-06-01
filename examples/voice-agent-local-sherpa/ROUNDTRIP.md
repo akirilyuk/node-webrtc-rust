@@ -65,6 +65,9 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **Batch (default)** | `npm run start:roundtrip` — 5 built-in sentences + similarity table |
 | **Counting 1–20**   | `npm run start:roundtrip-counting` — one long utterance, single final (see below) |
 | **Counting echo**   | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below) |
+| **Barge recovery**  | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below) |
+| **Utterance timing** | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below) |
+| **Two phrases**     | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below) |
 | **Single phrase**   | `npm run start:roundtrip -- "I love America"`                       |
 | **Single via env**  | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`     |
 
@@ -115,6 +118,69 @@ npm run start:roundtrip-counting-echo --workspace=@node-webrtc-rust/example-voic
 | `SHERPA_COUNTING_INTER_ROUND_GAP_S` | `1.0` | Silence between round 1 and round 2 |
 
 Other `SHERPA_COUNTING_*` vars apply (`TIMEOUT_MS`, `VERBOSE`, etc.).
+
+## Counting barge-in recovery roundtrip
+
+[`src/roundtrip-counting-barge-recovery.ts`](./src/roundtrip-counting-barge-recovery.ts) extends the echo harness with a **barge-in** step and a **recovery** round:
+
+| Step | What happens | Pass criteria |
+| ---- | ------------ | ------------- |
+| **1 — baseline** | Agent1 counts 1–10 → Agent2 → `You said: …` → Agent1 | Full echo (same as counting echo round 1) |
+| **2 — barge** | Agent1 counts again → Agent2 starts `You said: …` → tone on `agentOut` after guard | Agent1 hears **partial** echo (≤6 number words, similarity ≤55% vs full phrase) |
+| **3 — recovery** | Agent1 speaks recovery phrase → full `You said: …` again | Echo leg includes “you said” and passes sentence echo checks |
+
+```bash
+npm run build:native
+# models + SHERPA_*_MODEL_PATH as in Quick start
+npm run start:roundtrip-counting-barge-recovery --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+| Env | Default | Purpose |
+| --- | ------- | ------- |
+| `SHERPA_BARGE_RECOVERY_PHRASE` | `hello testing recovery one two three` | Round 3 source phrase |
+| `SHERPA_BARGE_RECOVERY_DELAY_MS` | `1500` | Ms after Agent2 TTS starts before barge tone (should exceed `agentPlaybackGuardMs`) |
+| `SHERPA_BARGE_RECOVERY_TONE_S` | `1.0` | Duration of barge-in tone on `agentOut` |
+| `SHERPA_BARGE_RECOVERY_MAX_NUMBER_WORDS` | `6` | Max number tokens on interrupted leg B |
+| `SHERPA_BARGE_RECOVERY_MAX_SIMILARITY` | `0.55` | Max word similarity vs full `You said: …` text on interrupted leg |
+
+Unit tests include `roundtrip-counting-barge-recovery.test.ts` in `npm run test:roundtrip-counting`.
+
+## Two-phrase roundtrip (multi-client turn-taking)
+
+[`src/roundtrip-two-phrases.ts`](./src/roundtrip-two-phrases.ts) simulates **two separate user turns** on one listener (same as one browser tab in multi-client):
+
+| Turn | TTS phrase | Expected |
+| ---- | ---------- | -------- |
+| **1** | `one two … ten` | `user_speaking_end` then `user_speech_final` (gap ≤500 ms) |
+| **pause** | wall-clock silence (`interPhraseSilenceSeconds`) | Turn 1 fully finalized before turn 2 |
+| **2** | `I am done speaking` | Second `user_speaking_end` + `user_speech_final` |
+
+In **multi-client**, each `user_speech_final` should trigger `voice-handler` → `You said: …` (**two agent replies**). This roundtrip does not run the handler; it only proves the Rust pipeline emits **2 finals**.
+
+```bash
+npm run build:native
+npm run start:roundtrip-two-phrases --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+| Env | Default | Purpose |
+| --- | ------- | ------- |
+| `SHERPA_TWO_PHRASE_FIRST` | `one two … ten` | Turn 1 |
+| `SHERPA_TWO_PHRASE_SECOND` | `I am done speaking` | Turn 2 |
+| `SHERPA_TWO_PHRASE_EXTRA_GAP_S` | `1.5` | Extra silence between turns (on top of VAD-derived post-TTS tail) |
+
+## Utterance timing roundtrip (`user_speaking_end` ↔ `user_speech_final`)
+
+[`src/roundtrip-utterance-timing.ts`](./src/roundtrip-utterance-timing.ts) plays one counting phrase and asserts **`user_speaking_end` arrives at most 500 ms before `user_speech_final`** (regression for Sherpa finalize lag with the STT gate closed early).
+
+```bash
+npm run build:native
+npm run start:roundtrip-utterance-timing --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+| Env | Default | Purpose |
+| --- | ------- | ------- |
+| `SHERPA_MAX_SPEAKING_END_TO_FINAL_MS` | `500` | Max allowed gap between the two events |
+| `SHERPA_UTTERANCE_TIMING_PHRASE` | `one two … ten` | Spoken phrase |
 
 | Env | Default | Purpose |
 | --- | ------- | ------- |
@@ -301,6 +367,30 @@ npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-age
 | `SHERPA_BARGE_IN_VERBOSE`     | off                    | Log speaker speech events                                     |
 
 Success ends with `Barge-in E2E OK — TTS playback was truncated after user interrupt.`
+
+## What each roundtrip catches (confidence matrix)
+
+Passing **unit tests alone** (`npm run test:roundtrip-counting`) does **not** run Sherpa — it only checks evaluators. For release confidence, run **native build + these E2E scripts** (with models):
+
+| Script | Catches | Does **not** catch |
+| ------ | ------- | ------------------ |
+| `start:roundtrip-counting` | One long utterance → **1** final; no mid-count duplicate finals | Second phrase after pause; `speaking_end` without final; multi-client handler |
+| `start:roundtrip-utterance-timing` | `user_speaking_end` → `user_speech_final` within 500 ms (one turn) | Dropped first turn when user speaks again; 2× finals |
+| `start:roundtrip-two-phrases` | **2×** `user_speech_final` with pause between (multi-client turn pattern) | Agent TTS echo; `voice-handler` ignore during `agent_speaking` |
+| `start:roundtrip-counting-echo` | Bidirectional “You said” after **one** counting round | Pending finalize cleared on new `SpeechStart` (fixed in Rust) |
+| `start:roundtrip-counting-barge-recovery` | Barge truncates echo; recovery echo works | Browser UI timing |
+
+**Why the bugs you saw slipped through:** earlier tests waited for **one** final per run and never simulated **phrase 1 → long pause → phrase 2** on the same listener. `SpeechStart` cleared `stt_finalize_pending`, so turn 1 never finalized until turn 2 merged in Sherpa.
+
+**Recommended pre-merge check (Sherpa):**
+
+```bash
+cd node-webrtc-rust
+npm run build:native
+npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run start:roundtrip-utterance-timing --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run start:roundtrip-two-phrases --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
 
 ## Related docs
 

@@ -8,6 +8,7 @@ import type { MuteScope } from '@node-webrtc-rust/sdk/conference'
 
 import { ManualSignalingServer } from './manual-signaling'
 
+import { freePort } from '../../shared/free-port.js'
 import { DisplayNameRegistry } from './display-names'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -272,6 +273,8 @@ async function main(): Promise<void> {
     },
   })
   signaling.attachConference(conference)
+
+  freePort(PORT, 'conference-room-manual-signaling')
 
   await new Promise<void>((resolve, reject) => {
     httpServer.listen(PORT, () => resolve())

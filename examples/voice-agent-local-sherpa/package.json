@@ -31,10 +31,13 @@
     "start:roundtrip": "tsx src/roundtrip.ts",
     "start:roundtrip-counting": "tsx src/roundtrip-counting.ts",
     "start:roundtrip-counting-echo": "tsx src/roundtrip-counting-echo.ts",
+    "start:roundtrip-counting-barge-recovery": "tsx src/roundtrip-counting-barge-recovery.ts",
+    "start:roundtrip-utterance-timing": "tsx src/roundtrip-utterance-timing.ts",
+    "start:roundtrip-two-phrases": "tsx src/roundtrip-two-phrases.ts",
     "start:roundtrip-barge-in": "tsx src/roundtrip-barge-in.ts",
     "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
     "test": "vitest run",
-    "test:roundtrip-counting": "vitest run src/roundtrip-counting.test.ts src/roundtrip-counting-echo.test.ts",
+    "test:roundtrip-counting": "vitest run src/roundtrip-counting.test.ts src/roundtrip-counting-echo.test.ts src/roundtrip-counting-barge-recovery.test.ts src/roundtrip-utterance-timing.test.ts src/roundtrip-two-phrases.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

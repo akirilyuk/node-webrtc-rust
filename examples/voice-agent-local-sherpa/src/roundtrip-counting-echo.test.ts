@@ -21,6 +21,8 @@ const okStats = {
   speakingStartCount: 1,
   partialCount: 3,
   bargeInCount: 0,
+  speakingEndAtMs: 1000,
+  speechFinalAtMs: 1100,
 }
 
 describe('roundtrip-counting-echo helpers', () => {

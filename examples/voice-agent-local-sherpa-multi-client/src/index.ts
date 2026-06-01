@@ -34,6 +34,7 @@ import {
   startMultiClientVoiceServer,
 } from '@node-webrtc-rust/helpers'
 
+import { freePort } from '../../shared/free-port.js'
 import { resolveVoiceConfig } from '../../voice-agent-local-sherpa/src/resolve-voice-config.js'
 import { isVoiceDebugEnabled } from '@node-webrtc-rust/sdk/voice'
 
@@ -126,6 +127,8 @@ async function serveStatic(
 }
 
 async function main(): Promise<void> {
+  freePort(PORT, 'voice-agent-local-sherpa-multi-client')
+
   const sessionBudget = getProcessVoiceSessionBudget()
 
   const server = await startMultiClientVoiceServer({

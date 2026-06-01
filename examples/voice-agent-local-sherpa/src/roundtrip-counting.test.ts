@@ -32,6 +32,8 @@ describe('roundtrip-counting helpers', () => {
         speakingStartCount: 1,
         partialCount: 12,
         bargeInCount: 0,
+        speakingEndAtMs: null,
+        speechFinalAtMs: null,
       },
       minNumberWords: 16,
     })
@@ -50,6 +52,8 @@ describe('roundtrip-counting helpers', () => {
         speakingStartCount: 2,
         partialCount: 4,
         bargeInCount: 0,
+        speakingEndAtMs: null,
+        speechFinalAtMs: null,
       },
     })
     expect(result.passed).toBe(false)

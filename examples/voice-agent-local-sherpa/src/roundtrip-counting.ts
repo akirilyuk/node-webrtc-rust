@@ -70,6 +70,234 @@ export interface UtteranceEventStats {
   speakingStartCount: number
   partialCount: number
   bargeInCount: number
+  /** Wall-clock ms when the first `user_speaking_end` of the current wait was recorded. */
+  speakingEndAtMs: number | null
+  /** Wall-clock ms when the first `user_speech_final` of the current wait was recorded. */
+  speechFinalAtMs: number | null
+}
+
+/** Default max gap between `user_speaking_end` and `user_speech_final` (regression for Sherpa close). */
+export const DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS = 500
+
+export interface SpeakingEndFinalTimingResult {
+  gapMs: number | null
+  passed: boolean
+  failures: string[]
+}
+
+/** Assert `user_speaking_end` immediately precedes `user_speech_final` within a tight window. */
+export function evaluateSpeakingEndFinalTiming(params: {
+  stats: UtteranceEventStats
+  maxGapMs?: number
+  label?: string
+}): SpeakingEndFinalTimingResult {
+  const maxGapMs = params.maxGapMs ?? DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS
+  const who = params.label ? `${params.label}: ` : ''
+  const failures: string[] = []
+
+  if (params.stats.speakingEndCount !== 1) {
+    failures.push(
+      `${who}expected exactly 1 user_speaking_end, got ${params.stats.speakingEndCount}`,
+    )
+  }
+  if (params.stats.finals.length !== 1) {
+    failures.push(`${who}expected exactly 1 user_speech_final, got ${params.stats.finals.length}`)
+  }
+
+  const endAt = params.stats.speakingEndAtMs
+  const finalAt = params.stats.speechFinalAtMs
+  let gapMs: number | null = null
+
+  if (endAt == null) {
+    failures.push(`${who}missing timestamp for user_speaking_end`)
+  }
+  if (finalAt == null) {
+    failures.push(`${who}missing timestamp for user_speech_final`)
+  }
+  if (endAt != null && finalAt != null) {
+    gapMs = finalAt - endAt
+    if (gapMs < 0) {
+      failures.push(
+        `${who}user_speech_final arrived ${-gapMs} ms before user_speaking_end (expected end then final)`,
+      )
+    } else if (gapMs > maxGapMs) {
+      failures.push(
+        `${who}user_speaking_end → user_speech_final gap ${gapMs} ms exceeds ${maxGapMs} ms`,
+      )
+    }
+  }
+
+  return {
+    gapMs,
+    passed: failures.length === 0,
+    failures,
+  }
+}
+
+/** One paired `user_speaking_end` → `user_speech_final` from the event stream. */
+export interface FinalEventRecord {
+  text: string
+  speakingEndAtMs: number
+  finalAtMs: number
+  gapMs: number
+}
+
+export interface FinalSequenceEvaluation {
+  passed: boolean
+  failures: string[]
+}
+
+/** Evaluate every final in a multi-phrase session (timing + optional text checks). */
+export function evaluateFinalSequence(params: {
+  records: FinalEventRecord[]
+  expectedCount: number
+  maxGapMs?: number
+  label?: string
+  /** Optional per-index substring checks (index 0 = first final). */
+  textIncludes?: Array<string | undefined>
+  minNumberWordsFirst?: number
+  numberWords?: readonly string[]
+}): FinalSequenceEvaluation {
+  const maxGapMs = params.maxGapMs ?? DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS
+  const who = params.label ? `${params.label}: ` : ''
+  const failures: string[] = []
+  const numberWords = params.numberWords ?? NUMBER_WORDS_ONE_TO_TEN
+
+  if (params.records.length !== params.expectedCount) {
+    failures.push(
+      `${who}expected ${params.expectedCount} user_speech_final events, got ${params.records.length}`,
+    )
+  }
+
+  for (let i = 0; i < params.records.length; i++) {
+    const rec = params.records[i]
+    if (rec.gapMs < 0) {
+      failures.push(`${who}final ${i + 1}: user_speech_final before user_speaking_end`)
+    } else if (rec.gapMs > maxGapMs) {
+      failures.push(
+        `${who}final ${i + 1}: speaking_end→final gap ${rec.gapMs} ms exceeds ${maxGapMs} ms`,
+      )
+    }
+    const need = params.textIncludes?.[i]?.trim()
+    if (need && !rec.text.toLowerCase().includes(need.toLowerCase())) {
+      failures.push(`${who}final ${i + 1}: expected text to include ${JSON.stringify(need)}`)
+    }
+  }
+
+  if (
+    params.minNumberWordsFirst != null &&
+    params.records[0] &&
+    countNumberWordsInTranscript(params.records[0].text, numberWords) <
+      params.minNumberWordsFirst
+  ) {
+    failures.push(
+      `${who}final 1: expected at least ${params.minNumberWordsFirst} number words in "${params.records[0].text}"`,
+    )
+  }
+
+  return { passed: failures.length === 0, failures }
+}
+
+/** Extra wall time between two TTS phrases so the listener VAD can end turn 1 before turn 2. */
+export function interPhraseSilenceSeconds(config: VoiceAgentConfig): number {
+  const extra = Number(process.env.SHERPA_TWO_PHRASE_EXTRA_GAP_S ?? 1.5)
+  return postTtsSilenceSeconds(config) + extra
+}
+
+/**
+ * Collects every `user_speech_final` in order (multi-turn STT — like browser multi-client).
+ */
+export class FinalSequenceCollector {
+  readonly records: FinalEventRecord[] = []
+  private pendingSpeakingEndAt: number | null = null
+  private waitTarget = 0
+  private waitResolve: (() => void) | null = null
+  private waitReject: ((error: Error) => void) | null = null
+  private waitTimer: ReturnType<typeof setTimeout> | undefined
+
+  constructor(
+    private readonly listener: VoiceAgent,
+    private readonly pumpStarted: { value: boolean },
+    private readonly verbose: boolean,
+  ) {}
+
+  startPump(): void {
+    if (this.pumpStarted.value) return
+    this.pumpStarted.value = true
+    void this.pump()
+  }
+
+  private async pump(): Promise<void> {
+    try {
+      for await (const event of this.listener.speechEvents()) {
+        if (this.verbose) {
+          const detail =
+            event.type === 'user_speech_partial' || event.type === 'user_speech_final'
+              ? ` ${JSON.stringify(event.text ?? '')}`
+              : ''
+          console.log(`[listener] ${event.type}${detail}`)
+        }
+        if (event.type === 'user_speaking_end') {
+          this.pendingSpeakingEndAt = Date.now()
+        }
+        if (event.type === 'user_speech_final') {
+          const finalAt = Date.now()
+          const speakingEndAt = this.pendingSpeakingEndAt ?? finalAt
+          this.pendingSpeakingEndAt = null
+          const text = (event.text ?? '').trim()
+          this.records.push({
+            text,
+            speakingEndAtMs: speakingEndAt,
+            finalAtMs: finalAt,
+            gapMs: finalAt - speakingEndAt,
+          })
+          if (this.waitResolve && this.records.length >= this.waitTarget) {
+            this.clearWait()
+            this.waitResolve()
+          }
+        }
+      }
+    } catch (error) {
+      if (this.waitReject) {
+        this.fail(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+  }
+
+  private clearWait(): void {
+    if (this.waitTimer) clearTimeout(this.waitTimer)
+    this.waitTimer = undefined
+    this.waitResolve = null
+    this.waitReject = null
+    this.waitTarget = 0
+  }
+
+  private fail(error: Error): void {
+    this.clearWait()
+    this.waitReject?.(error)
+  }
+
+  /** Resolves when `records.length` reaches at least `count` (1-based count). */
+  waitForFinalCount(count: number, timeoutMs: number): Promise<void> {
+    if (this.records.length >= count) {
+      return Promise.resolve()
+    }
+    if (this.waitResolve) {
+      return Promise.reject(new Error('Already waiting for a final count'))
+    }
+    this.waitTarget = count
+    return new Promise((resolve, reject) => {
+      this.waitResolve = resolve
+      this.waitReject = reject
+      this.waitTimer = setTimeout(() => {
+        this.fail(
+          new Error(
+            `Timed out after ${timeoutMs} ms waiting for final #${count} (have ${this.records.length})`,
+          ),
+        )
+      }, timeoutMs)
+    })
+  }
 }
 
 export interface CountingRoundtripResult {
@@ -207,6 +435,8 @@ export class ListenerUtteranceCollector {
     speakingStartCount: 0,
     partialCount: 0,
     bargeInCount: 0,
+    speakingEndAtMs: null,
+    speechFinalAtMs: null,
   }
 
   constructor(
@@ -227,15 +457,23 @@ export class ListenerUtteranceCollector {
     this.stats.speakingStartCount = 0
     this.stats.partialCount = 0
     this.stats.bargeInCount = 0
+    this.stats.speakingEndAtMs = null
+    this.stats.speechFinalAtMs = null
   }
 
   private recordEvent(event: SpeechEvent): void {
     switch (event.type as SpeechEventType) {
       case 'user_speech_final':
         this.stats.finals.push((event.text ?? '').trim())
+        if (this.stats.speechFinalAtMs == null) {
+          this.stats.speechFinalAtMs = Date.now()
+        }
         break
       case 'user_speaking_end':
         this.stats.speakingEndCount += 1
+        if (this.stats.speakingEndAtMs == null) {
+          this.stats.speakingEndAtMs = Date.now()
+        }
         break
       case 'user_speaking_start':
         this.stats.speakingStartCount += 1

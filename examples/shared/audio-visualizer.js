@@ -27,13 +27,7 @@
  * @returns {AudioVisualizer}
  */
 export function attachAudioVisualizer(options) {
-  const {
-    canvas,
-    audioElement,
-    mediaStream,
-    waveColor = '#38bdf8',
-    barColor = '#818cf8',
-  } = options
+  const { canvas, audioElement, mediaStream, waveColor = '#38bdf8', barColor = '#818cf8' } = options
 
   if (!audioElement && !mediaStream) {
     throw new Error('attachAudioVisualizer requires audioElement or mediaStream')
@@ -52,8 +46,7 @@ export function attachAudioVisualizer(options) {
   // Prefer MediaStream tap: works reliably with WebRTC remote tracks while the
   // <audio> element plays the same stream independently.
   const streamSource =
-    mediaStream ??
-    (audioElement?.srcObject instanceof MediaStream ? audioElement.srcObject : null)
+    mediaStream ?? (audioElement?.srcObject instanceof MediaStream ? audioElement.srcObject : null)
 
   if (streamSource) {
     audioCtx.createMediaStreamSource(streamSource).connect(analyser)

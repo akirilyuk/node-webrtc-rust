@@ -76,9 +76,9 @@ describe('ConferenceServer', () => {
       JSON.stringify({ type: 'join', participantId: 'alice', roomId: 'mute-room' }),
     )
 
-    await expect(
-      room.muteParticipant('alice', { scope: 'listener' }),
-    ).rejects.toThrow(/listenerId/i)
+    await expect(room.muteParticipant('alice', { scope: 'listener' })).rejects.toThrow(
+      /listenerId/i,
+    )
 
     await server.destroyRoom('mute-room')
   })

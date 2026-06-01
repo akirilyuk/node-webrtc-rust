@@ -20,7 +20,13 @@
       <section class="panel hint-panel">
         <h2>Try multiple sessions</h2>
         <ol>
-          <li>Start the pod: <code>npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod</code></li>
+          <li>
+            Start the pod:
+            <code
+              >npm run start
+              --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod</code
+            >
+          </li>
           <li>Open this page in tab A with session <code>call-1</code>, connect, speak.</li>
           <li>Open tab B with session <code>call-2</code> — both run on the same pod.</li>
           <li>Disconnect tab A — watch the server log tear down that session's agent.</li>
@@ -41,7 +47,9 @@
       <section class="panel audio-panel">
         <h2>Your microphone</h2>
         <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform"></canvas>
-        <p id="mic-viz-status" class="viz-status">Connect and allow microphone to visualize input</p>
+        <p id="mic-viz-status" class="viz-status">
+          Connect and allow microphone to visualize input
+        </p>
       </section>
 
       <section class="panel audio-panel">

@@ -36,10 +36,7 @@ export const DEFAULT_BUNDLE =
 const REQUIRED_KEYS = ['tokens.txt', 'encoder', 'decoder', 'joiner']
 
 function parseArgs(argv) {
-  let lang =
-    process.env.SHERPA_STT_LANGUAGE?.trim() ??
-    process.env.SHERPA_LANGUAGE?.trim() ??
-    ''
+  let lang = process.env.SHERPA_STT_LANGUAGE?.trim() ?? process.env.SHERPA_LANGUAGE?.trim() ?? ''
   let list = false
 
   for (const arg of argv) {
@@ -127,7 +124,9 @@ export function downloadSherpaSttModel(modelId = DEFAULT_MODEL_ID) {
   }
 
   if (entry.kind !== 'transducer' || !entry.bundle) {
-    throw new Error(`${entry.label} (${entry.id}): ${entry.note ?? 'No downloadable bundle for this example.'}`)
+    throw new Error(
+      `${entry.label} (${entry.id}): ${entry.note ?? 'No downloadable bundle for this example.'}`,
+    )
   }
 
   const targetDir = bundleDir(entry.bundle)

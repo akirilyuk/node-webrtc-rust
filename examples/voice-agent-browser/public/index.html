@@ -11,9 +11,9 @@
       <header>
         <h1>Voice Agent — Browser Client</h1>
         <p>
-          Your microphone is sent to a Node <strong>VoiceAgent</strong> over WebRTC. Speech
-          events (STT, VAD, barge-in) arrive on a <code>voice-control</code> data channel.
-          Send text from this page to trigger TTS playback on the agent audio track.
+          Your microphone is sent to a Node <strong>VoiceAgent</strong> over WebRTC. Speech events
+          (STT, VAD, barge-in) arrive on a <code>voice-control</code> data channel. Send text from
+          this page to trigger TTS playback on the agent audio track.
         </p>
       </header>
 
@@ -29,8 +29,15 @@
 
       <section class="panel audio-panel">
         <h2>Your microphone</h2>
-        <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform and spectrum"></canvas>
-        <p id="mic-viz-status" class="viz-status">Connect and allow microphone to visualize input</p>
+        <canvas
+          id="mic-viz"
+          width="640"
+          height="160"
+          aria-label="Microphone waveform and spectrum"
+        ></canvas>
+        <p id="mic-viz-status" class="viz-status">
+          Connect and allow microphone to visualize input
+        </p>
       </section>
 
       <section class="panel audio-panel">
@@ -54,16 +61,18 @@
       <section class="panel hint-panel">
         <h2>Test barge-in</h2>
         <ol>
-          <li>Click <strong>Speak long reply</strong> and wait until you hear the agent talking.</li>
+          <li>
+            Click <strong>Speak long reply</strong> and wait until you hear the agent talking.
+          </li>
           <li>While the agent is still speaking, talk into your microphone.</li>
           <li>
-            Watch the event log for <code>barge_in</code> — the server flushes TTS and notifies
-            you over the data channel.
+            Watch the event log for <code>barge_in</code> — the server flushes TTS and notifies you
+            over the data channel.
           </li>
         </ol>
         <p class="hint">
-          Mock STT emits a final transcript after ~1 s of speech. Partial and VAD events appear
-          as you talk.
+          Mock STT emits a final transcript after ~1 s of speech. Partial and VAD events appear as
+          you talk.
         </p>
       </section>
 

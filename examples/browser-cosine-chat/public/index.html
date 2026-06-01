@@ -11,8 +11,8 @@
       <header>
         <h1>Browser Cosine + Chat</h1>
         <p>
-          Connect with native browser WebRTC. The Node server streams a 440 Hz cosine tone;
-          clients in the same room chat over peer-to-peer data channels.
+          Connect with native browser WebRTC. The Node server streams a 440 Hz cosine tone; clients
+          in the same room chat over peer-to-peer data channels.
         </p>
       </header>
 
@@ -32,7 +32,12 @@
 
       <section class="panel audio-panel">
         <h2>Incoming audio track</h2>
-        <canvas id="incoming-viz" width="640" height="160" aria-label="Incoming audio waveform"></canvas>
+        <canvas
+          id="incoming-viz"
+          width="640"
+          height="160"
+          aria-label="Incoming audio waveform"
+        ></canvas>
         <p id="viz-status" class="viz-status">Waiting for server track…</p>
         <audio id="tone" controls autoplay playsinline></audio>
         <p id="audio-status">Waiting for server track…</p>
@@ -49,7 +54,9 @@
 
       <section id="debug-panel" class="panel debug-panel" hidden>
         <h2>Debug log</h2>
-        <p class="debug-hint">Visible when URL contains <code>?debug</code> — also mirrored to the browser console.</p>
+        <p class="debug-hint">
+          Visible when URL contains <code>?debug</code> — also mirrored to the browser console.
+        </p>
         <pre id="debug-log"></pre>
       </section>
     </main>

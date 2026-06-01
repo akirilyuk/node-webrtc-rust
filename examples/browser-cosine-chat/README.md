@@ -39,10 +39,10 @@ sequenceDiagram
 
 Each browser tab has **two** peer connections:
 
-| Connection | Purpose |
-| --- | --- |
+| Connection                | Purpose                                 |
+| ------------------------- | --------------------------------------- |
 | Browser ↔ `cosine-server` | Server-pushed 440 Hz tone (audio track) |
-| Browser ↔ Browser | Room chat (data channel, mesh) |
+| Browser ↔ Browser         | Room chat (data channel, mesh)          |
 
 ---
 
@@ -61,12 +61,12 @@ connects. Receivers will not get a usable track without it.
 
 Implementation: `src/cosine-room-host.ts` (one async loop per browser client).
 
-| Step | When | Action |
-| --- | --- | --- |
-| 1 | Client joins room | Create `LocalAudioTrack`, `addTrack`, send offer |
-| 2 | Answer + ICE | Queue remote ICE until `setRemoteDescription(answer)` completes |
-| 3 | `connected` | **Prime:** `writeSample(960 B, 5 ms)` — kicks browser ontrack |
-| 4 | Loop every 20 ms | **Stream:** `writeSample(3840 B, 20 ms)` — await each call |
+| Step | When              | Action                                                          |
+| ---- | ----------------- | --------------------------------------------------------------- |
+| 1    | Client joins room | Create `LocalAudioTrack`, `addTrack`, send offer                |
+| 2    | Answer + ICE      | Queue remote ICE until `setRemoteDescription(answer)` completes |
+| 3    | `connected`       | **Prime:** `writeSample(960 B, 5 ms)` — kicks browser ontrack   |
+| 4    | Loop every 20 ms  | **Stream:** `writeSample(3840 B, 20 ms)` — await each call      |
 
 Shared constants and rationale: [`examples/shared/pcm-streaming.ts`](../shared/pcm-streaming.ts).
 
@@ -74,11 +74,11 @@ Shared constants and rationale: [`examples/shared/pcm-streaming.ts`](../shared/p
 
 RTP timestamp advance comes from `durationMs`, not byte length.
 
-| Kick | Browser ontrack | Continuous tone |
-| --- | --- | --- |
-| 960 B @ 20 ms (default) | Yes | **No** — RTP timeline breaks after first blip |
-| 3840 B @ 20 ms only | **No** in this stack | N/A |
-| **960 B @ 5 ms** then 3840 B @ 20 ms | Yes | **Yes** |
+| Kick                                 | Browser ontrack      | Continuous tone                               |
+| ------------------------------------ | -------------------- | --------------------------------------------- |
+| 960 B @ 20 ms (default)              | Yes                  | **No** — RTP timeline breaks after first blip |
+| 3840 B @ 20 ms only                  | **No** in this stack | N/A                                           |
+| **960 B @ 5 ms** then 3840 B @ 20 ms | Yes                  | **Yes**                                       |
 
 ### Browser receiver (`public/client.js`)
 
@@ -122,13 +122,13 @@ instead of `client-*` ids.
 
 ## Troubleshooting
 
-| Problem | Check |
-| --- | --- |
+| Problem                             | Check                                                                                                            |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | "Waiting for server track…" forever | Server logs for `Streaming … Hz tone to client-*`; prime frame after `connected`; browser console for ICE errors |
-| One blip then silence | Streaming loop must **await** each `writeSample` — see `CosineStreamServer.runTick` |
-| Server crash on join | ICE applied before answer — see `pendingIce` in `cosine-room-host.ts` |
-| Chat shows client ids | Hello handshake not received — open two tabs, same room, both connected |
-| No audio, track attached | Browser autoplay — click Connect (user gesture); check `<audio autoplay playsinline>` |
+| One blip then silence               | Streaming loop must **await** each `writeSample` — see `CosineStreamServer.runTick`                              |
+| Server crash on join                | ICE applied before answer — see `pendingIce` in `cosine-room-host.ts`                                            |
+| Chat shows client ids               | Hello handshake not received — open two tabs, same room, both connected                                          |
+| No audio, track attached            | Browser autoplay — click Connect (user gesture); check `<audio autoplay playsinline>`                            |
 
 Debug logging:
 

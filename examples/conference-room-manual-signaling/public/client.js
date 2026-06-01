@@ -426,9 +426,7 @@ async function muteParticipant(targetId, scope, muted) {
     )
   } else {
     appendLog(
-      muted
-        ? `You muted ${targetName} in your mix only`
-        : `You unmuted ${targetName} in your mix`,
+      muted ? `You muted ${targetName} in your mix only` : `You unmuted ${targetName} in your mix`,
     )
   }
 }

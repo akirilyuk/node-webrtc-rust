@@ -25,31 +25,31 @@ Shared helpers and comments: `src/shared-loopback.ts`, `examples/shared/pcm-stre
 
 ## Mock demos (CI-safe)
 
-| Script | File | Teaches |
-|--------|------|---------|
-| `start:callback` | `src/callback.ts` | `agent.on()` event handlers |
-| `start:stream` | `src/stream.ts` | `for await … speechEvents()` |
-| `start:barge-in` | `src/barge-in.ts` | VAD + `bargeIn.flushTts` |
+| Script           | File              | Teaches                      |
+| ---------------- | ----------------- | ---------------------------- |
+| `start:callback` | `src/callback.ts` | `agent.on()` event handlers  |
+| `start:stream`   | `src/stream.ts`   | `for await … speechEvents()` |
+| `start:barge-in` | `src/barge-in.ts` | VAD + `bargeIn.flushTts`     |
 
-| Vendor | Command | Required env |
-|--------|---------|--------------|
-| OpenAI | `npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent` | `OPENAI_API_KEY` |
-| Deepgram | `npm run start:live:deepgram --workspace=@node-webrtc-rust/example-voice-agent` | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY` (TTS pairing) |
+| Vendor     | Command                                                                           | Required env                                         |
+| ---------- | --------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| OpenAI     | `npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent`     | `OPENAI_API_KEY`                                     |
+| Deepgram   | `npm run start:live:deepgram --workspace=@node-webrtc-rust/example-voice-agent`   | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY` (TTS pairing)   |
 | ElevenLabs | `npm run start:live:elevenlabs --workspace=@node-webrtc-rust/example-voice-agent` | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` (STT pairing) |
-| Cartesia | `npm run start:live:cartesia --workspace=@node-webrtc-rust/example-voice-agent` | `CARTESIA_API_KEY`, `OPENAI_API_KEY` |
-| AssemblyAI | `npm run start:live:assemblyai --workspace=@node-webrtc-rust/example-voice-agent` | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY` |
-| Google | `npm run start:live:google --workspace=@node-webrtc-rust/example-voice-agent` | `GOOGLE_APPLICATION_CREDENTIALS` |
+| Cartesia   | `npm run start:live:cartesia --workspace=@node-webrtc-rust/example-voice-agent`   | `CARTESIA_API_KEY`, `OPENAI_API_KEY`                 |
+| AssemblyAI | `npm run start:live:assemblyai --workspace=@node-webrtc-rust/example-voice-agent` | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY`               |
+| Google     | `npm run start:live:google --workspace=@node-webrtc-rust/example-voice-agent`     | `GOOGLE_APPLICATION_CREDENTIALS`                     |
 
 ### Official API documentation
 
-| Vendor | STT docs | TTS docs |
-|--------|----------|----------|
-| OpenAI | [Speech to text](https://platform.openai.com/docs/guides/speech-to-text) | [Text to speech](https://platform.openai.com/docs/guides/text-to-speech) |
-| Deepgram | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) | — (STT-only; demo pairs OpenAI TTS) |
-| ElevenLabs | — (TTS-only; demo pairs OpenAI STT) | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) |
-| Cartesia | — | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
-| AssemblyAI | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming) | — |
-| Google Cloud | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs) | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs) |
+| Vendor       | STT docs                                                                    | TTS docs                                                                   |
+| ------------ | --------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| OpenAI       | [Speech to text](https://platform.openai.com/docs/guides/speech-to-text)    | [Text to speech](https://platform.openai.com/docs/guides/text-to-speech)   |
+| Deepgram     | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) | — (STT-only; demo pairs OpenAI TTS)                                        |
+| ElevenLabs   | — (TTS-only; demo pairs OpenAI STT)                                         | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) |
+| Cartesia     | —                                                                           | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes)              |
+| AssemblyAI   | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)   | —                                                                          |
+| Google Cloud | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs)              | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs)             |
 
 Full table with default models: [`VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md)
 

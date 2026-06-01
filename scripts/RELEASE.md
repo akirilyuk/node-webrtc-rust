@@ -4,13 +4,13 @@ How to publish `@node-webrtc-rust/*` packages to npm — from your machine or vi
 
 ## Packages published
 
-| Package | Description |
-| --- | --- |
-| `@node-webrtc-rust/bindings` | Main package; downloads platform-specific optional deps |
+| Package                        | Description                                                  |
+| ------------------------------ | ------------------------------------------------------------ |
+| `@node-webrtc-rust/bindings`   | Main package; downloads platform-specific optional deps      |
 | `@node-webrtc-rust/bindings-*` | One package per platform (darwin/linux/win `.node` binaries) |
-| `@node-webrtc-rust/signaling` | WebSocket signaling helpers |
-| `@node-webrtc-rust/sdk` | TypeScript WebRTC + conference + voice API |
-| `@node-webrtc-rust/helpers` | Session pod, voice session host, PCM utilities |
+| `@node-webrtc-rust/signaling`  | WebSocket signaling helpers                                  |
+| `@node-webrtc-rust/sdk`        | TypeScript WebRTC + conference + voice API                   |
+| `@node-webrtc-rust/helpers`    | Session pod, voice session host, PCM utilities               |
 
 Publish order (enforced by all scripts and CI): **platform bindings → bindings → signaling → sdk → helpers**.
 
@@ -56,12 +56,12 @@ PR and release workflows always pull `:latest`; they do not rebuild the image.
 
 User-facing release notes live in **[`CHANGELOG.md`](../CHANGELOG.md)** at the repo root ( [Keep a Changelog](https://keepachangelog.com/) style).
 
-| When | Action |
-| --- | --- |
-| **During development** | Add bullets under `[Unreleased]` as PRs merge |
-| **Before tagging** | Rename `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, add empty `[Unreleased]` at top, commit on `main` |
-| **On tag push** | CI publishes npm; GitHub Release body is extracted from the `[X.Y.Z]` section via [`scripts/changelog-release-body.sh`](changelog-release-body.sh) |
-| **After publish** | Commit version bumps on `main` (`chore(repo): release X.Y.Z`) |
+| When                   | Action                                                                                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **During development** | Add bullets under `[Unreleased]` as PRs merge                                                                                                      |
+| **Before tagging**     | Rename `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, add empty `[Unreleased]` at top, commit on `main`                                                  |
+| **On tag push**        | CI publishes npm; GitHub Release body is extracted from the `[X.Y.Z]` section via [`scripts/changelog-release-body.sh`](changelog-release-body.sh) |
+| **After publish**      | Commit version bumps on `main` (`chore(repo): release X.Y.Z`)                                                                                      |
 
 Preview release notes locally:
 
@@ -200,11 +200,11 @@ Dry-run publish packaging on a PR: the **Publish (dry-run)** job in [Build & Tes
 
 ## Troubleshooting
 
-| Issue | Fix |
-| --- | --- |
-| `shopt: not found` in CI | Fixed — Linux container steps use `shell: bash` |
-| `EOTP` / 2FA on npm | Re-run local script with `--otp=123456` |
-| `403` on scoped publish | Use `npm publish --access public` (scripts do this) |
-| Double publish of platform pkgs | Publish main bindings with `--ignore-scripts` (scripts do this) |
-| Missing Windows binary locally | Use CI release tag workflow or add `node-webrtc-rust.win32-x64-msvc.node` |
+| Issue                           | Fix                                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------- |
+| `shopt: not found` in CI        | Fixed — Linux container steps use `shell: bash`                                       |
+| `EOTP` / 2FA on npm             | Re-run local script with `--otp=123456`                                               |
+| `403` on scoped publish         | Use `npm publish --access public` (scripts do this)                                   |
+| Double publish of platform pkgs | Publish main bindings with `--ignore-scripts` (scripts do this)                       |
+| Missing Windows binary locally  | Use CI release tag workflow or add `node-webrtc-rust.win32-x64-msvc.node`             |
 | Zig / Opus link errors on Linux | Set `OPUS_STATIC=1` and `CMAKE_POLICY_VERSION_MINIMUM=3.5` (CI and scripts set these) |

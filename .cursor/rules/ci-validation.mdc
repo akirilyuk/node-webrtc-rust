@@ -17,7 +17,7 @@ When editing CI workflows or shared scripts under `scripts/ci/`, **do not fix on
 |---|---|---|
 | PR quality | `build.yml` → `quality` | `scripts/ci/run-pr-quality.sh` |
 | PR native compile | `build.yml` → `compile-native` (if Rust/bindings changed) | `ci-build-native-linux` |
-| PR TS build | `build.yml` → `build-ts` (if sdk/signaling changed) | `build-ts-workspace.sh` + `ci-cache-ts-dist` |
+| PR TS build | `build.yml` → `build-ts` (parallel with compile-native) | `build-ts-workspace.sh` once + `ci-cache-ts-dist` (not in quality job) |
 | PR integration | `build.yml` → `test` | restores both caches → `run-pr-integration.sh` |
 | Main push build + test | `build-main.yml` | `reusable-build-*` → `run-pr-tests-full.sh` |
 | Release build + test | `release.yml` | plan → partial matrix → `run-pr-integration.sh` (skipped when main validated + all cached) |

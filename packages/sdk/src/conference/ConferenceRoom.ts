@@ -9,12 +9,7 @@ import {
 
 import type { ConferenceServer } from './ConferenceServer'
 import { debugEvent, debugFn } from '../debug'
-import type {
-  MuteOptions,
-  ParticipantInfo,
-  RTCIceServer,
-  RoomOptions,
-} from './types'
+import type { MuteOptions, ParticipantInfo, RTCIceServer, RoomOptions } from './types'
 
 const MODULE = 'conference::ConferenceRoom'
 
@@ -203,19 +198,31 @@ export class ConferenceRoom {
 
     this.native.setOnParticipantJoined((event) => {
       if (!event) return
-      debugEvent(MODULE, 'participant-joined', `roomId=${event.roomId}, participantId=${event.participantId}`)
+      debugEvent(
+        MODULE,
+        'participant-joined',
+        `roomId=${event.roomId}, participantId=${event.participantId}`,
+      )
       this.server.emitParticipantJoined(event)
     })
 
     this.native.setOnParticipantLeft((event) => {
       if (!event) return
-      debugEvent(MODULE, 'participant-left', `roomId=${event.roomId}, participantId=${event.participantId}`)
+      debugEvent(
+        MODULE,
+        'participant-left',
+        `roomId=${event.roomId}, participantId=${event.participantId}`,
+      )
       this.server.emitParticipantLeft(event)
     })
 
     this.native.setOnParticipantKicked((event) => {
       if (!event) return
-      debugEvent(MODULE, 'participant-kicked', `roomId=${event.roomId}, participantId=${event.participantId}`)
+      debugEvent(
+        MODULE,
+        'participant-kicked',
+        `roomId=${event.roomId}, participantId=${event.participantId}`,
+      )
       this.server.emitParticipantKicked(event)
     })
 
@@ -227,7 +234,11 @@ export class ConferenceRoom {
 
     this.native.setOnMixingEnabledChanged((event) => {
       if (!event) return
-      debugEvent(MODULE, 'mixing-enabled-changed', `roomId=${event.roomId}, enabled=${event.enabled}`)
+      debugEvent(
+        MODULE,
+        'mixing-enabled-changed',
+        `roomId=${event.roomId}, enabled=${event.enabled}`,
+      )
       this.server.emitMixingEnabledChanged(event)
     })
 

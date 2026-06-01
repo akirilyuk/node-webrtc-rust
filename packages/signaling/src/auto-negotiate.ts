@@ -73,7 +73,13 @@ export function autoNegotiate(options: AutoNegotiateOptions): () => void {
     await pc.setRemoteDescription(new RTCSessionDescription(sdp))
   }
 
-  const onRemoteIce = async ({ peerId, candidate }: { peerId: string; candidate: RTCIceCandidateInit }) => {
+  const onRemoteIce = async ({
+    peerId,
+    candidate,
+  }: {
+    peerId: string
+    candidate: RTCIceCandidateInit
+  }) => {
     debugFn('signaling::autoNegotiate', 'onRemoteIce', `peerId=${peerId}`)
     if (candidate.candidate) {
       await pc.addIceCandidate(new RTCIceCandidate(candidate))

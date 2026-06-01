@@ -62,14 +62,14 @@ Voice agent milestone — agentic STT/TTS pipeline, multi-session server helpers
 
 #### Examples
 
-| Example | Description |
-| --- | --- |
-| `voice-agent` | CLI loopback — mock/live vendors, callback/stream/barge-in modes |
-| `voice-agent-browser` | Browser mic + Node `VoiceAgent`, DataChannel speech events & TTS control |
-| `voice-agent-local-sherpa` | On-device Sherpa STT/TTS, model download scripts, roundtrip & barge-in demos |
-| `voice-agent-multi-session-pod` | Many sessions on one server via `SessionPod` |
-| `peer-connection` `start:parity` | Transceivers, stats, config, replaceTrack tour |
-| `audio-cosine` `start:replace-track` | `replaceTrack` + `readSample` demo |
+| Example                              | Description                                                                  |
+| ------------------------------------ | ---------------------------------------------------------------------------- |
+| `voice-agent`                        | CLI loopback — mock/live vendors, callback/stream/barge-in modes             |
+| `voice-agent-browser`                | Browser mic + Node `VoiceAgent`, DataChannel speech events & TTS control     |
+| `voice-agent-local-sherpa`           | On-device Sherpa STT/TTS, model download scripts, roundtrip & barge-in demos |
+| `voice-agent-multi-session-pod`      | Many sessions on one server via `SessionPod`                                 |
+| `peer-connection` `start:parity`     | Transceivers, stats, config, replaceTrack tour                               |
+| `audio-cosine` `start:replace-track` | `replaceTrack` + `readSample` demo                                           |
 
 Shared helpers under `examples/shared/`: vendor presets, Sherpa model catalogs, PCM conventions (re-exported from `@node-webrtc-rust/helpers/pcm`).
 
@@ -115,13 +115,13 @@ Shared helpers under `examples/shared/`: vendor presets, Sherpa model catalogs, 
 
 ### Pull requests
 
-| PR | Summary |
-| --- | --- |
-| [#8](https://github.com/akirilyuk/node-webrtc-rust/pull/8) | WebRTC P1 parity, transceivers, mixer routing matrix |
-| [#10](https://github.com/akirilyuk/node-webrtc-rust/pull/10) | Cross-binding verify, README voice refocus |
+| PR                                                           | Summary                                                 |
+| ------------------------------------------------------------ | ------------------------------------------------------- |
+| [#8](https://github.com/akirilyuk/node-webrtc-rust/pull/8)   | WebRTC P1 parity, transceivers, mixer routing matrix    |
+| [#10](https://github.com/akirilyuk/node-webrtc-rust/pull/10) | Cross-binding verify, README voice refocus              |
 | [#11](https://github.com/akirilyuk/node-webrtc-rust/pull/11) | v0.3 voice: vendors, Sherpa, browser demos, live wiring |
-| [#12](https://github.com/akirilyuk/node-webrtc-rust/pull/12) | CI: Linux arm64 native gnu link |
-| [#14](https://github.com/akirilyuk/node-webrtc-rust/pull/14) | `@node-webrtc-rust/helpers`, multi-session pod example |
+| [#12](https://github.com/akirilyuk/node-webrtc-rust/pull/12) | CI: Linux arm64 native gnu link                         |
+| [#14](https://github.com/akirilyuk/node-webrtc-rust/pull/14) | `@node-webrtc-rust/helpers`, multi-session pod example  |
 
 ---
 

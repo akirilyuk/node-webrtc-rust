@@ -14,7 +14,12 @@ import {
   PCM_KICK_DURATION_MS,
   PCM_KICK_FRAME_BYTES,
 } from './cosine-generator'
-import { logToneTick, logToneDebug, summarizePcmFrame, TONE_STREAM_DEBUG } from './tone-stream-debug'
+import {
+  logToneTick,
+  logToneDebug,
+  summarizePcmFrame,
+  TONE_STREAM_DEBUG,
+} from './tone-stream-debug'
 
 interface ClientSession {
   pc: RTCPeerConnection
@@ -135,10 +140,7 @@ export class CosineRoomHost {
     }
   }
 
-  private async onAnswerReceived(
-    peerId: string,
-    sdp: RTCSessionDescriptionInit,
-  ): Promise<void> {
+  private async onAnswerReceived(peerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
     const session = this.sessions.get(peerId)
     if (!session) {
       console.warn(`[tone ${peerId}] answer received but no session yet`)

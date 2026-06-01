@@ -1,0 +1,151 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+header p {
+  color: #94a3b8;
+}
+
+.panel {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+input[type='text'] {
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: inherit;
+}
+
+button {
+  margin-right: 0.5rem;
+  margin-top: 0.25rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  border: none;
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status {
+  margin-top: 0.75rem;
+  color: #38bdf8;
+}
+
+#capacity-status {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+.setup-panel ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+
+.setup-panel code {
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.hint-panel ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+
+.hint {
+  color: #94a3b8;
+  font-size: 0.95rem;
+}
+
+.checkbox-row {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.35rem;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.checkbox-row input {
+  margin-top: 0.2rem;
+}
+
+#event-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+#event-log li {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid #334155;
+}
+
+#event-log li.barge-in {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+#event-log li.final {
+  color: #4ade80;
+}
+
+#event-log li.error {
+  color: #f87171;
+}
+
+audio {
+  width: 100%;
+}
+
+.viz-status {
+  margin: 0.5rem 0 0;
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+#mic-viz {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  border-radius: 6px;
+  background: #0b1018;
+}

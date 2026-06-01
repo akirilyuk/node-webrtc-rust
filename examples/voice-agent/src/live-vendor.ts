@@ -75,9 +75,7 @@ async function main(): Promise<void> {
   // Log the full event taxonomy — helps map Rust pipeline stages to your agent code.
   agent.on('user_speaking_start', () => console.log('[event] user_speaking_start (VAD)'))
   agent.on('user_speaking_end', () => console.log('[event] user_speaking_end (VAD)'))
-  agent.on('user_speech_partial', (e) =>
-    console.log('[event] user_speech_partial (STT):', e.text),
-  )
+  agent.on('user_speech_partial', (e) => console.log('[event] user_speech_partial (STT):', e.text))
   agent.on('user_speech_final', (e) => console.log('[event] user_speech_final (STT):', e.text))
   agent.on('agent_speaking_start', () => console.log('[event] agent_speaking_start (TTS)'))
   agent.on('agent_speaking_end', () => console.log('[event] agent_speaking_end (TTS)'))

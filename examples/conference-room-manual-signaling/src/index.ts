@@ -280,7 +280,9 @@ async function main(): Promise<void> {
 
   console.log(`Conference room (manual signaling) running at http://localhost:${PORT}`)
   console.log(`WebSocket signaling: ws://localhost:${PORT}/ws`)
-  console.log(`Signaling is implemented in src/manual-signaling.ts — no @node-webrtc-rust/signaling import.`)
+  console.log(
+    `Signaling is implemented in src/manual-signaling.ts — no @node-webrtc-rust/signaling import.`,
+  )
   console.log(`Open multiple browser tabs, join the same room, and allow microphone access.`)
 
   const shutdown = async () => {

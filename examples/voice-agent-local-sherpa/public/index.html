@@ -12,9 +12,9 @@
         <h1>Local Sherpa STT + TTS — Browser Client</h1>
         <p>
           Your microphone is sent to a Node <strong>VoiceAgent</strong> over WebRTC. Speech is
-          transcribed and synthesized on-device with <strong>Sherpa-ONNX</strong> (no cloud API keys).
-          Partial and final transcripts arrive on the <code>voice-control</code> data channel.
-          Use the Speak form for local Piper TTS and barge-in demos.
+          transcribed and synthesized on-device with <strong>Sherpa-ONNX</strong> (no cloud API
+          keys). Partial and final transcripts arrive on the <code>voice-control</code> data
+          channel. Use the Speak form for local Piper TTS and barge-in demos.
         </p>
       </header>
 
@@ -23,18 +23,27 @@
         <ol>
           <li>
             Download STT weights:
-            <code>npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
+            <code
+              >npm run download-stt
+              --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code
+            >
           </li>
           <li>
             Download TTS voice:
-            <code>npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
+            <code
+              >npm run download-tts
+              --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code
+            >
           </li>
           <li>
-            Export <code>SHERPA_STT_MODEL_PATH</code> and <code>SHERPA_TTS_MODEL_PATH</code> (printed by the scripts)
+            Export <code>SHERPA_STT_MODEL_PATH</code> and
+            <code>SHERPA_TTS_MODEL_PATH</code> (printed by the scripts)
           </li>
           <li>
             Start this server:
-            <code>npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code>
+            <code
+              >npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa</code
+            >
           </li>
         </ol>
         <p class="hint">Full guide: <code>examples/voice-agent-local-sherpa/README.md</code></p>
@@ -52,8 +61,15 @@
 
       <section class="panel audio-panel">
         <h2>Your microphone</h2>
-        <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform and spectrum"></canvas>
-        <p id="mic-viz-status" class="viz-status">Connect and allow microphone to visualize input</p>
+        <canvas
+          id="mic-viz"
+          width="640"
+          height="160"
+          aria-label="Microphone waveform and spectrum"
+        ></canvas>
+        <p id="mic-viz-status" class="viz-status">
+          Connect and allow microphone to visualize input
+        </p>
       </section>
 
       <section class="panel audio-panel">
@@ -78,7 +94,9 @@
         <h2>Test local STT</h2>
         <ol>
           <li>Click <strong>Connect</strong> and allow microphone access.</li>
-          <li>Watch the <strong>Your microphone</strong> waveform — it should move when you speak.</li>
+          <li>
+            Watch the <strong>Your microphone</strong> waveform — it should move when you speak.
+          </li>
           <li>Speak clearly — watch <code>user_speech_partial</code> update in the log.</li>
           <li>Pause briefly — Sherpa endpointing emits <code>user_speech_final</code>.</li>
         </ol>

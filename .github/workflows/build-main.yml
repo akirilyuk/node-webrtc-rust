@@ -13,8 +13,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
-  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-  OPUS_STATIC: "1"
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+  OPUS_STATIC: '1'
 
 jobs:
   quality:

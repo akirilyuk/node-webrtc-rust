@@ -106,7 +106,11 @@ export class RTCPeerConnection extends EventEmitter {
   constructor(config?: RTCConfiguration) {
     super()
     this._configuration = cloneConfiguration(config)
-    debugFn('sdk::RTCPeerConnection', 'constructor', config?.debug !== undefined ? `debug=${config.debug}` : '')
+    debugFn(
+      'sdk::RTCPeerConnection',
+      'constructor',
+      config?.debug !== undefined ? `debug=${config.debug}` : '',
+    )
     this.native = new NativePeerConnection(toNativeConfig(config))
 
     this.native.setOnIceCandidate((_err, candidate) => {
@@ -187,17 +191,13 @@ export class RTCPeerConnection extends EventEmitter {
    */
   async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescription> {
     debugFn('sdk::RTCPeerConnection', 'createOffer')
-    return fromNativeDescription(
-      await this.native.createOffer(toNativeOfferOptions(options)),
-    )
+    return fromNativeDescription(await this.native.createOffer(toNativeOfferOptions(options)))
   }
 
   /** Creates an SDP answer after a remote offer has been applied via {@link setRemoteDescription}. */
   async createAnswer(options?: RTCAnswerOptions): Promise<RTCSessionDescription> {
     debugFn('sdk::RTCPeerConnection', 'createAnswer')
-    return fromNativeDescription(
-      await this.native.createAnswer(toNativeAnswerOptions(options)),
-    )
+    return fromNativeDescription(await this.native.createAnswer(toNativeAnswerOptions(options)))
   }
 
   /**

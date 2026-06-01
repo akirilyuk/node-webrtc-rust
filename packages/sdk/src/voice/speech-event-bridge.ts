@@ -61,10 +61,7 @@ export interface WireVoiceAgentToDataChannelOptions {
 function sendSpeechEventToChannel(channel: RTCDataChannel, event: SpeechEvent): void {
   if (channel.readyState !== 'open') {
     if (isVoiceDebugEnabled()) {
-      voiceDebugLog(
-        'voice-control',
-        `drop ${event.type} (channel state=${channel.readyState})`,
-      )
+      voiceDebugLog('voice-control', `drop ${event.type} (channel state=${channel.readyState})`)
     }
     return
   }

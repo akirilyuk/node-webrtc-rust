@@ -40,10 +40,7 @@ async function waitForConnection(pc: RTCPeerConnection, timeoutMs = 20_000): Pro
   })
 }
 
-function waitForRemoteTrack(
-  receiver: RTCPeerConnection,
-  timeoutMs: number,
-): Promise<void> {
+function waitForRemoteTrack(receiver: RTCPeerConnection, timeoutMs: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`no remote audio track received within ${timeoutMs / 1000}s`))

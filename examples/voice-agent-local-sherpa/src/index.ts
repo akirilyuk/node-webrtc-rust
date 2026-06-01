@@ -38,8 +38,13 @@ const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
 }
 
-  const { config: voiceConfig, label: voiceLabel, sttModelPath, ttsModelPath, language } =
-    resolveVoiceConfig()
+const {
+  config: voiceConfig,
+  label: voiceLabel,
+  sttModelPath,
+  ttsModelPath,
+  language,
+} = resolveVoiceConfig()
 
 interface ActiveRoom {
   signaling: SignalingClient
@@ -136,7 +141,9 @@ async function main(): Promise<void> {
     console.error('[voice-debug] VOICE_DEBUG=1 — verbose pipeline logs on stderr')
     console.error('[voice-debug] WEBRTC_DEBUG=' + (process.env.WEBRTC_DEBUG ?? '0'))
     console.error('[voice-debug] Optional: VOICE_VAD_THRESHOLD=0.01  VOICE_VAD_DISABLED=1')
-    console.error('[voice-debug] Start with: npm run start:debug --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa')
+    console.error(
+      '[voice-debug] Start with: npm run start:debug --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa',
+    )
   }
 
   const shutdown = async () => {

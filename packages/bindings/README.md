@@ -77,12 +77,12 @@ Each platform package is a thin wrapper: its `"main"` field points directly at t
 
 **When the binary might be missing after install:**
 
-| Situation | Result |
-| --- | --- |
-| Normal install on a supported platform | Matching optional package is present |
-| `npm install --omit=optional` | No platform package — runtime fails unless a local `.node` exists |
-| Unsupported OS/arch | No matching optional package |
-| Publish/version mismatch for the optional pkg | Install may succeed; `require()` fails at runtime |
+| Situation                                     | Result                                                            |
+| --------------------------------------------- | ----------------------------------------------------------------- |
+| Normal install on a supported platform        | Matching optional package is present                              |
+| `npm install --omit=optional`                 | No platform package — runtime fails unless a local `.node` exists |
+| Unsupported OS/arch                           | No matching optional package                                      |
+| Publish/version mismatch for the optional pkg | Install may succeed; `require()` fails at runtime                 |
 
 ### At runtime (`require('@node-webrtc-rust/bindings')`)
 

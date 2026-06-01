@@ -13,8 +13,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
-  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-  OPUS_STATIC: "1"
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+  OPUS_STATIC: '1'
 
 jobs:
   changes:
@@ -23,6 +23,7 @@ jobs:
     outputs:
       native: ${{ steps.filter.outputs.native }}
       typescript: ${{ steps.filter.outputs.typescript }}
+      helpers: ${{ steps.filter.outputs.helpers }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - name: Prepare workspace
@@ -54,11 +55,15 @@ jobs:
             typescript:
               - 'packages/sdk/**'
               - 'packages/signaling/**'
+              - 'packages/helpers/**'
               - 'package.json'
               - 'package-lock.json'
               - '**/tsconfig*.json'
               - 'eslint.config.js'
               - '.prettierrc*'
+            helpers:
+              - 'packages/helpers/**'
+              - 'examples/voice-agent-local-sherpa-multi-client/**'
             workflows:
               - '.github/**'
               - 'docker/ci/**'
@@ -69,6 +74,7 @@ jobs:
     if: |
       needs.changes.outputs.native == 'true' ||
       needs.changes.outputs.typescript == 'true' ||
+      needs.changes.outputs.helpers == 'true' ||
       needs.changes.outputs.workflows == 'true'
     runs-on: self-hosted
     steps:
@@ -130,15 +136,14 @@ jobs:
 
   build-ts:
     name: Build TypeScript
-    needs: [changes, quality, compile-native]
+    needs: [changes, quality]
     if: |
       always() &&
       !cancelled() &&
       needs.quality.result == 'success' &&
-      (needs.compile-native.result == 'success' || needs.compile-native.result == 'skipped') &&
-      needs.compile-native.result != 'failure' &&
       (
         needs.changes.outputs.typescript == 'true' ||
+        needs.changes.outputs.helpers == 'true' ||
         needs.changes.outputs.workflows == 'true'
       )
     runs-on: self-hosted
@@ -167,6 +172,7 @@ jobs:
         if: steps.ts-cache.outputs.cache-hit != 'true'
         run: |
           npm ci
+          bash scripts/fix-rollup-native.sh
           bash scripts/ci/build-ts-workspace.sh
 
   test:
@@ -183,6 +189,7 @@ jobs:
       (
         needs.changes.outputs.native == 'true' ||
         needs.changes.outputs.typescript == 'true' ||
+        needs.changes.outputs.helpers == 'true' ||
         needs.changes.outputs.workflows == 'true'
       )
     uses: ./.github/workflows/reusable-test.yml

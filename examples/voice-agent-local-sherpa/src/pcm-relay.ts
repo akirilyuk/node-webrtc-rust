@@ -66,11 +66,7 @@ export async function streamSilence(sink: LocalAudioTrack, seconds: number): Pro
 /**
  * Sends tonal 20 ms frames at real-time pace (simulates user talking over agent TTS).
  */
-export async function streamTone(
-  sink: LocalAudioTrack,
-  seconds: number,
-  hz = 440,
-): Promise<void> {
+export async function streamTone(sink: LocalAudioTrack, seconds: number, hz = 440): Promise<void> {
   if (seconds <= 0) return
   const frameCount = Math.ceil((seconds * 1000) / PCM_FRAME_DURATION_MS)
   const endAt = performance.now() + seconds * 1000

@@ -98,7 +98,9 @@ function normalizeForCompare(text: string): string {
  * 1.0 = every input word appears in the STT transcript.
  */
 function wordSimilarity(input: string, recognized: string): number {
-  const words = normalizeForCompare(input).split(' ').filter((w) => w.length > 0)
+  const words = normalizeForCompare(input)
+    .split(' ')
+    .filter((w) => w.length > 0)
   if (words.length === 0) return recognized.trim().length > 0 ? 1 : 0
   const haystack = ` ${normalizeForCompare(recognized)} `
   let hits = 0
@@ -216,10 +218,7 @@ class ListenerTranscriptCollector {
     this.postSpeechTimer = setTimeout(() => {
       const fallback = this.lastPartial.trim()
       if (!fallback || this.settled) return
-      this.finish(
-        fallback,
-        `post-speech fallback after ${this.finalizeWaitMs} ms (no final yet)`,
-      )
+      this.finish(fallback, `post-speech fallback after ${this.finalizeWaitMs} ms (no final yet)`)
     }, this.finalizeWaitMs)
   }
 
@@ -294,7 +293,9 @@ async function runPhrase(params: {
 
   console.log(`Recognized:  "${recognized}"`)
   console.log(`Normalized:  "${normalizedInput}" → "${normalizedRecognized}"`)
-  console.log(`Similarity:  ${(similarity * 100).toFixed(0)}% (min ${(minSimilarity * 100).toFixed(0)}%)`)
+  console.log(
+    `Similarity:  ${(similarity * 100).toFixed(0)}% (min ${(minSimilarity * 100).toFixed(0)}%)`,
+  )
   console.log(passed ? 'Phrase OK' : 'Phrase FAILED')
 
   if (gapS > 0 && index + 1 < total) {
@@ -407,7 +408,9 @@ async function main(): Promise<void> {
   await cleanup().catch(() => undefined)
 
   if (failed.length > 0) {
-    console.error(`\nRoundtrip failed: ${failed.length}/${results.length} phrase(s) below similarity threshold.`)
+    console.error(
+      `\nRoundtrip failed: ${failed.length}/${results.length} phrase(s) below similarity threshold.`,
+    )
     process.exit(1)
   }
 

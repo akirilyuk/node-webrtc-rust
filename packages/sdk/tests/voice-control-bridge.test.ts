@@ -11,9 +11,7 @@ import {
 
 describe('voice control DataChannel bridge', () => {
   test('speechEventToControlMessage maps event fields', () => {
-    expect(
-      speechEventToControlMessage({ type: 'user_speech_final', text: 'hello' }),
-    ).toEqual({
+    expect(speechEventToControlMessage({ type: 'user_speech_final', text: 'hello' })).toEqual({
       type: 'speech_event',
       event: 'user_speech_final',
       text: 'hello',

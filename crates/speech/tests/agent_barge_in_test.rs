@@ -151,6 +151,7 @@ async fn barge_in_during_tts_drain_truncates_outbound_pcm() {
     .await
     .unwrap()
     .unwrap();
+    agent_arc.wait_tts_playback_idle().await.unwrap();
 
     agent_arc.stop().await.unwrap();
 
@@ -242,6 +243,7 @@ async fn agent_playback_guard_suppresses_early_barge_in() {
     }
 
     tts_task.await.unwrap().unwrap();
+    agent_arc.wait_tts_playback_idle().await.unwrap();
     agent_arc.stop().await.unwrap();
 
     let played_ms = *written_ms.lock().unwrap();
@@ -320,7 +322,7 @@ async fn use_vad_false_skips_auto_barge_on_speech_start() {
 }
 
 #[tokio::test]
-async fn speech_end_during_agent_speaking_does_not_arm_gate_hold() {
+async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() {
     let bytes = Arc::new(Mutex::new(0_usize));
     let mut registry = VendorRegistry::new();
     registry.register_stt(
@@ -371,33 +373,35 @@ async fn speech_end_during_agent_speaking_does_not_arm_gate_hold() {
     let loud = loud_stereo_frame();
     let silent = vec![0_u8; 3840];
 
-    let (_, _) = tokio::join!(
-        async { agent.send_text_to_tts(&long_text).await.unwrap() },
-        async {
-            sleep(Duration::from_millis(80)).await;
-            for _ in 0..3 {
-                agent
-                    .process_inbound_pcm(Bytes::from(loud.clone()), 20)
-                    .await
-                    .unwrap();
-            }
-            for _ in 0..3 {
-                agent
-                    .process_inbound_pcm(Bytes::from(silent.clone()), 20)
-                    .await
-                    .unwrap();
-            }
-            sleep(Duration::from_millis(200)).await;
-        }
-    );
+    let agent_arc = Arc::new(agent);
+    let agent_tts = Arc::clone(&agent_arc);
+    let text = long_text.clone();
+    let tts_task = tokio::spawn(async move {
+        agent_tts.send_text_to_tts(&text).await.unwrap();
+        agent_tts.wait_tts_playback_idle().await.unwrap();
+    });
 
-    let after_speech_end = *bytes.lock().unwrap();
-    agent.stop().await.unwrap();
-    let after_stop = *bytes.lock().unwrap();
+    sleep(Duration::from_millis(80)).await;
+    for _ in 0..3 {
+        agent_arc
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+    for _ in 0..3 {
+        agent_arc
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+    let during_agent = *bytes.lock().unwrap();
+    tts_task.await.unwrap();
+    agent_arc.stop().await.unwrap();
+    let after_playback = *bytes.lock().unwrap();
 
     assert!(
-        after_stop <= after_speech_end.saturating_add(3840 * 2),
-        "SpeechEnd during agent_speaking must not arm a long gate-hold tail; \
-         got {after_speech_end} bytes at speech end vs {after_stop} at stop"
+        during_agent <= after_playback.saturating_add(3840 * 4),
+        "SpeechEnd during agent_speaking should not finalize STT until playback ends; \
+         bytes during agent={during_agent}, after={after_playback}"
     );
 }

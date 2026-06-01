@@ -44,8 +44,9 @@ impl Default for EventsConfig {
 /// Tune `vad.threshold` and `vad.minSpeechDurationMs` to avoid brief sounds triggering
 /// interrupt when `use_vad` is true.
 ///
-/// `agent_playback_guard_ms` — after agent TTS starts, VAD barge-in does not flush playback
-/// for this long (stops speaker→mic echo from cutting off "You said: …" replies).
+/// `agent_playback_guard_ms` — optional: for this many ms after agent TTS starts, VAD barge-in
+/// does not flush playback (mitigates speaker→mic echo on some setups). Default **0** = barge
+/// anytime the user speaks. Raise only if echo falsely interrupts agent TTS (try headphones first).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BargeInConfig {
@@ -60,7 +61,7 @@ pub struct BargeInConfig {
 }
 
 fn default_agent_playback_guard_ms() -> u32 {
-    1200
+    0
 }
 
 impl Default for BargeInConfig {

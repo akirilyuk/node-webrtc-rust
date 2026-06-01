@@ -30,6 +30,7 @@ async fn tts_injection_writes_pcm_to_outbound() {
     agent.attach(reader, writer).await.unwrap();
     agent.start().await.unwrap();
     agent.send_text_to_tts("hello agent").await.unwrap();
+    agent.wait_tts_playback_idle().await.unwrap();
     agent.stop().await.unwrap();
 
     let chunks = written.lock().unwrap();
@@ -61,6 +62,7 @@ async fn tts_injection_emits_agent_speaking_events() {
     agent.attach(reader, writer).await.unwrap();
     agent.start().await.unwrap();
     agent.send_text_to_tts("hi").await.unwrap();
+    agent.wait_tts_playback_idle().await.unwrap();
 
     let event = timeout(Duration::from_secs(1), rx.recv())
         .await

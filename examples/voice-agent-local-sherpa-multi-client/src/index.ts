@@ -16,7 +16,7 @@
  *   npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
  *
  * Open **three browser tabs** to http://localhost:3004 — same room `sherpa-multi`.
- * Optional: `VOICE_MAX_CONCURRENT_SESSIONS=2 npm run start:cap-2 --workspace=...`
+ * Optional: `VOICE_MAX_CONCURRENT_SESSIONS=2 npm run start:cap-2 --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client`
  * then the third tab should fail to negotiate (check server log + GET /api/capacity).
  *
  * Tests (no models required):
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
     console.log(`Set VOICE_MAX_CONCURRENT_SESSIONS=${sessionBudget.max} — extra tabs are rejected.`)
   } else {
     console.log(
-      'Tip: VOICE_MAX_CONCURRENT_SESSIONS=2 npm run start:cap-2 --workspace=... to test rejection.',
+      'Tip: VOICE_MAX_CONCURRENT_SESSIONS=2 npm run start:cap-2 --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client to test rejection.',
     )
   }
 

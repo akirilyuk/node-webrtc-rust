@@ -20,9 +20,14 @@ const audioEl = document.getElementById('agent-audio')
 const audioStatusEl = document.getElementById('audio-status')
 const speakForm = document.getElementById('speak-form')
 const speakTextInput = document.getElementById('speak-text')
+const broadcastForm = document.getElementById('broadcast-form')
+const broadcastTextInput = document.getElementById('broadcast-text')
+const broadcastStatusEl = document.getElementById('broadcast-status')
 const eventLogEl = document.getElementById('event-log')
 const micVizCanvas = document.getElementById('mic-viz')
 const micVizStatusEl = document.getElementById('mic-viz-status')
+const pauseMicBackgroundCheckbox = document.getElementById('pause-mic-background')
+const micBackgroundStatusEl = document.getElementById('mic-background-status')
 
 /** @type {WebSocket | null} */
 let ws = null
@@ -40,6 +45,8 @@ let micStream = null
 let pendingIce = []
 /** @type {ReturnType<typeof attachAudioVisualizer> | null} */
 let micVisualizer = null
+/** When true, mute mic tracks while `document.hidden` (default false = allow background capture). */
+let pauseMicWhenBackground = false
 
 const slotParam = new URLSearchParams(location.search).get('slot')?.trim()
 const tabSlot =
@@ -59,6 +66,11 @@ speakForm.addEventListener('submit', (event) => {
   if (!text) return
   sendSpeak(text)
   speakTextInput.value = ''
+})
+
+broadcastForm.addEventListener('submit', (event) => {
+  event.preventDefault()
+  void sendBroadcastSpeak()
 })
 
 function setStatus(text) {
@@ -94,6 +106,54 @@ async function refreshCapacity() {
 void refreshCapacity()
 setInterval(() => void refreshCapacity(), 3000)
 
+pauseMicBackgroundCheckbox.addEventListener('change', () => {
+  pauseMicWhenBackground = pauseMicBackgroundCheckbox.checked
+  updateMicBackgroundPolicy()
+  appendEvent(
+    'client',
+    pauseMicWhenBackground ? 'pause mic in background: on' : 'pause mic in background: off',
+  )
+})
+
+document.addEventListener('visibilitychange', () => {
+  applyMicCaptureForVisibility()
+})
+
+function updateMicBackgroundPolicy() {
+  if (pauseMicWhenBackground) {
+    micBackgroundStatusEl.textContent = document.hidden
+      ? 'Enabled — mic paused while this tab is in the background.'
+      : 'Enabled — mic will pause when you switch to another tab.'
+  } else {
+    micBackgroundStatusEl.textContent =
+      'Default: off — mic keeps sending while this tab is open (even in the background).'
+  }
+  applyMicCaptureForVisibility()
+}
+
+/**
+ * Mute/unmute local mic tracks sent over WebRTC. Does not disconnect.
+ * When pauseMicWhenBackground is false, tracks stay enabled whenever connected.
+ */
+function applyMicCaptureForVisibility() {
+  if (!micStream) return
+
+  const tracks = micStream.getAudioTracks()
+  const shouldCapture = !pauseMicWhenBackground || !document.hidden
+
+  for (const track of tracks) {
+    track.enabled = shouldCapture
+  }
+
+  if (micVizStatusEl && serverPc) {
+    if (!shouldCapture) {
+      micVizStatusEl.textContent = 'Mic paused (tab in background)'
+    } else {
+      micVizStatusEl.textContent = 'Live mic → server STT'
+    }
+  }
+}
+
 function sendSignal(message) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(message))
@@ -118,7 +178,10 @@ function startMicVisualizer(stream) {
     barColor: '#10b981',
   })
   if (micVizStatusEl) {
-    micVizStatusEl.textContent = 'Live mic → server STT'
+    applyMicCaptureForVisibility()
+    if (micStream?.getAudioTracks().some((t) => t.enabled)) {
+      micVizStatusEl.textContent = 'Live mic → server STT'
+    }
   }
 }
 
@@ -137,6 +200,38 @@ function sendSpeak(text) {
   }
   controlChannel.send(JSON.stringify({ type: 'speak', text }))
   appendEvent('client', `speak → "${text.slice(0, 80)}"`)
+}
+
+async function sendBroadcastSpeak() {
+  const text = broadcastTextInput.value.trim()
+  if (!text) {
+    broadcastStatusEl.textContent = 'Enter text to broadcast'
+    return
+  }
+
+  broadcastStatusEl.textContent = 'Broadcasting…'
+  broadcastForm.querySelector('button').disabled = true
+
+  try {
+    const response = await fetch('/api/broadcast-speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error ?? `HTTP ${response.status}`)
+    }
+    const peers = Array.isArray(payload.peerIds) ? payload.peerIds.join(', ') : 'none'
+    broadcastStatusEl.textContent = `Sent to ${payload.count} client(s): ${peers || '(none connected)'}`
+    appendEvent('broadcast', `"${text.slice(0, 80)}" → ${payload.count} tab(s)`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    broadcastStatusEl.textContent = `Broadcast failed: ${message}`
+    appendEvent('error', `broadcast: ${message}`)
+  } finally {
+    broadcastForm.querySelector('button').disabled = false
+  }
 }
 
 function wireControlChannel(channel) {
@@ -181,6 +276,8 @@ async function connect() {
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
     startMicVisualizer(micStream)
+    applyMicCaptureForVisibility()
+    updateMicBackgroundPolicy()
   } catch {
     setStatus('Microphone permission denied')
     connectButton.disabled = false

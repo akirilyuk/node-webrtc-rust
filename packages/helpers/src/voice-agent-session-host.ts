@@ -131,6 +131,42 @@ export class VoiceAgentSessionHost {
     return this.sessionBudget.snapshot()
   }
 
+  /**
+   * Synthesize `text` on every connected client that has a running VoiceAgent.
+   * Invokes {@link VoiceSessionHandler.onBroadcastSpeak} when set; otherwise TTS each agent.
+   */
+  async broadcastSpeak(text: string): Promise<string[]> {
+    const trimmed = text.trim()
+    if (!trimmed) return []
+
+    const contexts: VoiceSessionContext[] = []
+    for (const [peerId, session] of this.sessions) {
+      if (!session.agentStarted) continue
+      contexts.push(this.createSessionContext(peerId, session.agent))
+    }
+
+    const onBroadcastSpeak = this.options.voiceHandler?.onBroadcastSpeak
+    if (onBroadcastSpeak) {
+      const spoken = await onBroadcastSpeak(trimmed, contexts)
+      this.log(
+        `[voice-server] broadcast via handler: "${trimmed.slice(0, 80)}" → ${spoken.join(', ')}`,
+      )
+      return spoken
+    }
+
+    const spoken: string[] = []
+    for (const ctx of contexts) {
+      try {
+        await ctx.speak(trimmed)
+        spoken.push(ctx.peerId)
+        this.log(`[voice ${ctx.peerId}] broadcast speak: "${trimmed.slice(0, 80)}"`)
+      } catch (error: unknown) {
+        console.error(`[voice ${ctx.peerId}] broadcast speak failed:`, error)
+      }
+    }
+    return spoken
+  }
+
   async close(): Promise<void> {
     for (const peerId of [...this.sessions.keys()]) {
       this.closeClient(peerId)

@@ -10,15 +10,16 @@ npm install @node-webrtc-rust/helpers @node-webrtc-rust/sdk @node-webrtc-rust/si
 
 ## What's included
 
-| Export                           | Purpose                                                               |
-| -------------------------------- | --------------------------------------------------------------------- |
-| `SessionPod`                     | One Node process, one signaling entry point, many concurrent sessions |
-| `VoiceAgentSessionHost`          | One signaling room; spawns one `VoiceAgent` + PC per browser client   |
-| `startMultiClientVoiceServer`    | One room, many tabs — wraps signaling + host + `/api/capacity`        |
-| `VoiceSessionHandler`            | Per-tab hooks: `onSpeechEvent` (STT/VAD) and `onSpeakRequest` (TTS)   |
-| `VoiceSessionBudget`             | Process-wide cap (`VOICE_MAX_CONCURRENT_SESSIONS`)                    |
-| `VOICE_AGENT_SERVER_PEER_ID`     | Stable server peer id for signaling joins                             |
-| `createKickFrame`, PCM constants | RTP prime / 20 ms frame conventions                                   |
+| Export                                 | Purpose                                                               |
+| -------------------------------------- | --------------------------------------------------------------------- |
+| `SessionPod`                           | One Node process, one signaling entry point, many concurrent sessions |
+| `VoiceAgentSessionHost`                | One signaling room; spawns one `VoiceAgent` + PC per browser client   |
+| `startMultiClientVoiceServer`          | One room, many tabs — wraps signaling + host + `/api/capacity`        |
+| `VoiceAgentSessionHost.broadcastSpeak` | TTS `text` on every connected client in the room                      |
+| `VoiceSessionHandler`                  | Per-tab hooks: `onSpeechEvent` (STT/VAD) and `onSpeakRequest` (TTS)   |
+| `VoiceSessionBudget`                   | Process-wide cap (`VOICE_MAX_CONCURRENT_SESSIONS`)                    |
+| `VOICE_AGENT_SERVER_PEER_ID`           | Stable server peer id for signaling joins                             |
+| `createKickFrame`, PCM constants       | RTP prime / 20 ms frame conventions                                   |
 
 ## Multi-session pod (recommended server pattern)
 

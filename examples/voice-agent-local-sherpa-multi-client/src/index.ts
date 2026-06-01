@@ -60,8 +60,42 @@ const {
   language,
 } = resolveVoiceConfig()
 
-async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
+  }
+  const raw = Buffer.concat(chunks).toString('utf8').trim()
+  if (!raw) return {}
+  return JSON.parse(raw) as unknown
+}
+
+async function serveStatic(
+  req: IncomingMessage,
+  res: ServerResponse,
+  broadcastSpeak?: (text: string) => Promise<string[]>,
+): Promise<void> {
   const pathname = req.url?.split('?')[0] ?? '/'
+
+  if (req.method === 'POST' && pathname === '/api/broadcast-speak' && broadcastSpeak) {
+    try {
+      const body = (await readJsonBody(req)) as { text?: string }
+      const text = typeof body.text === 'string' ? body.text : ''
+      const peerIds = await broadcastSpeak(text)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, text: text.trim(), peerIds, count: peerIds.length }))
+      return
+    } catch (error: unknown) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: error instanceof Error ? error.message : 'broadcast failed',
+        }),
+      )
+      return
+    }
+  }
 
   if (pathname.startsWith('/shared/')) {
     const sharedPath = join(SHARED_DIR, pathname.slice('/shared/'.length))
@@ -101,7 +135,7 @@ async function main(): Promise<void> {
     iceServers: ICE_SERVERS,
     sessionBudget,
     voiceHandler,
-    serveHttp: serveStatic,
+    serveHttp: (req, res) => serveStatic(req, res, server.broadcastSpeak),
     hostOptions: {
       log: (message) => console.log(message),
     },
@@ -111,13 +145,17 @@ async function main(): Promise<void> {
   console.log(`Room: ${ROOM} (use the same room in every tab)`)
   console.log(`Signaling: ${server.signalingUrl}`)
   console.log(`Capacity: GET ${server.httpUrl}/api/capacity`)
+  console.log(`Broadcast TTS: POST ${server.httpUrl}/api/broadcast-speak  body: {"text":"..."}`)
   console.log(`Voice pipeline: ${voiceLabel}`)
   console.log(`STT=local-sherpa (${language})  TTS=local-sherpa`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log(`Session budget: ${formatBudget(server.budget)}`)
   console.log('')
-  console.log('Open three tabs → Connect in each → speak (STT) or use Speak form (TTS).')
+  console.log('Open three tabs → Connect → speak: TTS replies to that tab only.')
+  console.log(
+    'Use Speak (per tab) or POST /api/broadcast-speak / page “Speak to all” for all tabs.',
+  )
   console.log('Edit src/voice-handler.ts to customize onSpeechEvent / onSpeakRequest.')
   console.log('Each tab = one client-* peer = one VoiceAgent; Sherpa models are shared in Rust.')
   if (sessionBudget.max > 0) {

@@ -31,7 +31,17 @@ export interface VoiceSessionHandler {
 
   /**
    * Called when the browser sends `{ type: 'speak', text }` (Speak form).
-   * Omit to use default behavior (`agent.sendTextToTTS(text)`).
+   * Use {@link VoiceSessionContext.speak} for this tab only. Omit to default TTS on `ctx`.
    */
   onSpeakRequest?: (ctx: VoiceSessionContext, text: string) => void | Promise<void>
+
+  /**
+   * Called only for an explicit broadcast command (e.g. `POST /api/broadcast-speak`).
+   * Use `contexts` to TTS every connected tab — never use this path for STT replies.
+   * Return peer ids that received audio. Omit for host default (`sendTextToTTS` on each).
+   */
+  onBroadcastSpeak?: (
+    text: string,
+    contexts: readonly VoiceSessionContext[],
+  ) => string[] | Promise<string[]>
 }

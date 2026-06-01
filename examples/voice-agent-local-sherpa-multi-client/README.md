@@ -11,10 +11,11 @@ Demonstrates the **reusable multi-client server pattern** for local Sherpa STT/T
 
 Edit **`src/voice-handler.ts`** only:
 
-| Handler          | When it runs                                    | Typical use                                         |
-| ---------------- | ----------------------------------------------- | --------------------------------------------------- |
-| `onSpeechEvent`  | VAD, STT partial/final, TTS lifecycle, barge-in | LLM on `user_speech_final`, then `ctx.speak(reply)` |
-| `onSpeakRequest` | Browser Speak form (`{ type: 'speak' }`)        | Custom TTS routing or echo                          |
+| Handler            | When it runs                                      | TTS scope                                  |
+| ------------------ | ------------------------------------------------- | ------------------------------------------ |
+| `onSpeechEvent`    | VAD, STT partial/final, TTS lifecycle, barge-in   | **This tab only** — `ctx.speak(reply)`     |
+| `onSpeakRequest`   | Browser Speak form (`{ type: 'speak' }`)          | **This tab only**                          |
+| `onBroadcastSpeak` | Page “Speak to all” / `POST /api/broadcast-speak` | **Every connected tab** — not used for STT |
 
 The example echoes finals: _"You said: …"_ via TTS. Events are still mirrored to each tab’s browser event log.
 
@@ -34,6 +35,25 @@ Tab 3 (client-tab3) ──WebRTC──┘         │
 ```
 
 For **many independent calls** (different room ids per customer), use [`voice-agent-multi-session-pod`](../voice-agent-multi-session-pod/) and `SessionPod` instead.
+
+## Multiple tabs and microphone capture
+
+This demo is **not** “one mic for the whole browser.” Each tab that clicks **Connect** calls `getUserMedia` and sends its own WebRTC audio stream to the server for as long as that tab stays **open and connected**.
+
+| Question                                              | Answer                                                                                                                                    |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Must the tab be **focused** to send audio?            | **No.** By default, background tabs keep sending (normal WebRTC behavior).                                                                |
+| Does a **closed** or **Disconnected** tab send audio? | **No** — tracks are stopped.                                                                                                              |
+| Why can all three tabs “hear” me when I speak once?   | One physical mic; three agents run STT. Room sound (or speakers) can trigger **multiple** `user_speech_final` events — not broadcast TTS. |
+
+### Pause mic in background (per tab)
+
+Each tab has a checkbox: **“Pause mic capture when this tab is in the background.”**
+
+- **Default: off** — matches production-style always-on capture while connected.
+- **On** — sets `MediaStreamTrack.enabled = false` when `document.hidden`, so that tab stops sending audio until you focus it again. Use this when testing at one desk to avoid background tabs picking up speech.
+
+Production apps often use one client per user, push-to-talk, or visibility-based mute; this control documents the tradeoff for the three-tab demo.
 
 ## Reusable library API
 
@@ -68,6 +88,18 @@ Open **three tabs** to [http://localhost:3004](http://localhost:3004):
 - `http://localhost:3004/?slot=3`
 
 Click **Connect** in each (allow microphone). Speak — on `user_speech_final` the server runs your handler and plays TTS. Use **Speak** to test `onSpeakRequest`.
+
+### Broadcast TTS to every connected tab
+
+Any tab can use **Speak to all** on the page (or call the API):
+
+```bash
+curl -s -X POST http://localhost:3004/api/broadcast-speak \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Hello everyone"}' | jq .
+```
+
+The server runs TTS on each active `client-*` peer (`VoiceAgentSessionHost.broadcastSpeak`).
 
 ### Test session cap
 

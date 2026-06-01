@@ -61,6 +61,8 @@ export interface MultiClientVoiceServerHandle {
   signalingUrl: string
   httpUrl: string
   budget: VoiceSessionBudgetSnapshot
+  /** Play TTS on every connected browser client in this room. */
+  broadcastSpeak: (text: string) => Promise<string[]>
   close: () => Promise<void>
 }
 
@@ -112,6 +114,7 @@ export async function startMultiClientVoiceServer(
     get budget() {
       return sessionBudget.snapshot()
     },
+    broadcastSpeak: (text: string) => host.broadcastSpeak(text),
     close: async () => {
       await host?.close()
       serverSignaling?.disconnect()

@@ -68,7 +68,7 @@ impl From<JsBargeInConfig> for BargeInConfig {
 }
 
 fn default_agent_playback_guard_ms() -> u32 {
-    1200
+    0
 }
 
 #[napi(string_enum)]

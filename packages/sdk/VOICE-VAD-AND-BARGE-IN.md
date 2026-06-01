@@ -39,8 +39,9 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | `vad.gateSttOpenOnPending` | `true`   | Include VAD “pending” speech in gate (WebRTC lead-in)               |
 | `vad.sttGateHoldMs`        | `1000`   | After internal `SpeechEnd`, keep STT open this long; with `gateStt`, `user_speaking_end` fires when hold expires (resume speech during hold → no end event) |
 | `vad.bargeIn.enabled`      | `true`   | Allow barge-in flush + event                                        |
-| `vad.bargeIn.useVad`       | `true`   | Auto barge on VAD `SpeechStart`                                     |
+| `vad.bargeIn.useVad`       | `true`   | Auto barge on VAD `SpeechStart` (including while agent TTS plays)   |
 | `vad.bargeIn.flushTts`     | `true`   | Clear pending TTS PCM on barge-in                                   |
+| `vad.bargeIn.agentPlaybackGuardMs` | `0` | **0 = barge anytime**; optional ms to ignore VAD barge right after TTS starts (speaker echo) |
 
 **Shipped native build** uses **energy VAD** only (`provider: "energy"`). See [VAD providers](#vad-providers-energy-vs-silero) below.
 
@@ -309,7 +310,7 @@ Use this when you stream STT through `VoiceAgent` with **`gateStt: true`** (`VOI
 2. User speaks; STT receives audio (plus **`speechPadMs`** pre-roll on `SpeechStart`).
 3. **`minSilenceDurationMs`** — continuous silence triggers VAD `SpeechEnd` **internally** (not necessarily the UI event yet).
 4. **`sttGateHoldMs`** — gate stays open; STT still receives frames. If the user speaks again, hold **resets** and the utterance continues.
-5. When hold reaches **0** → **`user_speaking_end`** (with `gateStt`) → **endpoint tail** (~`max(minSilenceDurationMs, 800)` ms synthetic silence) → **`finalize_utterance`** → **`user_speech_final`**.
+5. When hold reaches **0** → **endpoint tail** (~`max(minSilenceDurationMs, 800)` ms synthetic silence) → **`finalize_utterance`** → **`user_speaking_end`** immediately before **`user_speech_final`** (same poll; gate stays open until final).
 6. Your app runs LLM/TTS on `user_speech_final`.
 
 **Rough reply latency after the user stops** (no resume during hold):

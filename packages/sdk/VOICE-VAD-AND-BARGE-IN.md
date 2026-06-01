@@ -278,19 +278,41 @@ No `user_speaking_*`, no `barge_in`. STT receives all inbound PCM (vendor permit
 
 ```typescript
 bargeIn: {
-  enabled: true,   // master switch
-  useVad: true,    // auto: inbound VAD SpeechStart
-  flushTts: true,  // clear queued PCM before event
+  enabled: true,
+  useVad: true,
+  flushTts: true,
+  requireSttPartial: true, // default — semantic interrupt (see below)
+  minSttPartialChars: 2,
+  agentPlaybackGuardMs: 0,
 }
 ```
 
 | `enabled` | `useVad` | What happens                                                |
 | --------- | -------- | ----------------------------------------------------------- |
 | `false`   | —        | No `barge_in`, no TTS flush from barge path                 |
-| `true`    | `true`   | **Automatic** on VAD `SpeechStart` (`vad.enabled` required) |
+| `true`    | `true`   | **Automatic** while agent TTS plays (`vad.enabled` required) |
 | `true`    | `false`  | **Manual** via `flushTts()` only                            |
 
-Event order on auto barge: optional TTS flush → `barge_in` → `user_speaking_start`.
+### Semantic barge-in (`requireSttPartial`, default **true**)
+
+While **agent TTS is playing** and STT is configured:
+
+1. VAD `SpeechStart` → `user_speaking_start` (mic gate opens for STT).
+2. **No flush yet** — coughs, keyboard bumps, and pure tones usually produce no Sherpa partial.
+3. First qualifying **`user_speech_partial`** → flush TTS → `barge_in` → `agent_speaking_end`.
+
+When the agent is **not** speaking, or STT is disabled, behavior matches immediate VAD barge (flush on `SpeechStart`).
+
+**Caveats:**
+
+| Topic | Detail |
+| ----- | ------ |
+| **Latency** | Interrupt happens after the first partial (~200–800 ms+), not at the first voiced frame. |
+| **STT required** | Without `stt` on the agent, VAD barge applies immediately (legacy). |
+| **Echo** | Speaker bleed can still yield partials that match agent wording; use headphones, `gateStt`, or raise `agentPlaybackGuardMs`. |
+| **Disable** | `requireSttPartial: false` restores instant energy-VAD barge (noisier). |
+
+E2E: `npm run start:roundtrip-barge-in` — tone must **not** barge; spoken TTS phrase must barge.
 
 **Requirements for auto barge:**
 

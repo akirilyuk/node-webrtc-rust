@@ -119,6 +119,8 @@ export interface JsBargeInConfig {
   enabled?: boolean
   useVad?: boolean
   flushTts?: boolean
+  requireSttPartial?: boolean
+  minSttPartialChars?: number
   agentPlaybackGuardMs?: number
 }
 export const enum JsVadSampleRate {

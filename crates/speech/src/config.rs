@@ -40,9 +40,11 @@ impl Default for EventsConfig {
 ///   (`vad.enabled` must be true on the same agent). When false, only `flushTts()` from
 ///   your app triggers barge-in (no automatic interrupt on noise or test tones).
 /// - `flush_tts` — clear pending outbound PCM when barge-in runs.
-///
-/// Tune `vad.threshold` and `vad.minSpeechDurationMs` to avoid brief sounds triggering
-/// interrupt when `use_vad` is true.
+/// - `require_stt_partial` (default **true**) — while agent TTS is playing, defer barge-in until
+///   STT returns a non-empty partial (semantic interrupt). Coughs and tones open the STT gate via
+///   VAD but typically produce no transcript, so playback continues. Requires `stt` on the agent;
+///   when STT is disabled, VAD barge-in behaves as if this flag were false.
+/// - `min_stt_partial_chars` — minimum trimmed partial length to trigger barge (default 2).
 ///
 /// `agent_playback_guard_ms` — optional: for this many ms after agent TTS starts, VAD barge-in
 /// does not flush playback (mitigates speaker→mic echo on some setups). Default **0** = barge
@@ -56,8 +58,16 @@ pub struct BargeInConfig {
     pub use_vad: bool,
     #[serde(default = "default_true")]
     pub flush_tts: bool,
+    #[serde(default = "default_true")]
+    pub require_stt_partial: bool,
+    #[serde(default = "default_min_stt_partial_chars")]
+    pub min_stt_partial_chars: u32,
     #[serde(default = "default_agent_playback_guard_ms")]
     pub agent_playback_guard_ms: u32,
+}
+
+fn default_min_stt_partial_chars() -> u32 {
+    2
 }
 
 fn default_agent_playback_guard_ms() -> u32 {
@@ -70,6 +80,8 @@ impl Default for BargeInConfig {
             enabled: true,
             use_vad: true,
             flush_tts: true,
+            require_stt_partial: true,
+            min_stt_partial_chars: default_min_stt_partial_chars(),
             agent_playback_guard_ms: default_agent_playback_guard_ms(),
         }
     }

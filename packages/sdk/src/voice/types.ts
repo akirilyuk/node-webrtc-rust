@@ -20,8 +20,16 @@ export interface BargeInConfig {
   /** Clear pending TTS PCM when barge-in runs. Default true. */
   flushTts?: boolean
   /**
-   * After agent TTS starts, ignore VAD barge-in (no flush) for this many ms.
-   * Prevents speaker→mic echo from cutting off "You said: …" replies. Default 1200.
+   * While agent TTS is playing, defer barge-in until STT emits a qualifying partial
+   * (semantic interrupt — ignores coughs/tones that do not transcribe). Default true.
+   * Requires STT on the agent; without STT, VAD barge-in applies immediately.
+   */
+  requireSttPartial?: boolean
+  /** Minimum trimmed partial length to trigger barge when `requireSttPartial` is true. Default 2. */
+  minSttPartialChars?: number
+  /**
+   * Optional: ignore VAD barge for this many ms after agent TTS starts (speaker echo).
+   * Default 0. Prefer `requireSttPartial` for most setups.
    */
   agentPlaybackGuardMs?: number
 }

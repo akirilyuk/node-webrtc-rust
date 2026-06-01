@@ -57,6 +57,8 @@ struct AgentInner {
     /// True while agent TTS is synthesizing or playing outbound audio.
     agent_speaking: bool,
     agent_speaking_since: Option<Instant>,
+    /// VAD saw speech during agent TTS; waiting for STT partial before flushing playback.
+    barge_awaiting_stt_partial: bool,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
 }
@@ -114,6 +116,7 @@ impl VoiceAgent {
                 stt_speaking_end_emitted_this_utterance: false,
                 agent_speaking: false,
                 agent_speaking_since: None,
+                barge_awaiting_stt_partial: false,
                 pcm_writer: None,
                 pcm_reader: None,
             })),
@@ -288,6 +291,97 @@ impl VoiceAgent {
         since.elapsed() < std::time::Duration::from_millis(guard_ms as u64)
     }
 
+    fn stt_partial_qualifies_for_barge(inner: &AgentInner, text: &str) -> bool {
+        let trimmed = text.trim();
+        let min_chars = inner.config.vad.barge_in.min_stt_partial_chars.max(1) as usize;
+        if trimmed.len() < min_chars {
+            return false;
+        }
+        trimmed.chars().any(|c| c.is_alphanumeric())
+    }
+
+    async fn try_stt_gated_barge_in(&self, partial_text: &str) -> SpeechResult<()> {
+        let (should_barge, barge_in) = {
+            let inner = self.inner.lock().await;
+            if !inner.barge_awaiting_stt_partial || !inner.agent_speaking {
+                return Ok(());
+            }
+            if !Self::stt_partial_qualifies_for_barge(&inner, partial_text) {
+                return Ok(());
+            }
+            (
+                true,
+                inner.config.vad.barge_in.clone(),
+            )
+        };
+        if !should_barge {
+            return Ok(());
+        }
+        {
+            let mut inner = self.inner.lock().await;
+            inner.barge_awaiting_stt_partial = false;
+        }
+        voice_debug(format!(
+            "STT-gated barge-in: partial {:?}",
+            partial_text.trim()
+        ));
+        handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+        if barge_in.flush_tts {
+            let was_agent_speaking = {
+                let inner = self.inner.lock().await;
+                inner.agent_speaking
+            };
+            self.end_agent_speaking(false).await;
+            if was_agent_speaking {
+                self.emit(SpeechEvent::agent_speaking_end());
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_vad_barge_in_on_speech_start(&self) -> SpeechResult<()> {
+        let (barge_in, guard_active, agent_speaking, has_stt) = {
+            let inner = self.inner.lock().await;
+            (
+                inner.config.vad.barge_in.clone(),
+                Self::agent_playback_guard_active(&inner),
+                inner.agent_speaking,
+                inner.config.stt.is_some(),
+            )
+        };
+        if !barge_in.enabled || !barge_in.use_vad {
+            return Ok(());
+        }
+        if guard_active {
+            voice_debug(format!(
+                "barge-in suppressed: agent playback guard {} ms",
+                barge_in.agent_playback_guard_ms
+            ));
+            return Ok(());
+        }
+        if barge_in.require_stt_partial && agent_speaking && has_stt {
+            let mut inner = self.inner.lock().await;
+            inner.barge_awaiting_stt_partial = true;
+            voice_debug(
+                "barge-in deferred until STT partial (require_stt_partial while agent TTS playing)",
+            );
+            return Ok(());
+        }
+        handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+        if barge_in.flush_tts {
+            let was_agent_speaking = {
+                let inner = self.inner.lock().await;
+                inner.agent_speaking
+            };
+            self.end_agent_speaking(false).await;
+            voice_debug("agent_speaking=false (barge-in flush)");
+            if was_agent_speaking {
+                self.emit(SpeechEvent::agent_speaking_end());
+            }
+        }
+        Ok(())
+    }
+
     fn arm_stt_hold_if_idle(inner: &mut AgentInner) {
         if !inner.config.vad.gate_stt || inner.stt_gate_hold_ms > 0 {
             return;
@@ -368,11 +462,11 @@ impl VoiceAgent {
         let (
             transitions,
             gate_stt,
-            stt_audio_open,
-            stt_poll_open,
-            should_finalize_utterance,
             speech_start,
             complete_previous_utterance,
+            frame_active,
+            vad_pending,
+            vad_speaking,
         ) = {
             let mut inner = self.inner.lock().await;
             let was_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
@@ -451,14 +545,33 @@ impl VoiceAgent {
                 }
             }
 
+            (
+                transitions,
+                gate_stt,
+                speech_start,
+                complete_previous_utterance,
+                frame_active,
+                vad_pending,
+                vad_speaking,
+            )
+        };
+
+        let (stt_audio_open, stt_poll_open, should_finalize_utterance) = {
+            let inner = self.inner.lock().await;
             let pending_gate = inner.config.vad.gate_stt_open_on_pending && vad_pending;
             let utterance_closing =
                 inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance;
-            // During agent TTS, only stream mic when the user is actually speaking (avoid echo).
-            // Still poll STT while `utterance_closing` so a pending Sherpa final is not stranded.
+            let semantic_barge = inner.config.vad.barge_in.require_stt_partial
+                && inner.config.stt.is_some();
             let stt_audio_open = if gate_stt {
                 if inner.agent_speaking {
-                    vad_speaking || inner.stt_gate_hold_ms > 0 || pending_gate
+                    // While agent TTS plays, do not feed STT on VAD "pending" only — avoids
+                    // burning a partial before `barge_awaiting_stt_partial` is armed on SpeechStart.
+                    if semantic_barge {
+                        vad_speaking || inner.stt_gate_hold_ms > 0
+                    } else {
+                        vad_speaking || inner.stt_gate_hold_ms > 0 || pending_gate
+                    }
                 } else {
                     vad_speaking
                         || inner.stt_gate_hold_ms > 0
@@ -469,8 +582,6 @@ impl VoiceAgent {
                 true
             };
             let stt_poll_open = !gate_stt || stt_audio_open || utterance_closing;
-
-            // Hold drained — run endpoint close once; keep polling until STT returns Final.
             let should_finalize_utterance = gate_stt
                 && utterance_closing
                 && !inner.agent_speaking
@@ -478,16 +589,7 @@ impl VoiceAgent {
                 && inner.stt_gate_hold_ms == 0
                 && !vad_speaking
                 && !frame_active;
-
-            (
-                transitions,
-                gate_stt,
-                stt_audio_open,
-                stt_poll_open,
-                should_finalize_utterance,
-                speech_start,
-                complete_previous_utterance,
-            )
+            (stt_audio_open, stt_poll_open, should_finalize_utterance)
         };
 
         if complete_previous_utterance {
@@ -546,39 +648,14 @@ impl VoiceAgent {
             voice_debug(format!("VAD {transition:?}"));
             match transition {
                 VadTransition::SpeechStart => {
-                    let barge_in = {
-                        let inner = self.inner.lock().await;
-                        inner.config.vad.barge_in.clone()
-                    };
-                    let guard_active = {
-                        let inner = self.inner.lock().await;
-                        Self::agent_playback_guard_active(&inner)
-                    };
-                    if barge_in.enabled && barge_in.use_vad {
-                        if guard_active {
-                            voice_debug(format!(
-                                "barge-in suppressed: agent playback guard {} ms (optional echo mitigation; set to 0 for immediate barge)",
-                                barge_in.agent_playback_guard_ms
-                            ));
-                        } else {
-                            handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event))
-                                .await;
-                            if barge_in.flush_tts {
-                                let was_agent_speaking = {
-                                    let inner = self.inner.lock().await;
-                                    inner.agent_speaking
-                                };
-                                self.end_agent_speaking(false).await;
-                                voice_debug("agent_speaking=false (barge-in flush)");
-                                if was_agent_speaking {
-                                    self.emit(SpeechEvent::agent_speaking_end());
-                                }
-                            }
-                        }
-                    }
+                    self.apply_vad_barge_in_on_speech_start().await?;
                     self.emit(SpeechEvent::user_speaking_start());
                 }
                 VadTransition::SpeechEnd => {
+                    {
+                        let mut inner = self.inner.lock().await;
+                        inner.barge_awaiting_stt_partial = false;
+                    }
                     let (has_stt, defer_speaking_end, agent_speaking) = {
                         let inner = self.inner.lock().await;
                         (
@@ -707,6 +784,7 @@ impl VoiceAgent {
             match transcript {
                 SttTranscript::Partial(text) => {
                     voice_debug(format!("STT partial: {text}"));
+                    self.try_stt_gated_barge_in(&text).await?;
                     self.emit(SpeechEvent::user_speech_partial(text));
                 }
                 SttTranscript::Final(text) => {
@@ -800,6 +878,7 @@ impl VoiceAgent {
         let mut guard = inner.lock().await;
         guard.agent_speaking = false;
         guard.agent_speaking_since = None;
+        guard.barge_awaiting_stt_partial = false;
         if arm_stt_hold_after_playback {
             Self::arm_stt_hold_if_idle(&mut guard);
         }

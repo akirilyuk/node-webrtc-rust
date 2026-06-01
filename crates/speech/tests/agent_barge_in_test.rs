@@ -34,6 +34,7 @@ fn speaker_config() -> VoiceAgentConfig {
     vad.barge_in.use_vad = true;
     vad.barge_in.flush_tts = true;
     vad.barge_in.agent_playback_guard_ms = 0;
+    vad.barge_in.require_stt_partial = false;
 
     VoiceAgentConfig {
         stt: None,
@@ -195,6 +196,7 @@ async fn agent_playback_guard_suppresses_early_barge_in() {
     vad.barge_in.use_vad = true;
     vad.barge_in.flush_tts = true;
     vad.barge_in.agent_playback_guard_ms = 500;
+    vad.barge_in.require_stt_partial = false;
 
     let config = VoiceAgentConfig {
         stt: None,
@@ -276,6 +278,7 @@ async fn use_vad_false_skips_auto_barge_on_speech_start() {
     vad.barge_in.enabled = true;
     vad.barge_in.use_vad = false;
     vad.barge_in.flush_tts = true;
+    vad.barge_in.require_stt_partial = false;
 
     let config = VoiceAgentConfig {
         stt: None,
@@ -341,6 +344,7 @@ async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() 
     vad.gate_stt = true;
     vad.stt_gate_hold_ms = 500;
     vad.barge_in.enabled = false;
+    vad.barge_in.require_stt_partial = false;
 
     let config = VoiceAgentConfig {
         stt: Some(node_webrtc_rust_speech::SttConfig {
@@ -404,4 +408,247 @@ async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() 
         "SpeechEnd during agent_speaking should not finalize STT until playback ends; \
          bytes during agent={during_agent}, after={after_playback}"
     );
+}
+
+struct PartialOnPollStt {
+    saw_push: std::sync::Mutex<bool>,
+    partial_emitted: std::sync::Mutex<bool>,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for PartialOnPollStt {
+    fn vendor_name(&self) -> &'static str {
+        "partial-on-poll"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, _pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.saw_push.lock().unwrap() = true;
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        let pushed = *self.saw_push.lock().unwrap();
+        if !pushed {
+            return Ok(None);
+        }
+        let mut emitted = self.partial_emitted.lock().unwrap();
+        if *emitted {
+            return Ok(None);
+        }
+        *emitted = true;
+        Ok(Some(SttTranscript::Partial("stop".into())))
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
+struct PartialOnPollFactory;
+
+impl VendorFactory for PartialOnPollFactory {
+    fn create_stt(
+        &self,
+        _config: &node_webrtc_rust_speech::SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        Ok(Box::new(PartialOnPollStt {
+            saw_push: std::sync::Mutex::new(false),
+            partial_emitted: std::sync::Mutex::new(false),
+        }))
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn node_webrtc_rust_speech::TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+}
+
+#[tokio::test]
+async fn stt_partial_gated_barge_flushes_agent_tts_after_partial() {
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::new(PartialOnPollFactory));
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.gate_stt = true;
+    vad.barge_in.enabled = true;
+    vad.barge_in.use_vad = true;
+    vad.barge_in.flush_tts = true;
+    vad.barge_in.require_stt_partial = true;
+    vad.barge_in.agent_playback_guard_ms = 0;
+
+    let config = VoiceAgentConfig {
+        stt: Some(node_webrtc_rust_speech::SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut events = agent.subscribe_events();
+    let written_ms: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    let written_clone = Arc::clone(&written_ms);
+    let writer: PcmWriter = Arc::new(move |_pcm, ms| {
+        *written_clone.lock().unwrap() += ms;
+        std::thread::sleep(Duration::from_millis(4));
+        Ok(())
+    });
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let long_text = "wait for stt partial before barge ".repeat(6);
+    let expected_ms = mock_tts_duration_ms(&long_text);
+    let loud = loud_stereo_frame();
+
+    let agent_arc = Arc::new(agent);
+    let agent_tts = Arc::clone(&agent_arc);
+    let text = long_text.clone();
+
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(60)).await;
+        for _ in 0..8 {
+            agent_tts
+                .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+                .await
+                .unwrap();
+        }
+    });
+
+    agent_arc.send_text_to_tts(&text).await.unwrap();
+    agent_arc.wait_tts_playback_idle().await.unwrap();
+    agent_arc.stop().await.unwrap();
+
+    let played_ms = *written_ms.lock().unwrap();
+    assert!(
+        played_ms < expected_ms * 60 / 100,
+        "STT partial should gate barge and cut TTS early: played {played_ms} ms, synth ~{expected_ms} ms"
+    );
+
+    let mut saw_barge_in = false;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == SpeechEventKind::BargeIn {
+            saw_barge_in = true;
+        }
+    }
+    assert!(saw_barge_in, "expected BargeIn after STT partial");
+}
+
+#[tokio::test]
+async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
+    let bytes = Arc::new(Mutex::new(0_usize));
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::new(CountingFactory {
+            bytes: Arc::clone(&bytes),
+        }),
+    );
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.gate_stt = true;
+    vad.barge_in.enabled = true;
+    vad.barge_in.use_vad = true;
+    vad.barge_in.flush_tts = true;
+    vad.barge_in.require_stt_partial = true;
+
+    let config = VoiceAgentConfig {
+        stt: Some(node_webrtc_rust_speech::SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut events = agent.subscribe_events();
+    let written_ms: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    let written_clone = Arc::clone(&written_ms);
+    let writer: PcmWriter = Arc::new(move |_pcm, ms| {
+        *written_clone.lock().unwrap() += ms;
+        Ok(())
+    });
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let long_text = "tone should not barge without stt partial ".repeat(6);
+    let expected_ms = mock_tts_duration_ms(&long_text);
+    let loud = loud_stereo_frame();
+
+    let agent_arc = Arc::new(agent);
+    let agent_tts = Arc::clone(&agent_arc);
+    let text = long_text.clone();
+
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(60)).await;
+        for _ in 0..6 {
+            agent_tts
+                .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+                .await
+                .unwrap();
+        }
+    });
+
+    agent_arc.send_text_to_tts(&text).await.unwrap();
+    agent_arc.wait_tts_playback_idle().await.unwrap();
+    agent_arc.stop().await.unwrap();
+
+    let played_ms = *written_ms.lock().unwrap();
+    assert!(
+        played_ms > expected_ms * 80 / 100,
+        "without STT partial, VAD noise must not barge: played {played_ms} ms, expected ~{expected_ms} ms"
+    );
+
+    let mut saw_barge_in = false;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == SpeechEventKind::BargeIn {
+            saw_barge_in = true;
+        }
+    }
+    assert!(!saw_barge_in, "tone without STT partial must not emit BargeIn");
 }

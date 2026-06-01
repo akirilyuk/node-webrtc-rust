@@ -22,7 +22,9 @@ export const DEFAULT_VOICE_AGENT_VAD: VadConfig = {
     enabled: true,
     useVad: true,
     flushTts: true,
-    /** 0 = barge anytime; raise only if speaker echo falsely interrupts TTS. */
+    requireSttPartial: true,
+    minSttPartialChars: 2,
+    /** 0 = no playback guard; rely on requireSttPartial for noise rejection. */
     agentPlaybackGuardMs: 0,
   },
 }

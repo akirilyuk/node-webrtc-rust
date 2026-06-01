@@ -169,7 +169,15 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 
 Default (no args) runs **5 built-in phrases** and checks **word similarity** (lowercased word overlap, default 75% threshold).
 
-**Full documentation:** [`ROUNDTRIP.md`](./ROUNDTRIP.md) — architecture, VAD timing vs explicit silence, similarity, env vars, and defaults.
+**CI:** PR **Quality** runs roundtrip **Vitest** evaluators; PR **Test** runs all seven `start:roundtrip*` E2E scripts after model download — see [`ROUNDTRIP.md` § CI](./ROUNDTRIP.md#ci-github-actions) and [`scripts/ci/README.md`](../../scripts/ci/README.md#sherpa-roundtrip-e2e-integration-job).
+
+**Run the same checks locally:**
+
+```bash
+bash scripts/ci/run-sherpa-example-ci.sh e2e
+```
+
+**Full documentation:** [`ROUNDTRIP.md`](./ROUNDTRIP.md) — architecture, all run modes, VAD timing, CI, debug logging (`VOICE_DEBUG`, `[speech]` events), env vars.
 
 Quick reference:
 

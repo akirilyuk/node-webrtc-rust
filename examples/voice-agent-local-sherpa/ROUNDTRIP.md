@@ -70,6 +70,9 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **Two phrases**      | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)   |
 | **Single phrase**    | `npm run start:roundtrip -- "I love America"`                                                                    |
 | **Single via env**   | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`                                                  |
+| **Semantic barge-in**| `npm run start:roundtrip-barge-in` — tone must not barge; spoken phrase must (see [§ Semantic barge-in E2E](#semantic-barge-in-e2e)) |
+
+All modes above are exercised in CI — see [§ CI (GitHub Actions)](#ci-github-actions).
 
 ## Counting roundtrip (one utterance, one final)
 
@@ -373,15 +376,40 @@ Passing **unit tests alone** (`npm run test:roundtrip-counting`) does **not** ru
 
 **Why the bugs you saw slipped through:** earlier tests waited for **one** final per run and never simulated **phrase 1 → long pause → phrase 2** on the same listener. `SpeechStart` cleared `stt_finalize_pending`, so turn 1 never finalized until turn 2 merged in Sherpa.
 
-**Recommended pre-merge check (Sherpa):**
+**Recommended local check (matches CI):**
 
 ```bash
 cd node-webrtc-rust
 npm run build:native
-npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-npm run start:roundtrip-utterance-timing --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-npm run start:roundtrip-two-phrases --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+bash scripts/ci/run-sherpa-example-ci.sh vitest   # evaluators only
+bash scripts/ci/run-sherpa-example-ci.sh e2e      # all seven start:roundtrip-* scripts
+# or: bash scripts/ci/run-pr-tests-full.sh        # full PR quality + integration
 ```
+
+## CI (GitHub Actions)
+
+Sherpa roundtrips run on every PR and on `main` when the **Test** job executes [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh).
+
+| Job | Script | Sherpa roundtrip coverage |
+| --- | ------ | ------------------------- |
+| **Quality** | [`run-pr-quality.sh`](../../scripts/ci/run-pr-quality.sh) → [`run-sherpa-example-ci.sh typecheck`](../../scripts/ci/run-sherpa-example-ci.sh) + `vitest` | Typecheck + **Vitest evaluators** (`test:roundtrip-counting`) — no model download |
+| **Test** | [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh) → [`run-sherpa-example-ci.sh e2e`](../../scripts/ci/run-sherpa-example-ci.sh) | Downloads EN Kroko STT + Piper TTS, then runs **all** `start:roundtrip*` entry points in order |
+
+E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh)): counting → utterance-timing → two-phrases → counting-echo → counting-barge-recovery → barge-in → batch roundtrip.
+
+Path filter: changes under `examples/**` trigger the **examples** filter and run quality + test when other filters also match — see [`scripts/ci/README.md`](../../scripts/ci/README.md#sherpa-roundtrip-e2e-integration-job).
+
+## Debug logging (E2E failures)
+
+Every `start:roundtrip*` script calls `installRoundtripWallClockTimeout()` at startup, which enables:
+
+| Output | Env | Meaning |
+| ------ | --- | ------- |
+| `[voice-debug]` on **stderr** | `VOICE_DEBUG=1` (set automatically) | Rust VAD/STT/gate-hold in `crates/speech` |
+| `[speech] [agent] +Nms <event>` on **stderr** | enabled via roundtrip harness | Every speech event (like multi-client `speech_event` → browser log) |
+| Structured failure dump | on `exit 1` | Leg stats, finals, re-run hints — [`roundtrip-failure-debug.ts`](./src/roundtrip-failure-debug.ts) |
+
+Opt out: `SHERPA_ROUNDTRIP_DEBUG=0` or `VOICE_DEBUG=0`. Extra TS events: `SHERPA_COUNTING_VERBOSE=1` (also set by default during roundtrips). Wall-clock cap: `SHERPA_ROUNDTRIP_WALL_MS` (invalid/zero values fall back to per-script default).
 
 ## Related docs
 

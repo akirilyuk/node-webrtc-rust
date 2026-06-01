@@ -126,6 +126,42 @@ Test execution: runner **host Docker** → public `coturn/coturn:latest` sidecar
 
 **TURN test networking:** peers and coturn share the test container network namespace (`--network container:coturn`). Traffic stays on loopback / Docker — **no inbound ports on the host firewall** (80/443 nginx is unrelated). coturn uses UDP/TCP **3478** for TURN control and **49152–65535** for relay allocations inside the container only. CI enables `--allow-loopback-peers` because both WebRTC peers run on the same host.
 
+### Sherpa roundtrip E2E (integration job)
+
+After `cargo test` and `npm test`, [`run-pr-integration.sh`](run-pr-integration.sh) runs [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh):
+
+1. Download STT (`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`) and TTS (`vits-piper-en_US-amy-low`) into `examples/voice-agent-local-sherpa/.models/`
+2. Set `SHERPA_STT_MODEL_PATH` / `SHERPA_TTS_MODEL_PATH`
+3. Run each `start:roundtrip*` script in order (exit on first failure)
+
+| Quality job ([`run-pr-quality.sh`](run-pr-quality.sh)) | Integration job ([`run-pr-integration.sh`](run-pr-integration.sh)) |
+| ------------------------------------------------------ | ------------------------------------------------------------------ |
+| Sherpa example `tsc`                                   | Same models + native `.node` as browser demo                       |
+| Vitest: `npm run test:roundtrip-counting` (evaluators only — **no Sherpa weights**) | Full E2E below |
+
+| # | npm script | Purpose |
+| - | ---------- | ------- |
+| 1 | `start:roundtrip-counting` | One long count 1–20 → **1×** `user_speech_final` |
+| 2 | `start:roundtrip-utterance-timing` | `user_speaking_end` → `user_speech_final` within 500 ms |
+| 3 | `start:roundtrip-two-phrases` | Two phrases → **2×** finals (multi-turn) |
+| 4 | `start:roundtrip-counting-echo` | Agent1↔Agent2 “You said” echo (counting + long sentence) |
+| 5 | `start:roundtrip-counting-barge-recovery` | Full echo → barge truncate → recovery |
+| 6 | `start:roundtrip-barge-in` | Semantic barge-in (tone vs spoken interrupt) |
+| 7 | `start:roundtrip` | Five default phrases + word similarity |
+
+**Local mirror (models + `npm run build:native` first):**
+
+```bash
+cd node-webrtc-rust
+bash scripts/ci/run-sherpa-example-ci.sh vitest   # quality parity, no models
+bash scripts/ci/run-sherpa-example-ci.sh e2e      # all seven E2E scripts
+bash scripts/ci/run-pr-tests-full.sh              # quality + integration (full PR test job)
+```
+
+**Pre-push (scoped):** `npm run ci:pre-push` runs Sherpa typecheck + Vitest + E2E when `examples/voice-agent-local-sherpa/` or `crates/speech/` changed — see [`run-pre-push-gates.sh`](run-pre-push-gates.sh).
+
+Details, env vars, and debug logging: [`examples/voice-agent-local-sherpa/ROUNDTRIP.md`](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md).
+
 ---
 
 ## Main push pipeline (`build-main.yml`)

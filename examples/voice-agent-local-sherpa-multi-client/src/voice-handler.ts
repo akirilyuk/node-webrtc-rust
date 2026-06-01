@@ -42,7 +42,7 @@ export const voiceHandler: VoiceSessionHandler = {
         const heard = event.text?.trim()
         if (!heard) break
         console.log(`[${ctx.peerId}] user said: ${heard}`)
-        await ctx.speak(`You said: ${heard}`)
+        void ctx.speak(`You said: ${heard}`)
         break
       }
 

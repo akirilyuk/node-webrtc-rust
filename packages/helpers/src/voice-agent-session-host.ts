@@ -314,12 +314,10 @@ export class VoiceAgentSessionHost {
     void (async () => {
       for await (const event of session.agent.speechEvents()) {
         if (!active) break
-        try {
-          await voiceHandler.onSpeechEvent!(ctx, event)
-        } catch (error: unknown) {
-          console.error(`[voice ${peerId}] voiceHandler.onSpeechEvent failed:`, error)
-        }
         this.sendSpeechEventToControlChannel(session.controlChannel, event)
+        void Promise.resolve(voiceHandler.onSpeechEvent!(ctx, event)).catch((error: unknown) => {
+          console.error(`[voice ${peerId}] voiceHandler.onSpeechEvent failed:`, error)
+        })
       }
     })()
 

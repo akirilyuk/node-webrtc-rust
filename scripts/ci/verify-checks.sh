@@ -44,10 +44,11 @@ run "bash scripts/ci/build-ts-workspace.sh"
 echo "==> release publish TS parity (npm ci --ignore-scripts + version bump)"
 run "bash scripts/ci/verify-release-publish-ts.sh"
 
-echo "==> cargo test (core, mixer, conference)"
+echo "==> cargo test (core, mixer, conference, speech)"
 run "cargo test -p node-webrtc-rust-core"
 run "cargo test -p node-webrtc-rust-mixer"
 run "cargo test -p node-webrtc-rust-conference"
+run "cargo test -p node-webrtc-rust-speech"
 
 echo "==> npm test"
 run "npm test"

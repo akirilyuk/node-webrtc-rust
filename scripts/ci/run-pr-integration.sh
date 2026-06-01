@@ -30,11 +30,12 @@ else
   echo "    using $(basename "${nodes[0]}") (artifact or cache)"
 fi
 
-echo "==> cargo test (core, mixer, conference)"
+echo "==> cargo test (core, mixer, conference, speech)"
 echo "    (compiles Rust test deps on cold cache — separate from the .node binding above)"
 cargo test -p node-webrtc-rust-core
 cargo test -p node-webrtc-rust-mixer
 cargo test -p node-webrtc-rust-conference
+cargo test -p node-webrtc-rust-speech
 
 if [[ ! -f packages/sdk/dist/cjs/index.js ]] || [[ ! -f packages/signaling/dist/cjs/index.js ]] || [[ ! -f packages/helpers/dist/cjs/index.js ]]; then
   echo "==> build:ts (dist cache miss)"

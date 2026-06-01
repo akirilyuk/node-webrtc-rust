@@ -1,4 +1,6 @@
 //! Integration tests for peer connections.
+//!
+//! Run serially in CI/local integration (`--test-threads=1`) — parallel runs flake on shared ICE.
 
 use std::time::Duration;
 
@@ -10,10 +12,7 @@ use node_webrtc_rust_core::{
 use tokio::time::{sleep, timeout};
 
 fn test_config() -> PeerConnectionConfig {
-    PeerConnectionConfig::default()
-}
-
-fn stun_config() -> PeerConnectionConfig {
+    // STUN improves reliability on macOS and under parallel CI load (host candidates alone can flake).
     PeerConnectionConfig {
         ice_servers: vec![IceServer {
             urls: vec!["stun:stun.l.google.com:19302".into()],
@@ -62,20 +61,46 @@ async fn signal_pair(offer: &PeerConnection, answer: &PeerConnection) {
         .expect("set remote answer");
 }
 
+/// Pause so the next test in the same process can bind ICE ports (serial test harness).
+async fn settle_after_peer_activity() {
+    sleep(Duration::from_millis(1_000)).await;
+}
+
+async fn close_single_peer(pc: &PeerConnection) {
+    pc.close().await.expect("close pc");
+    settle_after_peer_activity().await;
+}
+
+async fn close_peer_pair(pc1: &PeerConnection, pc2: &PeerConnection) {
+    pc1.close().await.expect("close pc1");
+    pc2.close().await.expect("close pc2");
+    settle_after_peer_activity().await;
+}
+
 async fn wait_for_connection(pc: &PeerConnection) {
-    timeout(Duration::from_secs(15), async {
-        loop {
-            match pc.connection_state() {
-                ConnectionState::Connected => return,
-                ConnectionState::Failed | ConnectionState::Closed => {
-                    panic!("connection failed: {:?}", pc.connection_state());
+    const PER_ATTEMPT: Duration = Duration::from_secs(25);
+    for attempt in 1..=2u32 {
+        let result = timeout(PER_ATTEMPT, async {
+            loop {
+                match pc.connection_state() {
+                    ConnectionState::Connected => return,
+                    ConnectionState::Failed | ConnectionState::Closed => {
+                        panic!("connection failed: {:?}", pc.connection_state());
+                    }
+                    _ => sleep(Duration::from_millis(50)).await,
                 }
-                _ => sleep(Duration::from_millis(50)).await,
             }
+        })
+        .await;
+        if result.is_ok() {
+            return;
         }
-    })
-    .await
-    .expect("timed out waiting for connection");
+        if attempt < 2 {
+            sleep(Duration::from_millis(500)).await;
+            continue;
+        }
+        result.expect("timed out waiting for connection");
+    }
 }
 
 async fn wait_for_data_channel_open(
@@ -106,8 +131,7 @@ async fn test_two_peers_connect() {
     wait_for_connection(&pc1).await;
     wait_for_connection(&pc2).await;
 
-    pc1.close().await.expect("close pc1");
-    pc2.close().await.expect("close pc2");
+    close_peer_pair(&pc1, &pc2).await;
 }
 
 #[tokio::test]
@@ -161,8 +185,7 @@ async fn test_data_channel_round_trip() {
     assert!(!binary_msg.is_string);
     assert_eq!(binary_msg.data.as_ref(), &[1, 2, 3]);
 
-    pc1.close().await.expect("close pc1");
-    pc2.close().await.expect("close pc2");
+    close_peer_pair(&pc1, &pc2).await;
 }
 
 #[tokio::test]
@@ -175,7 +198,7 @@ async fn test_add_audio_track() {
         .await
         .expect("add track");
 
-    pc1.close().await.expect("close pc1");
+    close_single_peer(&pc1).await;
 }
 
 #[tokio::test]
@@ -222,8 +245,7 @@ async fn test_audio_track_exchange() {
         .expect("read sample");
     assert_eq!(sample.pcm.len(), 3_840);
 
-    pc1.close().await.expect("close pc1");
-    pc2.close().await.expect("close pc2");
+    close_peer_pair(&pc1, &pc2).await;
 }
 
 #[tokio::test]
@@ -238,7 +260,7 @@ async fn test_write_sample_with_shared_bytes() {
 
 #[tokio::test]
 async fn test_ice_candidate_generation() {
-    let config = stun_config();
+    let config = test_config();
     let pc = PeerConnection::new(config).await.expect("create pc");
 
     let mut events = pc.subscribe_events();
@@ -268,7 +290,7 @@ async fn test_ice_candidate_generation() {
     assert!(gather_timeout.is_ok(), "ICE gathering timed out");
     assert!(saw_candidate, "expected at least one ICE candidate");
 
-    pc.close().await.expect("close pc");
+    close_single_peer(&pc).await;
 }
 
 #[tokio::test]
@@ -320,8 +342,7 @@ async fn test_replace_track_swaps_outbound_audio() {
         .expect("read rtp");
     assert!(!packet.payload.is_empty());
 
-    pc1.close().await.expect("close pc1");
-    pc2.close().await.expect("close pc2");
+    close_peer_pair(&pc1, &pc2).await;
 }
 
 #[tokio::test]
@@ -337,7 +358,7 @@ async fn test_offer_to_receive_audio_adds_audio_mline() {
         .await
         .expect("create offer");
     assert!(desc.sdp.contains("m=audio"));
-    pc.close().await.expect("close");
+    close_single_peer(&pc).await;
 }
 
 #[tokio::test]
@@ -353,7 +374,7 @@ async fn test_offer_to_receive_video_returns_error() {
         .await
         .expect_err("video receive should fail");
     assert!(err.to_string().contains("offerToReceiveVideo"));
-    pc.close().await.expect("close");
+    close_single_peer(&pc).await;
 }
 
 #[tokio::test]
@@ -375,8 +396,7 @@ async fn test_remove_track_detaches_sender() {
 
     pc1.remove_track(&sender).await.expect("remove track");
 
-    pc1.close().await.expect("close pc1");
-    pc2.close().await.expect("close pc2");
+    close_peer_pair(&pc1, &pc2).await;
 }
 
 #[tokio::test]
@@ -406,7 +426,7 @@ async fn test_add_transceiver_recvonly_audio() {
     let offer = pc.create_offer(None).await.expect("create offer");
     assert!(offer.sdp.contains("m=audio"));
 
-    pc.close().await.expect("close");
+    close_single_peer(&pc).await;
 }
 
 #[tokio::test]
@@ -426,7 +446,7 @@ async fn test_add_transceiver_from_local_track() {
     assert_eq!(transceiver.kind(), TrackKind::Audio);
     assert_eq!(transceiver.direction(), RtpTransceiverDirection::Sendrecv);
 
-    pc.close().await.expect("close");
+    close_single_peer(&pc).await;
 }
 
 #[tokio::test]
@@ -452,7 +472,7 @@ async fn test_transceiver_set_direction_and_stop() {
     transceiver.stop().await.expect("stop transceiver");
     assert!(transceiver.stopped());
 
-    pc.close().await.expect("close");
+    close_single_peer(&pc).await;
 }
 
 #[tokio::test]
@@ -466,8 +486,7 @@ async fn test_connection_close() {
     signal_pair(&pc1, &pc2).await;
     wait_for_connection(&pc1).await;
 
-    pc1.close().await.expect("close pc1");
-    pc2.close().await.expect("close pc2");
+    close_peer_pair(&pc1, &pc2).await;
 
     assert_eq!(pc1.connection_state(), ConnectionState::Closed);
     assert_eq!(pc2.connection_state(), ConnectionState::Closed);

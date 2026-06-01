@@ -60,17 +60,17 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 
 ## Run modes
 
-| Mode                 | Command                                                                                                          |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Batch (default)**  | `npm run start:roundtrip` — 5 built-in sentences + similarity table                                              |
-| **Counting 1–20**    | `npm run start:roundtrip-counting` — one long utterance, single final (see below)                                |
-| **Counting echo**    | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                           |
-| **Barge recovery**   | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)           |
-| **Utterance timing** | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below) |
-| **Two phrases**      | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)   |
-| **Single phrase**    | `npm run start:roundtrip -- "I love America"`                                                                    |
-| **Single via env**   | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`                                                  |
-| **Semantic barge-in**| `npm run start:roundtrip-barge-in` — tone must not barge; spoken phrase must (see [§ Semantic barge-in E2E](#semantic-barge-in-e2e)) |
+| Mode                  | Command                                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **Batch (default)**   | `npm run start:roundtrip` — 5 built-in sentences + similarity table                                                                  |
+| **Counting 1–20**     | `npm run start:roundtrip-counting` — one long utterance, single final (see below)                                                    |
+| **Counting echo**     | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                                               |
+| **Barge recovery**    | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)                               |
+| **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                     |
+| **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                       |
+| **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                        |
+| **Single via env**    | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`                                                                      |
+| **Semantic barge-in** | `npm run start:roundtrip-barge-in` — tone must not barge; spoken phrase must (see [§ Semantic barge-in E2E](#semantic-barge-in-e2e)) |
 
 All modes above are exercised in CI — see [§ CI (GitHub Actions)](#ci-github-actions).
 
@@ -390,10 +390,10 @@ bash scripts/ci/run-sherpa-example-ci.sh e2e      # all seven start:roundtrip-* 
 
 Sherpa roundtrips run on every PR and on `main` when the **Test** job executes [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh).
 
-| Job | Script | Sherpa roundtrip coverage |
-| --- | ------ | ------------------------- |
-| **Quality** | [`run-pr-quality.sh`](../../scripts/ci/run-pr-quality.sh) → [`run-sherpa-example-ci.sh typecheck`](../../scripts/ci/run-sherpa-example-ci.sh) + `vitest` | Typecheck + **Vitest evaluators** (`test:roundtrip-counting`) — no model download |
-| **Test** | [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh) → [`run-sherpa-example-ci.sh e2e`](../../scripts/ci/run-sherpa-example-ci.sh) | Downloads EN Kroko STT + Piper TTS, then runs **all** `start:roundtrip*` entry points in order |
+| Job         | Script                                                                                                                                                   | Sherpa roundtrip coverage                                                                      |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Quality** | [`run-pr-quality.sh`](../../scripts/ci/run-pr-quality.sh) → [`run-sherpa-example-ci.sh typecheck`](../../scripts/ci/run-sherpa-example-ci.sh) + `vitest` | Typecheck + **Vitest evaluators** (`test:roundtrip-counting`) — no model download              |
+| **Test**    | [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh) → [`run-sherpa-example-ci.sh e2e`](../../scripts/ci/run-sherpa-example-ci.sh)          | Downloads EN Kroko STT + Piper TTS, then runs **all** `start:roundtrip*` entry points in order |
 
 E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh)): counting → utterance-timing → two-phrases → counting-echo → counting-barge-recovery → barge-in → batch roundtrip.
 
@@ -403,13 +403,16 @@ Path filter: changes under `examples/**` trigger the **examples** filter and run
 
 Every `start:roundtrip*` script calls `installRoundtripWallClockTimeout()` at startup, which enables:
 
-| Output | Env | Meaning |
-| ------ | --- | ------- |
-| `[voice-debug]` on **stderr** | `VOICE_DEBUG=1` (set automatically) | Rust VAD/STT/gate-hold in `crates/speech` |
-| `[speech] [agent] +Nms <event>` on **stderr** | enabled via roundtrip harness | Every speech event (like multi-client `speech_event` → browser log) |
-| Structured failure dump | on `exit 1` | Leg stats, finals, re-run hints — [`roundtrip-failure-debug.ts`](./src/roundtrip-failure-debug.ts) |
+| Output                                                          | Env                                 | Meaning                                                                                            |
+| --------------------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `[ci-step] START/OK/FAIL (N/M)`                                 | CI scripts                          | Which integration step is running (see `scripts/ci/ci-step.sh`)                                    |
+| `[topology] [signaling\|agent-pc\|user-pc\|listener\|user-sim]` | default on                          | Loopback attach + ICE — [`roundtrip-topology-log.ts`](./src/roundtrip-topology-log.ts)             |
+| `[e2e-phase]`                                                   | default on                          | Phase boundaries in multi-phase scripts (e.g. barge-in)                                            |
+| `[voice-debug]` on **stderr**                                   | `VOICE_DEBUG=1` (set automatically) | Rust VAD/STT/gate-hold in `crates/speech`                                                          |
+| `[speech] [Phase N] +Nms <event>` on **stderr**                 | enabled via roundtrip harness       | Every speech event (like multi-client `speech_event` → browser log)                                |
+| Structured failure dump                                         | on `exit 1`                         | Leg stats, finals, re-run hints — [`roundtrip-failure-debug.ts`](./src/roundtrip-failure-debug.ts) |
 
-Opt out: `SHERPA_ROUNDTRIP_DEBUG=0` or `VOICE_DEBUG=0`. Extra TS events: `SHERPA_COUNTING_VERBOSE=1` (also set by default during roundtrips). Wall-clock cap: `SHERPA_ROUNDTRIP_WALL_MS` (invalid/zero values fall back to per-script default).
+Opt out: `SHERPA_ROUNDTRIP_DEBUG=0` or `VOICE_DEBUG=0`; topology banners `SHERPA_ROUNDTRIP_TOPOLOGY_LOG=0`. Extra TS events: `SHERPA_COUNTING_VERBOSE=1` (also set by default during roundtrips). Wall-clock cap: `SHERPA_ROUNDTRIP_WALL_MS` (invalid/zero values fall back to per-script default). **Local CI parity:** `npm run ci:verify:pr-full` (host) or `npm run ci:verify:pr-test:docker` (optional Docker) — see [`scripts/ci/README.md`](../../scripts/ci/README.md).
 
 ## Related docs
 

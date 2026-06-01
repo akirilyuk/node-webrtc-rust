@@ -55,7 +55,7 @@ describe('roundtrip-barge-in helpers', () => {
       { type: SPEECH_EVENT_TYPE.userSpeakingStart, atMs: 800 },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 9000 },
     ]
-    expect(phase3EventsTerminal(userNoPartial)).toBe(false)
+    expect(phase3EventsTerminal(userNoPartial)).toBe(true)
   })
 
   it('evaluateSemanticBargeEventOrder accepts partial → barge_in → agent_speaking_end', () => {

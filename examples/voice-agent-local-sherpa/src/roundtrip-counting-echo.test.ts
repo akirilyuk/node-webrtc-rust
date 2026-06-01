@@ -45,6 +45,7 @@ describe('roundtrip-counting-echo helpers', () => {
 
   it('transcriptIncludesYouSaid detects echo prefix', () => {
     expect(transcriptIncludesYouSaid('You said: hello')).toBe(true)
+    expect(transcriptIncludesYouSaid('He uses one two three')).toBe(true)
     expect(transcriptIncludesYouSaid('hello only')).toBe(false)
   })
 

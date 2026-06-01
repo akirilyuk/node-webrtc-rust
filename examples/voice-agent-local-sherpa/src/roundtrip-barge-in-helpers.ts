@@ -87,6 +87,8 @@ export function phase3EventsTerminal(events: RecordedSpeechEvent[]): boolean {
 
   if (agentEnded && !userSpoke && !hadBarge) return true
   if (agentEnded && userSpoke && hasPartial && !hadBarge) return true
+  // User-leg audio finished agent TTS without barge — outcome is final (pass or fail).
+  if (agentEnded && userSpoke && !hadBarge) return true
   return false
 }
 

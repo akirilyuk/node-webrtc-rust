@@ -65,7 +65,7 @@ Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with three
 | ------------ | ------------------------------------------------------------------------------------- |
 | `native`     | `Cargo.*`, `crates/**`, `packages/bindings/**` (excluding generated `.node` / loader) |
 | `typescript` | `packages/sdk/**`, `packages/signaling/**`, lockfile, tsconfigs, eslint, prettier     |
-| `helpers`    | `packages/helpers/**`, `examples/voice-agent-local-sherpa-multi-client/**`          |
+| `helpers`    | `packages/helpers/**`, `examples/voice-agent-local-sherpa-multi-client/**`            |
 | `examples`   | `examples/**` (Sherpa roundtrip scripts, eslint on example TS, typecheck + E2E)       |
 | `workflows`  | `.github/**`, `docker/ci/**`                                                          |
 
@@ -132,22 +132,22 @@ After `cargo test` and `npm test`, [`run-pr-integration.sh`](run-pr-integration.
 
 1. Download STT (`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`) and TTS (`vits-piper-en_US-amy-low`) into `examples/voice-agent-local-sherpa/.models/`
 2. Set `SHERPA_STT_MODEL_PATH` / `SHERPA_TTS_MODEL_PATH`
-3. Run each `start:roundtrip*` script in order (exit on first failure)
+3. Run each `start:roundtrip*` script in order (exit on first failure). Each step is wrapped in [`run-with-timeout.sh`](run-with-timeout.sh) (default **180s** per script; override `CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC`). Model downloads cap at **900s** (`CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC`).
 
-| Quality job ([`run-pr-quality.sh`](run-pr-quality.sh)) | Integration job ([`run-pr-integration.sh`](run-pr-integration.sh)) |
-| ------------------------------------------------------ | ------------------------------------------------------------------ |
-| Sherpa example `tsc`                                   | Same models + native `.node` as browser demo                       |
-| Vitest: `npm run test:roundtrip-counting` (evaluators only — **no Sherpa weights**) | Full E2E below |
+| Quality job ([`run-pr-quality.sh`](run-pr-quality.sh))                              | Integration job ([`run-pr-integration.sh`](run-pr-integration.sh)) |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Sherpa example `tsc`                                                                | Same models + native `.node` as browser demo                       |
+| Vitest: `npm run test:roundtrip-counting` (evaluators only — **no Sherpa weights**) | Full E2E below                                                     |
 
-| # | npm script | Purpose |
-| - | ---------- | ------- |
-| 1 | `start:roundtrip-counting` | One long count 1–20 → **1×** `user_speech_final` |
-| 2 | `start:roundtrip-utterance-timing` | `user_speaking_end` → `user_speech_final` within 500 ms |
-| 3 | `start:roundtrip-two-phrases` | Two phrases → **2×** finals (multi-turn) |
-| 4 | `start:roundtrip-counting-echo` | Agent1↔Agent2 “You said” echo (counting + long sentence) |
-| 5 | `start:roundtrip-counting-barge-recovery` | Full echo → barge truncate → recovery |
-| 6 | `start:roundtrip-barge-in` | Semantic barge-in (tone vs spoken interrupt) |
-| 7 | `start:roundtrip` | Five default phrases + word similarity |
+| #   | npm script                                | Purpose                                                  |
+| --- | ----------------------------------------- | -------------------------------------------------------- |
+| 1   | `start:roundtrip-counting`                | One long count 1–20 → **1×** `user_speech_final`         |
+| 2   | `start:roundtrip-utterance-timing`        | `user_speaking_end` → `user_speech_final` within 500 ms  |
+| 3   | `start:roundtrip-two-phrases`             | Two phrases → **2×** finals (multi-turn)                 |
+| 4   | `start:roundtrip-counting-echo`           | Agent1↔Agent2 “You said” echo (counting + long sentence) |
+| 5   | `start:roundtrip-counting-barge-recovery` | Full echo → barge truncate → recovery                    |
+| 6   | `start:roundtrip-barge-in`                | Semantic barge-in (tone vs spoken interrupt)             |
+| 7   | `start:roundtrip`                         | Five default phrases + word similarity                   |
 
 **Local mirror (models + `npm run build:native` first):**
 
@@ -157,6 +157,28 @@ bash scripts/ci/run-sherpa-example-ci.sh vitest   # quality parity, no models
 bash scripts/ci/run-sherpa-example-ci.sh e2e      # all seven E2E scripts
 bash scripts/ci/run-pr-tests-full.sh              # quality + integration (full PR test job)
 ```
+
+**Local mirror of the PR Test job (host — recommended):**
+
+```bash
+cd node-webrtc-rust
+npm run build:native                           # host .node for npm test
+npm run ci:verify:pr-full                      # quality + integration
+npm run ci:verify:checks                       # full suite incl. format + release TS parity
+CI_STEP_LOG_TS=1 npm run ci:verify:pr-full     # UTC timestamps on [ci-step] lines
+```
+
+**Optional Docker parity** (coturn + ci-build container — only when debugging remote runner differences):
+
+```bash
+cd node-webrtc-rust
+npm run ci:verify:pr-test:docker              # integration only (cargo + npm test + Sherpa E2E)
+npm run ci:verify:pr-full:docker              # quality + integration
+CI_STEP_LOG_TS=1 npm run ci:verify:pr-test:docker   # UTC timestamps on [ci-step] lines
+```
+
+Step banners: `[ci-step] START (3/7) sherpa e2e start:roundtrip-barge-in` → `OK (25s)` or `FAIL` / timeout hint.  
+Sherpa stderr during E2E: `[topology]` (signaling / agent-pc / user-pc attach), `[e2e-phase]`, `[speech]` (listener events), `[voice-debug]` (Rust STT/VAD). See [`ROUNDTRIP.md`](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md) § Debug logging.
 
 **Pre-push (scoped):** `npm run ci:pre-push` runs Sherpa typecheck + Vitest + E2E when `examples/voice-agent-local-sherpa/` or `crates/speech/` changed — see [`run-pre-push-gates.sh`](run-pre-push-gates.sh).
 
@@ -257,24 +279,27 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 ## Scripts reference
 
-| Script                                                         | Used by                            | What it runs                                                                          |
-| -------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
-| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                     | `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest** |
-| [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers` | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)              |
-| [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`              | eslint + build-ts + helpers vitest when scoped; Sherpa **typecheck + Vitest + E2E** when example/speech changes |
-| [`install-pre-push-hook.sh`](install-pre-push-hook.sh)         | one-time per clone                 | installs `.git/hooks/pre-push` → `npm run ci:pre-push`                              |
-| [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)       | alias                              | → `run-pre-push-gates.sh`                                                           |
-| [`plan-native-builds.sh`](plan-native-builds.sh)               | main + release plan job            | Per-target cache hash check → dynamic build matrices                                  |
-| [`check-main-ci-success.sh`](check-main-ci-success.sh)         | release plan job                   | Skip release test when main validated same SHA                                        |
-| [`list-release-targets.sh`](list-release-targets.sh)           | plan / stage scripts               | Canonical six release triples                                                         |
-| [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity    | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh`                      |
-| [`build-ts-workspace.sh`](build-ts-workspace.sh)               | PR build-ts + integration fallback | sdk core → signaling → full sdk                                                       |
-| [`run-pr-integration.sh`](run-pr-integration.sh)               | PR test job                        | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test (incl. speech), optional build:ts, npm test, [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh) |
-| [`run-sherpa-example-ci.sh`](run-sherpa-example-ci.sh)         | quality (`typecheck`, `vitest`) + test (`e2e`) | Sherpa `tsc`; **all** `test:roundtrip-counting` Vitest; **all** `start:roundtrip-*` E2E after model download |
-| [`run-pr-tests-full.sh`](run-pr-tests-full.sh)                 | local `ci:verify`                  | quality + integration                                                                 |
-| [`run-pr-integration.sh`](run-pr-integration.sh)               | main + release test                | integration only (after quality job)                                                  |
-| [`verify-checks.sh`](verify-checks.sh)                         | `npm run ci:verify:checks*`        | Local mirror of quality + integration                                                 |
-| [`verify-linux.sh`](verify-linux.sh)                           | `npm run ci:verify:linux`          | Local release cross-builds in Docker                                                  |
+| Script                                                         | Used by                                        | What it runs                                                                                                                                                     |
+| -------------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                                 | `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest**                                  |
+| [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers`            | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)                                                                                           |
+| [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`                          | eslint + build-ts + helpers vitest when scoped; Sherpa **typecheck + Vitest + E2E** when example/speech changes                                                  |
+| [`install-pre-push-hook.sh`](install-pre-push-hook.sh)         | one-time per clone                             | installs `.git/hooks/pre-push` → `npm run ci:pre-push`                                                                                                           |
+| [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)       | alias                                          | → `run-pre-push-gates.sh`                                                                                                                                        |
+| [`plan-native-builds.sh`](plan-native-builds.sh)               | main + release plan job                        | Per-target cache hash check → dynamic build matrices                                                                                                             |
+| [`check-main-ci-success.sh`](check-main-ci-success.sh)         | release plan job                               | Skip release test when main validated same SHA                                                                                                                   |
+| [`list-release-targets.sh`](list-release-targets.sh)           | plan / stage scripts                           | Canonical six release triples                                                                                                                                    |
+| [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity                | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh`                                                                                                 |
+| [`build-ts-workspace.sh`](build-ts-workspace.sh)               | PR build-ts + integration fallback             | sdk core → signaling → full sdk                                                                                                                                  |
+| [`run-pr-integration.sh`](run-pr-integration.sh)               | PR test job                                    | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test (incl. speech), optional build:ts, npm test, [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh) |
+| [`run-sherpa-example-ci.sh`](run-sherpa-example-ci.sh)         | quality (`typecheck`, `vitest`) + test (`e2e`) | Sherpa `tsc`; **all** `test:roundtrip-counting` Vitest; **all** `start:roundtrip-*` E2E after model download                                                     |
+| [`ci-step.sh`](ci-step.sh)                                     | integration + Sherpa E2E                       | `[ci-step] START/OK/FAIL` banners; optional `--timeout` via [`run-with-timeout.sh`](run-with-timeout.sh)                                                         |
+| [`run-with-timeout.sh`](run-with-timeout.sh)                   | via `ci-step.sh`                               | GNU `timeout` / `gtimeout` wall-clock cap per step                                                                                                               |
+| [`run-pr-test-job-docker.sh`](run-pr-test-job-docker.sh)       | `npm run ci:verify:pr-test:docker`             | **Optional** coturn + ci-build container → `run-pr-integration.sh`                                                                                               |
+| [`run-pr-tests-full.sh`](run-pr-tests-full.sh)                 | `npm run ci:verify:pr-full`                    | quality + integration (host)                                                                                                                                     |
+| [`run-pr-integration.sh`](run-pr-integration.sh)               | main + release test                            | integration only (after quality job)                                                                                                                             |
+| [`verify-checks.sh`](verify-checks.sh)                         | `npm run ci:verify:checks*`                    | Local mirror of quality + integration                                                                                                                            |
+| [`verify-linux.sh`](verify-linux.sh)                           | `npm run ci:verify:linux`                      | Local release cross-builds in Docker                                                                                                                             |
 
 ---
 
@@ -283,13 +308,23 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 Run these **before pushing CI changes** (see [`.cursor/rules/ci-local-validation.mdc`](../../.cursor/rules/ci-local-validation.mdc)):
 
 ```bash
+npm run build:native                           # host .node for npm test
 bash scripts/ci/run-pr-quality.sh              # PR quality job
-bash scripts/ci/verify-release-publish-ts.sh   # release publish TS path (host)
-npm run ci:verify:release-ts:docker            # release publish TS in ci-build image
+bash scripts/ci/verify-release-publish-ts.sh   # release publish TS path
+npm run ci:verify:release-ts                     # same as verify-release-publish-ts.sh
 bash scripts/ci/build-ts-workspace.sh          # PR build-ts job (from clean dist/)
-npm run ci:verify:checks:docker                # quality + integration in ci-build image
-npm run ci:verify:linux                        # release Linux cross-builds
-npm run ci:verify                              # both verify targets
+npm run ci:verify:pr-full                        # quality + integration (host)
+npm run ci:verify:checks                         # full PR check suite (host)
+npm run ci:verify                                # alias for ci:verify:checks
+npm run ci:verify:linux                          # optional: release Linux cross-builds in Docker
+```
+
+**Optional Docker parity** (remote ci-build container only):
+
+```bash
+npm run ci:verify:checks:docker
+npm run ci:verify:release-ts:docker
+npm run ci:verify:pr-test:docker
 npm run ci:docker:build                        # build ci-build image locally
 ```
 

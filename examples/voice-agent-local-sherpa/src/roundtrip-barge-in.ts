@@ -38,6 +38,13 @@ import { stereoPcmDurationMs, streamSilence, streamTone } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
+import {
+  attachRoundtripConnectionLogs,
+  logE2ePhase,
+  logRoundtripScriptBanner,
+  logSignalingReady,
+  logVoiceAgentAttach,
+} from './roundtrip-topology-log.js'
 
 const DEFAULT_AGENT_PHRASE =
   'The quick brown fox jumps over the lazy dog and then continues speaking for several more seconds so we can interrupt playback.'
@@ -52,34 +59,83 @@ const DEFAULT_MAX_PHASE_MS = 25_000
 const DEFAULT_WARMUP_S = 0.6
 
 /**
- * Collect listener speech events until `until(events)` or `maxMs` (safety cap).
- * Only one `speechEvents()` consumer may run per VoiceAgent at a time.
+ * One `speechEvents()` pump for the whole E2E — per-phase iterators block on the next
+ * `pullSpeechEvent` and orphan pumps steal events after a wall-clock race.
  */
-function collectSpeechEventsUntil(params: {
-  agent: VoiceAgent
-  phaseLabel: string
-  maxMs: number
-  until: (events: RecordedSpeechEvent[]) => boolean
-}): Promise<RecordedSpeechEvent[]> {
-  const collected: RecordedSpeechEvent[] = []
-  const startedAtMs = Date.now()
-  const doneAt = startedAtMs + params.maxMs
+class ListenerSpeechCollector {
+  private phase: {
+    collected: RecordedSpeechEvent[]
+    phaseStartMs: number
+    phaseLabel: string
+    until: (events: RecordedSpeechEvent[]) => boolean
+    finish: () => void
+  } | null = null
 
-  console.log(`[${params.phaseLabel}] collecting speech events (max ${params.maxMs} ms)`)
+  constructor(agent: VoiceAgent) {
+    void this.pump(agent)
+  }
 
-  return (async () => {
-    for await (const event of params.agent.speechEvents()) {
-      if (Date.now() > doneAt) break
-      logRoundtripSpeechEvent(params.phaseLabel, event)
-      const recorded = recordSpeechEvent(collected, event, startedAtMs)
-      console.log(`[${params.phaseLabel}] event ${formatRecordedSpeechEvent(recorded)}`)
-      if (params.until(collected)) {
-        console.log(`[${params.phaseLabel}] terminal event sequence reached`)
-        break
+  private async pump(agent: VoiceAgent): Promise<void> {
+    try {
+      for await (const event of agent.speechEvents()) {
+        const active = this.phase
+        if (active == null) continue
+
+        logRoundtripSpeechEvent(active.phaseLabel, event)
+        const recorded = recordSpeechEvent(active.collected, event, active.phaseStartMs)
+        console.log(`[${active.phaseLabel}] event ${formatRecordedSpeechEvent(recorded)}`)
+        if (active.until(active.collected)) {
+          console.log(`[${active.phaseLabel}] terminal event sequence reached`)
+          active.finish()
+        }
       }
+    } catch (error) {
+      console.error('[speech-events] stream error:', error)
     }
-    return collected
-  })()
+  }
+
+  collectUntil(params: {
+    phaseLabel: string
+    maxMs: number
+    until: (events: RecordedSpeechEvent[]) => boolean
+  }): Promise<RecordedSpeechEvent[]> {
+    if (this.phase != null) {
+      return Promise.reject(new Error(`speech collector busy during ${this.phase.phaseLabel}`))
+    }
+
+    const collected: RecordedSpeechEvent[] = []
+    const phaseStartMs = Date.now()
+
+    console.log(`[${params.phaseLabel}] collecting speech events (max ${params.maxMs} ms)`)
+
+    return new Promise((resolve) => {
+      let wallTimer: ReturnType<typeof setTimeout> | null = null
+
+      const done = (reason: 'terminal' | 'wall') => {
+        if (wallTimer != null) {
+          clearTimeout(wallTimer)
+          wallTimer = null
+        }
+        if (this.phase == null) return
+        this.phase = null
+        if (reason === 'wall') {
+          console.error(
+            `[${params.phaseLabel}] wall-clock cap ${params.maxMs} ms — returning ${collected.length} events`,
+          )
+        }
+        resolve([...collected])
+      }
+
+      this.phase = {
+        collected,
+        phaseStartMs,
+        phaseLabel: params.phaseLabel,
+        until: params.until,
+        finish: () => done('terminal'),
+      }
+      wallTimer = setTimeout(() => done('wall'), params.maxMs)
+    })
+  }
 }
 
 function listenerVadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
@@ -144,6 +200,7 @@ class InboundAudioMeter {
 
 async function runMidPlaybackInterrupt(params: {
   listener: VoiceAgent
+  collector: ListenerSpeechCollector
   agentPhrase: string
   userInbound: RemoteAudioTrack
   delayMs: number
@@ -155,8 +212,7 @@ async function runMidPlaybackInterrupt(params: {
   const meter = new InboundAudioMeter()
   meter.start(params.userInbound)
 
-  const eventsPromise = collectSpeechEventsUntil({
-    agent: params.listener,
+  const eventsPromise = params.collector.collectUntil({
     phaseLabel: params.phaseLabel,
     maxMs: params.maxPhaseMs,
     until: params.untilEvents,
@@ -202,6 +258,14 @@ async function main(): Promise<void> {
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
 
   console.log('=== Sherpa semantic barge-in E2E ===')
+  logRoundtripScriptBanner({
+    script: 'roundtrip-barge-in',
+    pipeline: label,
+    extra: [
+      `requireSttPartial=${config.vad?.bargeIn?.requireSttPartial !== false}`,
+      `bargeDelayMs=${bargeDelayMs} maxPhaseMs=${maxPhaseMs}`,
+    ],
+  })
   console.log(`Pipeline: ${label}`)
   console.log(`requireSttPartial=${config.vad?.bargeIn?.requireSttPartial !== false}`)
   console.log(`Agent phrase: ${agentPhrase.slice(0, 80)}…`)
@@ -214,8 +278,11 @@ async function main(): Promise<void> {
   )
   console.log('')
 
-  const { agentOut, userInbound, userOut, agentInbound, cleanup } =
+  const { server, agentPc, userPc, agentOut, userInbound, userOut, agentInbound, cleanup } =
     await createBidirectionalLoopback()
+
+  logSignalingReady({ port: server.port })
+  attachRoundtripConnectionLogs({ agentPc, userPc })
 
   const listener = new VoiceAgent({
     stt: config.stt,
@@ -231,9 +298,21 @@ async function main(): Promise<void> {
   })
 
   await listener.attach({ inboundTrack: agentInbound, outboundTrack: agentOut })
+  logVoiceAgentAttach({
+    role: 'listener',
+    label: 'listener VoiceAgent (STT+VAD+barge on agent-pc)',
+    inboundTrack: 'agentInbound ← user-pc RTP',
+    outboundTrack: 'agentOut → user-pc',
+  })
   await userSpeaker.attach({
     inboundTrack: userInbound,
     outboundTrack: userOut,
+  })
+  logVoiceAgentAttach({
+    role: 'user-sim',
+    label: 'user simulator VoiceAgent (TTS only on user-pc)',
+    inboundTrack: 'userInbound ← agent-pc RTP',
+    outboundTrack: 'userOut → agent-pc',
   })
   await listener.start()
   await userSpeaker.start()
@@ -242,14 +321,15 @@ async function main(): Promise<void> {
   await streamSilence(userOut, DEFAULT_WARMUP_S)
 
   const failures: string[] = []
+  const speechCollector = new ListenerSpeechCollector(listener)
 
+  logE2ePhase({ phase: 'Phase 1', detail: 'full agent TTS playback (no interrupt)' })
   console.log('--- Phase 1: full playback (no interrupt) ---')
   const phase1Label = 'Phase 1'
   const meterFull = new InboundAudioMeter()
   meterFull.start(userInbound)
   console.log(`[${phase1Label}] agent TTS queued (${agentPhrase.length} chars)`)
-  const phase1EventsPromise = collectSpeechEventsUntil({
-    agent: listener,
+  const phase1EventsPromise = speechCollector.collectUntil({
     phaseLabel: phase1Label,
     maxMs: maxPhaseMs,
     until: phase1BaselineComplete,
@@ -271,10 +351,11 @@ async function main(): Promise<void> {
   await streamSilence(agentOut, 0.5)
   await streamSilence(userOut, 0.5)
 
-  console.log('')
+  logE2ePhase({ phase: 'Phase 2', detail: 'tone on user-pc mid-playback — must NOT barge' })
   console.log('--- Phase 2: tone mid-playback (must NOT barge) ---')
   const noiseResult = await runMidPlaybackInterrupt({
     listener,
+    collector: speechCollector,
     agentPhrase,
     userInbound,
     delayMs: bargeDelayMs,
@@ -306,10 +387,11 @@ async function main(): Promise<void> {
   await streamSilence(agentOut, 0.5)
   await streamSilence(userOut, 0.5)
 
-  console.log('')
+  logE2ePhase({ phase: 'Phase 3', detail: 'user TTS barge phrase on user-pc — must barge' })
   console.log('--- Phase 3: user TTS barge phrase mid-playback (must barge) ---')
   const speechResult = await runMidPlaybackInterrupt({
     listener,
+    collector: speechCollector,
     agentPhrase,
     userInbound,
     delayMs: bargeDelayMs,

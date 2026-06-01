@@ -11,6 +11,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+CI_STEP="$ROOT/scripts/ci/ci-step.sh"
+# Per roundtrip script — must exceed in-process SHERPA_ROUNDTRIP_WALL_MS (often 70–120s).
+DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC="${CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC:-180}"
+DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC="${CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC:-900}"
+
 WORKSPACE="@node-webrtc-rust/example-voice-agent-local-sherpa"
 EXAMPLE_ROOT="$ROOT/examples/voice-agent-local-sherpa"
 STT_BUNDLE="sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
@@ -60,8 +65,10 @@ run_vitest() {
 
 ensure_sherpa_models() {
   echo "==> Sherpa STT/TTS model weights ($WORKSPACE)"
-  npm run download-stt:en --workspace="$WORKSPACE"
-  npm run download-tts:en --workspace="$WORKSPACE"
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
+    "sherpa download-stt" -- npm run download-stt:en --workspace="$WORKSPACE"
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
+    "sherpa download-tts" -- npm run download-tts:en --workspace="$WORKSPACE"
 
   export SHERPA_STT_MODEL_PATH="$EXAMPLE_ROOT/.models/$STT_BUNDLE"
   export SHERPA_TTS_MODEL_PATH="$EXAMPLE_ROOT/.models/$TTS_BUNDLE"
@@ -78,11 +85,16 @@ ensure_sherpa_models() {
 run_e2e() {
   ensure_native_node
   ensure_ts_dist
+  bash "$ROOT/scripts/ci/sync-workspace-bindings.sh"
   ensure_sherpa_models
 
+  local total="${#SHERPA_ROUNDTRIP_E2E[@]}"
+  local idx=0
   for script in "${SHERPA_ROUNDTRIP_E2E[@]}"; do
-    echo "==> Sherpa roundtrip E2E: npm run $script ($WORKSPACE)"
-    npm run "$script" --workspace="$WORKSPACE"
+    idx=$((idx + 1))
+    CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
+      bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC" \
+        "sherpa e2e $script" -- npm run "$script" --workspace="$WORKSPACE"
   done
 }
 

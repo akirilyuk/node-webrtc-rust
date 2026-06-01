@@ -57,8 +57,10 @@ struct AgentInner {
     /// True while agent TTS is synthesizing or playing outbound audio.
     agent_speaking: bool,
     agent_speaking_since: Option<Instant>,
-    /// VAD saw speech during agent TTS; waiting for STT partial before flushing playback.
+    /// VAD saw speech during agent TTS; defer immediate flush until STT partial (if required).
     barge_awaiting_stt_partial: bool,
+    /// Semantic barge already fired for the current agent playback generation.
+    stt_barge_fired_this_agent_playback: bool,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
 }
@@ -117,6 +119,7 @@ impl VoiceAgent {
                 agent_speaking: false,
                 agent_speaking_since: None,
                 barge_awaiting_stt_partial: false,
+                stt_barge_fired_this_agent_playback: false,
                 pcm_writer: None,
                 pcm_reader: None,
             })),
@@ -303,15 +306,24 @@ impl VoiceAgent {
     async fn try_stt_gated_barge_in(&self, partial_text: &str) -> SpeechResult<()> {
         let (should_barge, barge_in) = {
             let inner = self.inner.lock().await;
-            if !inner.barge_awaiting_stt_partial || !inner.agent_speaking {
+            let barge_in_cfg = &inner.config.vad.barge_in;
+            if !barge_in_cfg.require_stt_partial || inner.config.stt.is_none() {
+                return Ok(());
+            }
+            // Any qualifying partial while agent TTS is playing — STT gate already limits
+            // inbound audio to user voice (not pending-only echo during semantic barge).
+            if !inner.agent_speaking {
                 return Ok(());
             }
             if !Self::stt_partial_qualifies_for_barge(&inner, partial_text) {
                 return Ok(());
             }
+            if inner.stt_barge_fired_this_agent_playback {
+                return Ok(());
+            }
             (
                 true,
-                inner.config.vad.barge_in.clone(),
+                barge_in_cfg.clone(),
             )
         };
         if !should_barge {
@@ -320,6 +332,7 @@ impl VoiceAgent {
         {
             let mut inner = self.inner.lock().await;
             inner.barge_awaiting_stt_partial = false;
+            inner.stt_barge_fired_this_agent_playback = true;
         }
         voice_debug(format!(
             "STT-gated barge-in: partial {:?}",
@@ -644,6 +657,7 @@ impl VoiceAgent {
             }
         }
 
+        let mut speech_end_transition = false;
         for transition in &transitions {
             voice_debug(format!("VAD {transition:?}"));
             match transition {
@@ -652,10 +666,7 @@ impl VoiceAgent {
                     self.emit(SpeechEvent::user_speaking_start());
                 }
                 VadTransition::SpeechEnd => {
-                    {
-                        let mut inner = self.inner.lock().await;
-                        inner.barge_awaiting_stt_partial = false;
-                    }
+                    speech_end_transition = true;
                     let (has_stt, defer_speaking_end, agent_speaking) = {
                         let inner = self.inner.lock().await;
                         (
@@ -703,6 +714,15 @@ impl VoiceAgent {
         }
         if !gate_stt || stt_poll_open {
             self.poll_stt_transcripts().await?;
+        }
+
+        if speech_end_transition {
+            let mut inner = self.inner.lock().await;
+            // Defer clearing until after STT poll — same-frame partials must still trigger barge.
+            // While agent TTS plays, brief VAD gaps must not cancel a pending semantic barge.
+            if !inner.agent_speaking {
+                inner.barge_awaiting_stt_partial = false;
+            }
         }
 
         if should_finalize_utterance {
@@ -842,6 +862,8 @@ impl VoiceAgent {
                     let mut guard = inner.lock().await;
                     guard.agent_speaking = true;
                     guard.agent_speaking_since = Some(Instant::now());
+                    guard.stt_barge_fired_this_agent_playback = false;
+                    guard.barge_awaiting_stt_partial = false;
                 }
                 event_bus.emit(SpeechEvent::agent_speaking_start());
                 voice_debug("agent_speaking_start (first outbound PCM frame)");
@@ -879,6 +901,7 @@ impl VoiceAgent {
         guard.agent_speaking = false;
         guard.agent_speaking_since = None;
         guard.barge_awaiting_stt_partial = false;
+        guard.stt_barge_fired_this_agent_playback = false;
         if arm_stt_hold_after_playback {
             Self::arm_stt_hold_if_idle(&mut guard);
         }

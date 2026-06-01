@@ -17,7 +17,7 @@ import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
-import { streamSilence, streamTone } from './pcm-relay.js'
+import { streamSilence } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import {
   countNumberWordsInTranscript,
@@ -106,9 +106,10 @@ export function evaluateInterruptedEchoLeg(params: {
 }
 
 /**
- * Agent2 speaks `You said: …` while tone on agentOut triggers barge-in on Agent2 mid-playback.
+ * Agent2 speaks `You said: …` while Agent1 TTS on agentOut triggers STT-gated barge-in on Agent2.
  */
 export async function playEchoLegBWithBargeIn(params: {
+  agent1: VoiceAgent
   agent2: VoiceAgent
   agentOut: LocalAudioTrack
   userOut: LocalAudioTrack
@@ -133,8 +134,13 @@ export async function playEchoLegBWithBargeIn(params: {
   const speakPromise = params.agent2.sendTextToTTS(params.echoText)
 
   await sleep(params.bargeDelayMs)
-  console.log(`[${params.logLabel}] Injecting barge-in tone on agentOut for ${params.bargeToneS}s…`)
-  await streamTone(params.agentOut, params.bargeToneS, 440)
+  const bargePhrase =
+    process.env.SHERPA_BARGE_RECOVERY_BARGE_PHRASE?.trim() || 'stop now please'
+  console.log(
+    `[${params.logLabel}] Barge via Sherpa TTS on agentOut: "${bargePhrase}" (${params.bargeToneS}s tail)…`,
+  )
+  await params.agent1.sendTextToTTS(bargePhrase)
+  await streamSilence(params.agentOut, params.bargeToneS)
 
   await speakPromise
   return Promise.all([
@@ -280,6 +286,7 @@ async function main(): Promise<void> {
 
   const echoText2 = formatAgent2EchoReply(legA2.recognized)
   const legB2Recognized = await playEchoLegBWithBargeIn({
+    agent1,
     agent2,
     agentOut,
     userOut,

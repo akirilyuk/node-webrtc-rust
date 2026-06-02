@@ -52,8 +52,11 @@ bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" --
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
   cargo test -p node-webrtc-rust-speech
 
-if [[ ! -f packages/sdk/dist/cjs/index.js ]] || [[ ! -f packages/signaling/dist/cjs/index.js ]] || [[ ! -f packages/helpers/dist/cjs/index.js ]]; then
-  echo "==> build:ts (dist cache miss)"
+if [[ ! -f packages/sdk/dist/cjs/index.js ]] \
+  || [[ ! -f packages/signaling/dist/cjs/index.js ]] \
+  || [[ ! -f packages/helpers/dist/cjs/index.js ]] \
+  || ! grep -q 'SPEECH_EVENT_TYPE' packages/sdk/dist/cjs/voice/types.js 2>/dev/null; then
+  echo "==> build:ts (dist cache miss or stale sdk voice dist)"
   bash scripts/ci/build-ts-workspace.sh
 else
   echo "==> build:ts skipped (dist restored from cache)"

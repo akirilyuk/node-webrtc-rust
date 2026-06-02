@@ -43,11 +43,11 @@ import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 
 /** Default batch when no argv / SHERPA_ROUNDTRIP_PHRASE. */
 const DEFAULT_SENTENCES = [
-  'I love America',
+  'I. am. happy.',
   'The weather is nice today.',
-  'Welcome to the demo',
-  'Open the browser please',
-  'Speech recognition works locally',
+  'Welcome to the demo, I hope you like the flow so far.',
+  'Open the browser please, then tell me what you see.',
+  'Speech recognition works locally, did you try to start and stop it again?',
 ]
 
 const DEFAULT_TIMEOUT_MS = 45_000

@@ -1,28 +1,41 @@
 /**
- * Speech event and configuration types for the voice agent API.
+ * Speech event and configuration types for {@link VoiceAgent}.
+ *
+ * Runtime behavior (VAD, `gateStt`, barge-in, finalize) is implemented in Rust
+ * (`node-webrtc-rust-speech`). See [VOICE-API.md](../../VOICE-API.md) and
+ * [VOICE-VAD-AND-BARGE-IN.md](../../VOICE-VAD-AND-BARGE-IN.md).
+ *
+ * @packageDocumentation
  */
 
 import type { LocalAudioTrack } from '../LocalAudioTrack'
 import type { RemoteAudioTrack } from '../RemoteAudioTrack'
 
+/** How {@link SpeechEvent} is delivered: Node callbacks, `speechEvents()` iterator, or both. */
 export type EventDeliveryMode = 'callback' | 'stream' | 'both'
 
+/** VAD internal sample rate. Inbound WebRTC PCM is resampled to mono 16 kHz for STT. */
 export type VadSampleRate = 8000 | 16000
 
+/**
+ * Barge-in: stop agent TTS playback and emit `barge_in`.
+ *
+ * With `requireSttPartial: true` (default), interrupt during **agent TTS** waits for a
+ * qualifying `user_speech_partial` — coughs and tones that do not transcribe do not cut playback.
+ */
 export interface BargeInConfig {
   /** Master switch for flush + `barge_in` event. Default true. */
   enabled?: boolean
   /**
-   * When true (default), inbound VAD `SpeechStart` triggers barge-in (`vad.enabled` required).
-   * When false, only `flushTts()` triggers barge-in — avoids auto-interrupt on noise/tones.
+   * When true (default), inbound VAD `SpeechStart` can trigger barge-in (`vad.enabled` required).
+   * When false, only {@link VoiceAgent.flushTts} triggers barge-in — no auto-interrupt on noise.
    */
   useVad?: boolean
   /** Clear pending TTS PCM when barge-in runs. Default true. */
   flushTts?: boolean
   /**
    * While agent TTS is playing, defer barge-in until STT emits a qualifying partial
-   * (semantic interrupt — ignores coughs/tones that do not transcribe). Default true.
-   * Requires STT on the agent; without STT, VAD barge-in applies immediately.
+   * (semantic interrupt). Default true. Requires STT on the agent.
    */
   requireSttPartial?: boolean
   /** Minimum trimmed partial length to trigger barge when `requireSttPartial` is true. Default 2. */
@@ -34,24 +47,41 @@ export interface BargeInConfig {
   agentPlaybackGuardMs?: number
 }
 
-/** See VOICE-VAD-AND-BARGE-IN.md — prefer VOICE_AGENT_VAD_PRESET for voice bots. */
+/**
+ * Voice activity detection and STT gating.
+ *
+ * Prefer {@link VOICE_AGENT_VAD_PRESET} for voice bots; use {@link DEFAULT_VOICE_AGENT_VAD}
+ * to match Rust defaults exactly.
+ */
 export interface VadConfig {
+  /** Master VAD switch. Default true. */
   enabled?: boolean
-  /** `energy` = RMS VAD (shipped in default `.node`). `silero` = neural VAD if native built with `silero-vad`. */
+  /**
+   * `energy` = RMS VAD (default native build).
+   * `silero` = neural VAD if the `.node` was built with `silero-vad`.
+   */
   provider?: 'energy' | 'silero'
   /** Energy: ~0.05–0.2. Silero: speech probability ~0.3–0.6. */
   threshold?: number
+  /** Minimum voiced time before `user_speaking_start`. Default 250 ms. */
   minSpeechDurationMs?: number
+  /**
+   * Silence duration before internal `SpeechEnd` (intra-utterance gaps).
+   * Default 500 ms in preset. Not inter-phrase batch spacing.
+   */
   minSilenceDurationMs?: number
-  /** Pre-roll ring capacity (ms), added to minSpeechDurationMs. Default 300. */
+  /** Pre-roll ring capacity (ms); fed to STT at `SpeechStart` when `gateStt`. Default 300. */
   speechPadMs?: number
   sampleRate?: VadSampleRate
-  /** Flush TTS on inbound VAD SpeechStart; requires `enabled: true`. */
   bargeIn?: BargeInConfig
+  /**
+   * When true, STT only receives PCM while the gate is open (speech, hold, closing).
+   * `user_speaking_end` timing follows `sttGateHoldMs` — see VOICE-VAD-AND-BARGE-IN.md.
+   */
   gateStt?: boolean
-  /** When gateStt is true, feed STT during VAD pending speech. Default true. */
+  /** When `gateStt` is true, feed STT during VAD pending speech (WebRTC lead-in). Default true. */
   gateSttOpenOnPending?: boolean
-  /** Keep feeding STT after VAD speech end (ms). Default 1000. */
+  /** After VAD speech end, keep feeding STT (ms). Default 1000. */
   sttGateHoldMs?: number
 }
 
@@ -82,6 +112,7 @@ export interface TtsConfig {
   apiKey?: string
 }
 
+/** Full configuration for {@link VoiceAgent}. */
 export interface VoiceAgentConfig {
   vad?: VadConfig
   events?: EventsConfig
@@ -89,6 +120,12 @@ export interface VoiceAgentConfig {
   tts?: TtsConfig
 }
 
+/**
+ * Speech lifecycle events from the native pipeline.
+ *
+ * **Agent events** (`agent_speaking_*`) are emitted only on the VoiceAgent that plays TTS,
+ * not on a separate listener peer in a two-agent loopback.
+ */
 export type SpeechEventType =
   | 'user_speaking_start'
   | 'user_speaking_end'
@@ -99,7 +136,10 @@ export type SpeechEventType =
   | 'barge_in'
   | 'error'
 
-/** Runtime names for {@link SpeechEventType} — use in tests and harnesses instead of string literals. */
+/**
+ * Runtime names for {@link SpeechEventType} — use in tests and E2E harnesses
+ * instead of string literals.
+ */
 export const SPEECH_EVENT_TYPE = {
   userSpeakingStart: 'user_speaking_start',
   userSpeakingEnd: 'user_speaking_end',
@@ -111,18 +151,25 @@ export const SPEECH_EVENT_TYPE = {
   error: 'error',
 } as const satisfies Record<string, SpeechEventType>
 
+/** Payload for callback and `speechEvents()` delivery. */
 export interface SpeechEvent {
   type: SpeechEventType
+  /** Present on `user_speech_*` and sometimes on errors. */
   text?: string
+  /** Present on `error`. */
   error?: string
 }
 
+/** Tracks for one peer connection session. */
 export interface VoiceAttachOptions {
   peerConnection?: unknown
+  /** User → agent audio (`readSample` loop). */
   inboundTrack: RemoteAudioTrack
+  /** Agent → user audio (TTS PCM). */
   outboundTrack: LocalAudioTrack
 }
 
 export type SpeechEventListener = (event: SpeechEvent) => void
 
+/** Event name for `on()` / `off()` — specific type or `'speech'` for all. */
 export type SpeechEventName = SpeechEventType | 'speech'

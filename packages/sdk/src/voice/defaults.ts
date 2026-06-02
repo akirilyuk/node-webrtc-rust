@@ -1,13 +1,18 @@
 /**
- * Default and recommended VAD presets for VoiceAgent.
+ * Default and recommended VAD presets for {@link VoiceAgent}.
  *
  * Values match Rust `VadConfig` / `BargeInConfig` defaults unless noted.
- * See packages/sdk/VOICE-VAD-AND-BARGE-IN.md for use cases and tuning.
+ *
+ * @see [VOICE-VAD-AND-BARGE-IN.md](../../VOICE-VAD-AND-BARGE-IN.md) — tuning latency vs accuracy
+ * @see [VOICE-API.md](../../VOICE-API.md) — API reference
  */
 
 import type { VadConfig } from './types.js'
 
-/** Library defaults (omit `vad` in VoiceAgentConfig to use the same in Rust). */
+/**
+ * Library defaults (`gateStt: false`).
+ * Omit `vad` in {@link VoiceAgentConfig} to get the same behavior from Rust `VadConfig::default()`.
+ */
 export const DEFAULT_VOICE_AGENT_VAD: VadConfig = {
   enabled: true,
   provider: 'energy',
@@ -31,7 +36,9 @@ export const DEFAULT_VOICE_AGENT_VAD: VadConfig = {
 
 /**
  * Recommended for typical voice agents (user STT + agent TTS + barge-in).
- * Only change from library default: `gateStt: true`.
+ *
+ * Only change from {@link DEFAULT_VOICE_AGENT_VAD}: `gateStt: true` so STT is not fed during
+ * silence and `user_speaking_end` follows gate hold + finalize (not the first brief pause).
  */
 export const VOICE_AGENT_VAD_PRESET: VadConfig = {
   ...DEFAULT_VOICE_AGENT_VAD,

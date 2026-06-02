@@ -32,6 +32,7 @@ export type VoiceControlClientMessage = VoiceControlSpeakMessage
 
 export type VoiceControlServerMessage = VoiceControlSpeechEventMessage
 
+/** Maps a {@link SpeechEvent} to the wire format sent on the voice-control data channel. */
 export function speechEventToControlMessage(event: SpeechEvent): VoiceControlSpeechEventMessage {
   return {
     type: 'speech_event',
@@ -41,6 +42,9 @@ export function speechEventToControlMessage(event: SpeechEvent): VoiceControlSpe
   }
 }
 
+/**
+ * Parses a client JSON message. Returns null if not `{ type: 'speak', text: string }`.
+ */
 export function parseVoiceControlClientMessage(raw: string): VoiceControlSpeakMessage | null {
   try {
     const parsed = JSON.parse(raw) as Partial<VoiceControlSpeakMessage>

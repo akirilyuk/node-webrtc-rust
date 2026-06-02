@@ -10,11 +10,11 @@ npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/
 
 ## Exports
 
-| Import path                        | Purpose                                                        |
-| ---------------------------------- | -------------------------------------------------------------- |
-| **`@node-webrtc-rust/sdk/voice`**  | **VoiceAgent** — VAD, barge-in, STT/TTS vendors, speech events |
-| `@node-webrtc-rust/sdk`            | W3C-style `RTCPeerConnection`, tracks, data channels           |
-| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing)                     |
+| Import path                        | Purpose                                                                                         |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **`@node-webrtc-rust/sdk/voice`**  | **VoiceAgent** — VAD, barge-in, STT/TTS vendors, speech events — [VOICE-API.md](./VOICE-API.md) |
+| `@node-webrtc-rust/sdk`            | W3C-style `RTCPeerConnection`, tracks, data channels                                            |
+| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing)                                                      |
 
 **WebRTC parity vs browser:** [`docs/webrtc-api-parity.md`](../../docs/webrtc-api-parity.md)
 
@@ -23,6 +23,8 @@ npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/
 ## Voice agent — build agentic workloads
 
 Import **`@node-webrtc-rust/sdk/voice`** when you need a conversational loop without reimplementing PCM timing or vendor HTTP/WebSocket clients in Node.
+
+**API reference:** [VOICE-API.md](./VOICE-API.md) (exports, speech events, data-channel bridge) · [VOICE-VAD-AND-BARGE-IN.md](./VOICE-VAD-AND-BARGE-IN.md) (tuning)
 
 ### Problem this solves
 

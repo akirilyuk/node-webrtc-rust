@@ -4,6 +4,8 @@ How `VoiceAgent` uses voice activity detection (VAD) and barge-in, which setting
 
 Rust defaults live in `crates/speech/src/config.rs`. TypeScript mirrors them in [`src/voice/defaults.ts`](./src/voice/defaults.ts).
 
+**API reference (exports, events, Rust modules):** [VOICE-API.md](./VOICE-API.md).
+
 ## Philosophy: defaults first
 
 Most phone-bot / voice-assistant apps only need:

@@ -7,7 +7,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
-use crate::config::{EventDeliveryMode, VoiceAgentConfig};
+use crate::config::{EventDeliveryMode, VadConfig, VoiceAgentConfig};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::pcm::i16_samples_to_bytes;
@@ -36,6 +36,11 @@ fn voice_debug(message: impl AsRef<str>) {
     if voice_debug_enabled() {
         eprintln!("[voice-debug] {}", message.as_ref());
     }
+}
+
+/// Synthetic silence fed to STT before finalize — aligned with Sherpa roundtrip harness.
+fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
+    vad.min_silence_duration_ms.max(400).min(600)
 }
 
 struct AgentInner {
@@ -423,7 +428,7 @@ impl VoiceAgent {
                 inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance;
             (
                 needed,
-                inner.config.vad.min_silence_duration_ms.max(800),
+                stt_endpoint_tail_ms(&inner.config.vad),
                 inner.stt_endpoint_closing_started,
             )
         };
@@ -767,7 +772,7 @@ impl VoiceAgent {
             }
             let tail_ms = {
                 let inner = self.inner.lock().await;
-                inner.config.vad.min_silence_duration_ms.max(800)
+                stt_endpoint_tail_ms(&inner.config.vad)
             };
             voice_debug(format!(
                 "STT utterance close: endpoint tail {tail_ms} ms then finalize (speaking_end with final)"

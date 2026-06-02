@@ -12,6 +12,19 @@ _No changes yet._
 
 ---
 
+## [0.4.1] — 2026-06-02
+
+**Compare:** [`release/0.4.0…release/0.4.1`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.4.0...release/0.4.1)
+
+Patch release — same bits as 0.4.0; fixes Release workflow on self-hosted runners.
+
+### Fixed
+
+- **Release workflow** — add workspace `chown` prepare step before checkout on **Plan native builds** (quality job leaves root-owned `node_modules` / `target`, which broke `actions/checkout` on the shared runner).
+- **Release workflow** — skip build/test/stage jobs when the plan job fails (avoids integration test without binding artifacts).
+
+---
+
 ## [0.4.0] — 2026-06-02
 
 **Compare:** [`release/0.3.0…release/0.4.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.3.0...release/0.4.0)

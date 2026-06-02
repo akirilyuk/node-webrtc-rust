@@ -41,7 +41,7 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | `vad.gateSttOpenOnPending`         | `true`   | Include VAD “pending” speech in gate (WebRTC lead-in)                                                                                                       |
 | `vad.sttGateHoldMs`                | `1000`   | After internal `SpeechEnd`, keep STT open this long; with `gateStt`, `user_speaking_end` fires when hold expires (resume speech during hold → no end event) |
 | `vad.sttListenTimeoutMs`           | `4000`   | After `vad_triggered`, emit `user_stt_not_found` when no STT partial within this window (C1)                                                                |
-| `vad.utteranceFinalizeTimeoutMs`   | `1500`   | Grace after last partial or VAD `SpeechEnd` before forcing `user_speech_final` when vendor final stalls (C2)                                                  |
+| `vad.utteranceFinalizeTimeoutMs`   | `1500`   | Grace after last partial or VAD `SpeechEnd` before forcing `user_speech_final` when vendor final stalls (C2)                                                |
 | `vad.bargeIn.enabled`              | `true`   | Allow barge-in flush + event                                                                                                                                |
 | `vad.bargeIn.useVad`               | `true`   | Auto barge on VAD `SpeechStart`; with `requireSttPartial` (default), **agent TTS** waits for STT partial before flush                                       |
 | `vad.bargeIn.requireSttPartial`    | `true`   | Semantic barge during agent playback — see [below](#semantic-barge-in-requiresttpartial-default-true)                                                       |
@@ -49,6 +49,96 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | `vad.bargeIn.agentPlaybackGuardMs` | `0`      | **0 = barge anytime**; optional ms to ignore VAD barge right after TTS starts (speaker echo)                                                                |
 
 **Shipped native build** uses **energy VAD** only (`provider: "energy"`). See [VAD providers](#vad-providers-energy-vs-silero) below.
+
+---
+
+## STT utterance lifecycle (VAD + STT events)
+
+When `vad.enabled` is **true** and STT is configured, each VAD `SpeechStart` opens a **recognition session** — STT is **not** fed continuously during agent TTS until VAD fires. Use the lifecycle events for logging, tests, and UI that need “listening for words” vs “user is talking.”
+
+### Event layers
+
+| Event                                       | Layer           | When                                                                                      |
+| ------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------- |
+| `vad_triggered`                             | VAD             | Every VAD `SpeechStart` while `vad.enabled`                                               |
+| `user_stt_start` / `user_stt_end`           | STT session     | Recognition session open / closed (normal, C1, or C2)                                     |
+| `stt_stream_start` / `stt_stream_end`       | STT vendor feed | PCM forwarding to the STT vendor on / off                                                 |
+| `user_speaking_start` / `user_speaking_end` | VAD + gate      | User turn boundaries (`user_speaking_end` paired with `user_speech_final` when `gateStt`) |
+| `user_speech_partial` / `user_speech_final` | STT text        | Streaming / final transcript                                                              |
+| `barge_in`                                  | Barge           | Only while `agent_speaking == true` and `bargeIn.enabled`                                 |
+
+**Open sequence (typical):** `vad_triggered` → `user_stt_start` → `stt_stream_start` → `user_speaking_start` (same VAD `SpeechStart`; pre-roll flush preserved when `gateStt`).
+
+**Successful close:** `stt_stream_end` → `user_stt_end` → `user_speaking_end` → `user_speech_final`.
+
+**`vad.enabled: false`** — no VAD, no `vad_triggered`; inbound PCM is **always** forwarded to STT (passthrough). Lifecycle events `vad_triggered`, `stt_stream_*`, and `user_stt_*` do **not** fire; you still get `user_speech_partial` / `user_speech_final` when the vendor transcribes.
+
+### Flows during agent TTS
+
+`barge_in` applies only while **`agent_speaking == true`** (no post-playback grace). STT opens on every VAD `SpeechStart` when VAD is on; barge only gates **interrupt + TTS flush**.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  state idle [Agent not speaking]
+  state bargeListen [Agent TTS + bargeIn on]
+  state overlapListen [Agent TTS + bargeIn off]
+
+  idle --> bargeListen: agent_speaking_start
+  idle --> overlapListen: agent_speaking_start
+  bargeListen --> idle: agent_speaking_end or barge_in flush
+  overlapListen --> idle: agent_speaking_end
+
+  note right of bargeListen
+    vad_triggered opens STT
+    requireSttPartial false: immediate barge_in
+    requireSttPartial true: partial then barge_in
+  end note
+
+  note right of overlapListen
+    vad_triggered opens STT
+    no barge_in no TTS flush
+  end note
+```
+
+| Flow       | Config                                                            | STT on VAD         | Barge / flush                                                   |
+| ---------- | ----------------------------------------------------------------- | ------------------ | --------------------------------------------------------------- |
+| **A**      | `bargeIn` on, `requireSttPartial: false`, agent speaking          | Immediate          | Same `SpeechStart` as `vad_triggered`                           |
+| **B**      | `bargeIn` on, `requireSttPartial: true` (default), agent speaking | Immediate          | After qualifying `user_speech_partial` (≥ `minSttPartialChars`) |
+| **D**      | `bargeIn` off during agent TTS                                    | Immediate          | Never auto — agent keeps talking                                |
+| **Normal** | Agent not speaking                                                | On `vad_triggered` | No barge                                                        |
+
+Event order for semantic barge (**B**): `vad_triggered` → `user_stt_start` → `stt_stream_start` → … → `user_speech_partial` → `barge_in` → `agent_speaking_end` (when `flushTts`).
+
+### C1 — VAD but no STT partial
+
+After `vad_triggered` + `stt_stream_start`, if **no** `user_speech_partial` within **`sttListenTimeoutMs`** (default 4000 ms):
+
+1. `stt_stream_end`
+2. `user_stt_not_found`
+3. `user_stt_end`
+4. **No** `user_speech_final` (nothing to reply to)
+
+Coughs and pure tones during semantic barge often hit **C1** instead of `barge_in`.
+
+### C2 — Partials but vendor final stalls
+
+After VAD `SpeechEnd` and/or the **last** `user_speech_partial`, **`utteranceFinalizeTimeoutMs`** (default 1500 ms) starts once **`sttGateHoldMs`** has drained when `gateStt` was holding the gate open (`defer_utterance_finalize_until_hold`). When the grace expires without a new partial or vendor final:
+
+1. `stt_stream_end`
+2. `user_speaking_end` (if not already emitted)
+3. `user_stt_end`
+4. **`user_speech_final`** — vendor final if it arrived during finalize poll, else **last partial** text, else empty string
+
+**Invariant:** Any utterance with ≥1 `user_speech_partial` must eventually get `user_speaking_end` + `user_speech_final` (normal path or C2).
+
+| Timer                            | Role                                                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **`sttGateHoldMs`**              | Keeps the STT **gate** open after internal VAD `SpeechEnd` for trailing phonemes / word gaps                        |
+| **`utteranceFinalizeTimeoutMs`** | After hold drains (or immediately if no hold), forces turn close so apps waiting on `user_speech_final` do not hang |
+| **`sttListenTimeoutMs`**         | After `vad_triggered` with no partial — C1 `user_stt_not_found`                                                     |
+
+Sherpa roundtrip harnesses assert these sequences — see [ROUNDTRIP.md § STT lifecycle evaluators](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md#stt-lifecycle-evaluators).
 
 ---
 
@@ -273,7 +363,7 @@ vad: {
 }
 ```
 
-No `user_speaking_*`, no `barge_in`. STT receives all inbound PCM (vendor permitting).
+No `user_speaking_*`, no `vad_triggered` / `stt_stream_*` / `user_stt_*`, no VAD-driven `barge_in`. STT receives **all** inbound PCM (vendor permitting). Manual barge still works via `flushTts()` when `bargeIn.useVad: false`.
 
 ---
 
@@ -314,12 +404,12 @@ When the agent is **not** speaking, VAD opens STT normally; no barge unless conf
 
 **Caveats:**
 
-| Topic            | Detail                                                                                                                       |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Latency**      | Interrupt happens after the first partial (~200–800 ms+), not at the first voiced frame.                                     |
-| **STT required** | Without `stt` on the agent, instant VAD barge still applies when `requireSttPartial: false`.                                 |
-| **Echo**         | Speaker bleed can still yield partials that match agent wording; use headphones, `gateStt`, or raise `agentPlaybackGuardMs`. |
-| **Disable**      | `requireSttPartial: false` restores instant energy-VAD barge (noisier).                                                      |
+| Topic            | Detail                                                                                                                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Latency**      | Interrupt happens after the first partial (~200–800 ms+), not at the first voiced frame.                                                                                        |
+| **STT required** | Without `stt` on the agent, instant VAD barge still applies when `requireSttPartial: false`.                                                                                    |
+| **Echo**         | Speaker bleed can still yield partials that match agent wording; use headphones, `gateStt`, or raise `agentPlaybackGuardMs`.                                                    |
+| **Disable**      | `requireSttPartial: false` restores instant energy-VAD barge (noisier).                                                                                                         |
 | **C1 / C2**      | `sttListenTimeoutMs` (4000) closes listen with `user_stt_not_found`; `utteranceFinalizeTimeoutMs` (1500) forces `user_speech_final` from last partial when vendor final stalls. |
 
 E2E: `npm run start:roundtrip-barge-in` — tone must **not** barge; spoken TTS phrase must barge.
@@ -338,12 +428,13 @@ Use this when you stream STT through `VoiceAgent` with **`gateStt: true`** (`VOI
 
 ### End-to-end timeline (one user utterance)
 
-1. **`minSpeechDurationMs`** — voiced audio must exceed this before VAD `SpeechStart` → `user_speaking_start` (+ optional `barge_in`).
-2. User speaks; STT receives audio (plus **`speechPadMs`** pre-roll on `SpeechStart`).
-3. **`minSilenceDurationMs`** — continuous silence triggers VAD `SpeechEnd` **internally** (not necessarily the UI event yet).
-4. **`sttGateHoldMs`** — gate stays open; STT still receives frames. If the user speaks again, hold **resets** and the utterance continues.
-5. When hold reaches **0** → **endpoint tail** (~`max(minSilenceDurationMs, 800)` ms synthetic silence) → **`finalize_utterance`** → **`user_speaking_end`** immediately before **`user_speech_final`** (same poll; gate stays open until final).
-6. Your app runs LLM/TTS on `user_speech_final`.
+1. **`minSpeechDurationMs`** — voiced audio must exceed this before VAD `SpeechStart`.
+2. On `SpeechStart`: **`vad_triggered`** → **`user_stt_start`** → **`stt_stream_start`** → **`user_speaking_start`** (+ optional `barge_in` if agent TTS + barge config — see [STT utterance lifecycle](#stt-utterance-lifecycle-vad--stt-events)).
+3. User speaks; STT receives audio while the stream is open (plus **`speechPadMs`** pre-roll on `SpeechStart` when `gateStt`).
+4. **`minSilenceDurationMs`** — continuous silence triggers VAD `SpeechEnd` **internally** (not necessarily `user_speaking_end` yet).
+5. **`sttGateHoldMs`** — gate stays open; STT still receives frames. If the user speaks again, hold **resets** and the utterance continues. C2 finalize timer starts **after** hold drains when partials were emitted.
+6. When hold reaches **0** → **endpoint tail** (~`max(minSilenceDurationMs, 800)` ms synthetic silence) → **`finalize_utterance`** → **`stt_stream_end`** → **`user_stt_end`** → **`user_speaking_end`** immediately before **`user_speech_final`** (same poll; gate stays open until final). If the vendor final stalls, **`utteranceFinalizeTimeoutMs`** forces the same close sequence using the last partial (**C2**).
+7. Your app runs LLM/TTS on `user_speech_final`.
 
 **Rough reply latency after the user stops** (no resume during hold):
 
@@ -353,17 +444,19 @@ With defaults: ~300 + 1000 + 800 ≈ **2.1 s** before finalize, plus synthesis.
 
 ### Knobs and what they affect
 
-| Field                      | Default                                      | Primary effect                                                                       | ↑ increase tends to…                                      | ↓ decrease tends to…                                |
-| -------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------- |
-| **`threshold`**            | `0.15` (energy)                              | What counts as “speech” vs noise                                                     | Fewer false starts in noise; may miss quiet talkers       | More sensitive mic; more false STT/barge-in         |
-| **`minSpeechDurationMs`**  | `250`                                        | Ignore short blips before `SpeechStart`                                              | Fewer cough/click triggers; slightly slower barge-in      | Faster barge-in; more noise triggers                |
-| **`minSilenceDurationMs`** | `500`                                        | Pause length before internal `SpeechEnd` / hold starts                               | Fewer splits on word gaps & counting; slower “maybe done” | Faster turn end; risk splitting one sentence        |
-| **`sttGateHoldMs`**        | `1000`                                       | How long STT stays open after that pause; when `user_speaking_end` fires (`gateStt`) | Capture slow talkers & long digit gaps; **more dead air** | **Snappier** bot; risk cutting trailing syllables   |
-| **`speechPadMs`**          | `300`                                        | Pre-roll bytes fed at `SpeechStart` (`gateStt`)                                      | More lead-in audio to STT; slightly more memory           | Risk clipping first syllable                        |
-| **`gateSttOpenOnPending`** | `true`                                       | STT during VAD “pending” before `SpeechStart`                                        | Better first-word capture on WebRTC                       | Slightly more noise to STT before confirmed speech  |
-| **`gateStt`**              | `false` in lib default; **`true` in preset** | Master STT gating                                                                    | Less noise to STT; deferred `user_speaking_end`           | STT always on; immediate `user_speaking_end` on VAD |
+| Field                            | Default                                      | Primary effect                                                                       | ↑ increase tends to…                                      | ↓ decrease tends to…                                |
+| -------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------- |
+| **`threshold`**                  | `0.15` (energy)                              | What counts as “speech” vs noise                                                     | Fewer false starts in noise; may miss quiet talkers       | More sensitive mic; more false STT/barge-in         |
+| **`minSpeechDurationMs`**        | `250`                                        | Ignore short blips before `SpeechStart`                                              | Fewer cough/click triggers; slightly slower barge-in      | Faster barge-in; more noise triggers                |
+| **`minSilenceDurationMs`**       | `500`                                        | Pause length before internal `SpeechEnd` / hold starts                               | Fewer splits on word gaps & counting; slower “maybe done” | Faster turn end; risk splitting one sentence        |
+| **`sttGateHoldMs`**              | `1000`                                       | How long STT stays open after that pause; when `user_speaking_end` fires (`gateStt`) | Capture slow talkers & long digit gaps; **more dead air** | **Snappier** bot; risk cutting trailing syllables   |
+| **`speechPadMs`**                | `300`                                        | Pre-roll bytes fed at `SpeechStart` (`gateStt`)                                      | More lead-in audio to STT; slightly more memory           | Risk clipping first syllable                        |
+| **`gateSttOpenOnPending`**       | `true`                                       | STT during VAD “pending” before `SpeechStart`                                        | Better first-word capture on WebRTC                       | Slightly more noise to STT before confirmed speech  |
+| **`gateStt`**                    | `false` in lib default; **`true` in preset** | Master STT gating                                                                    | Less noise to STT; deferred `user_speaking_end`           | STT always on; immediate `user_speaking_end` on VAD |
+| **`sttListenTimeoutMs`**         | `4000`                                       | C1: no partial after `vad_triggered` → `user_stt_not_found`                          | Longer tolerance for slow STT before “no speech”          | Faster C1; may false-close quiet talkers            |
+| **`utteranceFinalizeTimeoutMs`** | `1500`                                       | C2: grace after hold + last partial before forced `user_speech_final`                | More time for vendor final; slower turn boundary          | Snappier forced final; risk truncating slow STT     |
 
-**While agent TTS is playing:** inbound VAD `SpeechEnd` does **not** arm gate hold (avoids splitting on TTS word gaps in the mic path). Barge-in still uses `SpeechStart` on the user mic.
+**While agent TTS is playing:** inbound VAD `SpeechEnd` does **not** arm gate hold (avoids splitting on TTS word gaps in the mic path). Barge-in still uses `SpeechStart` on the user mic. STT opens on **`vad_triggered`**, not on every frame during agent playback.
 
 ### Symptom → tune (quick)
 

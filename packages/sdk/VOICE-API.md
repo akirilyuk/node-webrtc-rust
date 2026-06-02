@@ -64,6 +64,22 @@ new VoiceAgent(config)
 
 Use `SPEECH_EVENT_TYPE` constants instead of string literals in tests.
 
+### STT utterance lifecycle (event order)
+
+When `vad.enabled` and STT are configured, each VAD `SpeechStart` opens a session:
+
+```text
+vad_triggered → user_stt_start → stt_stream_start → user_speaking_start
+  → user_speech_partial* → [barge_in if agent TTS + barge config]
+  → stt_stream_end → user_stt_end → user_speaking_end → user_speech_final
+```
+
+**C1 (no partial):** after `sttListenTimeoutMs` → `stt_stream_end` → `user_stt_not_found` → `user_stt_end` — **no** `user_speech_final`.
+
+**C2 (stall):** after `utteranceFinalizeTimeoutMs` (starts when `sttGateHoldMs` drains if gate was open) → forced close with `user_speech_final` from last partial.
+
+Full flows, timers, and barge matrix: [VOICE-VAD-AND-BARGE-IN.md § STT utterance lifecycle](./VOICE-VAD-AND-BARGE-IN.md#stt-utterance-lifecycle-vad--stt-events). Sherpa harness evaluators: [ROUNDTRIP.md § STT lifecycle evaluators](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md#stt-lifecycle-evaluators).
+
 ### `gateStt` and `user_speaking_end`
 
 With **`gateStt: true`** (`VOICE_AGENT_VAD_PRESET`):

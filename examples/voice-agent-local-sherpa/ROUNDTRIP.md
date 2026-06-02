@@ -74,6 +74,28 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 
 All modes above are exercised in CI — see [§ CI (GitHub Actions)](#ci-github-actions).
 
+## STT lifecycle evaluators
+
+Shared Vitest helpers in [`src/roundtrip-stt-lifecycle-helpers.ts`](./src/roundtrip-stt-lifecycle-helpers.ts) assert **VAD/STT utterance lifecycle** event order (no Sherpa models required). Wired into counting, two-phrases, utterance-timing, barge-in, and barge-recovery E2E scripts.
+
+| Evaluator                                | Asserts                                                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `evaluateVadSttSessionOpen`              | Each VAD `SpeechStart`: `vad_triggered` → `user_stt_start` → `stt_stream_start` (tight gap, default ≤100 ms) |
+| `evaluateUtteranceSessionCloseWithFinal` | Successful close: `stt_stream_end` → `user_stt_end` → `user_speaking_end` → `user_speech_final`              |
+| `evaluateC1NotFoundPath`                 | Tone / no-transcript: `stt_stream_end` → `user_stt_not_found` → `user_stt_end`, **no** `user_speech_final`   |
+| `evaluateNoPartialWithoutFinal`          | No orphan `user_speech_partial` without a final or C1                                                        |
+| `evaluateSttLifecycleOnBargePath`        | After `agent_speaking_start`: `vad_triggered` before qualifying partial; STT stream open before partial      |
+| `evaluateNormalUtteranceLifecycle`       | Open + close + no orphans (counting, two-phrases, utterance-timing)                                          |
+| `evaluateBargePathLifecycle`             | Barge path open + close + no orphans (barge-in phase 3)                                                      |
+| `evaluateTonePhaseLifecycle`             | Phase 2 tone: no `barge_in`, no `user_speech_final`; optional C1                                             |
+
+```bash
+npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+# includes src/roundtrip-stt-lifecycle.test.ts
+```
+
+When debugging failures, grep **`[speech]`** lines for `vad_triggered`, `stt_stream_*`, and `user_stt_*` before re-running — see [Debug logging](#debug-logging-e2e-failures).
+
 ## Counting roundtrip (one utterance, one final)
 
 [`src/roundtrip-counting.ts`](./src/roundtrip-counting.ts) plays **one** long TTS phrase — the words _one_ through _twenty_ — and asserts the listener does **not** split it into multiple STT finals or extra `user_speaking_end` events (regression for mid-utterance VAD gaps while counting).
@@ -126,11 +148,11 @@ Other `SHERPA_COUNTING_*` vars apply (`TIMEOUT_MS`, `VERBOSE`, etc.).
 
 [`src/roundtrip-counting-barge-recovery.ts`](./src/roundtrip-counting-barge-recovery.ts) extends the echo harness with a **barge-in** step and a **recovery** round:
 
-| Step             | What happens                                                                                     | Pass criteria                                                                   |
-| ---------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| **1 — baseline** | Agent1 counts 1–10 → Agent2 → `You said: …` → Agent1                                             | Full echo (same as counting echo round 1)                                       |
+| Step             | What happens                                                                                     | Pass criteria                                                                                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **1 — baseline** | Agent1 counts 1–10 → Agent2 → `You said: …` → Agent1                                             | Full echo (same as counting echo round 1)                                                                                                              |
 | **2 — barge**    | Agent1 counts again → Agent2 starts `You said: …` → Agent1 Sherpa TTS barge phrase on `agentOut` | Agent1 hears **partial** echo (≤6 number words, similarity ≤55% vs full phrase); Agent2 **`user_speech_final`** matches barge phrase (≥60% similarity) |
-| **3 — recovery** | Agent1 speaks recovery phrase → full `You said: …` again                                         | Echo leg includes “you said” and passes sentence echo checks                    |
+| **3 — recovery** | Agent1 speaks recovery phrase → full `You said: …` again                                         | Echo leg includes “you said” and passes sentence echo checks                                                                                           |
 
 ```bash
 npm run build:native
@@ -413,25 +435,26 @@ Exit code `1` if any phrase is empty or below the similarity threshold.
 
 With `requireSttPartial: true` (default in `VOICE_AGENT_VAD_PRESET`):
 
-1. VAD `SpeechStart` while agent TTS plays → `user_speaking_start`, STT gate opens.
-2. First qualifying `user_speech_partial` → flush TTS + `barge_in`.
-3. Coughs / pure tones → often no partial → **no barge** (UX improvement).
+1. VAD `SpeechStart` while agent TTS plays → **`vad_triggered`** → **`user_stt_start`** → **`stt_stream_start`** (STT opens on VAD, not continuous pre-VAD feed).
+2. First qualifying `user_speech_partial` → flush TTS + `barge_in` → `agent_speaking_end`.
+3. Coughs / pure tones → often **C1** (`user_stt_not_found`) → **no barge** (UX improvement).
 
-Set `requireSttPartial: false` to restore immediate energy-VAD barge (legacy, noisier).
+Set `requireSttPartial: false` to restore immediate energy-VAD barge on the same `SpeechStart` (legacy, noisier).
 
-| Phase | Interrupt                                              | Pass criteria                                                                                                           |
-| ----- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| 1     | None                                                   | Full phrase received on `userInbound`                                                                                   |
-| 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; received audio ≥ ~75% of phase 1                                                                     |
-| 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`user_speech_partial` → `barge_in` → `agent_speaking_end`** (gaps ≤500 ms / ≤2 s); received audio &lt; 65% of phase 1 |
+| Phase | Interrupt                                              | Pass criteria                                                                                                          |
+| ----- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| 1     | None                                                   | Full phrase received on `userInbound`                                                                                  |
+| 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; optional **C1** path; received audio ≥ ~75% of phase 1                                              |
+| 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` → `barge_in` → `agent_speaking_end`**; lifecycle close with final |
 
 ```bash
 npm run build:native
+npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run test:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-Event-order logic lives in [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) (Vitest, no Sherpa models).
+Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) + [`src/roundtrip-stt-lifecycle-helpers.ts`](./src/roundtrip-stt-lifecycle-helpers.ts) (Vitest, no Sherpa models).
 
 | Variable                               | Default           | Purpose                                    |
 | -------------------------------------- | ----------------- | ------------------------------------------ |
@@ -449,14 +472,14 @@ Success: `Semantic barge-in E2E OK — tone ignored, spoken phrase interrupted a
 
 Passing **unit tests alone** (`npm run test:roundtrip-counting`) does **not** run Sherpa — it only checks evaluators. For release confidence, run **native build + these E2E scripts** (with models):
 
-| Script                                    | Catches                                                                    | Does **not** catch                                                            |
-| ----------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `start:roundtrip-counting`                | One long utterance → **1** final; no mid-count duplicate finals            | Second phrase after pause; `speaking_end` without final; multi-client handler |
-| `start:roundtrip-utterance-timing`        | `user_speaking_end` → `user_speech_final` within 500 ms (one turn)         | Dropped first turn when user speaks again; 2× finals                          |
-| `start:roundtrip-two-phrases`             | **2×** `user_speech_final` with pause between (multi-client turn pattern)  | Agent TTS echo; `voice-handler` ignore during `agent_speaking`                |
-| `start:roundtrip-counting-echo`           | Bidirectional “You said” after **one** counting round                      | Pending finalize cleared on new `SpeechStart` (fixed in Rust)                 |
-| `start:roundtrip-counting-barge-recovery` | Barge truncates echo; recovery echo works                                  | Browser UI timing                                                             |
-| `start:roundtrip-barge-in`                | Tone no barge; spoken phrase → **partial → barge_in → agent_speaking_end** | Instant VAD barge; partial after agent end                                    |
+| Script                                    | Catches                                                                                   | Does **not** catch                                                            |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `start:roundtrip-counting`                | One long utterance → **1** final; **lifecycle open/close**; no mid-count duplicate finals | Second phrase after pause; `speaking_end` without final; multi-client handler |
+| `start:roundtrip-utterance-timing`        | `user_speaking_end` → `user_speech_final` within 500 ms; **lifecycle close**              | Dropped first turn when user speaks again; 2× finals                          |
+| `start:roundtrip-two-phrases`             | **2×** `user_speech_final`; **2×** `vad_triggered` open sequences                         | Agent TTS echo; `voice-handler` ignore during `agent_speaking`                |
+| `start:roundtrip-counting-echo`           | Bidirectional “You said” after **one** counting round                                     | Pending finalize cleared on new `SpeechStart` (fixed in Rust)                 |
+| `start:roundtrip-counting-barge-recovery` | Barge truncates echo; recovery echo works; **lifecycle** on listen legs                   | Browser UI timing                                                             |
+| `start:roundtrip-barge-in`                | Tone no barge (C1 ok); spoken phrase → **vad_triggered → partial → barge_in**             | Instant VAD barge; partial after agent end                                    |
 
 **Why the bugs you saw slipped through:** earlier tests waited for **one** final per run and never simulated **phrase 1 → long pause → phrase 2** on the same listener. `SpeechStart` cleared `stt_finalize_pending`, so turn 1 never finalized until turn 2 merged in Sherpa.
 
@@ -505,6 +528,7 @@ Opt out of speech events: `SHERPA_ROUNDTRIP_EVENT_LOG=0`. Opt out of rust debug 
 
 ## Related docs
 
+- [`src/roundtrip-stt-lifecycle-helpers.ts`](./src/roundtrip-stt-lifecycle-helpers.ts) — shared VAD/STT lifecycle evaluators (Vitest)
 - [`src/roundtrip-counting.ts`](./src/roundtrip-counting.ts) — shared harness: `AgentSpeakingEndLatch`, `startSpeakerSpeechPump`, `playSpeakerTtsWithPostSilence`, timing helpers
 - [`packages/sdk/VOICE-API.md`](../../packages/sdk/VOICE-API.md) — SDK voice exports and speech events
 - [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md) — VAD/barge-in use cases and defaults

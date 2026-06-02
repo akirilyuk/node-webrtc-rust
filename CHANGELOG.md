@@ -19,6 +19,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Barge window** — `barge_in` only while `agent_speaking == true` (removed 2s post-playback grace).
 - **Utterance close** — partials without vendor final get `user_speech_final` via gate-hold finalize fallback or C2 timeout (last partial text).
 
+### Docs
+
+- [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](packages/sdk/VOICE-VAD-AND-BARGE-IN.md) — STT utterance lifecycle (flows A/B/C1/C2/D), timer interaction, updated fine-tuning timeline.
+- [`packages/sdk/VOICE-API.md`](packages/sdk/VOICE-API.md) — lifecycle event order reference.
+- [`examples/voice-agent-local-sherpa/ROUNDTRIP.md`](examples/voice-agent-local-sherpa/ROUNDTRIP.md) — STT lifecycle evaluators and updated barge-in E2E criteria.
+
 ---
 
 ## [0.4.1] — 2026-06-02

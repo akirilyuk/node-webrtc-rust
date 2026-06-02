@@ -18,7 +18,7 @@
  */
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
-import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+import { VoiceAgent, VOICE_AGENT_VAD_PRESET, SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import type { SpeechEvent, SpeechEventType, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
@@ -101,6 +101,61 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * One-shot wait for `agent_speaking_end` on the **speaker** VoiceAgent stream.
+ * Wire via `startSpeakerSpeechPump` — the listener leg does not receive agent events.
+ */
+export class AgentSpeakingEndLatch {
+  private endCount = 0
+  private waiters: Array<{ baseline: number; resolve: () => void }> = []
+
+  observe(event: SpeechEvent): void {
+    if (event.type !== SPEECH_EVENT_TYPE.agentSpeakingEnd) return
+    this.endCount += 1
+    for (let i = this.waiters.length - 1; i >= 0; i--) {
+      const waiter = this.waiters[i]!
+      if (this.endCount > waiter.baseline) {
+        waiter.resolve()
+        this.waiters.splice(i, 1)
+      }
+    }
+  }
+
+  waitForNext(timeoutMs: number): Promise<void> {
+    const baseline = this.endCount
+    if (this.endCount > baseline) {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w !== waiter)
+        reject(new Error(`timed out waiting for agent_speaking_end (${timeoutMs} ms)`))
+      }, timeoutMs)
+      const waiter = {
+        baseline,
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+      }
+      this.waiters.push(waiter)
+    })
+  }
+}
+
+/** Log speaker speech events and notify `agentEndLatch` for playback timing. */
+export function startSpeakerSpeechPump(
+  speaker: VoiceAgent,
+  agentEndLatch?: AgentSpeakingEndLatch,
+): void {
+  void (async () => {
+    for await (const event of speaker.speechEvents()) {
+      logRoundtripSpeechEvent('speaker', event)
+      agentEndLatch?.observe(event)
+    }
+  })()
+}
+
 /** Real-time TTS drain ~900 ms/word + 3 s base (capped). Long echo phrases need the headroom. */
 export function estimateTtsPlaybackMs(phrase: string, capMs: number): number {
   const words = phrase.split(/\s+/).filter((w) => w.length > 0).length
@@ -165,16 +220,22 @@ export async function playSpeakerTtsWithPostSilence(params: {
   phrase: string
   postTtsSilenceS: number
   playbackTimeoutMs?: number
-  /** When set, end playback on `agent_speaking_end` instead of waiting the full estimate. */
+  /** Prefer speaker-stream latch from `startSpeakerSpeechPump`. */
+  agentSpeakingEndLatch?: AgentSpeakingEndLatch
+  /** Fallback when no speaker pump / latch (rare). */
   waitForAgentSpeakingEnd?: () => Promise<void>
 }): Promise<void> {
   const playbackTimeoutMs = params.playbackTimeoutMs ?? DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS
+  const waitEnd =
+    params.agentSpeakingEndLatch != null
+      ? () => params.agentSpeakingEndLatch!.waitForNext(playbackTimeoutMs)
+      : params.waitForAgentSpeakingEnd
   console.log(`[speaker] TTS synthesize (${params.phrase.length} chars)…`)
   await params.speaker.sendTextToTTS(params.phrase)
   await waitAgentPlaybackEndRace({
     phrase: params.phrase,
     capMs: playbackTimeoutMs,
-    waitForAgentSpeakingEnd: params.waitForAgentSpeakingEnd,
+    waitForAgentSpeakingEnd: waitEnd,
   })
   console.log(`[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s`)
   await streamSilence(params.speakerOut, params.postTtsSilenceS)
@@ -863,6 +924,8 @@ async function main(): Promise<void> {
   const pumpStarted = { value: false }
   const collector = new ListenerUtteranceCollector(listener, pumpStarted, verbose)
   collector.startPump()
+  const agentEndLatch = new AgentSpeakingEndLatch()
+  startSpeakerSpeechPump(speaker, agentEndLatch)
 
   console.log('[speaker] Synthesizing long counting phrase…')
   const recognizedPromise = collector.waitForNext(timeoutMs, finalizeWaitMs)
@@ -872,7 +935,7 @@ async function main(): Promise<void> {
     phrase,
     postTtsSilenceS,
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
-    waitForAgentSpeakingEnd: () => collector.waitForAgentSpeakingEnd(timeoutMs),
+    agentSpeakingEndLatch: agentEndLatch,
   })
   const recognized = await recognizedPromise
 

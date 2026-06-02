@@ -483,7 +483,9 @@ async function main(): Promise<void> {
     )
   }
   if (utteranceEval.endToFinalGapMs != null) {
-    console.log(`user_speaking_end → user_speech_final: ${utteranceEval.endToFinalGapMs} ms`)
+    console.log(
+      `user_speaking_end → user_speech_final: ${utteranceEval.endToFinalGapMs} ms`,
+    )
   }
   if (!utteranceEval.passed) {
     failures.push(...utteranceEval.failures)

@@ -24,6 +24,7 @@ import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopba
 import { streamSilence } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import {
+  AgentSpeakingEndLatch,
   countNumberWordsInTranscript,
   DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
   ListenerUtteranceCollector,
@@ -32,6 +33,7 @@ import {
   sttFinalizeWaitMs,
   DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
   installRoundtripWallClockTimeout,
+  startSpeakerSpeechPump,
   waitAgentPlaybackEndRace,
   wordSimilarity,
 } from './roundtrip-counting.js'
@@ -162,6 +164,7 @@ export async function playEchoLegBWithBargeIn(params: {
   userOut: LocalAudioTrack
   collectorAgent1: ListenerUtteranceCollector
   collectorAgent2: ListenerUtteranceCollector
+  agent2EndLatch: AgentSpeakingEndLatch
   echoText: string
   bargeDelayMs: number
   bargeToneS: number
@@ -182,8 +185,7 @@ export async function playEchoLegBWithBargeIn(params: {
   const playbackDone = waitAgentPlaybackEndRace({
     phrase: params.echoText,
     capMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
-    waitForAgentSpeakingEnd: () =>
-      params.collectorAgent1.waitForAgentSpeakingEnd(params.timeoutMs),
+    waitForAgentSpeakingEnd: () => params.agent2EndLatch.waitForNext(params.timeoutMs),
   })
   const speakingStarted = params.collectorAgent2.waitForAgentSpeakingStart(params.timeoutMs)
   const speakPromise = params.agent2.sendTextToTTS(params.echoText)
@@ -292,6 +294,10 @@ async function main(): Promise<void> {
   )
   collectorAgent1.startPump()
   collectorAgent2.startPump()
+  const agent1EndLatch = new AgentSpeakingEndLatch()
+  const agent2EndLatch = new AgentSpeakingEndLatch()
+  startSpeakerSpeechPump(agent1, agent1EndLatch)
+  startSpeakerSpeechPump(agent2, agent2EndLatch)
 
   const roundParams = {
     agent1,
@@ -300,6 +306,8 @@ async function main(): Promise<void> {
     userOut,
     collectorAgent1,
     collectorAgent2,
+    agent1EndLatch,
+    agent2EndLatch,
     postTtsSilenceS,
     timeoutMs,
     finalizeWaitMs,
@@ -332,6 +340,7 @@ async function main(): Promise<void> {
     speaker: agent1,
     speakerOut: agentOut,
     listenerCollector: collectorAgent2,
+    agentSpeakingEndLatch: agent1EndLatch,
     text: countingPhrase,
     postTtsSilenceS,
     timeoutMs,
@@ -359,6 +368,7 @@ async function main(): Promise<void> {
     userOut,
     collectorAgent1,
     collectorAgent2,
+    agent2EndLatch,
     echoText: echoText2,
     bargeDelayMs,
     bargeToneS,

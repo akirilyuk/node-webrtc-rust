@@ -31,7 +31,9 @@ import {
   ListenerUtteranceCollector,
   normalizeForCompare,
   NUMBER_WORDS_ONE_TO_TEN,
+  AgentSpeakingEndLatch,
   playSpeakerTtsWithPostSilence,
+  startSpeakerSpeechPump,
   postTtsSilenceSeconds,
   sttFinalizeWaitMs,
   wordSimilarity,
@@ -265,6 +267,7 @@ export async function playTtsAndCollect(params: {
   speaker: VoiceAgent
   speakerOut: LocalAudioTrack
   listenerCollector: ListenerUtteranceCollector
+  agentSpeakingEndLatch: AgentSpeakingEndLatch
   text: string
   postTtsSilenceS: number
   timeoutMs: number
@@ -283,8 +286,7 @@ export async function playTtsAndCollect(params: {
     phrase: params.text,
     postTtsSilenceS: params.postTtsSilenceS,
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
-    waitForAgentSpeakingEnd: () =>
-      params.listenerCollector.waitForAgentSpeakingEnd(params.timeoutMs),
+    agentSpeakingEndLatch: params.agentSpeakingEndLatch,
   })
   const recognized = await recognizedPromise
   // Long echo TTS can trigger an early prefix final ("You said") then the full phrase — use the best transcript.
@@ -309,6 +311,8 @@ export async function runEchoRound(params: {
   userOut: LocalAudioTrack
   collectorAgent1: ListenerUtteranceCollector
   collectorAgent2: ListenerUtteranceCollector
+  agent1EndLatch: AgentSpeakingEndLatch
+  agent2EndLatch: AgentSpeakingEndLatch
   postTtsSilenceS: number
   timeoutMs: number
   finalizeWaitMs: number
@@ -329,6 +333,7 @@ export async function runEchoRound(params: {
     speaker: params.agent1,
     speakerOut: params.agentOut,
     listenerCollector: params.collectorAgent2,
+    agentSpeakingEndLatch: params.agent1EndLatch,
     text: params.sourcePhrase,
     postTtsSilenceS: params.postTtsSilenceS,
     timeoutMs: params.timeoutMs,
@@ -393,6 +398,7 @@ export async function runEchoRound(params: {
     speaker: params.agent2,
     speakerOut: params.userOut,
     listenerCollector: params.collectorAgent1,
+    agentSpeakingEndLatch: params.agent2EndLatch,
     text: echoText,
     postTtsSilenceS: params.postTtsSilenceS,
     timeoutMs: params.timeoutMs,
@@ -518,6 +524,10 @@ async function main(): Promise<void> {
   )
   collectorAgent1.startPump()
   collectorAgent2.startPump()
+  const agent1EndLatch = new AgentSpeakingEndLatch()
+  const agent2EndLatch = new AgentSpeakingEndLatch()
+  startSpeakerSpeechPump(agent1, agent1EndLatch)
+  startSpeakerSpeechPump(agent2, agent2EndLatch)
 
   const roundParams = {
     agent1,
@@ -526,6 +536,8 @@ async function main(): Promise<void> {
     userOut,
     collectorAgent1,
     collectorAgent2,
+    agent1EndLatch,
+    agent2EndLatch,
     postTtsSilenceS,
     timeoutMs,
     finalizeWaitMs,

@@ -31,9 +31,11 @@ import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopba
 import { streamSilence } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import {
+  AgentSpeakingEndLatch,
   installRoundtripWallClockTimeout,
   playSpeakerTtsWithPostSilence,
   postTtsSilenceSeconds,
+  startSpeakerSpeechPump,
   sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
@@ -246,6 +248,7 @@ async function runPhrase(params: {
   postTtsSilenceS: number
   minSimilarity: number
   gapS: number
+  agentEndLatch: AgentSpeakingEndLatch
 }): Promise<RoundtripPhraseResult> {
   const {
     phrase,
@@ -259,6 +262,7 @@ async function runPhrase(params: {
     postTtsSilenceS,
     minSimilarity,
     gapS,
+    agentEndLatch,
   } = params
 
   console.log('')
@@ -274,7 +278,7 @@ async function runPhrase(params: {
     phrase,
     postTtsSilenceS,
     playbackTimeoutMs: Math.min(timeoutMs, 45_000),
-    waitForAgentSpeakingEnd: () => collector.waitForAgentSpeakingEnd(timeoutMs),
+    agentSpeakingEndLatch: agentEndLatch,
   })
   const recognized = await recognizedPromise
   const normalizedInput = normalizeForCompare(phrase)
@@ -355,12 +359,8 @@ async function main(): Promise<void> {
   const pumpStarted = { value: false }
   const collector = new ListenerTranscriptCollector(listener, pumpStarted)
   collector.startPump()
-
-  void (async () => {
-    for await (const event of speaker.speechEvents()) {
-      logRoundtripSpeechEvent('speaker', event)
-    }
-  })()
+  const agentEndLatch = new AgentSpeakingEndLatch()
+  startSpeakerSpeechPump(speaker, agentEndLatch)
 
   const results: RoundtripPhraseResult[] = []
   for (let i = 0; i < phrases.length; i += 1) {
@@ -377,6 +377,7 @@ async function main(): Promise<void> {
         postTtsSilenceS,
         minSimilarity,
         gapS,
+        agentEndLatch,
       }),
     )
   }

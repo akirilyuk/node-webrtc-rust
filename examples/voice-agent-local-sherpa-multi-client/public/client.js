@@ -77,9 +77,12 @@ function setStatus(text) {
   statusEl.textContent = text
 }
 
-function appendEvent(eventName, detail) {
+function appendEvent(eventName, detail, serverTs) {
   const item = document.createElement('li')
-  item.textContent = `${new Date().toISOString().slice(11, 23)} ${eventName}${detail ? `: ${detail}` : ''}`
+  const localTs = new Date().toISOString().slice(11, 23)
+  const serverPart =
+    serverTs && typeof serverTs === 'string' ? ` srv=${serverTs.slice(11, 23)}` : ''
+  item.textContent = `${localTs}${serverPart} ${eventName}${detail ? `: ${detail}` : ''}`
   if (eventName === 'user_speech_final') item.classList.add('final')
   if (eventName === 'error') item.classList.add('error')
   eventLogEl.prepend(item)
@@ -248,7 +251,8 @@ function wireControlChannel(channel) {
     try {
       const message = JSON.parse(String(event.data))
       if (message.type !== 'speech_event') return
-      appendEvent(message.event, message.text ?? message.error ?? '')
+      const detail = message.text ?? message.error ?? ''
+      appendEvent(message.event, detail, message.ts)
     } catch {
       appendEvent('error', 'Malformed server message')
     }
@@ -295,7 +299,13 @@ async function connect() {
   }
 
   ws.onmessage = (event) => {
-    handleSignal(JSON.parse(event.data))
+    try {
+      handleSignal(JSON.parse(event.data))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      appendEvent('error', `signaling parse/handle: ${message}`)
+      setStatus(`Signaling error: ${message}`)
+    }
   }
 
   ws.onclose = () => {
@@ -338,14 +348,31 @@ function disconnect() {
 
 function handleSignal(message) {
   switch (message.type) {
+    case 'peer-joined':
+      if (message.peerId === SERVER_PEER_ID) {
+        appendEvent('client', 'voice agent in room — waiting for WebRTC offer…')
+        setStatus('Server peer present — waiting for offer…')
+      }
+      break
     case 'offer':
       if (message.peerId === SERVER_PEER_ID) {
-        void onServerOffer(message.sdp)
+        appendEvent('client', 'received WebRTC offer')
+        void onServerOffer(message.sdp).catch((error) => {
+          const text = error instanceof Error ? error.message : String(error)
+          appendEvent('error', `offer handling: ${text}`)
+          setStatus(`WebRTC offer failed: ${text}`)
+          connectButton.disabled = false
+        })
+      } else {
+        appendEvent('error', `unexpected offer from ${message.peerId ?? 'unknown'}`)
       }
       break
     case 'ice-candidate':
       if (message.peerId === SERVER_PEER_ID) {
-        void onRemoteIce(message.candidate)
+        void onRemoteIce(message.candidate).catch((error) => {
+          const text = error instanceof Error ? error.message : String(error)
+          appendEvent('error', `ICE: ${text}`)
+        })
       }
       break
     default:
@@ -354,7 +381,18 @@ function handleSignal(message) {
 }
 
 async function onServerOffer(sdp) {
-  if (serverPc) return
+  if (serverPc) {
+    const state = serverPc.connectionState
+    if (state === 'failed' || state === 'closed') {
+      serverPc.close()
+      serverPc = null
+      pendingIce = []
+      appendEvent('client', `replacing ${state} peer connection (server reconnect)`)
+    } else {
+      appendEvent('error', 'ignored duplicate offer (disconnect first)')
+      return
+    }
+  }
 
   serverPc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
 
@@ -382,10 +420,32 @@ async function onServerOffer(sdp) {
     }
   }
 
+  serverPc.oniceconnectionstatechange = () => {
+    const ice = serverPc?.iceConnectionState
+    if (ice && ice !== 'new') {
+      appendEvent('client', `iceConnectionState=${ice}`)
+    }
+    if (ice === 'failed') {
+      setStatus(
+        'ICE failed — restart server with WEBRTC_NAT_1TO1_IPS=127.0.0.1 and use http://127.0.0.1:3004',
+      )
+    }
+  }
+
   serverPc.onconnectionstatechange = () => {
+    const state = serverPc?.connectionState
+    if (state && state !== 'new') {
+      appendEvent('client', `connectionState=${state}`)
+    }
     if (serverPc?.connectionState === 'connected') {
       setStatus(`WebRTC connected (${clientId})`)
       void refreshCapacity()
+    } else if (state === 'failed') {
+      setStatus('WebRTC failed — server may send a new offer; or Disconnect and Connect')
+      serverPc?.close()
+      serverPc = null
+      pendingIce = []
+      connectButton.disabled = false
     }
   }
 
@@ -400,13 +460,18 @@ async function onServerOffer(sdp) {
 
   const answer = await serverPc.createAnswer()
   await serverPc.setLocalDescription(answer)
-  await waitGatheringComplete(serverPc)
 
+  // Send answer immediately (trickle ICE). Blocking on full gathering delays the answer
+  // past ICE failure when STUN is slow — see dev log 2026-06-02-multi-client-ice-first-connect.
   sendToServer({
     type: 'answer',
     targetPeerId: SERVER_PEER_ID,
     sdp: serverPc.localDescription,
   })
+  appendEvent('client', 'answer sent (trickle ICE)')
+  setStatus('Answer sent — finishing ICE…')
+
+  void waitGatheringComplete(serverPc, 5000).catch(() => undefined)
 }
 
 async function onRemoteIce(candidate) {
@@ -426,11 +491,16 @@ async function flushPendingIce() {
   pendingIce = []
 }
 
-function waitGatheringComplete(pc) {
+function waitGatheringComplete(pc, timeoutMs = 5000) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve()
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pc.removeEventListener('icegatheringstatechange', check)
+      reject(new Error(`ICE gathering timeout (${pc.iceGatheringState})`))
+    }, timeoutMs)
     const check = () => {
       if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timer)
         pc.removeEventListener('icegatheringstatechange', check)
         resolve()
       }

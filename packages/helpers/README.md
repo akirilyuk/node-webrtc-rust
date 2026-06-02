@@ -94,7 +94,7 @@ export VOICE_MAX_CONCURRENT_SESSIONS=8
 
 `VoiceAgentSessionHost` and `SessionPod` share one process-wide budget. When full, new `client-*` peers are rejected (no WebRTC offer). Expose metrics via `GET /api/capacity` when using `startMultiClientVoiceServer`.
 
-Demo: [`examples/voice-agent-local-sherpa-multi-client`](../../examples/voice-agent-local-sherpa-multi-client/) (three tabs, one room, local Sherpa).
+Demo: [`examples/voice-agent-local-sherpa-multi-client`](../../examples/voice-agent-local-sherpa-multi-client/) (three tabs, one room, local Sherpa; `npm run start` frees port 3004 via [`scripts/free-port.sh`](../../scripts/free-port.sh) — see example README).
 
 ## Multi-client room (three agents, shared Sherpa)
 

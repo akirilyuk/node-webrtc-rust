@@ -124,7 +124,7 @@ impl From<JsVadConfig> for VadConfig {
             provider: value.provider.unwrap_or_else(|| "energy".to_string()),
             threshold: value.threshold.unwrap_or(0.15) as f32,
             min_speech_duration_ms: value.min_speech_duration_ms.unwrap_or(250),
-            min_silence_duration_ms: value.min_silence_duration_ms.unwrap_or(300),
+            min_silence_duration_ms: value.min_silence_duration_ms.unwrap_or(600),
             speech_pad_ms: value.speech_pad_ms.unwrap_or(300),
             sample_rate: value
                 .sample_rate

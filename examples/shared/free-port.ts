@@ -3,6 +3,9 @@
  *
  * Avoids EADDRINUSE when restarting `npm run start` without manually killing the old server.
  * Set `VOICE_SKIP_FREE_PORT=1` to disable. Unix/macOS uses `lsof`; Windows uses `netstat` + `taskkill`.
+ *
+ * Shell equivalent (runs earlier via npm `prestart` on multi-client):
+ * [`scripts/free-port.sh`](../../scripts/free-port.sh) — see [`scripts/README.md`](../../scripts/README.md).
  */
 
 import { execSync } from 'node:child_process'

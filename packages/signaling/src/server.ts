@@ -136,6 +136,12 @@ export class SignalingServer extends EventEmitter {
             room = new Map()
             this.rooms.set(message.room, room)
           }
+          const existing = room.get(message.peerId)
+          if (existing && existing.socket !== socket) {
+            // Replace stale socket (tab refresh / reconnect with same peerId).
+            existing.socket.close()
+            room.delete(message.peerId)
+          }
           for (const other of room.values()) {
             if (other.id !== message.peerId) {
               send(other.socket, { type: 'peer-joined', peerId: message.peerId })

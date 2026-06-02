@@ -5,9 +5,12 @@
   "description": "Three browser clients, one room, shared local Sherpa STT/TTS + session budget demo",
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "start:cap-2": "VOICE_MAX_CONCURRENT_SESSIONS=2 tsx src/index.ts",
-    "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
+    "prestart": "PORT=${PORT:-3004} bash ../../scripts/free-port.sh voice-agent-local-sherpa-multi-client",
+    "start": "WEBRTC_NAT_1TO1_IPS=127.0.0.1 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/index.ts",
+    "prestart:cap-2": "PORT=${PORT:-3004} bash ../../scripts/free-port.sh voice-agent-local-sherpa-multi-client",
+    "start:cap-2": "WEBRTC_NAT_1TO1_IPS=127.0.0.1 VOICE_MAX_CONCURRENT_SESSIONS=2 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/index.ts",
+    "prestart:debug": "PORT=${PORT:-3004} bash ../../scripts/free-port.sh voice-agent-local-sherpa-multi-client",
+    "start:debug": "WEBRTC_NAT_1TO1_IPS=127.0.0.1 VOICE_DEBUG=1 WEBRTC_DEBUG=1 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

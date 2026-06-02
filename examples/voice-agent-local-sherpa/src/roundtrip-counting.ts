@@ -518,7 +518,7 @@ export interface CountingRoundtripResult {
 /** Matches Rust STT endpoint tail (`min_silence` clamped 400–600 ms). */
 export function endpointTailMs(config: VoiceAgentConfig): number {
   const minSilence =
-    config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs ?? 500
+    config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs ?? 600
   return Math.min(600, Math.max(minSilence, 400))
 }
 
@@ -534,7 +534,7 @@ export function sttFinalizeWaitMs(config: VoiceAgentConfig): number {
 export function postTtsSilenceSeconds(config: VoiceAgentConfig): number {
   const hold = config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000
   const minSilence =
-    config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs ?? 500
+    config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs ?? 600
   return (hold + minSilence + FINALIZE_MARGIN_MS) / 1000
 }
 

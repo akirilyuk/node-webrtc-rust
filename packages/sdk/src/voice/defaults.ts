@@ -18,7 +18,7 @@ export const DEFAULT_VOICE_AGENT_VAD: VadConfig = {
   provider: 'energy',
   threshold: 0.15,
   minSpeechDurationMs: 250,
-  minSilenceDurationMs: 500,
+  minSilenceDurationMs: 600,
   speechPadMs: 300,
   gateStt: false,
   gateSttOpenOnPending: true,

@@ -170,9 +170,9 @@ fn default_min_speech_ms() -> u32 {
     250
 }
 
-// Brief gaps inside a phrase (TTS word pauses, natural speech) should not split VAD.
+// Brief gaps inside a phrase: ~600 ms silence before "maybe done", then sttGateHold grace.
 fn default_min_silence_ms() -> u32 {
-    500
+    600
 }
 
 fn default_speech_pad_ms() -> u32 {

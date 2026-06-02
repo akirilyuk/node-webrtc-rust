@@ -10,7 +10,7 @@ Implementation: [`src/roundtrip.ts`](./src/roundtrip.ts).
 
 | Source                                     | What it does                                                                                                                                                                                                                                             |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`minSilenceDurationMs` (500 ms preset)** | How long silence must last **during** one utterance before VAD sees `SpeechEnd` internally. Short Piper gaps between words should stay under this so one TTS phrase stays one segment.                                                                   |
+| **`minSilenceDurationMs` (600 ms preset)** | How long silence must last **during** one utterance before VAD sees `SpeechEnd` (“maybe done”). Short pauses under ~600 ms should not end the turn.                                                                                                          |
 | **`sttGateHoldMs` (1000 ms default)**      | With **`gateStt: true`**, keep feeding STT after that internal speech end; **`user_speaking_end` is emitted when this hold expires** (not on the first short gap). If the user speaks again during hold, the utterance continues and no end event fires. |
 | **Endpoint tail**                          | `minSilence` clamped **400–600 ms** of synthetic silence pushed to STT after hold reaches zero, then `finalize_utterance` (Rust; not duplicated on the harness speaker track).                                                                           |
 | **`speechPadMs` / `minSpeechDurationMs`**  | Pre-roll and minimum voiced time before `user_speaking_start` — not inter-phrase gaps.                                                                                                                                                                   |
@@ -250,14 +250,14 @@ Gaps and pauses come from **two layers**: the **VoiceAgent VAD/STT pipeline** (l
 | Setting                | Default                         | Role                                                                                                 |
 | ---------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `minSpeechDurationMs`  | 250                             | Voice must be present this long before `user_speaking_start`                                         |
-| `minSilenceDurationMs` | 500 (`VOICE_AGENT_VAD_PRESET`)  | Silence this long ends the utterance (`user_speaking_end`) — avoids splitting on short TTS word gaps |
+| `minSilenceDurationMs` | 600 (`VOICE_AGENT_VAD_PRESET`)  | Silence this long before “maybe done” / gate hold (then `sttGateHoldMs` grace)                      |
 | `speechPadMs`          | 300                             | Pre-roll ring size only (`speechPadMs + minSpeechDurationMs` ≈ 550 ms buffered before `SpeechStart`) |
 | `gateStt`              | true                            | STT only while gate is open                                                                          |
 | `gateSttOpenOnPending` | true                            | Gate opens during VAD **pending** speech (before `SpeechStart`) — covers WebRTC lead-in              |
 | `sttGateHoldMs`        | 1000                            | After `SpeechEnd`, keep feeding STT for this many ms (trailing phonemes + relay)                     |
 | Endpoint tail          | `minSilence` clamped 400–600 ms | Extra silence pushed to STT after hold expires, then `finalize_utterance` (Rust only)                |
 
-**`minSilenceDurationMs` is not a gap between batch phrases.** It only controls how long silence must last **inside** an utterance before VAD declares speech ended. Piper TTS short pauses between words should stay below 300 ms so one phrase stays one segment.
+**`minSilenceDurationMs` is not a gap between batch phrases.** It only controls how long silence must last **inside** an utterance before VAD declares speech ended. Natural pauses under the preset (default **600 ms** + **1000 ms** gate hold) should not split one phrase.
 
 ### After each phrase (listener finalize path)
 
@@ -278,7 +278,7 @@ postTtsSilenceS = (sttGateHoldMs + minSilenceDurationMs + margin) / 1000
 
 Rust injects the STT **endpoint tail** on finalize (`minSilence` clamped 400–600 ms) — the harness does **not** add that again on the wire.
 
-Defaults ≈ **1.75 s** trailing silence (1000 + 500 + 250 ms of 20 ms frames). End-to-end finalize after the user stops talking targets **~1.5–2 s** (`minSilence` + `sttGateHold` + endpoint tail). The old **~2.3 s** post-TTS padding and **multi-second estimate playback waits** after TTS had already ended were the main roundtrip slowdown.
+Defaults ≈ **1.35 s** trailing silence (600 + 500 + 250 ms of 20 ms frames) plus gate hold. End-to-end finalize after the user stops talking targets **~1.5–2 s** (`minSilence` + `sttGateHold` + endpoint tail). The old **~2.3 s** post-TTS padding and **multi-second estimate playback waits** after TTS had already ended were the main roundtrip slowdown.
 
 ### Harness playback timing (`AgentSpeakingEndLatch`)
 
@@ -409,7 +409,7 @@ vad: {
 }
 ```
 
-`minSilenceDurationMs` is omitted → library default **300 ms** (see `VadConfig` in `crates/speech`).
+`minSilenceDurationMs` is omitted → library default **600 ms** (see `VadConfig` in `crates/speech`).
 
 ## Expected output
 

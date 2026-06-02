@@ -406,6 +406,15 @@ npm run build:ts
 
 Use release builds (`cd packages/bindings && npm run build:local`) before release-sensitive tests. Reserve `npm run build:all` in bindings for CI / publish verification only.
 
+### Dev scripts (examples)
+
+| Script | Purpose |
+| ------ | ------- |
+| [`scripts/free-port.sh`](scripts/free-port.sh) | Kill listeners on a port before `npm run start` (multi-client uses npm `prestart`) |
+| [`scripts/export-sherpa-local-models.sh`](scripts/export-sherpa-local-models.sh) | Set `SHERPA_*` paths for local Sherpa examples |
+
+Details: [`scripts/README.md`](scripts/README.md).
+
 ### Tests
 
 ```bash

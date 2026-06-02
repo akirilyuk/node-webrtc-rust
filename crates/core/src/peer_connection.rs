@@ -4,8 +4,10 @@ use std::sync::{Arc, OnceLock};
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::api::API;
+use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::interceptor::registry::Registry;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
@@ -249,6 +251,24 @@ impl Clone for PeerConnection {
 
 static SHARED_API: OnceLock<Arc<API>> = OnceLock::new();
 
+/// `WEBRTC_NAT_1TO1_IPS=127.0.0.1` (comma-separated) advertises host candidates on those
+/// addresses — required for browser ↔ Node on the same machine when opening `http://127.0.0.1`.
+fn apply_nat_1to1_from_env(settings: &mut SettingEngine) {
+    let Ok(raw) = std::env::var("WEBRTC_NAT_1TO1_IPS") else {
+        return;
+    };
+    let ips: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if ips.is_empty() {
+        return;
+    }
+    settings.set_nat_1to1_ips(ips, RTCIceCandidateType::Host);
+}
+
 fn shared_api() -> Result<Arc<API>, CoreError> {
     if let Some(api) = SHARED_API.get() {
         return Ok(Arc::clone(api));
@@ -260,8 +280,12 @@ fn shared_api() -> Result<Arc<API>, CoreError> {
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut media_engine)?;
 
+    let mut setting_engine = SettingEngine::default();
+    apply_nat_1to1_from_env(&mut setting_engine);
+
     let api = Arc::new(
         APIBuilder::new()
+            .with_setting_engine(setting_engine)
             .with_media_engine(media_engine)
             .with_interceptor_registry(registry)
             .build(),

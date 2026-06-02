@@ -7,6 +7,54 @@ Demonstrates the **reusable multi-client server pattern** for local Sherpa STT/T
 - **One shared Sherpa model load** in Rust (`SherpaModelPool`) — not three copies of ONNX weights
 - Optional **`VOICE_MAX_CONCURRENT_SESSIONS`** to reject extra tabs (deployment sizing)
 
+## Quick start
+
+From **`node-webrtc-rust`** repo root.
+
+**1. One-time — download English models** (skip if already done):
+
+```bash
+npm run download-stt:en --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-tts:en --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+**2. Start the server** (model paths are set automatically — no manual `export SHERPA_*`):
+
+```bash
+npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
+```
+
+Before `tsx` runs, npm **`prestart`** calls [`scripts/free-port.sh`](../../scripts/free-port.sh) to stop anything still listening on port **3004** (or your `PORT`). The server also calls [`shared/free-port.ts`](../shared/free-port.ts) at startup as a backup.
+
+**3. Open three browser tabs** to [http://127.0.0.1:3004](http://127.0.0.1:3004) (or use `?slot=1`, `?slot=2`, `?slot=3`). Click **Connect** in each tab, allow the microphone, then speak — each tab gets its own TTS reply on `user_speech_final`.
+
+Optional:
+
+```bash
+# Third tab rejected when two sessions are active
+npm run start:cap-2 --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
+
+# Verbose voice / WebRTC logs
+npm run start:debug --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
+```
+
+## npm scripts
+
+| Script          | What it does |
+| --------------- | ------------ |
+| `prestart`      | `free-port.sh` on `PORT` (default **3004**) |
+| `start`         | Export Sherpa model paths → `tsx src/index.ts` |
+| `start:cap-2`   | Same with `VOICE_MAX_CONCURRENT_SESSIONS=2` |
+| `start:debug`   | Same with `VOICE_DEBUG=1` and `WEBRTC_DEBUG=1` |
+| `test`          | Vitest (session budget; no models) |
+| `typecheck`     | `tsc --noEmit` |
+
+Model env vars (`SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE`) are exported by [`scripts/export-sherpa-local-models.sh`](../../scripts/export-sherpa-local-models.sh) on every `start*`. To set them in your shell instead:
+
+```bash
+source scripts/export-sherpa-local-models.sh
+```
+
 ## Your code
 
 Edit **`src/voice-handler.ts`** only:
@@ -66,22 +114,57 @@ Production apps often use one client per user, push-to-talk, or visibility-based
 
 ## Prerequisites
 
-Same model downloads as [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md):
+Same model downloads as [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md). Only the download step is required — `npm run start` wires model paths via [`scripts/export-sherpa-local-models.sh`](../../scripts/export-sherpa-local-models.sh):
 
 ```bash
-npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-export SHERPA_STT_MODEL_PATH=.../voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
-export SHERPA_TTS_MODEL_PATH=.../voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
+npm run download-stt:en --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run download-tts:en --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-## Run
+For a non-English STT bundle, download with the matching `download-stt:*` script, then override before start:
 
 ```bash
+export SHERPA_STT_BUNDLE=sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06
+export SHERPA_STT_LANGUAGE=de
 npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
 ```
 
-If port **3004** was left in use, `npm run start` stops the previous listener automatically ([`shared/free-port.ts`](../shared/free-port.ts)). Disable with `VOICE_SKIP_FREE_PORT=1`.
+## Troubleshooting connect
+
+| Symptom | What to check |
+| ------- | ------------- |
+| Event log stops at `joined as client-tab…` | Server terminal must show `[voice client-tab…] offer sent`. If not: restart `npm run start`, click **Disconnect** then **Connect**, or use a fresh `?slot=1` tab so the peer id is new. |
+| Stops after `received WebRTC offer`, no `answer sent` for ~15–40 s then **failed** | Old clients blocked the answer on full ICE gathering. Current client sends **answer immediately** (trickle ICE). Pull latest, hard-refresh the tab. |
+| `iceConnectionState=failed` then reconnect works | Use **`http://127.0.0.1:3004`** and `WEBRTC_NAT_1TO1_IPS=127.0.0.1` on the server (`npm run build:native` after core changes). Server auto-sends up to **2** new offers after `connectionState=failed`. |
+| `iceConnectionState=failed` / WebRTC **failed** | Server SDP must include **`127.0.0.1` ICE host candidates**. `npm run start` sets `WEBRTC_NAT_1TO1_IPS=127.0.0.1`. |
+| Server: `timed out waiting for mic track` | Usually ICE never connected (no answer or no `127.0.0.1` in offer). Fix ICE first; server no longer crashes the process on this timeout. |
+| `no offer within 15s` | Server not running, wrong port, or `VOICE_MAX_CONCURRENT_SESSIONS` full (`start:cap-2` + three tabs). |
+| Server exit code **137** | Previous listener was killed (`prestart` / `free-port.sh`) or OOM — start the server again and reconnect browsers. |
+| `ignored duplicate offer` | Click **Disconnect** before **Connect** again, or wait for server reconnect after ICE failed (replaces dead `RTCPeerConnection`). |
+| Event log shows `srv=…` on speech lines | Server timestamp when the event was forwarded on `voice-control` (compare to local time on the left). |
+
+After a code fix in `@node-webrtc-rust/helpers`, rebuild if needed: `npm run build --workspace=@node-webrtc-rust/helpers`.
+
+## Port cleanup (`EADDRINUSE`)
+
+| Layer | When | How |
+| ----- | ---- | --- |
+| **Shell** | npm `prestart` (before Sherpa export / `tsx`) | [`scripts/free-port.sh`](../../scripts/free-port.sh) |
+| **TypeScript** | `main()` in `src/index.ts` | [`shared/free-port.ts`](../shared/free-port.ts) |
+
+Both use the same port as the server (`PORT`, default **3004**). Disable both with `VOICE_SKIP_FREE_PORT=1`.
+
+From repo root (manual):
+
+```bash
+PORT=3004 bash scripts/free-port.sh voice-agent-local-sherpa-multi-client
+# or custom port:
+PORT=3010 bash scripts/free-port.sh voice-agent-local-sherpa-multi-client
+```
+
+See [`scripts/README.md`](../../scripts/README.md#free-portsh).
+
+## Run (browser)
 
 Open **three tabs** to [http://localhost:3004](http://localhost:3004):
 
@@ -129,13 +212,16 @@ npm run test:helpers
 
 | Variable                        | Default         | Purpose                               |
 | ------------------------------- | --------------- | ------------------------------------- |
-| `PORT`                          | `3004`          | HTTP + WebSocket                      |
+| `PORT`                          | `3004`          | HTTP + WebSocket; `prestart` frees this port |
+| `VOICE_SKIP_FREE_PORT`          | unset           | Set to `1` to skip shell + TS port cleanup |
 | `VOICE_ROOM`                    | `sherpa-multi`  | Signaling room                        |
 | `VOICE_MAX_CONCURRENT_SESSIONS` | `0` (unlimited) | Process-wide connection cap           |
-| `SHERPA_STT_MODEL_PATH`         | —               | Required                              |
-| `SHERPA_TTS_MODEL_PATH`         | —               | Required                              |
-| `VOICE_VAD_MIN_SILENCE_MS`      | preset `300`    | Pause before STT hold starts          |
-| `VOICE_VAD_STT_GATE_HOLD_MS`    | preset `1000`   | STT tail + `user_speaking_end` timing |
+| `SHERPA_STT_MODEL_PATH`         | auto (English Kroko) | Set by `export-sherpa-local-models.sh` on `npm run start*` |
+| `SHERPA_TTS_MODEL_PATH`         | auto (Piper amy-low) | Set by `export-sherpa-local-models.sh` on `npm run start*` |
+| `SHERPA_STT_BUNDLE`             | English Kroko bundle | Override STT directory name under `.models/`               |
+| `SHERPA_TTS_BUNDLE`             | `vits-piper-en_US-amy-low` | Override TTS directory name under `.models/`          |
+| `VOICE_VAD_MIN_SILENCE_MS`      | preset `600`    | Silence before “maybe done” / STT gate hold starts |
+| `VOICE_VAD_STT_GATE_HOLD_MS`    | preset `1000`   | After maybe-done, STT stays open ~1 s for word gaps; `user_speaking_end` when hold expires |
 
 VAD/STT flow tuning: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).
 

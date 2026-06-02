@@ -283,6 +283,8 @@ export async function playTtsAndCollect(params: {
     phrase: params.text,
     postTtsSilenceS: params.postTtsSilenceS,
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+    waitForAgentSpeakingEnd: () =>
+      params.listenerCollector.waitForAgentSpeakingEnd(params.timeoutMs),
   })
   const recognized = await recognizedPromise
   // Long echo TTS can trigger an early prefix final ("You said") then the full phrase — use the best transcript.
@@ -372,6 +374,7 @@ export async function runEchoRound(params: {
           partialCount: 0,
           bargeInCount: 0,
           agentSpeakingStartCount: 0,
+          agentSpeakingEndCount: 0,
           speakingEndAtMs: null,
           speechFinalAtMs: null,
         },

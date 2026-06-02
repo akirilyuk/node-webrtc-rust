@@ -33,6 +33,8 @@ import { resolveVoiceConfig } from './resolve-voice-config.js'
 import {
   installRoundtripWallClockTimeout,
   playSpeakerTtsWithPostSilence,
+  postTtsSilenceSeconds,
+  sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
@@ -47,8 +49,6 @@ const DEFAULT_SENTENCES = [
 ]
 
 const DEFAULT_TIMEOUT_MS = 45_000
-/** Added to sttGateHoldMs + endpoint tail when computing post-TTS silence duration. */
-const FINALIZE_MARGIN_MS = 500
 const DEFAULT_WARMUP_S = 0.6
 /** Extra inter-phrase silence (seconds). Default 0 — VAD hold + VAD-aligned post-TTS trailing silence suffice. */
 const DEFAULT_GAP_S = 0
@@ -69,25 +69,6 @@ function resolvePhrases(): string[] {
   const fromEnv = process.env.SHERPA_ROUNDTRIP_PHRASE?.trim()
   if (fromEnv) return [fromEnv]
   return DEFAULT_SENTENCES
-}
-
-function endpointTailMs(config: VoiceAgentConfig): number {
-  return Math.max(config.vad?.minSilenceDurationMs ?? 300, 800)
-}
-
-/** Ms to wait after VAD speech end before accepting a partial (aligns with hold + tail + margin). */
-function sttFinalizeWaitMs(config: VoiceAgentConfig): number {
-  const hold = config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000
-  return hold + endpointTailMs(config) + FINALIZE_MARGIN_MS
-}
-
-/**
- * Trailing silence on speaker outbound after each TTS utterance.
- * Duration matches listener `sttGateHoldMs` + endpoint tail so hold can drain on the wire.
- */
-function postTtsSilenceSeconds(config: VoiceAgentConfig): number {
-  const hold = config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000
-  return (hold + endpointTailMs(config) + FINALIZE_MARGIN_MS) / 1000
 }
 
 /** Lowercase, strip punctuation, collapse spaces — for similarity only. */
@@ -125,11 +106,44 @@ class ListenerTranscriptCollector {
   private reject: ((error: Error) => void) | null = null
   private overallTimer: ReturnType<typeof setTimeout> | undefined
   private finalizeWaitMs = 3800
+  private agentSpeakingEndCount = 0
+  private agentSpeakingEndWaiters: Array<{ baseline: number; resolve: () => void }> = []
   constructor(
     private readonly listener: VoiceAgent,
     private readonly pumpStarted: { value: boolean },
     private readonly verbose: boolean = process.env.SHERPA_COUNTING_VERBOSE === '1',
   ) {}
+
+  waitForAgentSpeakingEnd(timeoutMs: number): Promise<void> {
+    const baseline = this.agentSpeakingEndCount
+    if (this.agentSpeakingEndCount > baseline) {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.agentSpeakingEndWaiters = this.agentSpeakingEndWaiters.filter((w) => w !== waiter)
+        reject(new Error(`timed out waiting for agent_speaking_end (${timeoutMs} ms)`))
+      }, timeoutMs)
+      const waiter = {
+        baseline,
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+      }
+      this.agentSpeakingEndWaiters.push(waiter)
+    })
+  }
+
+  private resolveAgentEndWaiters(): void {
+    for (let i = this.agentSpeakingEndWaiters.length - 1; i >= 0; i--) {
+      const waiter = this.agentSpeakingEndWaiters[i]!
+      if (this.agentSpeakingEndCount > waiter.baseline) {
+        waiter.resolve()
+        this.agentSpeakingEndWaiters.splice(i, 1)
+      }
+    }
+  }
 
   startPump(): void {
     if (this.pumpStarted.value) return
@@ -141,6 +155,10 @@ class ListenerTranscriptCollector {
     try {
       for await (const event of this.listener.speechEvents()) {
         logRoundtripSpeechEvent('listener', event)
+        if (event.type === 'agent_speaking_end') {
+          this.agentSpeakingEndCount += 1
+          this.resolveAgentEndWaiters()
+        }
         if (this.settled) continue
 
         if (event.type === 'user_speech_partial' && event.text?.trim()) {
@@ -256,6 +274,7 @@ async function runPhrase(params: {
     phrase,
     postTtsSilenceS,
     playbackTimeoutMs: Math.min(timeoutMs, 45_000),
+    waitForAgentSpeakingEnd: () => collector.waitForAgentSpeakingEnd(timeoutMs),
   })
   const recognized = await recognizedPromise
   const normalizedInput = normalizeForCompare(phrase)

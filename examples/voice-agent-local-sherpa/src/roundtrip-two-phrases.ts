@@ -42,8 +42,10 @@ const DEFAULT_WARMUP_S = 0.6
 async function speakPhrase(params: {
   speaker: VoiceAgent
   speakerOut: LocalAudioTrack
+  listenerCollector: ListenerUtteranceCollector
   text: string
   postTtsSilenceS: number
+  timeoutMs: number
   logLabel: string
 }): Promise<void> {
   console.log(`[${params.logLabel}] TTS: "${params.text}"`)
@@ -53,6 +55,8 @@ async function speakPhrase(params: {
     phrase: params.text,
     postTtsSilenceS: params.postTtsSilenceS,
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+    waitForAgentSpeakingEnd: () =>
+      params.listenerCollector.waitForAgentSpeakingEnd(params.timeoutMs),
   })
 }
 
@@ -120,8 +124,10 @@ async function main(): Promise<void> {
   await speakPhrase({
     speaker,
     speakerOut: agentOut,
+    listenerCollector: collector,
     text: phrase1,
     postTtsSilenceS,
+    timeoutMs,
     logLabel: 'phrase 1',
   })
   const text1 = await text1Promise
@@ -137,8 +143,10 @@ async function main(): Promise<void> {
   await speakPhrase({
     speaker,
     speakerOut: agentOut,
+    listenerCollector: collector,
     text: phrase2,
     postTtsSilenceS,
+    timeoutMs,
     logLabel: 'phrase 2',
   })
   const text2 = await text2Promise

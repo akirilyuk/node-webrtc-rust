@@ -248,21 +248,23 @@ The roundtrip waits for **`user_speech_final`** (or timeout / partial fallback) 
 
 ### Trailing silence after TTS (speaker outbound, VAD-aligned)
 
-After each `sendTextToTTS`, the harness streams trailing silence on the speaker outbound track **at real time** (in parallel with waiting for `user_speech_final`):
+After each `sendTextToTTS`, the harness waits for **`agent_speaking_end`** (or a phrase-length estimate cap), then streams trailing silence on the speaker outbound track **at real time** while the listener wait for `user_speech_final` is already in flight:
 
 ```text
-postTtsSilenceS = (sttGateHoldMs + endpointTailMs + margin) / 1000
+postTtsSilenceS = (sttGateHoldMs + minSilenceDurationMs + margin) / 1000
 ```
 
-Defaults ≈ **2.3 s wall time** (1000 + 800 + 500 ms of 20 ms frames). Duration is **derived from listener VAD config** so hold and endpoint tail see silence paced like a quiet mic after the user stops talking. For stricter harness timing, raise `sttGateHoldMs` via config (e.g. 2000).
+Rust injects the STT **endpoint tail** on finalize (`minSilence` clamped 400–600 ms) — the harness does **not** add that again on the wire.
+
+Defaults ≈ **1.75 s** trailing silence (1000 + 500 + 250 ms of 20 ms frames). End-to-end finalize after the user stops talking targets **~1.5–2 s** (`minSilence` + `sttGateHold` + endpoint tail). The old **~2.3 s** post-TTS padding and **multi-second estimate playback waits** after TTS had already ended were the main roundtrip slowdown.
 
 ### Between phrases (batch)
 
-| Mechanism                    | Default                 | Purpose                                                    |
-| ---------------------------- | ----------------------- | ---------------------------------------------------------- |
-| Wait for `user_speech_final` | always                  | Next TTS starts only after previous utterance finalized    |
-| Trailing silence (above)     | ~3.8 s from VAD timings | Lets hold + finalize complete on the listener              |
-| `SHERPA_ROUNDTRIP_GAP_S`     | **0**                   | Extra explicit silence between phrases; **off by default** |
+| Mechanism                    | Default                  | Purpose                                                    |
+| ---------------------------- | ------------------------ | ---------------------------------------------------------- |
+| Wait for `user_speech_final` | always                   | Next TTS starts only after previous utterance finalized    |
+| Trailing silence (above)     | ~1.75 s from VAD timings | Lets hold + finalize complete on the listener              |
+| `SHERPA_ROUNDTRIP_GAP_S`     | **0**                    | Extra explicit silence between phrases; **off by default** |
 
 With `SHERPA_ROUNDTRIP_GAP_S=0` (default), **inter-phrase gaps come from VAD-driven finalize timing plus VAD-aligned trailing silence**, not from a separate fixed 1 s gap. The harness **must** stream that trailing PCM at real time (in parallel with waiting for `user_speech_final`) so `sttGateHoldMs` can count down on the wire; without it, the next phrase can start before finalize and STT can bleed across phrases.
 
@@ -403,19 +405,19 @@ Path filter: changes under `examples/**` trigger the **examples** filter and run
 
 Every `start:roundtrip*` script calls `installRoundtripWallClockTimeout()` at startup.
 
-| Context | `[speech]` events | `[voice-debug]` / topology |
-| ------- | ----------------- | -------------------------- |
-| **Local** (`npm run start:roundtrip*`) | **On** (browser `speech_event` parity) | **On** by default |
-| **CI** ([`run-sherpa-roundtrip-e2e.sh`](../../scripts/ci/run-sherpa-roundtrip-e2e.sh)) | **On** (streamed to CI log) | **Off** on first pass; **re-run with `VOICE_DEBUG=1`** on failure |
+| Context                                                                                | `[speech]` events                      | `[voice-debug]` / topology                                        |
+| -------------------------------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------- |
+| **Local** (`npm run start:roundtrip*`)                                                 | **On** (browser `speech_event` parity) | **On** by default                                                 |
+| **CI** ([`run-sherpa-roundtrip-e2e.sh`](../../scripts/ci/run-sherpa-roundtrip-e2e.sh)) | **On** (streamed to CI log)            | **Off** on first pass; **re-run with `VOICE_DEBUG=1`** on failure |
 
-| Output                                                          | Env                                 | Meaning                                                                                            |
-| --------------------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `[ci-step] START/OK/FAIL (N/M)`                                 | CI scripts                          | Which integration step is running (see `scripts/ci/ci-step.sh`)                                    |
+| Output                                                          | Env                                  | Meaning                                                                                            |
+| --------------------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `[ci-step] START/OK/FAIL (N/M)`                                 | CI scripts                           | Which integration step is running (see `scripts/ci/ci-step.sh`)                                    |
 | `[topology] [signaling\|agent-pc\|user-pc\|listener\|user-sim]` | default on locally; `=0` in CI quiet | Loopback attach + ICE — [`roundtrip-topology-log.ts`](./src/roundtrip-topology-log.ts)             |
-| `[e2e-phase]`                                                   | default on                          | Phase boundaries in multi-phase scripts (e.g. barge-in)                                            |
-| `[voice-debug]` on **stderr**                                   | `VOICE_DEBUG=1`                     | Rust VAD/STT/gate-hold in `crates/speech`                                                          |
-| `[speech] [Phase N] +Nms <event>` on **stderr**                 | `SHERPA_COUNTING_VERBOSE=1`         | Every speech event (like multi-client `speech_event` → browser log)                                |
-| Structured failure dump                                         | on `exit 1`                         | Leg stats, finals, re-run hints — [`roundtrip-failure-debug.ts`](./src/roundtrip-failure-debug.ts) |
+| `[e2e-phase]`                                                   | default on                           | Phase boundaries in multi-phase scripts (e.g. barge-in)                                            |
+| `[voice-debug]` on **stderr**                                   | `VOICE_DEBUG=1`                      | Rust VAD/STT/gate-hold in `crates/speech`                                                          |
+| `[speech] [Phase N] +Nms <event>` on **stderr**                 | `SHERPA_COUNTING_VERBOSE=1`          | Every speech event (like multi-client `speech_event` → browser log)                                |
+| Structured failure dump                                         | on `exit 1`                          | Leg stats, finals, re-run hints — [`roundtrip-failure-debug.ts`](./src/roundtrip-failure-debug.ts) |
 
 Opt out of speech events: `SHERPA_ROUNDTRIP_EVENT_LOG=0`. Opt out of rust debug locally: `VOICE_DEBUG=0` or `SHERPA_ROUNDTRIP_DEBUG=0`; topology banners `SHERPA_ROUNDTRIP_TOPOLOGY_LOG=0`. Wall-clock cap: `SHERPA_ROUNDTRIP_WALL_MS` (invalid/zero values fall back to per-script default). **Local CI parity:** `npm run ci:verify:pr-full` (host) or `npm run ci:verify:pr-test:docker` (optional Docker) — see [`scripts/ci/README.md`](../../scripts/ci/README.md).
 

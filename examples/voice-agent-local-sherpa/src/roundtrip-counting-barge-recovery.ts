@@ -32,7 +32,7 @@ import {
   sttFinalizeWaitMs,
   DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
   installRoundtripWallClockTimeout,
-  waitAgentTtsPlaybackEnd,
+  waitAgentPlaybackEndRace,
   wordSimilarity,
 } from './roundtrip-counting.js'
 import {
@@ -179,10 +179,12 @@ export async function playEchoLegBWithBargeIn(params: {
     params.finalizeWaitMs,
   )
 
-  const playbackDone = waitAgentTtsPlaybackEnd(
-    params.echoText,
-    DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
-  )
+  const playbackDone = waitAgentPlaybackEndRace({
+    phrase: params.echoText,
+    capMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+    waitForAgentSpeakingEnd: () =>
+      params.collectorAgent1.waitForAgentSpeakingEnd(params.timeoutMs),
+  })
   const speakingStarted = params.collectorAgent2.waitForAgentSpeakingStart(params.timeoutMs)
   const speakPromise = params.agent2.sendTextToTTS(params.echoText)
 

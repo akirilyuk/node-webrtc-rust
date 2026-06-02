@@ -26,7 +26,6 @@
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
-import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { streamSilence } from './pcm-relay.js'

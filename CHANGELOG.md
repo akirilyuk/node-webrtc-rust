@@ -8,7 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Speech lifecycle events: `vad_triggered`, `stt_stream_start`, `stt_stream_end`, `user_stt_start`, `user_stt_end`, `user_stt_not_found`.
+- VAD config: `sttListenTimeoutMs` (default 4000, C1 no-partial timeout) and `utteranceFinalizeTimeoutMs` (default 1500, C2 forced-final grace).
+
+### Changed
+
+- **STT during agent TTS** — STT opens on each VAD `SpeechStart` (`vad_triggered`), not continuous pre-VAD PCM feed during semantic barge.
+- **Barge window** — `barge_in` only while `agent_speaking == true` (removed 2s post-playback grace).
+- **Utterance close** — partials without vendor final get `user_speech_final` via gate-hold finalize fallback or C2 timeout (last partial text).
 
 ---
 

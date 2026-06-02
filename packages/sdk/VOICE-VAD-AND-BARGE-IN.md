@@ -40,6 +40,8 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | `vad.gateStt`                      | `false`  | If `true`, STT only while gate is open                                                                                                                      |
 | `vad.gateSttOpenOnPending`         | `true`   | Include VAD “pending” speech in gate (WebRTC lead-in)                                                                                                       |
 | `vad.sttGateHoldMs`                | `1000`   | After internal `SpeechEnd`, keep STT open this long; with `gateStt`, `user_speaking_end` fires when hold expires (resume speech during hold → no end event) |
+| `vad.sttListenTimeoutMs`           | `4000`   | After `vad_triggered`, emit `user_stt_not_found` when no STT partial within this window (C1)                                                                |
+| `vad.utteranceFinalizeTimeoutMs`   | `1500`   | Grace after last partial or VAD `SpeechEnd` before forcing `user_speech_final` when vendor final stalls (C2)                                                  |
 | `vad.bargeIn.enabled`              | `true`   | Allow barge-in flush + event                                                                                                                                |
 | `vad.bargeIn.useVad`               | `true`   | Auto barge on VAD `SpeechStart`; with `requireSttPartial` (default), **agent TTS** waits for STT partial before flush                                       |
 | `vad.bargeIn.requireSttPartial`    | `true`   | Semantic barge during agent playback — see [below](#semantic-barge-in-requiresttpartial-default-true)                                                       |
@@ -298,22 +300,27 @@ bargeIn: {
 
 ### Semantic barge-in (`requireSttPartial`, default **true**)
 
-While **agent TTS is playing** and STT is configured:
+While **agent TTS is playing** (`agent_speaking == true`) and STT is configured:
 
-1. VAD `SpeechStart` → `user_speaking_start` (mic gate opens for STT).
-2. **No flush yet** — coughs, keyboard bumps, and pure tones usually produce no Sherpa partial.
-3. First qualifying **`user_speech_partial` while agent TTS is playing** → flush TTS → `barge_in` → `agent_speaking_end` (once per playback).
+1. VAD `SpeechStart` → `vad_triggered` → `user_stt_start` → `stt_stream_start` (STT opens on VAD, not continuous pre-VAD feed).
+2. **`user_speech_partial` must precede `barge_in`** in the event stream — coughs and tones that do not transcribe emit `user_stt_not_found` (C1) instead of interrupting playback.
+3. First qualifying **`user_speech_partial`** → flush TTS → `barge_in` → `agent_speaking_end` (once per playback).
 
-When the agent is **not** speaking, or STT is disabled, behavior matches immediate VAD barge (flush on `SpeechStart`).
+When `bargeIn.enabled` is **false** during agent TTS, step 1 still runs (overlap listen) but **no** `barge_in` or TTS flush.
+
+When `requireSttPartial: false` and barge is enabled, step 3 runs immediately on the same VAD `SpeechStart` (no wait for STT text).
+
+When the agent is **not** speaking, VAD opens STT normally; no barge unless configured for instant path without partial.
 
 **Caveats:**
 
 | Topic            | Detail                                                                                                                       |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | **Latency**      | Interrupt happens after the first partial (~200–800 ms+), not at the first voiced frame.                                     |
-| **STT required** | Without `stt` on the agent, VAD barge applies immediately (legacy).                                                          |
+| **STT required** | Without `stt` on the agent, instant VAD barge still applies when `requireSttPartial: false`.                                 |
 | **Echo**         | Speaker bleed can still yield partials that match agent wording; use headphones, `gateStt`, or raise `agentPlaybackGuardMs`. |
 | **Disable**      | `requireSttPartial: false` restores instant energy-VAD barge (noisier).                                                      |
+| **C1 / C2**      | `sttListenTimeoutMs` (4000) closes listen with `user_stt_not_found`; `utteranceFinalizeTimeoutMs` (1500) forces `user_speech_final` from last partial when vendor final stalls. |
 
 E2E: `npm run start:roundtrip-barge-in` — tone must **not** barge; spoken TTS phrase must barge.
 

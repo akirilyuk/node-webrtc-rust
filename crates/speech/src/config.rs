@@ -150,6 +150,12 @@ pub struct VadConfig {
     /// With `gate_stt`, `user_speaking_end` is emitted when this hold expires (default 1000 ms).
     #[serde(default = "default_stt_gate_hold_ms")]
     pub stt_gate_hold_ms: u32,
+    /// After `vad_triggered`, emit `user_stt_not_found` when no STT partial arrives within this window (default 4000 ms).
+    #[serde(default = "default_stt_listen_timeout_ms")]
+    pub stt_listen_timeout_ms: u32,
+    /// Grace after the last partial or VAD `SpeechEnd` before forcing `user_speech_final` (default 1500 ms).
+    #[serde(default = "default_utterance_finalize_timeout_ms")]
+    pub utterance_finalize_timeout_ms: u32,
 }
 
 fn default_vad_provider() -> String {
@@ -177,6 +183,14 @@ fn default_stt_gate_hold_ms() -> u32 {
     1000
 }
 
+fn default_stt_listen_timeout_ms() -> u32 {
+    4000
+}
+
+fn default_utterance_finalize_timeout_ms() -> u32 {
+    1500
+}
+
 impl Default for VadConfig {
     fn default() -> Self {
         Self {
@@ -191,6 +205,8 @@ impl Default for VadConfig {
             gate_stt: false,
             gate_stt_open_on_pending: true,
             stt_gate_hold_ms: default_stt_gate_hold_ms(),
+            stt_listen_timeout_ms: default_stt_listen_timeout_ms(),
+            utterance_finalize_timeout_ms: default_utterance_finalize_timeout_ms(),
         }
     }
 }

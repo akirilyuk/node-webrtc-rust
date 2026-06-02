@@ -119,6 +119,10 @@ const LOCAL_SHERPA_VOICE_CONFIG = (
     provider: 'energy',
     // Energy RMS scale on loopback — lower than default 0.15 for reliable Sherpa demos.
     threshold: 0.05,
+    // Counting / deliberate speech: wider gaps before end-of-turn (see VOICE-VAD-AND-BARGE-IN.md).
+    minSilenceDurationMs: 600,
+    minSpeechDurationMs: 200,
+    sttGateHoldMs: 1400,
   },
 })
 

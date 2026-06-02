@@ -2,7 +2,9 @@
  * Log every speech event emitted by Rust VoiceAgent during Sherpa roundtrip E2E.
  *
  * Mirrors the multi-client browser path (`speech_event` on the voice-control channel →
- * `appendEvent` in `client.js`). Enabled for all `start:roundtrip*` scripts unless
+ * `appendEvent` in `client.js`). Logs all {@link SpeechEvent} types including
+ * `vad_triggered`, `stt_stream_*`, and `user_stt_*` lifecycle events.
+ * Enabled for all `start:roundtrip*` scripts unless
  * `SHERPA_ROUNDTRIP_EVENT_LOG=0` (including CI — rust `[voice-debug]` may be off).
  *
  * Opt out: `SHERPA_ROUNDTRIP_EVENT_LOG=0`

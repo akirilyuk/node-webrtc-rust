@@ -53,6 +53,12 @@ new VoiceAgent(config)
 | `user_speech_final`    | STT utterance closed                         | **Primary LLM turn trigger**                                       |
 | `agent_speaking_start` | First TTS PCM written                        | UI “agent talking”                                                 |
 | `agent_speaking_end`   | TTS queue drained                            | Harness playback boundary; do not assume remote peer receives this |
+| `vad_triggered`        | VAD `SpeechStart` when `vad.enabled`         | STT listen opens; logging / `[speech]` traces                      |
+| `stt_stream_start`     | STT vendor PCM feed opened for an utterance  | Pairs with `stt_stream_end`                                        |
+| `stt_stream_end`       | STT vendor PCM feed closed                   | After final, C1, or C2 close                                       |
+| `user_stt_start`       | STT recognition session opened               | Pairs with `user_stt_end` or `user_stt_not_found`                  |
+| `user_stt_end`         | STT recognition session closed               | Normal or forced utterance close                                   |
+| `user_stt_not_found`   | VAD fired but no partial within C1 timeout   | No `user_speech_final` — nothing to reply to                       |
 | `barge_in`             | Barge-in path fired (VAD and/or STT partial) | Cancel LLM stream; TTS may already be flushed                      |
 | `error`                | Vendor or pipeline failure                   | Log / recover                                                      |
 

@@ -16,7 +16,8 @@ Commit frequently in small, logical units. Each commit should represent one cohe
 ## Staging rules
 
 - **Always `git add` newly created files** before committing — never forget untracked files that are part of the current work
-- Run `git status` before committing to verify all relevant new files are staged
+- Before committing, inspect repo state via **MCP** (`git_git_status`, `git_git_diff_unstaged`) when ToolHive is available; shell `git status` only if MCP git is down
+- Run `git status` (MCP or shell) before committing to verify all relevant new files are staged
 - Do not stage files that are git-ignored (e.g., `development/`, `target/`, `node_modules/`)
 
 ## Rules

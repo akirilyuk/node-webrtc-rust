@@ -22,13 +22,14 @@ import {
   VOICE_AGENT_VAD_PRESET,
   SPEECH_EVENT_TYPE,
   type SpeechEventType,
+  type VoiceAgentConfig,
 } from '@node-webrtc-rust/sdk/voice'
-import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
-
 import {
+  evaluateBargeUtteranceFinal,
   evaluateSemanticBargeEventOrder,
   evaluateToneMustNotBarge,
   formatRecordedSpeechEvent,
+  hasUserSpeechFinal,
   logRecordedSpeechEvents,
   phase1BaselineComplete,
   phase2EventsComplete,
@@ -38,7 +39,7 @@ import {
 } from './roundtrip-barge-in-helpers.js'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
-import { installRoundtripWallClockTimeout } from './roundtrip-counting.js'
+import { installRoundtripWallClockTimeout, postTtsSilenceSeconds } from './roundtrip-counting.js'
 import { stereoPcmDurationMs, streamSilence, streamTone } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
@@ -433,6 +434,7 @@ async function main(): Promise<void> {
 
   logE2ePhase({ phase: 'Phase 3', detail: 'user TTS barge phrase on user-pc — must barge' })
   console.log('--- Phase 3: user TTS barge phrase mid-playback (must barge) ---')
+  const postSilenceS = postTtsSilenceSeconds(config)
   const speechResult = await runMidPlaybackInterrupt({
     listener,
     collector: speechCollector,
@@ -442,15 +444,37 @@ async function main(): Promise<void> {
     interrupt: async () => {
       console.log(`[Phase 3] user Sherpa TTS barge: "${bargePhrase}"`)
       await userSpeaker.sendTextToTTS(bargePhrase)
-      await streamSilence(userOut, 1.5)
+      console.log(
+        `[Phase 3] trailing silence ${postSilenceS.toFixed(1)}s (parallel with event collection)`,
+      )
+      // Real-time PCM must run while the collector phase is active — do not await before collect ends.
+      void streamSilence(userOut, postSilenceS)
     },
     maxPhaseMs,
     untilEvents: phase3EventsTerminal,
     phaseLabel: 'Phase 3',
   })
+
+  let phase3Events = speechResult.events
+  if (!hasUserSpeechFinal(phase3Events)) {
+    console.log(
+      `[Phase 3 finalize] trailing silence ${postSilenceS.toFixed(1)}s + collect (parallel)`,
+    )
+    const [finalizeEvents] = await Promise.all([
+      speechCollector.collectUntil({
+        phaseLabel: 'Phase 3 finalize',
+        maxMs: 15_000,
+        until: hasUserSpeechFinal,
+      }),
+      streamSilence(userOut, postSilenceS),
+    ])
+    phase3Events = [...phase3Events, ...finalizeEvents]
+    logRecordedSpeechEvents(finalizeEvents, 'Phase 3 finalize')
+  }
+
   const speechRatio = speechResult.receivedMs / fullMs
   const orderEval = evaluateSemanticBargeEventOrder({
-    events: speechResult.events,
+    events: phase3Events,
     label: 'Phase 3',
   })
   console.log(
@@ -470,6 +494,24 @@ async function main(): Promise<void> {
   if (!orderEval.passed) {
     failures.push(...orderEval.failures)
   }
+
+  const utteranceEval = evaluateBargeUtteranceFinal({
+    events: phase3Events,
+    expectedPhrase: bargePhrase,
+    label: 'Phase 3',
+  })
+  if (utteranceEval.recognized) {
+    console.log(
+      `Barge utterance recognized: "${utteranceEval.recognized}" (similarity ${(utteranceEval.similarity * 100).toFixed(0)}%)`,
+    )
+  }
+  if (utteranceEval.endToFinalGapMs != null) {
+    console.log(`user_speaking_end → user_speech_final: ${utteranceEval.endToFinalGapMs} ms`)
+  }
+  if (!utteranceEval.passed) {
+    failures.push(...utteranceEval.failures)
+  }
+
   if (speechRatio >= maxCutRatio) {
     failures.push(
       `Phase 3: playback not truncated enough (${(speechRatio * 100).toFixed(0)}% >= ${(maxCutRatio * 100).toFixed(0)}%)`,

@@ -170,6 +170,13 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
 
 /**
  * Voice agent orchestrating VAD, STT, TTS, and barge-in for one WebRTC session.
+ *
+ * After {@link attach} and {@link start}, a background loop reads
+ * `inboundTrack.readSample()` (20 ms frames) and forwards PCM to the native
+ * `processInboundPcm` pipeline. TTS from {@link sendTextToTTS} is drained to
+ * `outboundTrack` at real-time cadence.
+ *
+ * @see [VOICE-API.md](../../VOICE-API.md)
  */
 export class VoiceAgent {
   private readonly native: JsVoiceAgent
@@ -178,6 +185,9 @@ export class VoiceAgent {
   private running = false
   private readonly listeners = new Map<SpeechEventName, Set<SpeechEventListener>>()
 
+  /**
+   * @param config — optional VAD/STT/TTS/events; omitted fields use Rust defaults.
+   */
   constructor(config?: VoiceAgentConfig) {
     debugFn(MODULE, 'constructor')
     this.native = new NativeVoiceAgent(toJsConfig(config))
@@ -189,7 +199,8 @@ export class VoiceAgent {
   }
 
   /**
-   * Attaches inbound/outbound audio tracks for one peer connection session.
+   * Binds inbound (user) and outbound (agent TTS) tracks for one peer connection.
+   * Call before {@link start}.
    */
   async attach(options: VoiceAttachOptions): Promise<void> {
     debugFn(MODULE, 'attach')
@@ -197,6 +208,7 @@ export class VoiceAgent {
     await this.native.attach(options.outboundTrack.native)
   }
 
+  /** Starts STT, TTS drain, and the inbound PCM loop. Idempotent error if already running. */
   async start(): Promise<void> {
     debugFn(MODULE, 'start')
     await this.native.start()
@@ -205,28 +217,41 @@ export class VoiceAgent {
     this.startInboundLoop()
   }
 
+  /** Stops STT and the inbound loop. */
   async stop(): Promise<void> {
     debugFn(MODULE, 'stop')
     this.running = false
     await this.native.stop()
   }
 
+  /**
+   * Synthesizes `text` via the configured TTS vendor and enqueues PCM for outbound playback.
+   * Emits `agent_speaking_start` / `agent_speaking_end` around the drain window.
+   */
   async sendTextToTTS(text: string): Promise<void> {
     debugFn(MODULE, 'sendTextToTTS', `chars=${text.length}`)
     await this.native.sendTextToTts(text)
   }
 
+  /**
+   * Clears pending TTS PCM (manual interrupt).
+   * Also used internally when barge-in runs with `bargeIn.flushTts: true`.
+   */
   async flushTts(): Promise<void> {
     debugFn(MODULE, 'flushTts')
     await this.native.flushTts()
   }
 
-  /** Wait until TTS synthesis and real-time outbound drain complete. */
+  /**
+   * Blocks until outbound TTS queue is drained and `agent_speaking` is false.
+   * Can block the Node event loop for long phrases — prefer `agent_speaking_end` events in app code.
+   */
   async waitTtsPlaybackIdle(): Promise<void> {
     debugFn(MODULE, 'waitTtsPlaybackIdle')
     await this.native.waitTtsPlaybackIdle()
   }
 
+  /** Subscribe to `event` or `'speech'` for all event types. */
   on(event: SpeechEventName, listener: SpeechEventListener): this {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set())
@@ -241,7 +266,11 @@ export class VoiceAgent {
   }
 
   /**
-   * Async iterator over speech events (stream delivery mode).
+   * Async iterator over speech events (`events.mode` `'stream'` or `'both'`).
+   *
+   * Active only while {@link start} has run and before {@link stop}.
+   * **`agent_speaking_*` events are emitted only on the agent that plays TTS** — not on a
+   * separate listener `VoiceAgent` in a two-peer setup.
    */
   async *speechEvents(): AsyncGenerator<SpeechEvent, void, undefined> {
     while (this.running) {

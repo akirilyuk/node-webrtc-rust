@@ -10,11 +10,11 @@ npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/
 
 ## Exports
 
-| Import path                        | Purpose                                                        |
-| ---------------------------------- | -------------------------------------------------------------- |
-| **`@node-webrtc-rust/sdk/voice`**  | **VoiceAgent** — VAD, barge-in, STT/TTS vendors, speech events |
-| `@node-webrtc-rust/sdk`            | W3C-style `RTCPeerConnection`, tracks, data channels           |
-| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing)                     |
+| Import path                        | Purpose                                                                                         |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **`@node-webrtc-rust/sdk/voice`**  | **VoiceAgent** — VAD, barge-in, STT/TTS vendors, speech events — [VOICE-API.md](./VOICE-API.md) |
+| `@node-webrtc-rust/sdk`            | W3C-style `RTCPeerConnection`, tracks, data channels                                            |
+| `@node-webrtc-rust/sdk/conference` | Conference room control plane (MCU mixing)                                                      |
 
 **WebRTC parity vs browser:** [`docs/webrtc-api-parity.md`](../../docs/webrtc-api-parity.md)
 
@@ -23,6 +23,8 @@ npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/
 ## Voice agent — build agentic workloads
 
 Import **`@node-webrtc-rust/sdk/voice`** when you need a conversational loop without reimplementing PCM timing or vendor HTTP/WebSocket clients in Node.
+
+**API reference:** [VOICE-API.md](./VOICE-API.md) (exports, speech events, data-channel bridge) · [VOICE-VAD-AND-BARGE-IN.md](./VOICE-VAD-AND-BARGE-IN.md) (tuning)
 
 ### Problem this solves
 
@@ -115,6 +117,9 @@ interface VoiceAgentConfig {
       enabled?: boolean // master switch (default true)
       useVad?: boolean // auto barge on VAD SpeechStart (default true); false = flushTts() only
       flushTts?: boolean // clear TTS buffer when barge-in runs (default true)
+      requireSttPartial?: boolean // while agent TTS plays: barge only after STT partial (default true)
+      minSttPartialChars?: number // min partial length for semantic barge (default 2)
+      agentPlaybackGuardMs?: number // optional ms to ignore VAD barge after TTS starts (default 0)
     }
     gateStt?: boolean // only feed STT while gate is open (default false)
     gateSttOpenOnPending?: boolean // also open gate during VAD pending speech (default true)
@@ -210,28 +215,28 @@ tts: {
 
 Two layers — **fast VAD** vs **text-bearing STT**:
 
-| Event                          | Source                                | Use in your agent                             |
-| ------------------------------ | ------------------------------------- | --------------------------------------------- |
-| `user_speaking_start`          | VAD `SpeechStart`                     | User began talking (inbound voice activity)   |
-| `user_speaking_end`            | VAD + `sttGateHoldMs` (`gateStt`)     | End-of-utterance hint (not first short pause) |
-| `user_speech_partial`          | STT                                   | Live captions, prefetch                       |
-| `user_speech_final`            | STT                                   | **Primary LLM turn trigger**                  |
-| `agent_speaking_start` / `end` | TTS playback                          | UI / state machine                            |
-| `barge_in`                     | VAD `SpeechStart` + `bargeIn.enabled` | Cancel agent TTS (after optional flush)       |
-| `error`                        | Any                                   | Vendor or pipeline failure                    |
+| Event                          | Source                            | Use in your agent                             |
+| ------------------------------ | --------------------------------- | --------------------------------------------- |
+| `user_speaking_start`          | VAD `SpeechStart`                 | User began talking (inbound voice activity)   |
+| `user_speaking_end`            | VAD + `sttGateHoldMs` (`gateStt`) | End-of-utterance hint (not first short pause) |
+| `user_speech_partial`          | STT                               | Live captions, prefetch                       |
+| `user_speech_final`            | STT                               | **Primary LLM turn trigger**                  |
+| `agent_speaking_start` / `end` | TTS playback                      | UI / state machine                            |
+| `barge_in`                     | Barge-in path (see below)         | Cancel agent TTS (after optional flush)       |
+| `error`                        | Any                               | Vendor or pipeline failure                    |
 
 ### VAD and barge-in
 
 **Full guide:** [`VOICE-VAD-AND-BARGE-IN.md`](./VOICE-VAD-AND-BARGE-IN.md) — **energy vs Silero**, weight/comparison, use cases, defaults, when to tune.
 
-**Quick start:** use `VOICE_AGENT_VAD_PRESET` (or omit `vad` and only set `gateStt: true` if you stream STT). Defaults: 250 ms min speech, 300 ms min silence, barge-in on VAD `SpeechStart`, `sttGateHoldMs` 1000. See [VOICE-VAD-AND-BARGE-IN.md](./VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt) for tuning latency vs accuracy.
+**Quick start:** use `VOICE_AGENT_VAD_PRESET` (or omit `vad` and only set `gateStt: true` if you stream STT). Defaults: 250 ms min speech, 500 ms min silence, **`requireSttPartial: true`** (barge during agent TTS only after STT recognizes words), `sttGateHoldMs` 1000. See [VOICE-VAD-AND-BARGE-IN.md](./VOICE-VAD-AND-BARGE-IN.md#semantic-barge-in-requiresttpartial-default-true) and [STT flow fine-tuning](./VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).
 
 | Export                    | Use                                              |
 | ------------------------- | ------------------------------------------------ |
 | `VOICE_AGENT_VAD_PRESET`  | Recommended — `gateStt: true` + default barge-in |
 | `DEFAULT_VOICE_AGENT_VAD` | Rust defaults (`gateStt: false`)                 |
 
-Barge-in auto-fires only when `vad.enabled` and `bargeIn.useVad` (both default `true`). Set `useVad: false` and call `flushTts()` for manual interrupt only.
+Barge-in requires `vad.enabled` and `bargeIn.useVad` (both default `true`). With **`requireSttPartial: true`** (preset default), interrupt during **agent TTS** waits for a qualifying `user_speech_partial` before `barge_in` — coughs and tones alone do not cut playback. Set `requireSttPartial: false` for immediate energy-VAD barge (legacy). Set `useVad: false` and call `flushTts()` for manual interrupt only.
 
 **Callback delivery:**
 

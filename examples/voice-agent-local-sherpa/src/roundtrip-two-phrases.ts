@@ -27,8 +27,10 @@ import {
   installRoundtripWallClockTimeout,
   interPhraseSilenceSeconds,
   ListenerUtteranceCollector,
+  AgentSpeakingEndLatch,
   playSpeakerTtsWithPostSilence,
   postTtsSilenceSeconds,
+  startSpeakerSpeechPump,
   sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
@@ -42,6 +44,7 @@ const DEFAULT_WARMUP_S = 0.6
 async function speakPhrase(params: {
   speaker: VoiceAgent
   speakerOut: LocalAudioTrack
+  agentEndLatch: AgentSpeakingEndLatch
   text: string
   postTtsSilenceS: number
   logLabel: string
@@ -53,6 +56,7 @@ async function speakPhrase(params: {
     phrase: params.text,
     postTtsSilenceS: params.postTtsSilenceS,
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+    agentSpeakingEndLatch: params.agentEndLatch,
   })
 }
 
@@ -114,12 +118,15 @@ async function main(): Promise<void> {
   const pumpStarted = { value: false }
   const collector = new ListenerUtteranceCollector(listener, pumpStarted, verbose)
   collector.startPump()
+  const agentEndLatch = new AgentSpeakingEndLatch()
+  startSpeakerSpeechPump(speaker, agentEndLatch)
 
   console.log('[phrase 1] waiting for user_speech_final…')
   const text1Promise = collector.waitForNext(timeoutMs, finalizeWaitMs)
   await speakPhrase({
     speaker,
     speakerOut: agentOut,
+    agentEndLatch,
     text: phrase1,
     postTtsSilenceS,
     logLabel: 'phrase 1',
@@ -137,6 +144,7 @@ async function main(): Promise<void> {
   await speakPhrase({
     speaker,
     speakerOut: agentOut,
+    agentEndLatch,
     text: phrase2,
     postTtsSilenceS,
     logLabel: 'phrase 2',

@@ -18,7 +18,11 @@
  */
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
-import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+import {
+  VoiceAgent,
+  VOICE_AGENT_VAD_PRESET,
+  type VoiceAgentConfig,
+} from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { streamSilence } from './pcm-relay.js'
@@ -31,6 +35,7 @@ import {
   ListenerUtteranceCollector,
   normalizeForCompare,
   NUMBER_WORDS_ONE_TO_TEN,
+  AgentSpeakingEndLatch,
   playSpeakerTtsWithPostSilence,
   postTtsSilenceSeconds,
   sttFinalizeWaitMs,
@@ -41,6 +46,19 @@ import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
 /** Agent 2 always prefixes echoed speech (matches multi-client voice-handler). */
 export const ECHO_REPLY_PREFIX = 'You said: '
+
+/** Peer TTS on the loopback is not agent playback — disable barge so STT can finalize. */
+function echoVadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
+  return {
+    ...VOICE_AGENT_VAD_PRESET,
+    ...base.vad,
+    bargeIn: {
+      ...VOICE_AGENT_VAD_PRESET.bargeIn,
+      ...base.vad?.bargeIn,
+      enabled: false,
+    },
+  }
+}
 
 export const DEFAULT_LONG_SENTENCE_PHRASE =
   'This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.'
@@ -119,7 +137,11 @@ function evaluateLegEvents(
       `${who}expected exactly 1 user_speech_final, got ${stats.finals.length}: ${stats.finals.map((t) => JSON.stringify(t)).join(', ')}`,
     )
   }
-  if (stats.speakingEndCount !== 1) {
+  // STT utterance close may emit speaking_end in the same poll as the final; allow 0 when exactly one final.
+  if (
+    stats.speakingEndCount !== 1 &&
+    !(stats.finals.length === 1 && stats.speakingEndCount === 0)
+  ) {
     failures.push(`${who}expected exactly 1 user_speaking_end, got ${stats.speakingEndCount}`)
   }
   if (stats.speakingStartCount < 1) {
@@ -265,6 +287,7 @@ export async function playTtsAndCollect(params: {
   speaker: VoiceAgent
   speakerOut: LocalAudioTrack
   listenerCollector: ListenerUtteranceCollector
+  agentSpeakingEndLatch: AgentSpeakingEndLatch
   text: string
   postTtsSilenceS: number
   timeoutMs: number
@@ -283,6 +306,7 @@ export async function playTtsAndCollect(params: {
     phrase: params.text,
     postTtsSilenceS: params.postTtsSilenceS,
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+    agentSpeakingEndLatch: params.agentSpeakingEndLatch,
   })
   const recognized = await recognizedPromise
   // Long echo TTS can trigger an early prefix final ("You said") then the full phrase — use the best transcript.
@@ -307,6 +331,8 @@ export async function runEchoRound(params: {
   userOut: LocalAudioTrack
   collectorAgent1: ListenerUtteranceCollector
   collectorAgent2: ListenerUtteranceCollector
+  agent1EndLatch: AgentSpeakingEndLatch
+  agent2EndLatch: AgentSpeakingEndLatch
   postTtsSilenceS: number
   timeoutMs: number
   finalizeWaitMs: number
@@ -327,6 +353,7 @@ export async function runEchoRound(params: {
     speaker: params.agent1,
     speakerOut: params.agentOut,
     listenerCollector: params.collectorAgent2,
+    agentSpeakingEndLatch: params.agent1EndLatch,
     text: params.sourcePhrase,
     postTtsSilenceS: params.postTtsSilenceS,
     timeoutMs: params.timeoutMs,
@@ -372,6 +399,7 @@ export async function runEchoRound(params: {
           partialCount: 0,
           bargeInCount: 0,
           agentSpeakingStartCount: 0,
+          agentSpeakingEndCount: 0,
           speakingEndAtMs: null,
           speechFinalAtMs: null,
         },
@@ -390,6 +418,7 @@ export async function runEchoRound(params: {
     speaker: params.agent2,
     speakerOut: params.userOut,
     listenerCollector: params.collectorAgent1,
+    agentSpeakingEndLatch: params.agent2EndLatch,
     text: echoText,
     postTtsSilenceS: params.postTtsSilenceS,
     timeoutMs: params.timeoutMs,
@@ -480,17 +509,18 @@ async function main(): Promise<void> {
   const { agentOut, userInbound, userOut, agentInbound, cleanup } =
     await createBidirectionalLoopback()
 
+  const echoVad = echoVadConfig(config)
   const agent1 = new VoiceAgent({
     stt: config.stt,
     tts: config.tts,
     events: { mode: 'stream' },
-    vad: config.vad,
+    vad: echoVad,
   })
   const agent2 = new VoiceAgent({
     stt: config.stt,
     tts: config.tts,
     events: { mode: 'stream' },
-    vad: config.vad,
+    vad: echoVad,
   })
 
   await agent1.attach({ inboundTrack: agentInbound, outboundTrack: agentOut })
@@ -501,17 +531,21 @@ async function main(): Promise<void> {
   const warmupS = Number(process.env.SHERPA_ROUNDTRIP_WARMUP_S ?? DEFAULT_WARMUP_S)
   await Promise.all([streamSilence(agentOut, warmupS), streamSilence(userOut, warmupS)])
 
+  const agent1EndLatch = new AgentSpeakingEndLatch()
+  const agent2EndLatch = new AgentSpeakingEndLatch()
   const collectorAgent1 = new ListenerUtteranceCollector(
     agent1,
     { value: false },
     verbose,
     'agent1',
+    agent1EndLatch,
   )
   const collectorAgent2 = new ListenerUtteranceCollector(
     agent2,
     { value: false },
     verbose,
     'agent2',
+    agent2EndLatch,
   )
   collectorAgent1.startPump()
   collectorAgent2.startPump()
@@ -523,6 +557,8 @@ async function main(): Promise<void> {
     userOut,
     collectorAgent1,
     collectorAgent2,
+    agent1EndLatch,
+    agent2EndLatch,
     postTtsSilenceS,
     timeoutMs,
     finalizeWaitMs,

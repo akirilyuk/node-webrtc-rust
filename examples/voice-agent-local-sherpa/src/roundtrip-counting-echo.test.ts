@@ -22,6 +22,7 @@ const okStats = {
   partialCount: 3,
   bargeInCount: 0,
   agentSpeakingStartCount: 0,
+  agentSpeakingEndCount: 0,
   speakingEndAtMs: 1000,
   speechFinalAtMs: 1100,
 }

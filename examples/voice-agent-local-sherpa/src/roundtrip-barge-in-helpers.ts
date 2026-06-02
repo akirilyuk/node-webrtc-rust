@@ -9,6 +9,8 @@ import {
   type SpeechEventType,
 } from '@node-webrtc-rust/sdk/voice'
 
+import { DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS, wordSimilarity } from './roundtrip-counting.js'
+
 export interface RecordedSpeechEvent {
   type: SpeechEventType
   atMs: number
@@ -20,6 +22,9 @@ export const DEFAULT_MAX_PARTIAL_TO_BARGE_MS = 500
 
 /** Default max gap barge_in → agent_speaking_end after flush. */
 export const DEFAULT_MAX_BARGE_TO_AGENT_END_MS = 2000
+
+/** Default min word similarity for barge phrase `user_speech_final`. */
+export const DEFAULT_BARGE_PHRASE_MIN_SIMILARITY = 0.6
 
 export function recordSpeechEvent(
   events: RecordedSpeechEvent[],
@@ -48,14 +53,37 @@ export function phase2EventsComplete(events: RecordedSpeechEvent[]): boolean {
   return events.slice(agentStart + 1).some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
 }
 
-/** Phase 3 done when semantic barge sequence includes agent_speaking_end after barge_in. */
-export function phase3EventsComplete(events: RecordedSpeechEvent[]): boolean {
+function sliceAfterBargeInPhase3(events: RecordedSpeechEvent[]): RecordedSpeechEvent[] | null {
+  const agentStart = events.findIndex((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart)
+  if (agentStart < 0) return null
+  const afterStart = events.slice(agentStart + 1)
+  const bargeIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  if (bargeIdx < 0) return null
+  return afterStart.slice(bargeIdx + 1)
+}
+
+/** Phase 3 mid-run: barge-in fired and agent TTS stopped (finalize may still be pending). */
+export function phase3BargeObserved(events: RecordedSpeechEvent[]): boolean {
   const agentStart = events.findIndex((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart)
   if (agentStart < 0) return false
   const afterStart = events.slice(agentStart + 1)
-  const bargeIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
-  if (bargeIdx < 0) return false
-  return afterStart.slice(bargeIdx + 1).some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+  return (
+    afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.bargeIn) &&
+    afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+  )
+}
+
+export function hasUserSpeechFinal(events: RecordedSpeechEvent[]): boolean {
+  return events.some((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal)
+}
+
+/** Phase 3 done when barge truncated TTS and listener finalized the barge utterance. */
+export function phase3EventsComplete(events: RecordedSpeechEvent[]): boolean {
+  const afterBarge = sliceAfterBargeInPhase3(events)
+  if (afterBarge == null) return false
+  const agentEnded = afterBarge.some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+  const hasFinal = afterBarge.some((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal)
+  return agentEnded && hasFinal
 }
 
 function qualifyingPartialAfter(
@@ -84,6 +112,15 @@ export function phase3EventsTerminal(events: RecordedSpeechEvent[]): boolean {
   const userSpoke = afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart)
   const agentEnded = afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
   const hasPartial = qualifyingPartialAfter(events, agentStart)
+
+  // Barge path: keep collecting until user_speech_final (or wall-clock cap in harness).
+  if (
+    hadBarge &&
+    agentEnded &&
+    !afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal)
+  ) {
+    return false
+  }
 
   if (agentEnded && !userSpoke && !hadBarge) return true
   if (agentEnded && userSpoke && hasPartial && !hadBarge) return true
@@ -236,6 +273,98 @@ export function evaluateSemanticBargeEventOrder(params: {
     partialAtMs,
     bargeAtMs,
     agentEndAtMs,
+  }
+}
+
+export interface BargeUtteranceFinalResult {
+  passed: boolean
+  failures: string[]
+  recognized: string
+  similarity: number
+  speakingEndAtMs: number | null
+  finalAtMs: number | null
+  endToFinalGapMs: number | null
+}
+
+/**
+ * After semantic barge: listener must emit user_speaking_end → user_speech_final
+ * with text matching the barge phrase (Sherpa recognized the interrupt).
+ */
+export function evaluateBargeUtteranceFinal(params: {
+  events: RecordedSpeechEvent[]
+  expectedPhrase: string
+  minSimilarity?: number
+  maxEndToFinalMs?: number
+  label?: string
+}): BargeUtteranceFinalResult {
+  const who = params.label ? `${params.label}: ` : ''
+  const minSim = params.minSimilarity ?? DEFAULT_BARGE_PHRASE_MIN_SIMILARITY
+  const maxGap = params.maxEndToFinalMs ?? DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS
+  const failures: string[] = []
+
+  const afterBarge = sliceAfterBargeInPhase3(params.events)
+  if (afterBarge == null) {
+    failures.push(`${who}missing barge_in after agent_speaking_start`)
+    return {
+      passed: false,
+      failures,
+      recognized: '',
+      similarity: 0,
+      speakingEndAtMs: null,
+      finalAtMs: null,
+      endToFinalGapMs: null,
+    }
+  }
+
+  const finals = afterBarge.filter((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal)
+  const ends = afterBarge.filter((e) => e.type === SPEECH_EVENT_TYPE.userSpeakingEnd)
+
+  if (finals.length === 0) {
+    failures.push(`${who}missing user_speech_final after barge_in`)
+  } else if (finals.length > 1) {
+    failures.push(`${who}expected 1 user_speech_final after barge_in, got ${finals.length}`)
+  }
+  if (ends.length === 0) {
+    failures.push(`${who}missing user_speaking_end after barge_in`)
+  } else if (ends.length > 1) {
+    failures.push(`${who}expected 1 user_speaking_end after barge_in, got ${ends.length}`)
+  }
+
+  const final = finals[0]
+  const end = ends[0]
+  const recognized = final?.text?.trim() ?? ''
+  const similarity = recognized ? wordSimilarity(params.expectedPhrase, recognized) : 0
+  const speakingEndAtMs = end?.atMs ?? null
+  const finalAtMs = final?.atMs ?? null
+  let endToFinalGapMs: number | null = null
+
+  if (!recognized) {
+    failures.push(`${who}user_speech_final text is empty after barge_in`)
+  } else if (similarity < minSim) {
+    failures.push(
+      `${who}barge phrase similarity ${(similarity * 100).toFixed(0)}% < ${(minSim * 100).toFixed(0)}% (expected "${params.expectedPhrase}", got "${recognized}")`,
+    )
+  }
+
+  if (speakingEndAtMs != null && finalAtMs != null) {
+    endToFinalGapMs = finalAtMs - speakingEndAtMs
+    if (endToFinalGapMs < 0) {
+      failures.push(`${who}user_speech_final before user_speaking_end (${-endToFinalGapMs} ms)`)
+    } else if (endToFinalGapMs > maxGap) {
+      failures.push(
+        `${who}user_speaking_end → user_speech_final gap ${endToFinalGapMs} ms exceeds ${maxGap} ms`,
+      )
+    }
+  }
+
+  return {
+    passed: failures.length === 0,
+    failures,
+    recognized,
+    similarity,
+    speakingEndAtMs,
+    finalAtMs,
+    endToFinalGapMs,
   }
 }
 

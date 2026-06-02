@@ -7,6 +7,10 @@
  *   Speaker: Sherpa TTS plays one long phrase on agentOut
  *   Listener: VAD + gateStt + Sherpa STT (production preset from resolveVoiceConfig)
  *
+ * Shared harness (also used by `roundtrip.ts`, echo, two-phrases, utterance-timing):
+ *   `AgentSpeakingEndLatch`, `startSpeakerSpeechPump`, `playSpeakerTtsWithPostSilence` —
+ *   see ROUNDTRIP.md § "Harness playback timing".
+ *
  * Run (requires models — same as roundtrip):
  *   npm run start:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *
@@ -18,7 +22,7 @@
  */
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
-import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+import { VoiceAgent, VOICE_AGENT_VAD_PRESET, SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import type { SpeechEvent, SpeechEventType, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
@@ -67,7 +71,8 @@ export const NUMBER_WORDS_ONE_TO_TEN = NUMBER_WORDS_ONE_TO_TWENTY.slice(0, 10)
 /** STT / final wait (gate hold + Sherpa finalize). Override with SHERPA_COUNTING_TIMEOUT_MS. */
 const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_MIN_NUMBER_WORDS = 16
-const FINALIZE_MARGIN_MS = 500
+/** Harness scheduling jitter — not part of Rust VAD/STT close. */
+export const FINALIZE_MARGIN_MS = 250
 const DEFAULT_WARMUP_S = 0.6
 /** Outbound TTS drain cap — wall-clock estimate, always bounded. */
 export const DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS = 45_000
@@ -100,6 +105,70 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * One-shot wait for `agent_speaking_end` on the **speaker** VoiceAgent stream.
+ * Wire via `startSpeakerSpeechPump` — the listener leg does not receive agent events.
+ */
+export class AgentSpeakingEndLatch {
+  private endCount = 0
+  private waiters: Array<{ baseline: number; resolve: () => void }> = []
+
+  /** Count of `agent_speaking_end` observed on the speaker stream so far. */
+  endEventsSeen(): number {
+    return this.endCount
+  }
+
+  observe(event: SpeechEvent): void {
+    if (event.type !== SPEECH_EVENT_TYPE.agentSpeakingEnd) return
+    this.endCount += 1
+    for (let i = this.waiters.length - 1; i >= 0; i--) {
+      const waiter = this.waiters[i]!
+      if (this.endCount > waiter.baseline) {
+        waiter.resolve()
+        this.waiters.splice(i, 1)
+      }
+    }
+  }
+
+  /** Resolve when `agent_speaking_end` count exceeds `baseline` (capture baseline before `sendTextToTTS`). */
+  waitAfterCount(baseline: number, timeoutMs: number): Promise<void> {
+    if (this.endCount > baseline) {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w !== waiter)
+        reject(new Error(`timed out waiting for agent_speaking_end (${timeoutMs} ms)`))
+      }, timeoutMs)
+      const waiter = {
+        baseline,
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+      }
+      this.waiters.push(waiter)
+    })
+  }
+
+  waitForNext(timeoutMs: number): Promise<void> {
+    return this.waitAfterCount(this.endCount, timeoutMs)
+  }
+}
+
+/** Log speaker speech events and notify `agentEndLatch` for playback timing. */
+export function startSpeakerSpeechPump(
+  speaker: VoiceAgent,
+  agentEndLatch?: AgentSpeakingEndLatch,
+): void {
+  void (async () => {
+    for await (const event of speaker.speechEvents()) {
+      logRoundtripSpeechEvent('speaker', event)
+      agentEndLatch?.observe(event)
+    }
+  })()
+}
+
 /** Real-time TTS drain ~900 ms/word + 3 s base (capped). Long echo phrases need the headroom. */
 export function estimateTtsPlaybackMs(phrase: string, capMs: number): number {
   const words = phrase.split(/\s+/).filter((w) => w.length > 0).length
@@ -114,11 +183,41 @@ export async function waitAgentTtsPlaybackEnd(
   phrase: string,
   timeoutMs = DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
 ): Promise<void> {
-  const waitMs = estimateTtsPlaybackMs(phrase, timeoutMs)
+  await waitAgentPlaybackEndRace({ phrase, capMs: timeoutMs })
+}
+
+/**
+ * End playback when `agent_speaking_end` arrives (via speaker-stream latch), or when the
+ * phrase-length estimate elapses — whichever is first. Avoids multi-second dead air after TTS
+ * already stopped (estimate was ~900 ms/word + 3 s base).
+ */
+export async function waitAgentPlaybackEndRace(params: {
+  phrase: string
+  waitForAgentSpeakingEnd?: () => Promise<void>
+  capMs?: number
+}): Promise<'event' | 'estimate'> {
+  const capMs = params.capMs ?? DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS
+  const estimateMs = estimateTtsPlaybackMs(params.phrase, capMs)
+  if (!params.waitForAgentSpeakingEnd) {
+    console.log(
+      `[speaker] playback wait ${(estimateMs / 1000).toFixed(1)}s (estimate, cap ${(capMs / 1000).toFixed(0)}s)`,
+    )
+    await sleepMs(estimateMs)
+    return 'estimate'
+  }
   console.log(
-    `[speaker] playback wait ${(waitMs / 1000).toFixed(1)}s (estimate, cap ${(timeoutMs / 1000).toFixed(0)}s)`,
+    `[speaker] playback wait ≤${(estimateMs / 1000).toFixed(1)}s (agent_speaking_end or estimate)`,
   )
-  await sleepMs(waitMs)
+  const via = await Promise.race([
+    params.waitForAgentSpeakingEnd().then(() => 'event' as const),
+    sleepMs(estimateMs).then(() => 'estimate' as const),
+  ])
+  console.log(
+    via === 'event'
+      ? '[speaker] playback ended (agent_speaking_end)'
+      : `[speaker] playback ended (estimate cap ${(estimateMs / 1000).toFixed(1)}s)`,
+  )
+  return via
 }
 
 /**
@@ -131,11 +230,24 @@ export async function playSpeakerTtsWithPostSilence(params: {
   phrase: string
   postTtsSilenceS: number
   playbackTimeoutMs?: number
+  /** Prefer speaker-stream latch from `startSpeakerSpeechPump`. */
+  agentSpeakingEndLatch?: AgentSpeakingEndLatch
+  /** Fallback when no speaker pump / latch (rare). */
+  waitForAgentSpeakingEnd?: () => Promise<void>
 }): Promise<void> {
   const playbackTimeoutMs = params.playbackTimeoutMs ?? DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS
+  const playbackBaseline = params.agentSpeakingEndLatch?.endEventsSeen() ?? 0
+  const waitEnd =
+    params.agentSpeakingEndLatch != null
+      ? () => params.agentSpeakingEndLatch!.waitAfterCount(playbackBaseline, playbackTimeoutMs)
+      : params.waitForAgentSpeakingEnd
   console.log(`[speaker] TTS synthesize (${params.phrase.length} chars)…`)
   await params.speaker.sendTextToTTS(params.phrase)
-  await waitAgentTtsPlaybackEnd(params.phrase, playbackTimeoutMs)
+  await waitAgentPlaybackEndRace({
+    phrase: params.phrase,
+    capMs: playbackTimeoutMs,
+    waitForAgentSpeakingEnd: waitEnd,
+  })
   console.log(`[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s`)
   await streamSilence(params.speakerOut, params.postTtsSilenceS)
 }
@@ -147,10 +259,18 @@ export interface UtteranceEventStats {
   partialCount: number
   bargeInCount: number
   agentSpeakingStartCount: number
+  agentSpeakingEndCount: number
   /** Wall-clock ms when the first `user_speaking_end` of the current wait was recorded. */
   speakingEndAtMs: number | null
   /** Wall-clock ms when the first `user_speech_final` of the current wait was recorded. */
   speechFinalAtMs: number | null
+}
+
+/** Timestamped speech event captured during an optional recording window on a collector. */
+export interface CollectedSpeechEvent {
+  type: SpeechEventType
+  atMs: number
+  text?: string
 }
 
 /** Default max gap between `user_speaking_end` and `user_speech_final` (regression for Sherpa close). */
@@ -394,8 +514,11 @@ export interface CountingRoundtripResult {
   failures: string[]
 }
 
+/** Matches Rust STT endpoint tail (`min_silence` clamped 400–600 ms). */
 export function endpointTailMs(config: VoiceAgentConfig): number {
-  return Math.max(config.vad?.minSilenceDurationMs ?? 500, 800)
+  const minSilence =
+    config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs ?? 500
+  return Math.min(600, Math.max(minSilence, 400))
 }
 
 export function sttFinalizeWaitMs(config: VoiceAgentConfig): number {
@@ -403,9 +526,15 @@ export function sttFinalizeWaitMs(config: VoiceAgentConfig): number {
   return hold + endpointTailMs(config) + FINALIZE_MARGIN_MS
 }
 
+/**
+ * Real-time trailing silence after TTS so listener VAD can emit SpeechEnd and gate hold can drain.
+ * Rust injects the STT endpoint tail on finalize — do not add it again here.
+ */
 export function postTtsSilenceSeconds(config: VoiceAgentConfig): number {
   const hold = config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000
-  return (hold + endpointTailMs(config) + FINALIZE_MARGIN_MS) / 1000
+  const minSilence =
+    config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs ?? 500
+  return (hold + minSilence + FINALIZE_MARGIN_MS) / 1000
 }
 
 export function normalizeForCompare(text: string): string {
@@ -513,23 +642,45 @@ export class ListenerUtteranceCollector {
     partialCount: 0,
     bargeInCount: 0,
     agentSpeakingStartCount: 0,
+    agentSpeakingEndCount: 0,
     speakingEndAtMs: null,
     speechFinalAtMs: null,
   }
   private agentSpeakingWaiters: Array<{ baseline: number; resolve: () => void }> = []
+  private agentSpeakingEndWaiters: Array<{ baseline: number; resolve: () => void }> = []
   private bargeInWaiters: Array<{ baseline: number; resolve: () => void }> = []
+  private eventRecordingStartMs: number | null = null
+  private eventRecording: CollectedSpeechEvent[] = []
+  private finalAfterBaselineWaiters: Array<{
+    baseline: number
+    resolve: (text: string) => void
+    reject: (error: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }> = []
 
   constructor(
     private readonly listener: VoiceAgent,
     private readonly pumpStarted: { value: boolean },
     private readonly verbose: boolean,
     private readonly agentLabel = 'listener',
+    private readonly agentEndLatch?: AgentSpeakingEndLatch,
   ) {}
 
   startPump(): void {
     if (this.pumpStarted.value) return
     this.pumpStarted.value = true
     void this.pump()
+  }
+
+  /** Record speech events with relative timestamps until `stopEventRecording()`. */
+  startEventRecording(): void {
+    this.eventRecording = []
+    this.eventRecordingStartMs = Date.now()
+  }
+
+  stopEventRecording(): CollectedSpeechEvent[] {
+    this.eventRecordingStartMs = null
+    return [...this.eventRecording]
   }
 
   resetStatsForUtterance(): void {
@@ -539,8 +690,38 @@ export class ListenerUtteranceCollector {
     this.stats.partialCount = 0
     this.stats.bargeInCount = 0
     this.stats.agentSpeakingStartCount = 0
+    this.stats.agentSpeakingEndCount = 0
     this.stats.speakingEndAtMs = null
     this.stats.speechFinalAtMs = null
+  }
+
+  /** Resolve when `agent_speaking_end` count exceeds `baseline` (capture via `agentSpeakingEndCount()` before TTS). */
+  waitForAgentSpeakingEndAfter(baseline: number, timeoutMs: number): Promise<void> {
+    if (this.stats.agentSpeakingEndCount > baseline) {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.agentSpeakingEndWaiters = this.agentSpeakingEndWaiters.filter((w) => w !== waiter)
+        reject(new Error(`timed out waiting for agent_speaking_end (${timeoutMs} ms)`))
+      }, timeoutMs)
+      const waiter = {
+        baseline,
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+      }
+      this.agentSpeakingEndWaiters.push(waiter)
+    })
+  }
+
+  agentSpeakingEndCount(): number {
+    return this.stats.agentSpeakingEndCount
+  }
+
+  waitForAgentSpeakingEnd(timeoutMs: number): Promise<void> {
+    return this.waitForAgentSpeakingEndAfter(this.stats.agentSpeakingEndCount, timeoutMs)
   }
 
   /** Resolve on the **next** `agent_speaking_start` after this call (not a stale count from an earlier leg). */
@@ -562,6 +743,25 @@ export class ListenerUtteranceCollector {
         },
       }
       this.agentSpeakingWaiters.push(waiter)
+    })
+  }
+
+  /** Resolve when `stats.finals.length` exceeds `baseline` (does not reset stats or block `waitForNext`). */
+  waitForFinalAfterBaseline(baseline: number, timeoutMs: number): Promise<string> {
+    if (this.stats.finals.length > baseline) {
+      return Promise.resolve(this.stats.finals[this.stats.finals.length - 1]!)
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.finalAfterBaselineWaiters = this.finalAfterBaselineWaiters.filter((w) => w !== waiter)
+        reject(
+          new Error(
+            `timed out waiting for user_speech_final after baseline ${baseline} (${timeoutMs} ms)`,
+          ),
+        )
+      }, timeoutMs)
+      const waiter = { baseline, resolve, reject, timer }
+      this.finalAfterBaselineWaiters.push(waiter)
     })
   }
 
@@ -602,12 +802,21 @@ export class ListenerUtteranceCollector {
 
   private recordEvent(event: SpeechEvent): void {
     switch (event.type as SpeechEventType) {
-      case 'user_speech_final':
+      case 'user_speech_final': {
         this.stats.finals.push((event.text ?? '').trim())
         if (this.stats.speechFinalAtMs == null) {
           this.stats.speechFinalAtMs = Date.now()
         }
+        for (let i = this.finalAfterBaselineWaiters.length - 1; i >= 0; i--) {
+          const waiter = this.finalAfterBaselineWaiters[i]!
+          if (this.stats.finals.length > waiter.baseline) {
+            clearTimeout(waiter.timer)
+            waiter.resolve(this.stats.finals[this.stats.finals.length - 1]!)
+            this.finalAfterBaselineWaiters.splice(i, 1)
+          }
+        }
         break
+      }
       case 'user_speaking_end':
         this.stats.speakingEndCount += 1
         if (this.stats.speakingEndAtMs == null) {
@@ -628,6 +837,10 @@ export class ListenerUtteranceCollector {
         this.stats.agentSpeakingStartCount += 1
         this.resolveBaselineWaiters(this.agentSpeakingWaiters, this.stats.agentSpeakingStartCount)
         break
+      case 'agent_speaking_end':
+        this.stats.agentSpeakingEndCount += 1
+        this.resolveBaselineWaiters(this.agentSpeakingEndWaiters, this.stats.agentSpeakingEndCount)
+        break
       default:
         break
     }
@@ -637,6 +850,14 @@ export class ListenerUtteranceCollector {
     try {
       for await (const event of this.listener.speechEvents()) {
         logRoundtripSpeechEvent(this.agentLabel, event)
+        this.agentEndLatch?.observe(event)
+        if (this.eventRecordingStartMs != null) {
+          this.eventRecording.push({
+            type: event.type as SpeechEventType,
+            atMs: Date.now() - this.eventRecordingStartMs,
+            text: event.text,
+          })
+        }
         this.recordEvent(event)
         if (this.settled) continue
 
@@ -784,6 +1005,8 @@ async function main(): Promise<void> {
   const pumpStarted = { value: false }
   const collector = new ListenerUtteranceCollector(listener, pumpStarted, verbose)
   collector.startPump()
+  const agentEndLatch = new AgentSpeakingEndLatch()
+  startSpeakerSpeechPump(speaker, agentEndLatch)
 
   console.log('[speaker] Synthesizing long counting phrase…')
   const recognizedPromise = collector.waitForNext(timeoutMs, finalizeWaitMs)
@@ -793,6 +1016,7 @@ async function main(): Promise<void> {
     phrase,
     postTtsSilenceS,
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
+    agentSpeakingEndLatch: agentEndLatch,
   })
   const recognized = await recognizedPromise
 

@@ -58,6 +58,15 @@ jobs:
       all_cached: ${{ steps.plan.outputs.all_cached }}
       main_validated: ${{ steps.plan.outputs.main_validated }}
     steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/plan-native-builds
@@ -70,6 +79,7 @@ jobs:
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       needs.plan.outputs.all_cached != 'true' &&
       (
         needs.plan.outputs.linux_x64_matrix != '[]' ||
@@ -87,6 +97,7 @@ jobs:
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       needs.plan.outputs.all_cached != 'true' &&
       needs.plan.outputs.host_matrix != '[]'
     uses: ./.github/workflows/reusable-build-host.yml
@@ -100,6 +111,7 @@ jobs:
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       (
         needs.plan.outputs.cached_linux_x64 != '[]' ||
         needs.plan.outputs.cached_linux_arm64 == 'true' ||
@@ -117,6 +129,7 @@ jobs:
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       !(needs.plan.outputs.all_cached == 'true' && needs.plan.outputs.main_validated == 'true') &&
       (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
@@ -134,6 +147,7 @@ jobs:
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       (needs.test.result == 'success' || needs.test.result == 'skipped') &&
       (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&

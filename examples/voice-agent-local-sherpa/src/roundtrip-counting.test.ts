@@ -1,13 +1,25 @@
 import { describe, expect, it } from 'vitest'
 
+import { VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+
 import {
   countNumberWordsInTranscript,
   DEFAULT_COUNTING_PHRASE,
+  endpointTailMs,
   evaluateCountingRoundtrip,
   NUMBER_WORDS_ONE_TO_TWENTY,
+  postTtsSilenceSeconds,
+  sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
 
 describe('roundtrip-counting helpers', () => {
+  it('postTtsSilenceSeconds uses hold + minSilence (not Rust endpoint tail)', () => {
+    const config = { vad: VOICE_AGENT_VAD_PRESET }
+    expect(postTtsSilenceSeconds(config)).toBeCloseTo(1.75, 2)
+    expect(endpointTailMs(config)).toBe(500)
+    expect(sttFinalizeWaitMs(config)).toBe(1750)
+  })
+
   it('DEFAULT_COUNTING_PHRASE lists one through twenty', () => {
     const words = DEFAULT_COUNTING_PHRASE.split(/\s+/)
     expect(words).toHaveLength(20)
@@ -33,6 +45,7 @@ describe('roundtrip-counting helpers', () => {
         partialCount: 12,
         bargeInCount: 0,
         agentSpeakingStartCount: 0,
+        agentSpeakingEndCount: 0,
         speakingEndAtMs: null,
         speechFinalAtMs: null,
       },
@@ -54,6 +67,7 @@ describe('roundtrip-counting helpers', () => {
         partialCount: 4,
         bargeInCount: 0,
         agentSpeakingStartCount: 0,
+        agentSpeakingEndCount: 0,
         speakingEndAtMs: null,
         speechFinalAtMs: null,
       },

@@ -4,6 +4,8 @@ How `VoiceAgent` uses voice activity detection (VAD) and barge-in, which setting
 
 Rust defaults live in `crates/speech/src/config.rs`. TypeScript mirrors them in [`src/voice/defaults.ts`](./src/voice/defaults.ts).
 
+**API reference (exports, events, Rust modules):** [VOICE-API.md](./VOICE-API.md).
+
 ## Philosophy: defaults first
 
 Most phone-bot / voice-assistant apps only need:
@@ -39,7 +41,8 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | `vad.gateSttOpenOnPending`         | `true`   | Include VAD “pending” speech in gate (WebRTC lead-in)                                                                                                       |
 | `vad.sttGateHoldMs`                | `1000`   | After internal `SpeechEnd`, keep STT open this long; with `gateStt`, `user_speaking_end` fires when hold expires (resume speech during hold → no end event) |
 | `vad.bargeIn.enabled`              | `true`   | Allow barge-in flush + event                                                                                                                                |
-| `vad.bargeIn.useVad`               | `true`   | Auto barge on VAD `SpeechStart` (including while agent TTS plays)                                                                                           |
+| `vad.bargeIn.useVad`               | `true`   | Auto barge on VAD `SpeechStart`; with `requireSttPartial` (default), **agent TTS** waits for STT partial before flush                                       |
+| `vad.bargeIn.requireSttPartial`    | `true`   | Semantic barge during agent playback — see [below](#semantic-barge-in-requiresttpartial-default-true)                                                       |
 | `vad.bargeIn.flushTts`             | `true`   | Clear pending TTS PCM on barge-in                                                                                                                           |
 | `vad.bargeIn.agentPlaybackGuardMs` | `0`      | **0 = barge anytime**; optional ms to ignore VAD barge right after TTS starts (speaker echo)                                                                |
 
@@ -337,7 +340,7 @@ Use this when you stream STT through `VoiceAgent` with **`gateStt: true`** (`VOI
 
 **Rough reply latency after the user stops** (no resume during hold):
 
-`minSilenceDurationMs` + `sttGateHoldMs` + endpoint tail (~800 ms) + STT/TTS work.
+`minSilenceDurationMs` + `sttGateHoldMs` + endpoint tail (400–600 ms, from `minSilence`) + STT/TTS work.
 
 With defaults: ~300 + 1000 + 800 ≈ **2.1 s** before finalize, plus synthesis.
 

@@ -1,8 +1,11 @@
+import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_COUNTING_PHRASE_ONE_TO_TEN } from './roundtrip-counting.js'
 import { formatAgent2EchoReply } from './roundtrip-counting-echo.js'
+import { evaluateBargeUtteranceFinal } from './roundtrip-barge-in-helpers.js'
 import {
+  DEFAULT_BARGE_PHRASE,
   DEFAULT_RECOVERY_PHRASE,
   evaluateInterruptedEchoLeg,
 } from './roundtrip-counting-barge-recovery.js'
@@ -10,6 +13,10 @@ import {
 describe('roundtrip-counting-barge-recovery helpers', () => {
   it('DEFAULT_RECOVERY_PHRASE is non-empty', () => {
     expect(DEFAULT_RECOVERY_PHRASE.length).toBeGreaterThan(10)
+  })
+
+  it('DEFAULT_BARGE_PHRASE matches semantic barge-in default', () => {
+    expect(DEFAULT_BARGE_PHRASE).toBe('stop now please')
   })
 
   it('evaluateInterruptedEchoLeg passes when transcript is a short tail', () => {
@@ -45,5 +52,21 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
     })
     expect(result.passed).toBe(false)
     expect(result.failures.some((f) => f.includes('empty'))).toBe(true)
+  })
+
+  it('Round 2 barge phrase check passes when Agent2 final matches injected phrase', () => {
+    const result = evaluateBargeUtteranceFinal({
+      events: [
+        { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
+        { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 900, text: 'stop now' },
+        { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 950 },
+        { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1000 },
+        { type: SPEECH_EVENT_TYPE.userSpeakingEnd, atMs: 2200 },
+        { type: SPEECH_EVENT_TYPE.userSpeechFinal, atMs: 2300, text: DEFAULT_BARGE_PHRASE },
+      ],
+      expectedPhrase: DEFAULT_BARGE_PHRASE,
+      label: 'Round 2 barge',
+    })
+    expect(result.passed).toBe(true)
   })
 })

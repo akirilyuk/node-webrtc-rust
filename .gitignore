@@ -20,4 +20,5 @@ Thumbs.db
 
 # Build artifacts
 *.log
+.test-logs/
 .npmrc_release

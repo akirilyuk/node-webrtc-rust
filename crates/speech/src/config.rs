@@ -251,7 +251,9 @@ pub struct TtsConfig {
     pub api_key: Option<String>,
 }
 
-/// Full voice agent configuration.
+/// Full voice agent configuration (mirrored in TypeScript `VoiceAgentConfig`).
+///
+/// Defaults include mock STT/TTS for unit tests; production apps set real vendors via NAPI/TS.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceAgentConfig {

@@ -17,9 +17,11 @@ import {
   DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
   DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS,
   evaluateSpeakingEndFinalTiming,
+  AgentSpeakingEndLatch,
   installRoundtripWallClockTimeout,
   ListenerUtteranceCollector,
   postTtsSilenceSeconds,
+  startSpeakerSpeechPump,
   sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
 import { playTtsAndCollect } from './roundtrip-counting-echo.js'
@@ -78,11 +80,14 @@ async function main(): Promise<void> {
 
   const collector = new ListenerUtteranceCollector(listener, { value: false }, verbose)
   collector.startPump()
+  const agentEndLatch = new AgentSpeakingEndLatch()
+  startSpeakerSpeechPump(speaker, agentEndLatch)
 
   const recognized = await playTtsAndCollect({
     speaker,
     speakerOut: agentOut,
     listenerCollector: collector,
+    agentSpeakingEndLatch: agentEndLatch,
     text: phrase,
     postTtsSilenceS,
     timeoutMs,

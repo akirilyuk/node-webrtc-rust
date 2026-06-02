@@ -1,4 +1,8 @@
-//! Voice agent orchestration (attach, start/stop, TTS injection).
+//! Voice agent orchestration (attach, start/stop, TTS injection, inbound PCM).
+//!
+//! [`VoiceAgent`] is the main entry point: one instance per WebRTC session. Inbound audio
+//! is processed in [`VoiceAgent::process_inbound_pcm`]; the TypeScript SDK calls that from
+//! `RemoteAudioTrack.readSample()` in a loop after [`VoiceAgent::start`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -7,7 +11,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
-use crate::config::{EventDeliveryMode, VoiceAgentConfig};
+use crate::config::{EventDeliveryMode, VadConfig, VoiceAgentConfig};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::pcm::i16_samples_to_bytes;
@@ -38,6 +42,11 @@ fn voice_debug(message: impl AsRef<str>) {
     }
 }
 
+/// Synthetic silence fed to STT before finalize — aligned with Sherpa roundtrip harness.
+fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
+    vad.min_silence_duration_ms.max(400).min(600)
+}
+
 struct AgentInner {
     config: VoiceAgentConfig,
     attached: bool,
@@ -66,6 +75,9 @@ struct AgentInner {
 }
 
 /// One voice agent session bound to a single peer connection.
+///
+/// Holds VAD (optional), STT/TTS providers, TTS outbound buffer, and utterance state
+/// (`stt_gate_hold_ms`, finalize pending, barge-in flags). Thread-safe via internal `Mutex` / `Mutex`es.
 pub struct VoiceAgent {
     event_bus: SpeechEventBus,
     tts_buffer: TtsBuffer,
@@ -79,6 +91,7 @@ pub struct VoiceAgent {
 }
 
 impl VoiceAgent {
+    /// Builds agents with STT/TTS from `registry` and VAD/pre-roll from `config.vad`.
     pub fn new(config: VoiceAgentConfig, registry: Arc<VendorRegistry>) -> SpeechResult<Self> {
         let mut stt = None;
         let mut tts = None;
@@ -149,6 +162,7 @@ impl VoiceAgent {
             .unwrap_or(EventDeliveryMode::Both)
     }
 
+    /// Registers inbound (user) and outbound (agent TTS) PCM callbacks. Required before [`start`](Self::start).
     pub async fn attach(
         &self,
         pcm_reader: PcmReader,
@@ -161,6 +175,7 @@ impl VoiceAgent {
         Ok(())
     }
 
+    /// Starts STT vendor and TTS drain worker. Inbound PCM is driven by the host via [`process_inbound_pcm`](Self::process_inbound_pcm).
     pub async fn start(&self) -> SpeechResult<()> {
         {
             let mut inner = self.inner.lock().await;
@@ -242,6 +257,7 @@ impl VoiceAgent {
         Ok(())
     }
 
+    /// Synthesizes text and enqueues stereo 48 kHz PCM for real-time outbound drain.
     pub async fn send_text_to_tts(&self, text: &str) -> SpeechResult<()> {
         let chunks = {
             let tts = self.tts.lock().await;
@@ -261,6 +277,7 @@ impl VoiceAgent {
         Ok(())
     }
 
+    /// Clears pending outbound TTS (manual cancel or barge-in when `flush_tts` is enabled).
     pub async fn flush_tts(&self) -> SpeechResult<()> {
         let barge_in = {
             let inner = self.inner.lock().await;
@@ -279,6 +296,7 @@ impl VoiceAgent {
         Ok(())
     }
 
+    /// Non-blocking poll for stream-mode event delivery (NAPI / TS `speechEvents()`).
     pub async fn pull_speech_event(&self) -> Option<SpeechEvent> {
         None
     }
@@ -423,7 +441,7 @@ impl VoiceAgent {
                 inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance;
             (
                 needed,
-                inner.config.vad.min_silence_duration_ms.max(800),
+                stt_endpoint_tail_ms(&inner.config.vad),
                 inner.stt_endpoint_closing_started,
             )
         };
@@ -451,7 +469,10 @@ impl VoiceAgent {
         inner.stt_speaking_end_emitted_this_utterance = false;
     }
 
-    /// Process one inbound PCM frame through VAD, barge-in, and optional STT gating.
+    /// Processes one inbound WebRTC PCM frame (typically 20 ms stereo 48 kHz).
+    ///
+    /// Runs VAD transitions, barge-in, STT gate/hold/finalize, and STT poll. No-op when
+    /// [`stop`](Self::stop) has run. Set `VOICE_DEBUG=1` for per-frame diagnostics.
     pub async fn process_inbound_pcm(&self, pcm: Bytes, duration_ms: u32) -> SpeechResult<()> {
         let call = INBOUND_PCM_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
         if call == 1 || call % 50 == 0 {
@@ -767,7 +788,7 @@ impl VoiceAgent {
             }
             let tail_ms = {
                 let inner = self.inner.lock().await;
-                inner.config.vad.min_silence_duration_ms.max(800)
+                stt_endpoint_tail_ms(&inner.config.vad)
             };
             voice_debug(format!(
                 "STT utterance close: endpoint tail {tail_ms} ms then finalize (speaking_end with final)"

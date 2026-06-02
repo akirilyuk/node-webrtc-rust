@@ -1,4 +1,8 @@
 //! Ring buffer of recent mono STT PCM — prepended when VAD speech starts.
+//!
+//! Used when [`crate::config::VadConfig::gate_stt`] is true: captures audio during VAD
+//! pending/speech frames (excluding silence) and flushes at `SpeechStart` so the first
+//! syllable is not clipped. Capacity derives from `speech_pad_ms` + `min_speech_duration_ms`.
 
 use std::collections::VecDeque;
 

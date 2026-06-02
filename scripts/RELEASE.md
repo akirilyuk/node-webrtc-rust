@@ -52,6 +52,29 @@ PR and release workflows always pull `:latest`; they do not rebuild the image.
 
 ---
 
+## Package versions in git vs npm
+
+Two places versions matter:
+
+| Where | When bumped | Committed to git? |
+| ----- | ----------- | ----------------- |
+| **npm registry** | In CI/local **immediately before** `npm publish` | No |
+| **git (`package.json`)** | On the **release prep PR**, **before** the tag | **Yes — required** |
+
+CI [`release.yml`](../.github/workflows/release.yml) always rewrites versions in the publish job workspace from the tag (`release/X.Y.Z` → `X.Y.Z`), then publishes. That ephemeral bump does **not** update `main`. If git is never bumped, the repo drifts (e.g. npm at `0.4.0`, git still at `0.1.5`).
+
+**Rule:** committed `package.json` versions must match the version you are about to tag **before** `git push origin release/X.Y.Z`. Do **not** rely on a post-publish commit on `main` (easy to forget; no `chore(repo): release` commits have been made so far).
+
+To bump locally (full workspace — packages, platform bindings, examples, peer pins):
+
+```bash
+bash scripts/ci/bump-workspace-versions.sh 0.4.0
+```
+
+CI publish still runs `npm version` + `napi version` + [`set-release-deps.sh`](ci/set-release-deps.sh) in the runner before `npm publish`; committed git should match the tag version via the release prep PR using the script above.
+
+---
+
 ## Changelog workflow
 
 User-facing release notes live in **[`CHANGELOG.md`](../CHANGELOG.md)** at the repo root ( [Keep a Changelog](https://keepachangelog.com/) style).
@@ -59,9 +82,8 @@ User-facing release notes live in **[`CHANGELOG.md`](../CHANGELOG.md)** at the r
 | When                   | Action                                                                                                                                             |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **During development** | Add bullets under `[Unreleased]` as PRs merge                                                                                                      |
-| **Before tagging**     | Rename `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, add empty `[Unreleased]` at top, commit on `main`                                                  |
-| **On tag push**        | CI publishes npm; GitHub Release body is extracted from the `[X.Y.Z]` section via [`scripts/changelog-release-body.sh`](changelog-release-body.sh) |
-| **After publish**      | Commit version bumps on `main` (`chore(repo): release X.Y.Z`)                                                                                      |
+| **Release prep PR**    | On branch `release/X.Y.Z`: finalize `[X.Y.Z]` section, bump all `package.json` to `X.Y.Z`, open PR → `main`                                         |
+| **On tag push**        | CI publishes npm; GitHub Release body from [`scripts/changelog-release-body.sh`](changelog-release-body.sh)                                        |
 
 Preview release notes locally:
 
@@ -75,22 +97,24 @@ bash scripts/changelog-release-body.sh 0.3.0
 
 Use this for **all six platform binaries** and a consistent CI run before publish.
 
-### Branch workflow (prepare)
+### 1. Prepare release (PR — do not commit directly on `main`)
 
-1. Merge your changes to **`main`** via PR (Build & Test runs on the PR).
-2. Optionally bump versions in git on `main` — the release workflow sets npm versions from the tag, so a version commit is not required before tagging.
+1. Feature work is already merged to **`main`** via normal PRs.
+2. Create branch **`release/X.Y.Z`** from `main` (e.g. `release/0.4.1`).
+3. On that branch:
+   - Finalize [`CHANGELOG.md`](../CHANGELOG.md): `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, new empty `[Unreleased]`.
+   - Bump **all** publishable package versions and internal pins to `X.Y.Z` (see [Package versions in git vs npm](#package-versions-in-git-vs-npm)).
+4. Open PR **`release/X.Y.Z` → `main`**, wait for Build & Test green, **merge**.
 
-### Tag workflow (publish)
+### 2. Tag and publish (after merge)
 
-1. Finalize [`CHANGELOG.md`](../CHANGELOG.md) for the version (see [Changelog workflow](#changelog-workflow)).
-2. Merge to **`main`** and confirm Build & Test is green.
-3. Push a tag matching `release/<semver>`:
+Tag the **merge commit** on `main` (versions in tree must already be `X.Y.Z`):
 
 ```bash
 git checkout main
 git pull
-git tag release/0.3.0
-git push origin release/0.3.0
+git tag release/0.4.1
+git push origin release/0.4.1
 ```
 
 Supported tag forms:
@@ -101,7 +125,7 @@ release/0.2.0-beta.1
 release/0.2.0-rc.1
 ```
 
-The segment after `release/` becomes the npm version for all packages.
+The segment after `release/` must match committed `package.json` versions. CI uses the tag for publish metadata and re-applies the same bump in the runner before `npm publish`.
 
 ### What the workflow does
 
@@ -109,22 +133,21 @@ The segment after `release/` becomes the npm version for all packages.
 
 1. **Build** — full matrix (3× Linux in CI container, macOS ×2, Windows ×1)
 2. **Test** — format, lint, typecheck, `cargo test`, `npm test` (with coturn)
-3. **Publish** — stage artifacts, bump versions, `napi prepublish`, publish to npm (including `@node-webrtc-rust/helpers`)
+3. **Publish** — stage artifacts, bump versions in workspace, build TS, publish to npm (including `@node-webrtc-rust/helpers`)
 4. **GitHub Release** — creates a release with the matching section from `CHANGELOG.md`
 
 Required secrets: **`NPM_TOKEN`**, **`GITHUB_TOKEN`** (provided by Actions for the release step).
 
-### After a CI release
+No follow-up version commit on `main` is needed when the release prep PR already bumped git.
 
-Commit version bumps on `main` if you want the repo to match npm (optional but recommended):
+### Catch-up: repo behind npm (e.g. after 0.4.0 without a version PR)
 
-```bash
-git pull
-# versions were set in CI; pull or re-run release-local.sh --dry-run to sync locally
-git add -A
-git commit -m "chore(repo): release 0.2.0"
-git push origin main
-```
+If npm already has `X.Y.Z` but git does not:
+
+1. Branch from `main` (e.g. `chore/sync-versions-0.4.0` or `release/sync-0.4.0`).
+2. Bump git to match npm (`0.4.0`) using the commands above; **no** new tag.
+3. PR → `main`, merge.
+4. Then run the normal [prepare release](#1-prepare-release-pr--do-not-commit-directly-on-main) flow for the next version (`0.4.1`, etc.).
 
 ---
 
@@ -155,12 +178,15 @@ Behavior:
 - Publishes **only platform packages that have a `.node` file** (typically one on a dev machine)
 - Verifies the native binding loads before publish
 
-After a successful publish:
+After a successful publish (local only — versions should already be committed on `release/X.Y.Z` before tagging):
 
 ```bash
+# If you bumped only in the working tree during a local publish:
 git add -A && git commit -m "chore(repo): release 0.2.0"
-git tag release/0.2.0 && git push origin release/0.2.0   # optional: record on GitHub
+git tag release/0.2.0 && git push origin release/0.2.0
 ```
+
+Prefer the [GitHub Actions](#release-via-github-actions-recommended) PR + tag flow so git and npm stay aligned without a post-publish commit.
 
 ### Full release — all six platforms (macOS)
 

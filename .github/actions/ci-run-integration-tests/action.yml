@@ -11,6 +11,10 @@ inputs:
   github_token:
     description: GitHub token for GHCR login
     required: true
+  ts_dist_cache_hit:
+    description: Whether ci-cache-ts-dist had an exact key match (true/false)
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -41,6 +45,7 @@ runs:
           -e TURN_AVAILABLE=1 \
           -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
           -e OPUS_STATIC=1 \
+          -e TS_DIST_CACHE_HIT="${{ inputs.ts_dist_cache_hit }}" \
           "${{ inputs.ci_image }}" \
           bash "${{ inputs.test_script }}"
 

@@ -40,9 +40,43 @@ jobs:
 
       - run: bash scripts/ci/run-pr-quality.sh
 
+  build-ts:
+    name: Build TypeScript
+    needs: quality
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: ./.github/actions/ci-cache-ts-dist
+        id: ts-cache
+        with:
+          profile: release
+
+      - name: Build TypeScript packages
+        if: steps.ts-cache.outputs.cache-hit != 'true'
+        run: |
+          npm ci
+          bash scripts/fix-rollup-native.sh
+          bash scripts/ci/build-ts-workspace.sh
+
   plan:
     name: Plan native builds
-    needs: quality
+    needs: [quality, build-ts]
     runs-on: self-hosted
     outputs:
       linux_x64_matrix: ${{ steps.plan.outputs.linux_x64_matrix }}
@@ -61,7 +95,7 @@ jobs:
           check_main_success: 'false'
 
   build-linux:
-    needs: [quality, plan]
+    needs: [quality, build-ts, plan]
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
@@ -77,7 +111,7 @@ jobs:
     secrets: inherit
 
   build-host:
-    needs: [quality, plan]
+    needs: [quality, build-ts, plan]
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
@@ -89,7 +123,7 @@ jobs:
     secrets: inherit
 
   stage-cached:
-    needs: [quality, plan]
+    needs: [quality, build-ts, plan]
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
@@ -107,10 +141,11 @@ jobs:
 
   test:
     name: Test
-    needs: [quality, plan, build-linux, build-host, stage-cached]
+    needs: [quality, build-ts, plan, build-linux, build-host, stage-cached]
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
+      (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
       (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
       (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped')

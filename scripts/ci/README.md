@@ -356,3 +356,20 @@ PR native cache profile: **debug**. Main/release: **release**.
 | [`ci-build-native-host`](../../.github/actions/ci-build-native-host)         | Node + Rust setup, napi build, upload                                                                                  |
 | [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist)                 | sdk/signaling `dist/` cache                                                                                            |
 | [`ci-run-integration-tests`](../../.github/actions/ci-run-integration-tests) | GHCR login, coturn sidecar, ci-build test run                                                                          |
+
+---
+
+## Planned improvements (backlog)
+
+Spec: [`development/node-webrtc-rust/followups/2026-06-02-ci-release-branch-and-flat-pr-checks.md`](../../../development/node-webrtc-rust/followups/2026-06-02-ci-release-branch-and-flat-pr-checks.md) (in the workspace `development` repo).
+
+### Release branches (`release/*` → `main`)
+
+- **Skip** full `build.yml` when `main`’s latest **Build & Test (main)** run is green and the PR only touches `CHANGELOG.md`, `README.md`, and/or root `package.json` version.
+- **Fail** with a fixed message if any other path changes — code must go through a feature branch.
+- New lightweight workflow (e.g. `release-branch-pr.yml`); **`release.yml` on tag push unchanged**.
+
+### Flat PR checks
+
+- Stop calling `reusable-test.yml` from `build.yml` (avoids **Build & Test → Test → Test** nesting).
+- Expose **Detect changes**, **Typecheck & lint**, **Compile native**, **Build TypeScript**, and **Integration tests** as sibling top-level checks on PRs.

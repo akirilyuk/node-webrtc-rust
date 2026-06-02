@@ -341,6 +341,8 @@ Set `requireSttPartial: false` to restore immediate energy-VAD barge (legacy, no
 | 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; received audio ≥ ~75% of phase 1                                                                     |
 | 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`user_speech_partial` → `barge_in` → `agent_speaking_end`** (gaps ≤500 ms / ≤2 s); received audio &lt; 65% of phase 1 |
 
+**Planned (backlog):** Phase 3 should also assert the listener received a **`user_speaking_end` → `user_speech_final`** pair for the barge phrase with recognized text ≈ `SHERPA_BARGE_IN_BARGE_PHRASE` — see [`development/node-webrtc-rust/followups/2026-06-02-sherpa-barge-in-phase3-utterance-final.md`](../../../development/node-webrtc-rust/followups/2026-06-02-sherpa-barge-in-phase3-utterance-final.md).
+
 ```bash
 npm run build:native
 npm run test:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa

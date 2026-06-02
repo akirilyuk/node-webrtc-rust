@@ -190,17 +190,23 @@ Quick reference:
 | `SHERPA_ROUNDTRIP_GAP_S`          | `0`     | **Extra** silence between phrases; off by default (VAD hold + trailing silence suffice) |
 | `SHERPA_ROUNDTRIP_VERBOSE`        | off     | Log every VAD/STT event                                                                 |
 
-Inter-phrase separation comes from **listener VAD** (`sttGateHoldMs`, endpoint tail, wait for `user_speech_final`) plus **post-TTS trailing silence** on the speaker track (duration derived from those VAD timings). See [ROUNDTRIP.md § Timing](./ROUNDTRIP.md#timing-vad-vs-explicit-silence).
+Inter-phrase separation comes from **listener VAD** (`sttGateHoldMs`, `minSilenceDurationMs`, wait for `user_speech_final`) plus **post-TTS trailing silence** on the speaker track (~1.75 s default — hold + min silence, not the Rust endpoint tail). Playback ends on **`agent_speaking_end`** instead of a multi-second estimate wait. See [ROUNDTRIP.md § Timing](./ROUNDTRIP.md#timing-vad-vs-explicit-silence).
 
-### 3c. Barge-in E2E (interrupt TTS mid-playback)
+### 3c. Semantic barge-in E2E (STT-gated interrupt)
 
-Same loopback as §3b, but the **speaker** has VAD + `bargeIn`; the user leg injects tone on `agentInbound` after a delay. Phase 1 measures full TTS received on `userInbound`; phase 2 must be shorter and emit `barge_in`.
+Same loopback as §3b, but the **listener** uses `VOICE_AGENT_VAD_PRESET` (`requireSttPartial: true`): agent TTS stops only after Sherpa recognizes words on the user leg, not on tone alone.
+
+| Phase | Inject on `userOut`                         | Expected                                                                      |
+| ----- | ------------------------------------------- | ----------------------------------------------------------------------------- |
+| 1     | — (full agent phrase)                       | Full playback baseline                                                        |
+| 2     | 440 Hz tone mid-playback                    | **No** `barge_in`; ~full length                                               |
+| 3     | Sherpa TTS barge phrase (`stop now please`) | `user_speech_partial` → `barge_in` → `agent_speaking_end`; truncated playback |
 
 ```bash
 npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-Details: [ROUNDTRIP.md § Barge-in E2E](./ROUNDTRIP.md#barge-in-e2e).
+Details: [ROUNDTRIP.md § Semantic barge-in E2E](./ROUNDTRIP.md#semantic-barge-in-e2e).
 
 Rust-level smoke (no WebRTC): `cargo test -p node-webrtc-rust-vendor-sherpa-onnx tts_synthesize_produces_stereo_pcm_with_model -- --ignored` with `SHERPA_TTS_MODEL_PATH` set.
 

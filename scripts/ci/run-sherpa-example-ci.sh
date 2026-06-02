@@ -76,6 +76,9 @@ run_typecheck() {
 
 run_vitest() {
   ensure_ts_dist
+  bash "$ROOT/scripts/ci/ensure-workspace-bindings.sh"
+  bash "$ROOT/scripts/ci/ensure-vitest-optional-bindings.sh"
+  bash "$ROOT/scripts/ci/sync-workspace-bindings.sh"
   echo "==> roundtrip Vitest evaluators ($WORKSPACE)"
   npm run test:roundtrip-counting --workspace="$WORKSPACE"
 }

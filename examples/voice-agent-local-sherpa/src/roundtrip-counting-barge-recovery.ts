@@ -192,9 +192,10 @@ export async function playEchoLegBWithBargeIn(params: {
   console.log(
     `[${params.logLabel}] Barge via Sherpa TTS on agentOut: "${bargePhrase}" (${params.bargeToneS}s tail)…`,
   )
+  const bargeSeen = params.collectorAgent2.waitForBargeIn(params.timeoutMs)
   await params.agent1.sendTextToTTS(bargePhrase)
   await streamSilence(params.agentOut, params.bargeToneS)
-  await params.collectorAgent2.waitForBargeIn(params.timeoutMs)
+  await bargeSeen
 
   await speakPromise
   await playbackDone

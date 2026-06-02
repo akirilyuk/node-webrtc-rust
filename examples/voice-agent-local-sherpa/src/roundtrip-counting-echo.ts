@@ -138,7 +138,10 @@ function evaluateLegEvents(
     )
   }
   // STT utterance close may emit speaking_end in the same poll as the final; allow 0 when exactly one final.
-  if (stats.speakingEndCount !== 1 && !(stats.finals.length === 1 && stats.speakingEndCount === 0)) {
+  if (
+    stats.speakingEndCount !== 1 &&
+    !(stats.finals.length === 1 && stats.speakingEndCount === 0)
+  ) {
     failures.push(`${who}expected exactly 1 user_speaking_end, got ${stats.speakingEndCount}`)
   }
   if (stats.speakingStartCount < 1) {

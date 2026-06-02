@@ -648,6 +648,7 @@ export class ListenerUtteranceCollector {
     private readonly pumpStarted: { value: boolean },
     private readonly verbose: boolean,
     private readonly agentLabel = 'listener',
+    private readonly agentEndLatch?: AgentSpeakingEndLatch,
   ) {}
 
   startPump(): void {

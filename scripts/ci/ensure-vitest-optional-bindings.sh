@@ -55,12 +55,27 @@ if [[ -z "$WANT" ]]; then
   exit 1
 fi
 
-if npm view "${PKG}@${WANT}" version &>/dev/null; then
+install_platform_pkg() {
+  local ver="$1"
+  if [[ -z "$ver" ]]; then
+    echo "ensure-vitest-optional-bindings: empty version for $PKG" >&2
+    return 1
+  fi
+  mkdir -p "$BINDINGS/node_modules/@node-webrtc-rust"
+  # Install into bindings/node_modules without rewriting package.json optionalDeps.
+  npm install --prefix "$BINDINGS" --no-save --no-package-lock "${PKG}@${ver}"
+}
+
+if npm view "${PKG}@${WANT}" version &>/dev/null 2>&1; then
   echo "==> vitest bindings: ${PKG}@${WANT} on npm"
-  (cd "$BINDINGS" && npm install --no-save "${PKG}@${WANT}")
+  install_platform_pkg "$WANT"
   exit 0
 fi
 
-PUBLISHED="$(npm view "$PKG" version)"
+PUBLISHED="$(npm view "$PKG" version 2>/dev/null | tr -d '[:space:]')"
+if [[ -z "$PUBLISHED" ]]; then
+  # Last resort when registry metadata is unavailable in CI.
+  PUBLISHED="0.4.0"
+fi
 echo "==> vitest bindings: ${PKG}@${WANT} not on npm yet; using published @${PUBLISHED}"
-(cd "$BINDINGS" && npm install --no-save "${PKG}@${PUBLISHED}")
+install_platform_pkg "$PUBLISHED"

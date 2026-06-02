@@ -8,15 +8,31 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.5.0] — 2026-06-02
+
+**Compare:** [`release/0.4.1…release/0.5.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.4.1...release/0.5.0)
+
+Reworked VAD → STT → barge-in pipeline: recognition opens on speech detection instead of an always-on feed during agent TTS, with explicit lifecycle events and utterance-close timeouts.
+
+### Highlights
+
+- **Reworked VAD + bargeIn + STT forwarding** — STT stream opens on each VAD `SpeechStart` (`vad_triggered` → `user_stt_start` → `stt_stream_start`) with pre-roll flush preserved; PCM is no longer fed continuously to STT during agent playback for semantic barge.
+- **Tighter barge window** — `barge_in` only while `agent_speaking == true` (removed 2s post-playback grace); `requireSttPartial: true` still gates interrupt on real words, `false` barge is immediate on `SpeechStart`.
+- **Observable STT lifecycle** — new events (`vad_triggered`, `stt_stream_*`, `user_stt_*`) for debugging and browser parity; Sherpa roundtrip E2E asserts the full sequence across barge-in, counting, two-phrase, utterance-timing, and barge-recovery scripts.
+- **Utterance close paths** — `sttListenTimeoutMs` (C1: VAD without partial → `user_stt_not_found`, no final) and `utteranceFinalizeTimeoutMs` (C2: partial stall → forced `user_speech_final` from last partial).
+
 ### Added
 
 - Speech lifecycle events: `vad_triggered`, `stt_stream_start`, `stt_stream_end`, `user_stt_start`, `user_stt_end`, `user_stt_not_found`.
-- VAD config: `sttListenTimeoutMs` (default 4000, C1 no-partial timeout) and `utteranceFinalizeTimeoutMs` (default 1500, C2 forced-final grace).
+- VAD config: `sttListenTimeoutMs` (default 4000) and `utteranceFinalizeTimeoutMs` (default 1500).
+- Shared Sherpa roundtrip STT lifecycle evaluators (`roundtrip-stt-lifecycle-helpers.ts`) and Rust barge-in unit tests.
 
 ### Changed
 
-- **STT during agent TTS** — STT opens on each VAD `SpeechStart` (`vad_triggered`), not continuous pre-VAD PCM feed during semantic barge.
-- **Barge window** — `barge_in` only while `agent_speaking == true` (removed 2s post-playback grace).
+- **STT during agent TTS** — opens on VAD `SpeechStart`, not continuous pre-VAD PCM feed during semantic barge.
+- **Barge window** — `barge_in` only while `agent_speaking == true`.
 - **Utterance close** — partials without vendor final get `user_speech_final` via gate-hold finalize fallback or C2 timeout (last partial text).
 
 ### Docs

@@ -113,6 +113,11 @@ export class AgentSpeakingEndLatch {
   private endCount = 0
   private waiters: Array<{ baseline: number; resolve: () => void }> = []
 
+  /** Count of `agent_speaking_end` observed on the speaker stream so far. */
+  endEventsSeen(): number {
+    return this.endCount
+  }
+
   observe(event: SpeechEvent): void {
     if (event.type !== SPEECH_EVENT_TYPE.agentSpeakingEnd) return
     this.endCount += 1
@@ -125,8 +130,8 @@ export class AgentSpeakingEndLatch {
     }
   }
 
-  waitForNext(timeoutMs: number): Promise<void> {
-    const baseline = this.endCount
+  /** Resolve when `agent_speaking_end` count exceeds `baseline` (capture baseline before `sendTextToTTS`). */
+  waitAfterCount(baseline: number, timeoutMs: number): Promise<void> {
     if (this.endCount > baseline) {
       return Promise.resolve()
     }
@@ -144,6 +149,10 @@ export class AgentSpeakingEndLatch {
       }
       this.waiters.push(waiter)
     })
+  }
+
+  waitForNext(timeoutMs: number): Promise<void> {
+    return this.waitAfterCount(this.endCount, timeoutMs)
   }
 }
 
@@ -227,9 +236,10 @@ export async function playSpeakerTtsWithPostSilence(params: {
   waitForAgentSpeakingEnd?: () => Promise<void>
 }): Promise<void> {
   const playbackTimeoutMs = params.playbackTimeoutMs ?? DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS
+  const playbackBaseline = params.agentSpeakingEndLatch?.endEventsSeen() ?? 0
   const waitEnd =
     params.agentSpeakingEndLatch != null
-      ? () => params.agentSpeakingEndLatch!.waitForNext(playbackTimeoutMs)
+      ? () => params.agentSpeakingEndLatch!.waitAfterCount(playbackBaseline, playbackTimeoutMs)
       : params.waitForAgentSpeakingEnd
   console.log(`[speaker] TTS synthesize (${params.phrase.length} chars)…`)
   await params.speaker.sendTextToTTS(params.phrase)
@@ -658,9 +668,8 @@ export class ListenerUtteranceCollector {
     this.stats.speechFinalAtMs = null
   }
 
-  /** Resolve on the **next** `agent_speaking_end` after this call (speaker TTS drain). */
-  waitForAgentSpeakingEnd(timeoutMs: number): Promise<void> {
-    const baseline = this.stats.agentSpeakingEndCount
+  /** Resolve when `agent_speaking_end` count exceeds `baseline` (capture via `agentSpeakingEndCount()` before TTS). */
+  waitForAgentSpeakingEndAfter(baseline: number, timeoutMs: number): Promise<void> {
     if (this.stats.agentSpeakingEndCount > baseline) {
       return Promise.resolve()
     }
@@ -678,6 +687,14 @@ export class ListenerUtteranceCollector {
       }
       this.agentSpeakingEndWaiters.push(waiter)
     })
+  }
+
+  agentSpeakingEndCount(): number {
+    return this.stats.agentSpeakingEndCount
+  }
+
+  waitForAgentSpeakingEnd(timeoutMs: number): Promise<void> {
+    return this.waitForAgentSpeakingEndAfter(this.stats.agentSpeakingEndCount, timeoutMs)
   }
 
   /** Resolve on the **next** `agent_speaking_start` after this call (not a stale count from an earlier leg). */
@@ -778,6 +795,7 @@ export class ListenerUtteranceCollector {
     try {
       for await (const event of this.listener.speechEvents()) {
         logRoundtripSpeechEvent(this.agentLabel, event)
+        this.agentEndLatch?.observe(event)
         this.recordEvent(event)
         if (this.settled) continue
 

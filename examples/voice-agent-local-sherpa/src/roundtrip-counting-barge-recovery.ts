@@ -33,7 +33,6 @@ import {
   sttFinalizeWaitMs,
   DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
   installRoundtripWallClockTimeout,
-  startSpeakerSpeechPump,
   waitAgentPlaybackEndRace,
   wordSimilarity,
 } from './roundtrip-counting.js'
@@ -280,24 +279,24 @@ async function main(): Promise<void> {
   const warmupS = Number(process.env.SHERPA_ROUNDTRIP_WARMUP_S ?? DEFAULT_WARMUP_S)
   await Promise.all([streamSilence(agentOut, warmupS), streamSilence(userOut, warmupS)])
 
+  const agent1EndLatch = new AgentSpeakingEndLatch()
+  const agent2EndLatch = new AgentSpeakingEndLatch()
   const collectorAgent1 = new ListenerUtteranceCollector(
     agent1,
     { value: false },
     verbose,
     'agent1',
+    agent1EndLatch,
   )
   const collectorAgent2 = new ListenerUtteranceCollector(
     agent2,
     { value: false },
     verbose,
     'agent2',
+    agent2EndLatch,
   )
   collectorAgent1.startPump()
   collectorAgent2.startPump()
-  const agent1EndLatch = new AgentSpeakingEndLatch()
-  const agent2EndLatch = new AgentSpeakingEndLatch()
-  startSpeakerSpeechPump(agent1, agent1EndLatch)
-  startSpeakerSpeechPump(agent2, agent2EndLatch)
 
   const roundParams = {
     agent1,

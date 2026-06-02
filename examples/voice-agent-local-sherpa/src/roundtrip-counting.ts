@@ -199,12 +199,9 @@ export async function waitAgentPlaybackEndRace(params: {
   console.log(
     `[speaker] playback wait ≤${(estimateMs / 1000).toFixed(1)}s (agent_speaking_end or estimate)`,
   )
-  let via: 'event' | 'estimate' = 'estimate'
-  await Promise.race([
-    params.waitForAgentSpeakingEnd().then(() => {
-      via = 'event'
-    }),
-    sleepMs(estimateMs),
+  const via = await Promise.race([
+    params.waitForAgentSpeakingEnd().then(() => 'event' as const),
+    sleepMs(estimateMs).then(() => 'estimate' as const),
   ])
   console.log(
     via === 'event'

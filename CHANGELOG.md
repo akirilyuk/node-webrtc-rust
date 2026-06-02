@@ -12,6 +12,55 @@ _No changes yet._
 
 ---
 
+## [0.4.0] — 2026-06-02
+
+**Compare:** [`release/0.3.0…release/0.4.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.3.0...release/0.4.0)
+
+Semantic STT-gated barge-in, Sherpa roundtrip E2E coverage, and CI hardening for voice dist caches.
+
+### Highlights
+
+- **Semantic barge-in** — agent TTS stops only after STT recognizes real words (`bargeIn.requireSttPartial`, default `true`), not on coughs or tones alone; event order is `user_speech_partial` → `barge_in` → `agent_speaking_end`.
+- **Sherpa roundtrip E2E** — seven `start:roundtrip-*` scripts in PR/main integration (counting, two-phrases, utterance-timing, semantic barge-in, counting-echo, barge-recovery).
+- **CI** — TS `dist/` stamp/fingerprint rebuild when sources change; `build-ts` job on main; no partial `restore-keys` on dist cache.
+
+### Added
+
+#### Voice pipeline (Rust + `@node-webrtc-rust/sdk/voice`)
+
+- STT-gated barge during agent TTS: partial before `barge_in`, STT nudge on `SpeechEnd`, one barge per agent playback; optional `agentPlaybackGuardMs` (default `0`).
+- `SPEECH_EVENT_TYPE` export for typed tests and control-channel bridges.
+- Default Sherpa STT model: `en-kroko-2025-08-06`; VAD/env overrides documented.
+
+#### Examples
+
+- Sherpa roundtrip harness: counting, two-phrases, utterance-timing, semantic barge-in, counting-echo, barge-recovery (agent2 barge only; agent1 injects TTS).
+- Vitest evaluators (no models) for barge-in event ordering.
+- Baseline waiters for `agent_speaking_start` / `barge_in`; `[speech]` logs on, `[voice-debug]` opt-in via `VOICE_DEBUG=1`.
+
+#### `@node-webrtc-rust/helpers`
+
+- Do not block speech events on slow voice handlers (forward before `onSpeechEvent`).
+
+### Changed
+
+- Fix STT finalize on gate-hold expiry; pair `user_speaking_end` with `user_speech_final`.
+- Background TTS drain; `agent_speaking_start` / `agent_speaking_end` tied to real PCM playback.
+- Sherpa roundtrip phrase tweaks for STT stability (`"Welcome to the demo"`).
+
+### Fixed
+
+- Barge-recovery E2E: disable barge-in on agent1 (injector); STT-gated barge on agent2; arm `waitForBargeIn` before TTS.
+- Main CI stale `packages/sdk/dist` after voice API changes — rebuild when stamp mismatches sources.
+
+### CI & tooling
+
+- All Sherpa roundtrips in PR Test; `cargo test -p node-webrtc-rust-speech` in integration.
+- Host-local `ci:verify:checks`; `ci-step` timeouts; quiet roundtrip CI wrapper (`VOICE_DEBUG=0`).
+- `examples/**` path filter; workspace binding sync for `npm test`.
+
+---
+
 ## [0.3.0] — 2026-05-28
 
 **Compare:** [`release/0.2.1…release/0.3.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.2.1...release/0.3.0)

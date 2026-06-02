@@ -197,6 +197,7 @@ export async function playEchoLegBWithBargeIn(params: {
     waitForAgentSpeakingEnd: () => params.agent2EndLatch.waitForNext(params.timeoutMs),
   })
   const speakingStarted = params.collectorAgent2.waitForAgentSpeakingStart(params.timeoutMs)
+  const finalsBaselineBeforeLeg = params.collectorAgent2.stats.finals.length
   params.collectorAgent2.startEventRecording()
   const speakPromise = params.agent2.sendTextToTTS(params.echoText)
 
@@ -207,13 +208,25 @@ export async function playEchoLegBWithBargeIn(params: {
   )
   const bargeSeen = params.collectorAgent2.waitForBargeIn(params.timeoutMs)
   await params.agent1.sendTextToTTS(params.bargePhrase)
-  await streamSilence(params.agentOut, params.bargeToneS)
+  // Trailing silence on the barge path while Agent2 STT finalizes (parallel with collection).
+  const bargeTrailSilence = streamSilence(
+    params.agentOut,
+    params.bargeToneS + params.postTtsSilenceS,
+  )
   await bargeSeen
 
   await speakPromise
   await playbackDone
   await streamSilence(params.userOut, params.postTtsSilenceS)
-  const recognized = await recognizedPromise
+
+  const bargeFinalWait = params.collectorAgent2
+    .waitForFinalAfterBaseline(finalsBaselineBeforeLeg, params.finalizeWaitMs + 15_000)
+    .catch((err: Error) => {
+      console.log(`[${params.logLabel}] ${err.message}`)
+      return ''
+    })
+
+  const [recognized] = await Promise.all([recognizedPromise, bargeTrailSilence, bargeFinalWait])
   const agent2Events = params.collectorAgent2.stopEventRecording()
   return {
     recognized,

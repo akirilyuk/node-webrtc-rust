@@ -651,6 +651,12 @@ export class ListenerUtteranceCollector {
   private bargeInWaiters: Array<{ baseline: number; resolve: () => void }> = []
   private eventRecordingStartMs: number | null = null
   private eventRecording: CollectedSpeechEvent[] = []
+  private finalAfterBaselineWaiters: Array<{
+    baseline: number
+    resolve: (text: string) => void
+    reject: (error: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }> = []
 
   constructor(
     private readonly listener: VoiceAgent,
@@ -740,6 +746,25 @@ export class ListenerUtteranceCollector {
     })
   }
 
+  /** Resolve when `stats.finals.length` exceeds `baseline` (does not reset stats or block `waitForNext`). */
+  waitForFinalAfterBaseline(baseline: number, timeoutMs: number): Promise<string> {
+    if (this.stats.finals.length > baseline) {
+      return Promise.resolve(this.stats.finals[this.stats.finals.length - 1]!)
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.finalAfterBaselineWaiters = this.finalAfterBaselineWaiters.filter((w) => w !== waiter)
+        reject(
+          new Error(
+            `timed out waiting for user_speech_final after baseline ${baseline} (${timeoutMs} ms)`,
+          ),
+        )
+      }, timeoutMs)
+      const waiter = { baseline, resolve, reject, timer }
+      this.finalAfterBaselineWaiters.push(waiter)
+    })
+  }
+
   /** Resolve on the **next** `barge_in` after this call (mid-playback interrupt confirmation). */
   waitForBargeIn(timeoutMs: number): Promise<void> {
     const baseline = this.stats.bargeInCount
@@ -777,12 +802,21 @@ export class ListenerUtteranceCollector {
 
   private recordEvent(event: SpeechEvent): void {
     switch (event.type as SpeechEventType) {
-      case 'user_speech_final':
+      case 'user_speech_final': {
         this.stats.finals.push((event.text ?? '').trim())
         if (this.stats.speechFinalAtMs == null) {
           this.stats.speechFinalAtMs = Date.now()
         }
+        for (let i = this.finalAfterBaselineWaiters.length - 1; i >= 0; i--) {
+          const waiter = this.finalAfterBaselineWaiters[i]!
+          if (this.stats.finals.length > waiter.baseline) {
+            clearTimeout(waiter.timer)
+            waiter.resolve(this.stats.finals[this.stats.finals.length - 1]!)
+            this.finalAfterBaselineWaiters.splice(i, 1)
+          }
+        }
         break
+      }
       case 'user_speaking_end':
         this.stats.speakingEndCount += 1
         if (this.stats.speakingEndAtMs == null) {

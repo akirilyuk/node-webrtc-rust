@@ -1,7 +1,7 @@
 {
   "name": "@node-webrtc-rust/example-peer-connection",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Basic two-peer WebRTC connection demo",
   "type": "module",
   "scripts": {
@@ -10,9 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@node-webrtc-rust/helpers": "0.4.0",
-    "@node-webrtc-rust/sdk": "0.4.0",
-    "@node-webrtc-rust/signaling": "0.4.0"
+    "@node-webrtc-rust/helpers": "0.4.1",
+    "@node-webrtc-rust/sdk": "0.4.1",
+    "@node-webrtc-rust/signaling": "0.4.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

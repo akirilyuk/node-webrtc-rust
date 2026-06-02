@@ -139,6 +139,36 @@ describe('evaluateSttLifecycleOnBargePath', () => {
     expect(evaluateSttLifecycleOnBargePath({ events }).passed).toBe(true)
   })
 
+  it('accepts vad_triggered when STT stream stayed open from prior VAD in same run', () => {
+    const events = [
+      ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 0),
+      ev(SPEECH_EVENT_TYPE.vadTriggered, 200),
+      ev(SPEECH_EVENT_TYPE.userSttStart, 200),
+      ev(SPEECH_EVENT_TYPE.sttStreamStart, 201),
+      ev(SPEECH_EVENT_TYPE.vadTriggered, 800),
+      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 1400, 'stop'),
+      ev(SPEECH_EVENT_TYPE.bargeIn, 1450),
+      ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 1500),
+    ]
+    expect(evaluateSttLifecycleOnBargePath({ events }).passed).toBe(true)
+  })
+
+  it('accepts phase-isolated barge events when stream opened in a prior phase', () => {
+    const events = [
+      ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 268),
+      ev(SPEECH_EVENT_TYPE.vadTriggered, 1308),
+      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 2253, 'Stop now'),
+      ev(SPEECH_EVENT_TYPE.bargeIn, 2253),
+      ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 2253),
+      ev(SPEECH_EVENT_TYPE.sttStreamEnd, 48564),
+      ev(SPEECH_EVENT_TYPE.userSttEnd, 48565),
+      ev(SPEECH_EVENT_TYPE.userSpeakingEnd, 48565),
+      ev(SPEECH_EVENT_TYPE.userSpeechFinal, 48565, 'Stop now, please'),
+    ]
+    expect(evaluateSttLifecycleOnBargePath({ events }).passed).toBe(true)
+    expect(evaluateBargePathLifecycle({ events }).passed).toBe(true)
+  })
+
   it('rejects partial before stt_stream_start', () => {
     const events = [
       ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 0),
@@ -148,7 +178,7 @@ describe('evaluateSttLifecycleOnBargePath', () => {
     ]
     const result = evaluateSttLifecycleOnBargePath({ events })
     expect(result.passed).toBe(false)
-    expect(result.failures.some((f) => f.includes('stt_stream_start'))).toBe(true)
+    expect(result.failures.some((f) => f.includes('vad_triggered'))).toBe(true)
   })
 })
 

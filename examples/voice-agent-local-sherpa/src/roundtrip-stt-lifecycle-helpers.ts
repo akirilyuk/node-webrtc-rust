@@ -210,8 +210,9 @@ export function evaluateNoPartialWithoutFinal(params: {
 }
 
 /**
- * After agent TTS starts, barge listen: vad_triggered → user_stt_start → stt_stream_start
- * before qualifying partial; partial must not precede stt_stream_start.
+ * After agent TTS starts, barge listen: vad_triggered on user SpeechStart; STT stream must
+ * be open before the qualifying partial (stt_stream_start may predate this agent playback if
+ * the session stayed open from an earlier VAD trigger in the same run).
  */
 export function evaluateSttLifecycleOnBargePath(params: {
   events: LifecycleSpeechEvent[]
@@ -229,40 +230,71 @@ export function evaluateSttLifecycleOnBargePath(params: {
   }
   const afterStart = params.events.slice(agentStartIdx + 1)
   const vadIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.vadTriggered)
-  const userSttIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.userSttStart)
-  const sttIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.sttStreamStart)
   const partialIdx = qualifyingPartialIndex(params.events, agentStartIdx, minChars)
 
-  if (vadIdx < 0) failures.push(`${who}missing vad_triggered after agent_speaking_start`)
-  if (userSttIdx < 0) failures.push(`${who}missing user_stt_start after agent_speaking_start`)
-  if (sttIdx < 0) failures.push(`${who}missing stt_stream_start after agent_speaking_start`)
+  if (vadIdx < 0) {
+    failures.push(`${who}missing vad_triggered after agent_speaking_start`)
+  }
 
-  if (vadIdx >= 0 && userSttIdx >= 0 && userSttIdx < vadIdx) {
-    failures.push(`${who}user_stt_start must follow vad_triggered`)
-  }
-  if (userSttIdx >= 0 && sttIdx >= 0 && sttIdx < userSttIdx) {
-    failures.push(`${who}stt_stream_start must follow user_stt_start`)
-  }
-  if (partialIdx >= 0 && sttIdx >= 0) {
-    const sttAbs = agentStartIdx + 1 + sttIdx
-    if (partialIdx < sttAbs) {
-      failures.push(`${who}user_speech_partial must not precede stt_stream_start on barge path`)
-    }
-    const maxGap = params.maxSttStreamToPartialMs ?? DEFAULT_MAX_STT_STREAM_TO_PARTIAL_MS
-    const gap = params.events[partialIdx]!.atMs - params.events[sttAbs]!.atMs
-    if (gap > maxGap) {
-      failures.push(`${who}stt_stream_start → partial gap ${gap} ms exceeds ${maxGap} ms`)
-    }
-  }
-  if (vadIdx >= 0 && sttIdx >= 0) {
-    const maxVadGap = params.maxVadToSttStreamMs ?? DEFAULT_MAX_VAD_TO_STT_STREAM_MS
+  if (partialIdx >= 0 && vadIdx >= 0) {
     const vadAbs = agentStartIdx + 1 + vadIdx
-    const sttAbs = agentStartIdx + 1 + sttIdx
-    const gap = params.events[sttAbs]!.atMs - params.events[vadAbs]!.atMs
-    if (gap > maxVadGap) {
-      failures.push(`${who}vad_triggered → stt_stream_start gap ${gap} ms exceeds ${maxVadGap} ms`)
+    if (partialIdx < vadAbs) {
+      failures.push(`${who}user_speech_partial must not precede vad_triggered on barge path`)
     }
   }
+
+  if (partialIdx >= 0) {
+    const beforePartial = params.events.slice(0, partialIdx)
+    const sttStreamIdx = lastIndexOfType(beforePartial, SPEECH_EVENT_TYPE.sttStreamStart)
+    const userSttIdx = lastIndexOfType(beforePartial, SPEECH_EVENT_TYPE.userSttStart)
+
+    if (sttStreamIdx < 0) {
+      // STT session may have opened in an earlier phase (e.g. tone phase) — require vad in this window.
+      if (vadIdx < 0) {
+        failures.push(`${who}missing vad_triggered before qualifying user_speech_partial`)
+      } else {
+        const vadAbs = agentStartIdx + 1 + vadIdx
+        if (vadAbs > partialIdx) {
+          failures.push(`${who}vad_triggered must precede qualifying user_speech_partial`)
+        }
+      }
+    } else {
+      if (userSttIdx < 0) {
+        failures.push(`${who}missing user_stt_start before stt_stream_start`)
+      }
+      if (userSttIdx >= 0 && userSttIdx > sttStreamIdx) {
+        failures.push(`${who}user_stt_start must precede stt_stream_start`)
+      }
+      const maxGap = params.maxSttStreamToPartialMs ?? DEFAULT_MAX_STT_STREAM_TO_PARTIAL_MS
+      const gap = params.events[partialIdx]!.atMs - params.events[sttStreamIdx]!.atMs
+      if (gap > maxGap) {
+        failures.push(`${who}stt_stream_start → partial gap ${gap} ms exceeds ${maxGap} ms`)
+      }
+    }
+
+    if (vadIdx >= 0) {
+      const vadAbs = agentStartIdx + 1 + vadIdx
+      if (vadAbs > partialIdx) {
+        failures.push(`${who}vad_triggered must precede qualifying user_speech_partial`)
+      }
+    }
+  }
+
+  // When this barge window opens a fresh stream, vad → user_stt → stt_stream should be tight.
+  if (vadIdx >= 0) {
+    const vadAbs = agentStartIdx + 1 + vadIdx
+    const sliceFromVad = params.events.slice(vadAbs)
+    const userSttRel = sliceFromVad.findIndex((e) => e.type === SPEECH_EVENT_TYPE.userSttStart)
+    const sttRel = sliceFromVad.findIndex((e) => e.type === SPEECH_EVENT_TYPE.sttStreamStart)
+    if (userSttRel >= 0 && sttRel >= 0) {
+      const maxVadGap = params.maxVadToSttStreamMs ?? DEFAULT_MAX_VAD_TO_STT_STREAM_MS
+      const gap = params.events[vadAbs + sttRel]!.atMs - params.events[vadAbs]!.atMs
+      if (gap > maxVadGap) {
+        failures.push(`${who}vad_triggered → stt_stream_start gap ${gap} ms exceeds ${maxVadGap} ms`)
+      }
+    }
+  }
+
   return { passed: failures.length === 0, failures }
 }
 

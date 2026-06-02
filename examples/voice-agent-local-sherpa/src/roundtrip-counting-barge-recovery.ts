@@ -45,6 +45,7 @@ import {
   transcriptIncludesYouSaid,
 } from './roundtrip-counting-echo.js'
 import { evaluateBargeUtteranceFinal } from './roundtrip-barge-in-helpers.js'
+import { evaluateBargePathLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
 /** Agent2 plays long echo TTS — STT-gated barge must interrupt mid-playback. */
@@ -421,6 +422,11 @@ async function main(): Promise<void> {
     label: 'Round 2 barge',
   })
 
+  const bargeLifecycleEval = evaluateBargePathLifecycle({
+    events: legB2.agent2Events,
+    label: 'Round 2 barge',
+  })
+
   console.log(`Leg B (interrupted) recognized: "${interrupted.recognized}"`)
   console.log(
     `Leg B partial check: numbers=${interrupted.numberWordsFound}/10  similarity=${(interrupted.similarity * 100).toFixed(0)}%`,
@@ -436,6 +442,9 @@ async function main(): Promise<void> {
 
   if (!bargePhraseEval.passed) failures.push(...bargePhraseEval.failures)
   else console.log('✓ Round 2: barge phrase recognized on Agent2')
+
+  if (!bargeLifecycleEval.passed) failures.push(...bargeLifecycleEval.failures)
+  else console.log('✓ Round 2: STT lifecycle events on barge path')
 
   await streamSilence(agentOut, interRoundGapS)
   await streamSilence(userOut, interRoundGapS)

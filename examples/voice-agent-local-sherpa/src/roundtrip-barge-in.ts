@@ -26,8 +26,9 @@ import {
 } from '@node-webrtc-rust/sdk/voice'
 import {
   evaluateBargeUtteranceFinal,
+  evaluateBargePathLifecycle,
   evaluateSemanticBargeEventOrder,
-  evaluateToneMustNotBarge,
+  evaluateTonePhaseLifecycle,
   formatRecordedSpeechEvent,
   hasUserSpeechFinal,
   logRecordedSpeechEvents,
@@ -414,7 +415,11 @@ async function main(): Promise<void> {
   })
   const noiseRatio = noiseResult.receivedMs / fullMs
   const noiseBarges = noiseResult.events.filter((e) => e.type === SPEECH_EVENT_TYPE.bargeIn).length
-  const toneEval = evaluateToneMustNotBarge({ events: noiseResult.events, bargeCount: noiseBarges })
+  const toneEval = evaluateTonePhaseLifecycle({
+    events: noiseResult.events,
+    bargeCount: noiseBarges,
+    label: 'Phase 2',
+  })
   console.log(
     `Pre-interrupt received: ${noiseResult.receivedMs} ms (${(noiseRatio * 100).toFixed(0)}% of full)`,
   )
@@ -493,6 +498,14 @@ async function main(): Promise<void> {
 
   if (!orderEval.passed) {
     failures.push(...orderEval.failures)
+  }
+
+  const lifecycleEval = evaluateBargePathLifecycle({
+    events: phase3Events,
+    label: 'Phase 3',
+  })
+  if (!lifecycleEval.passed) {
+    failures.push(...lifecycleEval.failures)
   }
 
   const utteranceEval = evaluateBargeUtteranceFinal({

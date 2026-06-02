@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import {
   evaluateBargeUtteranceFinal,
   evaluateSemanticBargeEventOrder,
+  evaluateSttLifecycleOnBargePath,
+  evaluateNoPartialWithoutFinal,
   evaluateToneMustNotBarge,
   formatRecordedSpeechEvent,
   phase1BaselineComplete,
@@ -168,5 +170,30 @@ describe('roundtrip-barge-in helpers', () => {
       bargeCount: 1,
     })
     expect(result.passed).toBe(false)
+  })
+
+  it('evaluateSttLifecycleOnBargePath requires vad → user_stt → stt_stream before partial', () => {
+    const events: RecordedSpeechEvent[] = [
+      { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
+      { type: SPEECH_EVENT_TYPE.vadTriggered, atMs: 1200 },
+      { type: SPEECH_EVENT_TYPE.userSttStart, atMs: 1200 },
+      { type: SPEECH_EVENT_TYPE.sttStreamStart, atMs: 1201 },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop speaking' },
+      { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
+      { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
+    ]
+    expect(evaluateSttLifecycleOnBargePath({ events }).passed).toBe(true)
+  })
+
+  it('evaluateNoPartialWithoutFinal rejects orphan partial after barge', () => {
+    const events: RecordedSpeechEvent[] = [
+      { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop' },
+      { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
+      { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
+    ]
+    const result = evaluateNoPartialWithoutFinal({ events, label: 'Phase 3' })
+    expect(result.passed).toBe(false)
+    expect(result.failures.some((f) => f.includes('orphan partial'))).toBe(true)
   })
 })

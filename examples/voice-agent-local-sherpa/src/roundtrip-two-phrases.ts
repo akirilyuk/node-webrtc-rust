@@ -34,6 +34,7 @@ import {
   sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
+import { evaluateNormalUtteranceLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
 const DEFAULT_PHRASE_TWO = 'I am done speaking'
 /** Per-phrase STT wait — keep low; wall clock is the backstop. */
@@ -122,6 +123,7 @@ async function main(): Promise<void> {
   startSpeakerSpeechPump(speaker, agentEndLatch)
 
   console.log('[phrase 1] waiting for user_speech_final…')
+  collector.startEventRecording()
   const text1Promise = collector.waitForNext(timeoutMs, finalizeWaitMs)
   await speakPhrase({
     speaker,
@@ -153,6 +155,13 @@ async function main(): Promise<void> {
   console.log(`✓ Final 2: "${text2}"`)
   records.push(finalRecordFromStats(text2, collector.stats))
 
+  const lifecycleEvents = collector.stopEventRecording()
+  const lifecycleEval = evaluateNormalUtteranceLifecycle({
+    events: lifecycleEvents,
+    expectOpenCount: 2,
+    label: 'two-phrase',
+  })
+
   const evaluation = evaluateFinalSequence({
     records,
     expectedCount: 2,
@@ -162,14 +171,17 @@ async function main(): Promise<void> {
     label: 'two-phrase',
   })
 
+  const failures = [...evaluation.failures]
+  if (!lifecycleEval.passed) failures.push(...lifecycleEval.failures)
+
   await speaker.stop().catch(() => undefined)
   await listener.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)
 
-  if (!evaluation.passed) {
+  if (failures.length > 0) {
     exitSherpaRoundtripFailure({
       reason: 'two-phrase sequence assertions failed',
-      failures: evaluation.failures,
+      failures,
       legs: [{ label: 'listener', stats: collector.stats }],
     })
   }

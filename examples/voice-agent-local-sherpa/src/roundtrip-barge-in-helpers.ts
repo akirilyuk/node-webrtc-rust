@@ -10,6 +10,7 @@ import {
 } from '@node-webrtc-rust/sdk/voice'
 
 import { DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS, wordSimilarity } from './roundtrip-counting.js'
+import { evaluateTonePhaseLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
 export interface RecordedSpeechEvent {
   type: SpeechEventType
@@ -20,11 +21,11 @@ export interface RecordedSpeechEvent {
 /** Default max gap partial → barge_in (regression for SpeechEnd clearing await before poll). */
 export const DEFAULT_MAX_PARTIAL_TO_BARGE_MS = 500
 
-/** Default max gap vad_triggered → stt_stream_start on barge path. */
-export const DEFAULT_MAX_VAD_TO_STT_STREAM_MS = 100
-
-/** Default max gap stt_stream_start → first qualifying partial during agent TTS. */
-export const DEFAULT_MAX_STT_STREAM_TO_PARTIAL_MS = 3000
+/** Re-export lifecycle defaults used by barge evaluators. */
+export {
+  DEFAULT_MAX_STT_STREAM_TO_PARTIAL_MS,
+  DEFAULT_MAX_VAD_TO_STT_STREAM_MS,
+} from './roundtrip-stt-lifecycle-helpers.js'
 
 /** Default max gap barge_in → agent_speaking_end after flush. */
 export const DEFAULT_MAX_BARGE_TO_AGENT_END_MS = 2000
@@ -374,101 +375,22 @@ export function evaluateBargeUtteranceFinal(params: {
   }
 }
 
+/** @deprecated Use evaluateTonePhaseLifecycle from roundtrip-stt-lifecycle-helpers. */
 export function evaluateToneMustNotBarge(params: {
   events: RecordedSpeechEvent[]
   bargeCount: number
 }): { passed: boolean; failures: string[] } {
-  const failures: string[] = []
-  if (params.bargeCount > 0) {
-    failures.push(`tone phase must not emit barge_in (saw ${params.bargeCount})`)
-  }
-  const partialBeforeBarge = params.events.some(
-    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechPartial,
-  )
-  const barge = params.events.some((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
-  if (partialBeforeBarge && barge) {
-    failures.push('tone phase must not barge even if a stray partial appears')
-  }
-  return { passed: failures.length === 0, failures }
+  return evaluateTonePhaseLifecycle({
+    events: params.events,
+    bargeCount: params.bargeCount,
+    label: 'tone',
+  })
 }
 
-export interface SttLifecycleOrderResult {
-  passed: boolean
-  failures: string[]
-}
-
-/**
- * After agent TTS starts, VAD barge listen should emit vad_triggered → stt_stream_start
- * before the first qualifying partial (STT opens on VAD, not continuous pre-VAD feed).
- */
-export function evaluateSttLifecycleOnBargePath(params: {
-  events: RecordedSpeechEvent[]
-  maxVadToSttStreamMs?: number
-  maxSttStreamToPartialMs?: number
-  label?: string
-}): SttLifecycleOrderResult {
-  const who = params.label ? `${params.label}: ` : ''
-  const failures: string[] = []
-  const agentStartIdx = indexOfType(params.events, SPEECH_EVENT_TYPE.agentSpeakingStart)
-  if (agentStartIdx < 0) {
-    return { passed: false, failures: [`${who}missing agent_speaking_start`] }
-  }
-  const afterStart = params.events.slice(agentStartIdx + 1)
-  const vadIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.vadTriggered)
-  const sttIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.sttStreamStart)
-  const partialIdx = qualifyingPartialIndex(params.events, agentStartIdx, 2)
-  if (vadIdx < 0) {
-    failures.push(`${who}missing vad_triggered after agent_speaking_start`)
-  }
-  if (sttIdx < 0) {
-    failures.push(`${who}missing stt_stream_start after agent_speaking_start`)
-  }
-  if (vadIdx >= 0 && sttIdx >= 0 && sttIdx < vadIdx) {
-    failures.push(`${who}stt_stream_start must follow vad_triggered`)
-  }
-  if (partialIdx >= 0 && sttIdx >= 0) {
-    const sttAbs = agentStartIdx + 1 + sttIdx
-    if (partialIdx < sttAbs) {
-      failures.push(`${who}user_speech_partial must not precede stt_stream_start on barge path`)
-    }
-    const maxGap = params.maxSttStreamToPartialMs ?? DEFAULT_MAX_STT_STREAM_TO_PARTIAL_MS
-    const gap = params.events[partialIdx]!.atMs - params.events[sttAbs]!.atMs
-    if (gap > maxGap) {
-      failures.push(`${who}stt_stream_start → partial gap ${gap} ms exceeds ${maxGap} ms`)
-    }
-  }
-  if (vadIdx >= 0 && sttIdx >= 0) {
-    const maxVadGap = params.maxVadToSttStreamMs ?? DEFAULT_MAX_VAD_TO_STT_STREAM_MS
-    const vadAbs = agentStartIdx + 1 + vadIdx
-    const sttAbs = agentStartIdx + 1 + sttIdx
-    const gap = params.events[sttAbs]!.atMs - params.events[vadAbs]!.atMs
-    if (gap > maxVadGap) {
-      failures.push(`${who}vad_triggered → stt_stream_start gap ${gap} ms exceeds ${maxVadGap} ms`)
-    }
-  }
-  return { passed: failures.length === 0, failures }
-}
-
-/** Any utterance with ≥1 partial must eventually get user_speech_final (normal or C2 forced). */
-export function evaluateNoPartialWithoutFinal(params: {
-  events: RecordedSpeechEvent[]
-  label?: string
-}): { passed: boolean; failures: string[] } {
-  const who = params.label ? `${params.label}: ` : ''
-  const failures: string[] = []
-  const partialCount = params.events.filter(
-    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechPartial,
-  ).length
-  const finalCount = params.events.filter(
-    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal,
-  ).length
-  const notFoundCount = params.events.filter(
-    (e) => e.type === SPEECH_EVENT_TYPE.userSttNotFound,
-  ).length
-  if (partialCount > 0 && finalCount === 0 && notFoundCount === 0) {
-    failures.push(
-      `${who}orphan partial(s): ${partialCount} user_speech_partial without user_speech_final`,
-    )
-  }
-  return { passed: failures.length === 0, failures }
-}
+export {
+  evaluateNoPartialWithoutFinal,
+  evaluateSttLifecycleOnBargePath,
+  evaluateBargePathLifecycle,
+  evaluateTonePhaseLifecycle,
+  type LifecycleSpeechEvent,
+} from './roundtrip-stt-lifecycle-helpers.js'

@@ -12,6 +12,41 @@ _No changes yet._
 
 ---
 
+## [0.4.1] — 2026-06-02
+
+**Compare:** [`release/0.4.0…release/0.4.1`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.4.0...release/0.4.1)
+
+Snappier Sherpa roundtrip finalize, barge-in Phase 3 `user_speech_final` E2E, echo harness fixes, release CI workspace prep, and git/npm version alignment.
+
+### Highlights
+
+- **Snappier utterance finalize** — `stt_endpoint_tail_ms` capped at 600ms; harness post-TTS silence derived from VAD; `AgentSpeakingEndLatch` ends waits on `agent_speaking_end` instead of long estimate sleeps.
+- **Barge-in Phase 3 E2E** — assert `user_speech_final` after semantic `barge_in`; parallel trailing-silence collection so finals are not dropped.
+- **Release workflow** — plan job workspace `chown` on self-hosted runners; publish gated on `plan` success.
+- **Repo versions** — workspace `package.json` pins synced to published npm (`bump-workspace-versions.sh`); release prep via `release/X.Y.Z` PR before tag.
+
+### Added
+
+- `AgentSpeakingEndLatch`, `waitAgentPlaybackEndRace`, `postTtsSilenceSeconds()` in Sherpa roundtrip harness.
+- `evaluateBargeUtteranceFinal`, `phase3EventsTerminal` for barge-in Phase 3 tests.
+- [`scripts/ci/bump-workspace-versions.sh`](scripts/ci/bump-workspace-versions.sh) for release prep and catch-up PRs.
+
+### Changed
+
+- Echo / barge-recovery roundtrips: one `speechEvents()` consumer per `VoiceAgent`; `echoVadConfig` disables barge on peer-listen legs; playback baseline before `sendTextToTTS`.
+- [`scripts/RELEASE.md`](scripts/RELEASE.md) — versions committed on `release/X.Y.Z` PR before tag (not optional post-publish on `main`).
+
+### Fixed
+
+- Release CI `Permission denied` on plan-job checkout (self-hosted workspace ownership).
+- Barge-recovery round 2 waits for Agent2 barge phrase `user_speech_final`.
+
+### Docs
+
+- [`packages/sdk/VOICE-API.md`](packages/sdk/VOICE-API.md), [`ROUNDTRIP.md`](examples/voice-agent-local-sherpa/ROUNDTRIP.md) harness playback timing, voice JSDoc + speech rustdoc.
+
+---
+
 ## [0.4.0] — 2026-06-02
 
 **Compare:** [`release/0.3.0…release/0.4.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.3.0...release/0.4.0)

@@ -213,17 +213,23 @@ tts: {
 
 ### Speech events
 
-Two layers — **fast VAD** vs **text-bearing STT**:
+Three layers — **VAD activity**, **STT session / vendor feed**, and **text**:
 
-| Event                          | Source                            | Use in your agent                             |
-| ------------------------------ | --------------------------------- | --------------------------------------------- |
-| `user_speaking_start`          | VAD `SpeechStart`                 | User began talking (inbound voice activity)   |
-| `user_speaking_end`            | VAD + `sttGateHoldMs` (`gateStt`) | End-of-utterance hint (not first short pause) |
-| `user_speech_partial`          | STT                               | Live captions, prefetch                       |
-| `user_speech_final`            | STT                               | **Primary LLM turn trigger**                  |
-| `agent_speaking_start` / `end` | TTS playback                      | UI / state machine                            |
-| `barge_in`                     | Barge-in path (see below)         | Cancel agent TTS (after optional flush)       |
-| `error`                        | Any                               | Vendor or pipeline failure                    |
+| Event                                 | Source                            | Use in your agent                              |
+| ------------------------------------- | --------------------------------- | ---------------------------------------------- |
+| `vad_triggered`                       | VAD `SpeechStart`                 | STT listen opened; logging / `[speech]` traces |
+| `user_stt_start` / `user_stt_end`     | STT session                       | Recognition session boundaries                 |
+| `stt_stream_start` / `stt_stream_end` | STT vendor PCM gate               | Vendor feed on / off per utterance             |
+| `user_stt_not_found`                  | C1 timeout (`sttListenTimeoutMs`) | VAD fired but no partial — no LLM turn         |
+| `user_speaking_start`                 | VAD `SpeechStart`                 | User began talking (inbound voice activity)    |
+| `user_speaking_end`                   | VAD + `sttGateHoldMs` (`gateStt`) | End-of-utterance hint (paired with final)      |
+| `user_speech_partial`                 | STT                               | Live captions, semantic barge-in               |
+| `user_speech_final`                   | STT (or C2 forced)                | **Primary LLM turn trigger**                   |
+| `agent_speaking_start` / `end`        | TTS playback                      | UI / state machine                             |
+| `barge_in`                            | Barge-in path (see below)         | Cancel agent TTS (after optional flush)        |
+| `error`                               | Any                               | Vendor or pipeline failure                     |
+
+Lifecycle detail: [VOICE-VAD-AND-BARGE-IN.md § STT utterance lifecycle](./VOICE-VAD-AND-BARGE-IN.md#stt-utterance-lifecycle-vad--stt-events).
 
 ### VAD and barge-in
 

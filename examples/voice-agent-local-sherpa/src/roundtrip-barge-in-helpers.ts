@@ -10,6 +10,7 @@ import {
 } from '@node-webrtc-rust/sdk/voice'
 
 import { DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS, wordSimilarity } from './roundtrip-counting.js'
+import { evaluateTonePhaseLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
 export interface RecordedSpeechEvent {
   type: SpeechEventType
@@ -19,6 +20,12 @@ export interface RecordedSpeechEvent {
 
 /** Default max gap partial → barge_in (regression for SpeechEnd clearing await before poll). */
 export const DEFAULT_MAX_PARTIAL_TO_BARGE_MS = 500
+
+/** Re-export lifecycle defaults used by barge evaluators. */
+export {
+  DEFAULT_MAX_STT_STREAM_TO_PARTIAL_MS,
+  DEFAULT_MAX_VAD_TO_STT_STREAM_MS,
+} from './roundtrip-stt-lifecycle-helpers.js'
 
 /** Default max gap barge_in → agent_speaking_end after flush. */
 export const DEFAULT_MAX_BARGE_TO_AGENT_END_MS = 2000
@@ -368,20 +375,22 @@ export function evaluateBargeUtteranceFinal(params: {
   }
 }
 
+/** @deprecated Use evaluateTonePhaseLifecycle from roundtrip-stt-lifecycle-helpers. */
 export function evaluateToneMustNotBarge(params: {
   events: RecordedSpeechEvent[]
   bargeCount: number
 }): { passed: boolean; failures: string[] } {
-  const failures: string[] = []
-  if (params.bargeCount > 0) {
-    failures.push(`tone phase must not emit barge_in (saw ${params.bargeCount})`)
-  }
-  const partialBeforeBarge = params.events.some(
-    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechPartial,
-  )
-  const barge = params.events.some((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
-  if (partialBeforeBarge && barge) {
-    failures.push('tone phase must not barge even if a stray partial appears')
-  }
-  return { passed: failures.length === 0, failures }
+  return evaluateTonePhaseLifecycle({
+    events: params.events,
+    bargeCount: params.bargeCount,
+    label: 'tone',
+  })
 }
+
+export {
+  evaluateNoPartialWithoutFinal,
+  evaluateSttLifecycleOnBargePath,
+  evaluateBargePathLifecycle,
+  evaluateTonePhaseLifecycle,
+  type LifecycleSpeechEvent,
+} from './roundtrip-stt-lifecycle-helpers.js'

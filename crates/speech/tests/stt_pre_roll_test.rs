@@ -460,9 +460,10 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
         .process_inbound_pcm(Bytes::from(frame.clone()), 20)
         .await
         .unwrap();
-    assert!(
-        *bytes.lock().unwrap() >= 640,
-        "pending gate opens STT while accumulating min_speech_duration_ms"
+    assert_eq!(
+        *bytes.lock().unwrap(),
+        0,
+        "STT stream opens on vad_triggered (SpeechStart), not during pending accumulation"
     );
 
     agent
@@ -475,7 +476,7 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
         .unwrap();
     assert!(
         *bytes.lock().unwrap() >= 640 * 3,
-        "speech start should flush pre-roll including prior frames"
+        "SpeechStart should flush pre-roll including prior frames plus current audio"
     );
 
     let after_start = *bytes.lock().unwrap();

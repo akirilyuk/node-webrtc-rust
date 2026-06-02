@@ -83,6 +83,10 @@ export interface VadConfig {
   gateSttOpenOnPending?: boolean
   /** After VAD speech end, keep feeding STT (ms). Default 1000. */
   sttGateHoldMs?: number
+  /** After `vad_triggered`, emit `user_stt_not_found` when no partial within this window (ms). Default 4000. */
+  sttListenTimeoutMs?: number
+  /** Grace after last partial or VAD `SpeechEnd` before forcing `user_speech_final` (ms). Default 1500. */
+  utteranceFinalizeTimeoutMs?: number
 }
 
 export interface EventsConfig {
@@ -133,6 +137,12 @@ export type SpeechEventType =
   | 'user_speech_final'
   | 'agent_speaking_start'
   | 'agent_speaking_end'
+  | 'vad_triggered'
+  | 'stt_stream_start'
+  | 'stt_stream_end'
+  | 'user_stt_start'
+  | 'user_stt_end'
+  | 'user_stt_not_found'
   | 'barge_in'
   | 'error'
 
@@ -147,6 +157,12 @@ export const SPEECH_EVENT_TYPE = {
   userSpeechFinal: 'user_speech_final',
   agentSpeakingStart: 'agent_speaking_start',
   agentSpeakingEnd: 'agent_speaking_end',
+  vadTriggered: 'vad_triggered',
+  sttStreamStart: 'stt_stream_start',
+  sttStreamEnd: 'stt_stream_end',
+  userSttStart: 'user_stt_start',
+  userSttEnd: 'user_stt_end',
+  userSttNotFound: 'user_stt_not_found',
   bargeIn: 'barge_in',
   error: 'error',
 } as const satisfies Record<string, SpeechEventType>

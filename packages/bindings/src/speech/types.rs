@@ -113,6 +113,8 @@ pub struct JsVadConfig {
     pub gate_stt: Option<bool>,
     pub gate_stt_open_on_pending: Option<bool>,
     pub stt_gate_hold_ms: Option<u32>,
+    pub stt_listen_timeout_ms: Option<u32>,
+    pub utterance_finalize_timeout_ms: Option<u32>,
 }
 
 impl From<JsVadConfig> for VadConfig {
@@ -132,6 +134,8 @@ impl From<JsVadConfig> for VadConfig {
             gate_stt: value.gate_stt.unwrap_or(false),
             gate_stt_open_on_pending: value.gate_stt_open_on_pending.unwrap_or(true),
             stt_gate_hold_ms: value.stt_gate_hold_ms.unwrap_or(1000),
+            stt_listen_timeout_ms: value.stt_listen_timeout_ms.unwrap_or(4000),
+            utterance_finalize_timeout_ms: value.utterance_finalize_timeout_ms.unwrap_or(1500),
         }
     }
 }
@@ -275,6 +279,18 @@ pub enum JsSpeechEventType {
     AgentSpeakingStart,
     #[napi(value = "agent_speaking_end")]
     AgentSpeakingEnd,
+    #[napi(value = "vad_triggered")]
+    VadTriggered,
+    #[napi(value = "stt_stream_start")]
+    SttStreamStart,
+    #[napi(value = "stt_stream_end")]
+    SttStreamEnd,
+    #[napi(value = "user_stt_start")]
+    UserSttStart,
+    #[napi(value = "user_stt_end")]
+    UserSttEnd,
+    #[napi(value = "user_stt_not_found")]
+    UserSttNotFound,
     #[napi(value = "barge_in")]
     BargeIn,
     #[napi(value = "error")]

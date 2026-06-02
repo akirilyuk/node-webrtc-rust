@@ -23,6 +23,8 @@ export const DEFAULT_VOICE_AGENT_VAD: VadConfig = {
   gateStt: false,
   gateSttOpenOnPending: true,
   sttGateHoldMs: 1000,
+  sttListenTimeoutMs: 4000,
+  utteranceFinalizeTimeoutMs: 1500,
   bargeIn: {
     enabled: true,
     useVad: true,

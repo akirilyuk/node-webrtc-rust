@@ -139,6 +139,8 @@ export interface JsVadConfig {
   gateStt?: boolean
   gateSttOpenOnPending?: boolean
   sttGateHoldMs?: number
+  sttListenTimeoutMs?: number
+  utteranceFinalizeTimeoutMs?: number
 }
 export const enum JsSttVendor {
   Openai = 'openai',
@@ -183,6 +185,12 @@ export const enum JsSpeechEventType {
   UserSpeechFinal = 'user_speech_final',
   AgentSpeakingStart = 'agent_speaking_start',
   AgentSpeakingEnd = 'agent_speaking_end',
+  VadTriggered = 'vad_triggered',
+  SttStreamStart = 'stt_stream_start',
+  SttStreamEnd = 'stt_stream_end',
+  UserSttStart = 'user_stt_start',
+  UserSttEnd = 'user_stt_end',
+  UserSttNotFound = 'user_stt_not_found',
   BargeIn = 'barge_in',
   Error = 'error'
 }

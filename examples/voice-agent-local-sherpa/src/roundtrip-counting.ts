@@ -35,6 +35,7 @@ import {
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import { streamSilence } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { evaluateNormalUtteranceLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
 /** Default long utterance: spoken digits one through twenty (no commas — natural counting). */
 export const DEFAULT_COUNTING_PHRASE =
@@ -1009,6 +1010,7 @@ async function main(): Promise<void> {
   startSpeakerSpeechPump(speaker, agentEndLatch)
 
   console.log('[speaker] Synthesizing long counting phrase…')
+  collector.startEventRecording()
   const recognizedPromise = collector.waitForNext(timeoutMs, finalizeWaitMs)
   await playSpeakerTtsWithPostSilence({
     speaker,
@@ -1019,6 +1021,7 @@ async function main(): Promise<void> {
     agentSpeakingEndLatch: agentEndLatch,
   })
   const recognized = await recognizedPromise
+  const lifecycleEvents = collector.stopEventRecording()
 
   const evaluation = evaluateCountingRoundtrip({
     phrase,
@@ -1034,6 +1037,15 @@ async function main(): Promise<void> {
     `Events: finals=${evaluation.stats.finals.length} speaking_end=${evaluation.stats.speakingEndCount} speaking_start=${evaluation.stats.speakingStartCount} partials=${evaluation.stats.partialCount}`,
   )
   console.log(`Number words in final: ${evaluation.numberWordsFound}/20`)
+
+  const lifecycleEval = evaluateNormalUtteranceLifecycle({
+    events: lifecycleEvents,
+    label: 'listener',
+  })
+  if (!lifecycleEval.passed) {
+    evaluation.failures.push(...lifecycleEval.failures)
+    evaluation.passed = false
+  }
 
   await listener.stop().catch(() => undefined)
   await speaker.stop().catch(() => undefined)

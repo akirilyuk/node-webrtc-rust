@@ -13,6 +13,10 @@
 //! | `UserSpeechFinal` | STT `finalize_utterance` — primary turn boundary for LLM |
 //! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound |
 //! | `AgentSpeakingEnd` | TTS queue drained — **only on the agent that plays TTS** |
+//! | `VadTriggered` | VAD `SpeechStart` when `vad.enabled` — opens STT listen for this utterance |
+//! | `SttStreamStart` / `SttStreamEnd` | STT vendor PCM feed opened / closed for an utterance |
+//! | `UserSttStart` / `UserSttEnd` | STT recognition session for one user utterance |
+//! | `UserSttNotFound` | VAD fired but no STT partial within `sttListenTimeoutMs` |
 //! | `BargeIn` | Barge-in path (semantic STT partial and/or VAD during agent TTS) |
 //! | `Error` | Vendor or internal failure |
 
@@ -27,6 +31,12 @@ pub enum SpeechEventKind {
     UserSpeechFinal,
     AgentSpeakingStart,
     AgentSpeakingEnd,
+    VadTriggered,
+    SttStreamStart,
+    SttStreamEnd,
+    UserSttStart,
+    UserSttEnd,
+    UserSttNotFound,
     BargeIn,
     Error,
 }
@@ -83,6 +93,54 @@ impl SpeechEvent {
     pub fn agent_speaking_end() -> Self {
         Self {
             kind: SpeechEventKind::AgentSpeakingEnd,
+            text: None,
+            error: None,
+        }
+    }
+
+    pub fn vad_triggered() -> Self {
+        Self {
+            kind: SpeechEventKind::VadTriggered,
+            text: None,
+            error: None,
+        }
+    }
+
+    pub fn stt_stream_start() -> Self {
+        Self {
+            kind: SpeechEventKind::SttStreamStart,
+            text: None,
+            error: None,
+        }
+    }
+
+    pub fn stt_stream_end() -> Self {
+        Self {
+            kind: SpeechEventKind::SttStreamEnd,
+            text: None,
+            error: None,
+        }
+    }
+
+    pub fn user_stt_start() -> Self {
+        Self {
+            kind: SpeechEventKind::UserSttStart,
+            text: None,
+            error: None,
+        }
+    }
+
+    pub fn user_stt_end() -> Self {
+        Self {
+            kind: SpeechEventKind::UserSttEnd,
+            text: None,
+            error: None,
+        }
+    }
+
+    pub fn user_stt_not_found() -> Self {
+        Self {
+            kind: SpeechEventKind::UserSttNotFound,
             text: None,
             error: None,
         }

@@ -13,7 +13,9 @@
 //!
 //! 1. **Inbound** — WebRTC stereo 48 kHz PCM → mono 16 kHz → optional VAD → optional STT gate → STT.
 //! 2. **Outbound** — TTS synthesize → buffer → 20 ms frames to PCM writer → `agent_speaking_*` events.
-//! 3. **Barge-in** — VAD `SpeechStart` and/or STT partial during agent TTS → flush TTS → `barge_in`.
+//! 3. **Barge-in** — During agent TTS the inbound track is always processed (VAD every frame).
+//!    STT is fed only when VAD opens the gate (pending/speaking/hold). Semantic barge (`require_stt_partial`)
+//!    flushes TTS on a qualifying STT partial; VAD-only barge applies when STT is disabled.
 //!
 //! ## `gate_stt` utterance close
 //!

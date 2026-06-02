@@ -53,10 +53,32 @@ new VoiceAgent(config)
 | `user_speech_final`    | STT utterance closed                         | **Primary LLM turn trigger**                                       |
 | `agent_speaking_start` | First TTS PCM written                        | UI “agent talking”                                                 |
 | `agent_speaking_end`   | TTS queue drained                            | Harness playback boundary; do not assume remote peer receives this |
+| `vad_triggered`        | VAD `SpeechStart` when `vad.enabled`         | STT listen opens; logging / `[speech]` traces                      |
+| `stt_stream_start`     | STT vendor PCM feed opened for an utterance  | Pairs with `stt_stream_end`                                        |
+| `stt_stream_end`       | STT vendor PCM feed closed                   | After final, C1, or C2 close                                       |
+| `user_stt_start`       | STT recognition session opened               | Pairs with `user_stt_end` or `user_stt_not_found`                  |
+| `user_stt_end`         | STT recognition session closed               | Normal or forced utterance close                                   |
+| `user_stt_not_found`   | VAD fired but no partial within C1 timeout   | No `user_speech_final` — nothing to reply to                       |
 | `barge_in`             | Barge-in path fired (VAD and/or STT partial) | Cancel LLM stream; TTS may already be flushed                      |
 | `error`                | Vendor or pipeline failure                   | Log / recover                                                      |
 
 Use `SPEECH_EVENT_TYPE` constants instead of string literals in tests.
+
+### STT utterance lifecycle (event order)
+
+When `vad.enabled` and STT are configured, each VAD `SpeechStart` opens a session:
+
+```text
+vad_triggered → user_stt_start → stt_stream_start → user_speaking_start
+  → user_speech_partial* → [barge_in if agent TTS + barge config]
+  → stt_stream_end → user_stt_end → user_speaking_end → user_speech_final
+```
+
+**C1 (no partial):** after `sttListenTimeoutMs` → `stt_stream_end` → `user_stt_not_found` → `user_stt_end` — **no** `user_speech_final`.
+
+**C2 (stall):** after `utteranceFinalizeTimeoutMs` (starts when `sttGateHoldMs` drains if gate was open) → forced close with `user_speech_final` from last partial.
+
+Full flows, timers, and barge matrix: [VOICE-VAD-AND-BARGE-IN.md § STT utterance lifecycle](./VOICE-VAD-AND-BARGE-IN.md#stt-utterance-lifecycle-vad--stt-events). Sherpa harness evaluators: [ROUNDTRIP.md § STT lifecycle evaluators](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md#stt-lifecycle-evaluators).
 
 ### `gateStt` and `user_speaking_end`
 

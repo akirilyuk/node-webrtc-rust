@@ -161,6 +161,18 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'agent_speaking_start'
     case JsSpeechEventType.AgentSpeakingEnd:
       return 'agent_speaking_end'
+    case JsSpeechEventType.VadTriggered:
+      return 'vad_triggered'
+    case JsSpeechEventType.SttStreamStart:
+      return 'stt_stream_start'
+    case JsSpeechEventType.SttStreamEnd:
+      return 'stt_stream_end'
+    case JsSpeechEventType.UserSttStart:
+      return 'user_stt_start'
+    case JsSpeechEventType.UserSttEnd:
+      return 'user_stt_end'
+    case JsSpeechEventType.UserSttNotFound:
+      return 'user_stt_not_found'
     case JsSpeechEventType.BargeIn:
       return 'barge_in'
     default:

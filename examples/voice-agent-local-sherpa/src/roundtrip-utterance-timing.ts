@@ -26,6 +26,7 @@ import {
 } from './roundtrip-counting.js'
 import { playTtsAndCollect } from './roundtrip-counting-echo.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
+import { evaluateNormalUtteranceLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
 const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_WARMUP_S = 0.6
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
   const agentEndLatch = new AgentSpeakingEndLatch()
   startSpeakerSpeechPump(speaker, agentEndLatch)
 
+  collector.startEventRecording()
   const recognized = await playTtsAndCollect({
     speaker,
     speakerOut: agentOut,
@@ -101,6 +103,12 @@ async function main(): Promise<void> {
     label: 'listener',
   })
 
+  const lifecycleEvents = collector.stopEventRecording()
+  const lifecycleEval = evaluateNormalUtteranceLifecycle({
+    events: lifecycleEvents,
+    label: 'listener',
+  })
+
   console.log(`Recognized: "${recognized}"`)
   console.log(
     `Timing: speaking_end=${collector.stats.speakingEndAtMs ?? 'n/a'}  final=${collector.stats.speechFinalAtMs ?? 'n/a'}  gap=${timing.gapMs ?? 'n/a'} ms`,
@@ -110,10 +118,13 @@ async function main(): Promise<void> {
   await listener.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)
 
-  if (!timing.passed) {
+  const failures = [...timing.failures]
+  if (!lifecycleEval.passed) failures.push(...lifecycleEval.failures)
+
+  if (failures.length > 0) {
     exitSherpaRoundtripFailure({
       reason: 'speaking_end / final timing assertions failed',
-      failures: timing.failures,
+      failures,
       legs: [
         {
           label: 'listener',

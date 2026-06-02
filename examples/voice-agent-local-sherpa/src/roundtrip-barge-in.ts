@@ -26,6 +26,7 @@ import {
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
 import {
+  evaluateBargeUtteranceFinal,
   evaluateSemanticBargeEventOrder,
   evaluateToneMustNotBarge,
   formatRecordedSpeechEvent,
@@ -470,6 +471,24 @@ async function main(): Promise<void> {
   if (!orderEval.passed) {
     failures.push(...orderEval.failures)
   }
+
+  const utteranceEval = evaluateBargeUtteranceFinal({
+    events: speechResult.events,
+    expectedPhrase: bargePhrase,
+    label: 'Phase 3',
+  })
+  if (utteranceEval.recognized) {
+    console.log(
+      `Barge utterance recognized: "${utteranceEval.recognized}" (similarity ${(utteranceEval.similarity * 100).toFixed(0)}%)`,
+    )
+  }
+  if (utteranceEval.endToFinalGapMs != null) {
+    console.log(`user_speaking_end → user_speech_final: ${utteranceEval.endToFinalGapMs} ms`)
+  }
+  if (!utteranceEval.passed) {
+    failures.push(...utteranceEval.failures)
+  }
+
   if (speechRatio >= maxCutRatio) {
     failures.push(
       `Phase 3: playback not truncated enough (${(speechRatio * 100).toFixed(0)}% >= ${(maxCutRatio * 100).toFixed(0)}%)`,

@@ -2,6 +2,7 @@ import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import { describe, expect, it } from 'vitest'
 
 import {
+  evaluateBargeUtteranceFinal,
   evaluateSemanticBargeEventOrder,
   evaluateToneMustNotBarge,
   formatRecordedSpeechEvent,
@@ -11,6 +12,39 @@ import {
   phase3EventsTerminal,
   type RecordedSpeechEvent,
 } from './roundtrip-barge-in-helpers.js'
+
+describe('evaluateBargeUtteranceFinal', () => {
+  it('passes when barge phrase is recognized with paired end and final', () => {
+    const events: RecordedSpeechEvent[] = [
+      { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop' },
+      { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
+      { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
+      { type: SPEECH_EVENT_TYPE.userSpeakingEnd, atMs: 3000 },
+      { type: SPEECH_EVENT_TYPE.userSpeechFinal, atMs: 3100, text: 'stop now please' },
+    ]
+    const result = evaluateBargeUtteranceFinal({
+      events,
+      expectedPhrase: 'stop now please',
+    })
+    expect(result.passed).toBe(true)
+    expect(result.similarity).toBeGreaterThanOrEqual(0.6)
+  })
+
+  it('fails when user_speech_final is missing after barge_in', () => {
+    const events: RecordedSpeechEvent[] = [
+      { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
+      { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
+      { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
+    ]
+    const result = evaluateBargeUtteranceFinal({
+      events,
+      expectedPhrase: 'stop now please',
+    })
+    expect(result.passed).toBe(false)
+    expect(result.failures.some((f) => f.includes('user_speech_final'))).toBe(true)
+  })
+})
 
 describe('roundtrip-barge-in helpers', () => {
   it('formatRecordedSpeechEvent includes offset, type, and optional text', () => {
@@ -39,9 +73,19 @@ describe('roundtrip-barge-in helpers', () => {
       { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop' },
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
+      { type: SPEECH_EVENT_TYPE.userSpeakingEnd, atMs: 3000 },
+      { type: SPEECH_EVENT_TYPE.userSpeechFinal, atMs: 3100, text: 'stop now please' },
     ]
     expect(phase3EventsComplete(barge)).toBe(true)
     expect(phase3EventsTerminal(barge)).toBe(true)
+
+    const bargeNoFinal: RecordedSpeechEvent[] = [
+      { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
+      { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
+      { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
+    ]
+    expect(phase3EventsComplete(bargeNoFinal)).toBe(false)
+    expect(phase3EventsTerminal(bargeNoFinal)).toBe(false)
 
     const noBarge: RecordedSpeechEvent[] = [
       { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },

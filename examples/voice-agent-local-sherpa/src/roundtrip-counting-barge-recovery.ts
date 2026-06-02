@@ -44,7 +44,7 @@ import {
 } from './roundtrip-counting-echo.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
-/** Agent2 plays TTS and must honor STT-gated barge-in (same as roundtrip-barge-in listener). */
+/** Agent2 plays long echo TTS — STT-gated barge must interrupt mid-playback. */
 function agent2VadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
   return {
     ...VOICE_AGENT_VAD_PRESET,
@@ -64,6 +64,25 @@ function agent2VadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['
   }
 }
 
+/** Agent1 injects user-side barge TTS on agentOut — must not self-barge on echo heard on agentInbound. */
+function agent1VadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
+  return {
+    ...VOICE_AGENT_VAD_PRESET,
+    ...base.vad,
+    provider: 'energy',
+    threshold: 0.05,
+    gateStt: true,
+    bargeIn: {
+      ...VOICE_AGENT_VAD_PRESET.bargeIn,
+      ...base.vad?.bargeIn,
+      enabled: false,
+      useVad: false,
+      flushTts: false,
+      requireSttPartial: false,
+    },
+  }
+}
+
 export const DEFAULT_RECOVERY_PHRASE = 'hello testing recovery one two three'
 
 const DEFAULT_TIMEOUT_MS = 45_000
@@ -75,7 +94,7 @@ const DEFAULT_INTER_LEG_GAP_S = 0.5
 const DEFAULT_INTER_ROUND_GAP_S = 1.0
 /** Ms after agent2 TTS playback starts before barge TTS (mid-playback). */
 const DEFAULT_BARGE_DELAY_MS = 700
-const DEFAULT_BARGE_TONE_S = 1.0
+const DEFAULT_BARGE_TONE_S = 1.5
 /** Interrupted leg B must retain fewer number words than this. */
 const DEFAULT_MAX_INTERRUPT_NUMBER_WORDS = 6
 /** Interrupted leg B similarity vs full echo text must stay below this. */
@@ -175,6 +194,7 @@ export async function playEchoLegBWithBargeIn(params: {
   )
   await params.agent1.sendTextToTTS(bargePhrase)
   await streamSilence(params.agentOut, params.bargeToneS)
+  await params.collectorAgent2.waitForBargeIn(params.timeoutMs)
 
   await speakPromise
   await playbackDone
@@ -238,7 +258,7 @@ async function main(): Promise<void> {
     stt: config.stt,
     tts: config.tts,
     events: { mode: 'stream' },
-    vad: config.vad,
+    vad: agent1VadConfig(config),
   })
   const agent2 = new VoiceAgent({
     stt: config.stt,

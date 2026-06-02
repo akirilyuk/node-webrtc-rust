@@ -44,33 +44,14 @@ function roundtripScriptFromStack(): string {
  * **`[speech]` events** (same surface as browser `speech_event` → client log) are **always**
  * enabled unless `SHERPA_ROUNDTRIP_EVENT_LOG=0`.
  *
- * **`[voice-debug]`** (Rust VAD/STT internals): on locally by default; CI quiet pass sets
- * `VOICE_DEBUG=0` via [`run-sherpa-roundtrip-e2e.sh`](../../../scripts/ci/run-sherpa-roundtrip-e2e.sh)
- * and re-runs with `VOICE_DEBUG=1` on failure. Opt out locally: `VOICE_DEBUG=0` or
- * `SHERPA_ROUNDTRIP_DEBUG=0` (rust debug only — speech events stay on).
+ * **`[voice-debug]`**: off by default for all roundtrips; opt in with `VOICE_DEBUG=1`.
  */
 export function enableSherpaRoundtripRustDebug(): void {
   const scriptName = roundtripScriptFromStack()
-  const roundtripDebug = process.env.SHERPA_ROUNDTRIP_DEBUG
   const voiceDebug = process.env.VOICE_DEBUG
 
   if (process.env.SHERPA_ROUNDTRIP_EVENT_LOG !== '0') {
     enableRoundtripSpeechEventLog()
-  }
-
-  const disableRustDebug =
-    roundtripDebug === '0' ||
-    roundtripDebug === 'false' ||
-    voiceDebug === '0' ||
-    voiceDebug === 'false'
-
-  if (disableRustDebug) {
-    if (process.env.CI === 'true' && voiceDebug === '0') {
-      console.error(
-        `[${scriptName}] CI — [speech] events on stderr; [voice-debug] off (failure re-run adds VOICE_DEBUG=1)`,
-      )
-    }
-    return
   }
 
   if (isVoiceDebugEnabled()) {
@@ -78,14 +59,9 @@ export function enableSherpaRoundtripRustDebug(): void {
     return
   }
 
-  process.env.VOICE_DEBUG = '1'
-  if (process.env.SHERPA_COUNTING_VERBOSE !== '0') {
-    process.env.SHERPA_COUNTING_VERBOSE = '1'
+  if (process.env.CI === 'true' || voiceDebug === '0' || voiceDebug === 'false') {
+    return
   }
-  console.error(
-    `[${scriptName}] VOICE_DEBUG=1 — Rust agent/STT pipeline logs on stderr ([voice-debug]); ` +
-      'disable rust debug with VOICE_DEBUG=0 or SHERPA_ROUNDTRIP_DEBUG=0',
-  )
 }
 
 export type RoundtripLegDebug = {
@@ -158,11 +134,11 @@ export function reportSherpaRoundtripFailure(ctx: SherpaRoundtripFailureContext)
     )
   } else if (process.env.CI === 'true' && !isVoiceDebugEnabled()) {
     console.error(
-      'CI quiet run — [speech] events above; [voice-debug] off unless the runner re-ran with VOICE_DEBUG=1.',
+      'CI run — [speech] events above; add VOICE_DEBUG=1 locally to inspect [voice-debug].',
     )
-  } else {
+  } else if (!isVoiceDebugEnabled()) {
     console.error(
-      'VOICE_DEBUG was off — roundtrips normally set it at startup; re-run without SHERPA_ROUNDTRIP_DEBUG=0.',
+      'VOICE_DEBUG off — re-run with VOICE_DEBUG=1 for Rust [voice-debug] pipeline logs.',
     )
   }
   if (countingVerbose !== '1') {

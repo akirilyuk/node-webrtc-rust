@@ -13,8 +13,25 @@ cd "$ROOT"
 
 CI_STEP="$ROOT/scripts/ci/ci-step.sh"
 # Per roundtrip script — must exceed in-process SHERPA_ROUNDTRIP_WALL_MS (often 70–120s).
+# Long scripts and failure re-runs (VOICE_DEBUG) need headroom — see sherpa_roundtrip_timeout_sec.
 DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC="${CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC:-180}"
 DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC="${CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC:-900}"
+
+sherpa_roundtrip_timeout_sec() {
+  local script="$1"
+  case "$script" in
+    start:roundtrip-counting-barge-recovery)
+      # 240s in-process wall; quiet pass + VOICE_DEBUG re-run on failure.
+      echo "${CI_SHERPA_BARGE_RECOVERY_TIMEOUT_SEC:-420}"
+      ;;
+    start:roundtrip-counting-echo | start:roundtrip)
+      echo "${CI_SHERPA_LONG_ROUNDTRIP_TIMEOUT_SEC:-300}"
+      ;;
+    *)
+      echo "$DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC"
+      ;;
+  esac
+}
 
 WORKSPACE="@node-webrtc-rust/example-voice-agent-local-sherpa"
 EXAMPLE_ROOT="$ROOT/examples/voice-agent-local-sherpa"
@@ -92,8 +109,10 @@ run_e2e() {
   local idx=0
   for script in "${SHERPA_ROUNDTRIP_E2E[@]}"; do
     idx=$((idx + 1))
+    local step_timeout
+    step_timeout="$(sherpa_roundtrip_timeout_sec "$script")"
     CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
-      bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC" \
+      bash "$CI_STEP" --timeout "$step_timeout" \
         "sherpa e2e $script" -- bash "$ROOT/scripts/ci/run-sherpa-roundtrip-e2e.sh" "$script"
   done
 }

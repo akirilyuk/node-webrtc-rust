@@ -516,7 +516,8 @@ export class ListenerUtteranceCollector {
     speakingEndAtMs: null,
     speechFinalAtMs: null,
   }
-  private agentSpeakingWaiters: Array<() => void> = []
+  private agentSpeakingWaiters: Array<{ baseline: number; resolve: () => void }> = []
+  private bargeInWaiters: Array<{ baseline: number; resolve: () => void }> = []
 
   constructor(
     private readonly listener: VoiceAgent,
@@ -542,23 +543,61 @@ export class ListenerUtteranceCollector {
     this.stats.speechFinalAtMs = null
   }
 
-  /** Resolve when the listener emits `agent_speaking_start` (TTS playback actually started). */
+  /** Resolve on the **next** `agent_speaking_start` after this call (not a stale count from an earlier leg). */
   waitForAgentSpeakingStart(timeoutMs: number): Promise<void> {
-    if (this.stats.agentSpeakingStartCount > 0) {
+    const baseline = this.stats.agentSpeakingStartCount
+    if (this.stats.agentSpeakingStartCount > baseline) {
       return Promise.resolve()
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        const idx = this.agentSpeakingWaiters.indexOf(onStart)
-        if (idx >= 0) this.agentSpeakingWaiters.splice(idx, 1)
+        this.agentSpeakingWaiters = this.agentSpeakingWaiters.filter((w) => w !== waiter)
         reject(new Error(`timed out waiting for agent_speaking_start (${timeoutMs} ms)`))
       }, timeoutMs)
-      const onStart = () => {
-        clearTimeout(timer)
-        resolve()
+      const waiter = {
+        baseline,
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
       }
-      this.agentSpeakingWaiters.push(onStart)
+      this.agentSpeakingWaiters.push(waiter)
     })
+  }
+
+  /** Resolve on the **next** `barge_in` after this call (mid-playback interrupt confirmation). */
+  waitForBargeIn(timeoutMs: number): Promise<void> {
+    const baseline = this.stats.bargeInCount
+    if (this.stats.bargeInCount > baseline) {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.bargeInWaiters = this.bargeInWaiters.filter((w) => w !== waiter)
+        reject(new Error(`timed out waiting for barge_in (${timeoutMs} ms)`))
+      }, timeoutMs)
+      const waiter = {
+        baseline,
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+      }
+      this.bargeInWaiters.push(waiter)
+    })
+  }
+
+  private resolveBaselineWaiters(
+    waiters: Array<{ baseline: number; resolve: () => void }>,
+    count: number,
+  ): void {
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      const waiter = waiters[i]!
+      if (count > waiter.baseline) {
+        waiter.resolve()
+        waiters.splice(i, 1)
+      }
+    }
   }
 
   private recordEvent(event: SpeechEvent): void {
@@ -583,12 +622,11 @@ export class ListenerUtteranceCollector {
         break
       case 'barge_in':
         this.stats.bargeInCount += 1
+        this.resolveBaselineWaiters(this.bargeInWaiters, this.stats.bargeInCount)
         break
       case 'agent_speaking_start':
         this.stats.agentSpeakingStartCount += 1
-        for (const resolve of this.agentSpeakingWaiters.splice(0)) {
-          resolve()
-        }
+        this.resolveBaselineWaiters(this.agentSpeakingWaiters, this.stats.agentSpeakingStartCount)
         break
       default:
         break

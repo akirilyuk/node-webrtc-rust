@@ -22,6 +22,7 @@ import {
   VOICE_AGENT_VAD_PRESET,
   SPEECH_EVENT_TYPE,
   type SpeechEventType,
+  type VoiceAgentConfig,
 } from '@node-webrtc-rust/sdk/voice'
 import {
   evaluateBargeUtteranceFinal,

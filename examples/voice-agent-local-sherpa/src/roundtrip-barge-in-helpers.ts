@@ -62,6 +62,21 @@ function sliceAfterBargeInPhase3(events: RecordedSpeechEvent[]): RecordedSpeechE
   return afterStart.slice(bargeIdx + 1)
 }
 
+/** Phase 3 mid-run: barge-in fired and agent TTS stopped (finalize may still be pending). */
+export function phase3BargeObserved(events: RecordedSpeechEvent[]): boolean {
+  const agentStart = events.findIndex((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart)
+  if (agentStart < 0) return false
+  const afterStart = events.slice(agentStart + 1)
+  return (
+    afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.bargeIn) &&
+    afterStart.some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+  )
+}
+
+export function hasUserSpeechFinal(events: RecordedSpeechEvent[]): boolean {
+  return events.some((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal)
+}
+
 /** Phase 3 done when barge truncated TTS and listener finalized the barge utterance. */
 export function phase3EventsComplete(events: RecordedSpeechEvent[]): boolean {
   const afterBarge = sliceAfterBargeInPhase3(events)

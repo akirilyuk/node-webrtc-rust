@@ -8,6 +8,7 @@ import {
   formatRecordedSpeechEvent,
   phase1BaselineComplete,
   phase2EventsComplete,
+  phase3BargeObserved,
   phase3EventsComplete,
   phase3EventsTerminal,
   type RecordedSpeechEvent,
@@ -84,6 +85,7 @@ describe('roundtrip-barge-in helpers', () => {
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
     ]
+    expect(phase3BargeObserved(bargeNoFinal)).toBe(true)
     expect(phase3EventsComplete(bargeNoFinal)).toBe(false)
     expect(phase3EventsTerminal(bargeNoFinal)).toBe(false)
 

@@ -23,23 +23,22 @@ import {
   SPEECH_EVENT_TYPE,
   type SpeechEventType,
 } from '@node-webrtc-rust/sdk/voice'
-import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
-
 import {
   evaluateBargeUtteranceFinal,
   evaluateSemanticBargeEventOrder,
   evaluateToneMustNotBarge,
   formatRecordedSpeechEvent,
+  hasUserSpeechFinal,
   logRecordedSpeechEvents,
   phase1BaselineComplete,
   phase2EventsComplete,
-  phase3EventsTerminal,
+  phase3BargeObserved,
   recordSpeechEvent,
   type RecordedSpeechEvent,
 } from './roundtrip-barge-in-helpers.js'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
-import { installRoundtripWallClockTimeout } from './roundtrip-counting.js'
+import { installRoundtripWallClockTimeout, postTtsSilenceSeconds } from './roundtrip-counting.js'
 import { stereoPcmDurationMs, streamSilence, streamTone } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
@@ -443,15 +442,31 @@ async function main(): Promise<void> {
     interrupt: async () => {
       console.log(`[Phase 3] user Sherpa TTS barge: "${bargePhrase}"`)
       await userSpeaker.sendTextToTTS(bargePhrase)
-      await streamSilence(userOut, 1.5)
     },
     maxPhaseMs,
-    untilEvents: phase3EventsTerminal,
+    untilEvents: phase3BargeObserved,
     phaseLabel: 'Phase 3',
   })
+
+  let phase3Events = speechResult.events
+  if (!hasUserSpeechFinal(phase3Events)) {
+    const postSilenceS = postTtsSilenceSeconds(config)
+    console.log(
+      `[Phase 3] post-barge trailing silence ${postSilenceS.toFixed(1)}s (VAD-aligned STT finalize)`,
+    )
+    await streamSilence(userOut, postSilenceS)
+    const finalizeEvents = await speechCollector.collectUntil({
+      phaseLabel: 'Phase 3 finalize',
+      maxMs: 15_000,
+      until: hasUserSpeechFinal,
+    })
+    phase3Events = [...phase3Events, ...finalizeEvents]
+    logRecordedSpeechEvents(finalizeEvents, 'Phase 3 finalize')
+  }
+
   const speechRatio = speechResult.receivedMs / fullMs
   const orderEval = evaluateSemanticBargeEventOrder({
-    events: speechResult.events,
+    events: phase3Events,
     label: 'Phase 3',
   })
   console.log(
@@ -473,7 +488,7 @@ async function main(): Promise<void> {
   }
 
   const utteranceEval = evaluateBargeUtteranceFinal({
-    events: speechResult.events,
+    events: phase3Events,
     expectedPhrase: bargePhrase,
     label: 'Phase 3',
   })

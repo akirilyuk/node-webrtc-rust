@@ -29,4 +29,9 @@ npm run build --workspace=@node-webrtc-rust/sdk
 echo "==> build helpers"
 npm run build --workspace=@node-webrtc-rust/helpers
 
+KEY="$(bash "$ROOT/scripts/ci/ts-dist-cache-key.sh")"
+mkdir -p packages/sdk/dist
+echo "$KEY" > packages/sdk/dist/.ci-ts-dist-key
+echo "    stamped dist fingerprint ${KEY:0:12}…"
+
 echo "==> TypeScript workspace build OK"

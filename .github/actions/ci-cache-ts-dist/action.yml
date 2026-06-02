@@ -24,5 +24,3 @@ runs:
           packages/signaling/dist
           packages/helpers/dist
         key: ts-dist-${{ inputs.profile }}-${{ hashFiles('packages/sdk/src/**', 'packages/signaling/src/**', 'packages/helpers/src/**', 'packages/sdk/tsconfig*.json', 'packages/signaling/tsconfig*.json', 'packages/helpers/tsconfig*.json', 'tsconfig.base.json') }}
-        restore-keys: |
-          ts-dist-${{ inputs.profile }}-

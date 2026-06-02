@@ -27,6 +27,7 @@ import {
   AgentSpeakingEndLatch,
   countNumberWordsInTranscript,
   DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
+  type CollectedSpeechEvent,
   ListenerUtteranceCollector,
   NUMBER_WORDS_ONE_TO_TEN,
   postTtsSilenceSeconds,
@@ -43,6 +44,7 @@ import {
   runEchoRound,
   transcriptIncludesYouSaid,
 } from './roundtrip-counting-echo.js'
+import { evaluateBargeUtteranceFinal } from './roundtrip-barge-in-helpers.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
 /** Agent2 plays long echo TTS — STT-gated barge must interrupt mid-playback. */
@@ -85,6 +87,7 @@ function agent1VadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['
 }
 
 export const DEFAULT_RECOVERY_PHRASE = 'hello testing recovery one two three'
+export const DEFAULT_BARGE_PHRASE = 'stop now please'
 
 const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_MIN_NUMBER_WORDS = 8
@@ -153,6 +156,12 @@ export function evaluateInterruptedEchoLeg(params: {
   }
 }
 
+export interface EchoLegBWithBargeInResult {
+  recognized: string
+  bargePhrase: string
+  agent2Events: CollectedSpeechEvent[]
+}
+
 /**
  * Agent2 speaks `You said: …` while Agent1 TTS on agentOut triggers STT-gated barge-in on Agent2.
  */
@@ -165,13 +174,14 @@ export async function playEchoLegBWithBargeIn(params: {
   collectorAgent2: ListenerUtteranceCollector
   agent2EndLatch: AgentSpeakingEndLatch
   echoText: string
+  bargePhrase: string
   bargeDelayMs: number
   bargeToneS: number
   postTtsSilenceS: number
   timeoutMs: number
   finalizeWaitMs: number
   logLabel: string
-}): Promise<string> {
+}): Promise<EchoLegBWithBargeInResult> {
   console.log(
     `[${params.logLabel}] TTS (will barge after ${params.bargeDelayMs}ms): "${params.echoText.slice(0, 80)}${params.echoText.length > 80 ? '…' : ''}"`,
   )
@@ -187,23 +197,29 @@ export async function playEchoLegBWithBargeIn(params: {
     waitForAgentSpeakingEnd: () => params.agent2EndLatch.waitForNext(params.timeoutMs),
   })
   const speakingStarted = params.collectorAgent2.waitForAgentSpeakingStart(params.timeoutMs)
+  params.collectorAgent2.startEventRecording()
   const speakPromise = params.agent2.sendTextToTTS(params.echoText)
 
   await speakingStarted
   await sleep(params.bargeDelayMs)
-  const bargePhrase = process.env.SHERPA_BARGE_RECOVERY_BARGE_PHRASE?.trim() || 'stop now please'
   console.log(
-    `[${params.logLabel}] Barge via Sherpa TTS on agentOut: "${bargePhrase}" (${params.bargeToneS}s tail)…`,
+    `[${params.logLabel}] Barge via Sherpa TTS on agentOut: "${params.bargePhrase}" (${params.bargeToneS}s tail)…`,
   )
   const bargeSeen = params.collectorAgent2.waitForBargeIn(params.timeoutMs)
-  await params.agent1.sendTextToTTS(bargePhrase)
+  await params.agent1.sendTextToTTS(params.bargePhrase)
   await streamSilence(params.agentOut, params.bargeToneS)
   await bargeSeen
 
   await speakPromise
   await playbackDone
   await streamSilence(params.userOut, params.postTtsSilenceS)
-  return recognizedPromise
+  const recognized = await recognizedPromise
+  const agent2Events = params.collectorAgent2.stopEventRecording()
+  return {
+    recognized,
+    bargePhrase: params.bargePhrase,
+    agent2Events,
+  }
 }
 
 async function main(): Promise<void> {
@@ -212,6 +228,7 @@ async function main(): Promise<void> {
   const countingPhrase =
     process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
   const recoveryPhrase = process.env.SHERPA_BARGE_RECOVERY_PHRASE?.trim() || DEFAULT_RECOVERY_PHRASE
+  const bargePhrase = process.env.SHERPA_BARGE_RECOVERY_BARGE_PHRASE?.trim() || DEFAULT_BARGE_PHRASE
 
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
@@ -251,7 +268,7 @@ async function main(): Promise<void> {
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log(`Steps: (1) count→You said OK  (2) count→barge→partial  (3) recovery→You said OK`)
   console.log(
-    `Barge: delay=${bargeDelayMs}ms  tone=${bargeToneS}s  maxWords=${maxInterruptWords}  maxSim=${maxInterruptSimilarity}`,
+    `Barge: phrase="${bargePhrase}" delay=${bargeDelayMs}ms  tone=${bargeToneS}s  maxWords=${maxInterruptWords}  maxSim=${maxInterruptSimilarity}`,
   )
   console.log('')
 
@@ -360,7 +377,7 @@ async function main(): Promise<void> {
   await streamSilence(userOut, interLegGapS)
 
   const echoText2 = formatAgent2EchoReply(legA2.recognized)
-  const legB2Recognized = await playEchoLegBWithBargeIn({
+  const legB2 = await playEchoLegBWithBargeIn({
     agent1,
     agent2,
     agentOut,
@@ -369,6 +386,7 @@ async function main(): Promise<void> {
     collectorAgent2,
     agent2EndLatch,
     echoText: echoText2,
+    bargePhrase,
     bargeDelayMs,
     bargeToneS,
     postTtsSilenceS,
@@ -379,18 +397,32 @@ async function main(): Promise<void> {
 
   const interrupted = evaluateInterruptedEchoLeg({
     echoText: echoText2,
-    recognized: legB2Recognized,
+    recognized: legB2.recognized,
     maxNumberWords: maxInterruptWords,
     maxSimilarity: maxInterruptSimilarity,
+  })
+
+  const bargePhraseEval = evaluateBargeUtteranceFinal({
+    events: legB2.agent2Events,
+    expectedPhrase: legB2.bargePhrase,
+    label: 'Round 2 barge',
   })
 
   console.log(`Leg B (interrupted) recognized: "${interrupted.recognized}"`)
   console.log(
     `Leg B partial check: numbers=${interrupted.numberWordsFound}/10  similarity=${(interrupted.similarity * 100).toFixed(0)}%`,
   )
+  if (bargePhraseEval.recognized) {
+    console.log(
+      `Barge phrase on Agent2: "${bargePhraseEval.recognized}" (similarity ${(bargePhraseEval.similarity * 100).toFixed(0)}%)`,
+    )
+  }
 
   if (!interrupted.passed) failures.push(...interrupted.failures)
   else console.log('✓ Round 2: barge-in truncated You said playback')
+
+  if (!bargePhraseEval.passed) failures.push(...bargePhraseEval.failures)
+  else console.log('✓ Round 2: barge phrase recognized on Agent2')
 
   await streamSilence(agentOut, interRoundGapS)
   await streamSilence(userOut, interRoundGapS)
@@ -441,7 +473,7 @@ async function main(): Promise<void> {
       },
       {
         label: 'counting 2 leg B (barge interrupt)',
-        recognized: legB2Recognized,
+        recognized: legB2.recognized,
         stats: collectorAgent1.stats,
       },
       round3

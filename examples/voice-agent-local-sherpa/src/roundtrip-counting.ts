@@ -266,6 +266,13 @@ export interface UtteranceEventStats {
   speechFinalAtMs: number | null
 }
 
+/** Timestamped speech event captured during an optional recording window on a collector. */
+export interface CollectedSpeechEvent {
+  type: SpeechEventType
+  atMs: number
+  text?: string
+}
+
 /** Default max gap between `user_speaking_end` and `user_speech_final` (regression for Sherpa close). */
 export const DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS = 500
 
@@ -642,6 +649,8 @@ export class ListenerUtteranceCollector {
   private agentSpeakingWaiters: Array<{ baseline: number; resolve: () => void }> = []
   private agentSpeakingEndWaiters: Array<{ baseline: number; resolve: () => void }> = []
   private bargeInWaiters: Array<{ baseline: number; resolve: () => void }> = []
+  private eventRecordingStartMs: number | null = null
+  private eventRecording: CollectedSpeechEvent[] = []
 
   constructor(
     private readonly listener: VoiceAgent,
@@ -655,6 +664,17 @@ export class ListenerUtteranceCollector {
     if (this.pumpStarted.value) return
     this.pumpStarted.value = true
     void this.pump()
+  }
+
+  /** Record speech events with relative timestamps until `stopEventRecording()`. */
+  startEventRecording(): void {
+    this.eventRecording = []
+    this.eventRecordingStartMs = Date.now()
+  }
+
+  stopEventRecording(): CollectedSpeechEvent[] {
+    this.eventRecordingStartMs = null
+    return [...this.eventRecording]
   }
 
   resetStatsForUtterance(): void {
@@ -797,6 +817,13 @@ export class ListenerUtteranceCollector {
       for await (const event of this.listener.speechEvents()) {
         logRoundtripSpeechEvent(this.agentLabel, event)
         this.agentEndLatch?.observe(event)
+        if (this.eventRecordingStartMs != null) {
+          this.eventRecording.push({
+            type: event.type as SpeechEventType,
+            atMs: Date.now() - this.eventRecordingStartMs,
+            text: event.text,
+          })
+        }
         this.recordEvent(event)
         if (this.settled) continue
 

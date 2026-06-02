@@ -129,7 +129,7 @@ Other `SHERPA_COUNTING_*` vars apply (`TIMEOUT_MS`, `VERBOSE`, etc.).
 | Step             | What happens                                                                                     | Pass criteria                                                                   |
 | ---------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
 | **1 — baseline** | Agent1 counts 1–10 → Agent2 → `You said: …` → Agent1                                             | Full echo (same as counting echo round 1)                                       |
-| **2 — barge**    | Agent1 counts again → Agent2 starts `You said: …` → Agent1 Sherpa TTS barge phrase on `agentOut` | Agent1 hears **partial** echo (≤6 number words, similarity ≤55% vs full phrase) |
+| **2 — barge**    | Agent1 counts again → Agent2 starts `You said: …` → Agent1 Sherpa TTS barge phrase on `agentOut` | Agent1 hears **partial** echo (≤6 number words, similarity ≤55% vs full phrase); Agent2 **`user_speech_final`** matches barge phrase (≥60% similarity) |
 | **3 — recovery** | Agent1 speaks recovery phrase → full `You said: …` again                                         | Echo leg includes “you said” and passes sentence echo checks                    |
 
 ```bash

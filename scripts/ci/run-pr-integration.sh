@@ -7,6 +7,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+CI_STEP="$ROOT/scripts/ci/ci-step.sh"
+DEFAULT_CARGO_LIB_TIMEOUT_SEC="${CI_CARGO_LIB_TIMEOUT_SEC:-180}"
+DEFAULT_CARGO_PEER_TEST_TIMEOUT_SEC="${CI_CARGO_PEER_TEST_TIMEOUT_SEC:-420}"
+DEFAULT_NPM_TEST_TIMEOUT_SEC="${CI_NPM_TEST_TIMEOUT_SEC:-600}"
+
 echo "==> npm ci"
 bash scripts/ci/npm-ci-workspace.sh
 
@@ -30,11 +35,22 @@ else
   echo "    using $(basename "${nodes[0]}") (artifact or cache)"
 fi
 
-echo "==> cargo test (core, mixer, conference)"
+echo "==> sync workspace bindings for npm test (registry copy under packages/sdk)"
+bash "$ROOT/scripts/ci/sync-workspace-bindings.sh"
+
+echo "==> cargo test (core, mixer, conference, speech)"
 echo "    (compiles Rust test deps on cold cache — separate from the .node binding above)"
-cargo test -p node-webrtc-rust-core
-cargo test -p node-webrtc-rust-mixer
-cargo test -p node-webrtc-rust-conference
+# WebRTC peer integration tests flake when run in parallel (shared ICE/ports).
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo core --lib" -- \
+  cargo test -p node-webrtc-rust-core --lib
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_PEER_TEST_TIMEOUT_SEC" "cargo peer_connection_test" -- \
+  cargo test -p node-webrtc-rust-core --test peer_connection_test -- --test-threads=1
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo mixer" -- \
+  cargo test -p node-webrtc-rust-mixer
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" -- \
+  cargo test -p node-webrtc-rust-conference
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
+  cargo test -p node-webrtc-rust-speech
 
 if [[ ! -f packages/sdk/dist/cjs/index.js ]] || [[ ! -f packages/signaling/dist/cjs/index.js ]] || [[ ! -f packages/helpers/dist/cjs/index.js ]]; then
   echo "==> build:ts (dist cache miss)"
@@ -44,6 +60,9 @@ else
 fi
 
 echo "==> npm test"
-npm test
+bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "npm test" -- npm test
+
+echo "==> Sherpa roundtrip E2E (all start:roundtrip-*)"
+bash scripts/ci/run-sherpa-example-ci.sh e2e
 
 echo "==> Integration tests OK"

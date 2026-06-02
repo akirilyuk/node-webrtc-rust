@@ -8,6 +8,7 @@
     "download-stt": "node scripts/download-stt.mjs",
     "download-stt:list": "node scripts/download-stt.mjs --list",
     "download-stt:en": "node scripts/download-stt.mjs --lang=en",
+    "download-stt:en-legacy": "node scripts/download-stt.mjs --lang=en-legacy",
     "download-stt:es": "node scripts/download-stt.mjs --lang=es",
     "download-stt:pt": "node scripts/download-stt.mjs --lang=pt",
     "download-stt:ar": "node scripts/download-stt.mjs --lang=ar",
@@ -28,8 +29,16 @@
     "download-tts:zh": "node scripts/download-tts.mjs --lang=zh",
     "start": "tsx src/index.ts",
     "start:roundtrip": "tsx src/roundtrip.ts",
+    "start:roundtrip-counting": "tsx src/roundtrip-counting.ts",
+    "start:roundtrip-counting-echo": "tsx src/roundtrip-counting-echo.ts",
+    "start:roundtrip-counting-barge-recovery": "tsx src/roundtrip-counting-barge-recovery.ts",
+    "start:roundtrip-utterance-timing": "tsx src/roundtrip-utterance-timing.ts",
+    "start:roundtrip-two-phrases": "tsx src/roundtrip-two-phrases.ts",
     "start:roundtrip-barge-in": "tsx src/roundtrip-barge-in.ts",
     "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 tsx src/index.ts",
+    "test": "vitest run",
+    "test:roundtrip-counting": "vitest run src/roundtrip-counting.test.ts src/roundtrip-counting-echo.test.ts src/roundtrip-counting-barge-recovery.test.ts src/roundtrip-utterance-timing.test.ts src/roundtrip-two-phrases.test.ts src/roundtrip-barge-in.test.ts",
+    "test:roundtrip-barge-in": "vitest run src/roundtrip-barge-in.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -40,6 +49,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
   }
 }

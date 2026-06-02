@@ -55,6 +55,26 @@ export const SHERPA_DEFAULT_MODEL_ID = sherpaCatalog.defaultModelId
 export const SHERPA_LOCAL_MODEL_CATALOG = sherpaCatalog.models as SherpaLocalModelEntry[]
 export const SHERPA_EXAMPLE_WORKSPACE = sherpaCatalog.exampleWorkspace
 
+/** Default English STT bundle (`download-stt` / `download-stt:en`). */
+export const SHERPA_DEFAULT_EN_STT_BUNDLE =
+  SHERPA_LOCAL_MODEL_CATALOG.find((entry) => entry.id === SHERPA_DEFAULT_MODEL_ID)?.bundle ??
+  'sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06'
+
+/** Default Piper TTS voice bundled with the local Sherpa example. */
+export const SHERPA_DEFAULT_EN_TTS_BUNDLE = 'vits-piper-en_US-amy-low'
+
+const SHERPA_EXAMPLE_DIR = 'examples/voice-agent-local-sherpa'
+
+/** Shell-ready default `SHERPA_STT_MODEL_PATH` after `download-stt:en`. */
+export function defaultSherpaSttModelPath(repoRoot = '$PWD'): string {
+  return `${repoRoot}/${SHERPA_EXAMPLE_DIR}/.models/${SHERPA_DEFAULT_EN_STT_BUNDLE}`
+}
+
+/** Shell-ready default `SHERPA_TTS_MODEL_PATH` after `download-tts:en`. */
+export function defaultSherpaTtsModelPath(repoRoot = '$PWD'): string {
+  return `${repoRoot}/${SHERPA_EXAMPLE_DIR}/.models/${SHERPA_DEFAULT_EN_TTS_BUNDLE}`
+}
+
 /** All supported providers — cloud + local + mock. */
 export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
   {
@@ -126,7 +146,7 @@ export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
     stt: true,
     tts: true,
     defaultModels: {
-      stt: 'sherpa-onnx-streaming-zipformer-en-2023-06-26',
+      stt: 'sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06',
       tts: 'vits-piper-en_US-amy-low',
     },
     home: 'https://github.com/k2-fsa/sherpa-onnx',
@@ -208,8 +228,9 @@ npm run download-stt --workspace=${ws} -- --lang=zh
 After download, export path and language (printed by the script):
 
 \`\`\`bash
-export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/<bundle-name>"
-export SHERPA_STT_LANGUAGE=de   # optional — inferred from path when omitted
+export SHERPA_STT_MODEL_PATH="${defaultSherpaSttModelPath()}"
+export SHERPA_TTS_MODEL_PATH="${defaultSherpaTtsModelPath()}"
+export SHERPA_STT_LANGUAGE=en   # optional — inferred from path when omitted
 \`\`\`
 
 For the **multilingual** Japanese/Arabic bundle (\`…-ar_en_id_ja_ru_th_vi_zh-2025-02-10\`), set \`SHERPA_STT_LANGUAGE\` to the language you speak: \`ja\`, \`ar\`, \`ru\`, \`vi\`, \`id\`, \`th\`, \`zh\`, or \`en\`.`

@@ -63,9 +63,9 @@ Pinned streaming Zipformer bundles (Spanish, French, German, Chinese, Japanese, 
 
 ```bash
 npm run download-stt:list --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-npm run download-stt:de --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-export SHERPA_STT_MODEL_PATH="…/.models/sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06"
-export SHERPA_STT_LANGUAGE=de
+npm run download-stt:en --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+export SHERPA_STT_MODEL_PATH="…/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
+export SHERPA_STT_LANGUAGE=en
 ```
 
 Hindi, Portuguese, and Italian are not yet available as dedicated streaming Zipformer bundles in the official `asr-models` release set wired to this adapter — use cloud STT or see the vendor reference for alternatives.

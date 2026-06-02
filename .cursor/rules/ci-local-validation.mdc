@@ -10,7 +10,7 @@ alwaysApply: false
 
 # Validate CI Locally Before Push
 
-**Never commit and push CI changes until the affected steps pass locally in the same conditions as the remote job.**
+**Never commit and push CI changes until the affected steps pass locally on the host.**
 
 See [`scripts/ci/README.md`](../../scripts/ci/README.md) for pipeline layout.
 
@@ -20,10 +20,11 @@ See [`scripts/ci/README.md`](../../scripts/ci/README.md) for pipeline layout.
 |------------|--------------|-------|
 | PR quality (`build.yml`) | `bash scripts/ci/run-pr-quality.sh` | `npm ci`, typecheck, lint, helpers vitest (no dist build) |
 | PR TS build (`build.yml`) | `bash scripts/ci/build-ts-workspace.sh` | once per CI run; cached for Test |
-| PR test (`build.yml`) | `bash scripts/ci/run-pr-integration.sh` | needs linux-gnu `.node` |
+| PR test (`build.yml`) | `bash scripts/ci/run-pr-integration.sh` | needs `.node` (`npm run build:native` on macOS); Sherpa barge-in E2E + model download |
+| Sherpa example only | `bash scripts/ci/run-sherpa-example-ci.sh typecheck` / `e2e` | `e2e` needs `.node` + ~160 MB models (cached under `examples/voice-agent-local-sherpa/.models/`) |
 | Release publish TS (`release.yml`) | `bash scripts/ci/verify-release-publish-ts.sh` | **`npm ci --ignore-scripts`** + version bump + `build-ts-workspace.sh` |
-| PR + release checks in ci-build image | `npm run ci:verify:checks:docker` | runs inside `docker/ci` (same base as self-hosted compile/test) |
-| Release publish TS in ci-build image | `npm run ci:verify:release-ts:docker` | **required** when editing release publish or TS build scripts |
+| Full PR checks (host) | `npm run ci:verify:checks` | format, lint, typecheck, build-ts, release TS parity, cargo + npm test, Sherpa E2E |
+| Quality + integration (host) | `npm run ci:verify:pr-full` | same as `run-pr-quality.sh` + `run-pr-integration.sh` |
 
 PR typecheck alone is **not** equivalent to release publish — see [`release-ts-build.mdc`](release-ts-build.mdc).
 
@@ -33,27 +34,37 @@ PR typecheck alone is **not** equivalent to release publish — see [`release-ts
 |-------------|-------------------------|
 | Quality / typecheck / lint | `bash scripts/ci/run-pr-quality.sh` |
 | TS build (`build-ts-workspace.sh`, sdk tsconfig) | `bash scripts/ci/verify-release-publish-ts.sh` |
-| Native compile / bindings | `npm run build:debug:local` in `packages/bindings/` (or `npm run ci:verify:linux`) |
-| Integration / test scripts | `bash scripts/ci/run-pr-integration.sh` (needs linux-gnu `.node`) |
-| **Any CI script or workflow** | `npm run ci:verify:checks:docker` **and** `npm run ci:verify:release-ts:docker` when Docker is available |
+| Native compile / bindings | `npm run build:native` in `packages/bindings/` (or `npm run ci:verify:linux` for Linux cross-builds) |
+| Integration / test scripts | `npm run build:native` then `bash scripts/ci/run-pr-integration.sh` |
+| **Any CI script or workflow** | `npm run ci:verify:checks` and `npm run ci:verify:release-ts` |
 | Release / main workflows | Above + confirm reusable callers (`build-main.yml`, `release.yml`) |
 
 ## Full local mirrors
 
 ```bash
+npm run build:native                             # host .node for npm test (macOS/Windows)
 bash scripts/ci/run-pr-quality.sh              # PR quality job
-bash scripts/ci/verify-release-publish-ts.sh   # release publish TS path (host)
-npm run ci:verify:release-ts:docker            # release publish TS path (ci-build container)
-npm run ci:verify:checks:docker                # quality + integration in ci-build image
-npm run ci:verify:linux                          # release Linux cross-builds
-npm run ci:verify                                # linux builds + checks docker
+bash scripts/ci/verify-release-publish-ts.sh   # release publish TS path
+npm run ci:verify:release-ts                     # same as verify-release-publish-ts.sh
+npm run ci:verify:pr-full                        # quality + integration
+npm run ci:verify:checks                         # full PR check suite (host)
+npm run ci:verify                                # alias for ci:verify:checks
+npm run ci:verify:linux                          # optional: release Linux cross-builds in Docker
+```
+
+**Optional Docker parity** (only when debugging remote ci-build container differences):
+
+```bash
+npm run ci:verify:checks:docker
+npm run ci:verify:release-ts:docker
+npm run ci:verify:pr-test:docker               # coturn + ci-build container
 ```
 
 ## Agent workflow (CI script changes)
 
 1. Identify **every** remote workflow/job that calls the changed script (grep + read callers).
-2. Run the **matching local mirror** from the table above — host is not enough when the remote job uses the **ci-build container**; use `:docker` variants.
-3. For release/publish paths, always run `npm run ci:verify:release-ts:docker` before push.
+2. Run the **matching local mirror** from the table above on the host.
+3. For release/publish paths, run `npm run ci:verify:release-ts` before push.
 4. Update [`scripts/ci/README.md`](../../scripts/ci/README.md) if behavior changed.
 5. Do not push until all required commands exit 0.
 
@@ -63,4 +74,3 @@ npm run ci:verify                                # linux builds + checks docker
 - You only fixed one pipeline without checking callers (see [`ci-validation.mdc`](ci-validation.mdc))
 - TS build was not tested with **`npm ci --ignore-scripts`** (release publish layout)
 - TS build was not tested from **clean** `packages/*/dist` (catches sdk↔signaling cycle bugs)
-- Docker parity was skipped for CI changes when Docker is available on the machine

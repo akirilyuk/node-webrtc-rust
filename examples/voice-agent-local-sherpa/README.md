@@ -83,10 +83,10 @@ npm run download-tts:es --workspace=@node-webrtc-rust/example-voice-agent-local-
 npm run download-tts:de --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-This fetches **English streaming Zipformer** STT (`sherpa-onnx-streaming-zipformer-en-2023-06-26`, ~70 MB compressed) from the official Sherpa-ONNX releases and extracts it to:
+This fetches **English streaming Zipformer (Kroko)** STT (`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`, ~119 MB compressed) from the official Sherpa-ONNX releases and extracts it to:
 
 ```text
-examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26/
+examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/
 ```
 
 Expected files inside:
@@ -108,20 +108,21 @@ npm run download-stt:list --workspace=@node-webrtc-rust/example-voice-agent-loca
 
 Per-language shortcuts (from repo root) — full table also in [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models):
 
-| Language             | npm script                          | Sherpa bundle                                                |
-| -------------------- | ----------------------------------- | ------------------------------------------------------------ |
-| English (default)    | `download-stt` or `download-stt:en` | `…-en-2023-06-26`                                            |
-| Spanish              | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                      |
-| French               | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                      |
-| German               | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                      |
-| Chinese              | `download-stt:zh`                   | `…-zh-int8-2025-06-30`                                       |
-| Japanese             | `download-stt:ja`                   | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual)        |
-| Arabic               | `download-stt:ar`                   | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar`      |
-| Russian              | `download-stt:ru`                   | `…-small-ru-vosk-int8-2025-08-16`                            |
-| Bengali (South Asia) | `download-stt:bn`                   | `…-bn-vosk-2026-02-09`                                       |
-| Hindi                | `download-stt:hi`                   | _No streaming Zipformer transducer in official releases yet_ |
-| Portuguese           | `download-stt:pt`                   | _Not available for this example yet_                         |
-| Italian              | `download-stt:it`                   | _Not available for this example yet_                         |
+| Language              | npm script                          | Sherpa bundle                                                |
+| --------------------- | ----------------------------------- | ------------------------------------------------------------ |
+| English (default)     | `download-stt` or `download-stt:en` | `…-en-kroko-2025-08-06`                                      |
+| English (2023 legacy) | `download-stt:en-legacy`            | `…-en-2023-06-26`                                            |
+| Spanish               | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                      |
+| French                | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                      |
+| German                | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                      |
+| Chinese               | `download-stt:zh`                   | `…-zh-int8-2025-06-30`                                       |
+| Japanese              | `download-stt:ja`                   | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual)        |
+| Arabic                | `download-stt:ar`                   | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar`      |
+| Russian               | `download-stt:ru`                   | `…-small-ru-vosk-int8-2025-08-16`                            |
+| Bengali (South Asia)  | `download-stt:bn`                   | `…-bn-vosk-2026-02-09`                                       |
+| Hindi                 | `download-stt:hi`                   | _No streaming Zipformer transducer in official releases yet_ |
+| Portuguese            | `download-stt:pt`                   | _Not available for this example yet_                         |
+| Italian               | `download-stt:it`                   | _Not available for this example yet_                         |
 
 Generic form:
 
@@ -143,7 +144,7 @@ For the **multilingual** Japanese/Arabic bundle, always set `SHERPA_STT_LANGUAGE
 From **`node-webrtc-rust`** repo root (paths printed by the download scripts):
 
 ```bash
-export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
 export SHERPA_TTS_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low"
 export SHERPA_TTS_SPEAKER=0   # optional — Piper speaker id for multi-speaker models
 ```
@@ -168,7 +169,15 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 
 Default (no args) runs **5 built-in phrases** and checks **word similarity** (lowercased word overlap, default 75% threshold).
 
-**Full documentation:** [`ROUNDTRIP.md`](./ROUNDTRIP.md) — architecture, VAD timing vs explicit silence, similarity, env vars, and defaults.
+**CI:** PR **Quality** runs roundtrip **Vitest** evaluators; PR **Test** runs all seven `start:roundtrip*` E2E scripts after model download — see [`ROUNDTRIP.md` § CI](./ROUNDTRIP.md#ci-github-actions) and [`scripts/ci/README.md`](../../scripts/ci/README.md#sherpa-roundtrip-e2e-integration-job).
+
+**Run the same checks locally:**
+
+```bash
+bash scripts/ci/run-sherpa-example-ci.sh e2e
+```
+
+**Full documentation:** [`ROUNDTRIP.md`](./ROUNDTRIP.md) — architecture, all run modes, VAD timing, CI, debug logging (`VOICE_DEBUG`, `[speech]` events), env vars.
 
 Quick reference:
 
@@ -206,10 +215,15 @@ On startup you should see `[voice-debug] JsVoiceAgent native module loaded`. If 
 
 Logs go to **stderr** with `[voice-debug]` and `[webrtc-debug]` prefixes. Debug mode also relaxes VAD (`threshold=0.01`, `gateStt=false`). Optional overrides:
 
-| Variable                    | Effect                                |
-| --------------------------- | ------------------------------------- |
-| `VOICE_VAD_THRESHOLD=0.005` | Lower energy threshold                |
-| `VOICE_VAD_DISABLED=1`      | Skip VAD (STT still receives all PCM) |
+| Variable                     | Effect                                |
+| ---------------------------- | ------------------------------------- |
+| `VOICE_VAD_THRESHOLD=0.005`  | Lower energy threshold                |
+| `VOICE_VAD_MIN_SPEECH_MS`    | `minSpeechDurationMs`                 |
+| `VOICE_VAD_MIN_SILENCE_MS`   | `minSilenceDurationMs`                |
+| `VOICE_VAD_STT_GATE_HOLD_MS` | `sttGateHoldMs` (default **1000**)    |
+| `VOICE_VAD_DISABLED=1`       | Skip VAD (STT still receives all PCM) |
+
+STT/VAD tuning guide: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).
 
 Startup logs show the active pipeline and model path:
 
@@ -217,7 +231,7 @@ Startup logs show the active pipeline and model path:
 Local Sherpa voice demo at http://localhost:3002
 Voice pipeline: local Sherpa-ONNX (browser mic → on-device STT)
 STT=local-sherpa  TTS=local-sherpa
-SHERPA_STT_MODEL_PATH=.../sherpa-onnx-streaming-zipformer-en-2023-06-26
+SHERPA_STT_MODEL_PATH=.../sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
 SHERPA_TTS_MODEL_PATH=.../vits-piper-en_US-amy-low
 ```
 
@@ -237,7 +251,7 @@ Visit [http://localhost:3002](http://localhost:3002) (override with `PORT=`).
 If the download script fails (no `tar`, firewall, etc.):
 
 1. Open [Sherpa-ONNX ASR model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)
-2. Download `sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2`
+2. Download `sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2` (or `npm run download-stt:en`)
 3. Extract anywhere on disk
 4. Set `SHERPA_STT_MODEL_PATH` to the extracted folder containing `tokens.txt` and the three ONNX files
 

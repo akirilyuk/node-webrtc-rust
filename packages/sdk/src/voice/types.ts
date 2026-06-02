@@ -19,6 +19,19 @@ export interface BargeInConfig {
   useVad?: boolean
   /** Clear pending TTS PCM when barge-in runs. Default true. */
   flushTts?: boolean
+  /**
+   * While agent TTS is playing, defer barge-in until STT emits a qualifying partial
+   * (semantic interrupt — ignores coughs/tones that do not transcribe). Default true.
+   * Requires STT on the agent; without STT, VAD barge-in applies immediately.
+   */
+  requireSttPartial?: boolean
+  /** Minimum trimmed partial length to trigger barge when `requireSttPartial` is true. Default 2. */
+  minSttPartialChars?: number
+  /**
+   * Optional: ignore VAD barge for this many ms after agent TTS starts (speaker echo).
+   * Default 0. Prefer `requireSttPartial` for most setups.
+   */
+  agentPlaybackGuardMs?: number
 }
 
 /** See VOICE-VAD-AND-BARGE-IN.md — prefer VOICE_AGENT_VAD_PRESET for voice bots. */
@@ -38,7 +51,7 @@ export interface VadConfig {
   gateStt?: boolean
   /** When gateStt is true, feed STT during VAD pending speech. Default true. */
   gateSttOpenOnPending?: boolean
-  /** Keep feeding STT after VAD speech end (ms). Default 2500. */
+  /** Keep feeding STT after VAD speech end (ms). Default 1000. */
   sttGateHoldMs?: number
 }
 
@@ -85,6 +98,18 @@ export type SpeechEventType =
   | 'agent_speaking_end'
   | 'barge_in'
   | 'error'
+
+/** Runtime names for {@link SpeechEventType} — use in tests and harnesses instead of string literals. */
+export const SPEECH_EVENT_TYPE = {
+  userSpeakingStart: 'user_speaking_start',
+  userSpeakingEnd: 'user_speaking_end',
+  userSpeechPartial: 'user_speech_partial',
+  userSpeechFinal: 'user_speech_final',
+  agentSpeakingStart: 'agent_speaking_start',
+  agentSpeakingEnd: 'agent_speaking_end',
+  bargeIn: 'barge_in',
+  error: 'error',
+} as const satisfies Record<string, SpeechEventType>
 
 export interface SpeechEvent {
   type: SpeechEventType

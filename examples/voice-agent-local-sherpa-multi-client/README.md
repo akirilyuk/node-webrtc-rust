@@ -71,8 +71,8 @@ Same model downloads as [`voice-agent-local-sherpa`](../voice-agent-local-sherpa
 ```bash
 npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-export SHERPA_STT_MODEL_PATH=.../voice-agent-local-sherpa/.models/<stt-bundle>
-export SHERPA_TTS_MODEL_PATH=.../voice-agent-local-sherpa/.models/<tts-bundle>
+export SHERPA_STT_MODEL_PATH=.../voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
+export SHERPA_TTS_MODEL_PATH=.../voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
 ```
 
 ## Run
@@ -80,6 +80,8 @@ export SHERPA_TTS_MODEL_PATH=.../voice-agent-local-sherpa/.models/<tts-bundle>
 ```bash
 npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
 ```
+
+If port **3004** was left in use, `npm run start` stops the previous listener automatically ([`shared/free-port.ts`](../shared/free-port.ts)). Disable with `VOICE_SKIP_FREE_PORT=1`.
 
 Open **three tabs** to [http://localhost:3004](http://localhost:3004):
 
@@ -125,12 +127,16 @@ npm run test:helpers
 
 ## Environment
 
-| Variable                        | Default         | Purpose                     |
-| ------------------------------- | --------------- | --------------------------- |
-| `PORT`                          | `3004`          | HTTP + WebSocket            |
-| `VOICE_ROOM`                    | `sherpa-multi`  | Signaling room              |
-| `VOICE_MAX_CONCURRENT_SESSIONS` | `0` (unlimited) | Process-wide connection cap |
-| `SHERPA_STT_MODEL_PATH`         | —               | Required                    |
-| `SHERPA_TTS_MODEL_PATH`         | —               | Required                    |
+| Variable                        | Default         | Purpose                               |
+| ------------------------------- | --------------- | ------------------------------------- |
+| `PORT`                          | `3004`          | HTTP + WebSocket                      |
+| `VOICE_ROOM`                    | `sherpa-multi`  | Signaling room                        |
+| `VOICE_MAX_CONCURRENT_SESSIONS` | `0` (unlimited) | Process-wide connection cap           |
+| `SHERPA_STT_MODEL_PATH`         | —               | Required                              |
+| `SHERPA_TTS_MODEL_PATH`         | —               | Required                              |
+| `VOICE_VAD_MIN_SILENCE_MS`      | preset `300`    | Pause before STT hold starts          |
+| `VOICE_VAD_STT_GATE_HOLD_MS`    | preset `1000`   | STT tail + `user_speaking_end` timing |
+
+VAD/STT flow tuning: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).
 
 See also [`development/node-webrtc-rust/plans/2026-05-31-voice-session-budget.md`](../../development/node-webrtc-rust/plans/2026-05-31-voice-session-budget.md) and [`2026-05-31-sherpa-shared-model-pool.md`](../../development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md).

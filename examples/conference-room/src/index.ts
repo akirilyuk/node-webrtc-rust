@@ -7,6 +7,7 @@ import { ConferenceServer } from '@node-webrtc-rust/sdk/conference'
 import type { MuteScope } from '@node-webrtc-rust/sdk/conference'
 import { SignalingServer } from '@node-webrtc-rust/signaling'
 
+import { freePort } from '../../shared/free-port.js'
 import { DisplayNameRegistry } from './display-names'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -265,6 +266,8 @@ async function main(): Promise<void> {
 
     await serveStatic(req, res)
   })
+
+  freePort(PORT, 'conference-room')
 
   const signaling = new SignalingServer({ server: httpServer, path: '/ws' })
   await signaling.listen(PORT)

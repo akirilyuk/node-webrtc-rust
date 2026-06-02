@@ -54,9 +54,11 @@ Rebuild `ghcr.io/.../ci-build:latest` when `docker/ci/Dockerfile` changes — pu
 ## Local validation
 
 ```bash
-npm run ci:verify:linux          # release cross-builds (matches main push)
-npm run ci:verify:checks:docker  # PR quality + integration checks
-npm run ci:verify                # both
+npm run build:native             # host .node for npm test
+npm run ci:verify:checks         # PR quality + integration checks (host)
+npm run ci:verify:release-ts     # release publish TS path
+npm run ci:verify                # alias for ci:verify:checks
+npm run ci:verify:linux          # optional: release cross-builds in Docker
 ```
 
 After changing `docker/ci/Dockerfile`, rebuild (`npm run ci:docker:build`) and push to `ci` branch.

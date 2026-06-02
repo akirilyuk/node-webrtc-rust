@@ -8,3 +8,4 @@ rm -rf node_modules packages/*/node_modules
 npm ci
 
 bash scripts/fix-rollup-native.sh
+bash scripts/ci/ensure-workspace-bindings.sh

@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url'
 import { SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 import { SERVER_PEER_ID, VoiceAgentSessionHost } from '@node-webrtc-rust/helpers'
 
+import { freePort } from '../../shared/free-port.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -118,6 +119,8 @@ async function main(): Promise<void> {
 
     await serveStatic(req, res)
   })
+
+  freePort(PORT, 'voice-agent-browser')
 
   const signaling = new SignalingServer({ server: httpServer, path: '/ws' })
   await signaling.listen(PORT)

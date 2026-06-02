@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 
 import { SignalingServer } from '@node-webrtc-rust/signaling'
 
+import { freePort } from '../../shared/free-port.js'
 import { RoomManager } from './room-manager'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -83,6 +84,8 @@ async function main(): Promise<void> {
 
     await serveStatic(req, res)
   })
+
+  freePort(PORT, 'browser-cosine-chat')
 
   const signaling = new SignalingServer({ server: httpServer, path: '/ws' })
   await signaling.listen(PORT)

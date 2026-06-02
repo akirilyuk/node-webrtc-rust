@@ -4,8 +4,8 @@
  * Prerequisites:
  *   npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *   npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
- *   export SHERPA_STT_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/<stt-bundle>
- *   export SHERPA_TTS_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/<tts-bundle>
+ *   export SHERPA_STT_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
+ *   export SHERPA_TTS_MODEL_PATH=.../examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
  *
  * Run:
  *   npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
@@ -23,6 +23,7 @@ import { fileURLToPath } from 'url'
 import { SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 import { SERVER_PEER_ID, VoiceAgentSessionHost } from '@node-webrtc-rust/helpers'
 
+import { freePort } from '../../shared/free-port.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import { isVoiceDebugEnabled } from '@node-webrtc-rust/sdk/voice'
 
@@ -125,6 +126,8 @@ async function main(): Promise<void> {
 
     await serveStatic(req, res)
   })
+
+  freePort(PORT, 'voice-agent-local-sherpa')
 
   const signaling = new SignalingServer({ server: httpServer, path: '/ws' })
   await signaling.listen(PORT)

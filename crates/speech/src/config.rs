@@ -40,9 +40,15 @@ impl Default for EventsConfig {
 ///   (`vad.enabled` must be true on the same agent). When false, only `flushTts()` from
 ///   your app triggers barge-in (no automatic interrupt on noise or test tones).
 /// - `flush_tts` — clear pending outbound PCM when barge-in runs.
+/// - `require_stt_partial` (default **true**) — while agent TTS is playing, defer barge-in until
+///   STT returns a non-empty partial (semantic interrupt). Coughs and tones open the STT gate via
+///   VAD but typically produce no transcript, so playback continues. Requires `stt` on the agent;
+///   when STT is disabled, VAD barge-in behaves as if this flag were false.
+/// - `min_stt_partial_chars` — minimum trimmed partial length to trigger barge (default 2).
 ///
-/// Tune `vad.threshold` and `vad.minSpeechDurationMs` to avoid brief sounds triggering
-/// interrupt when `use_vad` is true.
+/// `agent_playback_guard_ms` — optional: for this many ms after agent TTS starts, VAD barge-in
+/// does not flush playback (mitigates speaker→mic echo on some setups). Default **0** = barge
+/// anytime the user speaks. Raise only if echo falsely interrupts agent TTS (try headphones first).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BargeInConfig {
@@ -52,6 +58,20 @@ pub struct BargeInConfig {
     pub use_vad: bool,
     #[serde(default = "default_true")]
     pub flush_tts: bool,
+    #[serde(default = "default_true")]
+    pub require_stt_partial: bool,
+    #[serde(default = "default_min_stt_partial_chars")]
+    pub min_stt_partial_chars: u32,
+    #[serde(default = "default_agent_playback_guard_ms")]
+    pub agent_playback_guard_ms: u32,
+}
+
+fn default_min_stt_partial_chars() -> u32 {
+    2
+}
+
+fn default_agent_playback_guard_ms() -> u32 {
+    0
 }
 
 impl Default for BargeInConfig {
@@ -60,6 +80,9 @@ impl Default for BargeInConfig {
             enabled: true,
             use_vad: true,
             flush_tts: true,
+            require_stt_partial: true,
+            min_stt_partial_chars: default_min_stt_partial_chars(),
+            agent_playback_guard_ms: default_agent_playback_guard_ms(),
         }
     }
 }
@@ -123,7 +146,8 @@ pub struct VadConfig {
     /// When `gate_stt` is true, also feed STT during VAD pending speech (before `SpeechStart`).
     #[serde(default = "default_true")]
     pub gate_stt_open_on_pending: bool,
-    /// After VAD speech end, keep passing inbound audio to STT for this long (covers relay lag / trailing phonemes).
+    /// After VAD speech end, keep passing inbound audio to STT for this long (trailing phonemes / word gaps).
+    /// With `gate_stt`, `user_speaking_end` is emitted when this hold expires (default 1000 ms).
     #[serde(default = "default_stt_gate_hold_ms")]
     pub stt_gate_hold_ms: u32,
 }
@@ -142,7 +166,7 @@ fn default_min_speech_ms() -> u32 {
 
 // Brief gaps inside a phrase (TTS word pauses, natural speech) should not split VAD.
 fn default_min_silence_ms() -> u32 {
-    300
+    500
 }
 
 fn default_speech_pad_ms() -> u32 {
@@ -150,7 +174,7 @@ fn default_speech_pad_ms() -> u32 {
 }
 
 fn default_stt_gate_hold_ms() -> u32 {
-    2500
+    1000
 }
 
 impl Default for VadConfig {

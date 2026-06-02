@@ -119,6 +119,9 @@ export interface JsBargeInConfig {
   enabled?: boolean
   useVad?: boolean
   flushTts?: boolean
+  requireSttPartial?: boolean
+  minSttPartialChars?: number
+  agentPlaybackGuardMs?: number
 }
 export const enum JsVadSampleRate {
   Hz8000 = '8000',
@@ -343,6 +346,8 @@ export declare class JsVoiceAgent {
   stop(): Promise<void>
   sendTextToTts(text: string): Promise<void>
   flushTts(): Promise<void>
+  /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */
+  waitTtsPlaybackIdle(): Promise<void>
   /** Pull the next speech event for async stream consumption. */
   pullSpeechEvent(): Promise<JsSpeechEvent | null>
   setOnSpeechEvent(callback: (...args: any[]) => any): void

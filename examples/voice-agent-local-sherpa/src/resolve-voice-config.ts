@@ -24,6 +24,58 @@ import {
   logResolvedVoiceConfig,
 } from '../../shared/voice-debug-config.js'
 
+function parsePositiveInt(raw: string | undefined): number | undefined {
+  const trimmed = raw?.trim()
+  if (!trimmed) return undefined
+  const value = Number.parseInt(trimmed, 10)
+  return Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function parseThreshold(raw: string | undefined): number | undefined {
+  const trimmed = raw?.trim()
+  if (!trimmed) return undefined
+  const value = Number.parseFloat(trimmed)
+  return Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+/** Optional VAD tuning via env (see packages/sdk/VOICE-VAD-AND-BARGE-IN.md). */
+function applyVadEnvOverrides(config: VoiceAgentConfig): VoiceAgentConfig {
+  const minSilenceDurationMs = parsePositiveInt(process.env.VOICE_VAD_MIN_SILENCE_MS)
+  const sttGateHoldMs = parsePositiveInt(process.env.VOICE_VAD_STT_GATE_HOLD_MS)
+  const agentPlaybackGuardMs = parsePositiveInt(process.env.VOICE_BARGE_IN_PLAYBACK_GUARD_MS)
+  const minSpeechDurationMs = parsePositiveInt(process.env.VOICE_VAD_MIN_SPEECH_MS)
+  const threshold = parseThreshold(process.env.VOICE_VAD_THRESHOLD)
+
+  if (
+    minSilenceDurationMs === undefined &&
+    sttGateHoldMs === undefined &&
+    minSpeechDurationMs === undefined &&
+    threshold === undefined &&
+    agentPlaybackGuardMs === undefined
+  ) {
+    return config
+  }
+
+  return {
+    ...config,
+    vad: {
+      ...config.vad,
+      ...(minSilenceDurationMs !== undefined ? { minSilenceDurationMs } : {}),
+      ...(sttGateHoldMs !== undefined ? { sttGateHoldMs } : {}),
+      ...(minSpeechDurationMs !== undefined ? { minSpeechDurationMs } : {}),
+      ...(threshold !== undefined ? { threshold } : {}),
+      ...(agentPlaybackGuardMs !== undefined
+        ? {
+            bargeIn: {
+              ...config.vad?.bargeIn,
+              agentPlaybackGuardMs,
+            },
+          }
+        : {}),
+    },
+  }
+}
+
 export interface ResolvedVoiceConfig {
   config: VoiceAgentConfig
   label: string
@@ -112,7 +164,7 @@ export function resolveVoiceConfig(): ResolvedVoiceConfig {
   const speaker = process.env.SHERPA_TTS_SPEAKER?.trim() || '0'
 
   const config = applyVoiceDebugOverrides(
-    LOCAL_SHERPA_VOICE_CONFIG(sttModelPath, ttsModelPath, language, speaker),
+    applyVadEnvOverrides(LOCAL_SHERPA_VOICE_CONFIG(sttModelPath, ttsModelPath, language, speaker)),
   )
   logResolvedVoiceConfig('local-sherpa', config, {
     SHERPA_STT_MODEL_PATH: sttModelPath,

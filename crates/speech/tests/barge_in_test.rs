@@ -41,6 +41,7 @@ async fn barge_in_flush_then_emit() {
         enabled: true,
         use_vad: true,
         flush_tts: true,
+        ..Default::default()
     })
     .await;
     assert_eq!(pending, 0);
@@ -53,6 +54,7 @@ async fn barge_in_notify_only() {
         enabled: true,
         use_vad: true,
         flush_tts: false,
+        ..Default::default()
     })
     .await;
     assert_eq!(pending, 1);
@@ -65,6 +67,7 @@ async fn barge_in_disabled() {
         enabled: false,
         use_vad: true,
         flush_tts: true,
+        ..Default::default()
     })
     .await;
     assert_eq!(pending, 1);

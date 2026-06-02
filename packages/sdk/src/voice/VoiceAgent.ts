@@ -51,6 +51,9 @@ function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
           enabled: vad.bargeIn.enabled,
           useVad: vad.bargeIn.useVad,
           flushTts: vad.bargeIn.flushTts,
+          requireSttPartial: vad.bargeIn.requireSttPartial,
+          minSttPartialChars: vad.bargeIn.minSttPartialChars,
+          agentPlaybackGuardMs: vad.bargeIn.agentPlaybackGuardMs,
         }
       : undefined,
     gateStt: vad.gateStt,
@@ -216,6 +219,12 @@ export class VoiceAgent {
   async flushTts(): Promise<void> {
     debugFn(MODULE, 'flushTts')
     await this.native.flushTts()
+  }
+
+  /** Wait until TTS synthesis and real-time outbound drain complete. */
+  async waitTtsPlaybackIdle(): Promise<void> {
+    debugFn(MODULE, 'waitTtsPlaybackIdle')
+    await this.native.waitTtsPlaybackIdle()
   }
 
   on(event: SpeechEventName, listener: SpeechEventListener): this {

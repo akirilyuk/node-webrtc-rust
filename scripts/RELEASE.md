@@ -189,9 +189,10 @@ Windows is never cross-compiled locally — copy from a Windows CI artifact or b
 Mirror PR CI locally:
 
 ```bash
-npm run ci:verify              # Linux native builds + full test suite in Docker
-npm run ci:verify:linux        # native matrix only
-npm run ci:verify:checks:docker
+npm run build:native             # host .node for npm test
+npm run ci:verify                # full PR check suite on host
+npm run ci:verify:release-ts     # release publish TS path
+npm run ci:verify:linux          # optional: native matrix cross-builds in Docker
 ```
 
 Dry-run publish packaging on a PR: the **Publish (dry-run)** job in [Build & Test](../.github/workflows/build.yml) runs `npm publish --dry-run --workspaces` when native or TS code changes.

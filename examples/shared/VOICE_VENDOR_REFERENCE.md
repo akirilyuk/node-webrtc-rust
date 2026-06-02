@@ -9,14 +9,14 @@ Sherpa local model catalog (download scripts): [`sherpa-local-model-catalog.json
 
 ## Speech-to-text (STT)
 
-| Provider            | SDK id         | Default model (examples)                        | Official docs                                                                                                                              |
-| ------------------- | -------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| OpenAI              | `openai`       | `whisper-1`                                     | [Speech to text](https://platform.openai.com/docs/guides/speech-to-text)                                                                   |
-| Deepgram            | `deepgram`     | `nova-2`                                        | [Live streaming audio](https://developers.deepgram.com/docs/live-streaming-audio) · [Models](https://developers.deepgram.com/docs/models)  |
-| Google Cloud        | `google`       | `latest_long`                                   | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs)                                                                             |
-| AssemblyAI          | `assemblyai`   | `universal-streaming-english`                   | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                                  |
-| Sherpa-ONNX (local) | `local-sherpa` | `sherpa-onnx-streaming-zipformer-en-2023-06-26` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Pre-trained models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
-| Mock                | `mock`         | _(deterministic test harness)_                  | [`crates/vendor-mock`](../../crates/vendor-mock/)                                                                                          |
+| Provider            | SDK id         | Default model (examples)                              | Official docs                                                                                                                              |
+| ------------------- | -------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| OpenAI              | `openai`       | `whisper-1`                                           | [Speech to text](https://platform.openai.com/docs/guides/speech-to-text)                                                                   |
+| Deepgram            | `deepgram`     | `nova-2`                                              | [Live streaming audio](https://developers.deepgram.com/docs/live-streaming-audio) · [Models](https://developers.deepgram.com/docs/models)  |
+| Google Cloud        | `google`       | `latest_long`                                         | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs)                                                                             |
+| AssemblyAI          | `assemblyai`   | `universal-streaming-english`                         | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                                  |
+| Sherpa-ONNX (local) | `local-sherpa` | `sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Pre-trained models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
+| Mock                | `mock`         | _(deterministic test harness)_                        | [`crates/vendor-mock`](../../crates/vendor-mock/)                                                                                          |
 
 ### Local Sherpa-ONNX — free on-device STT (recommended)
 
@@ -30,20 +30,21 @@ Example: [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md). Us
 
 On-device STT uses **streaming Zipformer transducer** bundles (encoder + decoder + joiner + `tokens.txt`). Weights are **not** bundled in npm — download via the example scripts below.
 
-| Language             | Lang id | npm download script                 | Sherpa bundle                                           |
-| -------------------- | ------- | ----------------------------------- | ------------------------------------------------------- |
-| English              | `en`    | `download-stt` or `download-stt:en` | `…-en-2023-06-26`                                       |
-| Spanish              | `es`    | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                 |
-| French               | `fr`    | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                 |
-| German               | `de`    | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                 |
-| Chinese (Mandarin)   | `zh`    | `download-stt:zh`                   | `…-zh-int8-2025-06-30`                                  |
-| Japanese             | `ja`    | `download-stt:ja`                   | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual)   |
-| Arabic               | `ar`    | `download-stt:ar`                   | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar` |
-| Russian              | `ru`    | `download-stt:ru`                   | `…-small-ru-vosk-int8-2025-08-16`                       |
-| Bengali (South Asia) | `bn`    | `download-stt:bn`                   | `…-bn-vosk-2026-02-09`                                  |
-| Hindi                | `hi`    | `download-stt:hi`                   | _No streaming Zipformer in official releases yet_       |
-| Portuguese           | `pt`    | `download-stt:pt`                   | _Not available for `local-sherpa` yet_                  |
-| Italian              | `it`    | `download-stt:it`                   | _Not available for `local-sherpa` yet_                  |
+| Language              | Lang id     | npm download script                 | Sherpa bundle                                           |
+| --------------------- | ----------- | ----------------------------------- | ------------------------------------------------------- |
+| English (default)     | `en`        | `download-stt` or `download-stt:en` | `…-en-kroko-2025-08-06`                                 |
+| English (2023 legacy) | `en-legacy` | `download-stt:en-legacy`            | `…-en-2023-06-26`                                       |
+| Spanish               | `es`        | `download-stt:es`                   | `…-es-kroko-2025-08-06`                                 |
+| French                | `fr`        | `download-stt:fr`                   | `…-fr-kroko-2025-08-06`                                 |
+| German                | `de`        | `download-stt:de`                   | `…-de-kroko-2025-08-06`                                 |
+| Chinese (Mandarin)    | `zh`        | `download-stt:zh`                   | `…-zh-int8-2025-06-30`                                  |
+| Japanese              | `ja`        | `download-stt:ja`                   | `…-ar_en_id_ja_ru_th_vi_zh-2025-02-10` (multilingual)   |
+| Arabic                | `ar`        | `download-stt:ar`                   | same multilingual bundle — set `SHERPA_STT_LANGUAGE=ar` |
+| Russian               | `ru`        | `download-stt:ru`                   | `…-small-ru-vosk-int8-2025-08-16`                       |
+| Bengali (South Asia)  | `bn`        | `download-stt:bn`                   | `…-bn-vosk-2026-02-09`                                  |
+| Hindi                 | `hi`        | `download-stt:hi`                   | _No streaming Zipformer in official releases yet_       |
+| Portuguese            | `pt`        | `download-stt:pt`                   | _Not available for `local-sherpa` yet_                  |
+| Italian               | `it`        | `download-stt:it`                   | _Not available for `local-sherpa` yet_                  |
 
 List every entry (including unavailable ones with notes):
 

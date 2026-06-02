@@ -118,7 +118,7 @@ interface VoiceAgentConfig {
     }
     gateStt?: boolean // only feed STT while gate is open (default false)
     gateSttOpenOnPending?: boolean // also open gate during VAD pending speech (default true)
-    sttGateHoldMs?: number // keep feeding STT after speech end (default 2500)
+    sttGateHoldMs?: number // keep feeding STT after speech end (default 1000)
   }
   stt?: {
     provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'local-sherpa' | 'mock'
@@ -187,7 +187,8 @@ Automatic downloads (from repo root):
 ```bash
 npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run download-tts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
-npm run download-tts:es --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+export SHERPA_STT_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
+export SHERPA_TTS_MODEL_PATH="$PWD/examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low"
 ```
 
 Supported languages, bundle names, and unavailable locales (Hindi, Portuguese, Italian): [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--multilingual-models). Full walkthrough: [`examples/voice-agent-local-sherpa/README.md`](../../examples/voice-agent-local-sherpa/README.md).
@@ -209,21 +210,21 @@ tts: {
 
 Two layers — **fast VAD** vs **text-bearing STT**:
 
-| Event                          | Source                                | Use in your agent                           |
-| ------------------------------ | ------------------------------------- | ------------------------------------------- |
-| `user_speaking_start`          | VAD `SpeechStart`                     | User began talking (inbound voice activity) |
-| `user_speaking_end`            | VAD `SpeechEnd`                       | End-of-utterance hint                       |
-| `user_speech_partial`          | STT                                   | Live captions, prefetch                     |
-| `user_speech_final`            | STT                                   | **Primary LLM turn trigger**                |
-| `agent_speaking_start` / `end` | TTS playback                          | UI / state machine                          |
-| `barge_in`                     | VAD `SpeechStart` + `bargeIn.enabled` | Cancel agent TTS (after optional flush)     |
-| `error`                        | Any                                   | Vendor or pipeline failure                  |
+| Event                          | Source                                | Use in your agent                             |
+| ------------------------------ | ------------------------------------- | --------------------------------------------- |
+| `user_speaking_start`          | VAD `SpeechStart`                     | User began talking (inbound voice activity)   |
+| `user_speaking_end`            | VAD + `sttGateHoldMs` (`gateStt`)     | End-of-utterance hint (not first short pause) |
+| `user_speech_partial`          | STT                                   | Live captions, prefetch                       |
+| `user_speech_final`            | STT                                   | **Primary LLM turn trigger**                  |
+| `agent_speaking_start` / `end` | TTS playback                          | UI / state machine                            |
+| `barge_in`                     | VAD `SpeechStart` + `bargeIn.enabled` | Cancel agent TTS (after optional flush)       |
+| `error`                        | Any                                   | Vendor or pipeline failure                    |
 
 ### VAD and barge-in
 
 **Full guide:** [`VOICE-VAD-AND-BARGE-IN.md`](./VOICE-VAD-AND-BARGE-IN.md) — **energy vs Silero**, weight/comparison, use cases, defaults, when to tune.
 
-**Quick start:** use `VOICE_AGENT_VAD_PRESET` (or omit `vad` and only set `gateStt: true` if you stream STT). Defaults are aimed at phone bots: 250 ms min speech, 300 ms min silence (no split on TTS word gaps), barge-in on VAD `SpeechStart`, `sttGateHoldMs` 2500.
+**Quick start:** use `VOICE_AGENT_VAD_PRESET` (or omit `vad` and only set `gateStt: true` if you stream STT). Defaults: 250 ms min speech, 300 ms min silence, barge-in on VAD `SpeechStart`, `sttGateHoldMs` 1000. See [VOICE-VAD-AND-BARGE-IN.md](./VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt) for tuning latency vs accuracy.
 
 | Export                    | Use                                              |
 | ------------------------- | ------------------------------------------------ |

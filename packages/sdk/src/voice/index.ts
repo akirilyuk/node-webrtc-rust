@@ -6,6 +6,7 @@
  * reimplementing PCM timing or vendor HTTP/WebSocket plumbing.
  */
 export { VoiceAgent } from './VoiceAgent'
+export { SPEECH_EVENT_TYPE } from './types'
 export { DEFAULT_VOICE_AGENT_VAD, VOICE_AGENT_VAD_PRESET } from './defaults'
 export { isVoiceDebugEnabled, voiceDebugLog } from './debug'
 export {

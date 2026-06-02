@@ -21,6 +21,7 @@
  *   SHERPA_ROUNDTRIP_GAP_S            extra silence between phrases (default 0 — see ROUNDTRIP.md)
  *
  * Full documentation: examples/voice-agent-local-sherpa/ROUNDTRIP.md
+ * Harness playback timing: ROUNDTRIP.md § Harness playback timing (AgentSpeakingEndLatch)
  */
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'

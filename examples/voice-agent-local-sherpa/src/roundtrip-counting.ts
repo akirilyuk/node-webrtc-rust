@@ -7,6 +7,10 @@
  *   Speaker: Sherpa TTS plays one long phrase on agentOut
  *   Listener: VAD + gateStt + Sherpa STT (production preset from resolveVoiceConfig)
  *
+ * Shared harness (also used by `roundtrip.ts`, echo, two-phrases, utterance-timing):
+ *   `AgentSpeakingEndLatch`, `startSpeakerSpeechPump`, `playSpeakerTtsWithPostSilence` —
+ *   see ROUNDTRIP.md § "Harness playback timing".
+ *
  * Run (requires models — same as roundtrip):
  *   npm run start:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *
@@ -174,7 +178,7 @@ export async function waitAgentTtsPlaybackEnd(
 }
 
 /**
- * End playback when `agent_speaking_end` arrives on the listener (or speaker) leg, or when the
+ * End playback when `agent_speaking_end` arrives (via speaker-stream latch), or when the
  * phrase-length estimate elapses — whichever is first. Avoids multi-second dead air after TTS
  * already stopped (estimate was ~900 ms/word + 3 s base).
  */

@@ -1,4 +1,8 @@
 //! Voice activity detection with Silero (optional) and energy fallback.
+//!
+//! [`VadEngine`] wraps the configured provider and accumulates speech/silence duration to emit
+//! [`VadTransition::SpeechStart`] and [`VadTransition::SpeechEnd`]. The voice agent uses those
+//! transitions for `user_speaking_*` events, STT gating, and barge-in ([`handle_barge_in`]).
 
 use crate::config::{BargeInConfig, VadConfig};
 use crate::error::SpeechResult;
@@ -108,6 +112,7 @@ enum VadBackend {
 }
 
 /// Stateful VAD with min speech/silence timing and barge-in handling.
+/// Frame-level VAD with min speech/silence durations and optional pending-speech detection.
 pub struct VadEngine {
     config: VadConfig,
     backend: VadBackend,

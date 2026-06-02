@@ -8,12 +8,12 @@ Implementation: [`src/roundtrip.ts`](./src/roundtrip.ts).
 
 **Yes — for timing inside and after an utterance.** **No — `minSilenceDurationMs` is not a “pause between batch phrases” knob.**
 
-| Source                                      | What it does                                                                                                                                                                                                                                             |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`minSilenceDurationMs` (300 ms default)** | How long silence must last **during** one utterance before VAD sees `SpeechEnd` internally. Short Piper gaps between words should stay under this so one TTS phrase stays one segment.                                                                   |
-| **`sttGateHoldMs` (1000 ms default)**       | With **`gateStt: true`**, keep feeding STT after that internal speech end; **`user_speaking_end` is emitted when this hold expires** (not on the first short gap). If the user speaks again during hold, the utterance continues and no end event fires. |
-| **Endpoint tail**                           | `max(minSilenceDurationMs, 800)` ms of silence pushed to STT after hold reaches zero, then `finalize_utterance`.                                                                                                                                         |
-| **`speechPadMs` / `minSpeechDurationMs`**   | Pre-roll and minimum voiced time before `user_speaking_start` — not inter-phrase gaps.                                                                                                                                                                   |
+| Source                                     | What it does                                                                                                                                                                                                                                             |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`minSilenceDurationMs` (500 ms preset)** | How long silence must last **during** one utterance before VAD sees `SpeechEnd` internally. Short Piper gaps between words should stay under this so one TTS phrase stays one segment.                                                                   |
+| **`sttGateHoldMs` (1000 ms default)**      | With **`gateStt: true`**, keep feeding STT after that internal speech end; **`user_speaking_end` is emitted when this hold expires** (not on the first short gap). If the user speaks again during hold, the utterance continues and no end event fires. |
+| **Endpoint tail**                          | `minSilence` clamped **400–600 ms** of synthetic silence pushed to STT after hold reaches zero, then `finalize_utterance` (Rust; not duplicated on the harness speaker track).                                                                           |
+| **`speechPadMs` / `minSpeechDurationMs`**  | Pre-roll and minimum voiced time before `user_speaking_start` — not inter-phrase gaps.                                                                                                                                                                   |
 
 **Between batch phrases**, separation is:
 
@@ -225,15 +225,15 @@ Gaps and pauses come from **two layers**: the **VoiceAgent VAD/STT pipeline** (l
 
 ### Within one phrase (listener VAD + gateStt)
 
-| Setting                | Default                          | Role                                                                                                 |
-| ---------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `minSpeechDurationMs`  | 250                              | Voice must be present this long before `user_speaking_start`                                         |
-| `minSilenceDurationMs` | 300                              | Silence this long ends the utterance (`user_speaking_end`) — avoids splitting on short TTS word gaps |
-| `speechPadMs`          | 300                              | Pre-roll ring size only (`speechPadMs + minSpeechDurationMs` ≈ 550 ms buffered before `SpeechStart`) |
-| `gateStt`              | true                             | STT only while gate is open                                                                          |
-| `gateSttOpenOnPending` | true                             | Gate opens during VAD **pending** speech (before `SpeechStart`) — covers WebRTC lead-in              |
-| `sttGateHoldMs`        | 1000                             | After `SpeechEnd`, keep feeding STT for this many ms (trailing phonemes + relay)                     |
-| Endpoint tail          | max(`minSilenceDurationMs`, 800) | Extra silence pushed to STT after hold expires, then `finalize_utterance`                            |
+| Setting                | Default                         | Role                                                                                                 |
+| ---------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `minSpeechDurationMs`  | 250                             | Voice must be present this long before `user_speaking_start`                                         |
+| `minSilenceDurationMs` | 500 (`VOICE_AGENT_VAD_PRESET`)  | Silence this long ends the utterance (`user_speaking_end`) — avoids splitting on short TTS word gaps |
+| `speechPadMs`          | 300                             | Pre-roll ring size only (`speechPadMs + minSpeechDurationMs` ≈ 550 ms buffered before `SpeechStart`) |
+| `gateStt`              | true                            | STT only while gate is open                                                                          |
+| `gateSttOpenOnPending` | true                            | Gate opens during VAD **pending** speech (before `SpeechStart`) — covers WebRTC lead-in              |
+| `sttGateHoldMs`        | 1000                            | After `SpeechEnd`, keep feeding STT for this many ms (trailing phonemes + relay)                     |
+| Endpoint tail          | `minSilence` clamped 400–600 ms | Extra silence pushed to STT after hold expires, then `finalize_utterance` (Rust only)                |
 
 **`minSilenceDurationMs` is not a gap between batch phrases.** It only controls how long silence must last **inside** an utterance before VAD declares speech ended. Piper TTS short pauses between words should stay below 300 ms so one phrase stays one segment.
 
@@ -257,6 +257,88 @@ postTtsSilenceS = (sttGateHoldMs + minSilenceDurationMs + margin) / 1000
 Rust injects the STT **endpoint tail** on finalize (`minSilence` clamped 400–600 ms) — the harness does **not** add that again on the wire.
 
 Defaults ≈ **1.75 s** trailing silence (1000 + 500 + 250 ms of 20 ms frames). End-to-end finalize after the user stops talking targets **~1.5–2 s** (`minSilence` + `sttGateHold` + endpoint tail). The old **~2.3 s** post-TTS padding and **multi-second estimate playback waits** after TTS had already ended were the main roundtrip slowdown.
+
+### Harness playback timing (`AgentSpeakingEndLatch`)
+
+Production apps do not need this — it is **test-harness-only** code in [`src/roundtrip-counting.ts`](./src/roundtrip-counting.ts), shared by all `start:roundtrip*` scripts.
+
+#### Why it exists
+
+Each phrase calls `playSpeakerTtsWithPostSilence`, which must:
+
+1. Send text to Sherpa TTS on the **speaker** `VoiceAgent`.
+2. Wait until outbound playback has **actually finished** before streaming trailing silence.
+3. Stream trailing silence at real time so the **listener** VAD/STT gate can drain and emit `user_speech_final`.
+
+Step 2 used to be a **fixed wall-clock estimate** (`~900 ms × word count + 3 s`, capped at 45 s). Piper often finishes much sooner; `agent_speaking_end` can fire at ~3 s while the harness still slept until ~5.7 s. That added **seconds of dead air** per phrase and made CI roundtrips feel stuck (the `[listener] still waiting for transcript (10s)` line is only a progress log every 10 s, not an extra wait).
+
+#### Why not wait on the listener?
+
+`agent_speaking_start` / `agent_speaking_end` are emitted by the **VoiceAgent that plays TTS** (the speaker). They appear on that agent’s `speechEvents()` async iterator.
+
+The listener’s `speechEvents()` stream carries **user-leg** events (`user_speaking_*`, `user_speech_*`, `barge_in`). It does **not** include `agent_speaking_end` for the remote peer’s TTS. Waiting on the listener for agent end never resolves; the harness fell back to the long estimate every time.
+
+#### Components
+
+| Export                                                                     | Role                                                                                                                                                                                                               |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`AgentSpeakingEndLatch`**                                                | Counts `agent_speaking_end` on the speaker stream. `waitForNext(timeoutMs)` resolves on the **next** end event after the call (baseline pattern — safe across multi-phrase runs).                                  |
+| **`startSpeakerSpeechPump(speaker, latch?)`**                              | Single background `for await` on `speaker.speechEvents()`: logs `[speech] [speaker] …` and calls `latch.observe(event)`. **Only one pump per speaker** — do not read `speechEvents()` elsewhere on the same agent. |
+| **`waitAgentPlaybackEndRace({ phrase, waitForAgentSpeakingEnd, capMs })`** | `Promise.race` between latch wait and `estimateTtsPlaybackMs(phrase)`. Logs `playback ended (agent_speaking_end)` or `playback ended (estimate cap …)`.                                                            |
+| **`playSpeakerTtsWithPostSilence({ …, agentSpeakingEndLatch })`**          | `sendTextToTTS` → playback race → `streamSilence(postTtsSilenceS)`.                                                                                                                                                |
+| **`postTtsSilenceSeconds(config)`**                                        | `(sttGateHoldMs + minSilenceDurationMs + margin) / 1000` — does **not** include Rust endpoint tail.                                                                                                                |
+
+Echo / two-agent scripts use **one latch per TTS-speaking agent** (`agent1EndLatch`, `agent2EndLatch`) and pass the matching latch into `playTtsAndCollect` / `playSpeakerTtsWithPostSilence`.
+
+#### Per-phrase timeline (typical)
+
+```text
+  sendTextToTTS
+       │
+       ├─► [parallel] listener already waiting for user_speech_final
+       │
+       ├─► waitAgentPlaybackEndRace
+       │        ├─ agent_speaking_end  (~3 s)  ◄── preferred
+       │        └─ or estimate cap      (~5.7 s for short phrase)  ◄── safety only
+       │
+       ├─► streamSilence(postTtsSilenceS)   (~1.75 s real-time PCM)
+       │
+       └─► listener: hold + endpoint tail → user_speaking_end → user_speech_final (~1–1.5 s after TTS end)
+```
+
+Example log (single phrase `"I love America"`):
+
+```text
+[speaker] playback wait ≤5.7s (agent_speaking_end or estimate)
+[speech] [speaker] +3516ms agent_speaking_end
+[speaker] playback ended (agent_speaking_end)
+[speaker] post-TTS silence 1.8s
+[speech] [listener] +4794ms user_speaking_end
+[speech] [listener] +4794ms user_speech_final "I love America"
+```
+
+~1.3 s from `agent_speaking_end` to final — within the ~1.5–2 s target.
+
+#### Wiring checklist (new roundtrip script)
+
+1. Create `const agentEndLatch = new AgentSpeakingEndLatch()` (or two latches for echo).
+2. Call `startSpeakerSpeechPump(speaker, agentEndLatch)` **once** after `speaker.start()` — before the first TTS.
+3. Start the listener collector pump (`ListenerUtteranceCollector.startPump()`).
+4. For each phrase: `const p = collector.waitForNext(…)` **before** TTS; then `playSpeakerTtsWithPostSilence({ agentSpeakingEndLatch: agentEndLatch, … })`; then `await p`.
+5. Do **not** add a second `speaker.speechEvents()` loop.
+
+#### Scripts using the harness
+
+| Script                                 | Latches                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------- |
+| `roundtrip.ts`                         | 1× speaker                                                                |
+| `roundtrip-counting.ts`                | 1× speaker                                                                |
+| `roundtrip-utterance-timing.ts`        | 1× speaker (via `playTtsAndCollect`)                                      |
+| `roundtrip-two-phrases.ts`             | 1× speaker                                                                |
+| `roundtrip-counting-echo.ts`           | `agent1EndLatch`, `agent2EndLatch`                                        |
+| `roundtrip-counting-barge-recovery.ts` | `agent1EndLatch`, `agent2EndLatch` (+ latch on agent2 for barge echo leg) |
+
+`roundtrip-barge-in.ts` uses its own phase collector (no `playSpeakerTtsWithPostSilence` for the main flow).
 
 ### Between phrases (batch)
 
@@ -423,6 +505,8 @@ Opt out of speech events: `SHERPA_ROUNDTRIP_EVENT_LOG=0`. Opt out of rust debug 
 
 ## Related docs
 
+- [`src/roundtrip-counting.ts`](./src/roundtrip-counting.ts) — shared harness: `AgentSpeakingEndLatch`, `startSpeakerSpeechPump`, `playSpeakerTtsWithPostSilence`, timing helpers
+- [`packages/sdk/VOICE-API.md`](../../packages/sdk/VOICE-API.md) — SDK voice exports and speech events
 - [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md) — VAD/barge-in use cases and defaults
 - [Example README](./README.md) — browser demo, model download
 - [`crates/vendor-sherpa-onnx/README.md`](../../crates/vendor-sherpa-onnx/README.md) — model layout

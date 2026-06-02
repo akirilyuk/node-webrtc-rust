@@ -190,7 +190,7 @@ Quick reference:
 | `SHERPA_ROUNDTRIP_GAP_S`          | `0`     | **Extra** silence between phrases; off by default (VAD hold + trailing silence suffice) |
 | `SHERPA_ROUNDTRIP_VERBOSE`        | off     | Log every VAD/STT event                                                                 |
 
-Inter-phrase separation comes from **listener VAD** (`sttGateHoldMs`, `minSilenceDurationMs`, wait for `user_speech_final`) plus **post-TTS trailing silence** on the speaker track (~1.75 s default — hold + min silence, not the Rust endpoint tail). Playback ends on **`agent_speaking_end`** instead of a multi-second estimate wait. See [ROUNDTRIP.md § Timing](./ROUNDTRIP.md#timing-vad-vs-explicit-silence).
+Inter-phrase separation comes from **listener VAD** (`sttGateHoldMs`, `minSilenceDurationMs`, wait for `user_speech_final`) plus **post-TTS trailing silence** on the speaker track (~1.75 s default — hold + min silence, not the Rust endpoint tail). Playback ends on **`agent_speaking_end`** (via `AgentSpeakingEndLatch` on the speaker event pump), not a multi-second estimate sleep. See [ROUNDTRIP.md § Timing](./ROUNDTRIP.md#timing-vad-vs-explicit-silence) and [Harness playback timing](./ROUNDTRIP.md#harness-playback-timing-agentspeakingendlatch).
 
 ### 3c. Semantic barge-in E2E (STT-gated interrupt)
 

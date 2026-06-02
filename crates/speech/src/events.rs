@@ -1,4 +1,20 @@
 //! Speech event bus and event types.
+//!
+//! Events are emitted by [`crate::agent::VoiceAgent`] and broadcast on [`SpeechEventBus`].
+//! TypeScript maps these to `SpeechEventType` strings in `@node-webrtc-rust/sdk/voice`.
+//!
+//! ## Event semantics (summary)
+//!
+//! | Kind | Typical trigger |
+//! | ---- | ----------------- |
+//! | `UserSpeakingStart` | VAD `SpeechStart` |
+//! | `UserSpeakingEnd` | With `gate_stt` + STT: paired with final; else after hold or VAD end |
+//! | `UserSpeechPartial` | STT streaming |
+//! | `UserSpeechFinal` | STT `finalize_utterance` — primary turn boundary for LLM |
+//! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound |
+//! | `AgentSpeakingEnd` | TTS queue drained — **only on the agent that plays TTS** |
+//! | `BargeIn` | Barge-in path (semantic STT partial and/or VAD during agent TTS) |
+//! | `Error` | Vendor or internal failure |
 
 use tokio::sync::broadcast;
 
@@ -89,7 +105,9 @@ impl SpeechEvent {
     }
 }
 
-/// Broadcast bus for speech events (supports callback + stream subscribers).
+/// Broadcast bus for speech events (callback + `pull_speech_event` / stream subscribers).
+///
+/// Capacity 256; lagging receivers may drop events under load.
 #[derive(Clone)]
 pub struct SpeechEventBus {
     tx: broadcast::Sender<SpeechEvent>,

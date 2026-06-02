@@ -41,7 +41,7 @@ import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 const DEFAULT_SENTENCES = [
   'I love America',
   'The weather is nice today.',
-  'Hello world',
+  'Welcome to the demo',
   'Open the browser please',
   'Speech recognition works locally',
 ]

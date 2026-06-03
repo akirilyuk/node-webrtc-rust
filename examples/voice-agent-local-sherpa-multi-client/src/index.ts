@@ -12,8 +12,9 @@
  *   export SHERPA_STT_MODEL_PATH=.../voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
  *   export SHERPA_TTS_MODEL_PATH=.../voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
  *
- * Run:
+ * Run (models exported automatically — see README.md):
  *   npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
+ *   (prestart frees port 3004 via scripts/free-port.sh)
  *
  * Open **three browser tabs** to http://localhost:3004 — same room `sherpa-multi`.
  * Optional: `VOICE_MAX_CONCURRENT_SESSIONS=2 npm run start:cap-2 --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client`
@@ -127,6 +128,11 @@ async function serveStatic(
 }
 
 async function main(): Promise<void> {
+  // Browser tabs use http://127.0.0.1 — Node must advertise 127.0.0.1 host ICE candidates (see core WEBRTC_NAT_1TO1_IPS).
+  if (!process.env.WEBRTC_NAT_1TO1_IPS) {
+    process.env.WEBRTC_NAT_1TO1_IPS = '127.0.0.1'
+  }
+
   freePort(PORT, 'voice-agent-local-sherpa-multi-client')
 
   const sessionBudget = getProcessVoiceSessionBudget()
@@ -140,7 +146,10 @@ async function main(): Promise<void> {
     voiceHandler,
     serveHttp: (req, res) => serveStatic(req, res, server.broadcastSpeak),
     hostOptions: {
-      log: (message) => console.log(message),
+      log: (message) => {
+        const ts = new Date().toISOString().slice(11, 23)
+        console.log(`${ts} ${message}`)
+      },
     },
   })
 

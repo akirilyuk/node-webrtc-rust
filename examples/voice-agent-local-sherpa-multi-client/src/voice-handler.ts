@@ -15,6 +15,11 @@ import type { VoiceSessionHandler } from '@node-webrtc-rust/helpers'
 /** Per-tab: ignore STT finals while agent TTS is playing (echo into Sherpa). */
 const agentSpeakingByPeer = new Map<string, boolean>()
 
+function logPeer(peerId: string, message: string): void {
+  const ts = new Date().toISOString().slice(11, 23)
+  console.log(`${ts} [${peerId}] ${message}`)
+}
+
 export const voiceHandler: VoiceSessionHandler = {
   /**
    * Per-tab pipeline events. Always reply with `ctx.speak` — never broadcast here.
@@ -34,14 +39,15 @@ export const voiceHandler: VoiceSessionHandler = {
 
       case 'user_speech_final': {
         if (agentSpeakingByPeer.get(ctx.peerId)) {
-          console.log(
-            `[${ctx.peerId}] ignored user_speech_final during agent TTS (likely echo): ${event.text?.slice(0, 60)}`,
+          logPeer(
+            ctx.peerId,
+            `ignored user_speech_final during agent TTS (likely echo): ${event.text?.slice(0, 60)}`,
           )
           break
         }
         const heard = event.text?.trim()
         if (!heard) break
-        console.log(`[${ctx.peerId}] user said: ${heard}`)
+        logPeer(ctx.peerId, `user said: ${heard}`)
         void ctx.speak(`You said: ${heard}`)
         break
       }
@@ -60,7 +66,7 @@ export const voiceHandler: VoiceSessionHandler = {
 
   /** Per-tab Speak form — this tab only. */
   async onSpeakRequest(ctx, text) {
-    console.log(`[${ctx.peerId}] speak form: ${text}`)
+    logPeer(ctx.peerId, `speak form: ${text}`)
     await ctx.speak(text)
   },
 
@@ -75,7 +81,7 @@ export const voiceHandler: VoiceSessionHandler = {
     for (const ctx of contexts) {
       await ctx.speak(trimmed)
       spoken.push(ctx.peerId)
-      console.log(`[${ctx.peerId}] broadcast: "${trimmed.slice(0, 80)}"`)
+      logPeer(ctx.peerId, `broadcast: "${trimmed.slice(0, 80)}"`)
     }
     return spoken
   },

@@ -61,6 +61,10 @@ interface ClientSession {
   offerSent: boolean
   pendingAnswer: RTCSessionDescriptionInit | null
   pendingIce: RTCIceCandidateInit[]
+  /** Cleared in {@link VoiceAgentSessionHost.closeClient}. */
+  micTrackTimer?: ReturnType<typeof setTimeout>
+  resolveMicTrack?: (track: RemoteAudioTrack) => void
+  rejectMicTrack?: (error: Error) => void
 }
 
 export interface VoiceAgentSessionHostOptions {
@@ -89,6 +93,8 @@ export class VoiceAgentSessionHost {
   private readonly clientPeerIdPrefix: string
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
+  /** Per-peer WebRTC reconnect attempts after `connectionState=failed`. */
+  private readonly reconnectAttempts = new Map<string, number>()
 
   constructor(
     private readonly signaling: SignalingClient,
@@ -100,8 +106,13 @@ export class VoiceAgentSessionHost {
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
 
     this.signaling.on('peer-joined', (peerId) => {
-      if (peerId === VOICE_AGENT_SERVER_PEER_ID || this.sessions.has(peerId)) return
+      if (peerId === VOICE_AGENT_SERVER_PEER_ID) return
       if (!peerId.startsWith(this.clientPeerIdPrefix)) return
+      // Same tab id can re-join after refresh without a clean peer-left (stale VoiceAgent/PC).
+      if (this.sessions.has(peerId)) {
+        this.log(`[voice ${peerId}] peer re-joined — replacing stale session`)
+        this.closeClient(peerId)
+      }
       void this.connectClient(peerId).catch((error: unknown) => {
         console.error(`Failed to connect client ${peerId}:`, error)
         this.closeClient(peerId)
@@ -212,17 +223,22 @@ export class VoiceAgentSessionHost {
     this.sessions.set(peerId, session)
 
     const inboundPromise = new Promise<RemoteAudioTrack>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`timed out waiting for mic track from ${peerId}`)),
-        30_000,
-      )
-      pc.ontrack = (event) => {
-        if (event.track.kind === 'audio') {
-          clearTimeout(timer)
-          resolve(event.track as RemoteAudioTrack)
-        }
-      }
+      session.resolveMicTrack = resolve
+      session.rejectMicTrack = reject
     })
+    void inboundPromise.catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      this.log(`[voice ${peerId}] ${message}`)
+      this.closeClient(peerId)
+    })
+
+    pc.ontrack = (event) => {
+      if (event.track.kind !== 'audio') return
+      this.clearMicTrackTimer(session)
+      session.resolveMicTrack?.(event.track as RemoteAudioTrack)
+      session.resolveMicTrack = undefined
+      session.rejectMicTrack = undefined
+    }
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -230,13 +246,34 @@ export class VoiceAgentSessionHost {
       }
     }
 
+    pc.oniceconnectionstatechange = () => {
+      this.log(`[voice ${peerId}] iceConnectionState=${pc.iceConnectionState}`)
+    }
+
     pc.onconnectionstatechange = () => {
       this.log(`[voice ${peerId}] connectionState=${pc.connectionState}`)
       if (pc.connectionState === 'connected') {
+        this.reconnectAttempts.delete(peerId)
         void this.startAgentSession(peerId, inboundPromise).catch((error: unknown) => {
           console.error(`Failed to start VoiceAgent for ${peerId}:`, error)
         })
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      } else if (pc.connectionState === 'failed') {
+        const attempts = (this.reconnectAttempts.get(peerId) ?? 0) + 1
+        this.reconnectAttempts.set(peerId, attempts)
+        if (attempts <= 2) {
+          this.log(
+            `[voice ${peerId}] connection failed — reconnect attempt ${attempts}/2 (new offer)`,
+          )
+          this.closeClient(peerId)
+          void this.connectClient(peerId).catch((error: unknown) => {
+            console.error(`Failed to reconnect client ${peerId}:`, error)
+            this.closeClient(peerId)
+          })
+        } else {
+          this.log(`[voice ${peerId}] connection failed — max reconnect attempts reached`)
+          this.closeClient(peerId)
+        }
+      } else if (pc.connectionState === 'closed') {
         this.closeClient(peerId)
       }
     }
@@ -328,7 +365,9 @@ export class VoiceAgentSessionHost {
 
   private sendSpeechEventToControlChannel(channel: RTCDataChannel, event: SpeechEvent): void {
     if (channel.readyState !== 'open') return
-    channel.send(JSON.stringify(speechEventToControlMessage(event)))
+    channel.send(
+      JSON.stringify(speechEventToControlMessage(event, { ts: new Date().toISOString() })),
+    )
   }
 
   private async onAnswerReceived(peerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
@@ -344,6 +383,26 @@ export class VoiceAgentSessionHost {
     await this.applyAnswer(peerId, sdp)
   }
 
+  private clearMicTrackTimer(session: ClientSession): void {
+    if (session.micTrackTimer !== undefined) {
+      clearTimeout(session.micTrackTimer)
+      session.micTrackTimer = undefined
+    }
+  }
+
+  private startMicTrackTimer(peerId: string, session: ClientSession): void {
+    this.clearMicTrackTimer(session)
+    session.micTrackTimer = setTimeout(() => {
+      session.rejectMicTrack?.(
+        new Error(
+          `timed out waiting for mic track from ${peerId} (check ICE — use http://127.0.0.1 and WEBRTC_NAT_1TO1_IPS=127.0.0.1 on the server)`,
+        ),
+      )
+      session.rejectMicTrack = undefined
+      session.resolveMicTrack = undefined
+    }, 30_000)
+  }
+
   private async applyAnswer(peerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
     const session = this.sessions.get(peerId)
     if (!session) return
@@ -354,6 +413,7 @@ export class VoiceAgentSessionHost {
         await session.pc.addIceCandidate(new RTCIceCandidate(candidate))
       }
       session.pendingIce = []
+      this.startMicTrackTimer(peerId, session)
       this.log(`[voice ${peerId}] answer applied, connectionState=${session.pc.connectionState}`)
     } catch (error: unknown) {
       console.error(`Failed to apply answer from ${peerId}:`, error)
@@ -377,6 +437,9 @@ export class VoiceAgentSessionHost {
       this.sessionBudget.release(peerId)
       return
     }
+    this.clearMicTrackTimer(session)
+    session.resolveMicTrack = undefined
+    session.rejectMicTrack = undefined
     session.unwireControl?.()
     session.unwireSpeechForward?.()
     void session.agent.stop().catch(() => undefined)

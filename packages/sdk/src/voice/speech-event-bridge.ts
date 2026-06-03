@@ -24,6 +24,8 @@ export interface VoiceControlSpeakMessage {
 export interface VoiceControlSpeechEventMessage {
   type: 'speech_event'
   event: SpeechEventType
+  /** ISO-8601 server time when the event was forwarded (multi-client event log). */
+  ts?: string
   text?: string
   error?: string
 }
@@ -33,10 +35,14 @@ export type VoiceControlClientMessage = VoiceControlSpeakMessage
 export type VoiceControlServerMessage = VoiceControlSpeechEventMessage
 
 /** Maps a {@link SpeechEvent} to the wire format sent on the voice-control data channel. */
-export function speechEventToControlMessage(event: SpeechEvent): VoiceControlSpeechEventMessage {
+export function speechEventToControlMessage(
+  event: SpeechEvent,
+  options?: { ts?: string },
+): VoiceControlSpeechEventMessage {
   return {
     type: 'speech_event',
     event: event.type,
+    ts: options?.ts,
     text: event.text,
     error: event.error,
   }
@@ -73,7 +79,7 @@ function sendSpeechEventToChannel(channel: RTCDataChannel, event: SpeechEvent): 
     const detail = event.text ? ` text=${JSON.stringify(event.text.slice(0, 120))}` : ''
     voiceDebugLog('voice-control', `send ${event.type}${detail}`)
   }
-  channel.send(JSON.stringify(speechEventToControlMessage(event)))
+  channel.send(JSON.stringify(speechEventToControlMessage(event, { ts: new Date().toISOString() })))
 }
 
 /**

@@ -24,6 +24,10 @@ sherpa_roundtrip_timeout_sec() {
       # 240s in-process wall; quiet pass + VOICE_DEBUG re-run on failure.
       echo "${CI_SHERPA_BARGE_RECOVERY_TIMEOUT_SEC:-420}"
       ;;
+    start:roundtrip-counting)
+      # 120s in-process wall + long TTS; allow one VOICE_DEBUG re-run.
+      echo "${CI_SHERPA_COUNTING_ROUNDTRIP_TIMEOUT_SEC:-300}"
+      ;;
     start:roundtrip-counting-echo | start:roundtrip)
       echo "${CI_SHERPA_LONG_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
@@ -34,9 +38,6 @@ sherpa_roundtrip_timeout_sec() {
 }
 
 WORKSPACE="@node-webrtc-rust/example-voice-agent-local-sherpa"
-EXAMPLE_ROOT="$ROOT/examples/voice-agent-local-sherpa"
-STT_BUNDLE="sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
-TTS_BUNDLE="vits-piper-en_US-amy-low"
 
 # Sherpa roundtrip E2E entry points (see examples/voice-agent-local-sherpa/ROUNDTRIP.md).
 SHERPA_ROUNDTRIP_E2E=(
@@ -90,9 +91,8 @@ ensure_sherpa_models() {
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
     "sherpa download-tts" -- npm run download-tts:en --workspace="$WORKSPACE"
 
-  export SHERPA_STT_MODEL_PATH="$EXAMPLE_ROOT/.models/$STT_BUNDLE"
-  export SHERPA_TTS_MODEL_PATH="$EXAMPLE_ROOT/.models/$TTS_BUNDLE"
-  export SHERPA_STT_LANGUAGE="${SHERPA_STT_LANGUAGE:-en}"
+  # shellcheck source=/dev/null
+  source "$ROOT/scripts/export-sherpa-local-models.sh"
 
   if [[ ! -d "$SHERPA_STT_MODEL_PATH" ]] || [[ ! -d "$SHERPA_TTS_MODEL_PATH" ]]; then
     echo "Sherpa model directories missing after download." >&2

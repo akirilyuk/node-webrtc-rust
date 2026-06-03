@@ -96,4 +96,10 @@ for dir in "$ROOT"/examples/*/; do
   fi
 done
 
+echo "==> Refreshing package-lock optional binding entries"
+if ! bash "$ROOT/scripts/ci/refresh-package-lock-optional-bindings.sh"; then
+  echo "WARN: lockfile refresh skipped or failed (platform bindings @$VERSION may not be published yet)." >&2
+  echo "After npm publish, run: bash scripts/ci/refresh-package-lock-optional-bindings.sh" >&2
+fi
+
 echo "==> Done — all publishable packages and examples set to $VERSION"

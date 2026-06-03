@@ -323,7 +323,7 @@ async function main(): Promise<void> {
   console.log('=== Sherpa TTS → STT roundtrip (two VoiceAgents) ===')
   console.log(`Pipeline: ${label}`)
   console.log(
-    `Listener: gateStt=${config.vad?.gateStt !== false}  minSilence=${config.vad?.minSilenceDurationMs ?? 300}ms  sttGateHold=${config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000}ms  bargeIn=${config.vad?.bargeIn?.enabled !== false}`,
+    `Listener: gateStt=${config.vad?.gateStt !== false}  minSilence=${config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs ?? 1300}ms  sttGateHold=${config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000}ms  bargeIn=${config.vad?.bargeIn?.enabled !== false}`,
   )
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)

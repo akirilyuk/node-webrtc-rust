@@ -40,7 +40,11 @@ import {
 } from './roundtrip-barge-in-helpers.js'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
-import { installRoundtripWallClockTimeout, postTtsSilenceSeconds } from './roundtrip-counting.js'
+import {
+  installRoundtripWallClockTimeout,
+  interPhaseSttDrainSeconds,
+  postTtsSilenceSeconds,
+} from './roundtrip-counting.js'
 import { stereoPcmDurationMs, streamSilence, streamTone } from './pcm-relay.js'
 import { resolveVoiceConfig } from './resolve-voice-config.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
@@ -434,8 +438,12 @@ async function main(): Promise<void> {
     )
   }
 
-  await streamSilence(agentOut, 0.5)
-  await streamSilence(userOut, 0.5)
+  const interPhaseDrainS = interPhaseSttDrainSeconds(config)
+  console.log(
+    `[between Phase 2→3] draining listener STT (${interPhaseDrainS.toFixed(1)}s silence — minSilence + gate hold + endpoint tail)`,
+  )
+  await streamSilence(agentOut, 0.3)
+  await streamSilence(userOut, interPhaseDrainS)
 
   logE2ePhase({ phase: 'Phase 3', detail: 'user TTS barge phrase on user-pc — must barge' })
   console.log('--- Phase 3: user TTS barge phrase mid-playback (must barge) ---')

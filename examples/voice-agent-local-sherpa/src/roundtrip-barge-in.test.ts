@@ -8,11 +8,13 @@ import {
   evaluateNoPartialWithoutFinal,
   evaluateToneMustNotBarge,
   formatRecordedSpeechEvent,
+  phraseLeadWord,
   phase1BaselineComplete,
   phase2EventsComplete,
   phase3BargeObserved,
   phase3EventsComplete,
   phase3EventsTerminal,
+  textContainsWholeWord,
   type RecordedSpeechEvent,
 } from './roundtrip-barge-in-helpers.js'
 
@@ -31,7 +33,50 @@ describe('evaluateBargeUtteranceFinal', () => {
       expectedPhrase: 'stop now please',
     })
     expect(result.passed).toBe(true)
-    expect(result.similarity).toBeGreaterThanOrEqual(0.6)
+    expect(result.similarity).toBeGreaterThanOrEqual(0.75)
+  })
+
+  it('fails when lead word is missing from final (main regression: "Now please" vs "stop now please")', () => {
+    const events: RecordedSpeechEvent[] = [
+      { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 439 },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 2509, text: 'Now' },
+      { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 2509 },
+      { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 2509 },
+      { type: SPEECH_EVENT_TYPE.userSpeakingEnd, atMs: 56495 },
+      { type: SPEECH_EVENT_TYPE.userSpeechFinal, atMs: 56495, text: 'Now please' },
+    ]
+    const result = evaluateBargeUtteranceFinal({
+      events,
+      expectedPhrase: 'stop now please',
+    })
+    expect(result.passed).toBe(false)
+    expect(result.similarity).toBeCloseTo(2 / 3, 5)
+    expect(result.failures.some((f) => f.includes('lead word "stop"'))).toBe(true)
+    expect(result.failures.some((f) => f.includes('similarity'))).toBe(true)
+  })
+
+  it('fails when barge-trigger partial omits lead word', () => {
+    const events: RecordedSpeechEvent[] = [
+      { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 439 },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 2509, text: 'Now' },
+      { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 2509 },
+      { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 2509 },
+    ]
+    const result = evaluateSemanticBargeEventOrder({
+      events,
+      expectedPhrase: 'stop now please',
+      label: 'Phase 3',
+    })
+    expect(result.passed).toBe(false)
+    expect(
+      result.failures.some((f) => f.includes('barge-trigger partial missing lead word "stop"')),
+    ).toBe(true)
+  })
+
+  it('phraseLeadWord and textContainsWholeWord helpers', () => {
+    expect(phraseLeadWord('stop now please')).toBe('stop')
+    expect(textContainsWholeWord('Now please', 'stop')).toBe(false)
+    expect(textContainsWholeWord('stop now', 'stop')).toBe(true)
   })
 
   it('fails when user_speech_final is missing after barge_in', () => {

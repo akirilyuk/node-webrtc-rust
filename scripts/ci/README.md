@@ -13,6 +13,8 @@ Human-readable reference for GitHub Actions workflows, reusable jobs, caches, an
 | **Build & Test (PR)**   | [`.github/workflows/build.yml`](../../.github/workflows/build.yml)           | PR → `main`                      | Path-filtered quality, native compile, TS build, integration tests |
 | **Build & Test (main)** | [`.github/workflows/build-main.yml`](../../.github/workflows/build-main.yml) | Push → `main`                    | Full release native matrix + full test suite                       |
 | **Release**             | [`.github/workflows/release.yml`](../../.github/workflows/release.yml)       | Tag `release/*`                  | Release matrix → tests → npm publish → GitHub Release              |
+
+Every workflow above starts with **`validate-package-lock`** (no path filter) — fails in seconds if `package-lock.json` has stub optional `@node-webrtc-rust/bindings-*` entries. Local: `npm run ci:validate:package-lock`.
 | **CI Docker image**     | [`.github/workflows/ci-image.yml`](../../.github/workflows/ci-image.yml)     | Push → `ci`, `workflow_dispatch` | Publish `ghcr.io/.../ci-build:latest`                              |
 
 Reusable workflows (called via `workflow_call`, not triggered directly):
@@ -71,18 +73,24 @@ Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with three
 
 If none match, the whole workflow is skipped.
 
-### 2. Typecheck & lint
+### 2. Package-lock optional bindings (always)
 
-- **When:** `native` OR `typescript` OR `helpers` OR `examples` OR `workflows`
+- **When:** every PR (always runs; not path-filtered)
+- **Job:** `validate-package-lock` → [`.github/actions/validate-package-lock`](../../.github/actions/validate-package-lock/action.yml)
+- **Script:** [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh) — no `npm ci`; blocks merge before opaque `Invalid Version:` errors
+
+### 3. Typecheck & lint
+
+- **When:** `native` OR `typescript` OR `helpers` OR `examples` OR `workflows` (and package-lock job succeeded)
 - **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
-- **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
+- **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh), `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
 - Runs [`build-ts-workspace.sh`](build-ts-workspace.sh) inside [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh) when sdk/signaling/helpers `dist/` is missing (fresh CI checkout). Job 4 still builds once for Test cache.
 
 Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
 
 **Compile native** runs when `native` or `workflows` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
 
-### 3. Compile native
+### 4. Compile native
 
 - **When:** `native` OR `workflows` (skipped on TS-only PRs)
 - **Runner:** `ci-build` container
@@ -92,7 +100,7 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 
 Populates the shared native cache used by the test job.
 
-### 4. Build TypeScript
+### 5. Build TypeScript
 
 - **When:** `typescript` OR `helpers` OR `workflows` (skipped on Rust-only PRs)
 - **Needs:** quality only (runs **in parallel** with compile-native — TS build does not need `.node`)
@@ -102,7 +110,7 @@ Populates the shared native cache used by the test job.
 
 Single CI build of publishable `dist/` for the Test job. Release-publish compile parity: [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) locally or `release.yml` publish job.
 
-### 5. Test
+### 6. Test
 
 - **When:** quality success; compile-native and build-ts success or skipped; at least one path filter matched
 - **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)
@@ -221,10 +229,11 @@ No path filtering — always validates release surface after merge, but skips co
 
 ## Release pipeline (`release.yml`)
 
-Triggered by `git push origin release/x.y.z`.
+Prep PRs use branch `release-prep/x.y.z` → `main`. Publish is triggered by `git push origin refs/tags/release/x.y.z`. Full release + lockfile docs: [`scripts/RELEASE.md`](../RELEASE.md#package-lockjson-after-release).
 
 ```mermaid
 flowchart TD
+  lock[validate-package-lock always]
   quality[Typecheck and lint]
   plan[Plan + check main CI]
   buildLinux[build-linux if not all cached]
@@ -232,7 +241,9 @@ flowchart TD
   stage[stage-cached-bindings]
   test[Integration tests unless main validated + all cached]
   publish[Publish npm + GitHub Release]
+  sync[sync-main-package-lock PR to main]
 
+  lock --> quality
   quality --> plan
   plan --> buildLinux
   plan --> buildHost
@@ -245,16 +256,19 @@ flowchart TD
   stage --> publish
   test --> publish
   quality --> publish
+  publish --> sync
 ```
 
-1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh)
-2. **plan** — per-target cache check + [`check-main-ci-success.sh`](check-main-ci-success.sh) (successful `build-main.yml` for this SHA)
-3. **build-linux / build-host** — skipped when **all** targets cached; otherwise compile **only missing** targets
-4. **stage-cached-bindings** — upload artifacts for cached targets
-5. **test** — **skipped** when `all_cached && main_validated` (A1); otherwise [`run-pr-integration.sh`](run-pr-integration.sh)
-6. **publish** — stage artifacts, `npm publish`, GitHub Release
+1. **validate-package-lock** — always (no path filter); [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh)
+2. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh)
+3. **plan** — per-target cache check + [`check-main-ci-success.sh`](check-main-ci-success.sh) (successful `build-main.yml` for this SHA)
+4. **build-linux / build-host** — skipped when **all** targets cached; otherwise compile **only missing** targets
+5. **stage-cached-bindings** — upload artifacts for cached targets
+6. **test** — **skipped** when `all_cached && main_validated` (A1); otherwise [`run-pr-integration.sh`](run-pr-integration.sh)
+7. **publish** — stage artifacts, `npm publish`, GitHub Release
+8. **sync-main-package-lock** — checkout `main`, [`post-release-sync-main-package-lock.sh`](post-release-sync-main-package-lock.sh), open PR `chore/post-release-package-lock-X.Y.Z` (merge promptly — see RELEASE.md)
 
-See [`scripts/RELEASE.md`](../RELEASE.md) for tagging and secrets.
+Release prep on git uses `SKIP_LOCK_REFRESH=1` with [`bump-workspace-versions.sh`](bump-workspace-versions.sh); post-publish sync runs full bump + [`refresh-package-lock-optional-bindings.sh`](refresh-package-lock-optional-bindings.sh).
 
 ---
 
@@ -281,7 +295,11 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 | Script                                                         | Used by                                          | What it runs                                                                                                                                                     |
 | -------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                                   | `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest**                                  |
+| [`bump-workspace-versions.sh`](bump-workspace-versions.sh) | Release prep (`SKIP_LOCK_REFRESH=1`), post-release sync | Bump workspace `package.json` / pins; optional lock refresh + validate |
+| [`refresh-package-lock-optional-bindings.sh`](refresh-package-lock-optional-bindings.sh) | After publish, via bump or post-release sync | Prune stub optional bindings + `npm install` |
+| [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh) | `validate-package-lock` job, before every `npm ci` | Fail fast on stub optional `@node-webrtc-rust/bindings-*` lock entries (`Invalid Version:`) |
+| [`post-release-sync-main-package-lock.sh`](post-release-sync-main-package-lock.sh) | Release `sync-main-package-lock` job after publish | Bump + refresh lock from npm; workflow opens PR to `main` |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                                   | lock validate, `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest**                                  |
 | [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers`              | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)                                                                                           |
 | [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`                            | eslint + build-ts + helpers vitest when scoped; Sherpa **typecheck + Vitest + E2E** when example/speech changes                                                  |
 | [`install-pre-push-hook.sh`](install-pre-push-hook.sh)         | one-time per clone                               | installs `.git/hooks/pre-push` → `npm run ci:pre-push`                                                                                                           |

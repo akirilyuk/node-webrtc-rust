@@ -9,6 +9,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+echo "==> validate package-lock optional bindings"
+bash scripts/ci/validate-package-lock-optional-bindings.sh
+
 echo "==> npm ci"
 npm ci
 

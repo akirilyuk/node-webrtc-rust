@@ -1,7 +1,8 @@
 name: Release
 
 # Builds all targets, runs tests, publishes to npm, and creates a GitHub Release.
-# Trigger by pushing a tag: git tag release/0.1.0 && git push origin release/0.1.0
+# Trigger by pushing a tag: git tag release/0.1.0 && git push origin refs/tags/release/0.1.0
+# Prep PRs use branch release-prep/X.Y.Z (see scripts/RELEASE.md) — not the same ref as the tag.
 
 on:
   push:
@@ -12,6 +13,7 @@ permissions:
   packages: read
   id-token: write
   actions: read
+  pull-requests: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,8 +23,30 @@ env:
   OPUS_STATIC: '1'
 
 jobs:
+  validate-package-lock:
+    name: Package-lock optional bindings
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: ./.github/actions/validate-package-lock
+
   quality:
     name: Typecheck & lint
+    needs: validate-package-lock
     runs-on: self-hosted
     steps:
       - name: Prepare workspace
@@ -46,7 +70,7 @@ jobs:
 
   plan:
     name: Plan native builds
-    needs: quality
+    needs: [validate-package-lock, quality]
     runs-on: self-hosted
     outputs:
       linux_x64_matrix: ${{ steps.plan.outputs.linux_x64_matrix }}
@@ -310,3 +334,69 @@ jobs:
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # After npm publish: align main package.json + package-lock.json with registry and open a PR.
+  sync-main-package-lock:
+    name: Sync main package-lock (PR)
+    needs: publish
+    if: success() && needs.publish.result == 'success'
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve release version from tag
+        id: version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#release/}"
+          if [ -z "$VERSION" ]; then
+            echo "Could not parse version from tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Syncing main after release $VERSION"
+
+      - name: Sync workspace versions and package-lock from npm
+        run: bash scripts/ci/post-release-sync-main-package-lock.sh "${{ steps.version.outputs.version }}"
+
+      - name: Open PR to main
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore(ci): sync package-lock after release ${{ steps.version.outputs.version }}"
+          title: "chore(ci): sync package-lock after release ${{ steps.version.outputs.version }}"
+          body: |
+            Automated follow-up to tag `${{ github.ref_name }}` after npm publish.
+
+            - Workspace `@node-webrtc-rust/*` versions aligned to `${{ steps.version.outputs.version }}`
+            - `package-lock.json` optional platform binding entries refreshed from the npm registry
+
+            **Merge promptly** so `main` stays green for `npm ci` (see `validate-package-lock` CI job).
+
+            Re-run locally if needed:
+
+            ```bash
+            bash scripts/ci/post-release-sync-main-package-lock.sh ${{ steps.version.outputs.version }}
+            ```
+          branch: chore/post-release-package-lock-${{ steps.version.outputs.version }}
+          base: main
+          delete-branch: true
+          labels: dependencies,automation

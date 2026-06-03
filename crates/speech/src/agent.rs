@@ -778,9 +778,16 @@ impl VoiceAgent {
                 .unwrap_or(false);
 
             if gate_stt {
+                let barge_listen =
+                    inner.agent_speaking && !inner.stt_stream_open;
                 if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
-                    // Voice-only — silence must not fill the ring (see stt_pre_roll tests).
-                    if !was_speaking && (frame_active || vad_pending) {
+                    // During agent TTS the STT gate is closed until VAD SpeechStart. User speech
+                    // often begins before VAD confirms (agent bleed / echo). Keep a continuous
+                    // lookback ring so the flush at SpeechStart includes the first syllable.
+                    if barge_listen {
+                        pre_roll.push(&mono_bytes);
+                    } else if !was_speaking && (frame_active || vad_pending) {
+                        // Voice-only — silence must not fill the ring (see stt_pre_roll tests).
                         pre_roll.push(&mono_bytes);
                     }
                 }
@@ -915,6 +922,7 @@ impl VoiceAgent {
             self.complete_pending_utterance_if_any().await?;
         }
 
+        let mut pre_roll_flushed_this_frame = false;
         if speech_start {
             let long_pause_new_phrase = {
                 let inner = self.inner.lock().await;
@@ -959,7 +967,10 @@ impl VoiceAgent {
                 }
             }
             if let Some(buffered) = pre_roll_after_start {
-                self.push_stt_audio_bytes(buffered).await?;
+                if !buffered.is_empty() {
+                    self.push_stt_audio_bytes(buffered).await?;
+                    pre_roll_flushed_this_frame = true;
+                }
             }
         }
 
@@ -1063,7 +1074,7 @@ impl VoiceAgent {
             ));
         }
 
-        if !gate_stt || stt_audio_open {
+        if (!gate_stt || stt_audio_open) && !pre_roll_flushed_this_frame {
             self.push_stt_audio_bytes(mono_bytes).await?;
         }
         if !gate_stt || stt_poll_open {
@@ -1307,6 +1318,8 @@ impl VoiceAgent {
                     guard.agent_speaking_since = Some(Instant::now());
                     guard.stt_barge_fired_this_agent_playback = false;
                     guard.barge_awaiting_stt_partial = false;
+                    // Drop any user-turn pre-roll so agent echo does not reach STT on barge.
+                    guard.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
                 }
                 event_bus.emit(SpeechEvent::agent_speaking_start());
                 voice_debug("agent_speaking_start (first outbound PCM frame)");

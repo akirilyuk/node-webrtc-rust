@@ -8,6 +8,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `validate-package-lock-optional-bindings.sh` + always-on **`validate-package-lock`** CI job on PR / `main` / release (no path filter); `npm ci` paths and `bump-workspace-versions.sh` run the same check.
+- Release workflow **`sync-main-package-lock`** job after publish — checks out `main`, syncs lockfile from npm, opens PR `chore/post-release-package-lock-X.Y.Z`. Release prep uses `SKIP_LOCK_REFRESH=1` on bump. Documented in [`scripts/RELEASE.md`](scripts/RELEASE.md#package-lockjson-after-release).
+
 ---
 
 ## [0.5.1] — 2026-06-03
@@ -82,7 +87,7 @@ Snappier Sherpa roundtrip finalize, barge-in Phase 3 `user_speech_final` E2E, ec
 - **Snappier utterance finalize** — `stt_endpoint_tail_ms` capped at 600ms; harness post-TTS silence derived from VAD; `AgentSpeakingEndLatch` ends waits on `agent_speaking_end` instead of long estimate sleeps.
 - **Barge-in Phase 3 E2E** — assert `user_speech_final` after semantic `barge_in`; parallel trailing-silence collection so finals are not dropped.
 - **Release workflow** — plan job workspace `chown` on self-hosted runners; publish gated on `plan` success.
-- **Repo versions** — workspace `package.json` pins synced to published npm (`bump-workspace-versions.sh`); release prep via `release/X.Y.Z` PR before tag.
+- **Repo versions** — workspace `package.json` pins synced to published npm (`bump-workspace-versions.sh`); release prep via `release-prep/X.Y.Z` PR before tag.
 
 ### Added
 
@@ -93,7 +98,7 @@ Snappier Sherpa roundtrip finalize, barge-in Phase 3 `user_speech_final` E2E, ec
 ### Changed
 
 - Echo / barge-recovery roundtrips: one `speechEvents()` consumer per `VoiceAgent`; `echoVadConfig` disables barge on peer-listen legs; playback baseline before `sendTextToTTS`.
-- [`scripts/RELEASE.md`](scripts/RELEASE.md) — versions committed on `release/X.Y.Z` PR before tag (not optional post-publish on `main`).
+- [`scripts/RELEASE.md`](scripts/RELEASE.md) — versions committed on `release-prep/X.Y.Z` PR before tag (not optional post-publish on `main`).
 
 ### Fixed
 

@@ -22,6 +22,7 @@
     "test": "npm run test --workspaces --if-present",
     "test:helpers": "bash scripts/ci/run-helpers-unit-tests.sh",
     "ci:pre-push": "bash scripts/ci/run-pre-push-gates.sh",
+    "ci:validate:package-lock": "bash scripts/ci/validate-package-lock-optional-bindings.sh",
     "ci:quality": "bash scripts/ci/run-pr-quality.sh",
     "test:rust": "cargo test --workspace",
     "test:ts": "npm run test --workspaces --if-present",

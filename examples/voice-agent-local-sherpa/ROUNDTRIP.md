@@ -445,7 +445,7 @@ Set `requireSttPartial: false` to restore immediate energy-VAD barge on the same
 | ----- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
 | 1     | None                                                   | Full phrase received on `userInbound`                                                                                  |
 | 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; optional **C1** path; received audio ≥ ~75% of phase 1                                              |
-| 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` → `barge_in` → `agent_speaking_end`**; lifecycle close with final |
+| 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` → `barge_in` → `agent_speaking_end`**; partial includes **lead word**; `user_speech_final` ≥ **75%** word similarity |
 
 Between phases 2 and 3 the harness streams **`interPhaseSttDrainSeconds(config)`** (~3.15 s with the 1300 ms / 1000 ms preset) of silence on `userOut` so the listener STT stream from the tone phase fully closes before Phase 3 — otherwise Phase 3 can barge without a fresh `vad_triggered`.
 
@@ -466,6 +466,7 @@ Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-i
 | `SHERPA_BARGE_IN_TONE_S`               | `1.0`             | Phase 2 tone duration                      |
 | `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65`            | Phase 3 max `cutMs / fullMs`               |
 | `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`            | Phase 2 min `cutMs / fullMs`               |
+| `SHERPA_BARGE_IN_MIN_SIMILARITY`       | `0.75`            | Phase 3 min word similarity vs barge phrase |
 | `SHERPA_BARGE_IN_VERBOSE`              | off               | Log listener speech events                 |
 
 Success: `Semantic barge-in E2E OK — tone ignored, spoken phrase interrupted agent TTS.`

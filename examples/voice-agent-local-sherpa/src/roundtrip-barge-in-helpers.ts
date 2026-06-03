@@ -9,7 +9,11 @@ import {
   type SpeechEventType,
 } from '@node-webrtc-rust/sdk/voice'
 
-import { DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS, wordSimilarity } from './roundtrip-counting.js'
+import {
+  DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS,
+  normalizeForCompare,
+  wordSimilarity,
+} from './roundtrip-counting.js'
 import { evaluateTonePhaseLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
 export interface RecordedSpeechEvent {
@@ -30,8 +34,24 @@ export {
 /** Default max gap barge_in → agent_speaking_end after flush. */
 export const DEFAULT_MAX_BARGE_TO_AGENT_END_MS = 2000
 
-/** Default min word similarity for barge phrase `user_speech_final`. */
-export const DEFAULT_BARGE_PHRASE_MIN_SIMILARITY = 0.6
+/** Default min word similarity for barge phrase `user_speech_final` (matches roundtrip default). */
+export const DEFAULT_BARGE_PHRASE_MIN_SIMILARITY = 0.75
+
+/** First whole word of a phrase after normalize — used to catch lost leading syllables on barge. */
+export function phraseLeadWord(phrase: string): string | null {
+  const words = normalizeForCompare(phrase)
+    .split(' ')
+    .filter((w) => w.length > 0)
+  return words[0] ?? null
+}
+
+/** Whether `text` contains `word` as a whole token (after normalize). */
+export function textContainsWholeWord(text: string, word: string): boolean {
+  const w = normalizeForCompare(word)
+  if (!w) return false
+  const haystack = ` ${normalizeForCompare(text)} `
+  return haystack.includes(` ${w} `)
+}
 
 export function recordSpeechEvent(
   events: RecordedSpeechEvent[],
@@ -193,6 +213,7 @@ export interface SemanticBargeOrderResult {
  */
 export function evaluateSemanticBargeEventOrder(params: {
   events: RecordedSpeechEvent[]
+  expectedPhrase?: string
   minPartialChars?: number
   maxPartialToBargeMs?: number
   maxBargeToAgentEndMs?: number
@@ -273,6 +294,17 @@ export function evaluateSemanticBargeEventOrder(params: {
     )
   }
 
+  const expectedPhrase = params.expectedPhrase?.trim()
+  if (expectedPhrase && partialIdx >= 0) {
+    const leadWord = phraseLeadWord(expectedPhrase)
+    const partialText = params.events[partialIdx]!.text?.trim() ?? ''
+    if (leadWord && partialText && !textContainsWholeWord(partialText, leadWord)) {
+      failures.push(
+        `${who}barge-trigger partial missing lead word "${leadWord}" (got ${JSON.stringify(partialText)}, expected phrase ${JSON.stringify(expectedPhrase)})`,
+      )
+    }
+  }
+
   return {
     passed: failures.length === 0,
     failures,
@@ -347,10 +379,18 @@ export function evaluateBargeUtteranceFinal(params: {
 
   if (!recognized) {
     failures.push(`${who}user_speech_final text is empty after barge_in`)
-  } else if (similarity < minSim) {
-    failures.push(
-      `${who}barge phrase similarity ${(similarity * 100).toFixed(0)}% < ${(minSim * 100).toFixed(0)}% (expected "${params.expectedPhrase}", got "${recognized}")`,
-    )
+  } else {
+    const leadWord = phraseLeadWord(params.expectedPhrase)
+    if (leadWord && !textContainsWholeWord(recognized, leadWord)) {
+      failures.push(
+        `${who}barge phrase missing lead word "${leadWord}" (got "${recognized}", expected "${params.expectedPhrase}")`,
+      )
+    }
+    if (similarity < minSim) {
+      failures.push(
+        `${who}barge phrase similarity ${(similarity * 100).toFixed(0)}% < ${(minSim * 100).toFixed(0)}% (expected "${params.expectedPhrase}", got "${recognized}")`,
+      )
+    }
   }
 
   if (speakingEndAtMs != null && finalAtMs != null) {

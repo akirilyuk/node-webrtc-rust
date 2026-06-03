@@ -27,6 +27,7 @@ import {
 import {
   evaluateBargeUtteranceFinal,
   evaluateBargePathLifecycle,
+  DEFAULT_BARGE_PHRASE_MIN_SIMILARITY,
   evaluateSemanticBargeEventOrder,
   evaluateTonePhaseLifecycle,
   formatRecordedSpeechEvent,
@@ -304,6 +305,9 @@ async function main(): Promise<void> {
     process.env.SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE ?? DEFAULT_MIN_FULL_RATIO_AFTER_NOISE,
   )
   const maxPhaseMs = Number(process.env.SHERPA_BARGE_IN_TIMEOUT_MS ?? DEFAULT_MAX_PHASE_MS)
+  const bargeMinSimilarity = Number(
+    process.env.SHERPA_BARGE_IN_MIN_SIMILARITY ?? DEFAULT_BARGE_PHRASE_MIN_SIMILARITY,
+  )
 
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
 
@@ -326,6 +330,7 @@ async function main(): Promise<void> {
   console.log(
     `maxCutRatio=${maxCutRatio} minFullAfterNoise=${minFullAfterNoise} maxPhaseMs=${maxPhaseMs}`,
   )
+  console.log(`bargeMinSimilarity=${bargeMinSimilarity}`)
   console.log('')
 
   const { server, agentPc, userPc, agentOut, userInbound, userOut, agentInbound, cleanup } =
@@ -488,6 +493,7 @@ async function main(): Promise<void> {
   const speechRatio = speechResult.receivedMs / fullMs
   const orderEval = evaluateSemanticBargeEventOrder({
     events: phase3Events,
+    expectedPhrase: bargePhrase,
     label: 'Phase 3',
   })
   console.log(
@@ -519,6 +525,7 @@ async function main(): Promise<void> {
   const utteranceEval = evaluateBargeUtteranceFinal({
     events: phase3Events,
     expectedPhrase: bargePhrase,
+    minSimilarity: bargeMinSimilarity,
     label: 'Phase 3',
   })
   if (utteranceEval.recognized) {

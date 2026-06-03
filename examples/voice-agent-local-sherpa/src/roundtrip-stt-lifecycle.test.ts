@@ -153,6 +153,17 @@ describe('evaluateSttLifecycleOnBargePath', () => {
     expect(evaluateSttLifecycleOnBargePath({ events }).passed).toBe(true)
   })
 
+  it('accepts phase-isolated barge when STT stayed open (no vad_triggered in this slice)', () => {
+    const events = [
+      ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 273),
+      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 2017, 'Stop'),
+      ev(SPEECH_EVENT_TYPE.bargeIn, 2018),
+      ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 2018),
+      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 2819, 'Stop now, please'),
+    ]
+    expect(evaluateSttLifecycleOnBargePath({ events }).passed).toBe(true)
+  })
+
   it('accepts phase-isolated barge events when stream opened in a prior phase', () => {
     const events = [
       ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 268),

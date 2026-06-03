@@ -231,8 +231,15 @@ export function evaluateSttLifecycleOnBargePath(params: {
   const afterStart = params.events.slice(agentStartIdx + 1)
   const vadIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.vadTriggered)
   const partialIdx = qualifyingPartialIndex(params.events, agentStartIdx, minChars)
+  const bargeRelIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  /** STT stream can stay open from an earlier phase — partial → barge_in without a new vad in this slice. */
+  const semanticBargeWithOpenStt =
+    partialIdx >= 0 &&
+    vadIdx < 0 &&
+    bargeRelIdx >= 0 &&
+    agentStartIdx + 1 + bargeRelIdx >= partialIdx
 
-  if (vadIdx < 0) {
+  if (vadIdx < 0 && !semanticBargeWithOpenStt) {
     failures.push(`${who}missing vad_triggered after agent_speaking_start`)
   }
 
@@ -249,10 +256,10 @@ export function evaluateSttLifecycleOnBargePath(params: {
     const userSttIdx = lastIndexOfType(beforePartial, SPEECH_EVENT_TYPE.userSttStart)
 
     if (sttStreamIdx < 0) {
-      // STT session may have opened in an earlier phase (e.g. tone phase) — require vad in this window.
-      if (vadIdx < 0) {
+      // STT session may have opened in an earlier phase (e.g. tone phase).
+      if (vadIdx < 0 && !semanticBargeWithOpenStt) {
         failures.push(`${who}missing vad_triggered before qualifying user_speech_partial`)
-      } else {
+      } else if (vadIdx >= 0) {
         const vadAbs = agentStartIdx + 1 + vadIdx
         if (vadAbs > partialIdx) {
           failures.push(`${who}vad_triggered must precede qualifying user_speech_partial`)

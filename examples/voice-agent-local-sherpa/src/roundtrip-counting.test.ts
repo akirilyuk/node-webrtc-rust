@@ -15,9 +15,9 @@ import {
 describe('roundtrip-counting helpers', () => {
   it('postTtsSilenceSeconds uses hold + minSilence (not Rust endpoint tail)', () => {
     const config = { vad: VOICE_AGENT_VAD_PRESET }
-    expect(postTtsSilenceSeconds(config)).toBeCloseTo(1.75, 2)
-    expect(endpointTailMs(config)).toBe(500)
-    expect(sttFinalizeWaitMs(config)).toBe(1750)
+    expect(postTtsSilenceSeconds(config)).toBeCloseTo(2.55, 2)
+    expect(endpointTailMs(config)).toBe(600)
+    expect(sttFinalizeWaitMs(config)).toBe(1850)
   })
 
   it('DEFAULT_COUNTING_PHRASE lists one through twenty', () => {

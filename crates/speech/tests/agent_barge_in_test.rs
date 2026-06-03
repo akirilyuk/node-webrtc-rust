@@ -114,9 +114,10 @@ async fn barge_in_during_tts_drain_truncates_outbound_pcm() {
     let written_ms: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
     let written_clone = Arc::clone(&written_ms);
     // Pace outbound frames so barge-in can fire mid-drain (mock TTS enqueues ~5 s of PCM at once).
+    // block_in_place: do not block the tokio worker outright — inbound VAD must run during drain.
     let writer: PcmWriter = Arc::new(move |_pcm, ms| {
         *written_clone.lock().unwrap() += ms;
-        std::thread::sleep(Duration::from_millis(4));
+        tokio::task::block_in_place(|| std::thread::sleep(Duration::from_millis(4)));
         Ok(())
     });
     agent
@@ -129,13 +130,13 @@ async fn barge_in_during_tts_drain_truncates_outbound_pcm() {
     let expected_ms = mock_tts_duration_ms(&long_text);
     let loud = loud_stereo_frame();
 
-    let agent_arc = std::sync::Arc::new(agent);
-    let agent_interrupt = std::sync::Arc::clone(&agent_arc);
+    let agent_arc = Arc::new(agent);
+    let agent_interrupt = Arc::clone(&agent_arc);
     let loud_spawn = loud.clone();
 
     tokio::spawn(async move {
-        sleep(Duration::from_millis(80)).await;
-        for _ in 0..6 {
+        sleep(Duration::from_millis(40)).await;
+        for _ in 0..8 {
             agent_interrupt
                 .process_inbound_pcm(Bytes::from(loud_spawn.clone()), 20)
                 .await
@@ -143,15 +144,7 @@ async fn barge_in_during_tts_drain_truncates_outbound_pcm() {
         }
     });
 
-    let agent_tts = std::sync::Arc::clone(&agent_arc);
-    let text = long_text.clone();
-    tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async move { agent_tts.send_text_to_tts(&text).await })
-    })
-    .await
-    .unwrap()
-    .unwrap();
+    agent_arc.send_text_to_tts(&long_text).await.unwrap();
     agent_arc.wait_tts_playback_idle().await.unwrap();
 
     agent_arc.stop().await.unwrap();

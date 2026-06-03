@@ -4,7 +4,7 @@
 #
 # Usage: bash scripts/ci/bump-workspace-versions.sh <version>
 #
-# Used by release prep PRs, version catch-up PRs, release-local.sh, and
+# Used by release-prep/* PRs, version catch-up PRs, release-local.sh, and
 # post-release-sync-main-package-lock.sh (after npm publish).
 #
 # Release prep (before platform packages are on npm):

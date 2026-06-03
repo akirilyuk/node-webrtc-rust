@@ -87,7 +87,7 @@ Snappier Sherpa roundtrip finalize, barge-in Phase 3 `user_speech_final` E2E, ec
 - **Snappier utterance finalize** — `stt_endpoint_tail_ms` capped at 600ms; harness post-TTS silence derived from VAD; `AgentSpeakingEndLatch` ends waits on `agent_speaking_end` instead of long estimate sleeps.
 - **Barge-in Phase 3 E2E** — assert `user_speech_final` after semantic `barge_in`; parallel trailing-silence collection so finals are not dropped.
 - **Release workflow** — plan job workspace `chown` on self-hosted runners; publish gated on `plan` success.
-- **Repo versions** — workspace `package.json` pins synced to published npm (`bump-workspace-versions.sh`); release prep via `release/X.Y.Z` PR before tag.
+- **Repo versions** — workspace `package.json` pins synced to published npm (`bump-workspace-versions.sh`); release prep via `release-prep/X.Y.Z` PR before tag.
 
 ### Added
 
@@ -98,7 +98,7 @@ Snappier Sherpa roundtrip finalize, barge-in Phase 3 `user_speech_final` E2E, ec
 ### Changed
 
 - Echo / barge-recovery roundtrips: one `speechEvents()` consumer per `VoiceAgent`; `echoVadConfig` disables barge on peer-listen legs; playback baseline before `sendTextToTTS`.
-- [`scripts/RELEASE.md`](scripts/RELEASE.md) — versions committed on `release/X.Y.Z` PR before tag (not optional post-publish on `main`).
+- [`scripts/RELEASE.md`](scripts/RELEASE.md) — versions committed on `release-prep/X.Y.Z` PR before tag (not optional post-publish on `main`).
 
 ### Fixed
 

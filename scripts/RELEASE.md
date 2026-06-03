@@ -16,6 +16,25 @@ Publish order (enforced by all scripts and CI): **platform bindings → bindings
 
 ---
 
+## Branch vs tag naming
+
+Use **different ref names** for prep work and publish triggers so `git push` never collides.
+
+| Ref | Pattern | Example | Lifetime |
+| --- | ------- | ------- | -------- |
+| **Prep branch** (PR → `main`) | `release-prep/X.Y.Z` | `release-prep/0.5.2` | Delete after merge |
+| **Publish tag** (CI trigger) | `release/X.Y.Z` | `release/0.5.2` | Permanent |
+
+Prep branches hold CHANGELOG + `package.json` bumps. Tags point at the merged commit on `main` and trigger [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+
+**Push tags** with an explicit ref (safe even if a stale prep branch existed):
+
+```bash
+git push origin refs/tags/release/0.5.2
+```
+
+---
+
 ## One-time setup
 
 ### npm organization
@@ -63,7 +82,7 @@ Two places versions matter:
 
 CI [`release.yml`](../.github/workflows/release.yml) always rewrites versions in the publish job workspace from the tag (`release/X.Y.Z` → `X.Y.Z`), then publishes. That ephemeral bump does **not** update `main`. If git is never bumped, the repo drifts (e.g. npm at `0.4.0`, git still at `0.1.5`).
 
-**Rule:** committed `package.json` versions must match the version you are about to tag **before** `git push origin release/X.Y.Z`.
+**Rule:** committed `package.json` versions must match the version you are about to tag **before** `git push origin refs/tags/release/X.Y.Z`. Do **not** rely on a hand-edited post-publish commit on `main` for the lockfile — merge the automated post-release PR (see [Package-lock.json after release](#package-lockjson-after-release)).
 
 **`package-lock.json`** is updated in a **separate automated PR after publish** (see [Package-lock.json after release](#package-lockjson-after-release)). Do not commit stub optional binding entries during release prep.
 
@@ -186,8 +205,8 @@ User-facing release notes live in **[`CHANGELOG.md`](../CHANGELOG.md)** at the r
 | When                   | Action                                                                                                                                             |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **During development** | Add bullets under `[Unreleased]` as PRs merge                                                                                                      |
-| **Release prep PR**    | On branch `release/X.Y.Z`: finalize `[X.Y.Z]`, `SKIP_LOCK_REFRESH=1` bump, PR → `main` (see [Package-lock.json after release](#package-lockjson-after-release)) |
-| **On tag push**        | CI publishes npm + GitHub Release; bot opens post-release package-lock PR → merge when green                                                        |
+| **Release prep PR**    | On branch `release-prep/X.Y.Z`: finalize `[X.Y.Z]`, `SKIP_LOCK_REFRESH=1` bump, PR → `main` (see [Package-lock.json after release](#package-lockjson-after-release)) |
+| **On tag push**        | CI publishes npm + GitHub Release; bot opens post-release package-lock PR → merge when green; release notes via [`changelog-release-body.sh`](changelog-release-body.sh) |
 
 Preview release notes locally:
 
@@ -204,11 +223,12 @@ Use this for **all six platform binaries** and a consistent CI run before publis
 ### 1. Prepare release (PR — do not commit directly on `main`)
 
 1. Feature work is already merged to **`main`** via normal PRs.
-2. Create branch **`release/X.Y.Z`** from `main` (e.g. `release/0.4.1`).
+2. Create branch **`release-prep/X.Y.Z`** from `main` (e.g. `release-prep/0.5.2`).
 3. On that branch:
    - Finalize [`CHANGELOG.md`](../CHANGELOG.md): `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, new empty `[Unreleased]`.
    - Bump **all** publishable package versions and internal pins to `X.Y.Z` with `SKIP_LOCK_REFRESH=1` (see [Package versions in git vs npm](#package-versions-in-git-vs-npm)). Do **not** commit a broken `package-lock.json` from a pre-publish refresh.
-4. Open PR **`release/X.Y.Z` → `main`**, wait for Build & Test green, **merge**.
+4. Open PR **`release-prep/X.Y.Z` → `main`**, wait for Build & Test green, **merge**.
+5. Delete the prep branch locally and on origin (avoids confusion with the tag name).
 
 ### 2. Tag and publish (after merge)
 
@@ -217,15 +237,15 @@ Tag the **merge commit** on `main` (`package.json` versions must already be `X.Y
 ```bash
 git checkout main
 git pull
-git tag release/0.4.1
-git push origin release/0.4.1
+git tag release/0.5.2
+git push origin refs/tags/release/0.5.2
 ```
 
 ### 3. Merge post-release package-lock PR
 
-When the Release workflow finishes, merge the automated PR **`chore(ci): sync package-lock after release 0.4.1`** → `main`. See [checklist](#end-to-end-release-flow-git--npm--lockfile).
+When the Release workflow finishes, merge the automated PR **`chore(ci): sync package-lock after release X.Y.Z`** → `main`. See [checklist](#end-to-end-release-flow-git--npm--lockfile).
 
-Supported tag forms:
+Supported **tag** forms (not branch names):
 
 ```text
 release/0.2.0
@@ -259,7 +279,6 @@ If npm already has `X.Y.Z` but git does not:
    ```bash
    bash scripts/ci/post-release-sync-main-package-lock.sh 0.4.0
    ```
-
 3. PR → `main`, merge.
 4. Then run the normal [prepare release](#1-prepare-release-pr--do-not-commit-directly-on-main) flow for the next version (`0.4.1`, etc.).
 
@@ -292,12 +311,12 @@ Behavior:
 - Publishes **only platform packages that have a `.node` file** (typically one on a dev machine)
 - Verifies the native binding loads before publish
 
-After a successful publish:
+After a successful publish (for CI releases, versions are already on `main` from the prep PR):
 
 ```bash
 bash scripts/ci/post-release-sync-main-package-lock.sh 0.2.0
 git add -A && git commit -m "chore(repo): sync package-lock after release 0.2.0"
-git tag release/0.2.0 && git push origin release/0.2.0
+git tag release/0.2.0 && git push origin refs/tags/release/0.2.0
 ```
 
 Pushing the tag on GitHub also runs the automated post-release PR on `main` ([Package-lock.json after release](#package-lockjson-after-release)).

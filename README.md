@@ -487,19 +487,21 @@ Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 
 ### CI release (all platforms)
 
-1. **Release prep PR** → `main`: changelog + `SKIP_LOCK_REFRESH=1` version bump (see [`scripts/RELEASE.md`](scripts/RELEASE.md)).
-2. Push a **`release/*`** tag — CI builds all targets, tests, publishes to npm, and opens a GitHub Release.
+1. Open a prep PR from **`release-prep/X.Y.Z`** → **`main`** (CHANGELOG + `SKIP_LOCK_REFRESH=1` version bump). See [`scripts/RELEASE.md`](scripts/RELEASE.md).
+2. After merge, tag **`main`** and push the tag (`refs/tags/release/X.Y.Z`). CI builds all targets, tests, publishes to npm, and opens a GitHub Release.
 3. **Merge the bot PR** `chore/post-release-package-lock-X.Y.Z` so `package-lock.json` matches npm (required for `npm ci` on `main`).
 
 ```bash
 # After release prep is merged:
 git checkout main && git pull
 git tag release/0.2.0
-git push origin release/0.2.0
+git push origin refs/tags/release/0.2.0
 # Then merge the automated package-lock sync PR when the workflow finishes
 ```
 
-Tag examples: `release/0.2.0`, `release/0.2.0-beta.1`, `release/0.2.0-rc.1`. The part after `release/` is the npm version.
+**Tags** (publish trigger): `release/0.2.0`, `release/0.2.0-beta.1`, `release/0.2.0-rc.1` — the part after `release/` is the npm version.
+
+**Prep branches** (ephemeral): `release-prep/0.2.0` — delete after the prep PR merges; do not reuse the tag name as a branch.
 
 Requires **`NPM_TOKEN`**. Linux jobs use the CI image from the **`ci`** branch (`ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest`).
 

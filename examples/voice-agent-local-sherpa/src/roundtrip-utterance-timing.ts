@@ -21,6 +21,7 @@ import {
   installRoundtripWallClockTimeout,
   ListenerUtteranceCollector,
   postTtsSilenceSeconds,
+  roundtripWallClockMs,
   startSpeakerSpeechPump,
   sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
@@ -32,8 +33,6 @@ const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_WARMUP_S = 0.6
 
 async function main(): Promise<void> {
-  installRoundtripWallClockTimeout(50_000)
-
   const phrase =
     process.env.SHERPA_UTTERANCE_TIMING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
   const maxGapMs = Number(
@@ -41,6 +40,7 @@ async function main(): Promise<void> {
   )
 
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  installRoundtripWallClockTimeout(roundtripWallClockMs(config, 'short'))
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
   const finalizeWaitMs = sttFinalizeWaitMs(config)
   const postTtsSilenceS = postTtsSilenceSeconds(config)

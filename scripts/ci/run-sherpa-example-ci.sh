@@ -24,6 +24,10 @@ sherpa_roundtrip_timeout_sec() {
       # 240s in-process wall; quiet pass + VOICE_DEBUG re-run on failure.
       echo "${CI_SHERPA_BARGE_RECOVERY_TIMEOUT_SEC:-420}"
       ;;
+    start:roundtrip-counting)
+      # 120s in-process wall + long TTS; allow one VOICE_DEBUG re-run.
+      echo "${CI_SHERPA_COUNTING_ROUNDTRIP_TIMEOUT_SEC:-300}"
+      ;;
     start:roundtrip-counting-echo | start:roundtrip)
       echo "${CI_SHERPA_LONG_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;

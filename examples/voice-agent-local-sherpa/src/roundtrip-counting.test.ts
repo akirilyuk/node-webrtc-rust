@@ -10,6 +10,7 @@ import {
   interPhaseSttDrainSeconds,
   NUMBER_WORDS_ONE_TO_TWENTY,
   postTtsSilenceSeconds,
+  roundtripWallClockMs,
   sttFinalizeWaitMs,
 } from './roundtrip-counting.js'
 
@@ -24,6 +25,12 @@ describe('roundtrip-counting helpers', () => {
   it('interPhaseSttDrainSeconds includes endpoint tail for between-phase STT close', () => {
     const config = { vad: VOICE_AGENT_VAD_PRESET }
     expect(interPhaseSttDrainSeconds(config)).toBeCloseTo(3.15, 2)
+  })
+
+  it('roundtripWallClockMs long profile exceeds legacy 55s counting cap', () => {
+    const config = { vad: VOICE_AGENT_VAD_PRESET }
+    expect(roundtripWallClockMs(config, 'long')).toBeGreaterThanOrEqual(120_000)
+    expect(roundtripWallClockMs(config, 'short')).toBeGreaterThanOrEqual(75_000)
   })
 
   it('DEFAULT_COUNTING_PHRASE lists one through twenty', () => {

@@ -549,6 +549,27 @@ export function interPhaseSttDrainSeconds(config: VoiceAgentConfig): number {
   return (hold + minSilence + endpointTailMs(config) + FINALIZE_MARGIN_MS) / 1000
 }
 
+/**
+ * Suggested `installRoundtripWallClockTimeout` budget from VAD timing + script profile.
+ * Long counting (1–20) needs headroom for TTS + postTtsSilence + STT on slow CI runners.
+ */
+export function roundtripWallClockMs(
+  config: VoiceAgentConfig,
+  profile: 'short' | 'long' | 'multi-phase',
+): number {
+  const warmupMs = (Number(process.env.SHERPA_ROUNDTRIP_WARMUP_S ?? DEFAULT_WARMUP_S) + 0.5) * 1000
+  const postMs = postTtsSilenceSeconds(config) * 1000
+  const sttMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
+  switch (profile) {
+    case 'short':
+      return Math.max(75_000, warmupMs + 30_000 + postMs + sttFinalizeWaitMs(config))
+    case 'long':
+      return Math.max(120_000, warmupMs + 55_000 + postMs + sttMs)
+    case 'multi-phase':
+      return Math.max(120_000, warmupMs + 90_000 + postMs * 2)
+  }
+}
+
 export function normalizeForCompare(text: string): string {
   return text
     .toLowerCase()
@@ -966,9 +987,9 @@ export class ListenerUtteranceCollector {
 }
 
 async function main(): Promise<void> {
-  installRoundtripWallClockTimeout(55_000)
-  const phrase = process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE
   const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  installRoundtripWallClockTimeout(roundtripWallClockMs(config, 'long'))
+  const phrase = process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
   const minNumberWords = Number(
     process.env.SHERPA_COUNTING_MIN_NUMBER_WORDS ?? DEFAULT_MIN_NUMBER_WORDS,

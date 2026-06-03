@@ -153,7 +153,7 @@ cleanup_npm_auth() {
 trap cleanup_npm_auth EXIT
 
 bump_versions() {
-  bash "$ROOT/scripts/ci/bump-workspace-versions.sh" "$VERSION"
+  SKIP_LOCK_REFRESH=1 bash "$ROOT/scripts/ci/bump-workspace-versions.sh" "$VERSION"
 }
 
 # ─── Build TypeScript ─────────────────────────────────────────────────────────
@@ -294,7 +294,9 @@ else
   echo "  Published @node-webrtc-rust/*@$VERSION"
   echo ""
   echo "  Next steps:"
+  echo "    bash scripts/ci/post-release-sync-main-package-lock.sh $VERSION"
   echo "    git add -A && git commit -m \"chore(repo): release $VERSION\""
   echo "    git tag release/$VERSION && git push origin refs/tags/release/$VERSION"
+  echo "    (GitHub Actions release also opens a post-release package-lock PR on main)"
 fi
 echo "═══════════════════════════════════════════════════════════"

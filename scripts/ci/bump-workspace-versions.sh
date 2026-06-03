@@ -4,7 +4,12 @@
 #
 # Usage: bash scripts/ci/bump-workspace-versions.sh <version>
 #
-# Used by release-prep/* PRs, version catch-up PRs, and release-local.sh.
+# Used by release-prep/* PRs, version catch-up PRs, release-local.sh, and
+# post-release-sync-main-package-lock.sh (after npm publish).
+#
+# Release prep (before platform packages are on npm):
+#   SKIP_LOCK_REFRESH=1 bash scripts/ci/bump-workspace-versions.sh <version>
+# Lock refresh runs automatically in CI after publish (see RELEASE.md).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -96,10 +101,19 @@ for dir in "$ROOT"/examples/*/; do
   fi
 done
 
-echo "==> Refreshing package-lock optional binding entries"
-if ! bash "$ROOT/scripts/ci/refresh-package-lock-optional-bindings.sh"; then
-  echo "WARN: lockfile refresh skipped or failed (platform bindings @$VERSION may not be published yet)." >&2
-  echo "After npm publish, run: bash scripts/ci/refresh-package-lock-optional-bindings.sh" >&2
+if [[ "${SKIP_LOCK_REFRESH:-0}" == "1" ]]; then
+  echo "==> SKIP_LOCK_REFRESH=1 — skipping package-lock refresh (run after npm publish or merge the post-release PR)" >&2
+else
+  echo "==> Refreshing package-lock optional binding entries"
+  if ! bash "$ROOT/scripts/ci/refresh-package-lock-optional-bindings.sh"; then
+    echo "ERROR: lockfile refresh failed (platform bindings @$VERSION may not be on npm yet)." >&2
+    echo "Before publish: SKIP_LOCK_REFRESH=1 bash scripts/ci/bump-workspace-versions.sh $VERSION" >&2
+    echo "After publish: bash scripts/ci/post-release-sync-main-package-lock.sh $VERSION (or merge the automated PR)" >&2
+    exit 1
+  fi
+
+  echo "==> Validate package-lock optional bindings"
+  bash "$ROOT/scripts/ci/validate-package-lock-optional-bindings.sh"
 fi
 
 echo "==> Done — all publishable packages and examples set to $VERSION"

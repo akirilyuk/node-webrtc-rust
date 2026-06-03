@@ -37,6 +37,19 @@ bash scripts/export-sherpa-local-models.sh -- tsx path/to/server.ts
 
 See [`examples/voice-agent-local-sherpa/README.md`](../examples/voice-agent-local-sherpa/README.md).
 
+## Release and package-lock scripts
+
+Publishing and version bumps: **[`RELEASE.md`](RELEASE.md)** (full guide).
+
+| Script | Purpose |
+| ------ | ------- |
+| [`ci/bump-workspace-versions.sh`](ci/bump-workspace-versions.sh) | Bump all `@node-webrtc-rust/*` versions in git |
+| [`ci/post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh) | After npm publish — align `main` lockfile from registry |
+| [`ci/refresh-package-lock-optional-bindings.sh`](ci/refresh-package-lock-optional-bindings.sh) | Regenerate optional platform binding lock entries |
+| [`ci/validate-package-lock-optional-bindings.sh`](ci/validate-package-lock-optional-bindings.sh) | Detect stub lock entries (`npm run ci:validate:package-lock`) |
+
+Release prep: `SKIP_LOCK_REFRESH=1 bash scripts/ci/bump-workspace-versions.sh X.Y.Z`. After tag publish, merge the automated **`chore/post-release-package-lock-X.Y.Z`** PR (see RELEASE.md).
+
 ## CI scripts
 
 See [`scripts/ci/README.md`](ci/README.md).

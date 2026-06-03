@@ -8,10 +8,34 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.5.2] — 2026-06-03
+
+**Compare:** [`release/0.5.1…release/0.5.2`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.1...release/0.5.2)
+
+Barge-in STT pre-roll keeps the first spoken syllable during agent TTS, plus release lockfile automation and CI guards.
+
+### Highlights
+
+- **Barge-in first syllable** — larger default `speechPadMs` (500 ms) and STT pre-roll flush timing so the opening word is not dropped when interrupting agent playback.
+- **Release lockfile sync** — post-publish workflow opens a PR to refresh `package-lock.json` optional binding entries from npm; release prep uses `SKIP_LOCK_REFRESH=1` on version bump.
+- **`validate-package-lock`** — always-on CI job and pre-`npm ci` check to catch stub optional binding entries before they cause opaque `Invalid Version:` failures.
+
+### Fixed
+
+- Barge-in TTS drain integration test stabilized for CI (deterministic drain wait, harness timing).
+- Sherpa barge-in roundtrip: Phase 3 waits for `user_speech_final` after semantic interrupt.
+
 ### Changed
 
 - `validate-package-lock-optional-bindings.sh` + always-on **`validate-package-lock`** CI job on PR / `main` / release (no path filter); `npm ci` paths and `bump-workspace-versions.sh` run the same check.
-- Release workflow **`sync-main-package-lock`** job after publish — checks out `main`, syncs lockfile from npm, opens PR `chore/post-release-package-lock-X.Y.Z`. Release prep uses `SKIP_LOCK_REFRESH=1` on bump. Documented in [`scripts/RELEASE.md`](scripts/RELEASE.md#package-lockjson-after-release).
+- Release workflow **`sync-main-package-lock`** job after publish — checks out `main`, syncs lockfile from npm, opens PR `chore/post-release-package-lock-X.Y.Z`. Documented in [`scripts/RELEASE.md`](scripts/RELEASE.md#package-lockjson-after-release).
+- Release prep branches use `release-prep/X.Y.Z`; publish tags remain `release/X.Y.Z`.
+
+### Docs
+
+- [`scripts/RELEASE.md`](scripts/RELEASE.md), [`scripts/ci/README.md`](scripts/ci/README.md) — package-lock after release flow.
 
 ---
 

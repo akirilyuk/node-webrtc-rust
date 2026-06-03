@@ -339,7 +339,7 @@ jobs:
   sync-main-package-lock:
     name: Sync main package-lock (PR)
     needs: publish
-    if: success() && needs.publish.result == 'success'
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: self-hosted
     permissions:
       contents: write

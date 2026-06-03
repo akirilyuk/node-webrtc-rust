@@ -71,6 +71,14 @@ To bump locally (full workspace — packages, platform bindings, examples, peer 
 bash scripts/ci/bump-workspace-versions.sh 0.4.0
 ```
 
+The bump script calls [`refresh-package-lock-optional-bindings.sh`](ci/refresh-package-lock-optional-bindings.sh) to regenerate platform optional-dep lock metadata. **Do not hand-edit** `package-lock.json` version strings for `@node-webrtc-rust/bindings-*` — that leaves invalid stubs (`"optional": true` only) and breaks `npm ci`.
+
+If the bump runs **before** platform packages are on npm, refresh may warn; after publish run:
+
+```bash
+bash scripts/ci/refresh-package-lock-optional-bindings.sh
+```
+
 CI publish still runs `npm version` + `napi version` + [`set-release-deps.sh`](ci/set-release-deps.sh) in the runner before `npm publish`; committed git should match the tag version via the release prep PR using the script above.
 
 ---

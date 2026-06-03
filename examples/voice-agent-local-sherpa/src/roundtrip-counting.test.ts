@@ -7,6 +7,7 @@ import {
   DEFAULT_COUNTING_PHRASE,
   endpointTailMs,
   evaluateCountingRoundtrip,
+  interPhaseSttDrainSeconds,
   NUMBER_WORDS_ONE_TO_TWENTY,
   postTtsSilenceSeconds,
   sttFinalizeWaitMs,
@@ -18,6 +19,11 @@ describe('roundtrip-counting helpers', () => {
     expect(postTtsSilenceSeconds(config)).toBeCloseTo(2.55, 2)
     expect(endpointTailMs(config)).toBe(600)
     expect(sttFinalizeWaitMs(config)).toBe(1850)
+  })
+
+  it('interPhaseSttDrainSeconds includes endpoint tail for between-phase STT close', () => {
+    const config = { vad: VOICE_AGENT_VAD_PRESET }
+    expect(interPhaseSttDrainSeconds(config)).toBeCloseTo(3.15, 2)
   })
 
   it('DEFAULT_COUNTING_PHRASE lists one through twenty', () => {

@@ -447,6 +447,8 @@ Set `requireSttPartial: false` to restore immediate energy-VAD barge on the same
 | 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; optional **C1** path; received audio ≥ ~75% of phase 1                                              |
 | 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` → `barge_in` → `agent_speaking_end`**; lifecycle close with final |
 
+Between phases 2 and 3 the harness streams **`interPhaseSttDrainSeconds(config)`** (~3.15 s with the 1300 ms / 1000 ms preset) of silence on `userOut` so the listener STT stream from the tone phase fully closes before Phase 3 — otherwise Phase 3 can barge without a fresh `vad_triggered`.
+
 ```bash
 npm run build:native
 npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa

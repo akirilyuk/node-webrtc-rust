@@ -538,6 +538,17 @@ export function postTtsSilenceSeconds(config: VoiceAgentConfig): number {
   return (hold + minSilence + FINALIZE_MARGIN_MS) / 1000
 }
 
+/**
+ * Real-time silence between roundtrip phases so the listener STT stream fully closes
+ * (minSilence + gate hold + endpoint tail + margin). Use before Phase 3 barge-in E2E.
+ */
+export function interPhaseSttDrainSeconds(config: VoiceAgentConfig): number {
+  const hold = config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs ?? 1000
+  const minSilence =
+    config.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs ?? 1300
+  return (hold + minSilence + endpointTailMs(config) + FINALIZE_MARGIN_MS) / 1000
+}
+
 export function normalizeForCompare(text: string): string {
   return text
     .toLowerCase()

@@ -10,6 +10,34 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.5.1] — 2026-06-03
+
+**Compare:** [`release/0.5.0…release/0.5.1`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.0...release/0.5.1)
+
+VAD pause grace defaults, more reliable multi-client localhost WebRTC, Sherpa roundtrip timing fixes, and dev scripts for ports and Sherpa model export.
+
+### Highlights
+
+- **VAD pause grace** — default `minSilenceDurationMs` 1300 and `sttGateHoldMs` 1000 so short intra-utterance pauses are less likely to end the turn early.
+- **Multi-client WebRTC** — send answer immediately (trickle ICE); replace stale sessions on re-join; auto-reconnect on `connectionState=failed`; default `WEBRTC_NAT_1TO1_IPS=127.0.0.1` for localhost; server timestamps on `speech_event` and logs.
+- **Sherpa barge-in E2E** — inter-phase STT drain (~3.15 s) between Phase 2 and 3 for a fresh `vad_triggered`; counting roundtrip wall clock scaled for 1300 ms VAD silence.
+
+### Added
+
+- `scripts/free-port.sh` and `scripts/export-sherpa-local-models.sh`; multi-client `prestart` frees port 3004.
+- Pause-mic-when-background UI under Connect; `?pauseMicBackground=1` for non-speaking tabs.
+
+### Changed
+
+- `refresh-package-lock-optional-bindings.sh` — regenerate lockfile optional bindings; prevent invalid stub entries after version bumps.
+- Sherpa CI roundtrip harness: barge-in allows STT session open across phases; drain between barge phases.
+
+### Docs
+
+- [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](packages/sdk/VOICE-VAD-AND-BARGE-IN.md), [`examples/voice-agent-local-sherpa/ROUNDTRIP.md`](examples/voice-agent-local-sherpa/ROUNDTRIP.md), [`scripts/README.md`](scripts/README.md).
+
+---
+
 ## [0.5.0] — 2026-06-02
 
 **Compare:** [`release/0.4.1…release/0.5.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.4.1...release/0.5.0)

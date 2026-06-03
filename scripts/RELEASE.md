@@ -79,6 +79,8 @@ If the bump runs **before** platform packages are on npm, refresh may warn; afte
 bash scripts/ci/refresh-package-lock-optional-bindings.sh
 ```
 
+CI and local `npm ci` run [`validate-package-lock-optional-bindings.sh`](ci/validate-package-lock-optional-bindings.sh) first — commit fails fast with a clear message instead of opaque `Invalid Version:` from npm.
+
 CI publish still runs `npm version` + `napi version` + [`set-release-deps.sh`](ci/set-release-deps.sh) in the runner before `npm publish`; committed git should match the tag version via the release prep PR using the script above.
 
 ---

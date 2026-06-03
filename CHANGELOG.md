@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `validate-package-lock-optional-bindings.sh` — CI and local `npm ci` fail fast when lockfile has stub optional `@node-webrtc-rust/bindings-*` entries (fixes opaque `Invalid Version:` after release prep).
+
 ---
 
 ## [0.5.1] — 2026-06-03

@@ -46,3 +46,5 @@ else
   echo "After publish, re-run: bash scripts/ci/refresh-package-lock-optional-bindings.sh" >&2
   exit 1
 fi
+
+bash "$ROOT/scripts/ci/validate-package-lock-optional-bindings.sh"

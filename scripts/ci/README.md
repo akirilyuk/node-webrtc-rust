@@ -75,7 +75,7 @@ If none match, the whole workflow is skipped.
 
 - **When:** `native` OR `typescript` OR `helpers` OR `examples` OR `workflows`
 - **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
-- **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
+- **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh), `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
 - Runs [`build-ts-workspace.sh`](build-ts-workspace.sh) inside [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh) when sdk/signaling/helpers `dist/` is missing (fresh CI checkout). Job 4 still builds once for Test cache.
 
 Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
@@ -281,7 +281,8 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 | Script                                                         | Used by                                          | What it runs                                                                                                                                                     |
 | -------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                                   | `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest**                                  |
+| [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh) | before every `npm ci` | Fail fast on stub optional `@node-webrtc-rust/bindings-*` lock entries (`Invalid Version:`) |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                                   | lock validate, `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest**                                  |
 | [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers`              | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)                                                                                           |
 | [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`                            | eslint + build-ts + helpers vitest when scoped; Sherpa **typecheck + Vitest + E2E** when example/speech changes                                                  |
 | [`install-pre-push-hook.sh`](install-pre-push-hook.sh)         | one-time per clone                               | installs `.git/hooks/pre-push` → `npm run ci:pre-push`                                                                                                           |

@@ -102,4 +102,7 @@ if ! bash "$ROOT/scripts/ci/refresh-package-lock-optional-bindings.sh"; then
   echo "After npm publish, run: bash scripts/ci/refresh-package-lock-optional-bindings.sh" >&2
 fi
 
+echo "==> Validate package-lock optional bindings (required before commit)"
+bash "$ROOT/scripts/ci/validate-package-lock-optional-bindings.sh"
+
 echo "==> Done — all publishable packages and examples set to $VERSION"

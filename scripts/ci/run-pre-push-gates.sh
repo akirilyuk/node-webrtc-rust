@@ -59,7 +59,16 @@ if echo "$FILES" | grep -qE '^packages/(helpers|sdk|signaling)/'; then
   NEED_SHERPA_VITEST=true
 fi
 
+if echo "$FILES" | grep -qE '^package-lock\.json$'; then
+  echo "==> validate package-lock optional bindings"
+  bash "$ROOT/scripts/ci/validate-package-lock-optional-bindings.sh"
+fi
+
 if ! $NEED_LINT && ! $NEED_HELPERS && ! $NEED_TS_BUILD && ! $NEED_SHERPA_TYPECHECK && ! $NEED_SHERPA_VITEST && ! $NEED_SHERPA_E2E; then
+  if echo "$FILES" | grep -qE '^package-lock\.json$'; then
+    echo "==> Pre-push gates OK (package-lock validate only)"
+    exit 0
+  fi
   echo "==> no eslint/helpers/sherpa-scoped changes in range ($RANGE) — skip"
   exit 0
 fi

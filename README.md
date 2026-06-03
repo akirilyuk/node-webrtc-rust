@@ -487,15 +487,18 @@ Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 
 ### CI release (all platforms)
 
-Merge to **`main`**, then push a **`release/*`** tag. GitHub Actions builds every target, runs tests, publishes to npm, and opens a GitHub Release.
+1. Open a prep PR from **`release-prep/X.Y.Z`** → **`main`** (CHANGELOG + version bumps). See [`scripts/RELEASE.md`](scripts/RELEASE.md).
+2. After merge, tag **`main`** and push the tag. GitHub Actions builds every target, runs tests, publishes to npm, and opens a GitHub Release.
 
 ```bash
 git checkout main && git pull
 git tag release/0.2.0
-git push origin release/0.2.0
+git push origin refs/tags/release/0.2.0
 ```
 
-Tag examples: `release/0.2.0`, `release/0.2.0-beta.1`, `release/0.2.0-rc.1`. The part after `release/` is the npm version.
+**Tags** (publish trigger): `release/0.2.0`, `release/0.2.0-beta.1`, `release/0.2.0-rc.1` — the part after `release/` is the npm version.
+
+**Prep branches** (ephemeral): `release-prep/0.2.0` — delete after the prep PR merges; do not reuse the tag name as a branch.
 
 Requires repository secret **`NPM_TOKEN`**. Linux jobs use the CI image built from the **`ci`** branch (`ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest`).
 

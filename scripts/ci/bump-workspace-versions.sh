@@ -4,7 +4,7 @@
 #
 # Usage: bash scripts/ci/bump-workspace-versions.sh <version>
 #
-# Used by release prep PRs, version catch-up PRs, and release-local.sh.
+# Used by release-prep/* PRs, version catch-up PRs, and release-local.sh.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

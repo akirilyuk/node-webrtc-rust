@@ -1,7 +1,8 @@
 name: Release
 
 # Builds all targets, runs tests, publishes to npm, and creates a GitHub Release.
-# Trigger by pushing a tag: git tag release/0.1.0 && git push origin release/0.1.0
+# Trigger by pushing a tag: git tag release/0.1.0 && git push origin refs/tags/release/0.1.0
+# Prep PRs use branch release-prep/X.Y.Z (see scripts/RELEASE.md) — not the same ref as the tag.
 
 on:
   push:

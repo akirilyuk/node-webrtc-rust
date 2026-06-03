@@ -109,20 +109,30 @@ async function refreshCapacity() {
 void refreshCapacity()
 setInterval(() => void refreshCapacity(), 3000)
 
-pauseMicBackgroundCheckbox.addEventListener('change', () => {
-  pauseMicWhenBackground = pauseMicBackgroundCheckbox.checked
+const pauseMicBackgroundParam = new URLSearchParams(location.search).get('pauseMicBackground')
+if (pauseMicBackgroundCheckbox && pauseMicBackgroundParam === '1') {
+  pauseMicBackgroundCheckbox.checked = true
+  pauseMicWhenBackground = true
   updateMicBackgroundPolicy()
-  appendEvent(
-    'client',
-    pauseMicWhenBackground ? 'pause mic in background: on' : 'pause mic in background: off',
-  )
-})
+}
+
+if (pauseMicBackgroundCheckbox) {
+  pauseMicBackgroundCheckbox.addEventListener('change', () => {
+    pauseMicWhenBackground = pauseMicBackgroundCheckbox.checked
+    updateMicBackgroundPolicy()
+    appendEvent(
+      'client',
+      pauseMicWhenBackground ? 'pause mic in background: on' : 'pause mic in background: off',
+    )
+  })
+}
 
 document.addEventListener('visibilitychange', () => {
   applyMicCaptureForVisibility()
 })
 
 function updateMicBackgroundPolicy() {
+  if (!micBackgroundStatusEl) return
   if (pauseMicWhenBackground) {
     micBackgroundStatusEl.textContent = document.hidden
       ? 'Enabled — mic paused while this tab is in the background.'

@@ -35,7 +35,7 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 | `vad.provider`                     | `energy` | RMS VAD in default native build                                                                                                                             |
 | `vad.threshold`                    | `0.15`   | Energy RMS default (not Silero 0.5)                                                                                                                         |
 | `vad.minSpeechDurationMs`          | `250`    | Min voiced time before `user_speaking_start`                                                                                                                |
-| `vad.minSilenceDurationMs`         | `600`    | Min silence before VAD internal `SpeechEnd` (“maybe done”) — then `sttGateHoldMs` grace (default **1000** ms)                                               |
+| `vad.minSilenceDurationMs`         | `1300`   | Min silence before VAD internal `SpeechEnd` (“maybe done”) — then `sttGateHoldMs` grace (default **1000** ms)                                               |
 | `vad.speechPadMs`                  | `300`    | Pre-roll ring size for `gateStt` (not subtracted from speech start)                                                                                         |
 | `vad.gateStt`                      | `false`  | If `true`, STT only while gate is open                                                                                                                      |
 | `vad.gateSttOpenOnPending`         | `true`   | Include VAD “pending” speech in gate (WebRTC lead-in)                                                                                                       |
@@ -448,7 +448,7 @@ With defaults: ~300 + 1000 + 800 ≈ **2.1 s** before finalize, plus synthesis.
 | -------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------- |
 | **`threshold`**                  | `0.15` (energy)                              | What counts as “speech” vs noise                                                     | Fewer false starts in noise; may miss quiet talkers       | More sensitive mic; more false STT/barge-in         |
 | **`minSpeechDurationMs`**        | `250`                                        | Ignore short blips before `SpeechStart`                                              | Fewer cough/click triggers; slightly slower barge-in      | Faster barge-in; more noise triggers                |
-| **`minSilenceDurationMs`**       | `600`                                        | Pause before internal `SpeechEnd` / hold starts (“maybe done”)                       | Fewer splits on word gaps & counting; slower “maybe done” | Faster turn end; risk splitting one sentence        |
+| **`minSilenceDurationMs`**       | `1300`                                       | Pause before internal `SpeechEnd` / hold starts (“maybe done”)                       | Fewer splits on word gaps & counting; slower “maybe done” | Faster turn end; risk splitting one sentence        |
 | **`sttGateHoldMs`**              | `1000`                                       | How long STT stays open after that pause; when `user_speaking_end` fires (`gateStt`) | Capture slow talkers & long digit gaps; **more dead air** | **Snappier** bot; risk cutting trailing syllables   |
 | **`speechPadMs`**                | `300`                                        | Pre-roll bytes fed at `SpeechStart` (`gateStt`)                                      | More lead-in audio to STT; slightly more memory           | Risk clipping first syllable                        |
 | **`gateSttOpenOnPending`**       | `true`                                       | STT during VAD “pending” before `SpeechStart`                                        | Better first-word capture on WebRTC                       | Slightly more noise to STT before confirmed speech  |
@@ -473,7 +473,7 @@ With defaults: ~300 + 1000 + 800 ≈ **2.1 s** before finalize, plus synthesis.
 
 | Deployment                         | `threshold` | `minSpeech` | `minSilence` | `sttGateHold` | Notes                                                                                                       |
 | ---------------------------------- | ----------- | ----------- | ------------ | ------------- | ----------------------------------------------------------------------------------------------------------- |
-| **Interactive bot** (preset)       | `0.15`      | `250`       | `600`        | `1000`        | `VOICE_AGENT_VAD_PRESET` — ~600 ms maybe-done + 1000 ms gate hold                                          |
+| **Interactive bot** (preset)       | `0.15`      | `250`       | `1300`       | `1000`        | `VOICE_AGENT_VAD_PRESET` — ~1.3 s maybe-done + 1000 ms gate hold                                           |
 | **Low-latency**                    | `0.15`      | `200`       | `250`        | `600–800`     | Snappier; test clipping                                                                                     |
 | **Deliberate speech / counting**   | `0.15`      | `250`       | `450–600`    | `800–1200`    | Wider word gaps OK                                                                                          |
 | **Noisy line / call center**       | `0.10–0.20` | `300–400`   | `400–500`    | `1000–1500`   | Tune threshold on real audio; AEC/headset                                                                   |
@@ -523,7 +523,7 @@ Pre-roll buffer capacity for `gateStt` only. Rarely change; does **not** delay `
 [`examples/voice-agent-local-sherpa`](../../examples/voice-agent-local-sherpa/README.md) sets:
 
 - `threshold: 0.05` — energy VAD RMS scale, not Silero 0.5
-- Otherwise aligned with `VOICE_AGENT_VAD_PRESET` (250 ms speech, **600 ms** maybe-done, **1000 ms** `sttGateHoldMs`, `gateStt`, barge-in defaults)
+- Otherwise aligned with `VOICE_AGENT_VAD_PRESET` (250 ms speech, **1300 ms** maybe-done, **1000 ms** `sttGateHoldMs`, `gateStt`, barge-in defaults)
 
 Do not copy `0.05` into cloud Silero deployments.
 

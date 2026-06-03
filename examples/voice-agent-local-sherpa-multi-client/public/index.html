@@ -58,20 +58,24 @@
         <button id="connect" type="button">Connect</button>
         <button id="disconnect" type="button" disabled>Disconnect</button>
         <p id="status" class="status">Disconnected</p>
+
+        <fieldset class="mic-background-fieldset">
+          <legend>Multi-tab microphone</legend>
+          <label class="checkbox-row" for="pause-mic-background">
+            <input id="pause-mic-background" type="checkbox" />
+            <span>Pause mic when this tab is in the background</span>
+          </label>
+          <p id="mic-background-status" class="hint">
+            Default: <strong>off</strong> — all open tabs keep sending audio. Enable on tabs you are
+            <strong>not</strong> speaking from (or use <code>?pauseMicBackground=1</code> in the URL).
+          </p>
+        </fieldset>
       </section>
 
       <section class="panel audio-panel">
         <h2>Your microphone</h2>
         <canvas id="mic-viz" width="640" height="160" aria-label="Microphone waveform"></canvas>
         <p id="mic-viz-status" class="viz-status">Connect and allow microphone</p>
-        <label class="checkbox-row">
-          <input id="pause-mic-background" type="checkbox" />
-          Pause mic capture when this tab is in the background
-        </label>
-        <p id="mic-background-status" class="hint">
-          Default: <strong>off</strong> — WebRTC keeps sending while the tab is open, even if
-          another tab is focused (see README: why three tabs can all “hear” you).
-        </p>
       </section>
 
       <section class="panel audio-panel">
@@ -117,8 +121,9 @@
         <ol>
           <li>Tab 1, 2, 3 — same room <code>sherpa-multi</code>, click Connect in each.</li>
           <li>
-            Optional: enable <strong>Pause mic in background</strong> on tabs you are not speaking
-            from.
+            Optional: under <strong>Connect</strong>, check <strong>Pause mic when this tab is in the
+            background</strong> on tabs you are not speaking from (or
+            <code>?slot=2&amp;pauseMicBackground=1</code>).
           </li>
           <li>
             Server log shows <code>[voice client-tabN]</code> — three VoiceAgents, one Sherpa model

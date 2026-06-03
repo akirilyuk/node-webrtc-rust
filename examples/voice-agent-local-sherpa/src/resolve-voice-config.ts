@@ -119,8 +119,8 @@ const LOCAL_SHERPA_VOICE_CONFIG = (
     provider: 'energy',
     // Energy RMS scale on loopback — lower than default 0.15 for reliable Sherpa demos.
     threshold: 0.05,
-    // Pause grace: 600 ms "maybe done", then 1000 ms STT gate hold (see VOICE-VAD-AND-BARGE-IN.md).
-    minSilenceDurationMs: 600,
+    // Pause grace: 1300 ms "maybe done", then 1000 ms STT gate hold (see VOICE-VAD-AND-BARGE-IN.md).
+    minSilenceDurationMs: 1300,
     minSpeechDurationMs: 200,
     sttGateHoldMs: 1000,
   },

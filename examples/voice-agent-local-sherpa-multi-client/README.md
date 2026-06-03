@@ -96,7 +96,7 @@ This demo is **not** “one mic for the whole browser.” Each tab that clicks *
 
 ### Pause mic in background (per tab)
 
-Each tab has a checkbox: **“Pause mic capture when this tab is in the background.”**
+Each tab has a checkbox under **Connect** → **Multi-tab microphone**: **“Pause mic when this tab is in the background.”** Or open with `?pauseMicBackground=1` (handy for `?slot=2` / `?slot=3`).
 
 - **Default: off** — matches production-style always-on capture while connected.
 - **On** — sets `MediaStreamTrack.enabled = false` when `document.hidden`, so that tab stops sending audio until you focus it again. Use this when testing at one desk to avoid background tabs picking up speech.
@@ -220,7 +220,7 @@ npm run test:helpers
 | `SHERPA_TTS_MODEL_PATH`         | auto (Piper amy-low) | Set by `export-sherpa-local-models.sh` on `npm run start*` |
 | `SHERPA_STT_BUNDLE`             | English Kroko bundle | Override STT directory name under `.models/`               |
 | `SHERPA_TTS_BUNDLE`             | `vits-piper-en_US-amy-low` | Override TTS directory name under `.models/`          |
-| `VOICE_VAD_MIN_SILENCE_MS`      | preset `600`    | Silence before “maybe done” / STT gate hold starts |
+| `VOICE_VAD_MIN_SILENCE_MS`      | preset `1300`   | Silence before “maybe done” / STT gate hold starts |
 | `VOICE_VAD_STT_GATE_HOLD_MS`    | preset `1000`   | After maybe-done, STT stays open ~1 s for word gaps; `user_speaking_end` when hold expires |
 
 VAD/STT flow tuning: [`packages/sdk/VOICE-VAD-AND-BARGE-IN.md`](../../packages/sdk/VOICE-VAD-AND-BARGE-IN.md#stt-flow-fine-tuning-gatestt).

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Vitest roundtrip evaluators load @node-webrtc-rust/bindings, which may pull a
-# platform optional package. On release prep PRs, optionalDependencies can be
+# platform optional package. On release-prep/* PRs, optionalDependencies can be
 # bumped before that version is published — install the latest published build instead.
 set -euo pipefail
 

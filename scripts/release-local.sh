@@ -295,6 +295,6 @@ else
   echo ""
   echo "  Next steps:"
   echo "    git add -A && git commit -m \"chore(repo): release $VERSION\""
-  echo "    git tag release/$VERSION && git push origin release/$VERSION"
+  echo "    git tag release/$VERSION && git push origin refs/tags/release/$VERSION"
 fi
 echo "═══════════════════════════════════════════════════════════"

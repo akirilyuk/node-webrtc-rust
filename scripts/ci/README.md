@@ -221,7 +221,7 @@ No path filtering — always validates release surface after merge, but skips co
 
 ## Release pipeline (`release.yml`)
 
-Triggered by `git push origin release/x.y.z`.
+Prep PRs use branch `release-prep/x.y.z` → `main`. Publish is triggered by `git push origin refs/tags/release/x.y.z`.
 
 ```mermaid
 flowchart TD

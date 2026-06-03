@@ -13,6 +13,8 @@ Human-readable reference for GitHub Actions workflows, reusable jobs, caches, an
 | **Build & Test (PR)**   | [`.github/workflows/build.yml`](../../.github/workflows/build.yml)           | PR → `main`                      | Path-filtered quality, native compile, TS build, integration tests |
 | **Build & Test (main)** | [`.github/workflows/build-main.yml`](../../.github/workflows/build-main.yml) | Push → `main`                    | Full release native matrix + full test suite                       |
 | **Release**             | [`.github/workflows/release.yml`](../../.github/workflows/release.yml)       | Tag `release/*`                  | Release matrix → tests → npm publish → GitHub Release              |
+
+Every workflow above starts with **`validate-package-lock`** (no path filter) — fails in seconds if `package-lock.json` has stub optional `@node-webrtc-rust/bindings-*` entries. Local: `npm run ci:validate:package-lock`.
 | **CI Docker image**     | [`.github/workflows/ci-image.yml`](../../.github/workflows/ci-image.yml)     | Push → `ci`, `workflow_dispatch` | Publish `ghcr.io/.../ci-build:latest`                              |
 
 Reusable workflows (called via `workflow_call`, not triggered directly):
@@ -71,9 +73,15 @@ Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with three
 
 If none match, the whole workflow is skipped.
 
-### 2. Typecheck & lint
+### 2. Package-lock optional bindings (always)
 
-- **When:** `native` OR `typescript` OR `helpers` OR `examples` OR `workflows`
+- **When:** every PR (always runs; not path-filtered)
+- **Job:** `validate-package-lock` → [`.github/actions/validate-package-lock`](../../.github/actions/validate-package-lock/action.yml)
+- **Script:** [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh) — no `npm ci`; blocks merge before opaque `Invalid Version:` errors
+
+### 3. Typecheck & lint
+
+- **When:** `native` OR `typescript` OR `helpers` OR `examples` OR `workflows` (and package-lock job succeeded)
 - **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
 - **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh), `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
 - Runs [`build-ts-workspace.sh`](build-ts-workspace.sh) inside [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh) when sdk/signaling/helpers `dist/` is missing (fresh CI checkout). Job 4 still builds once for Test cache.
@@ -82,7 +90,7 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 
 **Compile native** runs when `native` or `workflows` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
 
-### 3. Compile native
+### 4. Compile native
 
 - **When:** `native` OR `workflows` (skipped on TS-only PRs)
 - **Runner:** `ci-build` container
@@ -92,7 +100,7 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 
 Populates the shared native cache used by the test job.
 
-### 4. Build TypeScript
+### 5. Build TypeScript
 
 - **When:** `typescript` OR `helpers` OR `workflows` (skipped on Rust-only PRs)
 - **Needs:** quality only (runs **in parallel** with compile-native — TS build does not need `.node`)
@@ -102,7 +110,7 @@ Populates the shared native cache used by the test job.
 
 Single CI build of publishable `dist/` for the Test job. Release-publish compile parity: [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) locally or `release.yml` publish job.
 
-### 5. Test
+### 6. Test
 
 - **When:** quality success; compile-native and build-ts success or skipped; at least one path filter matched
 - **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)

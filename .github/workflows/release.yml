@@ -21,8 +21,30 @@ env:
   OPUS_STATIC: '1'
 
 jobs:
+  validate-package-lock:
+    name: Package-lock optional bindings
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: ./.github/actions/validate-package-lock
+
   quality:
     name: Typecheck & lint
+    needs: validate-package-lock
     runs-on: self-hosted
     steps:
       - name: Prepare workspace
@@ -46,7 +68,7 @@ jobs:
 
   plan:
     name: Plan native builds
-    needs: quality
+    needs: [validate-package-lock, quality]
     runs-on: self-hosted
     outputs:
       linux_x64_matrix: ${{ steps.plan.outputs.linux_x64_matrix }}

@@ -39,10 +39,12 @@ export const DEFAULT_VOICE_AGENT_VAD: VadConfig = {
 /**
  * Recommended for typical voice agents (user STT + agent TTS + barge-in).
  *
- * Only change from {@link DEFAULT_VOICE_AGENT_VAD}: `gateStt: true` so STT is not fed during
- * silence and `user_speaking_end` follows gate hold + finalize (not the first brief pause).
+ * Changes from {@link DEFAULT_VOICE_AGENT_VAD}:
+ * - `gateStt: true` — STT only while the gate is open; `user_speaking_end` follows gate hold + finalize.
+ * - `speechPadMs: 500` — larger pre-roll ring (with `minSpeechDurationMs`) for barge-in first syllable capture over agent TTS.
  */
 export const VOICE_AGENT_VAD_PRESET: VadConfig = {
   ...DEFAULT_VOICE_AGENT_VAD,
   gateStt: true,
+  speechPadMs: 500,
 }

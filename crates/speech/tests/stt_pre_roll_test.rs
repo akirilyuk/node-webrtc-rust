@@ -435,6 +435,7 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
     vad.min_silence_duration_ms = 20;
     vad.speech_pad_ms = 20;
     vad.gate_stt = true;
+    vad.gate_stt_open_on_pending = false;
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -1107,5 +1108,89 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
         *finalize_calls.lock().unwrap(),
         2,
         "second pause in the same session must also finalize"
+    );
+}
+
+#[tokio::test]
+async fn gate_stt_agent_tts_pre_roll_includes_pre_vad_lead_in() {
+    use node_webrtc_rust_speech::PcmWriter;
+    use tokio::time::{sleep, Duration};
+
+    let bytes = Arc::new(Mutex::new(0_usize));
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::new(CountingFactory {
+            bytes: Arc::clone(&bytes),
+        }),
+    );
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.speech_pad_ms = 200;
+    vad.gate_stt = true;
+    vad.barge_in.enabled = true;
+    vad.barge_in.require_stt_partial = false;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let long_text = "agent keeps talking ".repeat(6);
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    let agent_arc = Arc::new(agent);
+    let agent_tts = Arc::clone(&agent_arc);
+    let text = long_text.clone();
+    tokio::spawn(async move {
+        agent_tts.send_text_to_tts(&text).await.unwrap();
+    });
+    sleep(Duration::from_millis(80)).await;
+
+    // Simulate user starting to speak while VAD is still accumulating (pre SpeechStart).
+    for _ in 0..8 {
+        agent_arc
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+    for _ in 0..3 {
+        agent_arc
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    agent_arc.stop().await.unwrap();
+
+    assert!(
+        *bytes.lock().unwrap() >= 640 * 8,
+        "during agent TTS, STT pre-roll flush should include continuous lookback before VAD SpeechStart"
     );
 }

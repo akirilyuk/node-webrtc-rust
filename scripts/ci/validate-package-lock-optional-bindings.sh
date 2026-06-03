@@ -5,6 +5,10 @@
 # npm ci then fails with an opaque "Invalid Version:" error.
 #
 # Usage: bash scripts/ci/validate-package-lock-optional-bindings.sh
+#        npm run ci:validate:package-lock
+#
+# CI job: validate-package-lock (always runs on PR / main / release — no path filter)
+# Docs: scripts/RELEASE.md#package-lockjson-after-release
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

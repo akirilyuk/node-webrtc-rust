@@ -15,6 +15,7 @@ alwaysApply: false
 
 | Job | Purpose |
 |---|---|
+| **Package-lock optional bindings** | **Always runs** — `validate-package-lock-optional-bindings.sh` (no path filter) |
 | Detect changes | path filters (`native`, `typescript`, `workflows`) |
 | Typecheck & lint | `run-pr-quality.sh` — typecheck, lint, helpers vitest (no dist build) |
 | Build TypeScript | `build-ts-workspace.sh` + `ci-cache-ts-dist` (parallel with compile-native) |
@@ -28,11 +29,13 @@ Runs on **pull_request → `main`** only. Linux x64 jobs use **`self-hosted`**; 
 
 ## Build & Test — main (`.github/workflows/build-main.yml`)
 
-Runs on **push → `main`**: **quality** → reusable release matrix (skip compile on native cache hit) → integration tests.
+Runs on **push → `main`**: **validate-package-lock** → **quality** → reusable release matrix (skip compile on native cache hit) → integration tests.
 
 ## Release (`.github/workflows/release.yml`)
 
-Runs on **`release/*` tag push**: **quality** → reusable build matrix (skip compile on native cache hit) → integration tests → **publish** (only if quality, builds, and test all succeeded).
+Runs on **`release/*` tag push**: **validate-package-lock** → **quality** → reusable build matrix → integration tests → **publish** → **`sync-main-package-lock`** (PR to refresh `package-lock.json` on `main`). See [`scripts/RELEASE.md`](../../scripts/RELEASE.md#package-lockjson-after-release).
+
+Release prep uses `SKIP_LOCK_REFRESH=1` on [`bump-workspace-versions.sh`](../../scripts/ci/bump-workspace-versions.sh); merge the bot **`chore/post-release-package-lock-X.Y.Z`** PR after each tag.
 
 ## Reusable workflows & composite actions
 
@@ -54,6 +57,7 @@ Rebuild `ghcr.io/.../ci-build:latest` when `docker/ci/Dockerfile` changes — pu
 ## Local validation
 
 ```bash
+npm run ci:validate:package-lock # stub optional binding lock check
 npm run build:native             # host .node for npm test
 npm run ci:verify:checks         # PR quality + integration checks (host)
 npm run ci:verify:release-ts     # release publish TS path

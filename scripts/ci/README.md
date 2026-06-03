@@ -229,10 +229,11 @@ No path filtering — always validates release surface after merge, but skips co
 
 ## Release pipeline (`release.yml`)
 
-Triggered by `git push origin release/x.y.z`.
+Triggered by `git push origin release/x.y.z`. Full release + lockfile docs: [`scripts/RELEASE.md`](../RELEASE.md#package-lockjson-after-release).
 
 ```mermaid
 flowchart TD
+  lock[validate-package-lock always]
   quality[Typecheck and lint]
   plan[Plan + check main CI]
   buildLinux[build-linux if not all cached]
@@ -240,7 +241,9 @@ flowchart TD
   stage[stage-cached-bindings]
   test[Integration tests unless main validated + all cached]
   publish[Publish npm + GitHub Release]
+  sync[sync-main-package-lock PR to main]
 
+  lock --> quality
   quality --> plan
   plan --> buildLinux
   plan --> buildHost
@@ -253,16 +256,19 @@ flowchart TD
   stage --> publish
   test --> publish
   quality --> publish
+  publish --> sync
 ```
 
-1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh)
-2. **plan** — per-target cache check + [`check-main-ci-success.sh`](check-main-ci-success.sh) (successful `build-main.yml` for this SHA)
-3. **build-linux / build-host** — skipped when **all** targets cached; otherwise compile **only missing** targets
-4. **stage-cached-bindings** — upload artifacts for cached targets
-5. **test** — **skipped** when `all_cached && main_validated` (A1); otherwise [`run-pr-integration.sh`](run-pr-integration.sh)
-6. **publish** — stage artifacts, `npm publish`, GitHub Release
+1. **validate-package-lock** — always (no path filter); [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh)
+2. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh)
+3. **plan** — per-target cache check + [`check-main-ci-success.sh`](check-main-ci-success.sh) (successful `build-main.yml` for this SHA)
+4. **build-linux / build-host** — skipped when **all** targets cached; otherwise compile **only missing** targets
+5. **stage-cached-bindings** — upload artifacts for cached targets
+6. **test** — **skipped** when `all_cached && main_validated` (A1); otherwise [`run-pr-integration.sh`](run-pr-integration.sh)
+7. **publish** — stage artifacts, `npm publish`, GitHub Release
+8. **sync-main-package-lock** — checkout `main`, [`post-release-sync-main-package-lock.sh`](post-release-sync-main-package-lock.sh), open PR `chore/post-release-package-lock-X.Y.Z` (merge promptly — see RELEASE.md)
 
-See [`scripts/RELEASE.md`](../RELEASE.md) for tagging and secrets.
+Release prep on git uses `SKIP_LOCK_REFRESH=1` with [`bump-workspace-versions.sh`](bump-workspace-versions.sh); post-publish sync runs full bump + [`refresh-package-lock-optional-bindings.sh`](refresh-package-lock-optional-bindings.sh).
 
 ---
 
@@ -289,7 +295,9 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 | Script                                                         | Used by                                          | What it runs                                                                                                                                                     |
 | -------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh) | before every `npm ci` | Fail fast on stub optional `@node-webrtc-rust/bindings-*` lock entries (`Invalid Version:`) |
+| [`bump-workspace-versions.sh`](bump-workspace-versions.sh) | Release prep (`SKIP_LOCK_REFRESH=1`), post-release sync | Bump workspace `package.json` / pins; optional lock refresh + validate |
+| [`refresh-package-lock-optional-bindings.sh`](refresh-package-lock-optional-bindings.sh) | After publish, via bump or post-release sync | Prune stub optional bindings + `npm install` |
+| [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh) | `validate-package-lock` job, before every `npm ci` | Fail fast on stub optional `@node-webrtc-rust/bindings-*` lock entries (`Invalid Version:`) |
 | [`post-release-sync-main-package-lock.sh`](post-release-sync-main-package-lock.sh) | Release `sync-main-package-lock` job after publish | Bump + refresh lock from npm; workflow opens PR to `main` |
 | [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                                   | lock validate, `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest**                                  |
 | [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers`              | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)                                                                                           |

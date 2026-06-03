@@ -5,6 +5,9 @@
 # Run on a checkout of main; does not commit — the workflow opens a PR via create-pull-request.
 #
 # Usage: bash scripts/ci/post-release-sync-main-package-lock.sh <version>
+#
+# Docs: scripts/RELEASE.md#package-lockjson-after-release
+# CI: .github/workflows/release.yml job sync-main-package-lock
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -2,6 +2,7 @@ name: Validate package-lock optional bindings
 description: >
   Fail fast when package-lock.json has stub optional @node-webrtc-rust/bindings-* entries
   (no version). Prevents npm ci "Invalid Version:" after release prep.
+  Docs: scripts/RELEASE.md#package-lockjson-after-release
 runs:
   using: composite
   steps:

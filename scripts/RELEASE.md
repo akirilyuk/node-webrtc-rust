@@ -63,25 +63,119 @@ Two places versions matter:
 
 CI [`release.yml`](../.github/workflows/release.yml) always rewrites versions in the publish job workspace from the tag (`release/X.Y.Z` → `X.Y.Z`), then publishes. That ephemeral bump does **not** update `main`. If git is never bumped, the repo drifts (e.g. npm at `0.4.0`, git still at `0.1.5`).
 
-**Rule:** committed `package.json` versions must match the version you are about to tag **before** `git push origin release/X.Y.Z`. Do **not** rely on a post-publish commit on `main` (easy to forget; no `chore(repo): release` commits have been made so far).
+**Rule:** committed `package.json` versions must match the version you are about to tag **before** `git push origin release/X.Y.Z`.
 
-**Release prep** (before platform packages exist on npm) — bump `package.json` only:
+**`package-lock.json`** is updated in a **separate automated PR after publish** (see [Package-lock.json after release](#package-lockjson-after-release)). Do not commit stub optional binding entries during release prep.
+
+CI publish still runs `npm version` + `napi version` + [`set-release-deps.sh`](ci/set-release-deps.sh) before `npm publish`; release prep should already match the tag version in git.
+
+---
+
+## Package-lock.json after release
+
+`@node-webrtc-rust/bindings` lists six **optional** platform packages (`bindings-darwin-arm64`, `bindings-linux-x64-gnu`, …). `package-lock.json` must record each with a full npm resolution (`version`, `resolved`, `integrity`).
+
+If release prep runs `npm install` **before** those versions exist on npm, the lockfile can contain **stub** entries (`"optional": true` only). Then every `npm ci` fails with an opaque **`Invalid Version:`** error.
+
+### End-to-end release flow (git + npm + lockfile)
+
+```mermaid
+flowchart TD
+  prep[Release prep PR to main]
+  tag[Push tag release/X.Y.Z]
+  wf[Release workflow]
+  pub[Publish to npm]
+  sync[Job sync-main-package-lock]
+  pr[PR chore/post-release-package-lock-X.Y.Z]
+  merge[Merge post-release PR]
+
+  prep -->|"SKIP_LOCK_REFRESH=1 bump package.json"| tag
+  tag --> wf
+  wf --> pub
+  pub --> sync
+  sync -->|"checkout main, refresh lock from npm"| pr
+  pr --> merge
+  merge -->|"main green for npm ci"| done[Done]
+```
+
+| Step | Who | What lands on `main` |
+| ---- | --- | -------------------- |
+| 1. Release prep PR | Human | `CHANGELOG.md`, all `package.json` @ `X.Y.Z` (lock may be unchanged or stale — OK) |
+| 2. Tag `release/X.Y.Z` | Human | Triggers [`.github/workflows/release.yml`](../.github/workflows/release.yml) |
+| 3. Publish job | CI | npm packages @ `X.Y.Z` (does not commit to `main`) |
+| 4. **Post-release PR** | CI (`sync-main-package-lock`) | `package-lock.json` + any version alignment from registry |
+| 5. Merge post-release PR | Human | `main` valid for `npm ci` |
+
+**Checklist after each tag:**
+
+- [ ] Release workflow finished green (including **Publish**).
+- [ ] Open and merge PR **`chore(ci): sync package-lock after release X.Y.Z`** (created automatically; see Actions run for the tag).
+- [ ] Confirm **`Package-lock optional bindings`** job is green on `main` afterward.
+
+Until step 5, `main` may fail the always-on **`validate-package-lock`** CI job — expected.
+
+### Scripts
+
+| Script | When to use |
+| ------ | ----------- |
+| [`bump-workspace-versions.sh`](ci/bump-workspace-versions.sh) | Bump all workspace `package.json` / internal pins to one version |
+| [`refresh-package-lock-optional-bindings.sh`](ci/refresh-package-lock-optional-bindings.sh) | Prune stubs + `npm install` to rewrite optional binding lock entries (requires packages on npm) |
+| [`validate-package-lock-optional-bindings.sh`](ci/validate-package-lock-optional-bindings.sh) | Fail fast if stubs remain (used in CI before `npm ci`) |
+| [`post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh) | Full bump + refresh after publish (same as post-release CI job) |
+
+**Release prep** (platform packages **not** on npm yet):
 
 ```bash
 SKIP_LOCK_REFRESH=1 bash scripts/ci/bump-workspace-versions.sh 0.4.0
+git add package.json packages/ examples/
+git commit -m "chore(repo): release prep 0.4.0"
 ```
 
-**After npm publish** — lockfile is refreshed automatically (see below). Manual:
+**After npm publish** (automated on tag push, or manual):
 
 ```bash
+git checkout main && git pull
 bash scripts/ci/post-release-sync-main-package-lock.sh 0.4.0
+# commit + PR, or merge the bot PR from the Release workflow
 ```
 
-Do **not** hand-edit `package-lock.json` optional `@node-webrtc-rust/bindings-*` entries — stubs break `npm ci` with `Invalid Version:`.
+**Never** hand-edit `package-lock.json` lines for `@node-webrtc-rust/bindings-*` — use `refresh-package-lock-optional-bindings.sh`.
 
-GitHub Actions runs **`validate-package-lock`** on every PR / `main` / release tag. Local: `npm run ci:validate:package-lock`.
+### CI guards (always on)
 
-CI publish still runs `npm version` + `napi version` + [`set-release-deps.sh`](ci/set-release-deps.sh) before `npm publish`; release prep should already match the tag version in git.
+| Job / hook | Workflow | Path filter |
+| ---------- | -------- | ------------- |
+| **`validate-package-lock`** | PR ([`build.yml`](../.github/workflows/build.yml)), push to `main` ([`build-main.yml`](../.github/workflows/build-main.yml)), tag ([`release.yml`](../.github/workflows/release.yml)) | **None — always runs** |
+| Before `npm ci` | [`run-pr-quality.sh`](ci/run-pr-quality.sh), [`npm-ci-workspace.sh`](ci/npm-ci-workspace.sh), release TS verify | Same validate script |
+| Pre-push | [`run-pre-push-gates.sh`](ci/run-pre-push-gates.sh) | When `package-lock.json` changed |
+| **`sync-main-package-lock`** | [`release.yml`](../.github/workflows/release.yml) only | After successful **Publish** |
+
+Local:
+
+```bash
+npm run ci:validate:package-lock
+```
+
+Pipeline details: [`scripts/ci/README.md`](ci/README.md).
+
+### Post-release PR (automation)
+
+Job **`Sync main package-lock (PR)`** in [`release.yml`](../.github/workflows/release.yml):
+
+1. Runs only when **`publish`** succeeded.
+2. Checks out **`main`** (not the tag ref).
+3. Runs [`post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh) with the tag version.
+4. Opens a PR via [`peter-evans/create-pull-request`](https://github.com/peter-evans/create-pull-request) — branch `chore/post-release-package-lock-X.Y.Z`, labels `dependencies`, `automation`.
+5. Skips opening a PR if there is no diff.
+
+Requires workflow permission **`pull-requests: write`** and a `GITHUB_TOKEN` that can push branches. If branch protection blocks the bot, create the PR manually from the branch the job pushed (or re-run the sync script locally and open the PR yourself).
+
+### `SKIP_LOCK_REFRESH`
+
+| Value | Behavior |
+| ----- | -------- |
+| `1` | [`bump-workspace-versions.sh`](ci/bump-workspace-versions.sh) updates `package.json` only — **no** lock refresh or validate (use in release prep and [`release-local.sh`](release-local.sh) before publish). |
+| unset / `0` | Bump + **required** lock refresh + validate (fails if platform packages are not on npm). Used by post-release sync. |
 
 ---
 
@@ -92,8 +186,8 @@ User-facing release notes live in **[`CHANGELOG.md`](../CHANGELOG.md)** at the r
 | When                   | Action                                                                                                                                             |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **During development** | Add bullets under `[Unreleased]` as PRs merge                                                                                                      |
-| **Release prep PR**    | On branch `release/X.Y.Z`: finalize `[X.Y.Z]` section, bump all `package.json` to `X.Y.Z`, open PR → `main`                                         |
-| **On tag push**        | CI publishes npm; GitHub Release body from [`scripts/changelog-release-body.sh`](changelog-release-body.sh)                                        |
+| **Release prep PR**    | On branch `release/X.Y.Z`: finalize `[X.Y.Z]`, `SKIP_LOCK_REFRESH=1` bump, PR → `main` (see [Package-lock.json after release](#package-lockjson-after-release)) |
+| **On tag push**        | CI publishes npm + GitHub Release; bot opens post-release package-lock PR → merge when green                                                        |
 
 Preview release notes locally:
 
@@ -118,7 +212,7 @@ Use this for **all six platform binaries** and a consistent CI run before publis
 
 ### 2. Tag and publish (after merge)
 
-Tag the **merge commit** on `main` (versions in tree must already be `X.Y.Z`):
+Tag the **merge commit** on `main` (`package.json` versions must already be `X.Y.Z`; lockfile sync comes **after** publish):
 
 ```bash
 git checkout main
@@ -126,6 +220,10 @@ git pull
 git tag release/0.4.1
 git push origin release/0.4.1
 ```
+
+### 3. Merge post-release package-lock PR
+
+When the Release workflow finishes, merge the automated PR **`chore(ci): sync package-lock after release 0.4.1`** → `main`. See [checklist](#end-to-end-release-flow-git--npm--lockfile).
 
 Supported tag forms:
 
@@ -155,8 +253,13 @@ Release prep PR bumps git `package.json` versions; the **post-release PR** updat
 
 If npm already has `X.Y.Z` but git does not:
 
-1. Branch from `main` (e.g. `chore/sync-versions-0.4.0` or `release/sync-0.4.0`).
-2. Bump git to match npm (`0.4.0`) using the commands above; **no** new tag.
+1. Branch from `main` (e.g. `chore/sync-versions-0.4.0`).
+2. Run post-release sync (packages already on npm):
+
+   ```bash
+   bash scripts/ci/post-release-sync-main-package-lock.sh 0.4.0
+   ```
+
 3. PR → `main`, merge.
 4. Then run the normal [prepare release](#1-prepare-release-pr--do-not-commit-directly-on-main) flow for the next version (`0.4.1`, etc.).
 
@@ -185,19 +288,21 @@ Behavior:
 
 - Detects host OS/arch and looks for a matching `.node` in `packages/bindings/`, `prebuilt/`, or `artifacts/`
 - Rebuilds with `npm run build:local` only if missing
-- Bumps all package versions via direct JSON edits (no registry lookups)
+- Bumps all package versions via [`bump-workspace-versions.sh`](ci/bump-workspace-versions.sh) with `SKIP_LOCK_REFRESH=1` before publish
 - Publishes **only platform packages that have a `.node` file** (typically one on a dev machine)
 - Verifies the native binding loads before publish
 
-After a successful publish (local only — versions should already be committed on `release/X.Y.Z` before tagging):
+After a successful publish:
 
 ```bash
-# If you bumped only in the working tree during a local publish:
-git add -A && git commit -m "chore(repo): release 0.2.0"
+bash scripts/ci/post-release-sync-main-package-lock.sh 0.2.0
+git add -A && git commit -m "chore(repo): sync package-lock after release 0.2.0"
 git tag release/0.2.0 && git push origin release/0.2.0
 ```
 
-Prefer the [GitHub Actions](#release-via-github-actions-recommended) PR + tag flow so git and npm stay aligned without a post-publish commit.
+Pushing the tag on GitHub also runs the automated post-release PR on `main` ([Package-lock.json after release](#package-lockjson-after-release)).
+
+Prefer the [GitHub Actions](#release-via-github-actions-recommended) PR + tag flow so publish and lock sync stay consistent.
 
 ### Full release — all six platforms (macOS)
 
@@ -226,6 +331,7 @@ Windows is never cross-compiled locally — copy from a Windows CI artifact or b
 Mirror PR CI locally:
 
 ```bash
+npm run ci:validate:package-lock # fast lockfile check (no npm ci)
 npm run build:native             # host .node for npm test
 npm run ci:verify                # full PR check suite on host
 npm run ci:verify:release-ts     # release publish TS path
@@ -238,11 +344,16 @@ Dry-run publish packaging on a PR: the **Publish (dry-run)** job in [Build & Tes
 
 ## Troubleshooting
 
-| Issue                           | Fix                                                                                   |
-| ------------------------------- | ------------------------------------------------------------------------------------- |
-| `shopt: not found` in CI        | Fixed — Linux container steps use `shell: bash`                                       |
-| `EOTP` / 2FA on npm             | Re-run local script with `--otp=123456`                                               |
-| `403` on scoped publish         | Use `npm publish --access public` (scripts do this)                                   |
-| Double publish of platform pkgs | Publish main bindings with `--ignore-scripts` (scripts do this)                       |
-| Missing Windows binary locally  | Use CI release tag workflow or add `node-webrtc-rust.win32-x64-msvc.node`             |
-| Zig / Opus link errors on Linux | Set `OPUS_STATIC=1` and `CMAKE_POLICY_VERSION_MINIMUM=3.5` (CI and scripts set these) |
+| Issue | Fix |
+| ----- | --- |
+| `npm ci` / CI **`Invalid Version:`** | Stub optional bindings in `package-lock.json`. Run `npm run ci:validate:package-lock` to list stubs. After packages are on npm: `bash scripts/ci/refresh-package-lock-optional-bindings.sh` or merge the post-release PR. |
+| `main` red after release prep, before post-release PR | Expected until **`chore/post-release-package-lock-X.Y.Z`** merges. Do not “fix” by hand-editing stubs. |
+| `bump-workspace-versions.sh` fails on refresh | Use `SKIP_LOCK_REFRESH=1` before publish; run `post-release-sync-main-package-lock.sh` after publish. |
+| No post-release PR after tag | Check Release workflow job **Sync main package-lock**; verify `publish` succeeded and `pull-requests: write` permission. Re-run locally: `bash scripts/ci/post-release-sync-main-package-lock.sh X.Y.Z` on `main`. |
+| Post-release PR conflicts | Rebase branch on `main`, or close bot PR and run sync script locally. |
+| `shopt: not found` in CI | Linux container steps use `shell: bash` |
+| `EOTP` / 2FA on npm | Re-run local script with `--otp=123456` |
+| `403` on scoped publish | Scripts use `npm publish --access public` |
+| Double publish of platform pkgs | Publish main bindings with `--ignore-scripts` |
+| Missing Windows binary locally | CI release tag workflow or add `node-webrtc-rust.win32-x64-msvc.node` |
+| Zig / Opus link errors on Linux | `OPUS_STATIC=1` and `CMAKE_POLICY_VERSION_MINIMUM=3.5` |

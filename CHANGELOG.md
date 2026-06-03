@@ -11,7 +11,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `validate-package-lock-optional-bindings.sh` + always-on **`validate-package-lock`** CI job on PR / `main` / release (no path filter); `npm ci` paths and `bump-workspace-versions.sh` run the same check.
-- Release workflow **`sync-main-package-lock`** job after publish — checks out `main`, syncs lockfile from npm, opens PR `chore/post-release-package-lock-X.Y.Z`. Release prep uses `SKIP_LOCK_REFRESH=1` on bump.
+- Release workflow **`sync-main-package-lock`** job after publish — checks out `main`, syncs lockfile from npm, opens PR `chore/post-release-package-lock-X.Y.Z`. Release prep uses `SKIP_LOCK_REFRESH=1` on bump. Documented in [`scripts/RELEASE.md`](scripts/RELEASE.md#package-lockjson-after-release).
 
 ---
 

@@ -7,8 +7,10 @@
 # Usage: bash scripts/ci/refresh-package-lock-optional-bindings.sh
 #
 # Safe to run after bump-workspace-versions.sh when platform packages exist on
-# npm at the bumped version. Before first publish, npm install may 404 — stubs
-# are still pruned so a follow-up run after publish fixes CI.
+# npm at the bumped version. Before first publish, use SKIP_LOCK_REFRESH=1 on bump
+# and run post-release-sync-main-package-lock.sh after publish (or merge the bot PR).
+#
+# Docs: scripts/RELEASE.md#package-lockjson-after-release
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

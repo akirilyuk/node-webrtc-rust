@@ -38,6 +38,8 @@ run_inner() {
   }
   trap restore_versions EXIT
 
+  bash "$root/scripts/ci/validate-package-lock-optional-bindings.sh"
+
   echo "==> clean install (release publish: npm ci --ignore-scripts)"
   rm -rf node_modules
   find packages -maxdepth 2 -name node_modules -type d -exec rm -rf {} + 2>/dev/null || true

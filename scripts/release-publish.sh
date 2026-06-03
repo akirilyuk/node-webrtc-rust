@@ -365,5 +365,5 @@ verify_on_registry "@node-webrtc-rust/helpers"
 
 echo "==> Done: $VERSION"
 if [[ "$DRY_RUN" != true ]]; then
-  echo "Optional: git tag release/$VERSION && git push origin release/$VERSION"
+  echo "Optional: git tag release/$VERSION && git push origin refs/tags/release/$VERSION"
 fi

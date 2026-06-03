@@ -21,11 +21,20 @@ Release publish runs **`scripts/ci/build-ts-workspace.sh`**, which compiles SDK 
 
 `run-pr-quality.sh` (typecheck + lint only) will **not** catch this — PR CI runs **`build-ts-workspace.sh`** in the **Build TypeScript** job instead.
 
+## Package-lock (release prep / post-publish)
+
+Release prep bumps git with `SKIP_LOCK_REFRESH=1`; after tag publish, CI opens a post-release PR to refresh `package-lock.json` from npm. See [`scripts/RELEASE.md`](../../scripts/RELEASE.md#package-lockjson-after-release).
+
+```bash
+npm run ci:validate:package-lock   # fast stub check
+```
+
 ## Required before commit (release / SDK / bindings / CI changes)
 
 From `node-webrtc-rust/`:
 
 ```bash
+npm run ci:validate:package-lock
 bash scripts/ci/run-pr-quality.sh
 bash scripts/ci/build-ts-workspace.sh   # or verify-release-publish-ts.sh
 npm run ci:verify:release-ts

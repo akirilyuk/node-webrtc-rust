@@ -17,6 +17,28 @@ env:
   OPUS_STATIC: '1'
 
 jobs:
+  # Always runs (no path filter). Catches broken lockfiles even when quality/test are skipped.
+  validate-package-lock:
+    name: Package-lock optional bindings
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: ./.github/actions/validate-package-lock
+
   changes:
     name: Detect changes
     runs-on: self-hosted
@@ -73,8 +95,9 @@ jobs:
 
   quality:
     name: Typecheck & lint
-    needs: changes
+    needs: [changes, validate-package-lock]
     if: |
+      needs.validate-package-lock.result == 'success' &&
       needs.changes.outputs.native == 'true' ||
       needs.changes.outputs.typescript == 'true' ||
       needs.changes.outputs.helpers == 'true' ||
@@ -140,10 +163,11 @@ jobs:
 
   build-ts:
     name: Build TypeScript
-    needs: [changes, quality]
+    needs: [changes, validate-package-lock, quality]
     if: |
       always() &&
       !cancelled() &&
+      needs.validate-package-lock.result == 'success' &&
       needs.quality.result == 'success' &&
       (
         needs.changes.outputs.typescript == 'true' ||
@@ -176,16 +200,18 @@ jobs:
       - name: Build TypeScript packages
         if: steps.ts-cache.outputs.cache-hit != 'true'
         run: |
+          bash scripts/ci/validate-package-lock-optional-bindings.sh
           npm ci
           bash scripts/fix-rollup-native.sh
           bash scripts/ci/build-ts-workspace.sh
 
   test:
     name: Test
-    needs: [changes, quality, compile-native, build-ts]
+    needs: [changes, validate-package-lock, quality, compile-native, build-ts]
     if: |
       always() &&
       !cancelled() &&
+      needs.validate-package-lock.result == 'success' &&
       needs.quality.result == 'success' &&
       (needs.compile-native.result == 'success' || needs.compile-native.result == 'skipped') &&
       (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&

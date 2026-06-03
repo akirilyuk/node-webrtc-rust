@@ -65,23 +65,23 @@ CI [`release.yml`](../.github/workflows/release.yml) always rewrites versions in
 
 **Rule:** committed `package.json` versions must match the version you are about to tag **before** `git push origin release/X.Y.Z`. Do **not** rely on a post-publish commit on `main` (easy to forget; no `chore(repo): release` commits have been made so far).
 
-To bump locally (full workspace — packages, platform bindings, examples, peer pins):
+**Release prep** (before platform packages exist on npm) — bump `package.json` only:
 
 ```bash
-bash scripts/ci/bump-workspace-versions.sh 0.4.0
+SKIP_LOCK_REFRESH=1 bash scripts/ci/bump-workspace-versions.sh 0.4.0
 ```
 
-The bump script calls [`refresh-package-lock-optional-bindings.sh`](ci/refresh-package-lock-optional-bindings.sh) to regenerate platform optional-dep lock metadata. **Do not hand-edit** `package-lock.json` version strings for `@node-webrtc-rust/bindings-*` — that leaves invalid stubs (`"optional": true` only) and breaks `npm ci`.
-
-If the bump runs **before** platform packages are on npm, refresh may warn; after publish run:
+**After npm publish** — lockfile is refreshed automatically (see below). Manual:
 
 ```bash
-bash scripts/ci/refresh-package-lock-optional-bindings.sh
+bash scripts/ci/post-release-sync-main-package-lock.sh 0.4.0
 ```
 
-GitHub Actions runs a dedicated **`validate-package-lock`** job on every PR, every push to `main`, and every release tag (no path filter). Local: `npm run ci:validate:package-lock`. `npm ci` paths also run the same script first.
+Do **not** hand-edit `package-lock.json` optional `@node-webrtc-rust/bindings-*` entries — stubs break `npm ci` with `Invalid Version:`.
 
-CI publish still runs `npm version` + `napi version` + [`set-release-deps.sh`](ci/set-release-deps.sh) in the runner before `npm publish`; committed git should match the tag version via the release prep PR using the script above.
+GitHub Actions runs **`validate-package-lock`** on every PR / `main` / release tag. Local: `npm run ci:validate:package-lock`.
+
+CI publish still runs `npm version` + `napi version` + [`set-release-deps.sh`](ci/set-release-deps.sh) before `npm publish`; release prep should already match the tag version in git.
 
 ---
 
@@ -113,7 +113,7 @@ Use this for **all six platform binaries** and a consistent CI run before publis
 2. Create branch **`release/X.Y.Z`** from `main` (e.g. `release/0.4.1`).
 3. On that branch:
    - Finalize [`CHANGELOG.md`](../CHANGELOG.md): `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, new empty `[Unreleased]`.
-   - Bump **all** publishable package versions and internal pins to `X.Y.Z` (see [Package versions in git vs npm](#package-versions-in-git-vs-npm)).
+   - Bump **all** publishable package versions and internal pins to `X.Y.Z` with `SKIP_LOCK_REFRESH=1` (see [Package versions in git vs npm](#package-versions-in-git-vs-npm)). Do **not** commit a broken `package-lock.json` from a pre-publish refresh.
 4. Open PR **`release/X.Y.Z` → `main`**, wait for Build & Test green, **merge**.
 
 ### 2. Tag and publish (after merge)
@@ -145,10 +145,11 @@ The segment after `release/` must match committed `package.json` versions. CI us
 2. **Test** — format, lint, typecheck, `cargo test`, `npm test` (with coturn)
 3. **Publish** — stage artifacts, bump versions in workspace, build TS, publish to npm (including `@node-webrtc-rust/helpers`)
 4. **GitHub Release** — creates a release with the matching section from `CHANGELOG.md`
+5. **Sync main package-lock** — checks out `main`, runs [`post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh), opens PR `chore/post-release-package-lock-X.Y.Z` → `main` (merge when green)
 
-Required secrets: **`NPM_TOKEN`**, **`GITHUB_TOKEN`** (provided by Actions for the release step).
+Required secrets: **`NPM_TOKEN`**, **`GITHUB_TOKEN`** (publish, release, and automated PR).
 
-No follow-up version commit on `main` is needed when the release prep PR already bumped git.
+Release prep PR bumps git `package.json` versions; the **post-release PR** updates `package-lock.json` from npm so `main` stays valid for `npm ci`. Merge that PR promptly after each tag.
 
 ### Catch-up: repo behind npm (e.g. after 0.4.0 without a version PR)
 

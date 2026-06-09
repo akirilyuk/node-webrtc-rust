@@ -124,8 +124,8 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 ### 6. Test
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **When:** no **code** path filter matched (`native`, `typescript`, `helpers`, `examples`) — succeeds immediately (`skip: 'true'` in [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)). Test-CI-only edits (e.g. `reusable-test.yml` skip gates) do not run integration tests.
-- **When code changed:** requires **Typecheck & lint** success; restores `.node` / TS `dist/` only when needed; runs [`run-pr-integration.sh`](run-pr-integration.sh).
+- **When:** no source path filter matched — succeeds immediately (`skip: 'true'`). CI-only YAML edits do not run integration tests.
+- **When source code changed:** requires **Typecheck & lint** success (when it ran); restores `.node` / TS `dist/` only when needed.
 - **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 

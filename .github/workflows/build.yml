@@ -161,6 +161,8 @@ jobs:
       !cancelled() &&
       needs.validate-package-lock.result == 'success'
     runs-on: self-hosted
+    outputs:
+      ran_compile: ${{ steps.gate.outputs.run }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:
@@ -261,7 +263,8 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
-      skip: ${{ needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true' && needs.changes.outputs.workflows_test != 'true' }}
+      skip: ${{ (needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true' && needs.changes.outputs.workflows_test != 'true') && 'true' || 'false' }}
       quality_result: ${{ needs.quality.result }}
-      require_binding_artifact: ${{ needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows_native == 'true' }}
+      binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'bindings-x86_64-unknown-linux-gnu' || '' }}
+      require_binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'true' || 'false' }}
     secrets: inherit

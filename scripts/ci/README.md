@@ -129,8 +129,8 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 
 Before tests, the test job receives the native binding from the **same workflow run**:
 
-1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact uploaded by `compile-native` (PR) or `build-linux` (main/release). Fails the job when compile ran but the artifact is missing.
-2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) only when artifact download is skipped or failed (e.g. TS-only PR).
+1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact when **compile-native** ran in this workflow (`ran_compile` output). Skipped when compile was gated off (docs-only, TS-only, test-CI-only PRs).
+2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) when artifact download is skipped or failed (e.g. TS-only PR).
 3. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
 4. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist).
 

@@ -24,7 +24,7 @@ on:
         type: string
         default: debug
       require_binding_artifact:
-        description: Fail when the binding artifact is missing (compile/build-linux ran); 'true' or true
+        description: Fail when the binding artifact is missing (compile/build-linux ran)
         type: string
         default: 'false'
       needs_native_binding:
@@ -44,18 +44,45 @@ jobs:
       TURN_AVAILABLE: '1'
       CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
     steps:
-      - name: Skip integration tests (no code or test-CI changes)
-        if: inputs.skip == 'true'
-        run: echo "::notice::Skipping integration tests — no code or integration-test CI changes in this PR."
+      # workflow_call coerces booleans; normalize once in bash for reliable step if: gates.
+      - name: Resolve integration test gates
+        id: gate
+        env:
+          SKIP: ${{ inputs.skip }}
+          NEEDS_NATIVE: ${{ inputs.needs_native_binding }}
+          NEEDS_TS: ${{ inputs.needs_ts_dist }}
+        run: |
+          is_true() {
+            case "${1,,}" in
+              true|1|yes) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          if is_true "$SKIP"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping integration tests — no source code changes in this PR."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          if is_true "$NEEDS_NATIVE"; then
+            echo "needs_native=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_native=false" >> "$GITHUB_OUTPUT"
+          fi
+          if is_true "$NEEDS_TS"; then
+            echo "needs_ts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_ts=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Require quality passed before integration tests
-        if: inputs.skip != 'true' && inputs.needs_native_binding == 'true' && inputs.quality_result != 'success'
+        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && inputs.quality_result != 'success'
         run: |
           echo "Typecheck & lint must pass before integration tests (quality=${{ inputs.quality_result }})." >&2
           exit 1
 
       - name: Prepare workspace
-        if: inputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true'
         run: |
           if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
             docker run --rm \
@@ -65,11 +92,11 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
-        if: inputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true'
 
       - name: Download native binding artifact
         id: binding-artifact
-        if: inputs.skip != 'true' && inputs.needs_native_binding == 'true' && inputs.binding_artifact != ''
+        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && inputs.binding_artifact != ''
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.binding_artifact }}
@@ -79,13 +106,13 @@ jobs:
       # GHA cache restore often misses in workflow_call jobs even after a hit in the
       # caller (compile-native). Artifact download is the reliable same-run path.
       - uses: ./.github/actions/native-binding-cache
-        if: inputs.skip != 'true' && inputs.needs_native_binding == 'true' && (inputs.binding_artifact == '' || steps.binding-artifact.outcome == 'failure')
+        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && (inputs.binding_artifact == '' || steps.binding-artifact.outcome == 'failure')
         with:
           target: x86_64-unknown-linux-gnu
           profile: ${{ inputs.binding_profile }}
 
       - name: Verify native binding in workspace
-        if: inputs.skip != 'true' && inputs.needs_native_binding == 'true'
+        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'
         run: |
           shopt -s nullglob
           files=(packages/bindings/*.node)
@@ -96,13 +123,13 @@ jobs:
           echo "Native binding ready: $(basename "${files[0]}")"
 
       - uses: ./.github/actions/ci-cache-ts-dist
-        if: inputs.skip != 'true' && inputs.needs_ts_dist == 'true'
+        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_ts == 'true'
         id: ts-cache
         with:
           profile: release
 
       - uses: ./.github/actions/ci-run-integration-tests
-        if: inputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true'
         with:
           test_script: ${{ inputs.test_script }}
           ci_image: ${{ env.CI_IMAGE }}

@@ -52,6 +52,12 @@ jobs:
       workflows_native: ${{ steps.filter.outputs.workflows_native }}
       workflows_test: ${{ steps.filter.outputs.workflows_test }}
       workflows_ts: ${{ steps.filter.outputs.workflows_ts }}
+      skip_test: ${{ steps.pr_gates.outputs.skip_test }}
+      skip_quality: ${{ steps.pr_gates.outputs.skip_quality }}
+      skip_compile: ${{ steps.pr_gates.outputs.skip_compile }}
+      skip_build_ts: ${{ steps.pr_gates.outputs.skip_build_ts }}
+      needs_native_for_test: ${{ steps.pr_gates.outputs.needs_native }}
+      needs_ts_for_test: ${{ steps.pr_gates.outputs.needs_ts }}
     steps:
       - name: Prepare workspace
         run: |
@@ -126,6 +132,47 @@ jobs:
               - 'scripts/ci/verify-release-publish-ts.sh'
               - 'scripts/ci/ts-dist-cache-key.sh'
 
+      - name: Compute PR job gates
+        id: pr_gates
+        env:
+          CODE: ${{ steps.filter.outputs.code }}
+          WORKFLOWS: ${{ steps.filter.outputs.workflows }}
+          NATIVE: ${{ steps.filter.outputs.native }}
+          TYPESCRIPT: ${{ steps.filter.outputs.typescript }}
+          HELPERS: ${{ steps.filter.outputs.helpers }}
+          EXAMPLES: ${{ steps.filter.outputs.examples }}
+          WORKFLOWS_NATIVE: ${{ steps.filter.outputs.workflows_native }}
+          WORKFLOWS_TS: ${{ steps.filter.outputs.workflows_ts }}
+        run: |
+          source_changed=false
+          if [[ "$NATIVE" == "true" || "$TYPESCRIPT" == "true" || "$HELPERS" == "true" || "$EXAMPLES" == "true" ]]; then
+            source_changed=true
+          fi
+          if [[ "$source_changed" == true ]]; then
+            echo "skip_test=false" >> "$GITHUB_OUTPUT"
+            echo "needs_native=true" >> "$GITHUB_OUTPUT"
+            echo "needs_ts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_test=true" >> "$GITHUB_OUTPUT"
+            echo "needs_native=false" >> "$GITHUB_OUTPUT"
+            echo "needs_ts=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$CODE" == "true" || "$WORKFLOWS" == "true" ]]; then
+            echo "skip_quality=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_quality=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$NATIVE" == "true" || "$WORKFLOWS_NATIVE" == "true" ]]; then
+            echo "skip_compile=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_compile=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$TYPESCRIPT" == "true" || "$HELPERS" == "true" || "$EXAMPLES" == "true" || "$WORKFLOWS_TS" == "true" ]]; then
+            echo "skip_build_ts=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_build_ts=true" >> "$GITHUB_OUTPUT"
+          fi
+
   quality:
     name: Typecheck & lint
     needs: [changes, validate-package-lock]
@@ -140,12 +187,11 @@ jobs:
       - name: Skip when docs-only (no code or CI changes)
         id: gate
         run: |
-          if [[ "${{ needs.changes.outputs.code }}" == "true" || \
-                "${{ needs.changes.outputs.workflows }}" == "true" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
+          if [[ "${{ needs.changes.outputs.skip_quality }}" == "true" ]]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping typecheck & lint — docs-only PR (no code or CI changes)."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Prepare workspace
@@ -191,11 +237,11 @@ jobs:
       - name: Skip when no native or native-CI changes
         id: gate
         run: |
-          if [[ "${{ needs.changes.outputs.native }}" == "true" || "${{ needs.changes.outputs.workflows_native }}" == "true" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
+          if [[ "${{ needs.changes.outputs.skip_compile }}" == "true" ]]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping native compile — no Rust/bindings or native-build CI changes in this PR."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Require quality passed before native compile
@@ -240,14 +286,11 @@ jobs:
       - name: Skip when no TypeScript or TS-CI changes
         id: gate
         run: |
-          if [[ "${{ needs.changes.outputs.typescript }}" == "true" || \
-                "${{ needs.changes.outputs.helpers }}" == "true" || \
-                "${{ needs.changes.outputs.examples }}" == "true" || \
-                "${{ needs.changes.outputs.workflows_ts }}" == "true" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
+          if [[ "${{ needs.changes.outputs.skip_build_ts }}" == "true" ]]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping TypeScript build — no TS/examples or TS-build CI changes in this PR."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Require quality passed before TypeScript build
@@ -300,10 +343,10 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
-      skip: ${{ (needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true') && 'true' || 'false' }}
+      skip: ${{ needs.changes.outputs.skip_test }}
       quality_result: ${{ needs.quality.result }}
       binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'bindings-x86_64-unknown-linux-gnu' || '' }}
       require_binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'true' || 'false' }}
-      needs_native_binding: ${{ (needs.changes.outputs.native == 'true' || needs.changes.outputs.typescript == 'true' || needs.changes.outputs.helpers == 'true' || needs.changes.outputs.examples == 'true') && 'true' || 'false' }}
-      needs_ts_dist: ${{ (needs.changes.outputs.native == 'true' || needs.changes.outputs.typescript == 'true' || needs.changes.outputs.helpers == 'true' || needs.changes.outputs.examples == 'true') && 'true' || 'false' }}
+      needs_native_binding: ${{ needs.changes.outputs.needs_native_for_test }}
+      needs_ts_dist: ${{ needs.changes.outputs.needs_ts_for_test }}
     secrets: inherit

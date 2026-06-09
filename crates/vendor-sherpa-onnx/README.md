@@ -19,6 +19,8 @@ tokens.txt
 
 Filenames are matched flexibly (e.g. `encoder-epoch-99-avg-1.int8.onnx`).
 
+**Offline STT (not implemented yet):** Sherpa also ships offline models (e.g. Cohere Transcribe) that use `OfflineRecognizer` and a different ONNX layout (no joiner). See [`docs/offline-sherpa-stt-plan.md`](../../docs/offline-sherpa-stt-plan.md).
+
 ### Offline TTS (Piper/VITS)
 
 Point `TtsConfig.model_path` or `SHERPA_TTS_MODEL_PATH` at a folder containing:

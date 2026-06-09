@@ -65,7 +65,7 @@ export SHERPA_STT_LANGUAGE=de   # optional — inferred from model path when omi
 | `SHERPA_STT_MODEL_PATH` | **Yes**  | Directory with `tokens.txt` and encoder/decoder/joiner `.onnx` files    |
 | `SHERPA_STT_LANGUAGE`   | No       | Sets `stt.language` (must match bundle; required for multilingual pack) |
 
-**Hindi / Portuguese / Italian:** Sherpa publishes some languages only in non–Zipformer bundles (e.g. `sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01`), which are not wired to `local-sherpa` yet. Use cloud STT ([`voice-agent-browser`](../voice-agent-browser/README.md)) or Bengali (`bn`) as a South Asian alternative.
+**Hindi / Portuguese / Italian:** Sherpa publishes some languages only in non–Zipformer bundles (e.g. `sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01`), which are not wired to `local-sherpa` yet. Use cloud STT ([`voice-agent-browser`](../voice-agent-browser/README.md)) or Bengali (`bn`) as a South Asian alternative. **Future:** offline Sherpa STT plan — [`docs/offline-sherpa-stt-plan.md`](../../docs/offline-sherpa-stt-plan.md).
 
 ---
 

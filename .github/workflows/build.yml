@@ -72,6 +72,7 @@ jobs:
               - 'Cargo.lock'
               - 'crates/**'
               - 'packages/bindings/**'
+              - '!**/*.md'
               - '!packages/bindings/*.node'
               - '!packages/bindings/index.d.ts'
               - '!packages/bindings/index.js'
@@ -84,11 +85,14 @@ jobs:
               - '**/tsconfig*.json'
               - 'eslint.config.js'
               - '.prettierrc*'
+              - '!**/*.md'
             helpers:
               - 'packages/helpers/**'
               - 'examples/voice-agent-local-sherpa-multi-client/**'
+              - '!**/*.md'
             examples:
               - 'examples/**'
+              - '!**/*.md'
             workflows:
               - '.github/**'
               - 'docker/ci/**'
@@ -97,12 +101,13 @@ jobs:
     name: Typecheck & lint
     needs: [changes, validate-package-lock]
     if: |
-      needs.validate-package-lock.result == 'success' &&
-      needs.changes.outputs.native == 'true' ||
-      needs.changes.outputs.typescript == 'true' ||
-      needs.changes.outputs.helpers == 'true' ||
-      needs.changes.outputs.examples == 'true' ||
-      needs.changes.outputs.workflows == 'true'
+      needs.validate-package-lock.result == 'success' && (
+        needs.changes.outputs.native == 'true' ||
+        needs.changes.outputs.typescript == 'true' ||
+        needs.changes.outputs.helpers == 'true' ||
+        needs.changes.outputs.examples == 'true' ||
+        needs.changes.outputs.workflows == 'true'
+      )
     runs-on: self-hosted
     steps:
       - name: Prepare workspace
@@ -126,15 +131,11 @@ jobs:
 
   compile-native:
     name: Compile native
-    needs: [changes, quality]
+    needs: [changes, validate-package-lock, quality]
     if: |
       always() &&
       !cancelled() &&
-      needs.quality.result == 'success' &&
-      (
-        needs.changes.outputs.native == 'true' ||
-        needs.changes.outputs.workflows == 'true'
-      )
+      needs.validate-package-lock.result == 'success'
     runs-on: self-hosted
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -142,15 +143,34 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Skip when no native or workflow changes
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.native }}" == "true" || "${{ needs.changes.outputs.workflows }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping native compile — no Rust/bindings/workflow changes in this PR."
+          fi
+
+      - name: Require quality passed before native compile
+        if: steps.gate.outputs.run == 'true' && needs.quality.result != 'success'
+        run: |
+          echo "Typecheck & lint must pass before native compile (quality=${{ needs.quality.result }})." >&2
+          exit 1
+
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
 
       - uses: ./.github/actions/native-binding-cache
+        if: steps.gate.outputs.run == 'true'
         id: native-cache
         with:
           target: x86_64-unknown-linux-gnu
           profile: debug
 
       - uses: ./.github/actions/ci-build-native-linux
+        if: steps.gate.outputs.run == 'true'
         with:
           target: x86_64-unknown-linux-gnu
           profile: debug
@@ -212,20 +232,12 @@ jobs:
       always() &&
       !cancelled() &&
       needs.validate-package-lock.result == 'success' &&
-      needs.quality.result == 'success' &&
-      (needs.compile-native.result == 'success' || needs.compile-native.result == 'skipped') &&
-      (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
       needs.compile-native.result != 'failure' &&
-      needs.build-ts.result != 'failure' &&
-      (
-        needs.changes.outputs.native == 'true' ||
-        needs.changes.outputs.typescript == 'true' ||
-        needs.changes.outputs.helpers == 'true' ||
-        needs.changes.outputs.examples == 'true' ||
-        needs.changes.outputs.workflows == 'true'
-      )
+      needs.build-ts.result != 'failure'
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
+      skip: ${{ needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true' && needs.changes.outputs.workflows != 'true' }}
+      quality_result: ${{ needs.quality.result }}
       require_binding_artifact: ${{ needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows == 'true' }}
     secrets: inherit

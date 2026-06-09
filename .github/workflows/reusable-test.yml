@@ -7,6 +7,14 @@ on:
         description: Bash script path under repo root
         type: string
         required: true
+      skip:
+        description: When true, exit immediately (docs-only / no code changes) — job still succeeds for required checks
+        type: boolean
+        default: false
+      quality_result:
+        description: Result of the Typecheck & lint job (success required when skip is false)
+        type: string
+        default: skipped
       binding_artifact:
         description: Uploaded .node artifact from compile/build-linux (skip download when empty)
         type: string
@@ -28,7 +36,18 @@ jobs:
       TURN_AVAILABLE: '1'
       CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
     steps:
+      - name: Skip integration tests (docs-only / no code changes)
+        if: inputs.skip
+        run: echo "::notice::Skipping integration tests — no code changes in this PR."
+
+      - name: Require quality passed before integration tests
+        if: ${{ !inputs.skip && inputs.quality_result != 'success' }}
+        run: |
+          echo "Typecheck & lint must pass before integration tests (quality=${{ inputs.quality_result }})." >&2
+          exit 1
+
       - name: Prepare workspace
+        if: ${{ !inputs.skip }}
         run: |
           if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
             docker run --rm \
@@ -38,10 +57,11 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        if: ${{ !inputs.skip }}
 
       - name: Download native binding artifact
         id: binding-artifact
-        if: inputs.binding_artifact != ''
+        if: ${{ !inputs.skip && inputs.binding_artifact != '' }}
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.binding_artifact }}
@@ -51,12 +71,13 @@ jobs:
       # GHA cache restore often misses in workflow_call jobs even after a hit in the
       # caller (compile-native). Artifact download is the reliable same-run path.
       - uses: ./.github/actions/native-binding-cache
-        if: steps.binding-artifact.outcome != 'success'
+        if: ${{ !inputs.skip && steps.binding-artifact.outcome != 'success' }}
         with:
           target: x86_64-unknown-linux-gnu
           profile: ${{ inputs.binding_profile }}
 
       - name: Verify native binding in workspace
+        if: ${{ !inputs.skip }}
         run: |
           shopt -s nullglob
           files=(packages/bindings/*.node)
@@ -67,11 +88,13 @@ jobs:
           echo "Native binding ready: $(basename "${files[0]}")"
 
       - uses: ./.github/actions/ci-cache-ts-dist
+        if: ${{ !inputs.skip }}
         id: ts-cache
         with:
           profile: release
 
       - uses: ./.github/actions/ci-run-integration-tests
+        if: ${{ !inputs.skip }}
         with:
           test_script: ${{ inputs.test_script }}
           ci_image: ${{ env.CI_IMAGE }}

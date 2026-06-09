@@ -19,9 +19,9 @@ alwaysApply: false
 | Detect changes | path filters (`native`, `typescript`, `workflows`) |
 | Typecheck & lint | `run-pr-quality.sh` — typecheck, lint, helpers vitest (no dist build) |
 | Build TypeScript | `build-ts-workspace.sh` + `ci-cache-ts-dist` (parallel with compile-native) |
-| Compile native | debug `.node` when `native` or `workflows` change; cache key = sources + `index.d.ts`; verify NAPI surface before skip |
+| Compile native | **Always runs**; compiles debug `.node` only when `native` or `workflows` change — otherwise instant skip (required-check friendly). Markdown (`**/*.md`) excluded from path filters. |
 | Build TypeScript | `npm run build:ts` — **only** when `typescript` or `workflows` paths change |
-| Test | restores native + TS dist caches; runs cargo + npm tests (fallback compile/build on cache miss) |
+| Test | **Always runs**; integration tests only when a code path filter matched — otherwise instant skip via `reusable-test.yml` `skip` input |
 
 `compile-native` and `build-ts` run **in parallel** after quality passes on GitHub-hosted runners; on **self-hosted** runners `build-ts` waits for `compile-native` because both share one workspace directory. Rust-only PRs with no TS/workflow/native changes skip both compile and TS build. Vitest imports `src/` directly, but `build:ts` still validates publishable output when TS changes.
 

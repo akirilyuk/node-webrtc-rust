@@ -71,7 +71,9 @@ Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with three
 | `examples`   | `examples/**` (Sherpa roundtrip scripts, eslint on example TS, typecheck + E2E)       |
 | `workflows`  | `.github/**`, `docker/ci/**`                                                          |
 
-If none match, the whole workflow is skipped.
+If none match, **Compile native** and **Test** still run as required checks but exit immediately (success, no work). Other jobs (`quality`, `build-ts`) remain skipped.
+
+Markdown-only edits (`**/*.md`) do not match the code path filters — README changes under `crates/**` or `examples/**` no longer trigger native compile or integration tests.
 
 ### 2. Package-lock optional bindings (always)
 
@@ -92,7 +94,9 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 
 ### 4. Compile native
 
-- **When:** `native` OR `workflows` (skipped on TS-only PRs)
+- **Always runs** on every PR (for branch-protection required checks).
+- **When:** `native` OR `workflows` — otherwise the job succeeds immediately after a skip notice (no checkout, no container compile).
+- **When compiling:** requires **Typecheck & lint** success.
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
 - **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) — exact key from [`native-binding-cache-key.sh`](native-binding-cache-key.sh) + [`verify-native-binding-surface.mjs`](verify-native-binding-surface.mjs); skips `napi build` only when valid
@@ -112,7 +116,9 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 
 ### 6. Test
 
-- **When:** quality success; compile-native and build-ts success or skipped; at least one path filter matched
+- **Always runs** on every PR (for branch-protection required checks).
+- **When:** no code path filters matched — succeeds immediately (`skip: true` in [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)).
+- **When code changed:** requires **Typecheck & lint** success; runs [`run-pr-integration.sh`](run-pr-integration.sh) in the reusable workflow.
 - **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 

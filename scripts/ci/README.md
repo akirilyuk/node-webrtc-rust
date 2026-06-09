@@ -8,14 +8,14 @@ Human-readable reference for GitHub Actions workflows, reusable jobs, caches, an
 
 ## Overview
 
-| Workflow                | File                                                                         | Trigger                          | Purpose                                                            |
-| ----------------------- | ---------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------ |
-| **Build & Test (PR)**   | [`.github/workflows/build.yml`](../../.github/workflows/build.yml)           | PR → `main`                      | Path-filtered quality, native compile, TS build, integration tests |
-| **Build & Test (main)** | [`.github/workflows/build-main.yml`](../../.github/workflows/build-main.yml) | Push → `main`                    | Full release native matrix + full test suite                       |
-| **Release**             | [`.github/workflows/release.yml`](../../.github/workflows/release.yml)       | Tag `release/*`                  | Release matrix → tests → npm publish → GitHub Release              |
+| Workflow                | File                                                                         | Trigger         | Purpose                                                            |
+| ----------------------- | ---------------------------------------------------------------------------- | --------------- | ------------------------------------------------------------------ |
+| **Build & Test (PR)**   | [`.github/workflows/build.yml`](../../.github/workflows/build.yml)           | PR → `main`     | Path-filtered quality, native compile, TS build, integration tests |
+| **Build & Test (main)** | [`.github/workflows/build-main.yml`](../../.github/workflows/build-main.yml) | Push → `main`   | Full release native matrix + full test suite                       |
+| **Release**             | [`.github/workflows/release.yml`](../../.github/workflows/release.yml)       | Tag `release/*` | Release matrix → tests → npm publish → GitHub Release              |
 
 Every workflow above starts with **`validate-package-lock`** (no path filter) — fails in seconds if `package-lock.json` has stub optional `@node-webrtc-rust/bindings-*` entries. Local: `npm run ci:validate:package-lock`.
-| **CI Docker image**     | [`.github/workflows/ci-image.yml`](../../.github/workflows/ci-image.yml)     | Push → `ci`, `workflow_dispatch` | Publish `ghcr.io/.../ci-build:latest`                              |
+| **CI Docker image** | [`.github/workflows/ci-image.yml`](../../.github/workflows/ci-image.yml) | Push → `ci`, `workflow_dispatch` | Publish `ghcr.io/.../ci-build:latest` |
 
 Reusable workflows (called via `workflow_call`, not triggered directly):
 
@@ -61,19 +61,24 @@ flowchart TD
 
 ### 1. Detect changes
 
-Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with three outputs:
+Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with these outputs:
 
-| Output       | Paths (summary)                                                                       |
-| ------------ | ------------------------------------------------------------------------------------- |
-| `native`     | `Cargo.*`, `crates/**`, `packages/bindings/**` (excluding generated `.node` / loader) |
-| `typescript` | `packages/sdk/**`, `packages/signaling/**`, lockfile, tsconfigs, eslint, prettier     |
-| `helpers`    | `packages/helpers/**`, `examples/voice-agent-local-sherpa-multi-client/**`            |
-| `examples`   | `examples/**` (Sherpa roundtrip scripts, eslint on example TS, typecheck + E2E)       |
-| `workflows`  | `.github/**`, `docker/ci/**`                                                          |
+| Output             | Paths (summary)                                                                                      |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `native`           | `Cargo.*`, `crates/**`, `packages/bindings/**` (excluding generated `.node` / loader and `**/*.md`)  |
+| `typescript`       | `packages/sdk/**`, `packages/signaling/**`, lockfile, tsconfigs, eslint, prettier (excluding `*.md`) |
+| `helpers`          | `packages/helpers/**`, `examples/voice-agent-local-sherpa-multi-client/**` (excluding `*.md`)        |
+| `examples`         | `examples/**` (excluding `*.md`)                                                                     |
+| `workflows`        | `.github/**`, `docker/ci/**`, `scripts/ci/**` (excluding `*.md`) — **quality** only (cheap)          |
+| `workflows_native` | Native compile actions, `native-binding-cache`, `docker/ci/**`, cache-key + surface verify scripts   |
+| `workflows_test`   | Integration-test action, `reusable-test.yml`, `run-pr-integration.sh`, Sherpa CI scripts             |
+| `workflows_ts`     | `ci-cache-ts-dist`, `build-ts-workspace.sh`, TS dist cache key / release TS verify scripts           |
 
-If none match, **Compile native** and **Test** still run as required checks but exit immediately (success, no work). Other jobs (`quality`, `build-ts`) remain skipped.
+If no **code** filter matches (`native`, `typescript`, `helpers`, `examples`), **Compile native** and **Test** still run as required checks but exit immediately (success, skip notice). **Typecheck & lint** and **Build TypeScript** stay skipped unless their own filters match.
 
-Markdown-only edits (`**/*.md`) do not match the code path filters — README changes under `crates/**` or `examples/**` no longer trigger native compile or integration tests.
+Markdown-only edits (`**/*.md`) do not match code path filters — README changes under `crates/**` or `examples/**` no longer trigger native compile or integration tests.
+
+CI-only PRs that touch only `.github/workflows/build.yml` skip gates (no native/test/TS-build paths) also skip heavy jobs while **Typecheck & lint** still runs via the broad `workflows` filter.
 
 ### 2. Package-lock optional bindings (always)
 
@@ -90,12 +95,12 @@ Markdown-only edits (`**/*.md`) do not match the code path filters — README ch
 
 Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
 
-**Compile native** runs when `native` or `workflows` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
+**Compile native** runs when `native` or `workflows_native` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
 
 ### 4. Compile native
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **When:** `native` OR `workflows` — otherwise the job succeeds immediately after a skip notice (no checkout, no container compile).
+- **When:** `native` OR `workflows_native` — otherwise the job succeeds immediately after a skip notice (no checkout, no compile).
 - **When compiling:** requires **Typecheck & lint** success.
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
@@ -106,7 +111,7 @@ Populates the shared native cache used by the test job.
 
 ### 5. Build TypeScript
 
-- **When:** `typescript` OR `helpers` OR `workflows` (skipped on Rust-only PRs)
+- **When:** `typescript` OR `helpers` OR `examples` OR `workflows_ts` (skipped on Rust-only PRs and CI skip-gate-only PRs)
 - **Needs:** quality only (runs **in parallel** with compile-native — TS build does not need `.node`)
 - **Runner:** `self-hosted` + `setup-node`
 - **Cache:** [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) → `packages/sdk/dist`, `packages/signaling/dist`, `packages/helpers/dist`
@@ -117,8 +122,8 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 ### 6. Test
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **When:** no code path filters matched — succeeds immediately (`skip: true` in [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)).
-- **When code changed:** requires **Typecheck & lint** success; runs [`run-pr-integration.sh`](run-pr-integration.sh) in the reusable workflow.
+- **When:** no code or `workflows_test` filter matched — succeeds immediately (`skip: true` in [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)).
+- **When code or test-CI changed:** requires **Typecheck & lint** success; runs [`run-pr-integration.sh`](run-pr-integration.sh) in the reusable workflow.
 - **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 
@@ -299,33 +304,33 @@ Used by: PR compile-native, release Linux matrix, integration test container.
 
 ## Scripts reference
 
-| Script                                                         | Used by                                          | What it runs                                                                                                                                                     |
-| -------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`bump-workspace-versions.sh`](bump-workspace-versions.sh) | Release prep (`SKIP_LOCK_REFRESH=1`), post-release sync | Bump workspace `package.json` / pins; optional lock refresh + validate |
-| [`refresh-package-lock-optional-bindings.sh`](refresh-package-lock-optional-bindings.sh) | After publish, via bump or post-release sync | Prune stub optional bindings + `npm install` |
-| [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh) | `validate-package-lock` job, before every `npm ci` | Fail fast on stub optional `@node-webrtc-rust/bindings-*` lock entries (`Invalid Version:`) |
-| [`post-release-sync-main-package-lock.sh`](post-release-sync-main-package-lock.sh) | Release `sync-main-package-lock` job after publish | Bump + refresh lock from npm; workflow opens PR to `main` |
-| [`run-pr-quality.sh`](run-pr-quality.sh)                       | PR quality job                                   | lock validate, `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest**                                  |
-| [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)       | quality job, `npm run test:helpers`              | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)                                                                                           |
-| [`run-pre-push-gates.sh`](run-pre-push-gates.sh)               | `npm run ci:pre-push`                            | eslint + build-ts + helpers vitest when scoped; Sherpa **typecheck + Vitest + E2E** when example/speech changes                                                  |
-| [`install-pre-push-hook.sh`](install-pre-push-hook.sh)         | one-time per clone                               | installs `.git/hooks/pre-push` → `npm run ci:pre-push`                                                                                                           |
-| [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)       | alias                                            | → `run-pre-push-gates.sh`                                                                                                                                        |
-| [`plan-native-builds.sh`](plan-native-builds.sh)               | main + release plan job                          | Per-target cache hash check → dynamic build matrices                                                                                                             |
-| [`check-main-ci-success.sh`](check-main-ci-success.sh)         | release plan job                                 | Skip release test when main validated same SHA                                                                                                                   |
-| [`list-release-targets.sh`](list-release-targets.sh)           | plan / stage scripts                             | Canonical six release triples                                                                                                                                    |
-| [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh) | Local release publish TS parity                  | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh`                                                                                                 |
-| [`build-ts-workspace.sh`](build-ts-workspace.sh)               | PR build-ts + integration fallback               | sdk core → signaling → full sdk                                                                                                                                  |
-| [`run-pr-integration.sh`](run-pr-integration.sh)               | PR test job                                      | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test (incl. speech), optional build:ts, npm test, [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh) |
-| [`run-sherpa-example-ci.sh`](run-sherpa-example-ci.sh)         | quality (`typecheck`, `vitest`) + test (`e2e`)   | Sherpa `tsc`; **all** `test:roundtrip-counting` Vitest; **all** `start:roundtrip-*` E2E after model download                                                     |
-| [`run-sherpa-roundtrip-e2e.sh`](run-sherpa-roundtrip-e2e.sh)   | via `run-sherpa-example-ci.sh e2e`               | CI pass streams `[speech]` events; `[voice-debug]` off unless re-run on failure                                                                                  |
-| [`ci-step.sh`](ci-step.sh)                                     | integration + Sherpa E2E                         | `[ci-step] START/OK/FAIL` banners; optional `--timeout` via [`run-with-timeout.sh`](run-with-timeout.sh)                                                         |
-| [`run-with-timeout.sh`](run-with-timeout.sh)                   | via `ci-step.sh`                                 | GNU `timeout` / `gtimeout` wall-clock cap per step                                                                                                               |
-| [`run-pr-test-job-docker.sh`](run-pr-test-job-docker.sh)       | `npm run ci:verify:pr-test:docker`               | **Optional** coturn + ci-build container → `run-pr-integration.sh`                                                                                               |
-| [`run-pr-tests-full.sh`](run-pr-tests-full.sh)                 | `npm run ci:verify:pr-full`                      | quality + integration (host)                                                                                                                                     |
-| [`run-pr-integration.sh`](run-pr-integration.sh)               | main + release test                              | integration only (after quality job)                                                                                                                             |
-| [`verify-checks.sh`](verify-checks.sh)                         | `npm run ci:verify:checks*`                      | Local mirror of quality + integration                                                                                                                            |
-| [`ensure-workspace-bindings.sh`](ensure-workspace-bindings.sh) | via [`npm-ci-workspace.sh`](npm-ci-workspace.sh) | Remove nested registry `bindings` copies so `npm test` loads workspace `.node`                                                                                   |
-| [`verify-linux.sh`](verify-linux.sh)                           | `npm run ci:verify:linux`                        | Local release cross-builds in Docker                                                                                                                             |
+| Script                                                                                     | Used by                                                 | What it runs                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`bump-workspace-versions.sh`](bump-workspace-versions.sh)                                 | Release prep (`SKIP_LOCK_REFRESH=1`), post-release sync | Bump workspace `package.json` / pins; optional lock refresh + validate                                                                                           |
+| [`refresh-package-lock-optional-bindings.sh`](refresh-package-lock-optional-bindings.sh)   | After publish, via bump or post-release sync            | Prune stub optional bindings + `npm install`                                                                                                                     |
+| [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh) | `validate-package-lock` job, before every `npm ci`      | Fail fast on stub optional `@node-webrtc-rust/bindings-*` lock entries (`Invalid Version:`)                                                                      |
+| [`post-release-sync-main-package-lock.sh`](post-release-sync-main-package-lock.sh)         | Release `sync-main-package-lock` job after publish      | Bump + refresh lock from npm; workflow opens PR to `main`                                                                                                        |
+| [`run-pr-quality.sh`](run-pr-quality.sh)                                                   | PR quality job                                          | lock validate, `npm ci`, **`fix-rollup-native.sh`**, typecheck, lint, **`run-helpers-unit-tests.sh`**, Sherpa typecheck + **roundtrip Vitest**                   |
+| [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh)                                   | quality job, `npm run test:helpers`                     | vitest `@node-webrtc-rust/helpers` + multi-client example (no `.node`)                                                                                           |
+| [`run-pre-push-gates.sh`](run-pre-push-gates.sh)                                           | `npm run ci:pre-push`                                   | eslint + build-ts + helpers vitest when scoped; Sherpa **typecheck + Vitest + E2E** when example/speech changes                                                  |
+| [`install-pre-push-hook.sh`](install-pre-push-hook.sh)                                     | one-time per clone                                      | installs `.git/hooks/pre-push` → `npm run ci:pre-push`                                                                                                           |
+| [`run-if-helpers-changed.sh`](run-if-helpers-changed.sh)                                   | alias                                                   | → `run-pre-push-gates.sh`                                                                                                                                        |
+| [`plan-native-builds.sh`](plan-native-builds.sh)                                           | main + release plan job                                 | Per-target cache hash check → dynamic build matrices                                                                                                             |
+| [`check-main-ci-success.sh`](check-main-ci-success.sh)                                     | release plan job                                        | Skip release test when main validated same SHA                                                                                                                   |
+| [`list-release-targets.sh`](list-release-targets.sh)                                       | plan / stage scripts                                    | Canonical six release triples                                                                                                                                    |
+| [`verify-release-publish-ts.sh`](verify-release-publish-ts.sh)                             | Local release publish TS parity                         | `npm ci --ignore-scripts`, version bump, `build-ts-workspace.sh`                                                                                                 |
+| [`build-ts-workspace.sh`](build-ts-workspace.sh)                                           | PR build-ts + integration fallback                      | sdk core → signaling → full sdk                                                                                                                                  |
+| [`run-pr-integration.sh`](run-pr-integration.sh)                                           | PR test job                                             | [`npm-ci-workspace.sh`](npm-ci-workspace.sh), cargo test (incl. speech), optional build:ts, npm test, [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh) |
+| [`run-sherpa-example-ci.sh`](run-sherpa-example-ci.sh)                                     | quality (`typecheck`, `vitest`) + test (`e2e`)          | Sherpa `tsc`; **all** `test:roundtrip-counting` Vitest; **all** `start:roundtrip-*` E2E after model download                                                     |
+| [`run-sherpa-roundtrip-e2e.sh`](run-sherpa-roundtrip-e2e.sh)                               | via `run-sherpa-example-ci.sh e2e`                      | CI pass streams `[speech]` events; `[voice-debug]` off unless re-run on failure                                                                                  |
+| [`ci-step.sh`](ci-step.sh)                                                                 | integration + Sherpa E2E                                | `[ci-step] START/OK/FAIL` banners; optional `--timeout` via [`run-with-timeout.sh`](run-with-timeout.sh)                                                         |
+| [`run-with-timeout.sh`](run-with-timeout.sh)                                               | via `ci-step.sh`                                        | GNU `timeout` / `gtimeout` wall-clock cap per step                                                                                                               |
+| [`run-pr-test-job-docker.sh`](run-pr-test-job-docker.sh)                                   | `npm run ci:verify:pr-test:docker`                      | **Optional** coturn + ci-build container → `run-pr-integration.sh`                                                                                               |
+| [`run-pr-tests-full.sh`](run-pr-tests-full.sh)                                             | `npm run ci:verify:pr-full`                             | quality + integration (host)                                                                                                                                     |
+| [`run-pr-integration.sh`](run-pr-integration.sh)                                           | main + release test                                     | integration only (after quality job)                                                                                                                             |
+| [`verify-checks.sh`](verify-checks.sh)                                                     | `npm run ci:verify:checks*`                             | Local mirror of quality + integration                                                                                                                            |
+| [`ensure-workspace-bindings.sh`](ensure-workspace-bindings.sh)                             | via [`npm-ci-workspace.sh`](npm-ci-workspace.sh)        | Remove nested registry `bindings` copies so `npm test` loads workspace `.node`                                                                                   |
+| [`verify-linux.sh`](verify-linux.sh)                                                       | `npm run ci:verify:linux`                               | Local release cross-builds in Docker                                                                                                                             |
 
 ---
 

@@ -48,6 +48,9 @@ jobs:
       helpers: ${{ steps.filter.outputs.helpers }}
       examples: ${{ steps.filter.outputs.examples }}
       workflows: ${{ steps.filter.outputs.workflows }}
+      workflows_native: ${{ steps.filter.outputs.workflows_native }}
+      workflows_test: ${{ steps.filter.outputs.workflows_test }}
+      workflows_ts: ${{ steps.filter.outputs.workflows_ts }}
     steps:
       - name: Prepare workspace
         run: |
@@ -96,6 +99,27 @@ jobs:
             workflows:
               - '.github/**'
               - 'docker/ci/**'
+              - 'scripts/ci/**'
+              - '!**/*.md'
+            workflows_native:
+              - '.github/actions/ci-build-native-*'
+              - '.github/actions/native-binding-cache/**'
+              - 'docker/ci/**'
+              - 'scripts/ci/native-binding-cache-key.sh'
+              - 'scripts/ci/verify-native-binding-surface.mjs'
+            workflows_test:
+              - '.github/actions/ci-run-integration-tests/**'
+              - '.github/workflows/reusable-test.yml'
+              - 'scripts/ci/run-pr-integration.sh'
+              - 'scripts/ci/run-pr-tests-full.sh'
+              - 'scripts/ci/run-sherpa-example-ci.sh'
+              - 'scripts/ci/run-sherpa-roundtrip-e2e.sh'
+              - 'scripts/ci/run-pr-test-job-docker.sh'
+            workflows_ts:
+              - '.github/actions/ci-cache-ts-dist/**'
+              - 'scripts/ci/build-ts-workspace.sh'
+              - 'scripts/ci/verify-release-publish-ts.sh'
+              - 'scripts/ci/ts-dist-cache-key.sh'
 
   quality:
     name: Typecheck & lint
@@ -143,14 +167,14 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Skip when no native or workflow changes
+      - name: Skip when no native or native-CI changes
         id: gate
         run: |
-          if [[ "${{ needs.changes.outputs.native }}" == "true" || "${{ needs.changes.outputs.workflows }}" == "true" ]]; then
+          if [[ "${{ needs.changes.outputs.native }}" == "true" || "${{ needs.changes.outputs.workflows_native }}" == "true" ]]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping native compile — no Rust/bindings/workflow changes in this PR."
+            echo "::notice::Skipping native compile — no Rust/bindings or native-build CI changes in this PR."
           fi
 
       - name: Require quality passed before native compile
@@ -193,7 +217,7 @@ jobs:
         needs.changes.outputs.typescript == 'true' ||
         needs.changes.outputs.helpers == 'true' ||
         needs.changes.outputs.examples == 'true' ||
-        needs.changes.outputs.workflows == 'true'
+        needs.changes.outputs.workflows_ts == 'true'
       )
     runs-on: self-hosted
     steps:
@@ -237,7 +261,7 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
-      skip: ${{ needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true' && needs.changes.outputs.workflows != 'true' }}
+      skip: ${{ needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true' && needs.changes.outputs.workflows_test != 'true' }}
       quality_result: ${{ needs.quality.result }}
-      require_binding_artifact: ${{ needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows == 'true' }}
+      require_binding_artifact: ${{ needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows_native == 'true' }}
     secrets: inherit

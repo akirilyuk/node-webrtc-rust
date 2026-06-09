@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       skip:
-        description: When true, exit immediately (docs-only / no code changes) — job still succeeds for required checks
+        description: When true, exit immediately (docs-only / CI-only skip gates) — job still succeeds for required checks
         type: boolean
         default: false
       quality_result:
@@ -36,9 +36,9 @@ jobs:
       TURN_AVAILABLE: '1'
       CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
     steps:
-      - name: Skip integration tests (docs-only / no code changes)
+      - name: Skip integration tests (no code or test-CI changes)
         if: inputs.skip
-        run: echo "::notice::Skipping integration tests — no code changes in this PR."
+        run: echo "::notice::Skipping integration tests — no code or integration-test CI changes in this PR."
 
       - name: Require quality passed before integration tests
         if: ${{ !inputs.skip && inputs.quality_result != 'success' }}

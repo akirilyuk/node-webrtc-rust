@@ -213,17 +213,32 @@ jobs:
     if: |
       always() &&
       !cancelled() &&
-      needs.validate-package-lock.result == 'success' &&
-      needs.quality.result == 'success' &&
-      (
-        needs.changes.outputs.typescript == 'true' ||
-        needs.changes.outputs.helpers == 'true' ||
-        needs.changes.outputs.examples == 'true' ||
-        needs.changes.outputs.workflows_ts == 'true'
-      )
+      needs.validate-package-lock.result == 'success'
     runs-on: self-hosted
+    outputs:
+      ran_build: ${{ steps.gate.outputs.run }}
     steps:
+      - name: Skip when no TypeScript or TS-CI changes
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.typescript }}" == "true" || \
+                "${{ needs.changes.outputs.helpers }}" == "true" || \
+                "${{ needs.changes.outputs.examples }}" == "true" || \
+                "${{ needs.changes.outputs.workflows_ts }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping TypeScript build — no TS/examples or TS-build CI changes in this PR."
+          fi
+
+      - name: Require quality passed before TypeScript build
+        if: steps.gate.outputs.run == 'true' && needs.quality.result != 'success'
+        run: |
+          echo "Typecheck & lint must pass before TypeScript build (quality=${{ needs.quality.result }})." >&2
+          exit 1
+
       - name: Prepare workspace
+        if: steps.gate.outputs.run == 'true'
         run: |
           if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
             docker run --rm \
@@ -233,18 +248,21 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
 
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.run == 'true'
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: package-lock.json
 
       - uses: ./.github/actions/ci-cache-ts-dist
+        if: steps.gate.outputs.run == 'true'
         id: ts-cache
 
       - name: Build TypeScript packages
-        if: steps.ts-cache.outputs.cache-hit != 'true'
+        if: steps.gate.outputs.run == 'true' && steps.ts-cache.outputs.cache-hit != 'true'
         run: |
           bash scripts/ci/validate-package-lock-optional-bindings.sh
           npm ci
@@ -263,8 +281,10 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
-      skip: ${{ (needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true' && needs.changes.outputs.workflows_test != 'true') && 'true' || 'false' }}
+      skip: ${{ (needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true') && 'true' || 'false' }}
       quality_result: ${{ needs.quality.result }}
       binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'bindings-x86_64-unknown-linux-gnu' || '' }}
       require_binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'true' || 'false' }}
+      needs_native_binding: ${{ (needs.changes.outputs.native == 'true' || needs.changes.outputs.typescript == 'true' || needs.changes.outputs.helpers == 'true' || needs.changes.outputs.examples == 'true') && 'true' || 'false' }}
+      needs_ts_dist: ${{ (needs.changes.outputs.typescript == 'true' || needs.changes.outputs.helpers == 'true' || needs.changes.outputs.examples == 'true' || needs.changes.outputs.workflows_ts == 'true' || needs.changes.outputs.native == 'true') && 'true' || 'false' }}
     secrets: inherit

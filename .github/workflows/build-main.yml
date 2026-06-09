@@ -188,6 +188,7 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
+      binding_artifact: bindings-x86_64-unknown-linux-gnu
       binding_profile: release
-      require_binding_artifact: true
+      require_binding_artifact: 'true'
     secrets: inherit

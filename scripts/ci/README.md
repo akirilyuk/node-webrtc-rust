@@ -111,7 +111,9 @@ Populates the shared native cache used by the test job.
 
 ### 5. Build TypeScript
 
-- **When:** `typescript` OR `helpers` OR `examples` OR `workflows_ts` (skipped on Rust-only PRs and CI skip-gate-only PRs)
+- **Always runs** on every PR (for branch-protection required checks).
+- **When:** `typescript` OR `helpers` OR `examples` OR `workflows_ts` — otherwise the job succeeds immediately after a skip notice (no checkout, setup-node, or cache).
+- **When building:** requires **Typecheck & lint** success.
 - **Needs:** quality only (runs **in parallel** with compile-native — TS build does not need `.node`)
 - **Runner:** `self-hosted` + `setup-node`
 - **Cache:** [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) → `packages/sdk/dist`, `packages/signaling/dist`, `packages/helpers/dist`
@@ -122,8 +124,8 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 ### 6. Test
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **When:** no code or `workflows_test` filter matched — succeeds immediately (`skip: true` in [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)).
-- **When code or test-CI changed:** requires **Typecheck & lint** success; runs [`run-pr-integration.sh`](run-pr-integration.sh) in the reusable workflow.
+- **When:** no **code** path filter matched (`native`, `typescript`, `helpers`, `examples`) — succeeds immediately (`skip: 'true'` in [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)). Test-CI-only edits (e.g. `reusable-test.yml` skip gates) do not run integration tests.
+- **When code changed:** requires **Typecheck & lint** success; restores `.node` / TS `dist/` only when needed; runs [`run-pr-integration.sh`](run-pr-integration.sh).
 - **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 

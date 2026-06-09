@@ -531,19 +531,20 @@ After a local publish, run `bash scripts/ci/post-release-sync-main-package-lock.
 
 The SDK mirrors browser **WebRTC 1.0** where it matters for Node↔browser audio and data channels. Full gap analysis (supported / partial / missing) lives in **[`docs/webrtc-api-parity.md`](docs/webrtc-api-parity.md)** — update that doc when adding or changing public APIs.
 
-High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceivers are in place for Node↔browser audio. **Video**, **simulcast**, **DTMF**, and **`MediaDevices`** are planned for **v0.4**; see roadmap below.
+High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceivers are in place for Node↔browser audio. **Video**, **simulcast**, **DTMF**, and deeper browser alignment are on the [outlook roadmap](ROADMAP.md#w3c-webrtc-parity).
 
 ---
 
 ## Roadmap
 
-| Version    | Focus                                                                                   |
-| ---------- | --------------------------------------------------------------------------------------- |
-| **v0.1.0** | PeerConnection, DataChannels, audio tracks, STUN/TURN                                   |
-| **v0.2.x** | Conference MCU, API parity P0–P1, Unified Plan transceivers                             |
-| **v0.3.0** | **Voice agents:** `VoiceAgent`, VAD, barge-in, six STT/TTS vendors, speech event stream |
-| **v0.3.x** | Live vendor HTTP/WS, Silero VAD default, Pipeline A (realtime vendor WS)                |
-| **v0.4.0** | Video, simulcast, DTMF, conference video compositing                                    |
+Planned work (no version targets) lives in **[`ROADMAP.md`](ROADMAP.md)**. Summary:
+
+| Area | Direction |
+| ---- | --------- |
+| **Observability** | OpenTelemetry metrics with Rust + Node configuration; separate OTel verbosity levels; scoped logs (WebRTC, voice, conference, …) instead of one global debug flag |
+| **WebRTC** | More [W3C WebRTC parity](docs/webrtc-api-parity.md) (video, simulcast, DTMF, remaining P2 gaps) |
+| **Conference** | Video mixing / MCU-style compositing alongside audio `MixGraph` |
+| **Integrations** | Discord voice channel connectivity |
 
 ---
 

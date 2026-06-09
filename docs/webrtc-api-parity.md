@@ -304,4 +304,5 @@ When adding APIs, cover:
 
 - [SDK README](../packages/sdk/README.md)
 - [CI / release](../scripts/ci/README.md)
-- [Repository roadmap](../README.md#roadmap)
+- [Repository roadmap (outlook)](../ROADMAP.md)
+- [README roadmap summary](../README.md#roadmap)

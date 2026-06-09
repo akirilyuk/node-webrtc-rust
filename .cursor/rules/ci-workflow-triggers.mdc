@@ -16,11 +16,11 @@ alwaysApply: false
 | Job | Purpose |
 |---|---|
 | **Package-lock optional bindings** | **Always runs** — `validate-package-lock-optional-bindings.sh` (no path filter) |
-| Detect changes | path filters (`native`, `typescript`, `helpers`, `examples`, `workflows`, `workflows_native`, `workflows_test`, `workflows_ts`) |
-| Typecheck & lint | `run-pr-quality.sh` — when any code filter OR broad `workflows` (`.github/**`, `scripts/ci/**`, excluding `*.md`) |
+| Detect changes | path filters (`code`, `native`, `typescript`, `helpers`, `examples`, `workflows_*`) |
+| Typecheck & lint | **Always runs**; `run-pr-quality.sh` only when `code` or `workflows` — otherwise instant skip |
 | Build TypeScript | `build-ts-workspace.sh` + `ci-cache-ts-dist` — when TS/examples paths OR `workflows_ts` |
 | Compile native | **Always runs**; compiles debug `.node` only when `native` or `workflows_native` — otherwise instant skip (required-check friendly). Markdown (`**/*.md`) excluded from code filters. |
-| Test | **Always runs**; integration tests when any **code** path filter matched — otherwise instant skip via `reusable-test.yml` `skip` input |
+| Test | **Always runs**; integration tests only when `code` — otherwise instant skip via `reusable-test.yml` `skip: 'true'` |
 | Build TypeScript | **Always runs**; builds `dist/` only when TS/examples paths OR `workflows_ts` — otherwise instant skip |
 
 `compile-native` and `build-ts` run **in parallel** after quality passes on GitHub-hosted runners; on **self-hosted** runners `build-ts` waits for `compile-native` because both share one workspace directory. Docs-only and CI skip-gate-only PRs skip compile, TS build, and integration tests while required checks still go green.

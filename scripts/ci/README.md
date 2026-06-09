@@ -74,11 +74,9 @@ Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with these
 | `workflows_test`   | Integration-test action, `reusable-test.yml`, `run-pr-integration.sh`, Sherpa CI scripts             |
 | `workflows_ts`     | `ci-cache-ts-dist`, `build-ts-workspace.sh`, TS dist cache key / release TS verify scripts           |
 
-If no **code** filter matches (`native`, `typescript`, `helpers`, `examples`), **Compile native** and **Test** still run as required checks but exit immediately (success, skip notice). **Typecheck & lint** and **Build TypeScript** stay skipped unless their own filters match.
+If `code` is false (docs-only), **Typecheck & lint**, **Compile native**, **Build TypeScript**, and **Test** still run as required checks but exit immediately (skip notice). No checkout, setup-node, artifact download, or integration tests.
 
-Markdown-only edits (`**/*.md`) do not match code path filters — README changes under `crates/**` or `examples/**` no longer trigger native compile or integration tests.
-
-CI-only PRs that touch only `.github/workflows/build.yml` skip gates (no native/test/TS-build paths) also skip heavy jobs while **Typecheck & lint** still runs via the broad `workflows` filter.
+Markdown under `docs/**` and any `**/*.md` file do not set `code=true` — README edits under `crates/**` or `examples/**` no longer trigger heavy jobs.
 
 ### 2. Package-lock optional bindings (always)
 
@@ -88,7 +86,9 @@ CI-only PRs that touch only `.github/workflows/build.yml` skip gates (no native/
 
 ### 3. Typecheck & lint
 
-- **When:** `native` OR `typescript` OR `helpers` OR `examples` OR `workflows` (and package-lock job succeeded)
+- **Always runs** on every PR (for branch-protection required checks).
+- **When:** `code` OR `workflows` — otherwise the job succeeds immediately after a skip notice (no checkout or setup-node).
+- **When running:** [`run-pr-quality.sh`](run-pr-quality.sh) on self-hosted runner.
 - **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
 - **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh), `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
 - Runs [`build-ts-workspace.sh`](build-ts-workspace.sh) inside [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh) when sdk/signaling/helpers `dist/` is missing (fresh CI checkout). Job 4 still builds once for Test cache.

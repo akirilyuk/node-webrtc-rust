@@ -43,6 +43,7 @@ jobs:
     name: Detect changes
     runs-on: self-hosted
     outputs:
+      code: ${{ steps.filter.outputs.code }}
       native: ${{ steps.filter.outputs.native }}
       typescript: ${{ steps.filter.outputs.typescript }}
       helpers: ${{ steps.filter.outputs.helpers }}
@@ -70,6 +71,10 @@ jobs:
         with:
           token: ${{ github.token }}
           filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
             native:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -125,16 +130,26 @@ jobs:
     name: Typecheck & lint
     needs: [changes, validate-package-lock]
     if: |
-      needs.validate-package-lock.result == 'success' && (
-        needs.changes.outputs.native == 'true' ||
-        needs.changes.outputs.typescript == 'true' ||
-        needs.changes.outputs.helpers == 'true' ||
-        needs.changes.outputs.examples == 'true' ||
-        needs.changes.outputs.workflows == 'true'
-      )
+      always() &&
+      !cancelled() &&
+      needs.validate-package-lock.result == 'success'
     runs-on: self-hosted
+    outputs:
+      ran_quality: ${{ steps.gate.outputs.run }}
     steps:
+      - name: Skip when docs-only (no code or CI changes)
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.code }}" == "true" || \
+                "${{ needs.changes.outputs.workflows }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping typecheck & lint — docs-only PR (no code or CI changes)."
+          fi
+
       - name: Prepare workspace
+        if: steps.gate.outputs.run == 'true'
         run: |
           if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
             docker run --rm \
@@ -144,14 +159,18 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
 
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.run == 'true'
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - run: bash scripts/ci/run-pr-quality.sh
+      - name: Typecheck, lint, and unit tests
+        if: steps.gate.outputs.run == 'true'
+        run: bash scripts/ci/run-pr-quality.sh
 
   compile-native:
     name: Compile native
@@ -180,7 +199,7 @@ jobs:
           fi
 
       - name: Require quality passed before native compile
-        if: steps.gate.outputs.run == 'true' && needs.quality.result != 'success'
+        if: steps.gate.outputs.run == 'true' && needs.quality.outputs.ran_quality == 'true' && needs.quality.result != 'success'
         run: |
           echo "Typecheck & lint must pass before native compile (quality=${{ needs.quality.result }})." >&2
           exit 1
@@ -232,7 +251,7 @@ jobs:
           fi
 
       - name: Require quality passed before TypeScript build
-        if: steps.gate.outputs.run == 'true' && needs.quality.result != 'success'
+        if: steps.gate.outputs.run == 'true' && needs.quality.outputs.ran_quality == 'true' && needs.quality.result != 'success'
         run: |
           echo "Typecheck & lint must pass before TypeScript build (quality=${{ needs.quality.result }})." >&2
           exit 1
@@ -281,10 +300,10 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
-      skip: ${{ (needs.changes.outputs.native != 'true' && needs.changes.outputs.typescript != 'true' && needs.changes.outputs.helpers != 'true' && needs.changes.outputs.examples != 'true') && 'true' || 'false' }}
+      skip: ${{ needs.changes.outputs.code != 'true' && 'true' || 'false' }}
       quality_result: ${{ needs.quality.result }}
       binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'bindings-x86_64-unknown-linux-gnu' || '' }}
       require_binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'true' || 'false' }}
-      needs_native_binding: ${{ (needs.changes.outputs.native == 'true' || needs.changes.outputs.typescript == 'true' || needs.changes.outputs.helpers == 'true' || needs.changes.outputs.examples == 'true') && 'true' || 'false' }}
-      needs_ts_dist: ${{ (needs.changes.outputs.typescript == 'true' || needs.changes.outputs.helpers == 'true' || needs.changes.outputs.examples == 'true' || needs.changes.outputs.workflows_ts == 'true' || needs.changes.outputs.native == 'true') && 'true' || 'false' }}
+      needs_native_binding: ${{ needs.changes.outputs.code == 'true' && 'true' || 'false' }}
+      needs_ts_dist: ${{ needs.changes.outputs.code == 'true' && 'true' || 'false' }}
     secrets: inherit

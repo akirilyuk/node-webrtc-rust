@@ -54,8 +54,9 @@ jobs:
       workflows_ts: ${{ steps.filter.outputs.workflows_ts }}
       skip_test: ${{ steps.pr_gates.outputs.skip_test }}
       skip_quality: ${{ steps.pr_gates.outputs.skip_quality }}
-      skip_compile: ${{ steps.pr_gates.outputs.skip_compile }}
-      skip_build_ts: ${{ steps.pr_gates.outputs.skip_build_ts }}
+      run_compile: ${{ steps.pr_gates.outputs.run_compile }}
+      run_build_ts: ${{ steps.pr_gates.outputs.run_build_ts }}
+      run_test: ${{ steps.pr_gates.outputs.run_test }}
       needs_native_for_test: ${{ steps.pr_gates.outputs.needs_native }}
       needs_ts_for_test: ${{ steps.pr_gates.outputs.needs_ts }}
     steps:
@@ -135,20 +136,69 @@ jobs:
       - name: Compute PR job gates
         id: pr_gates
         env:
-          CODE: ${{ steps.filter.outputs.code }}
-          WORKFLOWS: ${{ steps.filter.outputs.workflows }}
-          NATIVE: ${{ steps.filter.outputs.native }}
-          TYPESCRIPT: ${{ steps.filter.outputs.typescript }}
-          HELPERS: ${{ steps.filter.outputs.helpers }}
-          EXAMPLES: ${{ steps.filter.outputs.examples }}
-          WORKFLOWS_NATIVE: ${{ steps.filter.outputs.workflows_native }}
-          WORKFLOWS_TS: ${{ steps.filter.outputs.workflows_ts }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          source_changed=false
-          if [[ "$NATIVE" == "true" || "$TYPESCRIPT" == "true" || "$HELPERS" == "true" || "$EXAMPLES" == "true" ]]; then
-            source_changed=true
-          fi
-          if [[ "$source_changed" == true ]]; then
+          run_compile=false
+          run_build_ts=false
+          run_test=false
+          run_quality=false
+
+          while IFS= read -r path; do
+            [[ -z "$path" ]] && continue
+            [[ "$path" == *.md || "$path" == docs/* ]] && continue
+
+            if [[ "$path" == .github/workflows/* || "$path" == .cursor/* ]]; then
+              run_quality=true
+              continue
+            fi
+            if [[ "$path" == .github/actions/ci-build-native-* || "$path" == .github/actions/native-binding-cache/* || "$path" == docker/ci/* || "$path" == scripts/ci/native-binding-cache-key.sh || "$path" == scripts/ci/verify-native-binding-surface.mjs ]]; then
+              run_compile=true
+              run_quality=true
+              continue
+            fi
+            if [[ "$path" == .github/actions/ci-cache-ts-dist/* || "$path" == scripts/ci/build-ts-workspace.sh || "$path" == scripts/ci/verify-release-publish-ts.sh || "$path" == scripts/ci/ts-dist-cache-key.sh ]]; then
+              run_build_ts=true
+              run_quality=true
+              continue
+            fi
+            if [[ "$path" == .github/actions/ci-run-integration-tests/* || "$path" == .github/workflows/reusable-test.yml || "$path" == scripts/ci/run-pr-integration.sh || "$path" == scripts/ci/run-pr-tests-full.sh || "$path" == scripts/ci/run-sherpa-example-ci.sh || "$path" == scripts/ci/run-sherpa-roundtrip-e2e.sh || "$path" == scripts/ci/run-pr-test-job-docker.sh ]]; then
+              run_quality=true
+              continue
+            fi
+            if [[ "$path" == Cargo.toml || "$path" == Cargo.lock || "$path" =~ ^crates/ || "$path" =~ ^packages/bindings/ ]]; then
+              run_compile=true
+              run_test=true
+              run_quality=true
+              continue
+            fi
+            if [[ "$path" =~ ^packages/sdk/ || "$path" =~ ^packages/signaling/ || "$path" =~ ^packages/helpers/ || "$path" == package.json || "$path" == package-lock.json || "$path" == eslint.config.js || "$path" == .prettierrc* || "$path" == *tsconfig*.json ]]; then
+              run_build_ts=true
+              run_test=true
+              run_quality=true
+              continue
+            fi
+            if [[ "$path" =~ ^examples/ ]]; then
+              run_build_ts=true
+              run_test=true
+              run_quality=true
+              continue
+            fi
+            if [[ "$path" == scripts/ci/* ]]; then
+              run_quality=true
+              continue
+            fi
+
+            run_quality=true
+            run_test=true
+          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          echo "run_compile=${run_compile}" >> "$GITHUB_OUTPUT"
+          echo "run_build_ts=${run_build_ts}" >> "$GITHUB_OUTPUT"
+          echo "run_test=${run_test}" >> "$GITHUB_OUTPUT"
+          echo "run_quality=${run_quality}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$run_test" == true ]]; then
             echo "skip_test=false" >> "$GITHUB_OUTPUT"
             echo "needs_native=true" >> "$GITHUB_OUTPUT"
             echo "needs_ts=true" >> "$GITHUB_OUTPUT"
@@ -157,21 +207,14 @@ jobs:
             echo "needs_native=false" >> "$GITHUB_OUTPUT"
             echo "needs_ts=false" >> "$GITHUB_OUTPUT"
           fi
-          if [[ "$CODE" == "true" || "$WORKFLOWS" == "true" ]]; then
+
+          if [[ "$run_quality" == true ]]; then
             echo "skip_quality=false" >> "$GITHUB_OUTPUT"
           else
             echo "skip_quality=true" >> "$GITHUB_OUTPUT"
           fi
-          if [[ "$NATIVE" == "true" || "$WORKFLOWS_NATIVE" == "true" ]]; then
-            echo "skip_compile=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip_compile=true" >> "$GITHUB_OUTPUT"
-          fi
-          if [[ "$TYPESCRIPT" == "true" || "$HELPERS" == "true" || "$EXAMPLES" == "true" || "$WORKFLOWS_TS" == "true" ]]; then
-            echo "skip_build_ts=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip_build_ts=true" >> "$GITHUB_OUTPUT"
-          fi
+
+          echo "::notice::PR gates from git diff — compile=${run_compile} build_ts=${run_build_ts} test=${run_test} quality=${run_quality}"
 
   quality:
     name: Typecheck & lint
@@ -187,11 +230,11 @@ jobs:
       - name: Skip when docs-only (no code or CI changes)
         id: gate
         run: |
-          if [[ "${{ needs.changes.outputs.skip_quality }}" == "true" ]]; then
+          if [[ "${{ needs.changes.outputs.run_quality }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping typecheck & lint — docs-only PR (no code or CI changes)."
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Prepare workspace
@@ -237,11 +280,11 @@ jobs:
       - name: Skip when no native or native-CI changes
         id: gate
         run: |
-          if [[ "${{ needs.changes.outputs.skip_compile }}" == "true" ]]; then
+          if [[ "${{ needs.changes.outputs.run_compile }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping native compile — no Rust/bindings or native-build CI changes in this PR."
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Require quality passed before native compile
@@ -286,11 +329,11 @@ jobs:
       - name: Skip when no TypeScript or TS-CI changes
         id: gate
         run: |
-          if [[ "${{ needs.changes.outputs.skip_build_ts }}" == "true" ]]; then
+          if [[ "${{ needs.changes.outputs.run_build_ts }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping TypeScript build — no TS/examples or TS-build CI changes in this PR."
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Require quality passed before TypeScript build

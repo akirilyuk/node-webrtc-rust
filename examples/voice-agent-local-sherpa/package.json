@@ -27,6 +27,8 @@
     "download-tts:es": "node scripts/download-tts.mjs --lang=es",
     "download-tts:de": "node scripts/download-tts.mjs --lang=de",
     "download-tts:zh": "node scripts/download-tts.mjs --lang=zh",
+    "download-all": "node scripts/download-all-sherpa.mjs",
+    "download-all:minimal": "node scripts/download-all-sherpa.mjs --minimal",
     "start": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/index.ts",
     "start:roundtrip": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip.ts",
     "start:roundtrip-counting": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-counting.ts",

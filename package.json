@@ -39,7 +39,9 @@
     "ci:verify:release-ts:docker": "CI_VERIFY_RELEASE_TS_IN_DOCKER=1 bash scripts/ci/verify-release-publish-ts.sh",
     "ci:verify": "npm run ci:verify:checks",
     "release:local": "bash scripts/release-local.sh",
-    "release:publish": "bash scripts/release-publish.sh"
+    "release:publish": "bash scripts/release-publish.sh",
+    "make-sherpa": "bash scripts/make-sherpa.sh",
+    "make-sherpa:minimal": "bash scripts/make-sherpa.sh --minimal"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

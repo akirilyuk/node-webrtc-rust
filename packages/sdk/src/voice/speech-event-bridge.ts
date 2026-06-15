@@ -66,6 +66,8 @@ export function parseVoiceControlClientMessage(raw: string): VoiceControlSpeakMe
 export interface WireVoiceAgentToDataChannelOptions {
   /** Called when the client requests TTS via `{ type: 'speak', text }`. */
   onSpeak?: (text: string) => void | Promise<void>
+  /** Called for other JSON payloads on the voice-control channel. */
+  onDataChannelMessage?: (payload: string) => void | Promise<void>
 }
 
 function sendSpeechEventToChannel(channel: RTCDataChannel, event: SpeechEvent): void {
@@ -125,7 +127,12 @@ export function wireVoiceControlSpeakHandler(
           : String(event.data)
 
     const message = parseVoiceControlClientMessage(payload)
-    if (!message) return
+    if (!message) {
+      if (options?.onDataChannelMessage) {
+        void options.onDataChannelMessage(payload)
+      }
+      return
+    }
 
     if (options?.onSpeak) {
       void options.onSpeak(message.text)

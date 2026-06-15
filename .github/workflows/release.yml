@@ -383,8 +383,10 @@ jobs:
         run: bash scripts/ci/post-release-sync-main-package-lock.sh "${{ steps.version.outputs.version }}"
 
       - name: Open PR to main
+        id: open_pr
         uses: peter-evans/create-pull-request@v7
         with:
+          token: ${{ secrets.REPO_SYNC_PAT != '' && secrets.REPO_SYNC_PAT || github.token }}
           commit-message: "chore(ci): sync package-lock after release ${{ steps.version.outputs.version }}"
           title: "chore(ci): sync package-lock after release ${{ steps.version.outputs.version }}"
           body: |
@@ -404,3 +406,12 @@ jobs:
           base: main
           delete-branch: true
           labels: dependencies,automation
+
+      - name: Manual PR fallback (when GITHUB_TOKEN cannot open PRs)
+        if: failure() && steps.open_pr.outcome == 'failure'
+        shell: bash
+        run: |
+          BRANCH="chore/post-release-package-lock-${{ steps.version.outputs.version }}"
+          echo "::warning::Automated PR creation failed (org may block GITHUB_TOKEN from opening PRs)."
+          echo "Fix: repo Settings → Actions → allow Actions to create PRs, or add secret REPO_SYNC_PAT (classic PAT, repo scope)."
+          echo "Open manually: https://github.com/${{ github.repository }}/compare/main...${BRANCH}?expand=1"

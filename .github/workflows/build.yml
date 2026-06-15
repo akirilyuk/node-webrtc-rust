@@ -8,6 +8,7 @@ permissions:
   contents: read
   pull-requests: read
   packages: read
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -192,6 +193,13 @@ jobs:
             run_quality=true
             run_test=true
           done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          # Integration tests always need a .node in the workspace. TS-only PRs do not
+          # touch Rust paths but still run Test — compile must run so the job uploads
+          # bindings-x86_64-unknown-linux-gnu for reusable-test to download.
+          if [[ "$run_test" == true ]]; then
+            run_compile=true
+          fi
 
           echo "run_compile=${run_compile}" >> "$GITHUB_OUTPUT"
           echo "run_build_ts=${run_build_ts}" >> "$GITHUB_OUTPUT"

@@ -10,6 +10,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.5.3] — 2026-06-15
+
+**Compare:** [`release/0.5.2…release/0.5.3`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.2...release/0.5.3)
+
+DataChannel hooks for dashboard chat and echo-dc agents.
+
+### Added
+
+- **`VoiceSessionHandler.onDataChannelMessage`** — handle inbound DataChannel JSON from the browser tab.
+- **`VoiceSessionContext.sendToClient`** — send arbitrary JSON payloads to the connected client over DataChannel.
+- Speech-event bridge forwards non-`speak` DataChannel payloads into the voice host pipeline.
+
+### Fixed
+
+- **`broadcastSpeak`** — pass the per-session control channel into `createSessionContext` so `sendToClient` works during broadcast.
+
+---
+
 ## [0.5.2] — 2026-06-03
 
 **Compare:** [`release/0.5.1…release/0.5.2`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.1...release/0.5.2)

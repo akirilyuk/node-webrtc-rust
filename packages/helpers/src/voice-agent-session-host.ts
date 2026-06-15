@@ -153,7 +153,7 @@ export class VoiceAgentSessionHost {
     const contexts: VoiceSessionContext[] = []
     for (const [peerId, session] of this.sessions) {
       if (!session.agentStarted) continue
-      contexts.push(this.createSessionContext(peerId, session.agent))
+      contexts.push(this.createSessionContext(peerId, session.agent, session.controlChannel))
     }
 
     const onBroadcastSpeak = this.options.voiceHandler?.onBroadcastSpeak
@@ -281,12 +281,19 @@ export class VoiceAgentSessionHost {
     controlChannel.onopen = () => {
       this.log(`[voice ${peerId}] control channel open`)
       session.unwireControl?.()
-      const ctx = this.createSessionContext(peerId, agent)
-      const onSpeakRequest = this.options.voiceHandler?.onSpeakRequest
+      const ctx = this.createSessionContext(peerId, agent, controlChannel)
+      const voiceHandler = this.options.voiceHandler
+      const onSpeakRequest = voiceHandler?.onSpeakRequest
+      const onDataChannelMessage = voiceHandler?.onDataChannelMessage
       session.unwireControl = wireVoiceAgentToDataChannel(agent, controlChannel, {
         onSpeak: onSpeakRequest
           ? (text) => {
               void onSpeakRequest(ctx, text)
+            }
+          : undefined,
+        onDataChannelMessage: onDataChannelMessage
+          ? (payload) => {
+              void onDataChannelMessage(ctx, payload)
             }
           : undefined,
       })
@@ -328,11 +335,19 @@ export class VoiceAgentSessionHost {
     this.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
   }
 
-  private createSessionContext(peerId: string, agent: VoiceAgent): VoiceSessionContext {
+  private createSessionContext(
+    peerId: string,
+    agent: VoiceAgent,
+    controlChannel: RTCDataChannel,
+  ): VoiceSessionContext {
     return {
       peerId,
       agent,
       speak: (text: string) => agent.sendTextToTTS(text),
+      sendToClient: (payload: unknown) => {
+        if (controlChannel.readyState !== 'open') return
+        controlChannel.send(JSON.stringify(payload))
+      },
     }
   }
 
@@ -345,7 +360,7 @@ export class VoiceAgentSessionHost {
       return forwardVoiceAgentSpeechToDataChannel(session.agent, session.controlChannel)
     }
 
-    const ctx = this.createSessionContext(peerId, session.agent)
+    const ctx = this.createSessionContext(peerId, session.agent, session.controlChannel)
     let active = true
 
     void (async () => {

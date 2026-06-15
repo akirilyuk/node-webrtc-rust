@@ -14,6 +14,8 @@ export interface VoiceSessionContext {
   agent: VoiceAgent
   /** Synthesize `text` and stream audio to the browser. */
   speak: (text: string) => Promise<void>
+  /** Send a JSON payload to the browser over the voice-control data channel. */
+  sendToClient: (payload: unknown) => void
 }
 
 /**
@@ -34,6 +36,15 @@ export interface VoiceSessionHandler {
    * Use {@link VoiceSessionContext.speak} for this tab only. Omit to default TTS on `ctx`.
    */
   onSpeakRequest?: (ctx: VoiceSessionContext, text: string) => void | Promise<void>
+
+  /**
+   * Called for non-speak data channel JSON (e.g. `{ type: 'chat', text }`).
+   * Raw string is passed when JSON parsing is deferred to the handler.
+   */
+  onDataChannelMessage?: (
+    ctx: VoiceSessionContext,
+    payload: string,
+  ) => void | Promise<void>
 
   /**
    * Called only for an explicit broadcast command (e.g. `POST /api/broadcast-speak`).

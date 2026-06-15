@@ -194,12 +194,10 @@ jobs:
             run_test=true
           done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
 
-          # Integration tests always need a .node in the workspace. TS-only PRs do not
-          # touch Rust paths but still run Test — compile must run so the job uploads
-          # bindings-x86_64-unknown-linux-gnu for reusable-test to download.
-          if [[ "$run_test" == true ]]; then
-            run_compile=true
-          fi
+          # Integration tests need a .node in the Test job workspace. Do not force
+          # compile-native here — compile runs in a container and artifact download
+          # to the host Test job is unreliable on self-hosted; Test restores cache
+          # and builds in CI image when needed (see test job below).
 
           echo "run_compile=${run_compile}" >> "$GITHUB_OUTPUT"
           echo "run_build_ts=${run_build_ts}" >> "$GITHUB_OUTPUT"
@@ -382,9 +380,10 @@ jobs:
           bash scripts/fix-rollup-native.sh
           bash scripts/ci/build-ts-workspace.sh
 
-  # Inline integration tests (not reusable-test.yml): GHA cannot download caller
-  # workflow artifacts from workflow_call jobs — compile-native uploads here, Test
-  # consumes in the same run. See development/node-webrtc-rust/followups/2026-06-02-ci-release-branch-and-flat-pr-checks.md
+  # Inline integration tests (not reusable-test.yml): workflow_call cannot download
+  # caller artifacts; compile-native runs in a container while Test runs on the
+  # self-hosted host — artifact handoff is unreliable. Test restores GHA cache and
+  # compiles in CI image when needed.
   test:
     name: Test
     needs: [changes, validate-package-lock, quality, compile-native, build-ts]
@@ -448,19 +447,42 @@ jobs:
       - uses: actions/checkout@v4
         if: steps.gate.outputs.skip != 'true'
 
-      - name: Download native binding artifact
-        id: binding-artifact
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && needs.compile-native.outputs.ran_compile == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: bindings-x86_64-unknown-linux-gnu
-          path: packages/bindings
-
       - uses: ./.github/actions/native-binding-cache
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && (needs.compile-native.outputs.ran_compile != 'true' || steps.binding-artifact.outcome == 'failure')
+        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'
+        id: native-cache
         with:
           target: x86_64-unknown-linux-gnu
           profile: debug
+
+      - name: Build native binding in CI image when cache miss
+        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'
+        run: |
+          shopt -s nullglob
+          files=(packages/bindings/*.node)
+          if [[ ${#files[@]} -gt 0 ]]; then
+            echo "Native binding already present: $(basename "${files[0]}")"
+            exit 0
+          fi
+          echo "No cached .node — compiling in ${{ env.CI_IMAGE }}"
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -w /workspace \
+            -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -e OPUS_STATIC=1 \
+            "${{ env.CI_IMAGE }}" \
+            bash -c '
+              set -euo pipefail
+              cd packages/bindings
+              npm ci --ignore-scripts
+              npx napi build --target x86_64-unknown-linux-gnu
+              npm run copy:local-node
+            '
+          files=(packages/bindings/*.node)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "Native build in CI image did not produce a .node file." >&2
+            exit 1
+          fi
+          echo "Built native binding: $(basename "${files[0]}")"
 
       - name: Verify native binding in workspace
         if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'

@@ -1,7 +1,7 @@
 {
   "name": "@node-webrtc-rust/example-browser-cosine-chat",
   "private": true,
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Browser clients receive a cosine tone from Node and chat via WebRTC data channels",
   "type": "module",
   "scripts": {
@@ -10,8 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@node-webrtc-rust/sdk": "0.5.2",
-    "@node-webrtc-rust/signaling": "0.5.2"
+    "@node-webrtc-rust/sdk": "0.5.3",
+    "@node-webrtc-rust/signaling": "0.5.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

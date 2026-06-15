@@ -187,7 +187,12 @@ Job **`Sync main package-lock (PR)`** in [`release.yml`](../.github/workflows/re
 4. Opens a PR via [`peter-evans/create-pull-request`](https://github.com/peter-evans/create-pull-request) — branch `chore/post-release-package-lock-X.Y.Z`, labels `dependencies`, `automation`.
 5. Skips opening a PR if there is no diff.
 
-Requires workflow permission **`pull-requests: write`** and a `GITHUB_TOKEN` that can push branches. If branch protection blocks the bot, create the PR manually from the branch the job pushed (or re-run the sync script locally and open the PR yourself).
+Requires workflow permission **`pull-requests: write`**. If the org disables **“Allow GitHub Actions to create and approve pull requests”**, `GITHUB_TOKEN` cannot open the PR (the branch may still be pushed). Fix one of:
+
+1. **Repo Settings → Actions → General** — enable **Allow GitHub Actions to create and approve pull requests**, or
+2. Add repo secret **`REPO_SYNC_PAT`** (classic PAT with `repo` scope) — `release.yml` uses it for `create-pull-request`.
+
+If automation fails, open the PR manually from branch `chore/post-release-package-lock-X.Y.Z` (compare link is printed in the failed workflow log).
 
 ### `SKIP_LOCK_REFRESH`
 

@@ -153,7 +153,7 @@ export class VoiceAgentSessionHost {
     const contexts: VoiceSessionContext[] = []
     for (const [peerId, session] of this.sessions) {
       if (!session.agentStarted) continue
-      contexts.push(this.createSessionContext(peerId, session.agent))
+      contexts.push(this.createSessionContext(peerId, session.agent, session.controlChannel))
     }
 
     const onBroadcastSpeak = this.options.voiceHandler?.onBroadcastSpeak

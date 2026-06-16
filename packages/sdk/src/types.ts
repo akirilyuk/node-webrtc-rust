@@ -134,7 +134,7 @@ export interface RTCDataChannelEvent {
 }
 
 /** Incoming data channel message. */
-export interface MessageEvent<T = string | Buffer> {
+export interface MessageEvent<T = string | Buffer | ArrayBuffer> {
   data: T
 }
 

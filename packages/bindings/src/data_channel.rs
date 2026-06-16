@@ -179,11 +179,10 @@ impl JsRTCDataChannel {
                 to_js_unknown(&ctx.env, ctx.env.create_string(text)?)
                     .map(|value| vec![value])
             } else {
-                Ok(vec![
-                    ctx.env
-                        .create_buffer_with_data(message.data.to_vec())?
-                        .into_unknown(),
-                ])
+                // Move webrtc-rs Bytes into a Node Buffer; use `.into()` to avoid napi `into_vec` name clash.
+                let vec: Vec<u8> = message.data.into();
+                let buffer = Buffer::from(vec);
+                to_js_unknown(&ctx.env, buffer).map(|value| vec![value])
             }
         })?;
         wire_event_channel(rx, tsfn);

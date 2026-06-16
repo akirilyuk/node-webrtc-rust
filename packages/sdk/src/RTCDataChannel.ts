@@ -94,14 +94,7 @@ export class RTCDataChannel extends EventEmitter {
       return
     }
     this.bufferedAmount += byteLength
-    const payload =
-      typeof data === 'string'
-        ? data
-        : Buffer.isBuffer(data)
-          ? data
-          : data instanceof ArrayBuffer
-            ? Buffer.from(new Uint8Array(data))
-            : Buffer.from(data)
+    const payload = toNativeSendPayload(data)
     void this.native
       .send(payload)
       .then(() => this.refreshBufferedAmount())
@@ -147,7 +140,7 @@ export class RTCDataChannel extends EventEmitter {
         `label=${this.label}, type=${typeof data === 'string' ? 'string' : 'binary'}`,
       )
       const message: MessageEvent =
-        typeof data === 'string' ? { data } : { data: Buffer.from(data) }
+        typeof data === 'string' ? { data } : { data: toMessageBinaryData(data, this.binaryType) }
       this.onmessage?.(message)
       this.emit('message', message)
     })
@@ -189,6 +182,26 @@ export class RTCDataChannel extends EventEmitter {
     this.onerror?.(event)
     this.emit('error', event)
   }
+}
+
+function toNativeSendPayload(data: SendPayload): string | Buffer {
+  if (typeof data === 'string') {
+    return data
+  }
+  if (Buffer.isBuffer(data)) {
+    return data
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(new Uint8Array(data))
+  }
+  return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+}
+
+function toMessageBinaryData(data: Buffer, binaryType: 'arraybuffer' | 'blob'): Buffer | ArrayBuffer {
+  if (binaryType === 'arraybuffer') {
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+  }
+  return data
 }
 
 function payloadByteLength(data: SendPayload): number {

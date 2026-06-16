@@ -153,3 +153,24 @@ audio {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.game-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid #243041;
+  background: #0b1018;
+}
+
+.game-status {
+  margin: 0.75rem 0 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}

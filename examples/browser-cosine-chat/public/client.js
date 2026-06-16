@@ -1,4 +1,10 @@
 import { attachAudioVisualizer } from '/shared/audio-visualizer.js'
+import {
+  createStateBuffer,
+  decodePlayerState,
+  encodePlayerState,
+  GAME_SYNC_CHANNEL_LABEL,
+} from '/shared/game-state-sync.js'
 
 const SERVER_PEER_ID = 'cosine-server'
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -18,6 +24,8 @@ const incomingVizCanvas = document.getElementById('incoming-viz')
 const vizStatusEl = document.getElementById('viz-status')
 const debugPanelEl = document.getElementById('debug-panel')
 const debugLogEl = document.getElementById('debug-log')
+const gameCanvas = document.getElementById('game-canvas')
+const gameStatusEl = document.getElementById('game-status')
 
 /** @type {WebSocket | null} */
 let ws = null
@@ -34,14 +42,111 @@ const peerConnections = new Map()
 const peerNames = new Map()
 /** @type {Map<string, RTCDataChannel>} */
 const chatChannels = new Map()
+/** @type {Map<string, RTCDataChannel>} */
+const gameSyncChannels = new Map()
 /** @type {Map<string, RTCIceCandidateInit[]>} */
 const pendingIceByPeer = new Map()
 /** @type {{ stop: () => void } | null} */
 let incomingVisualizer = null
 
+const localPlayerId = Math.floor(Math.random() * 60000)
+const localState = createStateBuffer()
+let localX = 320
+let localY = 180
+let gameTick = 0
+/** @type {Map<number, { x: number, y: number, peerId: string }>} */
+const remotePlayers = new Map()
+/** @type {number | null} */
+let gameLoopTimer = null
+/** @type {CanvasRenderingContext2D | null} */
+const gameCtx = gameCanvas?.getContext('2d') ?? null
+
+const PLAYER_COLORS = ['#38bdf8', '#f472b6', '#a3e635', '#fb923c', '#c084fc']
+
 if (DEBUG && debugPanelEl && debugLogEl) {
   debugPanelEl.hidden = false
   debugLog('Debug mode on — reload with ?debug if you change this URL mid-session')
+}
+
+window.addEventListener('keydown', (event) => {
+  const step = event.shiftKey ? 24 : 8
+  if (event.key === 'ArrowLeft') localX = Math.max(12, localX - step)
+  if (event.key === 'ArrowRight') localX = Math.min((gameCanvas?.width ?? 640) - 12, localX + step)
+  if (event.key === 'ArrowUp') localY = Math.max(12, localY - step)
+  if (event.key === 'ArrowDown') localY = Math.min((gameCanvas?.height ?? 360) - 12, localY + step)
+})
+
+function startGameLoop() {
+  if (gameLoopTimer != null) return
+  gameLoopTimer = window.setInterval(() => {
+    gameTick++
+    encodePlayerState(localState.view, 0, {
+      tick: gameTick,
+      playerId: localPlayerId,
+      x: localX,
+      y: localY,
+      rot: 0,
+    })
+    for (const dc of gameSyncChannels.values()) {
+      if (dc.readyState === 'open') {
+        dc.send(localState.bytes)
+      }
+    }
+    drawGameScene()
+  }, 100)
+}
+
+function stopGameLoop() {
+  if (gameLoopTimer != null) {
+    clearInterval(gameLoopTimer)
+    gameLoopTimer = null
+  }
+}
+
+function drawGameScene() {
+  if (!gameCtx || !gameCanvas) return
+  gameCtx.fillStyle = '#0b1018'
+  gameCtx.fillRect(0, 0, gameCanvas.width, gameCanvas.height)
+  gameCtx.fillStyle = '#1e293b'
+  gameCtx.fillRect(0, 0, gameCanvas.width, gameCanvas.height)
+  for (const [playerId, player] of remotePlayers) {
+    const color = PLAYER_COLORS[playerId % PLAYER_COLORS.length]
+    gameCtx.fillStyle = color
+    gameCtx.beginPath()
+    gameCtx.arc(player.x, player.y, 10, 0, Math.PI * 2)
+    gameCtx.fill()
+  }
+  gameCtx.fillStyle = '#fbbf24'
+  gameCtx.beginPath()
+  gameCtx.arc(localX, localY, 12, 0, Math.PI * 2)
+  gameCtx.fill()
+  if (gameStatusEl) {
+    gameStatusEl.textContent = `Local #${localPlayerId} · ${remotePlayers.size} remote player(s) · tick ${gameTick}`
+  }
+}
+
+function wireGameSyncChannel(peerId, dc) {
+  gameSyncChannels.set(peerId, dc)
+  dc.binaryType = 'arraybuffer'
+  dc.onopen = () => {
+    startGameLoop()
+    drawGameScene()
+  }
+  dc.onmessage = (event) => {
+    if (typeof event.data === 'string') return
+    const buf = event.data instanceof ArrayBuffer ? event.data : event.data.buffer
+    const decoded = decodePlayerState(buf)
+    if (decoded.playerId === localPlayerId) return
+    remotePlayers.set(decoded.playerId, {
+      x: decoded.x,
+      y: decoded.y,
+      peerId,
+    })
+  }
+  dc.onclose = () => {
+    gameSyncChannels.delete(peerId)
+    if (gameSyncChannels.size === 0) stopGameLoop()
+  }
 }
 
 function debugLog(...args) {
@@ -142,8 +247,12 @@ function cleanupPeers() {
   }
   peerConnections.clear()
   chatChannels.clear()
+  gameSyncChannels.clear()
+  remotePlayers.clear()
+  stopGameLoop()
   peerNames.clear()
   pendingIceByPeer.clear()
+  drawGameScene()
 }
 
 function handleSignal(message) {
@@ -245,6 +354,7 @@ function onPeerLeft(peerId) {
     session.pc.close()
     peerConnections.delete(peerId)
     chatChannels.delete(peerId)
+    gameSyncChannels.delete(peerId)
   }
 }
 
@@ -257,8 +367,16 @@ async function connectToPeer(peerId, createOffer) {
   if (createOffer) {
     const dc = pc.createDataChannel('chat')
     wireChatChannel(peerId, dc)
+    const gameDc = pc.createDataChannel(GAME_SYNC_CHANNEL_LABEL)
+    wireGameSyncChannel(peerId, gameDc)
   } else {
-    pc.ondatachannel = (event) => wireChatChannel(peerId, event.channel)
+    pc.ondatachannel = (event) => {
+      if (event.channel.label === GAME_SYNC_CHANNEL_LABEL) {
+        wireGameSyncChannel(peerId, event.channel)
+      } else {
+        wireChatChannel(peerId, event.channel)
+      }
+    }
   }
 
   pc.onicecandidate = (event) => {

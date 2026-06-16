@@ -25,6 +25,7 @@ export { isVoiceDebugEnabled, voiceDebugLog } from './debug.js'
 /** Browser ↔ Node control channel helpers (`voice-control` label). */
 export {
   VOICE_CONTROL_CHANNEL_LABEL,
+  VOICE_SYNC_CHANNEL_LABEL,
   forwardVoiceAgentSpeechToDataChannel,
   parseVoiceControlClientMessage,
   speechEventToControlMessage,

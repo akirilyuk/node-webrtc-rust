@@ -61,6 +61,59 @@ describe('End-to-end peer connection', () => {
     sig2.disconnect()
   })
 
+  test('two peers exchange binary DataChannel payloads via signaling', async () => {
+    const pc1 = new RTCPeerConnection(defaultIceConfig)
+    const pc2 = new RTCPeerConnection(defaultIceConfig)
+
+    const dc1 = pc1.createDataChannel('binary-test')
+
+    const sig1 = new SignalingClient({
+      url: `ws://localhost:${server.port}`,
+      room: 'e2e-binary',
+      peerId: 'pc1',
+    })
+    const sig2 = new SignalingClient({
+      url: `ws://localhost:${server.port}`,
+      room: 'e2e-binary',
+      peerId: 'pc2',
+    })
+
+    autoNegotiate({ pc: pc1, signaling: sig1, polite: false })
+    autoNegotiate({ pc: pc2, signaling: sig2, polite: true })
+
+    const dc2Promise = new Promise<typeof dc1>((resolve) => {
+      pc2.ondatachannel = (event) => resolve(event.channel)
+    })
+
+    await sig1.connect()
+    await sig2.connect()
+
+    const dc2 = await dc2Promise
+
+    await waitForOpen(dc1)
+    await waitForOpen(dc2)
+    await waitForConnection(pc1)
+    await waitForConnection(pc2)
+
+    dc1.binaryType = 'arraybuffer'
+    dc2.binaryType = 'arraybuffer'
+
+    const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef])
+    dc1.send(payload)
+
+    const message = await waitForMessage(dc2)
+    expect(typeof message.data).not.toBe('string')
+    const received = Buffer.isBuffer(message.data)
+      ? message.data
+      : Buffer.from(message.data as ArrayBuffer)
+    expect(received.equals(payload)).toBe(true)
+
+    pc1.close()
+    pc2.close()
+    sig1.disconnect()
+    sig2.disconnect()
+  })
+
   test('two peers exchange an audio track via signaling', async () => {
     const pc1 = new RTCPeerConnection(defaultIceConfig)
     const pc2 = new RTCPeerConnection(defaultIceConfig)

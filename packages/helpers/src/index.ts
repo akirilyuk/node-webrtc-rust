@@ -15,7 +15,7 @@ export {
   type VoiceAgentSessionHostOptions,
 } from './voice-agent-session-host.js'
 
-export { type VoiceSessionContext, type VoiceSessionHandler } from './voice-session-handler.js'
+export { type VoiceSessionContext, type VoiceSessionHandler, type DataChannelKind } from './voice-session-handler.js'
 
 export {
   SessionPod,

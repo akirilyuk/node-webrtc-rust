@@ -23,6 +23,7 @@ import {
 import {
   VoiceAgent,
   VOICE_CONTROL_CHANNEL_LABEL,
+  VOICE_SYNC_CHANNEL_LABEL,
   forwardVoiceAgentSpeechToDataChannel,
   speechEventToControlMessage,
   wireVoiceAgentToDataChannel,
@@ -37,7 +38,7 @@ import {
   type VoiceSessionBudget,
   type VoiceSessionBudgetSnapshot,
 } from './voice-session-budget.js'
-import type { VoiceSessionContext, VoiceSessionHandler } from './voice-session-handler.js'
+import type { VoiceSessionContext, VoiceSessionHandler, DataChannelKind } from './voice-session-handler.js'
 
 export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
 
@@ -52,10 +53,12 @@ interface ClientSession {
   pc: RTCPeerConnection
   agentOut: LocalAudioTrack
   controlChannel: RTCDataChannel
+  syncChannel?: RTCDataChannel
   agent: VoiceAgent
   inboundTrack?: RemoteAudioTrack
   agentStarted: boolean
   unwireControl?: () => void
+  unwireSync?: () => void
   unwireSpeechForward?: () => void
   remoteDescriptionSet: boolean
   offerSent: boolean
@@ -78,6 +81,15 @@ export interface VoiceAgentSessionHostOptions {
    * See `examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`.
    */
   voiceHandler?: VoiceSessionHandler
+  /**
+   * Optional second outbound data channel for high-frequency binary sync.
+   * Defaults to disabled; label {@link VOICE_SYNC_CHANNEL_LABEL} when enabled.
+   */
+  syncChannel?: {
+    enabled?: boolean
+    label?: string
+    ordered?: boolean
+  }
   /**
    * Process-wide connection cap (`VOICE_MAX_CONCURRENT_SESSIONS` when omitted).
    * Shared across rooms when using {@link SessionPod}.
@@ -153,7 +165,7 @@ export class VoiceAgentSessionHost {
     const contexts: VoiceSessionContext[] = []
     for (const [peerId, session] of this.sessions) {
       if (!session.agentStarted) continue
-      contexts.push(this.createSessionContext(peerId, session.agent, session.controlChannel))
+      contexts.push(this.createSessionContext(peerId, session.agent, session.controlChannel, session.syncChannel))
     }
 
     const onBroadcastSpeak = this.options.voiceHandler?.onBroadcastSpeak
@@ -207,12 +219,19 @@ export class VoiceAgentSessionHost {
     const agent = new VoiceAgent(this.options.voiceConfig)
 
     const controlChannel = pc.createDataChannel(VOICE_CONTROL_CHANNEL_LABEL, { ordered: true })
+    const syncEnabled = this.options.syncChannel?.enabled ?? false
+    const syncChannel = syncEnabled
+      ? pc.createDataChannel(this.options.syncChannel?.label ?? VOICE_SYNC_CHANNEL_LABEL, {
+          ordered: this.options.syncChannel?.ordered ?? false,
+        })
+      : undefined
     await pc.addTrack(agentOut)
 
     const session: ClientSession = {
       pc,
       agentOut,
       controlChannel,
+      syncChannel,
       agent,
       agentStarted: false,
       remoteDescriptionSet: false,
@@ -281,10 +300,11 @@ export class VoiceAgentSessionHost {
     controlChannel.onopen = () => {
       this.log(`[voice ${peerId}] control channel open`)
       session.unwireControl?.()
-      const ctx = this.createSessionContext(peerId, agent, controlChannel)
+      const ctx = this.createSessionContext(peerId, agent, controlChannel, syncChannel)
       const voiceHandler = this.options.voiceHandler
       const onSpeakRequest = voiceHandler?.onSpeakRequest
       const onDataChannelMessage = voiceHandler?.onDataChannelMessage
+      const onDataChannelBinary = voiceHandler?.onDataChannelBinary
       session.unwireControl = wireVoiceAgentToDataChannel(agent, controlChannel, {
         onSpeak: onSpeakRequest
           ? (text) => {
@@ -296,7 +316,20 @@ export class VoiceAgentSessionHost {
               void onDataChannelMessage(ctx, payload)
             }
           : undefined,
+        onDataChannelBinary: onDataChannelBinary
+          ? (data) => {
+              void onDataChannelBinary(ctx, data, 'control')
+            }
+          : undefined,
       })
+    }
+
+    if (syncChannel) {
+      syncChannel.binaryType = 'arraybuffer'
+      syncChannel.onopen = () => {
+        this.log(`[voice ${peerId}] sync channel open (${syncChannel.label})`)
+      }
+      session.unwireSync = this.wireSyncChannel(peerId, session, syncChannel)
     }
 
     const offer = await pc.createOffer()
@@ -304,7 +337,9 @@ export class VoiceAgentSessionHost {
     await pc.gatheringComplete()
     this.signaling.sendOffer(peerId, pc.localDescription!.toJSON())
     session.offerSent = true
-    this.log(`[voice ${peerId}] offer sent (audio + ${VOICE_CONTROL_CHANNEL_LABEL} DC)`)
+    this.log(
+      `[voice ${peerId}] offer sent (audio + ${VOICE_CONTROL_CHANNEL_LABEL} DC${syncChannel ? ` + ${syncChannel.label}` : ''})`,
+    )
 
     if (session.pendingAnswer) {
       const sdp = session.pendingAnswer
@@ -339,7 +374,18 @@ export class VoiceAgentSessionHost {
     peerId: string,
     agent: VoiceAgent,
     controlChannel: RTCDataChannel,
+    syncChannel?: RTCDataChannel,
   ): VoiceSessionContext {
+    const sendBinary = (data: Buffer | Uint8Array, channel: DataChannelKind = 'sync') => {
+      const target =
+        channel === 'sync' && syncChannel?.readyState === 'open'
+          ? syncChannel
+          : controlChannel.readyState === 'open'
+            ? controlChannel
+            : null
+      if (!target) return
+      target.send(data)
+    }
     return {
       peerId,
       agent,
@@ -348,6 +394,39 @@ export class VoiceAgentSessionHost {
         if (controlChannel.readyState !== 'open') return
         controlChannel.send(JSON.stringify(payload))
       },
+      sendBinaryToClient: (data, channel) => sendBinary(data, channel),
+    }
+  }
+
+  private wireSyncChannel(
+    peerId: string,
+    session: ClientSession,
+    syncChannel: RTCDataChannel,
+  ): () => void {
+    const onDataChannelBinary = this.options.voiceHandler?.onDataChannelBinary
+    if (!onDataChannelBinary) {
+      return () => undefined
+    }
+    const ctx = this.createSessionContext(
+      peerId,
+      session.agent,
+      session.controlChannel,
+      syncChannel,
+    )
+    const previousOnMessage = syncChannel.onmessage
+    syncChannel.onmessage = (event) => {
+      previousOnMessage?.(event)
+      if (typeof event.data === 'string') return
+      const binary =
+        event.data instanceof ArrayBuffer
+          ? Buffer.from(event.data)
+          : Buffer.isBuffer(event.data)
+            ? event.data
+            : Buffer.from(event.data as Uint8Array)
+      void onDataChannelBinary(ctx, binary, 'sync')
+    }
+    return () => {
+      syncChannel.onmessage = previousOnMessage
     }
   }
 
@@ -360,7 +439,7 @@ export class VoiceAgentSessionHost {
       return forwardVoiceAgentSpeechToDataChannel(session.agent, session.controlChannel)
     }
 
-    const ctx = this.createSessionContext(peerId, session.agent, session.controlChannel)
+    const ctx = this.createSessionContext(peerId, session.agent, session.controlChannel, session.syncChannel)
     let active = true
 
     void (async () => {
@@ -456,6 +535,7 @@ export class VoiceAgentSessionHost {
     session.resolveMicTrack = undefined
     session.rejectMicTrack = undefined
     session.unwireControl?.()
+    session.unwireSync?.()
     session.unwireSpeechForward?.()
     void session.agent.stop().catch(() => undefined)
     session.pc.close()

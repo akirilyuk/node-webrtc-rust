@@ -7,6 +7,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "start:parity": "tsx src/parity-features.ts",
+    "start:binary": "tsx src/binary-roundtrip.ts",
+    "start:binary-mesh": "tsx src/binary-mesh.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

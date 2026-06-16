@@ -14,6 +14,9 @@ import type { SpeechEvent, SpeechEventType } from './types'
 /** Data channel label used by `examples/voice-agent-browser` and recommended for apps. */
 export const VOICE_CONTROL_CHANNEL_LABEL = 'voice-control'
 
+/** Optional high-frequency binary sync channel (see {@link VOICE_SYNC_CHANNEL_LABEL}). */
+export const VOICE_SYNC_CHANNEL_LABEL = 'voicethere-sync'
+
 /** Client → server: request TTS playback on the agent outbound track. */
 export interface VoiceControlSpeakMessage {
   type: 'speak'
@@ -68,6 +71,8 @@ export interface WireVoiceAgentToDataChannelOptions {
   onSpeak?: (text: string) => void | Promise<void>
   /** Called for other JSON payloads on the voice-control channel. */
   onDataChannelMessage?: (payload: string) => void | Promise<void>
+  /** Called for binary payloads on the voice-control channel. */
+  onDataChannelBinary?: (data: Buffer) => void | Promise<void>
 }
 
 function sendSpeechEventToChannel(channel: RTCDataChannel, event: SpeechEvent): void {
@@ -119,17 +124,27 @@ export function wireVoiceControlSpeakHandler(
   const previousOnMessage = channel.onmessage
   channel.onmessage = (event: MessageEvent) => {
     previousOnMessage?.(event)
-    const payload =
-      typeof event.data === 'string'
-        ? event.data
-        : event.data instanceof ArrayBuffer
-          ? Buffer.from(event.data).toString('utf8')
-          : String(event.data)
+    if (typeof event.data !== 'string') {
+      const binary =
+        event.data instanceof ArrayBuffer
+          ? Buffer.from(event.data)
+          : Buffer.isBuffer(event.data)
+            ? event.data
+            : Buffer.from(event.data as Uint8Array)
+      if (options?.onDataChannelBinary) {
+        void options.onDataChannelBinary(binary)
+        return
+      }
+      if (options?.onDataChannelMessage) {
+        void options.onDataChannelMessage(binary.toString('utf8'))
+      }
+      return
+    }
 
-    const message = parseVoiceControlClientMessage(payload)
+    const message = parseVoiceControlClientMessage(event.data)
     if (!message) {
       if (options?.onDataChannelMessage) {
-        void options.onDataChannelMessage(payload)
+        void options.onDataChannelMessage(event.data)
       }
       return
     }

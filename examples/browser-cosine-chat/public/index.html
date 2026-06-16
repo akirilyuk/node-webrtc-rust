@@ -43,6 +43,15 @@
         <p id="audio-status">Waiting for server track…</p>
       </section>
 
+      <section class="panel game-panel">
+        <h2>Multiplayer sync (binary DataChannel)</h2>
+        <p class="game-hint">
+          Move with arrow keys. Positions sync over a <code>game-sync</code> channel (~10 Hz).
+        </p>
+        <canvas id="game-canvas" width="640" height="360" aria-label="Multiplayer positions"></canvas>
+        <p id="game-status" class="game-status">Join a room to sync player dots.</p>
+      </section>
+
       <section class="panel chat-panel">
         <h2>Room chat</h2>
         <ul id="messages"></ul>
@@ -61,6 +70,6 @@
       </section>
     </main>
 
-    <script type="module" src="/client.js?v=4"></script>
+    <script type="module" src="/client.js?v=5"></script>
   </body>
 </html>

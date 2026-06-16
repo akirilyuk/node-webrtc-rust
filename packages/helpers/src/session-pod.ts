@@ -16,7 +16,7 @@ import {
   type VoiceSessionBudget,
   type VoiceSessionBudgetSnapshot,
 } from './voice-session-budget.js'
-import { VOICE_AGENT_SERVER_PEER_ID, VoiceAgentSessionHost } from './voice-agent-session-host.js'
+import { VOICE_AGENT_SERVER_PEER_ID, VoiceAgentSessionHost, type VoiceAgentSessionHostOptions } from './voice-agent-session-host.js'
 import type { VoiceSessionHandler } from './voice-session-handler.js'
 
 interface IceServerConfig {
@@ -38,6 +38,8 @@ export interface SessionPodOptions {
   sessionBudget?: VoiceSessionBudget
   /** Per-tab STT/TTS logic (same handler instance for every room in this pod). */
   voiceHandler?: VoiceSessionHandler
+  /** Optional binary sync data channel per WebRTC connection. */
+  syncChannel?: VoiceAgentSessionHostOptions['syncChannel']
   log?: (message: string) => void
 }
 
@@ -114,6 +116,7 @@ export class SessionPod {
       voiceConfig: this.options.voiceConfig,
       sessionBudget: this.sessionBudget,
       voiceHandler: this.options.voiceHandler,
+      syncChannel: this.options.syncChannel,
       log: this.options.log,
     })
 

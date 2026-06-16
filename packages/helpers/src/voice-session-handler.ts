@@ -6,6 +6,9 @@
 
 import type { VoiceAgent, SpeechEvent } from '@node-webrtc-rust/sdk/voice'
 
+/** Which WebRTC data channel carried a binary payload. */
+export type DataChannelKind = 'control' | 'sync'
+
 /** Per-browser-tab context passed into your handlers. */
 export interface VoiceSessionContext {
   /** Signaling peer id (e.g. `client-tab1`). */
@@ -16,6 +19,8 @@ export interface VoiceSessionContext {
   speak: (text: string) => Promise<void>
   /** Send a JSON payload to the browser over the voice-control data channel. */
   sendToClient: (payload: unknown) => void
+  /** Send raw bytes — prefers the sync channel when negotiated and open. */
+  sendBinaryToClient: (data: Buffer | Uint8Array, channel?: DataChannelKind) => void
 }
 
 /**
@@ -44,6 +49,15 @@ export interface VoiceSessionHandler {
   onDataChannelMessage?: (
     ctx: VoiceSessionContext,
     payload: string,
+  ) => void | Promise<void>
+
+  /**
+   * Called for binary payloads on the voice-control or sync data channel.
+   */
+  onDataChannelBinary?: (
+    ctx: VoiceSessionContext,
+    data: Buffer,
+    channel: DataChannelKind,
   ) => void | Promise<void>
 
   /**

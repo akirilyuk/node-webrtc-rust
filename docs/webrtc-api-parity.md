@@ -209,9 +209,9 @@ Browser: `ontrack` → attach to `<audio>` or WebAudio.
 | `maxPacketLifeTime` / `maxRetransmits`         | 🟡     | In init type; verify native SCTP mapping                        |
 | `negotiated`                                   | 🟡     |                                                                 |
 | `readyState`                                   | ✅     |                                                                 |
-| `send(string \| Buffer)`                       | ✅     | `ArrayBuffer` / `Uint8Array` coerced                            |
+| `send(string \| Buffer \| ArrayBuffer \| Uint8Array)` | ✅     | `Buffer` passed through on send when already a Buffer           |
 | `close()`                                      | ✅     |                                                                 |
-| `binaryType`                                   | 🟡     | Property only; incoming binary as `Buffer`                      |
+| `binaryType`                                   | ✅     | `'arraybuffer'` returns `ArrayBuffer` on receive; default `Buffer` |
 | `bufferedAmount`                               | ✅     | Cached property synced from native after send and on low events |
 | `bufferedAmountLowThreshold`                   | ✅     | Forwarded to SCTP stack                                         |
 | `onopen` / `onmessage` / `onclose` / `onerror` | ✅     |                                                                 |

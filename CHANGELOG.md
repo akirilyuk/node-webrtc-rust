@@ -10,7 +10,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.5.3] — 2026-06-15
+## [0.5.4] — 2026-06-16
+
+**Compare:** [`release/0.5.3…release/0.5.4`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.3...release/0.5.4)
+
+ArrayBuffer / binary DataChannel support and optional high-frequency sync channel.
+
+### Added
+
+- **SDK `RTCDataChannel`** — honor `binaryType: 'arraybuffer'` on receive; pass `Buffer` through on send without extra copies.
+- **Helpers dual channel** — optional `voicethere-sync` data channel; `sendBinaryToClient`, `onDataChannelBinary`, exported `DataChannelKind`.
+- **Examples** — `shared/game-state-sync`, `peer-connection` `start:binary` / `start:binary-mesh`, browser-cosine-chat multiplayer canvas sync over `game-sync`.
+- **SDK e2e** — binary DataChannel round-trip test.
+
+### Changed
+
+- **Native bindings** — move incoming SCTP `Bytes` into Node `Buffer` with one allocation when uniquely owned.
+
+---
 
 **Compare:** [`release/0.5.2…release/0.5.3`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.2...release/0.5.3)
 

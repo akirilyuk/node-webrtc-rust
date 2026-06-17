@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/sdk",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Browser-compatible WebRTC and conference APIs for Node.js",
   "keywords": [
     "webrtc",
@@ -59,13 +59,14 @@
   ],
   "scripts": {
     "prebuild": "rm -rf dist",
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node ../../scripts/fix-esm-import-extensions.mjs dist/esm && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
+    "test:esm-import": "node ../../scripts/smoke-esm-sdk-import.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },
   "dependencies": {
-    "@node-webrtc-rust/bindings": "0.5.4",
-    "@node-webrtc-rust/signaling": "0.5.4"
+    "@node-webrtc-rust/bindings": "0.5.5",
+    "@node-webrtc-rust/signaling": "0.5.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

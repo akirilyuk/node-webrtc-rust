@@ -10,6 +10,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.5.5] — 2026-06-17
+
+**Compare:** [`release/0.5.4…release/0.5.5`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.4...release/0.5.5)
+
+### Fixed
+
+- **SDK / signaling ESM publish** — post-build step adds `.js` extensions on relative imports in `dist/esm` so Node 24+ can load `@node-webrtc-rust/sdk` from ESM consumers (e.g. VoiceThere runner).
+
+---
+
 ## [0.5.4] — 2026-06-16
 
 **Compare:** [`release/0.5.3…release/0.5.4`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.3...release/0.5.4)

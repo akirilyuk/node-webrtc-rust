@@ -48,7 +48,7 @@ Mock STT/TTS by default (no API keys). Same `VOICE_VENDOR` env vars as [`voice-a
 | `POST` | `/api/sessions` | `{ "sessionId": "call-1" }` — allocate session on pod |
 | `GET`  | `/api/sessions` | `{ activeSessions, activeConnections, sessions[] }`   |
 
-In production, call `SessionPod.ensureSession()` from your orchestrator instead of this demo route.
+In production, call `SessionPod.ensureSession()` from your session host instead of this demo route.
 
 ## Use in your app
 

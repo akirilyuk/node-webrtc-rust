@@ -95,7 +95,7 @@ Multiple concurrent callers = multiple `VoiceAgent` instances (one per WebRTC co
 
 | Helper                  | Use when                                                                               |
 | ----------------------- | -------------------------------------------------------------------------------------- |
-| `SessionPod`            | One signaling entry point, many concurrent sessions (orchestrator assigns `sessionId`) |
+| `SessionPod`            | One signaling entry point, many concurrent sessions (your host assigns `sessionId`) |
 | `VoiceAgentSessionHost` | One signaling room; auto-spawns one agent per `client-*` peer                          |
 | `createKickFrame`       | Prime outbound RTP before TTS PCM                                                      |
 

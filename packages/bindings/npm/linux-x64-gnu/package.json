@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/bindings-linux-x64-gnu",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "node-webrtc-rust native binding for Linux x64 (glibc)",
   "keywords": [
     "webrtc",

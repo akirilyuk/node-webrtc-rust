@@ -1,11 +1,14 @@
 name: CI Docker image
 
-# Rebuild and publish the CI container only from the `ci` branch.
-# All other workflows pull ghcr.io/.../ci-build:latest.
+# Rebuild and publish CI containers from the `ci` branch (or `main` when Dockerfiles change).
+# Workflows pull ghcr.io/.../ci-build:latest (glibc) and ci-build-alpine:latest (musl).
 
 on:
   push:
-    branches: [ci]
+    branches: [ci, main]
+    paths:
+      - 'docker/ci/**'
+      - 'scripts/ci/install-alpine-native-toolchain.sh'
   workflow_dispatch:
 
 env:

@@ -68,12 +68,12 @@ jobs:
     if: inputs.build_linux_musl
     runs-on: self-hosted
     container:
-      image: node:24-alpine
+      image: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Alpine native toolchain
-        run: bash scripts/ci/install-alpine-native-toolchain.sh
 
       - uses: ./.github/actions/native-binding-cache
         id: native-cache

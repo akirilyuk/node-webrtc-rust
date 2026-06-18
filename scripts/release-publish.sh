@@ -192,7 +192,31 @@ stage_build_output() {
 
 build_linux_target() {
   local target="$1"
-  (cd "$BINDINGS" && npx napi build --platform --release --target "$target" --zig)
+  if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
+    build_linux_musl_target "$target"
+    return
+  fi
+  if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+    (cd "$BINDINGS" && npx napi build --platform --release --target "$target")
+  else
+    (cd "$BINDINGS" && npx napi build --platform --release --target "$target" --zig)
+  fi
+  stage_build_output "$target"
+}
+
+build_linux_musl_target() {
+  local target="$1"
+  local alpine_image="${CI_ALPINE_IMAGE_LOCAL:-node-webrtc-rust-ci-alpine:local}"
+  echo "  $target (native Alpine — no Zig cross)"
+  docker build -t "$alpine_image" -f "$ROOT/docker/ci/Dockerfile.alpine" "$ROOT"
+  docker run --rm \
+    -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -e OPUS_STATIC=1 \
+    -v "$ROOT:/workspace" \
+    -w /workspace/packages/bindings \
+    "$alpine_image" \
+    npx napi build --platform --release --target "$target"
+  bash "$ROOT/scripts/ci/verify-musl-runtime.sh"
   stage_build_output "$target"
 }
 
@@ -225,9 +249,9 @@ if ! ensure_artifact "$WINDOWS_TARGET"; then
 fi
 
 if [[ "$NEED_BINDINGS_CI" == true ]]; then
-  echo "==> Checking build prerequisites (cmake, zig, rust)"
+  echo "==> Checking build prerequisites (cmake, rust, docker for musl)"
   require_cmd cmake
-  require_cmd zig
+  require_cmd docker
   require_cmd rustc
   require_cmd cargo
   require_cmd npm
@@ -242,7 +266,7 @@ if [[ "$NEED_BINDINGS_CI" == true ]]; then
   cd "$BINDINGS"
   npm ci --ignore-scripts
 
-  echo "==> Build Linux targets (Zig cross-compile)"
+  echo "==> Build Linux targets"
   for target in "${LINUX_TARGETS[@]}"; do
     ensure_artifact "$target" && continue
     echo "  $target"

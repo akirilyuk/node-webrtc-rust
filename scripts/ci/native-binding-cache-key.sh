@@ -25,4 +25,10 @@ cd "$ROOT"
       find "crates/${crate}/src" -type f -name '*.rs' | sort | xargs sha256sum
     fi
   done
+
+  # Musl prebuilds must rebuild when Alpine native toolchain changes (not Zig cross).
+  sha256sum \
+    docker/ci/Dockerfile.alpine \
+    scripts/ci/install-alpine-native-toolchain.sh \
+    scripts/ci/verify-musl-runtime.sh
 } | sha256sum | awk '{print $1}'

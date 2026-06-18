@@ -10,6 +10,7 @@ on:
 
 env:
   CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+  CI_ALPINE_IMAGE: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
 
 jobs:
   build-and-push:
@@ -48,5 +49,17 @@ jobs:
           tags: |
             ${{ env.CI_IMAGE }}
             ghcr.io/${{ github.repository }}/ci-build:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Alpine CI image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/ci/Dockerfile.alpine
+          push: true
+          tags: |
+            ${{ env.CI_ALPINE_IMAGE }}
+            ghcr.io/${{ github.repository }}/ci-build-alpine:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -104,6 +104,7 @@ jobs:
     outputs:
       linux_x64_matrix: ${{ steps.plan.outputs.linux_x64_matrix }}
       build_linux_arm64: ${{ steps.plan.outputs.build_linux_arm64 }}
+      build_linux_musl: ${{ steps.plan.outputs.build_linux_musl }}
       host_matrix: ${{ steps.plan.outputs.host_matrix }}
       cached_linux_x64: ${{ steps.plan.outputs.cached_linux_x64 }}
       cached_linux_arm64: ${{ steps.plan.outputs.cached_linux_arm64 }}
@@ -125,13 +126,15 @@ jobs:
       needs.quality.result == 'success' &&
       (
         needs.plan.outputs.linux_x64_matrix != '[]' ||
-        needs.plan.outputs.build_linux_arm64 == 'true'
+        needs.plan.outputs.build_linux_arm64 == 'true' ||
+        needs.plan.outputs.build_linux_musl == 'true'
       )
     uses: ./.github/workflows/reusable-build-linux.yml
     with:
       cache_prefix: v1-release
       linux_x64_matrix: ${{ needs.plan.outputs.linux_x64_matrix }}
       build_linux_arm64: ${{ needs.plan.outputs.build_linux_arm64 == 'true' }}
+      build_linux_musl: ${{ needs.plan.outputs.build_linux_musl == 'true' }}
     secrets: inherit
 
   build-host:

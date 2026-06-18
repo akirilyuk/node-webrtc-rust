@@ -1,0 +1,10 @@
+# Alpine CI image — native x86_64-unknown-linux-musl builds (no Zig cross from glibc).
+# Build from repo root: docker build -f docker/ci/Dockerfile.alpine .
+
+FROM node:24-alpine
+
+COPY scripts/ci/install-alpine-native-toolchain.sh /usr/local/bin/install-alpine-native-toolchain.sh
+RUN chmod +x /usr/local/bin/install-alpine-native-toolchain.sh \
+  && install-alpine-native-toolchain.sh
+
+WORKDIR /workspace

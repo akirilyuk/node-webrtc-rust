@@ -36,7 +36,7 @@ Composite actions live in [`.github/actions/`](../../.github/actions/).
 | macOS                  | `macos-latest`                             | Release host matrix (darwin x64 + arm64)                                                        |
 | Windows                | `windows-latest`                           | Release host matrix (x64)                                                                       |
 
-**Linux gnu x64** builds natively on the self-hosted runner without `napi --zig` so Sherpa/ONNX static objects link correctly (`__cpu_features2`). **Linux arm64 gnu** builds on GitHub-hosted ARM runners (native compile, no Zig cross) to avoid build-script `ring` arch mismatches. **Linux musl** still cross-compiles with Zig on self-hosted x64.
+**Linux gnu x64** builds natively on the self-hosted runner without `napi --zig` so Sherpa/ONNX static objects link correctly (`__cpu_features2`). **Linux x64 musl** builds natively on **Alpine** (`node:24-alpine` job + `install-alpine-native-toolchain.sh`) without Zig — Zig cross from Ubuntu glibc produced `.node` files that fail on Alpine (`__strdup: symbol not found`). CI runs `verify-musl-runtime.sh` (dlopen in `node:24-alpine`) after musl builds. **Linux arm64 gnu** builds on GitHub-hosted ARM runners (native compile, no Zig cross) to avoid build-script `ring` arch mismatches.
 
 The self-hosted runner must have **Docker** (runner user in the `docker` group). Container jobs and test `docker run` leave root-owned files; host jobs run an inline **Docker `chown`** prepare step before checkout (no passwordless sudo required).
 

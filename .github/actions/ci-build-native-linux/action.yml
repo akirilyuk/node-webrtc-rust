@@ -49,14 +49,6 @@ inputs:
     description: Restore npm cache (disable on Alpine — BusyBox tar lacks GNU tar -P)
     required: false
     default: 'true'
-  cargo_features:
-    description: Optional Cargo features passed to napi build (e.g. linux-musl-shared-sherpa)
-    required: false
-    default: ''
-  cargo_no_default_features:
-    description: Pass --no-default-features to cargo (required for linux-musl-shared-sherpa)
-    required: false
-    default: 'false'
   sherpa_onnx_lib_dir:
     description: SHERPA_ONNX_LIB_DIR for musl builds (musl Sherpa shared libs)
     required: false
@@ -160,10 +152,13 @@ runs:
       env:
         CMAKE_POLICY_VERSION_MINIMUM: '3.5'
         OPUS_STATIC: '1'
-        SHERPA_ONNX_LIB_DIR: ${{ inputs.sherpa_onnx_lib_dir }}
       run: |
         set -euo pipefail
-        if [[ -n "${SHERPA_ONNX_LIB_DIR:-}" ]]; then
+        # Never export empty SHERPA_ONNX_LIB_DIR — sherpa-onnx-sys treats a set-but-empty
+        # value as shared mode and panics (breaks gnu/arm64 when musl input is unset).
+        unset SHERPA_ONNX_LIB_DIR
+        if [[ -n "${{ inputs.sherpa_onnx_lib_dir }}" ]]; then
+          export SHERPA_ONNX_LIB_DIR="${{ inputs.sherpa_onnx_lib_dir }}"
           export LD_LIBRARY_PATH="${SHERPA_ONNX_LIB_DIR}:/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
         fi
         rm -f *.node
@@ -177,12 +172,6 @@ runs:
         if [[ "${{ inputs.zig }}" == "true" ]]; then
           args+=(--zig)
         fi
-        if [[ -n "${{ inputs.cargo_features }}" ]]; then
-          args+=(--features "${{ inputs.cargo_features }}")
-        fi
-        if [[ "${{ inputs.cargo_no_default_features }}" == "true" ]]; then
-          args+=(--cargo-flags=--no-default-features)
-        fi
         npx napi "${args[@]}"
         # Host-style build emits node-webrtc-rust.node; index.js loads *.linux-x64-gnu.node
         # (or falls back to published optional deps). Mirror local build:debug:local.
@@ -193,10 +182,10 @@ runs:
     - name: Verify native NAPI surface
       if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
       shell: bash
-      env:
-        SHERPA_ONNX_LIB_DIR: ${{ inputs.sherpa_onnx_lib_dir }}
       run: |
-        if [[ -n "${SHERPA_ONNX_LIB_DIR:-}" ]]; then
+        unset SHERPA_ONNX_LIB_DIR
+        if [[ -n "${{ inputs.sherpa_onnx_lib_dir }}" ]]; then
+          export SHERPA_ONNX_LIB_DIR="${{ inputs.sherpa_onnx_lib_dir }}"
           export LD_LIBRARY_PATH="${SHERPA_ONNX_LIB_DIR}:/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
         fi
         node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"

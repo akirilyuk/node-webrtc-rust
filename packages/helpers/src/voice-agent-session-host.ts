@@ -38,7 +38,11 @@ import {
   type VoiceSessionBudget,
   type VoiceSessionBudgetSnapshot,
 } from './voice-session-budget.js'
-import type { VoiceSessionContext, VoiceSessionHandler, DataChannelKind } from './voice-session-handler.js'
+import type {
+  VoiceSessionContext,
+  VoiceSessionHandler,
+  DataChannelKind,
+} from './voice-session-handler.js'
 
 export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
 
@@ -51,12 +55,13 @@ interface IceServerConfig {
 
 interface ClientSession {
   pc: RTCPeerConnection
-  agentOut: LocalAudioTrack
   controlChannel: RTCDataChannel
   syncChannel?: RTCDataChannel
-  agent: VoiceAgent
+  agent?: VoiceAgent
+  agentOut?: LocalAudioTrack
   inboundTrack?: RemoteAudioTrack
   agentStarted: boolean
+  peerConnectedNotified: boolean
   unwireControl?: () => void
   unwireSync?: () => void
   unwireSpeechForward?: () => void
@@ -72,6 +77,8 @@ interface ClientSession {
 
 export interface VoiceAgentSessionHostOptions {
   voiceConfig: VoiceAgentConfig
+  /** `data-only` skips audio tracks and VoiceAgent (DataChannels only). */
+  sessionMode?: 'voice' | 'data-only'
   /** Peer id prefix for clients that receive an agent (default `client-`). */
   clientPeerIdPrefix?: string
   /** Log connection lifecycle when provided. */
@@ -105,6 +112,7 @@ export class VoiceAgentSessionHost {
   private readonly clientPeerIdPrefix: string
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
+  private readonly sessionMode: 'voice' | 'data-only'
   /** Per-peer WebRTC reconnect attempts after `connectionState=failed`. */
   private readonly reconnectAttempts = new Map<string, number>()
 
@@ -116,6 +124,7 @@ export class VoiceAgentSessionHost {
     this.clientPeerIdPrefix = options.clientPeerIdPrefix ?? 'client-'
     this.log = options.log ?? ((message) => console.log(message))
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
+    this.sessionMode = options.sessionMode ?? 'voice'
 
     this.signaling.on('peer-joined', (peerId) => {
       if (peerId === VOICE_AGENT_SERVER_PEER_ID) return
@@ -164,8 +173,16 @@ export class VoiceAgentSessionHost {
 
     const contexts: VoiceSessionContext[] = []
     for (const [peerId, session] of this.sessions) {
-      if (!session.agentStarted) continue
-      contexts.push(this.createSessionContext(peerId, session.agent, session.controlChannel, session.syncChannel))
+      if (this.sessionMode === 'voice' && !session.agentStarted) continue
+      if (!session.agent) continue
+      contexts.push(
+        this.createSessionContext(
+          peerId,
+          session.agent,
+          session.controlChannel,
+          session.syncChannel,
+        ),
+      )
     }
 
     const onBroadcastSpeak = this.options.voiceHandler?.onBroadcastSpeak
@@ -215,8 +232,7 @@ export class VoiceAgentSessionHost {
 
   private async connectClientInner(peerId: string): Promise<void> {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers })
-    const agentOut = new LocalAudioTrack(`agent-out-${peerId}`, 'voice-agent')
-    const agent = new VoiceAgent(this.options.voiceConfig)
+    const dataOnly = this.sessionMode === 'data-only'
 
     const controlChannel = pc.createDataChannel(VOICE_CONTROL_CHANNEL_LABEL, { ordered: true })
     const syncEnabled = this.options.syncChannel?.enabled ?? false
@@ -225,7 +241,18 @@ export class VoiceAgentSessionHost {
           ordered: this.options.syncChannel?.ordered ?? false,
         })
       : undefined
-    await pc.addTrack(agentOut)
+
+    let agent: VoiceAgent | undefined
+    let agentOut: LocalAudioTrack | undefined
+    let inboundPromise: Promise<RemoteAudioTrack> | undefined
+
+    if (dataOnly) {
+      this.log(`[data ${peerId}] negotiating DataChannels only (no audio)`)
+    } else {
+      agentOut = new LocalAudioTrack(`agent-out-${peerId}`, 'voice-agent')
+      agent = new VoiceAgent(this.options.voiceConfig)
+      await pc.addTrack(agentOut)
+    }
 
     const session: ClientSession = {
       pc,
@@ -234,6 +261,7 @@ export class VoiceAgentSessionHost {
       syncChannel,
       agent,
       agentStarted: false,
+      peerConnectedNotified: false,
       remoteDescriptionSet: false,
       offerSent: false,
       pendingAnswer: null,
@@ -241,22 +269,24 @@ export class VoiceAgentSessionHost {
     }
     this.sessions.set(peerId, session)
 
-    const inboundPromise = new Promise<RemoteAudioTrack>((resolve, reject) => {
-      session.resolveMicTrack = resolve
-      session.rejectMicTrack = reject
-    })
-    void inboundPromise.catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      this.log(`[voice ${peerId}] ${message}`)
-      this.closeClient(peerId)
-    })
+    if (!dataOnly && agent) {
+      inboundPromise = new Promise<RemoteAudioTrack>((resolve, reject) => {
+        session.resolveMicTrack = resolve
+        session.rejectMicTrack = reject
+      })
+      void inboundPromise.catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        this.log(`[voice ${peerId}] ${message}`)
+        this.closeClient(peerId)
+      })
 
-    pc.ontrack = (event) => {
-      if (event.track.kind !== 'audio') return
-      this.clearMicTrackTimer(session)
-      session.resolveMicTrack?.(event.track as RemoteAudioTrack)
-      session.resolveMicTrack = undefined
-      session.rejectMicTrack = undefined
+      pc.ontrack = (event) => {
+        if (event.track.kind !== 'audio') return
+        this.clearMicTrackTimer(session)
+        session.resolveMicTrack?.(event.track as RemoteAudioTrack)
+        session.resolveMicTrack = undefined
+        session.rejectMicTrack = undefined
+      }
     }
 
     pc.onicecandidate = (event) => {
@@ -266,22 +296,28 @@ export class VoiceAgentSessionHost {
     }
 
     pc.oniceconnectionstatechange = () => {
-      this.log(`[voice ${peerId}] iceConnectionState=${pc.iceConnectionState}`)
+      const tag = dataOnly ? 'data' : 'voice'
+      this.log(`[${tag} ${peerId}] iceConnectionState=${pc.iceConnectionState}`)
     }
 
     pc.onconnectionstatechange = () => {
-      this.log(`[voice ${peerId}] connectionState=${pc.connectionState}`)
+      const tag = dataOnly ? 'data' : 'voice'
+      this.log(`[${tag} ${peerId}] connectionState=${pc.connectionState}`)
       if (pc.connectionState === 'connected') {
         this.reconnectAttempts.delete(peerId)
-        void this.startAgentSession(peerId, inboundPromise).catch((error: unknown) => {
-          console.error(`Failed to start VoiceAgent for ${peerId}:`, error)
-        })
+        if (dataOnly) {
+          this.maybeNotifyPeerConnected(peerId, session)
+        } else if (inboundPromise) {
+          void this.startAgentSession(peerId, inboundPromise).catch((error: unknown) => {
+            console.error(`Failed to start VoiceAgent for ${peerId}:`, error)
+          })
+        }
       } else if (pc.connectionState === 'failed') {
         const attempts = (this.reconnectAttempts.get(peerId) ?? 0) + 1
         this.reconnectAttempts.set(peerId, attempts)
         if (attempts <= 2) {
           this.log(
-            `[voice ${peerId}] connection failed — reconnect attempt ${attempts}/2 (new offer)`,
+            `[${tag} ${peerId}] connection failed — reconnect attempt ${attempts}/2 (new offer)`,
           )
           this.closeClient(peerId)
           void this.connectClient(peerId).catch((error: unknown) => {
@@ -289,7 +325,7 @@ export class VoiceAgentSessionHost {
             this.closeClient(peerId)
           })
         } else {
-          this.log(`[voice ${peerId}] connection failed — max reconnect attempts reached`)
+          this.log(`[${tag} ${peerId}] connection failed — max reconnect attempts reached`)
           this.closeClient(peerId)
         }
       } else if (pc.connectionState === 'closed') {
@@ -298,10 +334,40 @@ export class VoiceAgentSessionHost {
     }
 
     controlChannel.onopen = () => {
-      this.log(`[voice ${peerId}] control channel open`)
+      const tag = dataOnly ? 'data' : 'voice'
+      this.log(`[${tag} ${peerId}] control channel open`)
       session.unwireControl?.()
-      const ctx = this.createSessionContext(peerId, agent, controlChannel, syncChannel)
+      const ctx = this.createSessionContext(peerId, session.agent, controlChannel, syncChannel)
       const voiceHandler = this.options.voiceHandler
+      if (dataOnly) {
+        const onDataChannelMessage = voiceHandler?.onDataChannelMessage
+        const onDataChannelBinary = voiceHandler?.onDataChannelBinary
+        const previousOnMessage = controlChannel.onmessage
+        controlChannel.onmessage = (event) => {
+          previousOnMessage?.(event)
+          if (typeof event.data !== 'string') {
+            if (!onDataChannelBinary) return
+            const binary =
+              event.data instanceof ArrayBuffer
+                ? Buffer.from(event.data)
+                : Buffer.isBuffer(event.data)
+                  ? event.data
+                  : Buffer.from(event.data as Uint8Array)
+            void onDataChannelBinary(ctx, binary, 'control')
+            return
+          }
+          if (onDataChannelMessage) {
+            void onDataChannelMessage(ctx, event.data)
+          }
+        }
+        session.unwireControl = () => {
+          controlChannel.onmessage = previousOnMessage
+        }
+        this.maybeNotifyPeerConnected(peerId, session)
+        return
+      }
+
+      if (!agent) return
       const onSpeakRequest = voiceHandler?.onSpeakRequest
       const onDataChannelMessage = voiceHandler?.onDataChannelMessage
       const onDataChannelBinary = voiceHandler?.onDataChannelBinary
@@ -327,7 +393,8 @@ export class VoiceAgentSessionHost {
     if (syncChannel) {
       syncChannel.binaryType = 'arraybuffer'
       syncChannel.onopen = () => {
-        this.log(`[voice ${peerId}] sync channel open (${syncChannel.label})`)
+        const tag = dataOnly ? 'data' : 'voice'
+        this.log(`[${tag} ${peerId}] sync channel open (${syncChannel.label})`)
       }
       session.unwireSync = this.wireSyncChannel(peerId, session, syncChannel)
     }
@@ -337,8 +404,9 @@ export class VoiceAgentSessionHost {
     await pc.gatheringComplete()
     this.signaling.sendOffer(peerId, pc.localDescription!.toJSON())
     session.offerSent = true
+    const tag = dataOnly ? 'data' : 'voice'
     this.log(
-      `[voice ${peerId}] offer sent (audio + ${VOICE_CONTROL_CHANNEL_LABEL} DC${syncChannel ? ` + ${syncChannel.label}` : ''})`,
+      `[${tag} ${peerId}] offer sent (${dataOnly ? '' : 'audio + '}${VOICE_CONTROL_CHANNEL_LABEL} DC${syncChannel ? ` + ${syncChannel.label}` : ''})`,
     )
 
     if (session.pendingAnswer) {
@@ -348,12 +416,30 @@ export class VoiceAgentSessionHost {
     }
   }
 
+  private maybeNotifyPeerConnected(peerId: string, session: ClientSession): void {
+    if (session.peerConnectedNotified) return
+    if (session.pc.connectionState !== 'connected') return
+    if (session.controlChannel.readyState !== 'open') return
+    session.peerConnectedNotified = true
+    const ctx = this.createSessionContext(
+      peerId,
+      session.agent,
+      session.controlChannel,
+      session.syncChannel,
+    )
+    void Promise.resolve(this.options.voiceHandler?.onPeerConnected?.(ctx)).catch(
+      (error: unknown) => {
+        console.error(`[session ${peerId}] voiceHandler.onPeerConnected failed:`, error)
+      },
+    )
+  }
+
   private async startAgentSession(
     peerId: string,
     inboundPromise: Promise<RemoteAudioTrack>,
   ): Promise<void> {
     const session = this.sessions.get(peerId)
-    if (!session || session.agentStarted) return
+    if (!session || session.agentStarted || !session.agent || !session.agentOut) return
     session.agentStarted = true
 
     session.inboundTrack = await inboundPromise
@@ -368,11 +454,12 @@ export class VoiceAgentSessionHost {
 
     await session.agentOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
     this.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
+    this.maybeNotifyPeerConnected(peerId, session)
   }
 
   private createSessionContext(
     peerId: string,
-    agent: VoiceAgent,
+    agent: VoiceAgent | undefined,
     controlChannel: RTCDataChannel,
     syncChannel?: RTCDataChannel,
   ): VoiceSessionContext {
@@ -388,8 +475,12 @@ export class VoiceAgentSessionHost {
     }
     return {
       peerId,
+      roomId: this.signaling.room,
       agent,
-      speak: (text: string) => agent.sendTextToTTS(text),
+      speak: (text: string) => {
+        if (!agent) return Promise.resolve()
+        return agent.sendTextToTTS(text)
+      },
       sendToClient: (payload: unknown) => {
         if (controlChannel.readyState !== 'open') return
         controlChannel.send(JSON.stringify(payload))
@@ -435,15 +526,28 @@ export class VoiceAgentSessionHost {
    */
   private wireSpeechEvents(peerId: string, session: ClientSession): () => void {
     const voiceHandler = this.options.voiceHandler
+    if (!session.agent) {
+      return () => undefined
+    }
     if (!voiceHandler?.onSpeechEvent) {
       return forwardVoiceAgentSpeechToDataChannel(session.agent, session.controlChannel)
     }
 
-    const ctx = this.createSessionContext(peerId, session.agent, session.controlChannel, session.syncChannel)
+    if (!session.agent) {
+      return () => undefined
+    }
+    const agent = session.agent
+
+    const ctx = this.createSessionContext(
+      peerId,
+      agent,
+      session.controlChannel,
+      session.syncChannel,
+    )
     let active = true
 
     void (async () => {
-      for await (const event of session.agent.speechEvents()) {
+      for await (const event of agent.speechEvents()) {
         if (!active) break
         this.sendSpeechEventToControlChannel(session.controlChannel, event)
         void Promise.resolve(voiceHandler.onSpeechEvent!(ctx, event)).catch((error: unknown) => {
@@ -507,8 +611,11 @@ export class VoiceAgentSessionHost {
         await session.pc.addIceCandidate(new RTCIceCandidate(candidate))
       }
       session.pendingIce = []
-      this.startMicTrackTimer(peerId, session)
-      this.log(`[voice ${peerId}] answer applied, connectionState=${session.pc.connectionState}`)
+      if (this.sessionMode !== 'data-only') {
+        this.startMicTrackTimer(peerId, session)
+      }
+      const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+      this.log(`[${tag} ${peerId}] answer applied, connectionState=${session.pc.connectionState}`)
     } catch (error: unknown) {
       console.error(`Failed to apply answer from ${peerId}:`, error)
       this.closeClient(peerId)
@@ -531,16 +638,32 @@ export class VoiceAgentSessionHost {
       this.sessionBudget.release(peerId)
       return
     }
+    if (session.peerConnectedNotified) {
+      const ctx = this.createSessionContext(
+        peerId,
+        session.agent,
+        session.controlChannel,
+        session.syncChannel,
+      )
+      void Promise.resolve(this.options.voiceHandler?.onPeerDisconnected?.(ctx)).catch(
+        (error: unknown) => {
+          console.error(`[session ${peerId}] voiceHandler.onPeerDisconnected failed:`, error)
+        },
+      )
+    }
     this.clearMicTrackTimer(session)
     session.resolveMicTrack = undefined
     session.rejectMicTrack = undefined
     session.unwireControl?.()
     session.unwireSync?.()
     session.unwireSpeechForward?.()
-    void session.agent.stop().catch(() => undefined)
+    if (session.agent) {
+      void session.agent.stop().catch(() => undefined)
+    }
     session.pc.close()
     this.sessions.delete(peerId)
     this.sessionBudget.release(peerId)
-    this.log(`[voice ${peerId}] VoiceAgent stopped, connection closed`)
+    const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+    this.log(`[${tag} ${peerId}] session stopped, connection closed`)
   }
 }

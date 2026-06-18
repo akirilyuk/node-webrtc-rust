@@ -304,7 +304,16 @@ git push origin ci
 # Or: Actions → CI Docker image → Run workflow (workflow_dispatch)
 ```
 
-**Before the first musl CI run after adding `Dockerfile.alpine`:** publish `ci-build-alpine:latest` (merge to `main` or push `ci`, then wait for **CI Docker image** workflow). The musl job pulls that image; it does not bootstrap Rust on plain `node:24-alpine` each run.
+If release prep bumps versions before platform packages are on npm, run:
+
+```bash
+SKIP_LOCK_REFRESH=1 bash scripts/ci/bump-workspace-versions.sh <version>
+bash scripts/ci/sync-lock-workspace-versions.sh   # keeps lock workspace versions in sync
+```
+
+After publish: `bash scripts/ci/refresh-package-lock-optional-bindings.sh` (or merge the post-release PR).
+
+**Before the first musl CI run after adding `Dockerfile.alpine`:** publish `ci-build-alpine:latest` (merge to `main` or push `ci`, then wait for **CI Docker image** workflow). Musl jobs disable npm cache (BusyBox `tar` lacks GNU `-P`).
 
 **Native build env:** `audiopus_sys` needs static Opus + CMake policy shim. Set `OPUS_STATIC=1` and `CMAKE_POLICY_VERSION_MINIMUM=3.5` on reusable build workflows and in [`ci-build-native-*`](../../.github/actions/) build steps (caller workflow `env` does not propagate into `workflow_call` jobs).
 

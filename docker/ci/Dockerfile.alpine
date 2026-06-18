@@ -9,4 +9,8 @@ RUN apk add --no-cache bash \
   && chmod +x /usr/local/bin/install-alpine-native-toolchain.sh \
   && install-alpine-native-toolchain.sh
 
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
 WORKDIR /workspace

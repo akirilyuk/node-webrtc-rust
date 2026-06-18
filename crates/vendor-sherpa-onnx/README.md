@@ -81,6 +81,21 @@ Hindi, Portuguese, and Italian are not yet available as dedicated streaming Zipf
 
 See also [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../shared/VOICE_VENDOR_REFERENCE.md).
 
+## Alpine / musl (linux-x64-musl)
+
+Default builds link **glibc static** Sherpa prebuilts from `sherpa-onnx-sys`. On **Alpine/musl**, those artifacts fail at runtime (`__strdup: symbol not found`).
+
+Musl CI and release builds compile Sherpa against Alpine’s **musl `onnxruntime`** package and link **shared** libs from `scripts/ci/build-sherpa-onnx-musl-libs.sh`:
+
+```bash
+export SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib
+export LD_LIBRARY_PATH="$SHERPA_ONNX_LIB_DIR:/usr/lib"
+napi build --platform --target x86_64-unknown-linux-musl \
+  --features linux-musl-shared-sherpa --cargo-flags=--no-default-features
+```
+
+Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_DIR` to a Sherpa shared-lib prefix or use the published `@node-webrtc-rust/bindings-linux-x64-musl` optional package (built with the same flags in CI).
+
 ## Multi-session scaling (current vs planned)
 
 **Pooled (default):** a process-wide **`SherpaModelPool`** shares one `OnlineRecognizer` per STT `model_path` and one `OfflineTts` per TTS model directory. Each `VoiceAgent` / `SherpaStt` session still owns its own `OnlineStream`; TTS uses a shared engine with a synthesis mutex and optional concurrency limits.

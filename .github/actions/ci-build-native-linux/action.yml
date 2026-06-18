@@ -49,6 +49,18 @@ inputs:
     description: Restore npm cache (disable on Alpine — BusyBox tar lacks GNU tar -P)
     required: false
     default: 'true'
+  cargo_features:
+    description: Optional Cargo features passed to napi build (e.g. linux-musl-shared-sherpa)
+    required: false
+    default: ''
+  cargo_no_default_features:
+    description: Pass --no-default-features to cargo (required for linux-musl-shared-sherpa)
+    required: false
+    default: 'false'
+  sherpa_onnx_lib_dir:
+    description: SHERPA_ONNX_LIB_DIR for musl builds (musl Sherpa shared libs)
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -142,8 +154,12 @@ runs:
       env:
         CMAKE_POLICY_VERSION_MINIMUM: '3.5'
         OPUS_STATIC: '1'
+        SHERPA_ONNX_LIB_DIR: ${{ inputs.sherpa_onnx_lib_dir }}
       run: |
         set -euo pipefail
+        if [[ -n "${SHERPA_ONNX_LIB_DIR:-}" ]]; then
+          export LD_LIBRARY_PATH="${SHERPA_ONNX_LIB_DIR}:/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        fi
         rm -f *.node
         args=(build --target "${{ inputs.target }}")
         if [[ "${{ inputs.profile }}" == "release" ]]; then
@@ -154,6 +170,12 @@ runs:
         fi
         if [[ "${{ inputs.zig }}" == "true" ]]; then
           args+=(--zig)
+        fi
+        if [[ -n "${{ inputs.cargo_features }}" ]]; then
+          args+=(--features "${{ inputs.cargo_features }}")
+        fi
+        if [[ "${{ inputs.cargo_no_default_features }}" == "true" ]]; then
+          args+=(--cargo-flags=--no-default-features)
         fi
         npx napi "${args[@]}"
         # Host-style build emits node-webrtc-rust.node; index.js loads *.linux-x64-gnu.node

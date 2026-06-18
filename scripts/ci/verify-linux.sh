@@ -30,15 +30,24 @@ docker run --rm -v "$ROOT:/workspace" -w /workspace/packages/bindings "$IMAGE" \
 
 for target in "${TARGETS[@]}"; do
   if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
-    echo "==> napi build --platform --release --target $target (native Alpine, no --zig)"
+    echo "==> napi build --platform --release --target $target (native Alpine, musl Sherpa shared)"
     docker run --rm \
       -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
       -e OPUS_STATIC=1 \
+      -e SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib \
+      -e LD_LIBRARY_PATH=/opt/sherpa-musl/lib:/usr/lib \
       -v "$ROOT:/workspace" \
       -w /workspace/packages/bindings \
       "$ALPINE_IMAGE" \
-      npx napi build --platform --release --target "$target"
-    bash "$ROOT/scripts/ci/verify-musl-runtime.sh"
+      npx napi build --platform --release --target "$target" \
+        --features linux-musl-shared-sherpa --cargo-flags=--no-default-features
+    docker run --rm \
+      -e SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib \
+      -e LD_LIBRARY_PATH=/opt/sherpa-musl/lib:/usr/lib \
+      -v "$ROOT:/workspace" \
+      -w /workspace/packages/bindings \
+      "$ALPINE_IMAGE" \
+      bash ../../scripts/ci/verify-musl-runtime.sh
     continue
   fi
 

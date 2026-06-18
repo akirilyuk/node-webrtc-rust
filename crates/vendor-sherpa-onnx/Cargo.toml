@@ -10,9 +10,15 @@ description = "Local Sherpa ONNX streaming STT and offline TTS vendor adapter"
 async-trait = "0.1"
 bytes = { workspace = true }
 node-webrtc-rust-speech = { path = "../speech" }
-sherpa-onnx = "1.13.2"
+sherpa-onnx = { version = "1.13.2", default-features = false }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+
+[features]
+default = ["link-static"]
+# glibc prebuilt static libs (default). Musl/Alpine must use link-shared + SHERPA_ONNX_LIB_DIR.
+link-static = ["sherpa-onnx/static"]
+link-shared = ["sherpa-onnx/shared"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -207,16 +207,24 @@ build_linux_target() {
 build_linux_musl_target() {
   local target="$1"
   local alpine_image="${CI_ALPINE_IMAGE_LOCAL:-node-webrtc-rust-ci-alpine:local}"
-  echo "  $target (native Alpine — no Zig cross)"
+  echo "  $target (native Alpine — musl Sherpa shared + system onnxruntime)"
   docker build -t "$alpine_image" -f "$ROOT/docker/ci/Dockerfile.alpine" "$ROOT"
   docker run --rm \
     -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -e OPUS_STATIC=1 \
+    -e SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib \
+    -e LD_LIBRARY_PATH=/opt/sherpa-musl/lib:/usr/lib \
     -v "$ROOT:/workspace" \
     -w /workspace/packages/bindings \
     "$alpine_image" \
-    npx napi build --platform --release --target "$target"
-  bash "$ROOT/scripts/ci/verify-musl-runtime.sh"
+    bash -lc 'npx napi build --platform --release --target '"$target"' --features linux-musl-shared-sherpa --cargo-flags=--no-default-features'
+  docker run --rm \
+    -e SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib \
+    -e LD_LIBRARY_PATH=/opt/sherpa-musl/lib:/usr/lib \
+    -v "$ROOT:/workspace" \
+    -w /workspace/packages/bindings \
+    "$alpine_image" \
+    bash ../../scripts/ci/verify-musl-runtime.sh
   stage_build_output "$target"
 }
 

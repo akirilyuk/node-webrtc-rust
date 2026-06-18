@@ -30,5 +30,8 @@ cd "$ROOT"
   sha256sum \
     docker/ci/Dockerfile.alpine \
     scripts/ci/install-alpine-native-toolchain.sh \
-    scripts/ci/verify-musl-runtime.sh
+    scripts/ci/build-sherpa-onnx-musl-libs.sh \
+    scripts/ci/verify-musl-runtime.sh \
+    crates/vendor-sherpa-onnx/Cargo.toml \
+    packages/bindings/Cargo.toml
 } | sha256sum | awk '{print $1}'

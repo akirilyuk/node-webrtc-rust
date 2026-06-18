@@ -13,4 +13,10 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 
+COPY scripts/ci/build-sherpa-onnx-musl-libs.sh /usr/local/bin/build-sherpa-onnx-musl-libs.sh
+RUN chmod +x /usr/local/bin/build-sherpa-onnx-musl-libs.sh \
+  && build-sherpa-onnx-musl-libs.sh
+
+ENV SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib
+
 WORKDIR /workspace

@@ -387,9 +387,9 @@ After changing `docker/ci/Dockerfile`, rebuild and push to the `ci` branch befor
 | Native binding             | `Cargo.lock`, crates, bindings sources | `packages/bindings/*.node` | compile-native, release/main/host matrix, test |
 | TS dist                    | sdk/signaling sources + tsconfigs      | `packages/*/dist`          | build-ts, test                                 |
 | npm                        | `package-lock.json`                    | `node_modules`             | setup-node jobs                                |
-| Rust target (restore-only) | `Cargo.lock`, workspace                | `target/`                  | compile/build-linux warm start only            |
+| Rust target (restore-only) | `Cargo.lock`, workspace `Cargo.toml` (per target label) | `target/` | compile/build-linux warm start only; **no cross-label restore-keys**; `rm -rf target` when cache key is not an exact hit (avoids stale artifacts after feature/toolchain changes) |
 
-PR native cache profile: **debug**. Main/release: **release**.
+PR native cache profile: **debug** (`v1-pr-debug`). Main/release: **release** (`v2-release` — bumped after Sherpa link-static/shared split in #55).
 
 ---
 

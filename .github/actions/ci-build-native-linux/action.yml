@@ -45,6 +45,10 @@ inputs:
     description: Upload bindings artifact
     required: false
     default: 'true'
+  use_npm_cache:
+    description: Restore npm cache (disable on Alpine — BusyBox tar lacks GNU tar -P)
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -96,6 +100,7 @@ runs:
         add-rust-environment-hash-key: false
 
     - name: Cache npm
+      if: inputs.use_npm_cache == 'true'
       uses: actions/cache@v4
       with:
         path: |
@@ -116,7 +121,14 @@ runs:
     - name: Install bindings dependencies
       shell: bash
       working-directory: packages/bindings
-      run: npm ci --ignore-scripts
+      run: |
+        set -euo pipefail
+        if npm ci --ignore-scripts --omit=optional; then
+          exit 0
+        fi
+        echo "npm ci failed (release-prep lock drift); installing @napi-rs/cli only" >&2
+        rm -rf node_modules
+        npm install --ignore-scripts --no-save --omit=optional @napi-rs/cli@^2.18.0
 
     - name: Reuse cached native addon
       if: inputs.skip_build_on_cache_hit == 'true' && inputs.native_cache_hit == 'true'

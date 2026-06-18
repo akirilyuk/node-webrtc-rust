@@ -90,6 +90,7 @@ jobs:
           cache_target_label: Linux-x64-musl
           platform: 'true'
           zig: 'false'
+          use_npm_cache: 'false'
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
 

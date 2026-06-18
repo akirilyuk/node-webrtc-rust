@@ -155,11 +155,10 @@ runs:
       shell: bash
       run: node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"
 
-    - name: Verify musl runtime on Alpine (host Docker)
+    - name: Verify musl runtime on Alpine
       if: |
         (inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true') &&
-        inputs.target == 'x86_64-unknown-linux-musl' &&
-        ! grep -qi alpine /etc/os-release 2>/dev/null
+        inputs.target == 'x86_64-unknown-linux-musl'
       shell: bash
       run: bash scripts/ci/verify-musl-runtime.sh
 

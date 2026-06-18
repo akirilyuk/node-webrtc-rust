@@ -3,7 +3,7 @@
 #
 # sherpa-onnx-sys (static, default) downloads glibc prebuilt archives — dlopen on Alpine
 # fails with "__strdup: symbol not found". Musl CI/release must set SHERPA_ONNX_LIB_DIR to
-# musl-built shared libs and compile bindings with --features linux-musl-shared-sherpa.
+# musl-built shared libs and compile bindings for target x86_64-unknown-linux-musl (Cargo selects link-shared via target_env).
 #
 # Usage: bash scripts/ci/build-sherpa-onnx-musl-libs.sh
 #
@@ -83,4 +83,4 @@ fi
 touch "$MARKER"
 echo "==> Sherpa musl libs installed to $PREFIX/lib"
 echo "    Set SHERPA_ONNX_LIB_DIR=$PREFIX/lib and LD_LIBRARY_PATH=$PREFIX/lib:/usr/lib"
-echo "    Build bindings with: napi build ... --features linux-musl-shared-sherpa --cargo-flags=--no-default-features"
+echo "    Build bindings with: napi build --platform --target x86_64-unknown-linux-musl"

@@ -39,8 +39,7 @@ for target in "${TARGETS[@]}"; do
       -v "$ROOT:/workspace" \
       -w /workspace/packages/bindings \
       "$ALPINE_IMAGE" \
-      npx napi build --platform --release --target "$target" \
-        --features linux-musl-shared-sherpa --cargo-flags=--no-default-features
+      npx napi build --platform --release --target "$target"
     docker run --rm \
       -e SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib \
       -e LD_LIBRARY_PATH=/opt/sherpa-musl/lib:/usr/lib \

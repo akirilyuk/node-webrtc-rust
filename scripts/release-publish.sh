@@ -217,7 +217,7 @@ build_linux_musl_target() {
     -v "$ROOT:/workspace" \
     -w /workspace/packages/bindings \
     "$alpine_image" \
-    bash -lc 'npx napi build --platform --release --target '"$target"' --features linux-musl-shared-sherpa --cargo-flags=--no-default-features'
+    bash -lc 'npx napi build --platform --release --target '"$target"
   docker run --rm \
     -e SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib \
     -e LD_LIBRARY_PATH=/opt/sherpa-musl/lib:/usr/lib \

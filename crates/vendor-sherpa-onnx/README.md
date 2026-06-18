@@ -90,8 +90,7 @@ Musl CI and release builds compile Sherpa against Alpine’s **musl `onnxruntime
 ```bash
 export SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib
 export LD_LIBRARY_PATH="$SHERPA_ONNX_LIB_DIR:/usr/lib"
-napi build --platform --target x86_64-unknown-linux-musl \
-  --features linux-musl-shared-sherpa --cargo-flags=--no-default-features
+napi build --platform --target x86_64-unknown-linux-musl
 ```
 
 Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_DIR` to a Sherpa shared-lib prefix or use the published `@node-webrtc-rust/bindings-linux-x64-musl` optional package (built with the same flags in CI).

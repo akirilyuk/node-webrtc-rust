@@ -193,7 +193,13 @@ runs:
     - name: Verify native NAPI surface
       if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
       shell: bash
-      run: node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"
+      env:
+        SHERPA_ONNX_LIB_DIR: ${{ inputs.sherpa_onnx_lib_dir }}
+      run: |
+        if [[ -n "${SHERPA_ONNX_LIB_DIR:-}" ]]; then
+          export LD_LIBRARY_PATH="${SHERPA_ONNX_LIB_DIR}:/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        fi
+        node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"
 
     - name: Verify musl runtime on Alpine
       if: |

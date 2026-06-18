@@ -37,9 +37,7 @@ docker run --rm --platform "$DOCKER_PLATFORM" \
     rm -f *.node 2>/dev/null || true
     npm install --ignore-scripts --no-save --omit=optional @napi-rs/cli@^2.18.0
     npx napi build --platform --release \
-      --target x86_64-unknown-linux-musl \
-      --features linux-musl-shared-sherpa \
-      --cargo-flags=--no-default-features
+      --target x86_64-unknown-linux-musl
     node ../../scripts/ci/verify-native-binding-surface.mjs --target x86_64-unknown-linux-musl
     bash ../../scripts/ci/verify-musl-runtime.sh
     echo "==> musl native build OK"

@@ -94,8 +94,6 @@ jobs:
           platform: 'true'
           zig: 'false'
           use_npm_cache: 'false'
-          cargo_features: linux-musl-shared-sherpa
-          cargo_no_default_features: 'true'
           sherpa_onnx_lib_dir: /opt/sherpa-musl/lib
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}

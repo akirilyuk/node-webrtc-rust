@@ -15,13 +15,24 @@ fi
 BINDINGS_DIR="$(cd "$(dirname "$NODE_FILE")" && pwd)"
 BASENAME="$(basename "$NODE_FILE")"
 
-echo "==> Musl runtime verify ($ALPINE_NODE_IMAGE) — $BASENAME"
-docker run --rm \
-  -v "${BINDINGS_DIR}:/bindings:ro" \
-  -w /bindings \
-  "$ALPINE_NODE_IMAGE" \
+echo "==> Musl runtime verify — $BASENAME"
+if grep -qi alpine /etc/os-release 2>/dev/null; then
+  # Already on Alpine CI (ci-build-alpine); dlopen in-process — no nested Docker.
+  cd "$BINDINGS_DIR"
   node -e "
     const b = require('./${BASENAME}');
     new b.JsPeerConnection({});
-    console.log('musl runtime OK');
+    console.log('musl runtime OK (native Alpine)');
   "
+else
+  echo "==> Musl runtime verify ($ALPINE_NODE_IMAGE) — $BASENAME"
+  docker run --rm \
+    -v "${BINDINGS_DIR}:/bindings:ro" \
+    -w /bindings \
+    "$ALPINE_NODE_IMAGE" \
+    node -e "
+      const b = require('./${BASENAME}');
+      new b.JsPeerConnection({});
+      console.log('musl runtime OK');
+    "
+fi

@@ -4,7 +4,9 @@
 FROM node:24-alpine
 
 COPY scripts/ci/install-alpine-native-toolchain.sh /usr/local/bin/install-alpine-native-toolchain.sh
-RUN chmod +x /usr/local/bin/install-alpine-native-toolchain.sh \
+# node:24-alpine has no bash; the installer script uses a bash shebang.
+RUN apk add --no-cache bash \
+  && chmod +x /usr/local/bin/install-alpine-native-toolchain.sh \
   && install-alpine-native-toolchain.sh
 
 WORKDIR /workspace

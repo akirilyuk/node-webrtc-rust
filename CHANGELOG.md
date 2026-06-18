@@ -10,9 +10,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.5.6] — 2026-06-18
+## [0.5.7] — 2026-06-18
 
-**Compare:** [`release/0.5.5…release/0.5.6`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.5...release/0.5.6)
+**Compare:** [`release/0.5.5…release/0.5.7`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.5...release/0.5.7)
+
+Data-only multiplayer sessions and Alpine musl native bindings (includes SDK/helpers published together at one version).
+
+### Added
+
+- **Helpers `sessionMode: 'data-only'`** — negotiate DataChannels without audio tracks or `VoiceAgent` (multiplayer coordinators, game sync).
+- **Helpers peer lifecycle hooks** — `onPeerConnected` / `onPeerDisconnected` on `VoiceAgentSessionHost` for room join/leave handling.
 
 ### Fixed
 

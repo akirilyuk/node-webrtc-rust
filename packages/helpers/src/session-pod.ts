@@ -16,7 +16,11 @@ import {
   type VoiceSessionBudget,
   type VoiceSessionBudgetSnapshot,
 } from './voice-session-budget.js'
-import { VOICE_AGENT_SERVER_PEER_ID, VoiceAgentSessionHost, type VoiceAgentSessionHostOptions } from './voice-agent-session-host.js'
+import {
+  VOICE_AGENT_SERVER_PEER_ID,
+  VoiceAgentSessionHost,
+  type VoiceAgentSessionHostOptions,
+} from './voice-agent-session-host.js'
 import type { VoiceSessionHandler } from './voice-session-handler.js'
 
 interface IceServerConfig {
@@ -40,6 +44,8 @@ export interface SessionPodOptions {
   voiceHandler?: VoiceSessionHandler
   /** Optional binary sync data channel per WebRTC connection. */
   syncChannel?: VoiceAgentSessionHostOptions['syncChannel']
+  /** Passed to each room's {@link VoiceAgentSessionHost}. */
+  sessionMode?: 'voice' | 'data-only'
   log?: (message: string) => void
 }
 
@@ -114,6 +120,7 @@ export class SessionPod {
 
     const host = new VoiceAgentSessionHost(signaling, this.options.iceServers, {
       voiceConfig: this.options.voiceConfig,
+      sessionMode: this.options.sessionMode,
       sessionBudget: this.sessionBudget,
       voiceHandler: this.options.voiceHandler,
       syncChannel: this.options.syncChannel,

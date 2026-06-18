@@ -13,8 +13,10 @@ export type DataChannelKind = 'control' | 'sync'
 export interface VoiceSessionContext {
   /** Signaling peer id (e.g. `client-tab1`). */
   peerId: string
-  /** This tab's VoiceAgent — advanced use only; prefer {@link VoiceSessionContext.speak}. */
-  agent: VoiceAgent
+  /** Orchestrator / signaling room id (set by {@link SessionPod}). */
+  roomId?: string
+  /** This tab's VoiceAgent — omitted in data-only mode. */
+  agent?: VoiceAgent
   /** Synthesize `text` and stream audio to the browser. */
   speak: (text: string) => Promise<void>
   /** Send a JSON payload to the browser over the voice-control data channel. */
@@ -27,6 +29,12 @@ export interface VoiceSessionContext {
  * Implement this in your app (see `examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`).
  */
 export interface VoiceSessionHandler {
+  /** Called when a browser peer's WebRTC session is ready (voice: after VoiceAgent start). */
+  onPeerConnected?: (ctx: VoiceSessionContext) => void | Promise<void>
+
+  /** Called when a browser peer disconnects (before teardown). */
+  onPeerDisconnected?: (ctx: VoiceSessionContext) => void | Promise<void>
+
   /**
    * Called for each pipeline event: VAD (`user_speaking_*`), STT (`user_speech_*`),
    * TTS lifecycle (`agent_speaking_*`), `barge_in`, `error`, etc.
@@ -46,10 +54,7 @@ export interface VoiceSessionHandler {
    * Called for non-speak data channel JSON (e.g. `{ type: 'chat', text }`).
    * Raw string is passed when JSON parsing is deferred to the handler.
    */
-  onDataChannelMessage?: (
-    ctx: VoiceSessionContext,
-    payload: string,
-  ) => void | Promise<void>
+  onDataChannelMessage?: (ctx: VoiceSessionContext, payload: string) => void | Promise<void>
 
   /**
    * Called for binary payloads on the voice-control or sync data channel.

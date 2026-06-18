@@ -99,7 +99,13 @@ runs:
         key: ${{ inputs.cache_prefix }}-target-${{ inputs.cache_target_label }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
         restore-keys: |
           ${{ inputs.cache_prefix }}-target-${{ inputs.cache_target_label }}-
-          ${{ inputs.cache_prefix }}-target-
+
+    - name: Drop stale target/ on inexact cache restore
+      if: steps.target-restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        echo "target/ cache key miss (cache-hit=${{ steps.target-restore.outputs.cache-hit }}) — removing partial restore"
+        rm -rf target
 
     - name: Cache Cargo registry
       uses: Swatinem/rust-cache@v2

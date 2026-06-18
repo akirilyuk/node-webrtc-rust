@@ -36,7 +36,7 @@ Composite actions live in [`.github/actions/`](../../.github/actions/).
 | macOS                  | `macos-latest`                             | Release host matrix (darwin x64 + arm64)                                                        |
 | Windows                | `windows-latest`                           | Release host matrix (x64)                                                                       |
 
-**Linux gnu x64** builds natively on the self-hosted runner without `napi --zig` so Sherpa/ONNX static objects link correctly (`__cpu_features2`). **Linux arm64 gnu** builds on GitHub-hosted ARM runners (native compile, no Zig cross) to avoid build-script `ring` arch mismatches. **Linux musl** still cross-compiles with Zig on self-hosted x64.
+**Linux gnu x64** builds natively on the self-hosted runner without `napi --zig` so Sherpa/ONNX static objects link correctly (`__cpu_features2`). **Linux x64 musl** builds natively in **`ghcr.io/.../ci-build-alpine:latest`** (no Zig) — Zig cross from Ubuntu glibc produced `.node` files that fail on Alpine (`__strdup: symbol not found`). CI runs `verify-musl-runtime.sh` (dlopen in `node:24-alpine`) after musl builds. **Linux arm64 gnu** builds on GitHub-hosted ARM runners (native compile, no Zig cross) to avoid build-script `ring` arch mismatches.
 
 The self-hosted runner must have **Docker** (runner user in the `docker` group). Container jobs and test `docker run` leave root-owned files; host jobs run an inline **Docker `chown`** prepare step before checkout (no passwordless sudo required).
 
@@ -285,20 +285,26 @@ Release prep on git uses `SKIP_LOCK_REFRESH=1` with [`bump-workspace-versions.sh
 
 ---
 
-## CI Docker image
+## CI Docker images
 
-**Image:** `ghcr.io/<owner>/node-webrtc-rust/ci-build:latest`  
-**Dockerfile:** [`docker/ci/Dockerfile`](../../docker/ci/Dockerfile)  
-**Contents:** Ubuntu 24.04, Node 20, Rust stable + Linux cross targets, Zig (napi `--zig`)
+| Image | Dockerfile | Used for |
+| ----- | ---------- | -------- |
+| `ghcr.io/<owner>/node-webrtc-rust/ci-build:latest` | [`docker/ci/Dockerfile`](../../docker/ci/Dockerfile) | glibc native builds (Linux gnu x64), PR compile-native, integration tests |
+| `ghcr.io/<owner>/node-webrtc-rust/ci-build-alpine:latest` | [`docker/ci/Dockerfile.alpine`](../../docker/ci/Dockerfile.alpine) | **musl** native builds (`x86_64-unknown-linux-musl`) |
 
-Rebuild when the Dockerfile changes:
+**ci-build:** Ubuntu 24.04, Node 20, Rust stable + Linux cross targets, Zig (napi `--zig` for non-gnu targets).  
+**ci-build-alpine:** Node 24 Alpine, Rust + musl toolchain via [`install-alpine-native-toolchain.sh`](install-alpine-native-toolchain.sh).
+
+Rebuild when either Dockerfile (or the Alpine install script) changes:
 
 ```bash
-# push to ci branch, or workflow_dispatch on ci-image.yml
+# Preferred: push to ci branch, or merge docker/ci changes to main (path-filtered workflow)
 git push origin ci
+
+# Or: Actions → CI Docker image → Run workflow (workflow_dispatch)
 ```
 
-Used by: PR compile-native, release Linux matrix, integration test container.
+**Before the first musl CI run after adding `Dockerfile.alpine`:** publish `ci-build-alpine:latest` (merge to `main` or push `ci`, then wait for **CI Docker image** workflow). The musl job pulls that image; it does not bootstrap Rust on plain `node:24-alpine` each run.
 
 **Native build env:** `audiopus_sys` needs static Opus + CMake policy shim. Set `OPUS_STATIC=1` and `CMAKE_POLICY_VERSION_MINIMUM=3.5` on reusable build workflows and in [`ci-build-native-*`](../../.github/actions/) build steps (caller workflow `env` does not propagate into `workflow_call` jobs).
 

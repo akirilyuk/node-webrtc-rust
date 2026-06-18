@@ -21,6 +21,9 @@ outputs:
   build_linux_arm64:
     description: Whether aarch64-unknown-linux-gnu needs compile
     value: ${{ steps.plan.outputs.build_linux_arm64 }}
+  build_linux_musl:
+    description: Whether x86_64-unknown-linux-musl needs compile (Alpine native)
+    value: ${{ steps.plan.outputs.build_linux_musl }}
   host_matrix:
     description: JSON array of {target,os,build-args} needing host compile
     value: ${{ steps.plan.outputs.host_matrix }}

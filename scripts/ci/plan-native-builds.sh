@@ -54,8 +54,10 @@ linux_x64_matrix=()
 if [[ "$need_gnu" == true ]]; then
   linux_x64_matrix+=('{"target":"x86_64-unknown-linux-gnu","zig":"false"}')
 fi
+
+build_linux_musl=false
 if [[ "$need_musl" == true ]]; then
-  linux_x64_matrix+=('{"target":"x86_64-unknown-linux-musl","zig":"true"}')
+  build_linux_musl=true
 fi
 
 host_matrix=()
@@ -128,6 +130,7 @@ fi
   echo "$linux_x64_json"
   echo "EOF"
   echo "build_linux_arm64=${need_arm64}"
+  echo "build_linux_musl=${build_linux_musl}"
   echo "host_matrix<<EOF"
   echo "$host_json"
   echo "EOF"
@@ -148,5 +151,6 @@ echo "==> Native build plan (hash=${HASH})"
 echo "    all_cached=${all_cached}"
 echo "    linux_x64_matrix=${linux_x64_json}"
 echo "    build_linux_arm64=${need_arm64}"
+echo "    build_linux_musl=${build_linux_musl}"
 echo "    host_matrix=${host_json}"
 echo "    cached_targets=${cached_json}"

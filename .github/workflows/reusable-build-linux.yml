@@ -16,9 +16,13 @@ on:
         type: boolean
         default: true
       linux_x64_matrix:
-        description: JSON array of {target,zig} to compile on linux x64
+        description: JSON array of {target,zig} for glibc x64 (gnu only)
         type: string
-        default: '[{"target":"x86_64-unknown-linux-gnu","zig":"false"},{"target":"x86_64-unknown-linux-musl","zig":"true"}]'
+        default: '[{"target":"x86_64-unknown-linux-gnu","zig":"false"}]'
+      build_linux_musl:
+        description: Compile x86_64-unknown-linux-musl natively on Alpine (no Zig)
+        type: boolean
+        default: true
       build_linux_arm64:
         description: Compile aarch64-unknown-linux-gnu when true
         type: boolean
@@ -56,6 +60,36 @@ jobs:
           cache_target_label: Linux-x64
           platform: 'true'
           zig: ${{ matrix.zig }}
+          skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
+          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
+
+  build-linux-x64-musl:
+    name: Build - x86_64-unknown-linux-musl
+    if: inputs.build_linux_musl
+    runs-on: self-hosted
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/native-binding-cache
+        id: native-cache
+        if: inputs.use_native_cache
+        with:
+          target: x86_64-unknown-linux-musl
+          profile: release
+
+      - uses: ./.github/actions/ci-build-native-linux
+        with:
+          target: x86_64-unknown-linux-musl
+          profile: release
+          cache_prefix: ${{ inputs.cache_prefix }}
+          cache_target_label: Linux-x64-musl
+          platform: 'true'
+          zig: 'false'
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
 

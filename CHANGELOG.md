@@ -10,6 +10,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.5.6] — 2026-06-18
+
+**Compare:** [`release/0.5.5…release/0.5.6`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.5...release/0.5.6)
+
+### Fixed
+
+- **Linux x64 musl (Alpine) native bindings** — build `x86_64-unknown-linux-musl` natively on Alpine instead of Zig cross-compile from glibc Ubuntu. Fixes runtime `ERR_DLOPEN_FAILED` / `__strdup: symbol not found` in Alpine Node 24 containers (VoiceThere runner).
+
+---
+
 ## [0.5.5] — 2026-06-17
 
 **Compare:** [`release/0.5.4…release/0.5.5`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.4...release/0.5.5)

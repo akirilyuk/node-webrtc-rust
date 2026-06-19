@@ -158,6 +158,11 @@ export class VoiceAgentSessionHost {
     return this.sessions.size
   }
 
+  /** Disconnect one browser peer and release its session budget slot. */
+  disconnectPeer(peerId: string): void {
+    this.closeClient(peerId)
+  }
+
   /** Current process session budget (active / max / rejected). */
   get sessionBudgetSnapshot(): VoiceSessionBudgetSnapshot {
     return this.sessionBudget.snapshot()

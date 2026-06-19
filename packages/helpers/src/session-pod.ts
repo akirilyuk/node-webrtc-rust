@@ -53,6 +53,8 @@ export interface SessionPodChangeEvent {
   sessionId: string
   action: 'created' | 'destroyed'
   activeSessions: number
+  /** Set when action is `destroyed` and the teardown was reason-coded. */
+  endReason?: string
 }
 
 export interface SessionPodSessionInfo {
@@ -148,7 +150,7 @@ export class SessionPod {
     )
   }
 
-  async teardownSession(sessionId: string): Promise<void> {
+  async teardownSession(sessionId: string, endReason?: string): Promise<void> {
     const slot = this.slots.get(sessionId)
     if (!slot) return
 
@@ -159,10 +161,29 @@ export class SessionPod {
       sessionId,
       action: 'destroyed',
       activeSessions: this.activeSessionCount,
+      endReason,
     })
     this.log(
       `[pod] session torn down: ${sessionId} (sessions=${this.activeSessionCount}, connections=${this.activeConnectionCount})`,
     )
+  }
+
+  /**
+   * Disconnect one browser peer. Tears down the room when this was the last peer.
+   */
+  disconnectPeer(sessionId: string, peerId: string, endReason?: string): void {
+    const slot = this.slots.get(sessionId)
+    if (!slot) return
+
+    slot.host.disconnectPeer(peerId)
+    if (slot.host.activeClientCount === 0) {
+      void this.teardownSession(sessionId, endReason).catch((error: unknown) => {
+        console.error(
+          `Failed to teardown session ${sessionId} after peer disconnect:`,
+          error,
+        )
+      })
+    }
   }
 
   async close(): Promise<void> {

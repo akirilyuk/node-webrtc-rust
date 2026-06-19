@@ -36,6 +36,8 @@ export interface SessionPodOptions {
   teardownIdleSessions?: boolean
   /** Called after a session slot is created or destroyed (metrics, orchestrator hooks). */
   onSessionChange?: (event: SessionPodChangeEvent) => void
+  /** Hold the runner slot after the last client leaves so same-session reconnect can succeed. */
+  rejoinGraceMs?: number
   /** Server-side signaling peer id (default {@link VOICE_AGENT_SERVER_PEER_ID}). */
   serverPeerId?: string
   /** Shared across all rooms in this pod (default: process env budget). */
@@ -73,7 +75,9 @@ interface SessionSlot {
  */
 export class SessionPod {
   private readonly slots = new Map<string, SessionSlot>()
+  private readonly teardownTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly teardownIdle: boolean
+  private readonly rejoinGraceMs: number
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
 
@@ -82,8 +86,40 @@ export class SessionPod {
     private readonly options: SessionPodOptions,
   ) {
     this.teardownIdle = options.teardownIdleSessions ?? true
+    this.rejoinGraceMs = options.rejoinGraceMs ?? 90_000
     this.log = options.log ?? ((message) => console.log(message))
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
+  }
+
+  private cancelTeardownTimer(sessionId: string): void {
+    const timer = this.teardownTimers.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      this.teardownTimers.delete(sessionId)
+    }
+  }
+
+  private scheduleIdleTeardown(sessionId: string): void {
+    if (!this.teardownIdle) return
+    this.cancelTeardownTimer(sessionId)
+    if (this.rejoinGraceMs <= 0) {
+      void this.teardownSession(sessionId).catch((error: unknown) => {
+        console.error(`Failed to teardown idle session ${sessionId}:`, error)
+      })
+      return
+    }
+    const timer = setTimeout(() => {
+      this.teardownTimers.delete(sessionId)
+      const slot = this.slots.get(sessionId)
+      if (!slot || slot.host.activeClientCount > 0) return
+      void this.teardownSession(sessionId).catch((error: unknown) => {
+        console.error(`Failed to teardown idle session ${sessionId}:`, error)
+      })
+    }, this.rejoinGraceMs)
+    this.teardownTimers.set(sessionId, timer)
+    this.log(
+      `[pod] session ${sessionId} idle — teardown in ${this.rejoinGraceMs}ms unless client rejoins`,
+    )
   }
 
   get sessionBudgetSnapshot(): VoiceSessionBudgetSnapshot {
@@ -130,12 +166,14 @@ export class SessionPod {
     })
 
     if (this.teardownIdle) {
+      signaling.on('peer-joined', (peerId) => {
+        if (!peerId.startsWith('client-')) return
+        this.cancelTeardownTimer(sessionId)
+      })
       signaling.on('peer-left', (peerId) => {
         if (!peerId.startsWith('client-')) return
         if (host.activeClientCount > 0) return
-        void this.teardownSession(sessionId).catch((error: unknown) => {
-          console.error(`Failed to teardown idle session ${sessionId}:`, error)
-        })
+        this.scheduleIdleTeardown(sessionId)
       })
     }
 
@@ -154,6 +192,7 @@ export class SessionPod {
     const slot = this.slots.get(sessionId)
     if (!slot) return
 
+    this.cancelTeardownTimer(sessionId)
     await slot.host.close()
     slot.signaling.disconnect()
     this.slots.delete(sessionId)

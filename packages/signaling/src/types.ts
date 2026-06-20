@@ -16,6 +16,8 @@ export interface SignalingServerOptions {
   server?: HttpServer
   /** WebSocket path when using a custom HTTP server. */
   path?: string
+  /** WebSocket ping interval; set to 0 to disable liveness checks. */
+  pingIntervalMs?: number
 }
 
 /** Options for {@link SignalingClient}. */

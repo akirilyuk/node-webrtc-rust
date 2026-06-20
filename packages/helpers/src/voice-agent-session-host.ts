@@ -44,6 +44,9 @@ import type {
   DataChannelKind,
 } from './voice-session-handler.js'
 
+/** Debounce before tearing down a peer after ICE/PC disconnect (allows brief blips). */
+const PEER_TRANSPORT_DISCONNECT_GRACE_MS = 5_000
+
 export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
 
 /** @deprecated Use {@link VOICE_AGENT_SERVER_PEER_ID}. */
@@ -71,6 +74,7 @@ interface ClientSession {
   pendingIce: RTCIceCandidateInit[]
   /** Cleared in {@link VoiceAgentSessionHost.closeClient}. */
   micTrackTimer?: ReturnType<typeof setTimeout>
+  transportDisconnectTimer?: ReturnType<typeof setTimeout>
   resolveMicTrack?: (track: RemoteAudioTrack) => void
   rejectMicTrack?: (error: Error) => void
 }
@@ -302,13 +306,23 @@ export class VoiceAgentSessionHost {
 
     pc.oniceconnectionstatechange = () => {
       const tag = dataOnly ? 'data' : 'voice'
-      this.log(`[${tag} ${peerId}] iceConnectionState=${pc.iceConnectionState}`)
+      const iceState = pc.iceConnectionState
+      this.log(`[${tag} ${peerId}] iceConnectionState=${iceState}`)
+      if (iceState === 'connected' || iceState === 'completed') {
+        this.clearTransportDisconnectTimer(session)
+      } else if (iceState === 'disconnected') {
+        this.scheduleTransportDisconnect(peerId, session)
+      } else if (iceState === 'failed' || iceState === 'closed') {
+        this.clearTransportDisconnectTimer(session)
+        this.closeClient(peerId)
+      }
     }
 
     pc.onconnectionstatechange = () => {
       const tag = dataOnly ? 'data' : 'voice'
       this.log(`[${tag} ${peerId}] connectionState=${pc.connectionState}`)
       if (pc.connectionState === 'connected') {
+        this.clearTransportDisconnectTimer(session)
         this.reconnectAttempts.delete(peerId)
         if (dataOnly) {
           this.maybeNotifyPeerConnected(peerId, session)
@@ -317,25 +331,20 @@ export class VoiceAgentSessionHost {
             console.error(`Failed to start VoiceAgent for ${peerId}:`, error)
           })
         }
-      } else if (pc.connectionState === 'failed') {
-        const attempts = (this.reconnectAttempts.get(peerId) ?? 0) + 1
-        this.reconnectAttempts.set(peerId, attempts)
-        if (attempts <= 2) {
-          this.log(
-            `[${tag} ${peerId}] connection failed — reconnect attempt ${attempts}/2 (new offer)`,
-          )
-          this.closeClient(peerId)
-          void this.connectClient(peerId).catch((error: unknown) => {
-            console.error(`Failed to reconnect client ${peerId}:`, error)
-            this.closeClient(peerId)
-          })
-        } else {
-          this.log(`[${tag} ${peerId}] connection failed — max reconnect attempts reached`)
-          this.closeClient(peerId)
-        }
-      } else if (pc.connectionState === 'closed') {
+      } else if (pc.connectionState === 'disconnected') {
+        this.scheduleTransportDisconnect(peerId, session)
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        this.clearTransportDisconnectTimer(session)
+        this.log(`[${tag} ${peerId}] connection ${pc.connectionState} — closing peer`)
         this.closeClient(peerId)
       }
+    }
+
+    controlChannel.onclose = () => {
+      if (!this.sessions.has(peerId)) return
+      const tag = dataOnly ? 'data' : 'voice'
+      this.log(`[${tag} ${peerId}] control channel closed`)
+      this.closeClient(peerId)
     }
 
     controlChannel.onopen = () => {
@@ -637,6 +646,39 @@ export class VoiceAgentSessionHost {
     await session.pc.addIceCandidate(new RTCIceCandidate(candidate))
   }
 
+  private clearTransportDisconnectTimer(session: ClientSession): void {
+    if (session.transportDisconnectTimer) {
+      clearTimeout(session.transportDisconnectTimer)
+      session.transportDisconnectTimer = undefined
+    }
+  }
+
+  private scheduleTransportDisconnect(peerId: string, session: ClientSession): void {
+    if (session.transportDisconnectTimer) return
+    session.transportDisconnectTimer = setTimeout(() => {
+      session.transportDisconnectTimer = undefined
+      const current = this.sessions.get(peerId)
+      if (!current || current !== session) return
+      const pc = session.pc
+      const iceState = pc.iceConnectionState
+      const connState = pc.connectionState
+      if (
+        iceState === 'disconnected' ||
+        iceState === 'failed' ||
+        iceState === 'closed' ||
+        connState === 'disconnected' ||
+        connState === 'failed' ||
+        connState === 'closed'
+      ) {
+        const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+        this.log(
+          `[${tag} ${peerId}] transport still down after ${PEER_TRANSPORT_DISCONNECT_GRACE_MS}ms — closing peer`,
+        )
+        this.closeClient(peerId)
+      }
+    }, PEER_TRANSPORT_DISCONNECT_GRACE_MS)
+  }
+
   private closeClient(peerId: string): void {
     const session = this.sessions.get(peerId)
     if (!session) {
@@ -657,6 +699,7 @@ export class VoiceAgentSessionHost {
       )
     }
     this.clearMicTrackTimer(session)
+    this.clearTransportDisconnectTimer(session)
     session.resolveMicTrack = undefined
     session.rejectMicTrack = undefined
     session.unwireControl?.()

@@ -24,11 +24,14 @@ export class SignalingServer extends EventEmitter {
   private readonly rooms = new Map<string, Map<string, Peer>>()
   private httpServer: HttpServer | null = null
   private listeningPort = 0
+  private readonly pingIntervalMs: number
+  private pingTimer: NodeJS.Timeout | null = null
 
   /** @param options - Optional HTTP server attachment or WebSocket path. */
   constructor(options: SignalingServerOptions = {}) {
     super()
     this.attachedServer = options.server
+    this.pingIntervalMs = options.pingIntervalMs ?? 5_000
     this.wss = options.server
       ? new WebSocketServer({ server: options.server, path: options.path })
       : new WebSocketServer({ noServer: true })
@@ -54,6 +57,7 @@ export class SignalingServer extends EventEmitter {
       this.httpServer = httpServer
       return new Promise((resolve, reject) => {
         this.wss.on('connection', (socket) => this.handleConnection(socket))
+        this.startPingTimer()
 
         const onListening = () => {
           const address = httpServer.address()
@@ -82,6 +86,7 @@ export class SignalingServer extends EventEmitter {
         const address = this.httpServer?.address()
         this.listeningPort = typeof address === 'object' && address ? address.port : port
         this.wss.on('connection', (socket) => this.handleConnection(socket))
+        this.startPingTimer()
         resolve()
       })
       this.httpServer.on('error', reject)
@@ -91,6 +96,7 @@ export class SignalingServer extends EventEmitter {
   /** Closes all peer sockets and the underlying HTTP/WebSocket servers. */
   close(): Promise<void> {
     debugFn('signaling::SignalingServer', 'close')
+    this.stopPingTimer()
     for (const room of this.rooms.values()) {
       for (const peer of room.values()) {
         peer.socket.close()
@@ -117,6 +123,12 @@ export class SignalingServer extends EventEmitter {
   private handleConnection(socket: WebSocket): void {
     debugEvent('signaling::SignalingServer', 'connection')
     let peer: Peer | null = null
+
+    const trackedSocket = socket as WebSocket & { isAlive?: boolean }
+    trackedSocket.isAlive = true
+    socket.on('pong', () => {
+      trackedSocket.isAlive = true
+    })
 
     socket.on('message', (raw) => {
       let message: SignalingMessage
@@ -171,6 +183,28 @@ export class SignalingServer extends EventEmitter {
       }
       this.broadcast(peer.room, { type: 'peer-left', peerId: peer.id }, peer.id)
     })
+  }
+
+  private startPingTimer(): void {
+    if (this.pingIntervalMs <= 0 || this.pingTimer) return
+    this.pingTimer = setInterval(() => {
+      for (const client of this.wss.clients) {
+        if (client.readyState !== WebSocket.OPEN) continue
+        const trackedClient = client as WebSocket & { isAlive?: boolean }
+        if (trackedClient.isAlive === false) {
+          trackedClient.terminate()
+          continue
+        }
+        trackedClient.isAlive = false
+        trackedClient.ping()
+      }
+    }, this.pingIntervalMs)
+  }
+
+  private stopPingTimer(): void {
+    if (!this.pingTimer) return
+    clearInterval(this.pingTimer)
+    this.pingTimer = null
   }
 
   private forward(roomId: string, targetPeerId: string, message: SignalingMessage): void {

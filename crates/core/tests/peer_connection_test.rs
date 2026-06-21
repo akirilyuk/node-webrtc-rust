@@ -68,6 +68,7 @@ async fn settle_after_peer_activity() {
 
 async fn close_single_peer(pc: &PeerConnection) {
     pc.close().await.expect("close pc");
+    pc.close().await.expect("idempotent close pc");
     settle_after_peer_activity().await;
 }
 
@@ -186,6 +187,26 @@ async fn test_data_channel_round_trip() {
     assert_eq!(binary_msg.data.as_ref(), &[1, 2, 3]);
 
     close_peer_pair(&pc1, &pc2).await;
+}
+
+#[tokio::test]
+async fn test_close_before_data_channel_established() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    let _dc1 = pc1
+        .create_data_channel("chat", None)
+        .await
+        .expect("create data channel");
+
+    signal_pair(&pc1, &pc2).await;
+
+    pc1.close().await.expect("close pc1 before dc open");
+    pc2.close().await.expect("close pc2 before dc open");
+    settle_after_peer_activity().await;
 }
 
 #[tokio::test]

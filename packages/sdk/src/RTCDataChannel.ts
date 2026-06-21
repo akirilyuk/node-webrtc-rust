@@ -105,7 +105,9 @@ export class RTCDataChannel extends EventEmitter {
   close(): void {
     debugFn('sdk::RTCDataChannel', 'close', `label=${this.label}`)
     if (this.native) {
-      void this.native.close()
+      void swallowNativeClose(this.native.close(), 'sdk::RTCDataChannel', this.label, (error) =>
+        this.emitError(error),
+      )
     }
     this.readyState = 'closed'
   }
@@ -197,7 +199,10 @@ function toNativeSendPayload(data: SendPayload): string | Buffer {
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
 }
 
-function toMessageBinaryData(data: Buffer, binaryType: 'arraybuffer' | 'blob'): Buffer | ArrayBuffer {
+function toMessageBinaryData(
+  data: Buffer,
+  binaryType: 'arraybuffer' | 'blob',
+): Buffer | ArrayBuffer {
   if (binaryType === 'arraybuffer') {
     return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
   }
@@ -222,6 +227,22 @@ function createErrorEvent(error: unknown): RTCErrorEvent {
     type: 'error',
     message: error instanceof Error ? error.message : String(error),
   }
+}
+
+function swallowNativeClose(
+  closePromise: Promise<void>,
+  scope: string,
+  label: string,
+  onError?: (error: unknown) => void,
+): Promise<void> {
+  return closePromise.catch((error: unknown) => {
+    debugEvent(scope, 'close-error', `label=${label}, message=${formatErrorMessage(error)}`)
+    onError?.(error)
+  })
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function createDeferredNative(label: string, init?: RTCDataChannelInit): NativeDataChannel {

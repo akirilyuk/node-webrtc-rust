@@ -10,7 +10,7 @@ use webrtc::data_channel::RTCDataChannel;
 
 use crate::debug_call;
 use crate::debug_evt;
-use crate::error::CoreError;
+use crate::error::{is_benign_teardown_error, CoreError};
 
 /// Options for creating a DataChannel.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -108,11 +108,12 @@ impl DataChannel {
             self.label(),
             text.len()
         );
-        self.inner
-            .send_text(text.to_owned())
-            .await
-            .map(|_| ())
-            .map_err(|e| CoreError::DataChannel(e.to_string()))
+        self.ensure_open_for_send()?;
+        match self.inner.send_text(text.to_owned()).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_benign_teardown_error(&err) => Ok(()),
+            Err(err) => Err(CoreError::DataChannel(err.to_string())),
+        }
     }
 
     /// Sends a binary message without copying when `data` is already `Bytes`.
@@ -124,11 +125,12 @@ impl DataChannel {
             self.label(),
             data.len()
         );
-        self.inner
-            .send(&data)
-            .await
-            .map(|_| ())
-            .map_err(|e| CoreError::DataChannel(e.to_string()))
+        self.ensure_open_for_send()?;
+        match self.inner.send(&data).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_benign_teardown_error(&err) => Ok(()),
+            Err(err) => Err(CoreError::DataChannel(err.to_string())),
+        }
     }
 
     /// Sends a binary slice, copying once into a shared buffer.
@@ -139,10 +141,39 @@ impl DataChannel {
     /// Closes the channel.
     pub async fn close(&self) -> Result<(), CoreError> {
         debug_call!("core::data_channel", "close", "label={}", self.label());
-        self.inner
-            .close()
-            .await
-            .map_err(|e| CoreError::DataChannel(e.to_string()))
+        if matches!(
+            self.ready_state(),
+            DataChannelState::Closed | DataChannelState::Closing
+        ) {
+            return Ok(());
+        }
+        match self.inner.close().await {
+            Ok(()) => Ok(()),
+            Err(err) if is_benign_teardown_error(&err) => Ok(()),
+            Err(err) => Err(CoreError::DataChannel(err.to_string())),
+        }
+    }
+
+    fn ensure_open_for_send(&self) -> Result<(), CoreError> {
+        match self.ready_state() {
+            DataChannelState::Open => Ok(()),
+            DataChannelState::Connecting => Err(CoreError::InvalidState(format!(
+                "data channel '{}' is not open yet",
+                self.label()
+            ))),
+            DataChannelState::Closing | DataChannelState::Closed => Err(CoreError::InvalidState(
+                format!("data channel '{}' is {}", self.label(), self.ready_state_name()),
+            )),
+        }
+    }
+
+    fn ready_state_name(&self) -> &'static str {
+        match self.ready_state() {
+            DataChannelState::Connecting => "connecting",
+            DataChannelState::Open => "open",
+            DataChannelState::Closing => "closing",
+            DataChannelState::Closed => "closed",
+        }
     }
 
     /// Registers a handler invoked when the channel opens.

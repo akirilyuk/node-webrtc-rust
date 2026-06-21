@@ -61,6 +61,14 @@ flowchart TD
 
 ### 1. Detect changes
 
+[`compute-pr-job-gates.sh`](compute-pr-job-gates.sh) sets `run_compile` / `run_test` / … from:
+
+1. **`merge-base..pull_request.head.sha`** (full PR diff — not `github.sha`, which is a synthetic merge commit)
+2. **Files in the latest head commit** (`git diff-tree`) so a push that only edits `crates/speech/**` still forces native compile + integration tests
+3. **`dorny/paths-filter` `native` / `workflows_native`** as a fallback
+
+Local check: `bash scripts/ci/compute-pr-job-gates.test.sh`
+
 Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with these outputs:
 
 | Output             | Paths (summary)                                                                                      |

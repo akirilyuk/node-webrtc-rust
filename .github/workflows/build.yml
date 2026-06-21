@@ -128,6 +128,7 @@ jobs:
               - 'scripts/ci/run-sherpa-example-ci.sh'
               - 'scripts/ci/run-sherpa-roundtrip-e2e.sh'
               - 'scripts/ci/run-pr-test-job-docker.sh'
+              - 'scripts/ci/compute-pr-job-gates.sh'
             workflows_ts:
               - '.github/actions/ci-cache-ts-dist/**'
               - 'scripts/ci/build-ts-workspace.sh'
@@ -137,90 +138,16 @@ jobs:
       - name: Compute PR job gates
         id: pr_gates
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FILTER_NATIVE: ${{ steps.filter.outputs.native }}
+          FILTER_WORKFLOWS_NATIVE: ${{ steps.filter.outputs.workflows_native }}
         run: |
-          run_compile=false
-          run_build_ts=false
-          run_test=false
-          run_quality=false
-
-          while IFS= read -r path; do
-            [[ -z "$path" ]] && continue
-            [[ "$path" == *.md || "$path" == docs/* ]] && continue
-
-            if [[ "$path" == .github/workflows/* || "$path" == .cursor/* ]]; then
-              run_quality=true
-              continue
-            fi
-            if [[ "$path" == .github/actions/ci-build-native-* || "$path" == .github/actions/native-binding-cache/* || "$path" == docker/ci/* || "$path" == scripts/ci/native-binding-cache-key.sh || "$path" == scripts/ci/verify-native-binding-surface.mjs ]]; then
-              run_compile=true
-              run_quality=true
-              continue
-            fi
-            if [[ "$path" == .github/actions/ci-cache-ts-dist/* || "$path" == scripts/ci/build-ts-workspace.sh || "$path" == scripts/ci/verify-release-publish-ts.sh || "$path" == scripts/ci/ts-dist-cache-key.sh ]]; then
-              run_build_ts=true
-              run_quality=true
-              continue
-            fi
-            if [[ "$path" == .github/actions/ci-run-integration-tests/* || "$path" == .github/workflows/reusable-test.yml || "$path" == scripts/ci/run-pr-integration.sh || "$path" == scripts/ci/run-pr-tests-full.sh || "$path" == scripts/ci/run-sherpa-example-ci.sh || "$path" == scripts/ci/run-sherpa-roundtrip-e2e.sh || "$path" == scripts/ci/run-pr-test-job-docker.sh ]]; then
-              run_quality=true
-              continue
-            fi
-            if [[ "$path" == Cargo.toml || "$path" == Cargo.lock || "$path" =~ ^crates/ || "$path" =~ ^packages/bindings/ ]]; then
-              run_compile=true
-              run_test=true
-              run_quality=true
-              continue
-            fi
-            if [[ "$path" =~ ^packages/sdk/ || "$path" =~ ^packages/signaling/ || "$path" =~ ^packages/helpers/ || "$path" == package.json || "$path" == package-lock.json || "$path" == eslint.config.js || "$path" == .prettierrc* || "$path" == *tsconfig*.json ]]; then
-              run_build_ts=true
-              run_test=true
-              run_quality=true
-              continue
-            fi
-            if [[ "$path" =~ ^examples/ ]]; then
-              run_build_ts=true
-              run_test=true
-              run_quality=true
-              continue
-            fi
-            if [[ "$path" == scripts/ci/* ]]; then
-              run_quality=true
-              continue
-            fi
-
-            run_quality=true
-            run_test=true
-          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-
-          # Integration tests need a .node in the Test job workspace. Do not force
-          # compile-native here — compile runs in a container and artifact download
-          # to the host Test job is unreliable on self-hosted; Test restores cache
-          # and builds in CI image when needed (see test job below).
-
-          echo "run_compile=${run_compile}" >> "$GITHUB_OUTPUT"
-          echo "run_build_ts=${run_build_ts}" >> "$GITHUB_OUTPUT"
-          echo "run_test=${run_test}" >> "$GITHUB_OUTPUT"
-          echo "run_quality=${run_quality}" >> "$GITHUB_OUTPUT"
-
-          if [[ "$run_test" == true ]]; then
-            echo "skip_test=false" >> "$GITHUB_OUTPUT"
-            echo "needs_native=true" >> "$GITHUB_OUTPUT"
-            echo "needs_ts=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip_test=true" >> "$GITHUB_OUTPUT"
-            echo "needs_native=false" >> "$GITHUB_OUTPUT"
-            echo "needs_ts=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          if [[ "$run_quality" == true ]]; then
-            echo "skip_quality=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip_quality=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "::notice::PR gates from git diff — compile=${run_compile} build_ts=${run_build_ts} test=${run_test} quality=${run_quality}"
+          bash scripts/ci/compute-pr-job-gates.sh \
+            "$PR_BASE_SHA" \
+            "$PR_HEAD_SHA" \
+            "$FILTER_NATIVE" \
+            "$FILTER_WORKFLOWS_NATIVE" >> "$GITHUB_OUTPUT"
 
   quality:
     name: Typecheck & lint
@@ -286,7 +213,12 @@ jobs:
       - name: Skip when no native or native-CI changes
         id: gate
         run: |
-          if [[ "${{ needs.changes.outputs.run_compile }}" == "true" ]]; then
+          is_true() {
+            case "${1,,}" in true|1|yes) return 0 ;; *) return 1 ;; esac
+          }
+          if is_true "${{ needs.changes.outputs.run_compile }}" \
+            || is_true "${{ needs.changes.outputs.native }}" \
+            || is_true "${{ needs.changes.outputs.workflows_native }}"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -405,6 +337,9 @@ jobs:
           SKIP: ${{ needs.changes.outputs.skip_test }}
           NEEDS_NATIVE: ${{ needs.changes.outputs.needs_native_for_test }}
           NEEDS_TS: ${{ needs.changes.outputs.needs_ts_for_test }}
+          RUN_COMPILE: ${{ needs.changes.outputs.run_compile }}
+          FILTER_NATIVE: ${{ needs.changes.outputs.native }}
+          COMPILE_RAN: ${{ needs.compile-native.outputs.ran_compile }}
         run: |
           is_true() {
             case "${1,,}" in
@@ -412,13 +347,17 @@ jobs:
               *) return 1 ;;
             esac
           }
-          if is_true "$SKIP"; then
+          skip=false
+          if is_true "$SKIP" && ! is_true "$RUN_COMPILE" && ! is_true "$FILTER_NATIVE" && ! is_true "$COMPILE_RAN"; then
+            skip=true
+          fi
+          if is_true "$skip"; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping integration tests — no source code changes in this PR."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-          if is_true "$NEEDS_NATIVE"; then
+          if is_true "$NEEDS_NATIVE" || is_true "$RUN_COMPILE" || is_true "$FILTER_NATIVE" || is_true "$COMPILE_RAN"; then
             echo "needs_native=true" >> "$GITHUB_OUTPUT"
           else
             echo "needs_native=false" >> "$GITHUB_OUTPUT"

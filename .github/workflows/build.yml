@@ -58,6 +58,8 @@ jobs:
       run_compile: ${{ steps.pr_gates.outputs.run_compile }}
       run_build_ts: ${{ steps.pr_gates.outputs.run_build_ts }}
       run_test: ${{ steps.pr_gates.outputs.run_test }}
+      run_compile_native: ${{ steps.job_gates.outputs.run_compile_native }}
+      run_integration_test: ${{ steps.job_gates.outputs.run_integration_test }}
       needs_native_for_test: ${{ steps.pr_gates.outputs.needs_native }}
       needs_ts_for_test: ${{ steps.pr_gates.outputs.needs_ts }}
     steps:
@@ -149,6 +151,27 @@ jobs:
             "$FILTER_NATIVE" \
             "$FILTER_WORKFLOWS_NATIVE" >> "$GITHUB_OUTPUT"
 
+      # Compute on the self-hosted runner (bash 5). compile-native runs inside the
+      # ci-build container where `${var,,}` and other bash-4+ syntax is unavailable.
+      - name: Derive compile and integration job gates
+        id: job_gates
+        env:
+          RUN_COMPILE: ${{ steps.pr_gates.outputs.run_compile }}
+          SKIP_TEST: ${{ steps.pr_gates.outputs.skip_test }}
+          FILTER_NATIVE: ${{ steps.filter.outputs.native }}
+          FILTER_WORKFLOWS_NATIVE: ${{ steps.filter.outputs.workflows_native }}
+        run: |
+          if [ "$RUN_COMPILE" = "true" ] || [ "$FILTER_NATIVE" = "true" ] || [ "$FILTER_WORKFLOWS_NATIVE" = "true" ]; then
+            echo "run_compile_native=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_compile_native=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$SKIP_TEST" != "true" ] || [ "$RUN_COMPILE" = "true" ] || [ "$FILTER_NATIVE" = "true" ]; then
+            echo "run_integration_test=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_integration_test=false" >> "$GITHUB_OUTPUT"
+          fi
+
   quality:
     name: Typecheck & lint
     needs: [changes, validate-package-lock]
@@ -213,12 +236,7 @@ jobs:
       - name: Skip when no native or native-CI changes
         id: gate
         run: |
-          is_true() {
-            case "${1,,}" in true|1|yes) return 0 ;; *) return 1 ;; esac
-          }
-          if is_true "${{ needs.changes.outputs.run_compile }}" \
-            || is_true "${{ needs.changes.outputs.native }}" \
-            || is_true "${{ needs.changes.outputs.workflows_native }}"; then
+          if [ "${{ needs.changes.outputs.run_compile_native }}" = "true" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -333,36 +351,19 @@ jobs:
     steps:
       - name: Resolve integration test gates
         id: gate
-        env:
-          SKIP: ${{ needs.changes.outputs.skip_test }}
-          NEEDS_NATIVE: ${{ needs.changes.outputs.needs_native_for_test }}
-          NEEDS_TS: ${{ needs.changes.outputs.needs_ts_for_test }}
-          RUN_COMPILE: ${{ needs.changes.outputs.run_compile }}
-          FILTER_NATIVE: ${{ needs.changes.outputs.native }}
-          COMPILE_RAN: ${{ needs.compile-native.outputs.ran_compile }}
         run: |
-          is_true() {
-            case "${1,,}" in
-              true|1|yes) return 0 ;;
-              *) return 1 ;;
-            esac
-          }
-          skip=false
-          if is_true "$SKIP" && ! is_true "$RUN_COMPILE" && ! is_true "$FILTER_NATIVE" && ! is_true "$COMPILE_RAN"; then
-            skip=true
-          fi
-          if is_true "$skip"; then
+          if [ "${{ needs.changes.outputs.run_integration_test }}" = "true" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping integration tests — no source code changes in this PR."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-          if is_true "$NEEDS_NATIVE" || is_true "$RUN_COMPILE" || is_true "$FILTER_NATIVE" || is_true "$COMPILE_RAN"; then
+          if [ "${{ needs.changes.outputs.run_compile_native }}" = "true" ] || [ "${{ needs.changes.outputs.needs_native_for_test }}" = "true" ]; then
             echo "needs_native=true" >> "$GITHUB_OUTPUT"
           else
             echo "needs_native=false" >> "$GITHUB_OUTPUT"
           fi
-          if is_true "$NEEDS_TS"; then
+          if [ "${{ needs.changes.outputs.needs_ts_for_test }}" = "true" ]; then
             echo "needs_ts=true" >> "$GITHUB_OUTPUT"
           else
             echo "needs_ts=false" >> "$GITHUB_OUTPUT"

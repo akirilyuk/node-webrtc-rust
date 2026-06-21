@@ -65,6 +65,7 @@ interface ClientSession {
   inboundTrack?: RemoteAudioTrack
   agentStarted: boolean
   peerConnectedNotified: boolean
+  peerSignalingJoined: boolean
   unwireControl?: () => void
   unwireSync?: () => void
   unwireSpeechForward?: () => void
@@ -271,6 +272,7 @@ export class VoiceAgentSessionHost {
       agent,
       agentStarted: false,
       peerConnectedNotified: false,
+      peerSignalingJoined: true,
       remoteDescriptionSet: false,
       offerSent: false,
       pendingAnswer: null,
@@ -695,6 +697,18 @@ export class VoiceAgentSessionHost {
       void Promise.resolve(this.options.voiceHandler?.onPeerDisconnected?.(ctx)).catch(
         (error: unknown) => {
           console.error(`[session ${peerId}] voiceHandler.onPeerDisconnected failed:`, error)
+        },
+      )
+    } else if (session.peerSignalingJoined) {
+      const ctx = this.createSessionContext(
+        peerId,
+        session.agent,
+        session.controlChannel,
+        session.syncChannel,
+      )
+      void Promise.resolve(this.options.voiceHandler?.onPeerSignalingLost?.(ctx)).catch(
+        (error: unknown) => {
+          console.error(`[session ${peerId}] voiceHandler.onPeerSignalingLost failed:`, error)
         },
       )
     }

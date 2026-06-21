@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/helpers",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "description": "Reusable server-side helpers for voice agents, session pods, and PCM streaming",
   "keywords": [
     "webrtc",

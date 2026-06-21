@@ -36,6 +36,12 @@ export interface VoiceSessionHandler {
   onPeerDisconnected?: (ctx: VoiceSessionContext) => void | Promise<void>
 
   /**
+   * Called when signaling/WebRTC setup started but billable connect never completed
+   * (peer-left or transport closed before {@link onPeerConnected}).
+   */
+  onPeerSignalingLost?: (ctx: VoiceSessionContext) => void | Promise<void>
+
+  /**
    * Called for each pipeline event: VAD (`user_speaking_*`), STT (`user_speech_*`),
    * TTS lifecycle (`agent_speaking_*`), `barge_in`, `error`, etc.
    *

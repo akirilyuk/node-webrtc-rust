@@ -10,6 +10,37 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.5.11] — 2026-06-20
+
+**Compare:** [`@node-webrtc-rust/helpers@0.5.10…0.5.11`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.10...release/0.5.11) *(helpers-only release)*
+
+Connection-gated billing: signal when a client leaves before billable WebRTC connect completes.
+
+### Added
+
+- **`VoiceSessionHandler.onPeerSignalingLost`** — called when signaling/WebRTC setup started but `onPeerConnected` never fired (peer-left, transport closed, or teardown before voice agent start). Runners use this to clear billing state without rejoin grace (`never_connected` path).
+
+---
+
+## [0.5.10] — 2026-06-20
+
+**Compare:** [`@node-webrtc-rust/helpers@0.5.7…0.5.10`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.7...release/0.5.10) *(helpers + signaling server defaults)*
+
+Faster disconnect detection and shorter reconnect window for connection-gated session billing.
+
+### Added
+
+- **`SessionPod.rejoinGraceMs`** — hold the runner slot briefly after the last client leaves so same-session reconnect can succeed (default **10s**).
+- **`SessionPod.disconnectPeer`** — server-initiated teardown of one browser peer in a room.
+- **Signaling server ping defaults** — when `pingIntervalMs` is unset, the server sends WebSocket pings every **5s** so dead clients are detected sooner.
+
+### Fixed
+
+- **`VoiceAgentSessionHost` transport loss** — on `failed` / `disconnected` / `closed` ICE or PC state, close the peer after **~5s** instead of retrying reconnect indefinitely (which kept runner billing slots alive after abrupt client exit).
+- **`SessionPod` idle teardown** — waits for rejoin grace before destroying the session slot when the last client disconnects.
+
+---
+
 ## [0.5.7] — 2026-06-18
 
 **Compare:** [`release/0.5.5…release/0.5.7`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.5...release/0.5.7)

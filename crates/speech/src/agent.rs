@@ -421,6 +421,7 @@ impl VoiceAgent {
         synthesis_epoch: &Arc<AtomicU64>,
     ) -> SpeechResult<()> {
         let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
+        let generation_at_start = tts_buffer.current_generation().await;
         let chunks = {
             let tts_guard = tts.lock().await;
             let provider = tts_guard
@@ -438,7 +439,13 @@ impl VoiceAgent {
             return Ok(());
         }
 
-        tts_buffer.enqueue(chunks).await;
+        if !tts_buffer
+            .enqueue_if_generation(chunks, Some(generation_at_start))
+            .await
+        {
+            voice_debug("TTS synthesis discarded (buffer flushed during synthesize)");
+            return Ok(());
+        }
         Self::ensure_tts_drain_worker_shared(
             tts_drain_worker,
             tts_drain_wake,

@@ -114,4 +114,28 @@ describe('SDK type surface', () => {
     expect(transceiver.sender.track?.id).toBe('tx1')
     pc.close()
   })
+
+  test('RTCPeerConnection close does not leave unhandled rejections for data channels', async () => {
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => rejections.push(reason)
+    process.on('unhandledRejection', onRejection)
+    try {
+      const pc1 = new RTCPeerConnection()
+      const pc2 = new RTCPeerConnection()
+      pc1.createDataChannel('teardown-test')
+      const offer = await pc1.createOffer()
+      await pc1.setLocalDescription(offer)
+      await pc2.setRemoteDescription(offer)
+      const answer = await pc2.createAnswer()
+      await pc2.setLocalDescription(answer)
+      await pc1.setRemoteDescription(answer)
+      pc1.close()
+      pc2.close()
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const resetErrors = rejections.filter((reason) => String(reason).includes('reset packet'))
+      expect(resetErrors).toHaveLength(0)
+    } finally {
+      process.off('unhandledRejection', onRejection)
+    }
+  })
 })

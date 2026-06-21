@@ -364,7 +364,13 @@ export class RTCPeerConnection extends EventEmitter {
   /** Closes the connection and releases native resources. */
   close(): void {
     debugFn('sdk::RTCPeerConnection', 'close')
-    void this.native.close()
+    void this.native.close().catch((error: unknown) => {
+      debugEvent(
+        'sdk::RTCPeerConnection',
+        'close-error',
+        `message=${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
   }
 
   /** Last local description set or refreshed after gathering. */

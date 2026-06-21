@@ -29,7 +29,7 @@ use crate::offer_answer::{AnswerOptions, OfferOptions};
 use crate::data_channel::{DataChannel, DataChannelOptions};
 use crate::debug_call;
 use crate::debug_evt;
-use crate::error::CoreError;
+use crate::error::{is_benign_teardown_error, CoreError};
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
 use crate::media::RemoteTrack;
 use crate::rtp_sender::RtpSender;
@@ -488,8 +488,14 @@ impl PeerConnection {
     /// Closes the peer connection.
     pub async fn close(&self) -> Result<(), CoreError> {
         debug_call!("core::peer_connection", "close");
-        self.inner.close().await?;
-        Ok(())
+        if self.connection_state() == ConnectionState::Closed {
+            return Ok(());
+        }
+        match self.inner.close().await {
+            Ok(()) => Ok(()),
+            Err(err) if is_benign_teardown_error(&err) => Ok(()),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Returns the current connection state.

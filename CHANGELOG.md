@@ -10,6 +10,29 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.0] — 2026-06-21
+
+**Compare:** [`release/0.5.7…release/0.6.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.7...release/0.6.0)
+
+Concurrent Sherpa TTS across sessions, helpers billing/disconnect improvements (since 0.5.7), and stable data-channel teardown on ICE close.
+
+### Added
+
+- **`sendTextToTTS(text, { nonBlocking: true })`** — enqueue TTS without blocking the caller; default behavior still awaits synthesis + playback for that utterance. Per-agent synthesis worker + Sherpa `TtsEnginePool` (`SHERPA_POOL_MAX_CONCURRENT_TTS`) for parallel ONNX work across sessions.
+- **Helpers `VoiceSessionContext.speak` options** — forward `nonBlocking` to the SDK; `broadcastSpeak` uses parallel enqueue for multi-client rooms.
+- **`VoiceSessionHandler.onPeerSignalingLost`** — signal when a client leaves before billable WebRTC connect completes (connection-gated billing).
+- **`SessionPod.rejoinGraceMs`** — hold the runner slot briefly after the last client leaves so same-session reconnect can succeed (default **10s**).
+- **`SessionPod.disconnectPeer`** — server-initiated teardown of one browser peer in a room.
+- **Signaling server ping defaults** — when `pingIntervalMs` is unset, WebSocket pings every **5s** for faster dead-client detection.
+
+### Fixed
+
+- **Data-channel teardown** — closing a peer after `iceConnectionState=closed` no longer crashes Node with unhandled WebRTC data-channel reset errors during cleanup.
+- **`VoiceAgentSessionHost` transport loss** — on `failed` / `disconnected` / `closed` ICE or PC state, close the peer after **~5s** instead of retrying reconnect indefinitely.
+- **`SessionPod` idle teardown** — waits for rejoin grace before destroying the session slot when the last client disconnects.
+
+---
+
 ## [0.5.11] — 2026-06-20
 
 **Compare:** [`@node-webrtc-rust/helpers@0.5.10…0.5.11`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.10...release/0.5.11) *(helpers-only release)*

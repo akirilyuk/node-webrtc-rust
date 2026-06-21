@@ -101,6 +101,15 @@ export function formatAgent2EchoReply(recognized: string): string {
   return `${ECHO_REPLY_PREFIX}${trimmed}`
 }
 
+/** Echo payload only — omit fixed "You said:" prefix for truncation similarity. */
+export function echoPayloadForCompare(text: string): string {
+  const norm = normalizeForCompare(text)
+  const marker = 'you said'
+  const idx = norm.indexOf(marker)
+  if (idx === -1) return norm
+  return norm.slice(idx + marker.length).replace(/^[\s:]+/, '').trim()
+}
+
 export function transcriptIncludesYouSaid(recognized: string): boolean {
   const norm = normalizeForCompare(recognized)
   if (norm.includes('you said') || (norm.includes('you') && norm.includes('said'))) {

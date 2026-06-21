@@ -121,6 +121,8 @@ pub struct VoiceAgent {
     tts_synthesis_wake: Arc<Notify>,
     tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_busy: Arc<AtomicBool>,
+    /// Incremented on barge/flush/cancel so in-flight ONNX synthesis can drop late PCM.
+    tts_synthesis_epoch: Arc<AtomicU64>,
 }
 
 impl VoiceAgent {
@@ -186,7 +188,12 @@ impl VoiceAgent {
             tts_synthesis_wake: Arc::new(Notify::new()),
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
+            tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    fn invalidate_inflight_tts_synthesis(&self) {
+        self.tts_synthesis_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn event_bus(&self) -> &SpeechEventBus {
@@ -366,6 +373,7 @@ impl VoiceAgent {
         let inner = Arc::clone(&self.inner);
         let event_bus = self.event_bus.clone();
         let synthesis_busy = Arc::clone(&self.tts_synthesis_busy);
+        let synthesis_epoch = Arc::clone(&self.tts_synthesis_epoch);
         *slot = Some(tokio::spawn(async move {
             loop {
                 wake.notified().await;
@@ -387,6 +395,7 @@ impl VoiceAgent {
                         &tts_drain_worker,
                         &inner,
                         &event_bus,
+                        &synthesis_epoch,
                     )
                     .await;
                     synthesis_busy.store(false, Ordering::SeqCst);
@@ -409,7 +418,9 @@ impl VoiceAgent {
         tts_drain_worker: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
+        synthesis_epoch: &Arc<AtomicU64>,
     ) -> SpeechResult<()> {
+        let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let chunks = {
             let tts_guard = tts.lock().await;
             let provider = tts_guard
@@ -417,6 +428,11 @@ impl VoiceAgent {
                 .ok_or_else(|| SpeechError::Config("TTS not configured".into()))?;
             provider.synthesize(text).await?
         };
+
+        if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
+            voice_debug("TTS synthesis discarded (invalidated during synthesize)");
+            return Ok(());
+        }
 
         if chunks.is_empty() {
             return Ok(());
@@ -482,6 +498,7 @@ impl VoiceAgent {
     }
 
     async fn cancel_pending_tts_synthesis(&self) {
+        self.invalidate_inflight_tts_synthesis();
         let mut queue = self.tts_synthesis_queue.lock().await;
         for job in queue.drain(..) {
             if let Some(done) = job.done {

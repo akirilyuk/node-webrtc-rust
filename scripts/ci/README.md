@@ -95,7 +95,7 @@ Markdown under `docs/**` and any `**/*.md` file do not set `code=true` — READM
 
 Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
 
-**Compile native** runs when `native` or `workflows_native` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
+**Compile native** runs when `native` or `workflows_native` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **all dependent crates linked into bindings** (core, mixer, conference, speech, vendor-*), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
 
 ### 4. Compile native
 

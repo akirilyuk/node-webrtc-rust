@@ -98,7 +98,7 @@ const DEFAULT_WARMUP_S = 0.6
 const DEFAULT_INTER_LEG_GAP_S = 0.5
 const DEFAULT_INTER_ROUND_GAP_S = 1.0
 /** Ms after agent2 TTS playback starts before barge TTS (mid-playback). */
-const DEFAULT_BARGE_DELAY_MS = 700
+const DEFAULT_BARGE_DELAY_MS = 400
 const DEFAULT_BARGE_TONE_S = 1.5
 /** Interrupted leg B must retain fewer number words than this. */
 const DEFAULT_MAX_INTERRUPT_NUMBER_WORDS = 6

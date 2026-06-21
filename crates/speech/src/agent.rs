@@ -1548,7 +1548,18 @@ impl VoiceAgent {
                     return Ok(());
                 }
                 writer(frame, duration_ms)?;
-                tokio::time::sleep(std::time::Duration::from_millis(duration_ms as u64)).await;
+                if !Self::pace_tts_drain_frame(tts_buffer, drain_generation, duration_ms).await {
+                    voice_debug("TTS drain stopped during frame pacing (barge-in flush)");
+                    let still_speaking = {
+                        let guard = inner.lock().await;
+                        guard.agent_speaking
+                    };
+                    if still_speaking {
+                        Self::end_agent_speaking_inner(inner, false).await;
+                        event_bus.emit(SpeechEvent::agent_speaking_end());
+                    }
+                    return Ok(());
+                }
             }
         }
 
@@ -1569,6 +1580,24 @@ impl VoiceAgent {
         if arm_stt_hold_after_playback {
             Self::arm_stt_hold_if_idle(&mut guard);
         }
+    }
+
+    /// Real-time pacing between PCM frames; returns false when the buffer was flushed (barge-in).
+    async fn pace_tts_drain_frame(
+        tts_buffer: &TtsBuffer,
+        drain_generation: u64,
+        duration_ms: u32,
+    ) -> bool {
+        let mut remaining = duration_ms;
+        while remaining > 0 {
+            let slice = remaining.min(20);
+            tokio::time::sleep(std::time::Duration::from_millis(slice as u64)).await;
+            if tts_buffer.current_generation().await != drain_generation {
+                return false;
+            }
+            remaining = remaining.saturating_sub(slice);
+        }
+        true
     }
 }
 

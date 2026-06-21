@@ -352,7 +352,7 @@ export declare class JsVoiceAgent {
   attach(outboundTrack: JsLocalAudioTrack): Promise<void>
   start(): Promise<void>
   stop(): Promise<void>
-  sendTextToTts(text: string): Promise<void>
+  sendTextToTts(text: string, nonBlocking?: boolean | undefined | null): Promise<void>
   flushTts(): Promise<void>
   /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */
   waitTtsPlaybackIdle(): Promise<void>

@@ -4,7 +4,7 @@
  * Use {@link VoiceSessionContext.speak} to play TTS on the agent outbound track.
  */
 
-import type { VoiceAgent, SpeechEvent } from '@node-webrtc-rust/sdk/voice'
+import type { VoiceAgent, SendTextToTtsOptions, SpeechEvent } from '@node-webrtc-rust/sdk/voice'
 
 /** Which WebRTC data channel carried a binary payload. */
 export type DataChannelKind = 'control' | 'sync'
@@ -18,7 +18,7 @@ export interface VoiceSessionContext {
   /** This tab's VoiceAgent — omitted in data-only mode. */
   agent?: VoiceAgent
   /** Synthesize `text` and stream audio to the browser. */
-  speak: (text: string) => Promise<void>
+  speak: (text: string, options?: SendTextToTtsOptions) => Promise<void>
   /** Send a JSON payload to the browser over the voice-control data channel. */
   sendToClient: (payload: unknown) => void
   /** Send raw bytes — prefers the sync channel when negotiated and open. */

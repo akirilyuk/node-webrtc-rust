@@ -8,11 +8,25 @@ use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
 use crate::audio::f32_mono_to_stereo_48k_s16le;
-use crate::pool::{SharedTtsEngine, SherpaModelPool};
+use crate::pool::{SherpaModelPool, TtsEnginePool};
+
+fn voice_debug_enabled() -> bool {
+    matches!(
+        std::env::var("VOICE_DEBUG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+fn voice_debug(message: impl AsRef<str>) {
+    if voice_debug_enabled() {
+        eprintln!("[voice-debug] {}", message.as_ref());
+    }
+}
+
 pub struct SherpaTts {
     config: TtsConfig,
     pool: Arc<crate::pool::SherpaModelPool>,
-    shared: Arc<Mutex<Option<Arc<SharedTtsEngine>>>>,
+    engine_pool: Arc<Mutex<Option<Arc<TtsEnginePool>>>>,
     speaker_id: i32,
     speed: f32,
 }
@@ -22,26 +36,25 @@ impl SherpaTts {
         Self {
             config: config.clone(),
             pool: SherpaModelPool::global(),
-            shared: Arc::new(Mutex::new(None)),
+            engine_pool: Arc::new(Mutex::new(None)),
             speaker_id: parse_speaker_id(config),
             speed: parse_speed(config),
         }
     }
 
-    async fn ensure_engine(&self) -> SpeechResult<Arc<SharedTtsEngine>> {
-        let mut guard = self.shared.lock().await;
-        if let Some(shared) = guard.as_ref() {
-            return Ok(Arc::clone(shared));
+    async fn ensure_engine_pool(&self) -> SpeechResult<Arc<TtsEnginePool>> {
+        let mut guard = self.engine_pool.lock().await;
+        if let Some(pool) = guard.as_ref() {
+            return Ok(Arc::clone(pool));
         }
 
         let config = self.config.clone();
         let pool = Arc::clone(&self.pool);
-        let shared = tokio::task::spawn_blocking(move || pool.get_or_create_tts(&config))
+        let engine_pool = tokio::task::spawn_blocking(move || pool.get_or_create_tts(&config))
             .await
             .map_err(|err| SpeechError::Internal(err.to_string()))??;
-        shared.session_started();
-        *guard = Some(Arc::clone(&shared));
-        Ok(shared)
+        *guard = Some(Arc::clone(&engine_pool));
+        Ok(engine_pool)
     }
 }
 
@@ -79,29 +92,31 @@ impl TtsProvider for SherpaTts {
             return Ok(Vec::new());
         }
 
-        let shared = self.ensure_engine().await?;
+        let engine_pool = self.ensure_engine_pool().await?;
+        let shared = engine_pool.acquire();
+        shared.session_started();
         let input = trimmed.to_string();
         let speaker_id = self.speaker_id;
         let speed = self.speed;
-        let tts_semaphore = shared.tts_semaphore();
+        let text_len = trimmed.len();
+        let tts_semaphore = self.pool.tts_semaphore();
         let _permit = tts_semaphore
             .acquire()
             .await
             .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
 
-        let chunk = tokio::task::spawn_blocking(move || -> SpeechResult<TtsAudioChunk> {
-            let _synthesis_guard = shared
-                .synthesis_mutex()
-                .lock()
-                .map_err(|_| SpeechError::Internal("sherpa TTS synthesis lock poisoned".into()))?;
+        voice_debug(format!("tts synthesis start text_len={text_len}"));
+        let wall_start = std::time::Instant::now();
 
+        let shared_for_blocking = Arc::clone(&shared);
+        let chunk = tokio::task::spawn_blocking(move || -> SpeechResult<TtsAudioChunk> {
             let gen_config = GenerationConfig {
                 sid: speaker_id,
                 speed,
                 ..Default::default()
             };
 
-            let tts = shared
+            let tts = shared_for_blocking
                 .tts
                 .lock()
                 .map_err(|_| SpeechError::Internal("sherpa TTS engine lock poisoned".into()))?;
@@ -121,16 +136,12 @@ impl TtsProvider for SherpaTts {
         .await
         .map_err(|err| SpeechError::Internal(err.to_string()))??;
 
+        voice_debug(format!(
+            "tts synthesis done wall_ms={} audio_duration_ms={}",
+            wall_start.elapsed().as_millis(),
+            chunk.duration_ms
+        ));
+        shared.session_ended();
         Ok(vec![chunk])
-    }
-}
-
-impl Drop for SherpaTts {
-    fn drop(&mut self) {
-        if let Ok(guard) = self.shared.try_lock() {
-            if let Some(shared) = guard.as_ref() {
-                shared.session_ended();
-            }
-        }
     }
 }

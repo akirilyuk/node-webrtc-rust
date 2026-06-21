@@ -124,6 +124,12 @@ export interface VoiceAgentConfig {
   tts?: TtsConfig
 }
 
+/** Options for {@link VoiceAgent.sendTextToTTS}. */
+export interface SendTextToTtsOptions {
+  /** When true, resolve as soon as the utterance is queued. Default: wait for synthesis + playback. */
+  nonBlocking?: boolean
+}
+
 /**
  * Speech lifecycle events from the native pipeline.
  *

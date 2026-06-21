@@ -414,6 +414,18 @@ When the agent is **not** speaking, VAD opens STT normally; no barge unless conf
 
 E2E: `npm run start:roundtrip-barge-in` — tone must **not** barge; spoken TTS phrase must barge.
 
+### TTS enqueue: blocking vs non-blocking
+
+`sendTextToTTS` (Rust: `send_text_to_tts`) defaults to **blocking**: the Promise resolves after **synthesis and outbound playback** for that utterance finish (same ergonomics as before the synthesis queue refactor).
+
+Pass **`{ nonBlocking: true }`** when you want to enqueue and return immediately — for example parallel multi-client broadcast:
+
+```typescript
+await Promise.all(contexts.map((ctx) => ctx.speak(text, { nonBlocking: true })))
+```
+
+Cross-session ONNX work is still capped by `SHERPA_POOL_MAX_CONCURRENT_TTS` (Sherpa engine pool). Per-session utterances always synthesize and play in FIFO order.
+
 **Requirements for auto barge:**
 
 1. Same `VoiceAgent` that calls `sendTextToTTS`
@@ -460,20 +472,20 @@ With defaults: ~300 + 1000 + 800 ≈ **2.1 s** before finalize, plus synthesis.
 
 ### Symptom → tune (quick)
 
-| Symptom                                                           | Try first                                                                                                       |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Bot silent too long after user stops                              | Lower **`sttGateHoldMs`** (600–800), then **`minSilenceDurationMs`** (200–250)                                  |
-| One sentence → two `user_speech_final`                            | Raise **`minSilenceDurationMs`** (1200–1500) or **`sttGateHoldMs`** (1200–1500)                               |
+| Symptom                                                           | Try first                                                                                                      |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Bot silent too long after user stops                              | Lower **`sttGateHoldMs`** (600–800), then **`minSilenceDurationMs`** (200–250)                                 |
+| One sentence → two `user_speech_final`                            | Raise **`minSilenceDurationMs`** (1200–1500) or **`sttGateHoldMs`** (1200–1500)                                |
 | Counting / “one, two, three…” splits or early `user_speaking_end` | Raise **`minSilenceDurationMs`** (1200+); keep **`sttGateHoldMs`** ~1000–1400 so digit gaps don’t end the turn |
-| Last word clipped in transcript                                   | Raise **`sttGateHoldMs`** (1200–1500) or endpoint tail (via higher **`minSilenceDurationMs`**)                  |
-| Call center / floor noise triggers STT                            | Raise **`threshold`** and **`minSpeechDurationMs`**; consider Silero build; **avoid** debug `threshold: 0.01`   |
-| Quiet mic, never starts                                           | Lower **`threshold`** (energy: try `0.05`–`0.08` on Sherpa demos only)                                          |
+| Last word clipped in transcript                                   | Raise **`sttGateHoldMs`** (1200–1500) or endpoint tail (via higher **`minSilenceDurationMs`**)                 |
+| Call center / floor noise triggers STT                            | Raise **`threshold`** and **`minSpeechDurationMs`**; consider Silero build; **avoid** debug `threshold: 0.01`  |
+| Quiet mic, never starts                                           | Lower **`threshold`** (energy: try `0.05`–`0.08` on Sherpa demos only)                                         |
 
 ### Example presets (starting points)
 
 | Deployment                         | `threshold` | `minSpeech` | `minSilence` | `sttGateHold` | Notes                                                                                                       |
 | ---------------------------------- | ----------- | ----------- | ------------ | ------------- | ----------------------------------------------------------------------------------------------------------- |
-| **Interactive bot** (preset)       | `0.15`      | `250`       | `1300`       | `1000`        | `VOICE_AGENT_VAD_PRESET` — ~1.3 s maybe-done + 1000 ms gate hold                                           |
+| **Interactive bot** (preset)       | `0.15`      | `250`       | `1300`       | `1000`        | `VOICE_AGENT_VAD_PRESET` — ~1.3 s maybe-done + 1000 ms gate hold                                            |
 | **Low-latency**                    | `0.15`      | `200`       | `250`        | `600–800`     | Snappier; test clipping                                                                                     |
 | **Deliberate speech / counting**   | `0.15`      | `250`       | `450–600`    | `800–1200`    | Wider word gaps OK                                                                                          |
 | **Noisy line / call center**       | `0.10–0.20` | `300–400`   | `400–500`    | `1000–1500`   | Tune threshold on real audio; AEC/headset                                                                   |

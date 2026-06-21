@@ -30,18 +30,47 @@ pub struct SharedSttRecognizer {
     pub(crate) active_sessions: AtomicUsize,
 }
 
-/// Shared offline TTS engine (one per model directory).
+/// Shared offline TTS engine (one slot in a [`TtsEnginePool`]).
 pub struct SharedTtsEngine {
     pub(crate) tts: Mutex<OfflineTts>,
-    synthesis_mutex: Mutex<()>,
     pub(crate) active_sessions: AtomicUsize,
     tts_semaphore: Arc<Semaphore>,
+}
+
+/// Pool of offline TTS engines for one model directory (parallel synthesis up to pool size).
+pub struct TtsEnginePool {
+    engines: Vec<Arc<SharedTtsEngine>>,
+    next: AtomicUsize,
+}
+
+impl TtsEnginePool {
+    fn new(config: &TtsConfig, tts_semaphore: Arc<Semaphore>) -> SpeechResult<Self> {
+        let slots = max_concurrent_tts();
+        let mut engines = Vec::with_capacity(slots);
+        for _ in 0..slots {
+            let engine = create_offline_tts(config)?;
+            engines.push(Arc::new(SharedTtsEngine::new(engine, Arc::clone(&tts_semaphore))));
+        }
+        Ok(Self {
+            engines,
+            next: AtomicUsize::new(0),
+        })
+    }
+
+    pub fn acquire(&self) -> Arc<SharedTtsEngine> {
+        let index = self.next.fetch_add(1, Ordering::Relaxed) % self.engines.len();
+        Arc::clone(&self.engines[index])
+    }
+
+    pub fn len(&self) -> usize {
+        self.engines.len()
+    }
 }
 
 /// Process-wide Sherpa model pool.
 pub struct SherpaModelPool {
     stt: Mutex<HashMap<SttPoolKey, Arc<SharedSttRecognizer>>>,
-    tts: Mutex<HashMap<TtsPoolKey, Arc<SharedTtsEngine>>>,
+    tts: Mutex<HashMap<TtsPoolKey, Arc<TtsEnginePool>>>,
     decode_semaphore: Arc<Semaphore>,
     tts_semaphore: Arc<Semaphore>,
 }
@@ -87,8 +116,8 @@ impl SherpaModelPool {
         Ok(shared)
     }
 
-    /// Acquire or create a shared TTS engine for `config` (call from blocking context).
-    pub fn get_or_create_tts(&self, config: &TtsConfig) -> SpeechResult<Arc<SharedTtsEngine>> {
+    /// Acquire or create a shared TTS engine pool for `config` (call from blocking context).
+    pub fn get_or_create_tts(&self, config: &TtsConfig) -> SpeechResult<Arc<TtsEnginePool>> {
         let key = tts_pool_key(config)?;
         let mut map = self
             .tts
@@ -97,13 +126,12 @@ impl SherpaModelPool {
         if let Some(existing) = map.get(&key) {
             return Ok(Arc::clone(existing));
         }
-        let engine = create_offline_tts(config)?;
-        let shared = Arc::new(SharedTtsEngine::new(
-            engine,
+        let pool = Arc::new(TtsEnginePool::new(
+            config,
             Arc::clone(&self.tts_semaphore),
-        ));
-        map.insert(key, Arc::clone(&shared));
-        Ok(shared)
+        )?);
+        map.insert(key, Arc::clone(&pool));
+        Ok(pool)
     }
 
     /// Number of distinct STT model directories loaded in the pool.
@@ -168,7 +196,6 @@ impl SharedTtsEngine {
     fn new(tts: OfflineTts, tts_semaphore: Arc<Semaphore>) -> Self {
         Self {
             tts: Mutex::new(tts),
-            synthesis_mutex: Mutex::new(()),
             active_sessions: AtomicUsize::new(0),
             tts_semaphore,
         }
@@ -184,10 +211,6 @@ impl SharedTtsEngine {
 
     pub fn session_ended(&self) {
         self.active_sessions.fetch_sub(1, Ordering::SeqCst);
-    }
-
-    pub fn synthesis_mutex(&self) -> &Mutex<()> {
-        &self.synthesis_mutex
     }
 }
 

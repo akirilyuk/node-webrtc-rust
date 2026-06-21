@@ -77,12 +77,13 @@ export const voiceHandler: VoiceSessionHandler = {
     const trimmed = text.trim()
     if (!trimmed) return []
 
-    const spoken: string[] = []
-    for (const ctx of contexts) {
-      await ctx.speak(trimmed)
-      spoken.push(ctx.peerId)
-      logPeer(ctx.peerId, `broadcast: "${trimmed.slice(0, 80)}"`)
-    }
-    return spoken
+    const results = await Promise.all(
+      contexts.map(async (ctx) => {
+        await ctx.speak(trimmed, { nonBlocking: true })
+        logPeer(ctx.peerId, `broadcast: "${trimmed.slice(0, 80)}"`)
+        return ctx.peerId
+      }),
+    )
+    return results
   },
 }

@@ -38,6 +38,7 @@ import {
   wordSimilarity,
 } from './roundtrip-counting.js'
 import {
+  echoPayloadForCompare,
   evaluateCountingEchoLeg,
   formatAgent2EchoReply,
   playTtsAndCollect,
@@ -131,7 +132,11 @@ export function evaluateInterruptedEchoLeg(params: {
   const failures: string[] = []
 
   const numberWordsFound = countNumberWordsInTranscript(recognized, NUMBER_WORDS_ONE_TO_TEN)
-  const similarity = wordSimilarity(params.echoText, recognized)
+  // Compare payload only — "You said:" always matches and inflates similarity on partial echoes.
+  const similarity = wordSimilarity(
+    echoPayloadForCompare(params.echoText),
+    echoPayloadForCompare(recognized),
+  )
 
   if (!recognized) {
     failures.push('interrupted leg B: recognized transcript is empty')

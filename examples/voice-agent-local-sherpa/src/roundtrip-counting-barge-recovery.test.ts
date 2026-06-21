@@ -2,7 +2,7 @@ import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_COUNTING_PHRASE_ONE_TO_TEN } from './roundtrip-counting.js'
-import { formatAgent2EchoReply } from './roundtrip-counting-echo.js'
+import { echoPayloadForCompare, formatAgent2EchoReply } from './roundtrip-counting-echo.js'
 import { evaluateBargeUtteranceFinal } from './roundtrip-barge-in-helpers.js'
 import {
   DEFAULT_BARGE_PHRASE,
@@ -17,6 +17,23 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
 
   it('DEFAULT_BARGE_PHRASE matches semantic barge-in default', () => {
     expect(DEFAULT_BARGE_PHRASE).toBe('stop now please')
+  })
+
+  it('echoPayloadForCompare strips You said prefix', () => {
+    expect(echoPayloadForCompare('You said: one two three')).toBe('one two three')
+    expect(echoPayloadForCompare('You said one two three')).toBe('one two three')
+  })
+
+  it('evaluateInterruptedEchoLeg passes CI-like partial echo (5 number words, 50% payload sim)', () => {
+    const echoText = formatAgent2EchoReply('one two three four five six seven eight nine ten')
+    const result = evaluateInterruptedEchoLeg({
+      echoText,
+      recognized: 'You said one two three four five',
+      maxNumberWords: 6,
+      maxSimilarity: 0.55,
+    })
+    expect(result.passed).toBe(true)
+    expect(result.similarity).toBe(0.5)
   })
 
   it('evaluateInterruptedEchoLeg fails when six number words exceed similarity cap', () => {

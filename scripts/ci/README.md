@@ -104,7 +104,7 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 - **When compiling:** requires **Typecheck & lint** success.
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
-- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) — exact key from [`native-binding-cache-key.sh`](native-binding-cache-key.sh) + [`verify-native-binding-surface.mjs`](verify-native-binding-surface.mjs); skips `napi build` only when valid
+- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) restores a prior `.node` for the Test job, but **compile always runs `napi build`** when this job is not skipped (`skip_build_on_cache_hit: false`). Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **every `path = "../../crates/…"` dep in `packages/bindings/Cargo.toml`**, **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`**. No `restore-keys` prefix fallback.
 - **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) — host-style build runs `copy:local-node` so `index.js` loads the fresh `.node` instead of stale optional npm packages
 
 Populates the shared native cache used by the test job.

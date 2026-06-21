@@ -8,6 +8,10 @@ cd "$ROOT"
 
 hash_crate_sources() {
   local crate_dir="$1"
+  if [[ ! -f "${crate_dir}/Cargo.toml" ]]; then
+    echo "native-binding-cache-key: missing ${crate_dir}/Cargo.toml" >&2
+    exit 1
+  fi
   sha256sum "${crate_dir}/Cargo.toml"
   if [[ -d "${crate_dir}/src" ]]; then
     find "${crate_dir}/src" -type f -name '*.rs' | sort | xargs sha256sum
@@ -17,8 +21,16 @@ hash_crate_sources() {
   fi
 }
 
+list_bindings_path_crates() {
+  # Path deps from packages/bindings/Cargo.toml → repo-relative crate roots.
+  grep -E 'path = "\.\./\.\./crates/' packages/bindings/Cargo.toml \
+    | awk -F'"' '{ print $2 }' \
+    | sed 's|^\.\./\.\./||' \
+    | sort -u
+}
+
 {
-  sha256sum Cargo.toml Cargo.lock
+  sha256sum Cargo.toml Cargo.lock scripts/ci/native-binding-cache-key.sh
   sha256sum \
     packages/bindings/Cargo.toml \
     packages/bindings/build.rs \
@@ -30,13 +42,10 @@ hash_crate_sources() {
     find packages/bindings/src -type f | sort | xargs sha256sum
   fi
 
-  # Every crate linked into packages/bindings (see bindings/Cargo.toml). signaling is
-  # workspace-only and not part of the .node — exclude it to avoid spurious rebuilds.
-  for crate_dir in crates/*/; do
-    crate="$(basename "$crate_dir")"
-    [[ "$crate" == signaling ]] && continue
+  while IFS= read -r crate_dir; do
+    [[ -z "$crate_dir" ]] && continue
     hash_crate_sources "$crate_dir"
-  done
+  done < <(list_bindings_path_crates)
 
   # Musl prebuilds must rebuild when Alpine native toolchain changes (not Zig cross).
   sha256sum \

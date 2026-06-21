@@ -317,7 +317,8 @@ jobs:
           cache_prefix: v1-pr-debug
           platform: 'false'
           zig: 'false'
-          skip_build_on_cache_hit: 'true'
+          # When compile-native runs, always rebuild — binding cache is for Test restore only.
+          skip_build_on_cache_hit: 'false'
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
           binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}
 
@@ -453,6 +454,19 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
           profile: debug
+
+      - name: Discard cached .node when Rust sources changed in PR
+        if: |
+          steps.gate.outputs.skip != 'true' &&
+          steps.gate.outputs.needs_native == 'true' &&
+          (needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows_native == 'true')
+        run: |
+          shopt -s nullglob
+          files=(packages/bindings/*.node)
+          if [[ ${#files[@]} -gt 0 ]]; then
+            echo "::notice::Rust/native paths changed — removing restored .node so Test rebuilds against current sources."
+            rm -f packages/bindings/*.node
+          fi
 
       - name: Build native binding in CI image when cache miss
         if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'

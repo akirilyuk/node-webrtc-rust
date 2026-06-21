@@ -28,12 +28,29 @@ impl TtsBuffer {
     }
 
     pub async fn enqueue(&self, chunks: Vec<TtsAudioChunk>) {
+        let _ = self.enqueue_if_generation(chunks, None).await;
+    }
+
+    /// Enqueue PCM only when the buffer generation still matches `expect_generation`.
+    /// When `expect_generation` is `None`, always enqueues (legacy callers).
+    /// Returns `true` when chunks were accepted.
+    pub async fn enqueue_if_generation(
+        &self,
+        chunks: Vec<TtsAudioChunk>,
+        expect_generation: Option<u64>,
+    ) -> bool {
         let mut inner = self.inner.lock().await;
         if chunks.is_empty() {
-            return;
+            return false;
+        }
+        if let Some(expected) = expect_generation {
+            if inner.generation != expected {
+                return false;
+            }
         }
         inner.speaking = true;
         inner.queue.extend(chunks);
+        true
     }
 
     pub async fn flush(&self) -> u64 {

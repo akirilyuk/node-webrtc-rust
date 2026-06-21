@@ -37,9 +37,10 @@
     "start:roundtrip-utterance-timing": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-utterance-timing.ts",
     "start:roundtrip-two-phrases": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-two-phrases.ts",
     "start:roundtrip-barge-in": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-barge-in.ts",
+    "start:roundtrip-concurrent-multi-client": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-concurrent-multi-client.ts",
     "start:debug": "VOICE_DEBUG=1 WEBRTC_DEBUG=1 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/index.ts",
     "test": "vitest run",
-    "test:roundtrip-counting": "vitest run src/roundtrip-counting.test.ts src/roundtrip-counting-echo.test.ts src/roundtrip-counting-barge-recovery.test.ts src/roundtrip-utterance-timing.test.ts src/roundtrip-two-phrases.test.ts src/roundtrip-barge-in.test.ts src/roundtrip-stt-lifecycle.test.ts",
+    "test:roundtrip-counting": "vitest run src/roundtrip-counting.test.ts src/roundtrip-counting-echo.test.ts src/roundtrip-counting-barge-recovery.test.ts src/roundtrip-utterance-timing.test.ts src/roundtrip-two-phrases.test.ts src/roundtrip-barge-in.test.ts src/roundtrip-stt-lifecycle.test.ts src/roundtrip-concurrent-multi-client.test.ts",
     "test:roundtrip-barge-in": "vitest run src/roundtrip-barge-in.test.ts",
     "typecheck": "tsc --noEmit"
   },

@@ -4,14 +4,15 @@
 //! is processed in [`VoiceAgent::process_inbound_pcm`]; the TypeScript SDK calls that from
 //! `RemoteAudioTrack.readSample()` in a loop after [`VoiceAgent::start`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
-use crate::config::{EventDeliveryMode, VadConfig, VoiceAgentConfig};
+use crate::config::{EventDeliveryMode, SendTextToTtsOptions, VadConfig, VoiceAgentConfig};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::pcm::i16_samples_to_bytes;
@@ -97,6 +98,11 @@ struct AgentInner {
     pcm_reader: Option<PcmReader>,
 }
 
+struct TtsSynthesisJob {
+    text: String,
+    done: Option<tokio::sync::oneshot::Sender<SpeechResult<()>>>,
+}
+
 /// One voice agent session bound to a single peer connection.
 ///
 /// Holds VAD (optional), STT/TTS providers, TTS outbound buffer, and utterance state
@@ -108,9 +114,15 @@ pub struct VoiceAgent {
     registry: Arc<VendorRegistry>,
     inner: Arc<Mutex<AgentInner>>,
     stt: Mutex<Option<Box<dyn SttProvider>>>,
-    tts: Mutex<Option<Box<dyn TtsProvider>>>,
+    tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
-    tts_drain_worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    tts_synthesis_queue: Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
+    tts_synthesis_wake: Arc<Notify>,
+    tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    tts_synthesis_busy: Arc<AtomicBool>,
+    /// Incremented on barge/flush/cancel so in-flight ONNX synthesis can drop late PCM.
+    tts_synthesis_epoch: Arc<AtomicU64>,
 }
 
 impl VoiceAgent {
@@ -169,10 +181,19 @@ impl VoiceAgent {
                 pcm_reader: None,
             })),
             stt: Mutex::new(stt),
-            tts: Mutex::new(tts),
+            tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
-            tts_drain_worker: Mutex::new(None),
+            tts_drain_worker: Arc::new(Mutex::new(None)),
+            tts_synthesis_queue: Arc::new(Mutex::new(VecDeque::new())),
+            tts_synthesis_wake: Arc::new(Notify::new()),
+            tts_synthesis_worker: Arc::new(Mutex::new(None)),
+            tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
+            tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    fn invalidate_inflight_tts_synthesis(&self) {
+        self.tts_synthesis_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn event_bus(&self) -> &SpeechEventBus {
@@ -232,38 +253,34 @@ impl VoiceAgent {
     }
 
     async fn ensure_tts_drain_worker(&self) {
-        let mut slot = self.tts_drain_worker.lock().await;
-        if slot.is_some() {
-            return;
-        }
-        let wake = Arc::clone(&self.tts_drain_wake);
-        let tts_buffer = self.tts_buffer.clone();
-        let inner = Arc::clone(&self.inner);
-        let event_bus = self.event_bus.clone();
-        *slot = Some(tokio::spawn(async move {
-            loop {
-                wake.notified().await;
-                if let Err(error) = Self::run_tts_drain(&tts_buffer, &inner, &event_bus).await {
-                    voice_debug(format!("TTS drain error: {error}"));
-                }
-            }
-        }));
+        Self::ensure_tts_drain_worker_shared(
+            &self.tts_drain_worker,
+            &self.tts_drain_wake,
+            &self.tts_buffer,
+            &self.inner,
+            &self.event_bus,
+        )
+        .await;
     }
 
     /// Wait until outbound TTS playback finishes (for tests and explicit synchronization).
     pub async fn wait_tts_playback_idle(&self) -> SpeechResult<()> {
-        voice_debug("wait_tts_playback_idle: waiting for agent_speaking=false and TTS queue drained");
+        voice_debug(
+            "wait_tts_playback_idle: waiting for synthesis queue, agent_speaking=false, TTS buffer drained",
+        );
         let deadline = Instant::now() + std::time::Duration::from_secs(45);
         loop {
             let agent_speaking = self.inner.lock().await.agent_speaking;
             let queued = self.tts_buffer.is_speaking().await;
-            if !agent_speaking && !queued {
+            let synth_pending = !self.tts_synthesis_queue.lock().await.is_empty()
+                || self.tts_synthesis_busy.load(Ordering::SeqCst);
+            if !agent_speaking && !queued && !synth_pending {
                 voice_debug("wait_tts_playback_idle: playback idle");
                 return Ok(());
             }
             if Instant::now() >= deadline {
                 voice_debug(format!(
-                    "wait_tts_playback_idle: TIMEOUT agent_speaking={agent_speaking} tts_queued={queued}"
+                    "wait_tts_playback_idle: TIMEOUT agent_speaking={agent_speaking} tts_queued={queued} synth_pending={synth_pending}"
                 ));
                 return Err(SpeechError::Internal(
                     "timed out waiting for TTS playback to finish".into(),
@@ -290,27 +307,216 @@ impl VoiceAgent {
     }
 
     /// Synthesizes text and enqueues stereo 48 kHz PCM for real-time outbound drain.
+    ///
+    /// Default ([`SendTextToTtsOptions::default`]) waits until synthesis and playback for this
+    /// utterance finish. Pass `non_blocking: true` to return once the job is queued.
     pub async fn send_text_to_tts(&self, text: &str) -> SpeechResult<()> {
-        let chunks = {
+        self.send_text_to_tts_with_options(text, SendTextToTtsOptions::default())
+            .await
+    }
+
+    /// Like [`send_text_to_tts`](Self::send_text_to_tts) with explicit queue / wait behavior.
+    pub async fn send_text_to_tts_with_options(
+        &self,
+        text: &str,
+        options: SendTextToTtsOptions,
+    ) -> SpeechResult<()> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+
+        {
             let tts = self.tts.lock().await;
-            let tts = tts
+            if tts.is_none() {
+                return Err(SpeechError::Config("TTS not configured".into()));
+            }
+        }
+
+        let (done_tx, done_rx) = if options.non_blocking {
+            (None, None)
+        } else {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            (Some(tx), Some(rx))
+        };
+
+        {
+            let mut queue = self.tts_synthesis_queue.lock().await;
+            queue.push_back(TtsSynthesisJob {
+                text: trimmed.to_string(),
+                done: done_tx,
+            });
+        }
+
+        self.ensure_tts_synthesis_worker().await;
+        self.tts_synthesis_wake.notify_one();
+
+        if let Some(rx) = done_rx {
+            rx.await
+                .map_err(|_| SpeechError::Internal("TTS job cancelled".into()))??;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_tts_synthesis_worker(&self) {
+        let mut slot = self.tts_synthesis_worker.lock().await;
+        if slot.is_some() {
+            return;
+        }
+        let wake = Arc::clone(&self.tts_synthesis_wake);
+        let queue = Arc::clone(&self.tts_synthesis_queue);
+        let tts = Arc::clone(&self.tts);
+        let tts_buffer = self.tts_buffer.clone();
+        let tts_drain_wake = Arc::clone(&self.tts_drain_wake);
+        let tts_drain_worker = Arc::clone(&self.tts_drain_worker);
+        let inner = Arc::clone(&self.inner);
+        let event_bus = self.event_bus.clone();
+        let synthesis_busy = Arc::clone(&self.tts_synthesis_busy);
+        let synthesis_epoch = Arc::clone(&self.tts_synthesis_epoch);
+        *slot = Some(tokio::spawn(async move {
+            loop {
+                wake.notified().await;
+                loop {
+                    let job = {
+                        let mut pending = queue.lock().await;
+                        pending.pop_front()
+                    };
+                    let Some(job) = job else {
+                        break;
+                    };
+
+                    synthesis_busy.store(true, Ordering::SeqCst);
+                    let result = Self::run_tts_synthesis_job(
+                        &job.text,
+                        &tts,
+                        &tts_buffer,
+                        &tts_drain_wake,
+                        &tts_drain_worker,
+                        &inner,
+                        &event_bus,
+                        &synthesis_epoch,
+                    )
+                    .await;
+                    synthesis_busy.store(false, Ordering::SeqCst);
+
+                    if let Some(done) = job.done {
+                        let _ = done.send(result);
+                    } else if let Err(error) = result {
+                        voice_debug(format!("non-blocking TTS synthesis error: {error}"));
+                    }
+                }
+            }
+        }));
+    }
+
+    async fn run_tts_synthesis_job(
+        text: &str,
+        tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
+        tts_buffer: &TtsBuffer,
+        tts_drain_wake: &Arc<Notify>,
+        tts_drain_worker: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        inner: &Arc<Mutex<AgentInner>>,
+        event_bus: &SpeechEventBus,
+        synthesis_epoch: &Arc<AtomicU64>,
+    ) -> SpeechResult<()> {
+        let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
+        let generation_at_start = tts_buffer.current_generation().await;
+        let chunks = {
+            let tts_guard = tts.lock().await;
+            let provider = tts_guard
                 .as_ref()
                 .ok_or_else(|| SpeechError::Config("TTS not configured".into()))?;
-            tts.synthesize(text).await?
+            provider.synthesize(text).await?
         };
+
+        if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
+            voice_debug("TTS synthesis discarded (invalidated during synthesize)");
+            return Ok(());
+        }
 
         if chunks.is_empty() {
             return Ok(());
         }
 
-        self.tts_buffer.enqueue(chunks).await;
-        self.ensure_tts_drain_worker().await;
-        self.tts_drain_wake.notify_one();
-        Ok(())
+        if !tts_buffer
+            .enqueue_if_generation(chunks, Some(generation_at_start))
+            .await
+        {
+            voice_debug("TTS synthesis discarded (buffer flushed during synthesize)");
+            return Ok(());
+        }
+        Self::ensure_tts_drain_worker_shared(
+            tts_drain_worker,
+            tts_drain_wake,
+            tts_buffer,
+            inner,
+            event_bus,
+        )
+        .await;
+        tts_drain_wake.notify_one();
+        Self::wait_job_playback_idle(tts_buffer, inner).await
+    }
+
+    async fn ensure_tts_drain_worker_shared(
+        slot: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        wake: &Arc<Notify>,
+        tts_buffer: &TtsBuffer,
+        inner: &Arc<Mutex<AgentInner>>,
+        event_bus: &SpeechEventBus,
+    ) {
+        let mut guard = slot.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        let wake = Arc::clone(wake);
+        let tts_buffer = tts_buffer.clone();
+        let inner = Arc::clone(inner);
+        let event_bus = event_bus.clone();
+        *guard = Some(tokio::spawn(async move {
+            loop {
+                wake.notified().await;
+                if let Err(error) = VoiceAgent::run_tts_drain(&tts_buffer, &inner, &event_bus).await
+                {
+                    voice_debug(format!("TTS drain error: {error}"));
+                }
+            }
+        }));
+    }
+
+    async fn wait_job_playback_idle(
+        tts_buffer: &TtsBuffer,
+        inner: &Arc<Mutex<AgentInner>>,
+    ) -> SpeechResult<()> {
+        let deadline = Instant::now() + std::time::Duration::from_secs(45);
+        loop {
+            let agent_speaking = inner.lock().await.agent_speaking;
+            let queued = tts_buffer.is_speaking().await;
+            if !agent_speaking && !queued {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(SpeechError::Internal(
+                    "timed out waiting for TTS job playback".into(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn cancel_pending_tts_synthesis(&self) {
+        self.invalidate_inflight_tts_synthesis();
+        let mut queue = self.tts_synthesis_queue.lock().await;
+        for job in queue.drain(..) {
+            if let Some(done) = job.done {
+                let _ = done.send(Err(SpeechError::Internal("TTS cancelled".into())));
+            }
+        }
     }
 
     /// Clears pending outbound TTS (manual cancel or barge-in when `flush_tts` is enabled).
     pub async fn flush_tts(&self) -> SpeechResult<()> {
+        self.cancel_pending_tts_synthesis().await;
         let barge_in = {
             let inner = self.inner.lock().await;
             inner.config.vad.barge_in.clone()
@@ -395,6 +601,7 @@ impl VoiceAgent {
             partial_text.trim()
         ));
         handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+        self.cancel_pending_tts_synthesis().await;
         if barge_in.flush_tts {
             let was_agent_speaking = {
                 let inner = self.inner.lock().await;
@@ -505,6 +712,7 @@ impl VoiceAgent {
             if !barge_in.require_stt_partial || !has_stt {
                 voice_debug("immediate barge-in on VAD SpeechStart (require_stt_partial=false)");
                 handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+                self.cancel_pending_tts_synthesis().await;
                 if barge_in.flush_tts {
                     let was_agent_speaking = {
                         let inner = self.inner.lock().await;
@@ -1340,7 +1548,18 @@ impl VoiceAgent {
                     return Ok(());
                 }
                 writer(frame, duration_ms)?;
-                tokio::time::sleep(std::time::Duration::from_millis(duration_ms as u64)).await;
+                if !Self::pace_tts_drain_frame(tts_buffer, drain_generation, duration_ms).await {
+                    voice_debug("TTS drain stopped during frame pacing (barge-in flush)");
+                    let still_speaking = {
+                        let guard = inner.lock().await;
+                        guard.agent_speaking
+                    };
+                    if still_speaking {
+                        Self::end_agent_speaking_inner(inner, false).await;
+                        event_bus.emit(SpeechEvent::agent_speaking_end());
+                    }
+                    return Ok(());
+                }
             }
         }
 
@@ -1361,6 +1580,24 @@ impl VoiceAgent {
         if arm_stt_hold_after_playback {
             Self::arm_stt_hold_if_idle(&mut guard);
         }
+    }
+
+    /// Real-time pacing between PCM frames; returns false when the buffer was flushed (barge-in).
+    async fn pace_tts_drain_frame(
+        tts_buffer: &TtsBuffer,
+        drain_generation: u64,
+        duration_ms: u32,
+    ) -> bool {
+        let mut remaining = duration_ms;
+        while remaining > 0 {
+            let slice = remaining.min(20);
+            tokio::time::sleep(std::time::Duration::from_millis(slice as u64)).await;
+            if tts_buffer.current_generation().await != drain_generation {
+                return false;
+            }
+            remaining = remaining.saturating_sub(slice);
+        }
+        true
     }
 }
 

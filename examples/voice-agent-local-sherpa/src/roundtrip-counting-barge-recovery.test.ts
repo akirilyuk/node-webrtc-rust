@@ -19,6 +19,18 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
     expect(DEFAULT_BARGE_PHRASE).toBe('stop now please')
   })
 
+  it('evaluateInterruptedEchoLeg fails when six number words exceed similarity cap', () => {
+    const echoText = formatAgent2EchoReply('one two three four five six seven eight nine ten')
+    const result = evaluateInterruptedEchoLeg({
+      echoText,
+      recognized: 'you said one two three four five six',
+      maxNumberWords: 6,
+      maxSimilarity: 0.55,
+    })
+    expect(result.passed).toBe(false)
+    expect(result.similarity).toBeGreaterThan(0.55)
+  })
+
   it('evaluateInterruptedEchoLeg passes when transcript is a short tail', () => {
     const echoText = formatAgent2EchoReply('one two three four five six seven eight nine ten')
     const result = evaluateInterruptedEchoLeg({

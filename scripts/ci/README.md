@@ -61,6 +61,14 @@ flowchart TD
 
 ### 1. Detect changes
 
+[`compute-pr-job-gates.sh`](compute-pr-job-gates.sh) sets `run_compile` / `run_test` / … from:
+
+1. **`merge-base..pull_request.head.sha`** (full PR diff — not `github.sha`, which is a synthetic merge commit)
+2. **Files in the latest head commit** (`git diff-tree`) so a push that only edits `crates/speech/**` still forces native compile + integration tests
+3. **`dorny/paths-filter` `native` / `workflows_native`** as a fallback
+
+Local check: `bash scripts/ci/compute-pr-job-gates.test.sh`
+
 Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with these outputs:
 
 | Output             | Paths (summary)                                                                                      |
@@ -95,7 +103,7 @@ Markdown under `docs/**` and any `**/*.md` file do not set `code=true` — READM
 
 Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
 
-**Compile native** runs when `native` or `workflows_native` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **dependent crates** (core/mixer/conference), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
+**Compile native** runs when `native` or `workflows_native` paths change. Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **all dependent crates linked into bindings** (core, mixer, conference, speech, vendor-*), **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`** (NAPI surface). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test.
 
 ### 4. Compile native
 
@@ -104,7 +112,7 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 - **When compiling:** requires **Typecheck & lint** success.
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
-- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) — exact key from [`native-binding-cache-key.sh`](native-binding-cache-key.sh) + [`verify-native-binding-surface.mjs`](verify-native-binding-surface.mjs); skips `napi build` only when valid
+- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) restores a prior `.node` for the Test job, but **compile always runs `napi build`** when this job is not skipped (`skip_build_on_cache_hit: false`). Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **every `path = "../../crates/…"` dep in `packages/bindings/Cargo.toml`**, **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`**. No `restore-keys` prefix fallback.
 - **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) — host-style build runs `copy:local-node` so `index.js` loads the fresh `.node` instead of stale optional npm packages
 
 Populates the shared native cache used by the test job.

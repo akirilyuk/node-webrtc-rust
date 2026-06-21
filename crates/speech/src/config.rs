@@ -281,6 +281,24 @@ pub struct VoiceAgentConfig {
     pub tts: Option<TtsConfig>,
 }
 
+/// Options for [`crate::VoiceAgent::send_text_to_tts_with_options`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTextToTtsOptions {
+    /// When true, return as soon as the utterance is queued. When false (default), await synthesis
+    /// and outbound playback for this call before resolving.
+    #[serde(default)]
+    pub non_blocking: bool,
+}
+
+impl Default for SendTextToTtsOptions {
+    fn default() -> Self {
+        Self {
+            non_blocking: false,
+        }
+    }
+}
+
 impl Default for VoiceAgentConfig {
     fn default() -> Self {
         Self {

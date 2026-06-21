@@ -56,8 +56,8 @@ pub mod vad;
 
 pub use agent::{PcmReader, PcmWriter, VoiceAgent};
 pub use config::{
-    BargeInConfig, EventDeliveryMode, EventsConfig, SttConfig, SttVendor, TtsConfig, TtsVendor,
-    VadConfig, VadSampleRate, VoiceAgentConfig,
+    BargeInConfig, EventDeliveryMode, EventsConfig, SendTextToTtsOptions, SttConfig, SttVendor,
+    TtsConfig, TtsVendor, VadConfig, VadSampleRate, VoiceAgentConfig,
 };
 pub use error::{SpeechError, SpeechResult};
 pub use events::{SpeechEvent, SpeechEventKind, SpeechEventBus};

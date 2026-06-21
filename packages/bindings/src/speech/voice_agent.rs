@@ -7,7 +7,7 @@ use bytes::Bytes;
 use napi::bindgen_prelude::*;
 use napi::JsFunction;
 use napi_derive::napi;
-use node_webrtc_rust_speech::{PcmReader, PcmWriter, SpeechEvent, VoiceAgent};
+use node_webrtc_rust_speech::{PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, VoiceAgent};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::media::JsLocalAudioTrack;
@@ -92,9 +92,12 @@ impl JsVoiceAgent {
     }
 
     #[napi]
-    pub async fn send_text_to_tts(&self, text: String) -> Result<()> {
+    pub async fn send_text_to_tts(&self, text: String, non_blocking: Option<bool>) -> Result<()> {
+        let options = SendTextToTtsOptions {
+            non_blocking: non_blocking.unwrap_or(false),
+        };
         self.inner
-            .send_text_to_tts(&text)
+            .send_text_to_tts_with_options(&text, options)
             .await
             .map_err(speech_err)
     }

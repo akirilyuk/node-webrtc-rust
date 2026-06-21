@@ -53,8 +53,8 @@ jobs:
           NEEDS_TS: ${{ inputs.needs_ts_dist }}
         run: |
           is_true() {
-            case "${1,,}" in
-              true|1|yes) return 0 ;;
+            case "$1" in
+              true|True|TRUE|1|yes|Yes|YES) return 0 ;;
               *) return 1 ;;
             esac
           }

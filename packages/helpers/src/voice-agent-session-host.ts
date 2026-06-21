@@ -205,15 +205,17 @@ export class VoiceAgentSessionHost {
     }
 
     const spoken: string[] = []
-    for (const ctx of contexts) {
-      try {
-        await ctx.speak(trimmed)
-        spoken.push(ctx.peerId)
-        this.log(`[voice ${ctx.peerId}] broadcast speak: "${trimmed.slice(0, 80)}"`)
-      } catch (error: unknown) {
-        console.error(`[voice ${ctx.peerId}] broadcast speak failed:`, error)
-      }
-    }
+    await Promise.all(
+      contexts.map(async (ctx) => {
+        try {
+          await ctx.speak(trimmed, { nonBlocking: true })
+          spoken.push(ctx.peerId)
+          this.log(`[voice ${ctx.peerId}] broadcast speak: "${trimmed.slice(0, 80)}"`)
+        } catch (error: unknown) {
+          console.error(`[voice ${ctx.peerId}] broadcast speak failed:`, error)
+        }
+      }),
+    )
     return spoken
   }
 
@@ -493,9 +495,9 @@ export class VoiceAgentSessionHost {
       peerId,
       roomId: this.signaling.room,
       agent,
-      speak: (text: string) => {
+      speak: (text: string, options?) => {
         if (!agent) return Promise.resolve()
-        return agent.sendTextToTTS(text)
+        return agent.sendTextToTTS(text, options)
       },
       sendToClient: (payload: unknown) => {
         if (controlChannel.readyState !== 'open') return

@@ -938,3 +938,85 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
     assert!(saw_stt_start, "expected stt_stream_start");
     assert!(!saw_barge, "bargeIn disabled must not emit barge_in during agent TTS");
 }
+
+struct SlowMockTts {
+    delay: Duration,
+    inner: Box<dyn node_webrtc_rust_speech::TtsProvider>,
+}
+
+#[async_trait::async_trait]
+impl node_webrtc_rust_speech::TtsProvider for SlowMockTts {
+    fn vendor_name(&self) -> &'static str {
+        "mock-slow"
+    }
+
+    async fn synthesize(
+        &self,
+        text: &str,
+    ) -> node_webrtc_rust_speech::SpeechResult<Vec<node_webrtc_rust_speech::TtsAudioChunk>> {
+        sleep(self.delay).await;
+        self.inner.synthesize(text).await
+    }
+}
+
+struct SlowMockFactory {
+    delay: Duration,
+}
+
+impl VendorFactory for SlowMockFactory {
+    fn create_stt(
+        &self,
+        config: &node_webrtc_rust_speech::SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        MockFactory.create_stt(config)
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn node_webrtc_rust_speech::TtsProvider>> {
+        Ok(Box::new(SlowMockTts {
+            delay: self.delay,
+            inner: MockFactory.create_tts(config)?,
+        }))
+    }
+}
+
+#[tokio::test]
+async fn barge_flush_during_slow_synthesis_discards_late_pcm() {
+    let mut registry = VendorRegistry::new();
+    registry.register_tts(
+        TtsVendor::Mock,
+        Arc::new(SlowMockFactory {
+            delay: Duration::from_millis(500),
+        }),
+    );
+
+    let agent = VoiceAgent::new(speaker_config(), Arc::new(registry)).unwrap();
+    let written_ms: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    let written_clone = Arc::clone(&written_ms);
+    let writer: PcmWriter = Arc::new(move |_pcm, ms| {
+        *written_clone.lock().unwrap() += ms;
+        Ok(())
+    });
+    let reader = Arc::new(|| Ok(None));
+    agent.attach(reader, writer).await.unwrap();
+    agent.start().await.unwrap();
+
+    let long_text = "late synthesis must not replay after barge flush ".repeat(8);
+    let expected_full_ms = mock_tts_duration_ms(&long_text);
+    let agent = Arc::new(agent);
+    let agent_flush = Arc::clone(&agent);
+    let text = long_text.clone();
+    let speak = tokio::spawn(async move { agent.send_text_to_tts(&text).await });
+    sleep(Duration::from_millis(80)).await;
+    agent_flush.flush_tts().await.unwrap();
+    speak.await.unwrap().unwrap();
+
+    let played_ms = *written_ms.lock().unwrap();
+    assert!(
+        played_ms < expected_full_ms / 4,
+        "flush during synthesize should drop late PCM: played {played_ms} ms, synth ~{expected_full_ms} ms"
+    );
+    agent_flush.stop().await.unwrap();
+}

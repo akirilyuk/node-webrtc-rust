@@ -198,7 +198,9 @@ runs:
       run: bash scripts/ci/verify-musl-runtime.sh
 
     - name: Save native binding cache
-      if: inputs.binding_cache_key != '' && inputs.native_cache_hit != 'true'
+      if: |
+        inputs.binding_cache_key != '' &&
+        (inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true')
       uses: actions/cache/save@v4
       with:
         path: packages/bindings/*.node

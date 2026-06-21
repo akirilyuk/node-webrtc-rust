@@ -27,6 +27,7 @@ import type {
   VadConfig,
   VoiceAgentConfig,
   VoiceAttachOptions,
+  SendTextToTtsOptions,
 } from './types'
 
 const MODULE = 'voice::VoiceAgent'
@@ -239,10 +240,13 @@ export class VoiceAgent {
   /**
    * Synthesizes `text` via the configured TTS vendor and enqueues PCM for outbound playback.
    * Emits `agent_speaking_start` / `agent_speaking_end` around the drain window.
+   *
+   * By default waits until synthesis and playback for this utterance finish. Pass
+   * `{ nonBlocking: true }` to return once the job is queued.
    */
-  async sendTextToTTS(text: string): Promise<void> {
+  async sendTextToTTS(text: string, options?: SendTextToTtsOptions): Promise<void> {
     debugFn(MODULE, 'sendTextToTTS', `chars=${text.length}`)
-    await this.native.sendTextToTts(text)
+    await this.native.sendTextToTts(text, options?.nonBlocking ?? undefined)
   }
 
   /**

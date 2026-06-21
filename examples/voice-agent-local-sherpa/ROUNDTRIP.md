@@ -8,12 +8,12 @@ Implementation: [`src/roundtrip.ts`](./src/roundtrip.ts).
 
 **Yes — for timing inside and after an utterance.** **No — `minSilenceDurationMs` is not a “pause between batch phrases” knob.**
 
-| Source                                     | What it does                                                                                                                                                                                                                                             |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`minSilenceDurationMs` (1300 ms preset)** | How long silence must last **during** one utterance before VAD sees `SpeechEnd` (“maybe done”). Short pauses under ~1.3 s should not end the turn.                                                                                                           |
-| **`sttGateHoldMs` (1000 ms default)**      | With **`gateStt: true`**, keep feeding STT after that internal speech end; **`user_speaking_end` is emitted when this hold expires** (not on the first short gap). If the user speaks again during hold, the utterance continues and no end event fires. |
-| **Endpoint tail**                          | `minSilence` clamped **400–600 ms** of synthetic silence pushed to STT after hold reaches zero, then `finalize_utterance` (Rust; not duplicated on the harness speaker track).                                                                           |
-| **`speechPadMs` / `minSpeechDurationMs`**  | Pre-roll and minimum voiced time before `user_speaking_start` — not inter-phrase gaps.                                                                                                                                                                   |
+| Source                                      | What it does                                                                                                                                                                                                                                             |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`minSilenceDurationMs` (1300 ms preset)** | How long silence must last **during** one utterance before VAD sees `SpeechEnd` (“maybe done”). Short pauses under ~1.3 s should not end the turn.                                                                                                       |
+| **`sttGateHoldMs` (1000 ms default)**       | With **`gateStt: true`**, keep feeding STT after that internal speech end; **`user_speaking_end` is emitted when this hold expires** (not on the first short gap). If the user speaks again during hold, the utterance continues and no end event fires. |
+| **Endpoint tail**                           | `minSilence` clamped **400–600 ms** of synthetic silence pushed to STT after hold reaches zero, then `finalize_utterance` (Rust; not duplicated on the harness speaker track).                                                                           |
+| **`speechPadMs` / `minSpeechDurationMs`**   | Pre-roll and minimum voiced time before `user_speaking_start` — not inter-phrase gaps.                                                                                                                                                                   |
 
 **Between batch phrases**, separation is:
 
@@ -66,6 +66,7 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **Counting 1–20**     | `npm run start:roundtrip-counting` — one long utterance, single final (see below)                                                    |
 | **Counting echo**     | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                                               |
 | **Barge recovery**    | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)                               |
+| **Concurrent 3-leg**  | `npm run start:roundtrip-concurrent-multi-client` — 3 speakers enqueue TTS with `nonBlocking: true`, STT finals overlap (see below)  |
 | **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                     |
 | **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                       |
 | **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                        |
@@ -171,6 +172,23 @@ npm run start:roundtrip-counting-barge-recovery --workspace=@node-webrtc-rust/ex
 
 Unit tests include `roundtrip-counting-barge-recovery.test.ts` in `npm run test:roundtrip-counting`.
 
+## Concurrent multi-client roundtrip (3 legs, overlapping TTS)
+
+[`src/roundtrip-concurrent-multi-client.ts`](./src/roundtrip-concurrent-multi-client.ts) spins up **three** independent speaker→listener loopbacks in one process. Each speaker calls `sendTextToTTS(phrase, { nonBlocking: true })` in a single `Promise.all` so enqueue is fast and Sherpa synthesis can overlap when `SHERPA_POOL_MAX_CONCURRENT_TTS` allows.
+
+| Check                  | Requirement                                       |
+| ---------------------- | ------------------------------------------------- |
+| Enqueue wall time      | All 3 `nonBlocking` calls resolve in **< 200 ms** |
+| `agent_speaking_start` | All 3 within **500 ms** spread                    |
+| `user_speech_final`    | All 3 within **500 ms** spread; keyword per leg   |
+
+```bash
+npm run build:native
+SHERPA_POOL_MAX_CONCURRENT_TTS=3 npm run start:roundtrip-concurrent-multi-client --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Vitest (no models): `roundtrip-concurrent-multi-client.test.ts` in `npm run test:roundtrip-counting`.
+
 ## Two-phrase roundtrip (multi-client turn-taking)
 
 [`src/roundtrip-two-phrases.ts`](./src/roundtrip-two-phrases.ts) simulates **two separate user turns** on one listener (same as one browser tab in multi-client):
@@ -250,7 +268,7 @@ Gaps and pauses come from **two layers**: the **VoiceAgent VAD/STT pipeline** (l
 | Setting                | Default                         | Role                                                                                                 |
 | ---------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `minSpeechDurationMs`  | 250                             | Voice must be present this long before `user_speaking_start`                                         |
-| `minSilenceDurationMs` | 1300 (`VOICE_AGENT_VAD_PRESET`) | Silence this long before “maybe done” / gate hold (then `sttGateHoldMs` grace)                      |
+| `minSilenceDurationMs` | 1300 (`VOICE_AGENT_VAD_PRESET`) | Silence this long before “maybe done” / gate hold (then `sttGateHoldMs` grace)                       |
 | `speechPadMs`          | 300                             | Pre-roll ring size only (`speechPadMs + minSpeechDurationMs` ≈ 550 ms buffered before `SpeechStart`) |
 | `gateStt`              | true                            | STT only while gate is open                                                                          |
 | `gateSttOpenOnPending` | true                            | Gate opens during VAD **pending** speech (before `SpeechStart`) — covers WebRTC lead-in              |
@@ -441,10 +459,10 @@ With `requireSttPartial: true` (default in `VOICE_AGENT_VAD_PRESET`):
 
 Set `requireSttPartial: false` to restore immediate energy-VAD barge on the same `SpeechStart` (legacy, noisier).
 
-| Phase | Interrupt                                              | Pass criteria                                                                                                          |
-| ----- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| 1     | None                                                   | Full phrase received on `userInbound`                                                                                  |
-| 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; optional **C1** path; received audio ≥ ~75% of phase 1                                              |
+| Phase | Interrupt                                              | Pass criteria                                                                                                                                                             |
+| ----- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | None                                                   | Full phrase received on `userInbound`                                                                                                                                     |
+| 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; optional **C1** path; received audio ≥ ~75% of phase 1                                                                                                 |
 | 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` → `barge_in` → `agent_speaking_end`**; partial includes **lead word**; `user_speech_final` ≥ **75%** word similarity |
 
 Between phases 2 and 3 the harness streams **`interPhaseSttDrainSeconds(config)`** (~3.15 s with the 1300 ms / 1000 ms preset) of silence on `userOut` so the listener STT stream from the tone phase fully closes before Phase 3 — otherwise Phase 3 can barge without a fresh `vad_triggered`.
@@ -458,16 +476,16 @@ npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-age
 
 Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) + [`src/roundtrip-stt-lifecycle-helpers.ts`](./src/roundtrip-stt-lifecycle-helpers.ts) (Vitest, no Sherpa models).
 
-| Variable                               | Default           | Purpose                                    |
-| -------------------------------------- | ----------------- | ------------------------------------------ |
-| `SHERPA_BARGE_IN_PHRASE`               | long sentence     | Agent TTS under test                       |
-| `SHERPA_BARGE_IN_BARGE_PHRASE`         | `stop now please` | User-leg TTS for phase 3                   |
-| `SHERPA_BARGE_IN_DELAY_MS`             | `700`             | Ms after agent TTS starts before interrupt |
-| `SHERPA_BARGE_IN_TONE_S`               | `1.0`             | Phase 2 tone duration                      |
-| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65`            | Phase 3 max `cutMs / fullMs`               |
-| `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`            | Phase 2 min `cutMs / fullMs`               |
+| Variable                               | Default           | Purpose                                     |
+| -------------------------------------- | ----------------- | ------------------------------------------- |
+| `SHERPA_BARGE_IN_PHRASE`               | long sentence     | Agent TTS under test                        |
+| `SHERPA_BARGE_IN_BARGE_PHRASE`         | `stop now please` | User-leg TTS for phase 3                    |
+| `SHERPA_BARGE_IN_DELAY_MS`             | `700`             | Ms after agent TTS starts before interrupt  |
+| `SHERPA_BARGE_IN_TONE_S`               | `1.0`             | Phase 2 tone duration                       |
+| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65`            | Phase 3 max `cutMs / fullMs`                |
+| `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`            | Phase 2 min `cutMs / fullMs`                |
 | `SHERPA_BARGE_IN_MIN_SIMILARITY`       | `0.75`            | Phase 3 min word similarity vs barge phrase |
-| `SHERPA_BARGE_IN_VERBOSE`              | off               | Log listener speech events                 |
+| `SHERPA_BARGE_IN_VERBOSE`              | off               | Log listener speech events                  |
 
 Success: `Semantic barge-in E2E OK — tone ignored, spoken phrase interrupted agent TTS.`
 

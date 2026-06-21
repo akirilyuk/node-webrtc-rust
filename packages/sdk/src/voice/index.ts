@@ -47,6 +47,7 @@ export type {
   SpeechEventListener,
   SpeechEventName,
   SpeechEventType,
+  SendTextToTtsOptions,
   SttConfig,
   SttVendor,
   TtsConfig,

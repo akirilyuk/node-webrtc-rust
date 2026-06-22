@@ -250,11 +250,20 @@ export async function playSpeakerTtsWithPostSilence(params: {
     waitForAgentSpeakingEnd: waitEnd,
   })
   // Outbound post-TTS silence is streamed by VoiceAgent after drain (see resolved_post_utterance_silence_ms).
-  // Do not duplicate streamSilence on speakerOut — it doubled wall clock and broke long Sherpa E2E on CI.
+  // On macOS loopback that is enough for listener STT finalize. Linux CI/Docker loopback often quiesces
+  // before the listener sees trailing PCM — stream harness silence once after agent_speaking_end only
+  // in CI (not in parallel with TTS), avoiding the old 2× real-time tail that broke long counting E2E.
   if (params.postTtsSilenceS > 0) {
-    console.log(
-      `[speaker] post-TTS silence ~${params.postTtsSilenceS.toFixed(1)}s (agent outbound, no harness duplicate)`,
-    )
+    if (process.env.CI === 'true') {
+      console.log(
+        `[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s on speakerOut (CI harness tail)`,
+      )
+      await streamSilence(params.speakerOut, params.postTtsSilenceS)
+    } else {
+      console.log(
+        `[speaker] post-TTS silence ~${params.postTtsSilenceS.toFixed(1)}s (agent outbound, no harness duplicate)`,
+      )
+    }
   }
 }
 

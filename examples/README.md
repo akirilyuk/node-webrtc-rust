@@ -30,6 +30,7 @@ Each example is an npm workspace package under this directory, authored in **Typ
 | **voice-agent-local-sherpa**              | Browser + Node server   | 3002             | Sherpa browser demo + **7 CI roundtrip E2E** scripts — [`ROUNDTRIP.md`](./voice-agent-local-sherpa/ROUNDTRIP.md) (`roundtrip`, `roundtrip-counting`, `roundtrip-utterance-timing`, `roundtrip-two-phrases`, `roundtrip-counting-echo`, `roundtrip-counting-barge-recovery`, `roundtrip-barge-in`) |
 | **voice-agent-local-sherpa-multi-client** | Browser + Node (3 tabs) | 3004             | **Three clients, one room**; `prestart` runs [`scripts/free-port.sh`](../scripts/free-port.sh); edit `src/voice-handler.ts` — [README](./voice-agent-local-sherpa-multi-client/README.md)                                                                                                        |
 | **voice-agent-multi-session-pod**         | Browser + Node server   | 3003             | One pod, many sessions via `@node-webrtc-rust/helpers` `SessionPod`                                                                                                                                                                                                                               |
+| **voice-agent-echo-pod**                  | Node server (headless)  | 8090             | **Layer isolation:** SessionPod + inline echo handler — no runner, no agent child; pairs with `e2e` `test:local-direct-voice-reconnect` — [README](./voice-agent-echo-pod/README.md)                                                                                                            |
 
 ## Run examples locally
 
@@ -100,6 +101,7 @@ WEBRTC_DEBUG=1 npm run start --workspace=@node-webrtc-rust/example-conference-ro
 | voice-agent-local-sherpa         | `download-stt:en` + `download-tts:en`; `bash scripts/ci/run-sherpa-example-ci.sh e2e` (all roundtrips)      | Seven Sherpa E2E scripts in CI Test job — [ROUNDTRIP.md](./voice-agent-local-sherpa/ROUNDTRIP.md#ci-github-actions) |
 | voice-agent-local-sherpa-multi-client | `download-stt:en` + `download-tts:en`; `npm run start --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client` | Open **three tabs** at `http://127.0.0.1:3004`, Connect in each — [README](./voice-agent-local-sherpa-multi-client/README.md#quick-start) |
 | voice-agent-multi-session-pod    | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-pod`                         | Open `http://localhost:3003`, different session IDs in multiple tabs; `GET /api/sessions` for pod metrics           |
+| voice-agent-echo-pod             | `npm run start --workspace=@node-webrtc-rust/example-voice-agent-echo-pod`                                  | Headless echo pod on `:8090`; `cd e2e && npm run test:local-direct-voice-reconnect` — [README](./voice-agent-echo-pod/README.md) |
 
 ### Troubleshooting
 

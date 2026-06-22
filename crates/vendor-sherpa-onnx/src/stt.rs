@@ -206,8 +206,6 @@ impl SttProvider for SherpaStt {
                 return Ok(None);
             }
 
-            voice_debug(format!("sherpa hypothesis={text:?} endpoint={endpoint}"));
-
             if endpoint {
                 session.shared.with_recognizer(|recognizer| {
                     recognizer.reset(&session.stream);

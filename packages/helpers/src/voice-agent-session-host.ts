@@ -24,6 +24,7 @@ import {
   VoiceAgent,
   VOICE_CONTROL_CHANNEL_LABEL,
   VOICE_SYNC_CHANNEL_LABEL,
+  agentSpeakToControlMessage,
   forwardVoiceAgentSpeechToDataChannel,
   speechEventToControlMessage,
   wireVoiceAgentToDataChannel,
@@ -497,6 +498,14 @@ export class VoiceAgentSessionHost {
       agent,
       speak: (text: string, options?) => {
         if (!agent) return Promise.resolve()
+        const trimmed = text.trim()
+        if (trimmed.length > 0 && controlChannel.readyState === 'open') {
+          controlChannel.send(
+            JSON.stringify(
+              agentSpeakToControlMessage(trimmed, { ts: new Date().toISOString() }),
+            ),
+          )
+        }
         return agent.sendTextToTTS(text, options)
       },
       sendToClient: (payload: unknown) => {

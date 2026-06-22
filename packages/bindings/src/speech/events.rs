@@ -45,7 +45,7 @@ pub fn wire_speech_callback(
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let status = tsfn.call(Ok(event), ThreadsafeFunctionCallMode::Blocking);
+                    let status = tsfn.call(Ok(event), ThreadsafeFunctionCallMode::NonBlocking);
                     if status != napi::Status::Ok {
                         eprintln!("[voice-debug] speech callback: tsfn.call status={status:?}");
                     }

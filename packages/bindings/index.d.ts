@@ -171,12 +171,14 @@ export interface JsTtsConfig {
   modelPath?: string
   voice?: string
   apiKey?: string
+  postUtteranceSilenceMs?: number
 }
 export interface JsVoiceAgentConfig {
   vad?: JsVadConfig
   events?: JsEventsConfig
   stt?: JsSttConfig
   tts?: JsTtsConfig
+  postUtteranceSilenceMs?: number
 }
 export const enum JsSpeechEventType {
   UserSpeakingStart = 'user_speaking_start',

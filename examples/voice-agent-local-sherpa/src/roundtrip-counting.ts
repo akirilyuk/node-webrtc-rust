@@ -249,8 +249,13 @@ export async function playSpeakerTtsWithPostSilence(params: {
     capMs: playbackTimeoutMs,
     waitForAgentSpeakingEnd: waitEnd,
   })
-  console.log(`[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s`)
-  await streamSilence(params.speakerOut, params.postTtsSilenceS)
+  // Outbound post-TTS silence is streamed by VoiceAgent after drain (see resolved_post_utterance_silence_ms).
+  // Do not duplicate streamSilence on speakerOut — it doubled wall clock and broke long Sherpa E2E on CI.
+  if (params.postTtsSilenceS > 0) {
+    console.log(
+      `[speaker] post-TTS silence ~${params.postTtsSilenceS.toFixed(1)}s (agent outbound, no harness duplicate)`,
+    )
+  }
 }
 
 export interface UtteranceEventStats {

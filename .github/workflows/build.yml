@@ -453,7 +453,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_ts == 'true'
         id: ts-cache
         with:
-          profile: release
+          profile: pr
 
       - uses: ./.github/actions/ci-run-integration-tests
         if: steps.gate.outputs.skip != 'true'

@@ -45,6 +45,7 @@ npm run ci:verify:checks
 
 ### Common mistakes
 
+- **New `examples/*` or `packages/*` without `package-lock.json`** — CI `validate-package-lock` / `npm ci` fails with `Missing: @node-webrtc-rust/… from lock file`. Run `npm install` and commit the lock in the same PR ([`package-lock-workspace-sync.mdc`](package-lock-workspace-sync.mdc)).
 - **`npm run typecheck` is not enough** — no eslint; no vitest/cargo tests; no `build-ts-workspace.sh` (release publish compiles SDK against npm-installed bindings unless `paths` override).
 - **`run-pr-quality.sh` alone is not enough for SDK/bindings** — see [`release-ts-build.mdc`](release-ts-build.mdc); run **`build-ts-workspace.sh`** or **`verify-release-publish-ts.sh`** (CI **Build TypeScript** job does this once).
 - **`run-pr-quality.sh` alone is not enough** — TS-only commits can pass quality but fail Test when CI loads a stale cached `.node` without new native exports.

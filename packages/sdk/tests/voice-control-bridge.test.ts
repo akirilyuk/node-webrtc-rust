@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest'
 import type { RTCDataChannel } from '../src/RTCDataChannel'
 import { VoiceAgent, type SpeechEvent } from '../src/voice'
 import {
+  agentSpeakToControlMessage,
   forwardVoiceAgentSpeechToDataChannel,
   parseVoiceControlClientMessage,
   speechEventToControlMessage,
@@ -10,6 +11,13 @@ import {
 } from '../src/voice/speech-event-bridge'
 
 describe('voice control DataChannel bridge', () => {
+  test('agentSpeakToControlMessage maps TTS text', () => {
+    expect(agentSpeakToControlMessage('ready')).toEqual({
+      type: 'agent_speak',
+      text: 'ready',
+    })
+  })
+
   test('speechEventToControlMessage maps event fields', () => {
     expect(speechEventToControlMessage({ type: 'user_speech_final', text: 'hello' })).toEqual({
       type: 'speech_event',

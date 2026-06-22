@@ -33,9 +33,30 @@ export interface VoiceControlSpeechEventMessage {
   error?: string
 }
 
+/** Server → client: text queued for agent TTS (`ctx.speak` / `sendTextToTTS`). */
+export interface VoiceControlAgentSpeakMessage {
+  type: 'agent_speak'
+  text: string
+  ts?: string
+}
+
 export type VoiceControlClientMessage = VoiceControlSpeakMessage
 
-export type VoiceControlServerMessage = VoiceControlSpeechEventMessage
+export type VoiceControlServerMessage =
+  | VoiceControlSpeechEventMessage
+  | VoiceControlAgentSpeakMessage
+
+/** Maps agent TTS text to the wire format sent before playback starts. */
+export function agentSpeakToControlMessage(
+  text: string,
+  options?: { ts?: string },
+): VoiceControlAgentSpeakMessage {
+  return {
+    type: 'agent_speak',
+    text,
+    ts: options?.ts,
+  }
+}
 
 /** Maps a {@link SpeechEvent} to the wire format sent on the voice-control data channel. */
 export function speechEventToControlMessage(

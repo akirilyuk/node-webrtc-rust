@@ -34,7 +34,7 @@ import {
 } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import { streamSilence } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import { evaluateNormalUtteranceLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
 /** Default long utterance: spoken digits one through twenty (no commas — natural counting). */
@@ -77,18 +77,6 @@ export const FINALIZE_MARGIN_MS = 250
 const DEFAULT_WARMUP_S = 0.6
 /** Outbound TTS drain cap — wall-clock estimate, always bounded. */
 export const DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS = 45_000
-
-function ciHarnessPostSilenceEnabled(): boolean {
-  if (process.env.SHERPA_ROUNDTRIP_CI_HARNESS_POST_SILENCE === '0') return false
-  if (
-    process.env.SHERPA_ROUNDTRIP_CI_HARNESS_POST_SILENCE === '1' ||
-    process.env.CI === 'true' ||
-    process.env.GITHUB_ACTIONS === 'true'
-  ) {
-    return true
-  }
-  return false
-}
 
 /**
  * Hard process kill for E2E scripts — overrides hung STT/native waits so CI/local runs fail fast.
@@ -261,21 +249,11 @@ export async function playSpeakerTtsWithPostSilence(params: {
     capMs: playbackTimeoutMs,
     waitForAgentSpeakingEnd: waitEnd,
   })
-  // Outbound post-TTS silence is streamed by VoiceAgent after drain (see resolved_post_utterance_silence_ms).
-  // On macOS loopback that is enough for listener STT finalize. Linux CI/Docker loopback often quiesces
-  // before the listener sees trailing PCM — stream harness silence once after agent_speaking_end only
-  // in CI (not in parallel with TTS), avoiding the old 2× real-time tail that broke long counting E2E.
+  // Roundtrip speaker agents use postUtteranceSilenceMs: 0 (see resolveRoundtripVoiceConfig).
+  // Harness streams one real-time trailing silence window for listener STT finalize.
   if (params.postTtsSilenceS > 0) {
-    if (ciHarnessPostSilenceEnabled()) {
-      console.log(
-        `[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s on speakerOut (CI harness tail)`,
-      )
-      await streamSilence(params.speakerOut, params.postTtsSilenceS)
-    } else {
-      console.log(
-        `[speaker] post-TTS silence ~${params.postTtsSilenceS.toFixed(1)}s (agent outbound, no harness duplicate)`,
-      )
-    }
+    console.log(`[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s on speakerOut`)
+    await streamSilence(params.speakerOut, params.postTtsSilenceS)
   }
 }
 
@@ -1013,7 +991,7 @@ export class ListenerUtteranceCollector {
 }
 
 async function main(): Promise<void> {
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   installRoundtripWallClockTimeout(roundtripWallClockMs(config, 'long'))
   const phrase = process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)

@@ -141,9 +141,6 @@ function requireDirectory(path: string | undefined, envName: string, downloadHin
   return trimmed
 }
 
-/**
- * Loads local Sherpa config from SHERPA_STT_MODEL_PATH and SHERPA_TTS_MODEL_PATH.
- */
 export function resolveVoiceConfig(): ResolvedVoiceConfig {
   const sttDownloadHint =
     'Run: npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa'
@@ -184,4 +181,19 @@ export function resolveVoiceConfig(): ResolvedVoiceConfig {
     ttsModelPath,
     language,
   }
+}
+
+/** Roundtrip harness streams trailing silence — disable agent duplicate on speaker legs. */
+export function withRoundtripHarnessSilence(config: VoiceAgentConfig): VoiceAgentConfig {
+  return {
+    ...config,
+    postUtteranceSilenceMs: 0,
+    tts: config.tts ? { ...config.tts, postUtteranceSilenceMs: 0 } : config.tts,
+  }
+}
+
+/** Sherpa roundtrip E2E scripts — agent post-TTS silence off; harness owns trailing PCM. */
+export function resolveRoundtripVoiceConfig(): ResolvedVoiceConfig {
+  const resolved = resolveVoiceConfig()
+  return { ...resolved, config: withRoundtripHarnessSilence(resolved.config) }
 }

@@ -26,7 +26,7 @@ import {
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { streamSilence } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import {
   DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
   DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
@@ -479,7 +479,7 @@ async function main(): Promise<void> {
   const longSentencePhrase =
     process.env.SHERPA_ECHO_LONG_SENTENCE?.trim() || DEFAULT_LONG_SENTENCE_PHRASE
 
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
   const minNumberWords = Number(
     process.env.SHERPA_COUNTING_MIN_NUMBER_WORDS ?? DEFAULT_MIN_NUMBER_WORDS_ONE_TO_TEN,

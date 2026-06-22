@@ -47,7 +47,7 @@ import {
   postTtsSilenceSeconds,
 } from './roundtrip-counting.js'
 import { stereoPcmDurationMs, streamSilence, streamTone } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import {
@@ -319,7 +319,7 @@ async function main(): Promise<void> {
     process.env.SHERPA_BARGE_IN_MIN_SIMILARITY ?? DEFAULT_BARGE_PHRASE_MIN_SIMILARITY,
   )
 
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
 
   console.log('=== Sherpa semantic barge-in E2E ===')
   logRoundtripScriptBanner({

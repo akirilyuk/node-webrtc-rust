@@ -36,7 +36,7 @@ import {
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import { streamSilence } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 
 const DEFAULT_TIMEOUT_MS = 90_000
 const DEFAULT_MAX_ENQUEUE_MS = 200
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
   if (!process.env.SHERPA_POOL_MAX_CONCURRENT_TTS) {
     process.env.SHERPA_POOL_MAX_CONCURRENT_TTS = '3'
   }
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   const legDefs = resolveConcurrentLegs()
   const wallMs =
     Number(process.env.SHERPA_ROUNDTRIP_WALL_MS) ||

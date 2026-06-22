@@ -505,10 +505,15 @@ async function main(): Promise<void> {
     expectedPhrase: bargePhrase,
     label: 'Phase 3',
   })
+  // Truncation = agent playback span in phase 3 (agent_speaking_end), not barge_in ms.
+  // Linux CI STT partials can lag macOS; barge_in wall time inflates the ratio while
+  // agent_speaking_end still reflects flushed playback length.
   const playbackMsForRatio =
-    orderEval.agentStartAtMs != null && orderEval.bargeAtMs != null
-      ? orderEval.bargeAtMs - orderEval.agentStartAtMs
-      : speechResult.receivedMs
+    orderEval.agentStartAtMs != null && orderEval.agentEndAtMs != null
+      ? orderEval.agentEndAtMs - orderEval.agentStartAtMs
+      : orderEval.agentStartAtMs != null && orderEval.bargeAtMs != null
+        ? orderEval.bargeAtMs - orderEval.agentStartAtMs
+        : speechResult.receivedMs
   const speechRatio = playbackMsForRatio / fullMs
   console.log(
     `Pre-barge playback: ${playbackMsForRatio} ms (${(speechRatio * 100).toFixed(0)}% of full); ` +

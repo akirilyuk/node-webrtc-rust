@@ -207,7 +207,8 @@ export class RTCPeerConnection extends EventEmitter {
   async setLocalDescription(desc: RTCSessionDescription): Promise<void> {
     debugFn('sdk::RTCPeerConnection', 'setLocalDescription', `type=${desc.type}`)
     await this.native.setLocalDescription(toNativeDescription(desc))
-    this._localDescription = desc
+    // Native may rewrite SDP (ICE ufrag/pwd, mids). Always mirror native localDescription.
+    await this.refreshLocalDescription()
   }
 
   private async refreshLocalDescription(): Promise<void> {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { RTCPeerConnection } from '../src'
+import { RTCPeerConnection, RTCSessionDescription } from '../src'
 import { waitForConnection, waitForMessage, waitForOpen } from './helpers'
 
 const turnAvailable = process.env.TURN_AVAILABLE === '1'
@@ -17,6 +17,12 @@ const turnConfig = {
   iceTransportPolicy: 'relay' as const,
 }
 
+function assertSdpReady(desc: RTCSessionDescription, label: string): void {
+  if (!desc.sdp.includes('ice-ufrag')) {
+    throw new Error(`${label} SDP missing ice-ufrag (len=${desc.sdp.length})`)
+  }
+}
+
 async function exchangeSdp(pc1: RTCPeerConnection, pc2: RTCPeerConnection): Promise<void> {
   const dc1 = pc1.createDataChannel('turn-test')
 
@@ -24,12 +30,16 @@ async function exchangeSdp(pc1: RTCPeerConnection, pc2: RTCPeerConnection): Prom
   await pc1.setLocalDescription(offer)
   await pc1.gatheringComplete()
 
-  await pc2.setRemoteDescription(pc1.localDescription!)
+  const localOffer = pc1.localDescription!
+  assertSdpReady(localOffer, 'offer')
+  await pc2.setRemoteDescription(localOffer)
   const answer = await pc2.createAnswer()
   await pc2.setLocalDescription(answer)
   await pc2.gatheringComplete()
 
-  await pc1.setRemoteDescription(pc2.localDescription!)
+  const localAnswer = pc2.localDescription!
+  assertSdpReady(localAnswer, 'answer')
+  await pc1.setRemoteDescription(localAnswer)
 
   const dc2Promise = new Promise<typeof dc1>((resolve) => {
     pc2.ondatachannel = (event) => resolve(event.channel)

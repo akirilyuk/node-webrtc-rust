@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { RTCPeerConnection, RTCSessionDescription } from '../src'
+import { RTCPeerConnection, type RTCSessionDescription } from '../src'
 import { waitForConnection, waitForMessage, waitForOpen } from './helpers'
 
 const turnAvailable = process.env.TURN_AVAILABLE === '1'

@@ -20,6 +20,7 @@ When shipping a **user-facing SDK or API change**, extend **`examples/`** in the
    npm run start[:script] --workspace=@node-webrtc-rust/example-<name>
    ```
 4. **Update** [`examples/README.md`](../../examples/README.md) — table row + quick-reference verify column.
+5. **Sync `package-lock.json`** — run `npm install` at repo root and commit the lock with the new example ([`package-lock-workspace-sync.mdc`](package-lock-workspace-sync.mdc)).
 
 ## What to demonstrate
 

@@ -1,0 +1,50 @@
+---
+description: Sync package-lock.json when adding or changing npm workspaces
+globs:
+  - package.json
+  - packages/**/package.json
+  - examples/**/package.json
+alwaysApply: false
+---
+
+# package-lock workspace sync
+
+Root `package.json` declares `"workspaces": ["packages/*", "examples/*"]`. A **new or renamed** workspace is not in `package-lock.json` until you regenerate the lockfile. CI **`validate-package-lock`** (always runs) and every **`npm ci`** path then fail with:
+
+```text
+Missing: @node-webrtc-rust/example-…@x.y.z from lock file
+```
+
+## When this applies
+
+| Change | Lock update needed |
+|--------|-------------------|
+| New `examples/<name>/package.json` or `packages/<name>/package.json` | **Yes** — run `npm install` |
+| Renamed example/package directory | **Yes** — lock still points at old path |
+| Bumped workspace `version` or `dependencies` | Often yes; after release prep see [`scripts/RELEASE.md`](../../scripts/RELEASE.md) |
+
+## Required in the same PR
+
+```bash
+npm install
+git add package-lock.json
+```
+
+Verify before push:
+
+```bash
+npm run ci:validate:package-lock
+rm -rf node_modules packages/*/node_modules && npm ci
+```
+
+## Agent checklist
+
+1. After adding a workspace, confirm `package-lock.json` lists it (grep the package name or `examples/<dir>`).
+2. **Commit `package-lock.json` with the new workspace** — never push example-only or package-only dirs without the lock change.
+3. Stub optional `@node-webrtc-rust/bindings-*` entries are a separate failure mode — use `refresh-package-lock-optional-bindings.sh` after publish (see RELEASE.md).
+
+## Related
+
+- [`examples-workflow.mdc`](examples-workflow.mdc) — new examples
+- [`pre-commit-quality.mdc`](pre-commit-quality.mdc) — `run-pr-quality.sh` runs validate + `npm ci`
+- CI: `validate-package-lock` job in [`.github/workflows/build.yml`](../../.github/workflows/build.yml)

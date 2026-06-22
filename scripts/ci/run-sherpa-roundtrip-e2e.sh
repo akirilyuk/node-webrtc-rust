@@ -30,7 +30,7 @@ run_pass() {
     CI=true \
     VOICE_DEBUG="$voice_debug" \
     SHERPA_ROUNDTRIP_TOPOLOGY_LOG=0 \
-    "${extra_env[@]}" \
+    ${extra_env[@]+"${extra_env[@]}"} \
     npm run "$SCRIPT" --workspace="$WORKSPACE"
 }
 

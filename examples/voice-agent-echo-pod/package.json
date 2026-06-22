@@ -1,0 +1,22 @@
+{
+  "name": "@node-webrtc-rust/example-voice-agent-echo-pod",
+  "private": true,
+  "version": "0.6.0",
+  "description": "SessionPod echo host — runner parent stack without runner or agent child IPC (layer isolation)",
+  "type": "module",
+  "scripts": {
+    "start": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/index.ts",
+    "start:debug": "bash ../../scripts/export-sherpa-local-models.sh -- env SPEECH_EVENT_LOG=1 tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@node-webrtc-rust/helpers": "0.6.0",
+    "@node-webrtc-rust/sdk": "0.6.0",
+    "@node-webrtc-rust/signaling": "0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  }
+}

@@ -26,6 +26,7 @@ export { isVoiceDebugEnabled, voiceDebugLog } from './debug.js'
 export {
   VOICE_CONTROL_CHANNEL_LABEL,
   VOICE_SYNC_CHANNEL_LABEL,
+  agentSpeakToControlMessage,
   forwardVoiceAgentSpeechToDataChannel,
   parseVoiceControlClientMessage,
   speechEventToControlMessage,
@@ -33,6 +34,7 @@ export {
   wireVoiceControlSpeakHandler,
 } from './speech-event-bridge.js'
 export type {
+  VoiceControlAgentSpeakMessage,
   VoiceControlClientMessage,
   VoiceControlServerMessage,
   VoiceControlSpeakMessage,

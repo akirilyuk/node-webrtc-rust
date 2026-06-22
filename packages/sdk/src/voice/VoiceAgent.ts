@@ -60,6 +60,8 @@ function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
     gateStt: vad.gateStt,
     gateSttOpenOnPending: vad.gateSttOpenOnPending,
     sttGateHoldMs: vad.sttGateHoldMs,
+    sttListenTimeoutMs: vad.sttListenTimeoutMs,
+    utteranceFinalizeTimeoutMs: vad.utteranceFinalizeTimeoutMs,
   }
 }
 

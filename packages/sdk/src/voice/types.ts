@@ -114,6 +114,11 @@ export interface TtsConfig {
   /** Speaker id for multi-speaker Piper models (default 0). */
   voice?: string
   apiKey?: string
+  /**
+   * Real-time silence (ms) on outbound audio after each TTS utterance. `0` disables.
+   * When unset, derived from VAD gate hold + min silence + 250 ms.
+   */
+  postUtteranceSilenceMs?: number
 }
 
 /** Full configuration for {@link VoiceAgent}. */
@@ -122,6 +127,8 @@ export interface VoiceAgentConfig {
   events?: EventsConfig
   stt?: SttConfig
   tts?: TtsConfig
+  /** Trailing outbound silence after TTS (ms). Deploy JSON may set `tts.postUtteranceSilenceMs`. */
+  postUtteranceSilenceMs?: number
 }
 
 /** Options for {@link VoiceAgent.sendTextToTTS}. */

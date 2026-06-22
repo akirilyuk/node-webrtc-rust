@@ -20,18 +20,25 @@ describe('VoiceAgent', () => {
     await cleanup()
   })
 
-  test('registers speech callbacks', async () => {
+  test('callback mode delivers speech events to on() handlers', async () => {
     const { agentOut, userInbound, cleanup } = await createVoiceLoopback()
-    const agent = new VoiceAgent({ ...mockVoiceConfig, events: { mode: 'both' } })
+    const agent = new VoiceAgent({ ...mockVoiceConfig, events: { mode: 'callback' } })
 
     await agent.attach({ inboundTrack: userInbound, outboundTrack: agentOut })
     await agent.start()
 
-    const sawStart = new Promise<void>((resolve) => {
-      agent.on('agent_speaking_start', () => resolve())
+    const sawStart = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('timed out waiting for agent_speaking_start')),
+        5000,
+      )
+      agent.on('agent_speaking_start', () => {
+        clearTimeout(timer)
+        resolve()
+      })
     })
     await agent.sendTextToTTS('ping')
-    await Promise.race([sawStart, new Promise((resolve) => setTimeout(resolve, 2000))])
+    await sawStart
 
     await agent.stop()
     await cleanup()

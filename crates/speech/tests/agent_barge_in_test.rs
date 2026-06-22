@@ -855,6 +855,171 @@ async fn c2_partial_stall_forces_user_speech_final() {
 }
 
 #[tokio::test]
+async fn c2_partial_stall_no_pcm_forces_user_speech_final() {
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::new(PartialOnlyFactory));
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 100;
+    vad.utterance_finalize_timeout_ms = 200;
+    vad.barge_in.enabled = false;
+
+    let config = VoiceAgentConfig {
+        stt: Some(node_webrtc_rust_speech::SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: None,
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut events = agent.subscribe_events();
+    let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = vec![0_u8; 3840];
+    for _ in 0..6 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+    // Hold expires and C2 timer arms, but stop PCM before PCM-clock C2 can fire.
+    for _ in 0..8 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+
+    let mut saw_partial = false;
+    let mut saw_final = false;
+    let mut final_text = String::new();
+    while let Ok(event) = events.try_recv() {
+        match event.kind {
+            SpeechEventKind::UserSpeechPartial => saw_partial = true,
+            SpeechEventKind::UserSpeechFinal => {
+                saw_final = true;
+                final_text = event.text.unwrap_or_default();
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_partial, "expected user_speech_partial before wall-clock C2");
+    assert!(
+        saw_final,
+        "C2 wall-clock: expected forced user_speech_final with zero PCM after partial"
+    );
+    assert!(
+        final_text.contains("hello"),
+        "C2 final should fall back to last partial, got {final_text:?}"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+async fn run_gated_utterance(agent: &VoiceAgent, loud: &[u8], silent: &[u8]) {
+    for _ in 0..6 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.to_vec()), 20)
+            .await
+            .unwrap();
+    }
+    for _ in 0..25 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.to_vec()), 20)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn second_turn_stt_finalizes_after_prior_utterance_final() {
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::new(MockFactory));
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 1000;
+    vad.utterance_finalize_timeout_ms = 200;
+    vad.barge_in.enabled = false;
+
+    let config = VoiceAgentConfig {
+        stt: Some(node_webrtc_rust_speech::SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut events = agent.subscribe_events();
+    let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = vec![0_u8; 3840];
+
+    run_gated_utterance(&agent, &loud, &silent).await;
+    agent.send_text_to_tts("echo").await.unwrap();
+    sleep(Duration::from_millis(400)).await;
+
+    // Brief-gap SpeechStart while post-TTS gate hold is still active (multi-turn E2E).
+    run_gated_utterance(&agent, &loud, &silent).await;
+
+    agent.stop().await.unwrap();
+
+    let mut finals = 0_u32;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == SpeechEventKind::UserSpeechFinal {
+            finals += 1;
+        }
+    }
+    assert_eq!(
+        finals, 2,
+        "turn 2 must emit user_speech_final after turn 1 completed (brief-gap SpeechStart)"
+    );
+}
+
+#[tokio::test]
 async fn barge_disabled_stt_on_vad_during_agent_tts() {
     let bytes = Arc::new(Mutex::new(0_usize));
     let mut registry = VendorRegistry::new();

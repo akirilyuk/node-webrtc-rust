@@ -6,13 +6,16 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
-use crate::config::{EventDeliveryMode, SendTextToTtsOptions, VadConfig, VoiceAgentConfig};
+use crate::config::{
+    resolved_post_utterance_silence_ms, EventDeliveryMode, SendTextToTtsOptions, VadConfig,
+    VoiceAgentConfig,
+};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::pcm::i16_samples_to_bytes;
@@ -84,6 +87,8 @@ struct AgentInner {
     stt_listen_deadline_ms: u32,
     /// C2: ms remaining until forced `user_speech_final` after last partial or `SpeechEnd`.
     utterance_finalize_deadline_ms: u32,
+    /// Wall-clock anchor for C2 when inbound PCM stops (see `c2_wall_clock_ticker`).
+    utterance_finalize_armed_at: Option<Instant>,
     /// Start C2 only after gate hold drains when `SpeechEnd` preceded partials.
     defer_utterance_finalize_until_hold: bool,
     /// Last partial text for C2 forced final fallback.
@@ -123,11 +128,13 @@ pub struct VoiceAgent {
     tts_synthesis_busy: Arc<AtomicBool>,
     /// Incremented on barge/flush/cancel so in-flight ONNX synthesis can drop late PCM.
     tts_synthesis_epoch: Arc<AtomicU64>,
+    weak_self: Weak<VoiceAgent>,
+    c2_ticker_started: AtomicBool,
 }
 
 impl VoiceAgent {
     /// Builds agents with STT/TTS from `registry` and VAD/pre-roll from `config.vad`.
-    pub fn new(config: VoiceAgentConfig, registry: Arc<VendorRegistry>) -> SpeechResult<Self> {
+    pub fn new(config: VoiceAgentConfig, registry: Arc<VendorRegistry>) -> SpeechResult<Arc<Self>> {
         let mut stt = None;
         let mut tts = None;
 
@@ -149,7 +156,7 @@ impl VoiceAgent {
             None
         };
 
-        Ok(Self {
+        Ok(Arc::new_cyclic(|weak| Self {
             event_bus: SpeechEventBus::new(),
             tts_buffer: TtsBuffer::new(),
             registry,
@@ -172,6 +179,7 @@ impl VoiceAgent {
                 vad_triggered_this_utterance: false,
                 stt_listen_deadline_ms: 0,
                 utterance_finalize_deadline_ms: 0,
+                utterance_finalize_armed_at: None,
                 defer_utterance_finalize_until_hold: false,
                 last_partial_text: None,
                 partials_emitted_this_utterance: false,
@@ -189,7 +197,81 @@ impl VoiceAgent {
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
-        })
+            weak_self: weak.clone(),
+            c2_ticker_started: AtomicBool::new(false),
+        }))
+    }
+
+    fn clear_utterance_finalize_timer(inner: &mut AgentInner) {
+        inner.utterance_finalize_deadline_ms = 0;
+        inner.utterance_finalize_armed_at = None;
+        inner.defer_utterance_finalize_until_hold = false;
+    }
+
+    fn arm_utterance_finalize_timer(inner: &mut AgentInner) {
+        if inner.partials_emitted_this_utterance && !inner.stt_final_emitted_this_utterance {
+            inner.utterance_finalize_deadline_ms =
+                inner.config.vad.utterance_finalize_timeout_ms;
+            inner.utterance_finalize_armed_at = Some(Instant::now());
+            inner.defer_utterance_finalize_until_hold = false;
+            voice_debug(format!(
+                "utterance finalize timer: {} ms",
+                inner.utterance_finalize_deadline_ms
+            ));
+        }
+    }
+
+    fn ensure_c2_wall_clock_ticker(self: &Arc<Self>) {
+        if self
+            .c2_ticker_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let agent = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let Some(this) = agent.weak_self.upgrade() else {
+                    break;
+                };
+                let running = {
+                    let inner = this.inner.lock().await;
+                    inner.running
+                };
+                if !running {
+                    break;
+                }
+                if let Err(error) = this.c2_wall_clock_tick().await {
+                    voice_debug(format!("C2 wall-clock tick error: {error}"));
+                }
+            }
+        });
+    }
+
+    async fn c2_wall_clock_tick(&self) -> SpeechResult<()> {
+        let should_force = {
+            let inner = self.inner.lock().await;
+            if !inner.running
+                || inner.defer_utterance_finalize_until_hold
+                || inner.utterance_finalize_deadline_ms == 0
+            {
+                false
+            } else if let Some(armed_at) = inner.utterance_finalize_armed_at {
+                armed_at.elapsed()
+                    >= std::time::Duration::from_millis(
+                        inner.config.vad.utterance_finalize_timeout_ms as u64,
+                    )
+            } else {
+                false
+            }
+        };
+        if should_force {
+            voice_debug("C2 wall-clock timeout (no inbound PCM)");
+            self.force_close_utterance().await?;
+        }
+        Ok(())
     }
 
     fn invalidate_inflight_tts_synthesis(&self) {
@@ -249,6 +331,9 @@ impl VoiceAgent {
             voice_debug(format!("STT started ({})", stt.vendor_name()));
         }
         self.ensure_tts_drain_worker().await;
+        if let Some(this) = self.weak_self.upgrade() {
+            this.ensure_c2_wall_clock_ticker();
+        }
         Ok(())
     }
 
@@ -647,18 +732,6 @@ impl VoiceAgent {
         }
     }
 
-    fn arm_utterance_finalize_timer(inner: &mut AgentInner) {
-        if inner.partials_emitted_this_utterance && !inner.stt_final_emitted_this_utterance {
-            inner.utterance_finalize_deadline_ms =
-                inner.config.vad.utterance_finalize_timeout_ms;
-            inner.defer_utterance_finalize_until_hold = false;
-            voice_debug(format!(
-                "utterance finalize timer: {} ms",
-                inner.utterance_finalize_deadline_ms
-            ));
-        }
-    }
-
     async fn on_vad_speech_start(&self) -> SpeechResult<()> {
         let (barge_in, guard_active, agent_speaking, has_stt, vad_enabled) = {
             let inner = self.inner.lock().await;
@@ -688,8 +761,7 @@ impl VoiceAgent {
                 inner.stt_listen_deadline_ms = inner.config.vad.stt_listen_timeout_ms;
             }
             if !inner.partials_emitted_this_utterance {
-                inner.utterance_finalize_deadline_ms = 0;
-                inner.defer_utterance_finalize_until_hold = false;
+                Self::clear_utterance_finalize_timer(&mut inner);
             }
         }
 
@@ -737,8 +809,7 @@ impl VoiceAgent {
             inner.stt_stream_open = false;
             inner.user_stt_session_open = false;
             inner.stt_listen_deadline_ms = 0;
-            inner.utterance_finalize_deadline_ms = 0;
-            inner.defer_utterance_finalize_until_hold = false;
+            Self::clear_utterance_finalize_timer(&mut inner);
             inner.vad_triggered_this_utterance = false;
             inner.barge_awaiting_stt_partial = false;
             (stream_was_open, session_open, vad_speaking)
@@ -804,8 +875,7 @@ impl VoiceAgent {
                 inner.user_stt_session_open = false;
             }
             inner.stt_listen_deadline_ms = 0;
-            inner.utterance_finalize_deadline_ms = 0;
-            inner.defer_utterance_finalize_until_hold = false;
+            Self::clear_utterance_finalize_timer(&mut inner);
             inner.vad_triggered_this_utterance = false;
             inner.barge_awaiting_stt_partial = false;
             let already_final = inner.stt_final_emitted_this_utterance;
@@ -909,8 +979,7 @@ impl VoiceAgent {
         inner.user_stt_session_open = false;
         inner.vad_triggered_this_utterance = false;
         inner.stt_listen_deadline_ms = 0;
-        inner.utterance_finalize_deadline_ms = 0;
-        inner.defer_utterance_finalize_until_hold = false;
+        Self::clear_utterance_finalize_timer(inner);
         inner.last_partial_text = None;
         inner.partials_emitted_this_utterance = false;
     }
@@ -1014,6 +1083,7 @@ impl VoiceAgent {
                     {
                         inner.defer_utterance_finalize_until_hold = true;
                         inner.utterance_finalize_deadline_ms = 0;
+                        inner.utterance_finalize_armed_at = None;
                     }
                     voice_debug(format!(
                         "STT gate hold: {} ms after speech end{}",
@@ -1149,7 +1219,10 @@ impl VoiceAgent {
             let mut pre_roll_after_start = None;
             {
                 let mut inner = self.inner.lock().await;
-                if long_pause_new_phrase {
+                if long_pause_new_phrase || inner.stt_final_emitted_this_utterance {
+                    // A completed final always starts a new utterance — the brief-gap path is only
+                    // for mid-phrase pauses (e.g. counting). Leaving `stt_final_emitted` set blocks
+                    // C2 arming and `should_finalize_utterance` on turn 2+ (local multi-turn E2E).
                     Self::reset_utterance_state_for_new_speech(&mut inner);
                 } else {
                     // Brief gap (e.g. counting): same utterance — clear hold only.
@@ -1324,8 +1397,7 @@ impl VoiceAgent {
                     inner.user_stt_session_open = false;
                 }
                 inner.stt_listen_deadline_ms = 0;
-                inner.utterance_finalize_deadline_ms = 0;
-                inner.defer_utterance_finalize_until_hold = false;
+                Self::clear_utterance_finalize_timer(&mut inner);
                 inner.vad_triggered_this_utterance = false;
                 let need_forced = !inner.stt_final_emitted_this_utterance
                     && inner.partials_emitted_this_utterance;
@@ -1453,8 +1525,7 @@ impl VoiceAgent {
                         inner.stt_finalize_pending = false;
                         inner.stt_endpoint_closing_started = false;
                         inner.stt_listen_deadline_ms = 0;
-                        inner.utterance_finalize_deadline_ms = 0;
-                        inner.defer_utterance_finalize_until_hold = false;
+                        Self::clear_utterance_finalize_timer(&mut inner);
                         inner.vad_triggered_this_utterance = false;
                         let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
                         if emit_end {
@@ -1567,6 +1638,40 @@ impl VoiceAgent {
             Self::end_agent_speaking_inner(inner, true).await;
             voice_debug("agent_speaking=false (TTS drained)");
             event_bus.emit(SpeechEvent::agent_speaking_end());
+
+            let silence_ms = {
+                let guard = inner.lock().await;
+                resolved_post_utterance_silence_ms(&guard.config)
+            };
+            if silence_ms > 0 {
+                Self::stream_post_utterance_silence(&writer, tts_buffer, drain_generation, silence_ms)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn stream_post_utterance_silence(
+        writer: &PcmWriter,
+        tts_buffer: &TtsBuffer,
+        drain_generation: u64,
+        silence_ms: u32,
+    ) -> SpeechResult<()> {
+        let frame_count = silence_ms.div_ceil(20);
+        let silent = Bytes::from(vec![0_u8; STEREO_FRAME_20MS_BYTES]);
+        voice_debug(format!(
+            "post-TTS outbound silence: {silence_ms} ms ({frame_count} frames)"
+        ));
+        for _ in 0..frame_count {
+            if tts_buffer.current_generation().await != drain_generation {
+                voice_debug("post-TTS silence stopped (barge-in flush)");
+                return Ok(());
+            }
+            writer(silent.clone(), 20)?;
+            if !Self::pace_tts_drain_frame(tts_buffer, drain_generation, 20).await {
+                voice_debug("post-TTS silence stopped during pacing (barge-in flush)");
+                return Ok(());
+            }
         }
         Ok(())
     }
@@ -1603,25 +1708,28 @@ impl VoiceAgent {
 
 const STEREO_FRAME_20MS_BYTES: usize = 3840;
 
-fn split_stereo_pcm_frames(pcm: &Bytes, total_duration_ms: u32) -> Vec<(Bytes, u32)> {
+/// Pad to a full 20 ms stereo frame so Opus always receives 960 samples/channel.
+fn pad_stereo_frame_20ms(frame: &[u8]) -> (Bytes, u32) {
+    if frame.len() == STEREO_FRAME_20MS_BYTES {
+        return (Bytes::copy_from_slice(frame), 20);
+    }
+    let mut padded = vec![0_u8; STEREO_FRAME_20MS_BYTES];
+    let copy_len = frame.len().min(STEREO_FRAME_20MS_BYTES);
+    padded[..copy_len].copy_from_slice(&frame[..copy_len]);
+    (Bytes::from(padded), 20)
+}
+
+fn split_stereo_pcm_frames(pcm: &Bytes, _total_duration_ms: u32) -> Vec<(Bytes, u32)> {
     if pcm.is_empty() {
         return Vec::new();
     }
     if pcm.len() <= STEREO_FRAME_20MS_BYTES {
-        return vec![(pcm.clone(), total_duration_ms.max(1))];
+        return vec![pad_stereo_frame_20ms(pcm)];
     }
 
-    let frame_count = pcm.len().div_ceil(STEREO_FRAME_20MS_BYTES);
-    let mut frames = Vec::with_capacity(frame_count);
-    for (index, frame) in pcm.chunks(STEREO_FRAME_20MS_BYTES).enumerate() {
-        let duration_ms = if index + 1 == frame_count {
-            total_duration_ms.saturating_sub(20 * index as u32).max(1)
-        } else {
-            20
-        };
-        frames.push((Bytes::copy_from_slice(frame), duration_ms));
-    }
-    frames
+    pcm.chunks(STEREO_FRAME_20MS_BYTES)
+        .map(pad_stereo_frame_20ms)
+        .collect()
 }
 
 pub fn version() -> &'static str {
@@ -1649,6 +1757,17 @@ mod tests {
     #[test]
     fn version_is_non_empty() {
         assert!(!version().is_empty());
+    }
+
+    #[test]
+    fn split_stereo_pcm_frames_pads_tail_to_opus_20ms() {
+        let pcm = Bytes::from(vec![0_u8; STEREO_FRAME_20MS_BYTES + 2560]);
+        let frames = split_stereo_pcm_frames(&pcm, 45);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].0.len(), STEREO_FRAME_20MS_BYTES);
+        assert_eq!(frames[0].1, 20);
+        assert_eq!(frames[1].0.len(), STEREO_FRAME_20MS_BYTES);
+        assert_eq!(frames[1].1, 20);
     }
 
     #[tokio::test]

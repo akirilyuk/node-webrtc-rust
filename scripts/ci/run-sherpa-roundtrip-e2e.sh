@@ -32,6 +32,7 @@ run_pass() {
   fi
   env \
     CI=true \
+    SHERPA_ROUNDTRIP_CI_HARNESS_POST_SILENCE=1 \
     VOICE_DEBUG="$voice_debug" \
     SHERPA_ROUNDTRIP_TOPOLOGY_LOG=0 \
     ${extra_env[@]+"${extra_env[@]}"} \

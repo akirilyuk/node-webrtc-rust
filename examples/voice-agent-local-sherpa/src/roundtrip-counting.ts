@@ -78,6 +78,18 @@ const DEFAULT_WARMUP_S = 0.6
 /** Outbound TTS drain cap — wall-clock estimate, always bounded. */
 export const DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS = 45_000
 
+function ciHarnessPostSilenceEnabled(): boolean {
+  if (process.env.SHERPA_ROUNDTRIP_CI_HARNESS_POST_SILENCE === '0') return false
+  if (
+    process.env.SHERPA_ROUNDTRIP_CI_HARNESS_POST_SILENCE === '1' ||
+    process.env.CI === 'true' ||
+    process.env.GITHUB_ACTIONS === 'true'
+  ) {
+    return true
+  }
+  return false
+}
+
 /**
  * Hard process kill for E2E scripts — overrides hung STT/native waits so CI/local runs fail fast.
  * Override with `SHERPA_ROUNDTRIP_WALL_MS` (applies to all roundtrip `start:*` scripts).
@@ -254,7 +266,7 @@ export async function playSpeakerTtsWithPostSilence(params: {
   // before the listener sees trailing PCM — stream harness silence once after agent_speaking_end only
   // in CI (not in parallel with TTS), avoiding the old 2× real-time tail that broke long counting E2E.
   if (params.postTtsSilenceS > 0) {
-    if (process.env.CI === 'true') {
+    if (ciHarnessPostSilenceEnabled()) {
       console.log(
         `[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s on speakerOut (CI harness tail)`,
       )

@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.6.1] — 2026-06-22
+## [0.6.1] — 2026-06-22 (pending re-release)
 
 **Compare:** [`release/0.6.0…release/0.6.1`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.0...release/0.6.1)
 
@@ -19,6 +19,7 @@ SDK fix: advanced voice VAD timeout overrides now reach the native pipeline.
 ### Fixed
 
 - **`VoiceAgent` VAD config** — forward `sttListenTimeoutMs` and `utteranceFinalizeTimeoutMs` through `toJsVadConfig` so STT timeout fields set on the SDK reach the Rust voice pipeline.
+- **SDK TURN integration test** — type-only import for `RTCSessionDescription` (`@typescript-eslint/consistent-type-imports`; unblocks CI and release after a broken `release/0.6.1` tag).
 
 ---
 

@@ -10,6 +10,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.4] — 2026-06-23
+
+**Compare:** [`release/0.6.3…release/0.6.4`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.3...release/0.6.4)
+
+Republish `@node-webrtc-rust/helpers` so npm installs `@node-webrtc-rust/sdk@0.6.3` (not 0.6.2). Staging runners that only bumped top-level `sdk` still crashed because `helpers@0.6.3` nested the pre-fix SDK.
+
+### Fixed
+
+- **`@node-webrtc-rust/helpers`** — dependency `@node-webrtc-rust/sdk` `0.6.2` → `0.6.3` (includes closed DataChannel send fix).
+
+---
+
 ## [0.6.3] — 2026-06-23
 
 **Compare:** [`release/0.6.2…release/0.6.3`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.2...release/0.6.3)

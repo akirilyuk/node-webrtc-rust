@@ -26,11 +26,16 @@ run_pass() {
     # Linux CI STT partials lag macOS; barge slightly earlier than local default (400ms).
     extra_env+=(SHERPA_BARGE_RECOVERY_DELAY_MS="${SHERPA_BARGE_RECOVERY_DELAY_MS:-350}")
   fi
+  if [[ "$SCRIPT" == *barge-in* ]]; then
+    # Linux CI: partial→barge_in can lag; agent_speaking_end still truncates playback.
+    extra_env+=(SHERPA_BARGE_IN_MAX_RATIO="${SHERPA_BARGE_IN_MAX_RATIO:-0.80}")
+  fi
   env \
     CI=true \
+    SHERPA_ROUNDTRIP_CI_HARNESS_POST_SILENCE=1 \
     VOICE_DEBUG="$voice_debug" \
     SHERPA_ROUNDTRIP_TOPOLOGY_LOG=0 \
-    "${extra_env[@]}" \
+    ${extra_env[@]+"${extra_env[@]}"} \
     npm run "$SCRIPT" --workspace="$WORKSPACE"
 }
 

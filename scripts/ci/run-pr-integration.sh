@@ -15,6 +15,8 @@ DEFAULT_NPM_TEST_TIMEOUT_SEC="${CI_NPM_TEST_TIMEOUT_SEC:-600}"
 echo "==> npm ci"
 bash scripts/ci/npm-ci-workspace.sh
 
+echo "==> integration git $(git rev-parse --short HEAD)"
+
 echo "==> ensure native binding"
 shopt -s nullglob
 nodes=(packages/bindings/*.node)

@@ -29,7 +29,7 @@ import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { streamSilence } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import {
   AgentSpeakingEndLatch,
   installRoundtripWallClockTimeout,
@@ -311,7 +311,7 @@ async function main(): Promise<void> {
   installRoundtripWallClockTimeout(120_000)
 
   const phrases = resolvePhrases()
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_ROUNDTRIP_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
   const finalizeWaitMs = sttFinalizeWaitMs(config)
   const postTtsSilenceS = postTtsSilenceSeconds(config)

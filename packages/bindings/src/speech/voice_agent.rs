@@ -47,7 +47,7 @@ impl JsVoiceAgent {
         let agent = VoiceAgent::new(config, registry).map_err(speech_err)?;
         let pull_rx = agent.subscribe_events();
         Ok(Self {
-            inner: Arc::new(agent),
+            inner: agent,
             state: Arc::new(Mutex::new(VoiceAgentState {
                 pull_rx: Some(pull_rx),
                 callback_wired: false,

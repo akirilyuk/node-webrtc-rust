@@ -105,10 +105,13 @@ export class SessionPod {
 
   private scheduleIdleTeardown(sessionId: string, endReason?: string): void {
     if (!this.teardownIdle) return
-    this.cancelTeardownTimer(sessionId)
     const slot = this.slots.get(sessionId)
     if (slot && endReason) {
       slot.pendingEndReason = endReason
+    }
+    // WebRTC close and signaling peer-left both notify SessionPod — arm grace once.
+    if (this.teardownTimers.has(sessionId)) {
+      return
     }
     if (this.rejoinGraceMs <= 0) {
       void this.teardownSession(sessionId, endReason).catch((error: unknown) => {
@@ -182,11 +185,6 @@ export class SessionPod {
         if (!peerId.startsWith('client-')) return
         this.cancelTeardownTimer(sessionId)
       })
-      signaling.on('peer-left', (peerId) => {
-        if (!peerId.startsWith('client-')) return
-        if (host.activeClientCount > 0) return
-        this.scheduleIdleTeardown(sessionId)
-      })
     }
 
     this.slots.set(sessionId, { sessionId, signaling, host })
@@ -221,6 +219,15 @@ export class SessionPod {
     )
   }
 
+  private maybeScheduleIdleTeardownAfterLastPeer(sessionId: string): void {
+    if (!this.teardownIdle) return
+    setTimeout(() => {
+      const slot = this.slots.get(sessionId)
+      if (!slot || slot.host.activeClientCount > 0) return
+      this.scheduleIdleTeardown(sessionId)
+    }, 0)
+  }
+
   private wrapVoiceHandler(
     sessionId: string,
     handler?: VoiceSessionHandler,
@@ -235,14 +242,12 @@ export class SessionPod {
         return handler?.onPeerConnected?.(ctx)
       },
       onPeerDisconnected: (ctx) => {
-        if (this.teardownIdle) {
-          setTimeout(() => {
-            const slot = this.slots.get(sessionId)
-            if (!slot || slot.host.activeClientCount > 0) return
-            this.scheduleIdleTeardown(sessionId)
-          }, 0)
-        }
+        this.maybeScheduleIdleTeardownAfterLastPeer(sessionId)
         return handler?.onPeerDisconnected?.(ctx)
+      },
+      onPeerSignalingLost: (ctx) => {
+        this.maybeScheduleIdleTeardownAfterLastPeer(sessionId)
+        return handler?.onPeerSignalingLost?.(ctx)
       },
     }
   }

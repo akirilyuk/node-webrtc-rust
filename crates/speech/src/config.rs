@@ -267,6 +267,20 @@ pub struct TtsConfig {
     pub api_key: Option<String>,
 }
 
+/// Resolved post-TTS silence duration for outbound pacing.
+pub fn resolved_post_utterance_silence_ms(config: &VoiceAgentConfig) -> u32 {
+    let explicit = config.post_utterance_silence_ms;
+    match explicit {
+        Some(0) => 0,
+        Some(ms) => ms,
+        None => config
+            .vad
+            .stt_gate_hold_ms
+            .saturating_add(config.vad.min_silence_duration_ms)
+            .saturating_add(250),
+    }
+}
+
 /// Full voice agent configuration (mirrored in TypeScript `VoiceAgentConfig`).
 ///
 /// Defaults include mock STT/TTS for unit tests; production apps set real vendors via NAPI/TS.
@@ -279,6 +293,9 @@ pub struct VoiceAgentConfig {
     pub events: EventsConfig,
     pub stt: Option<SttConfig>,
     pub tts: Option<TtsConfig>,
+    /// Trailing outbound silence (ms) after TTS. Also accepted under `tts.postUtteranceSilenceMs` in deploy JSON.
+    #[serde(default)]
+    pub post_utterance_silence_ms: Option<u32>,
 }
 
 /// Options for [`crate::VoiceAgent::send_text_to_tts_with_options`].
@@ -318,6 +335,7 @@ impl Default for VoiceAgentConfig {
                 voice: None,
                 api_key: None,
             }),
+            post_utterance_silence_ms: None,
         }
     }
 }

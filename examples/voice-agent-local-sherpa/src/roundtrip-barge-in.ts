@@ -47,7 +47,7 @@ import {
   postTtsSilenceSeconds,
 } from './roundtrip-counting.js'
 import { stereoPcmDurationMs, streamSilence, streamTone } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import {
@@ -261,11 +261,21 @@ async function runMidPlaybackInterrupt(params: {
 }): Promise<{ receivedMs: number; events: RecordedSpeechEvent[] }> {
   const meter = new InboundAudioMeter()
   meter.start(params.userInbound)
+  /** Truncation ratio uses audio received through agent_speaking_end, not STT finalize tail. */
+  let receivedMsThroughAgentEnd: number | undefined
 
   const eventsPromise = params.collector.collectUntil({
     phaseLabel: params.phaseLabel,
     maxMs: params.maxPhaseMs,
-    until: params.untilEvents,
+    until: (events) => {
+      if (
+        receivedMsThroughAgentEnd === undefined &&
+        events.some((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+      ) {
+        receivedMsThroughAgentEnd = meter.getTotalMs()
+      }
+      return params.untilEvents(events)
+    },
   })
 
   console.log(`[${params.phaseLabel}] agent TTS queued (${params.agentPhrase.length} chars)`)
@@ -278,7 +288,7 @@ async function runMidPlaybackInterrupt(params: {
 
   const events = await eventsPromise
   meter.stop()
-  const receivedMs = meter.getTotalMs()
+  const receivedMs = receivedMsThroughAgentEnd ?? meter.getTotalMs()
   await ttsDone
   await sleep(200)
 
@@ -309,7 +319,7 @@ async function main(): Promise<void> {
     process.env.SHERPA_BARGE_IN_MIN_SIMILARITY ?? DEFAULT_BARGE_PHRASE_MIN_SIMILARITY,
   )
 
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
 
   console.log('=== Sherpa semantic barge-in E2E ===')
   logRoundtripScriptBanner({
@@ -490,14 +500,24 @@ async function main(): Promise<void> {
     logRecordedSpeechEvents(finalizeEvents, 'Phase 3 finalize')
   }
 
-  const speechRatio = speechResult.receivedMs / fullMs
   const orderEval = evaluateSemanticBargeEventOrder({
     events: phase3Events,
     expectedPhrase: bargePhrase,
     label: 'Phase 3',
   })
+  // Truncation = agent playback span in phase 3 (agent_speaking_end), not barge_in ms.
+  // Linux CI STT partials can lag macOS; barge_in wall time inflates the ratio while
+  // agent_speaking_end still reflects flushed playback length.
+  const playbackMsForRatio =
+    orderEval.agentStartAtMs != null && orderEval.agentEndAtMs != null
+      ? orderEval.agentEndAtMs - orderEval.agentStartAtMs
+      : orderEval.agentStartAtMs != null && orderEval.bargeAtMs != null
+        ? orderEval.bargeAtMs - orderEval.agentStartAtMs
+        : speechResult.receivedMs
+  const speechRatio = playbackMsForRatio / fullMs
   console.log(
-    `Pre-barge received: ${speechResult.receivedMs} ms (${(speechRatio * 100).toFixed(0)}% of full)`,
+    `Pre-barge playback: ${playbackMsForRatio} ms (${(speechRatio * 100).toFixed(0)}% of full); ` +
+      `userInbound through phase end: ${speechResult.receivedMs} ms`,
   )
   if (
     orderEval.partialAtMs != null &&

@@ -2,6 +2,7 @@
  * Shared VoiceAgent debug overrides for browser voice examples.
  *
  * Enable with `VOICE_DEBUG=1` (see `start:debug` npm scripts).
+ * Sherpa roundtrip E2E uses `resolveRoundtripVoiceConfig()` which skips these overrides.
  */
 
 import {

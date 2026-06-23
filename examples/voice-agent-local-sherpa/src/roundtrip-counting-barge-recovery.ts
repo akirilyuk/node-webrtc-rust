@@ -22,7 +22,7 @@ import {
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { streamSilence } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import {
   AgentSpeakingEndLatch,
   countNumberWordsInTranscript,
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
   const recoveryPhrase = process.env.SHERPA_BARGE_RECOVERY_PHRASE?.trim() || DEFAULT_RECOVERY_PHRASE
   const bargePhrase = process.env.SHERPA_BARGE_RECOVERY_BARGE_PHRASE?.trim() || DEFAULT_BARGE_PHRASE
 
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
   const minNumberWords = Number(
     process.env.SHERPA_COUNTING_MIN_NUMBER_WORDS ?? DEFAULT_MIN_NUMBER_WORDS,

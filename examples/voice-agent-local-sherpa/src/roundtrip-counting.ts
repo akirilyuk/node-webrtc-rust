@@ -34,7 +34,7 @@ import {
 } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import { streamSilence } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import { evaluateNormalUtteranceLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
 /** Default long utterance: spoken digits one through twenty (no commas — natural counting). */
@@ -249,8 +249,12 @@ export async function playSpeakerTtsWithPostSilence(params: {
     capMs: playbackTimeoutMs,
     waitForAgentSpeakingEnd: waitEnd,
   })
-  console.log(`[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s`)
-  await streamSilence(params.speakerOut, params.postTtsSilenceS)
+  // Roundtrip speaker agents use postUtteranceSilenceMs: 0 (see resolveRoundtripVoiceConfig).
+  // Harness streams one real-time trailing silence window for listener STT finalize.
+  if (params.postTtsSilenceS > 0) {
+    console.log(`[speaker] post-TTS silence ${params.postTtsSilenceS.toFixed(1)}s on speakerOut`)
+    await streamSilence(params.speakerOut, params.postTtsSilenceS)
+  }
 }
 
 export interface UtteranceEventStats {
@@ -690,6 +694,12 @@ export class ListenerUtteranceCollector {
     reject: (error: Error) => void
     timer: ReturnType<typeof setTimeout>
   }> = []
+  /** Ignore premature finals until speaker playback + post-TTS silence complete. */
+  private deferFinalUntilPlaybackDone = false
+  private playbackFinished = false
+  private bestDeferredTranscript = ''
+  /** Final observed while speaker playback was still running (not counted in stats until accepted). */
+  private deferredFinalText = ''
 
   constructor(
     private readonly listener: VoiceAgent,
@@ -820,6 +830,76 @@ export class ListenerUtteranceCollector {
     })
   }
 
+  private pickLongerTranscript(a: string, b: string): string {
+    const left = a.trim()
+    const right = b.trim()
+    if (right.length > left.length) return right
+    return left
+  }
+
+  private noteDeferredTranscript(text: string): void {
+    this.bestDeferredTranscript = this.pickLongerTranscript(
+      this.bestDeferredTranscript,
+      text.trim(),
+    )
+  }
+
+  /** Stats skip deferred close events — backfill once we accept a transcript. */
+  private recordAcceptedUtteranceStats(text: string): void {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    if (this.stats.finals.length === 0) {
+      this.stats.finals.push(trimmed)
+      if (this.stats.speechFinalAtMs == null) {
+        this.stats.speechFinalAtMs = Date.now()
+      }
+    }
+    if (this.stats.speakingEndCount === 0) {
+      this.stats.speakingEndCount = 1
+      if (this.stats.speakingEndAtMs == null) {
+        this.stats.speakingEndAtMs = Date.now()
+      }
+    }
+  }
+
+  private shouldDeferSpeechClose(event: SpeechEvent): boolean {
+    if (!this.deferFinalUntilPlaybackDone || this.playbackFinished) {
+      return false
+    }
+    return event.type === 'user_speech_final' || event.type === 'user_speaking_end'
+  }
+
+  private onPlaybackFinished(): void {
+    this.playbackFinished = true
+    this.deferFinalUntilPlaybackDone = false
+    if (this.settled) return
+
+    const deferredFinal = this.deferredFinalText.trim()
+    if (deferredFinal) {
+      this.recordAcceptedUtteranceStats(deferredFinal)
+      this.finish(deferredFinal, 'final after playback (deferred during TTS)')
+      return
+    }
+
+    const latestFinal = this.stats.finals[this.stats.finals.length - 1]?.trim()
+    if (latestFinal) {
+      this.recordAcceptedUtteranceStats(latestFinal)
+      this.finish(
+        this.pickLongerTranscript(latestFinal, this.bestDeferredTranscript),
+        'final after playback',
+      )
+      return
+    }
+
+    const candidate = this.pickLongerTranscript(this.bestDeferredTranscript, this.lastPartial)
+    if (candidate) {
+      this.schedulePartialFallback()
+      return
+    }
+
+    this.schedulePartialFallback()
+  }
+
   private resolveBaselineWaiters(
     waiters: Array<{ baseline: number; resolve: () => void }>,
     count: number,
@@ -834,6 +914,13 @@ export class ListenerUtteranceCollector {
   }
 
   private recordEvent(event: SpeechEvent): void {
+    if (this.shouldDeferSpeechClose(event)) {
+      if (event.type === 'user_speech_partial' && event.text?.trim()) {
+        this.stats.partialCount += 1
+      }
+      return
+    }
+
     switch (event.type as SpeechEventType) {
       case 'user_speech_final': {
         this.stats.finals.push((event.text ?? '').trim())
@@ -896,11 +983,23 @@ export class ListenerUtteranceCollector {
 
         if (event.type === 'user_speech_partial' && event.text?.trim()) {
           this.lastPartial = event.text.trim()
+          if (this.deferFinalUntilPlaybackDone && !this.playbackFinished) {
+            this.noteDeferredTranscript(this.lastPartial)
+          }
         }
         if (event.type === 'user_speech_final') {
+          if (this.deferFinalUntilPlaybackDone && !this.playbackFinished) {
+            const text = (event.text ?? this.lastPartial).trim()
+            this.deferredFinalText = this.pickLongerTranscript(this.deferredFinalText, text)
+            this.noteDeferredTranscript(text)
+            continue
+          }
           this.finish(event.text ?? this.lastPartial, 'final')
         }
         if (event.type === 'user_speaking_end') {
+          if (this.deferFinalUntilPlaybackDone && !this.playbackFinished) {
+            continue
+          }
           this.schedulePartialFallback()
         }
       }
@@ -912,15 +1011,50 @@ export class ListenerUtteranceCollector {
   }
 
   waitForNext(timeoutMs: number, finalizeWaitMs: number): Promise<string> {
+    return this.beginTranscriptWait(timeoutMs, finalizeWaitMs, null)
+  }
+
+  /**
+   * Like `waitForNext`, but ignores `user_speech_final` / `user_speaking_end` until `playbackPromise`
+   * settles (TTS drain + harness post-TTS silence). Long TTS can trigger a prefix final mid-playback on
+   * slow CI; deferring avoids accepting a truncated transcript.
+   */
+  waitForNextAfterPlayback(
+    playbackPromise: Promise<unknown>,
+    timeoutMs: number,
+    finalizeWaitMs: number,
+  ): Promise<string> {
+    return this.beginTranscriptWait(timeoutMs, finalizeWaitMs, playbackPromise)
+  }
+
+  private beginTranscriptWait(
+    timeoutMs: number,
+    finalizeWaitMs: number,
+    playbackPromise: Promise<unknown> | null,
+  ): Promise<string> {
     if (!this.settled) {
       return Promise.reject(new Error('Previous transcript wait still active'))
     }
     this.resetStatsForUtterance()
     this.settled = false
     this.lastPartial = ''
+    this.bestDeferredTranscript = ''
+    this.deferredFinalText = ''
+    this.deferFinalUntilPlaybackDone = playbackPromise != null
+    this.playbackFinished = playbackPromise == null
     this.finalizeWaitMs = finalizeWaitMs
     if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
     if (this.progressTimer) clearInterval(this.progressTimer)
+
+    if (playbackPromise) {
+      void playbackPromise
+        .then(() => {
+          this.onPlaybackFinished()
+        })
+        .catch((error: unknown) => {
+          this.fail(error instanceof Error ? error : new Error(String(error)))
+        })
+    }
 
     const waitStartedAt = Date.now()
     this.progressTimer = setInterval(() => {
@@ -938,9 +1072,9 @@ export class ListenerUtteranceCollector {
       this.resolve = resolve
       this.reject = reject
       this.overallTimer = setTimeout(() => {
-        const fallback = this.lastPartial.trim()
+        const fallback = this.pickLongerTranscript(this.bestDeferredTranscript, this.lastPartial)
         if (fallback) {
-          this.finish(fallback, 'timeout — using last partial')
+          this.finish(fallback, 'timeout — using best partial')
           return
         }
         console.error(
@@ -954,7 +1088,7 @@ export class ListenerUtteranceCollector {
   private schedulePartialFallback(): void {
     if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
     this.postSpeechTimer = setTimeout(() => {
-      const fallback = this.lastPartial.trim()
+      const fallback = this.pickLongerTranscript(this.bestDeferredTranscript, this.lastPartial)
       if (!fallback || this.settled) return
       this.finish(fallback, `post-speech fallback after ${this.finalizeWaitMs} ms (no final yet)`)
     }, this.finalizeWaitMs)
@@ -966,10 +1100,14 @@ export class ListenerUtteranceCollector {
     if (this.overallTimer) clearTimeout(this.overallTimer)
     if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
     if (this.progressTimer) clearInterval(this.progressTimer)
-    if (reason !== 'final' && this.verbose) {
-      console.log(`[listener] [STT] ${reason}: "${text.trim()}"`)
+    const trimmed = text.trim()
+    if (!reason.startsWith('final')) {
+      this.recordAcceptedUtteranceStats(trimmed)
     }
-    this.resolve?.(text.trim())
+    if (reason !== 'final' && this.verbose) {
+      console.log(`[listener] [STT] ${reason}: "${trimmed}"`)
+    }
+    this.resolve?.(trimmed)
     this.resolve = null
     this.reject = null
   }
@@ -987,7 +1125,7 @@ export class ListenerUtteranceCollector {
 }
 
 async function main(): Promise<void> {
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   installRoundtripWallClockTimeout(roundtripWallClockMs(config, 'long'))
   const phrase = process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
@@ -1043,8 +1181,7 @@ async function main(): Promise<void> {
 
   console.log('[speaker] Synthesizing long counting phrase…')
   collector.startEventRecording()
-  const recognizedPromise = collector.waitForNext(timeoutMs, finalizeWaitMs)
-  await playSpeakerTtsWithPostSilence({
+  const playbackPromise = playSpeakerTtsWithPostSilence({
     speaker,
     speakerOut: agentOut,
     phrase,
@@ -1052,6 +1189,12 @@ async function main(): Promise<void> {
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
     agentSpeakingEndLatch: agentEndLatch,
   })
+  const recognizedPromise = collector.waitForNextAfterPlayback(
+    playbackPromise,
+    timeoutMs,
+    finalizeWaitMs,
+  )
+  await playbackPromise
   const recognized = await recognizedPromise
   const lifecycleEvents = collector.stopEventRecording()
 

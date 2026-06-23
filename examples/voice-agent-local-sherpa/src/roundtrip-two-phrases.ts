@@ -17,7 +17,7 @@ import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import { streamSilence } from './pcm-relay.js'
-import { resolveVoiceConfig } from './resolve-voice-config.js'
+import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import {
   DEFAULT_COUNTING_PHRASE_ONE_TO_TEN,
   DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS,
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
     process.env.SHERPA_MAX_SPEAKING_END_TO_FINAL_MS ?? DEFAULT_MAX_SPEAKING_END_TO_FINAL_MS,
   )
 
-  const { config, label, sttModelPath, ttsModelPath } = resolveVoiceConfig()
+  const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
   const finalizeWaitMs = sttFinalizeWaitMs(config)
   const postTtsSilenceS = postTtsSilenceSeconds(config)

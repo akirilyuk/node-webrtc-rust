@@ -158,6 +158,7 @@ async function main(): Promise<void> {
     voiceConfig,
     voiceHandler: echoVoiceHandler,
     rejoinGraceMs,
+    log: (message) => console.log(`[echo-pod] ${message.replace(/^\[pod\] /, '')}`),
     onSessionChange: ({ sessionId, action, activeSessions }) => {
       console.log(`[echo-pod] ${action} session=${sessionId} activeSessions=${activeSessions}`)
     },

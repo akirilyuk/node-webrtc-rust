@@ -230,6 +230,7 @@ pub struct JsTtsConfig {
     pub model_path: Option<String>,
     pub voice: Option<String>,
     pub api_key: Option<String>,
+    pub post_utterance_silence_ms: Option<u32>,
 }
 
 impl From<JsTtsConfig> for TtsConfig {
@@ -251,15 +252,20 @@ pub struct JsVoiceAgentConfig {
     pub events: Option<JsEventsConfig>,
     pub stt: Option<JsSttConfig>,
     pub tts: Option<JsTtsConfig>,
+    pub post_utterance_silence_ms: Option<u32>,
 }
 
 impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
     fn from(value: JsVoiceAgentConfig) -> Self {
+        let post_utterance_silence_ms = value
+            .post_utterance_silence_ms
+            .or_else(|| value.tts.as_ref().and_then(|tts| tts.post_utterance_silence_ms));
         Self {
             vad: value.vad.map(Into::into).unwrap_or_default(),
             events: value.events.map(Into::into).unwrap_or_default(),
             stt: value.stt.map(Into::into),
             tts: value.tts.map(Into::into),
+            post_utterance_silence_ms,
         }
     }
 }

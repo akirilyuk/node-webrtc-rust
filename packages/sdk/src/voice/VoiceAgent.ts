@@ -32,6 +32,19 @@ import type {
 
 const MODULE = 'voice::VoiceAgent'
 
+/** Stereo 48 kHz 20 ms frame (3840 bytes) — matches native TTS drain. */
+const INBOUND_SILENCE_FRAME_BYTES = 3840
+const INBOUND_FRAME_MS = 20
+
+function isInboundStreamEndError(error: unknown): boolean {
+  const message = String(error)
+  return (
+    message.includes('DataChannel is not opened') ||
+    message.includes('ErrClosedPipe') ||
+    message.includes('closed pipe')
+  )
+}
+
 function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
   if (!vad) return undefined
   return {
@@ -82,6 +95,7 @@ function toJsTtsConfig(tts: TtsConfig): JsTtsConfig {
     modelPath: tts.modelPath,
     voice: tts.voice,
     apiKey: tts.apiKey,
+    postUtteranceSilenceMs: tts.postUtteranceSilenceMs,
   }
 }
 
@@ -121,11 +135,14 @@ function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
 
 function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
   if (!config) return undefined
+  const postUtteranceSilenceMs =
+    config.postUtteranceSilenceMs ?? config.tts?.postUtteranceSilenceMs
   return {
     vad: toJsVadConfig(config.vad),
     events: config.events?.mode ? { mode: eventModeToJs(config.events.mode) } : undefined,
     stt: config.stt ? toJsSttConfig(config.stt) : undefined,
     tts: config.tts ? toJsTtsConfig(config.tts) : undefined,
+    postUtteranceSilenceMs,
   }
 }
 
@@ -195,8 +212,13 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
  */
 export class VoiceAgent {
   private readonly native: JsVoiceAgent
+  private readonly eventsMode: EventDeliveryMode
   private inboundTrack?: RemoteAudioTrack
   private inboundLoop?: Promise<void>
+  private speechPullLoop?: Promise<void>
+  /** Buffered events for {@link speechEvents} when mode is `'both'` (single pull consumer). */
+  private readonly speechStreamQueue: SpeechEvent[] = []
+  private readonly speechStreamWaiters: Array<(event: SpeechEvent) => void> = []
   private running = false
   private readonly listeners = new Map<SpeechEventName, Set<SpeechEventListener>>()
 
@@ -205,12 +227,8 @@ export class VoiceAgent {
    */
   constructor(config?: VoiceAgentConfig) {
     debugFn(MODULE, 'constructor')
+    this.eventsMode = config?.events?.mode ?? 'both'
     this.native = new NativeVoiceAgent(toJsConfig(config))
-    this.native.setOnSpeechEvent((event) => {
-      if (!event) return
-      const mapped = fromJsSpeechEvent(event)
-      this.dispatch(mapped)
-    })
   }
 
   /**
@@ -230,6 +248,9 @@ export class VoiceAgent {
     this.running = true
     voiceDebugLog(MODULE, 'native start() complete — starting inbound PCM loop')
     this.startInboundLoop()
+    if (this.eventsMode === 'callback' || this.eventsMode === 'both') {
+      this.startSpeechEventPullLoop()
+    }
   }
 
   /** Stops STT and the inbound loop. */
@@ -291,6 +312,20 @@ export class VoiceAgent {
    * separate listener `VoiceAgent` in a two-peer setup.
    */
   async *speechEvents(): AsyncGenerator<SpeechEvent, void, undefined> {
+    if (this.eventsMode === 'callback') {
+      return
+    }
+    if (this.eventsMode === 'both') {
+      while (this.running) {
+        const event = await this.waitSpeechStreamEvent()
+        if (event) {
+          yield event
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+      }
+      return
+    }
     while (this.running) {
       const event = await this.native.pullSpeechEvent()
       if (event) {
@@ -312,27 +347,93 @@ export class VoiceAgent {
     this.listeners.get(event.type)?.forEach((fn) => fn(event))
   }
 
+  /**
+   * Native ThreadsafeFunction callbacks are unreliable under Node; pull from the
+   * broadcast channel and dispatch to `on()` listeners (and queue for `both` mode).
+   */
+  private startSpeechEventPullLoop(): void {
+    this.speechPullLoop = (async () => {
+      while (this.running) {
+        try {
+          const raw = await this.native.pullSpeechEvent()
+          if (!raw) {
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            continue
+          }
+          const event = fromJsSpeechEvent(raw)
+          this.dispatch(event)
+          if (this.eventsMode === 'both') {
+            this.enqueueSpeechStreamEvent(event)
+          }
+        } catch (error: unknown) {
+          if (isVoiceDebugEnabled()) {
+            voiceDebugLog(MODULE, `speech pull loop error: ${String(error)}`)
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+      }
+    })()
+  }
+
+  private enqueueSpeechStreamEvent(event: SpeechEvent): void {
+    const waiter = this.speechStreamWaiters.shift()
+    if (waiter) {
+      waiter(event)
+    } else {
+      this.speechStreamQueue.push(event)
+    }
+  }
+
+  private waitSpeechStreamEvent(): Promise<SpeechEvent | null> {
+    const queued = this.speechStreamQueue.shift()
+    if (queued) {
+      return Promise.resolve(queued)
+    }
+    if (!this.running) {
+      return Promise.resolve(null)
+    }
+    return new Promise((resolve) => {
+      this.speechStreamWaiters.push(resolve)
+    })
+  }
+
+  private async injectInboundSilenceTail(totalMs = 1500): Promise<void> {
+    const silent = Buffer.alloc(INBOUND_SILENCE_FRAME_BYTES)
+    const frameCount = Math.ceil(totalMs / INBOUND_FRAME_MS)
+    for (let i = 0; i < frameCount && this.running; i++) {
+      await this.native.processInboundPcm(silent, INBOUND_FRAME_MS)
+      await new Promise((resolve) => setTimeout(resolve, INBOUND_FRAME_MS))
+    }
+  }
+
   private startInboundLoop(): void {
     const track = this.inboundTrack
     if (!track) return
 
     this.inboundLoop = (async () => {
       let frameCount = 0
+      /** True after stream-end until the next successful readSample (multi-turn sessions). */
+      let awaitingNextRtpBurst = false
       while (this.running) {
         try {
           const pcm = await track.readSample()
+          awaitingNextRtpBurst = false
           frameCount += 1
           if (isVoiceDebugEnabled() && (frameCount === 1 || frameCount % 50 === 0)) {
-            voiceDebugLog(MODULE, `readSample frame=${frameCount} bytes=${pcm.length}`)
-          }
-          if (isVoiceDebugEnabled() && (frameCount === 1 || frameCount % 50 === 0)) {
-            voiceDebugLog(MODULE, `processInboundPcm begin frame=${frameCount}`)
+            voiceDebugLog(MODULE, `inbound pcm frame=${frameCount} bytes=${pcm.length}`)
           }
           await this.native.processInboundPcm(pcm, 20)
-          if (isVoiceDebugEnabled() && (frameCount === 1 || frameCount % 50 === 0)) {
-            voiceDebugLog(MODULE, `processInboundPcm done frame=${frameCount}`)
-          }
         } catch (error: unknown) {
+          if (isInboundStreamEndError(error)) {
+            voiceDebugLog(MODULE, 'inbound RTP stream ended (receiver stopped)')
+            if (this.running && !awaitingNextRtpBurst) {
+              awaitingNextRtpBurst = true
+              await this.injectInboundSilenceTail()
+            }
+            // Keep looping — server echo TTS on later turns resumes RTP on the same track.
+            await new Promise((resolve) => setTimeout(resolve, 50))
+            continue
+          }
           if (isVoiceDebugEnabled()) {
             voiceDebugLog(MODULE, `readSample/processInboundPcm error: ${String(error)}`)
           }

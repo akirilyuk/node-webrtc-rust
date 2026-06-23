@@ -10,6 +10,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.3] — 2026-06-23
+
+**Compare:** [`release/0.6.2…release/0.6.3`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.2...release/0.6.3)
+
+Helpers patch: retry `onPeerConnected` when voice-control DataChannel opens after `VoiceAgent` startup.
+
+### Fixed
+
+- **`VoiceAgentSessionHost`** — call `maybeNotifyPeerConnected` on voice-control `onopen` (same as data-only mode). Fixes missed echo-agent `speak("ready")` / `agent_speak` when `startAgentSession` completes before the control DC is open (staging load-staging / parallel connect).
+
+---
+
 ## [0.6.2] — 2026-06-23
 
 **Compare:** [`release/0.6.1…release/0.6.2`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.1...release/0.6.2)

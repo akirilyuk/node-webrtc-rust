@@ -10,7 +10,25 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.6.1] — 2026-06-22 (pending re-release)
+## [0.6.2] — 2026-06-23
+
+**Compare:** [`release/0.6.1…release/0.6.2`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.1...release/0.6.2)
+
+Stabilize inbound STT finalize across multi-turn voice sessions and agent TTS playback.
+
+### Added
+
+- **`postUtteranceSilenceMs`** — optional VAD config on `VoiceAgent` / native voice pipeline; extra trailing silence after end-of-turn before wall-clock finalize arms.
+
+### Fixed
+
+- **Inbound STT finalize timing** — phase-aware C2 finalize waits until gate hold drains and VAD is quiet; disarms on partials during active speech; stall-based finalize only after inbound PCM stops. Fixes dropped words during agent TTS (loopback counting) and broken multi-turn / inbound-echo sessions.
+- **Inbound PCM loop** — keep processing alive across RTP stream-end gaps so late audio is not lost before finalize.
+- **`SessionPod` idle teardown** — arm rejoin/idle grace once per last-peer disconnect instead of on every disconnect callback.
+
+---
+
+## [0.6.1] — 2026-06-22
 
 **Compare:** [`release/0.6.0…release/0.6.1`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.0...release/0.6.1)
 

@@ -698,6 +698,8 @@ export class ListenerUtteranceCollector {
   private deferFinalUntilPlaybackDone = false
   private playbackFinished = false
   private bestDeferredTranscript = ''
+  /** Final observed while speaker playback was still running (not counted in stats until accepted). */
+  private deferredFinalText = ''
 
   constructor(
     private readonly listener: VoiceAgent,
@@ -842,6 +844,24 @@ export class ListenerUtteranceCollector {
     )
   }
 
+  /** Stats skip deferred close events — backfill once we accept a transcript. */
+  private recordAcceptedUtteranceStats(text: string): void {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    if (this.stats.finals.length === 0) {
+      this.stats.finals.push(trimmed)
+      if (this.stats.speechFinalAtMs == null) {
+        this.stats.speechFinalAtMs = Date.now()
+      }
+    }
+    if (this.stats.speakingEndCount === 0) {
+      this.stats.speakingEndCount = 1
+      if (this.stats.speakingEndAtMs == null) {
+        this.stats.speakingEndAtMs = Date.now()
+      }
+    }
+  }
+
   private shouldDeferSpeechClose(event: SpeechEvent): boolean {
     if (!this.deferFinalUntilPlaybackDone || this.playbackFinished) {
       return false
@@ -854,8 +874,16 @@ export class ListenerUtteranceCollector {
     this.deferFinalUntilPlaybackDone = false
     if (this.settled) return
 
+    const deferredFinal = this.deferredFinalText.trim()
+    if (deferredFinal) {
+      this.recordAcceptedUtteranceStats(deferredFinal)
+      this.finish(deferredFinal, 'final after playback (deferred during TTS)')
+      return
+    }
+
     const latestFinal = this.stats.finals[this.stats.finals.length - 1]?.trim()
     if (latestFinal) {
+      this.recordAcceptedUtteranceStats(latestFinal)
       this.finish(
         this.pickLongerTranscript(latestFinal, this.bestDeferredTranscript),
         'final after playback',
@@ -961,7 +989,9 @@ export class ListenerUtteranceCollector {
         }
         if (event.type === 'user_speech_final') {
           if (this.deferFinalUntilPlaybackDone && !this.playbackFinished) {
-            this.noteDeferredTranscript(event.text ?? this.lastPartial)
+            const text = (event.text ?? this.lastPartial).trim()
+            this.deferredFinalText = this.pickLongerTranscript(this.deferredFinalText, text)
+            this.noteDeferredTranscript(text)
             continue
           }
           this.finish(event.text ?? this.lastPartial, 'final')
@@ -1009,6 +1039,7 @@ export class ListenerUtteranceCollector {
     this.settled = false
     this.lastPartial = ''
     this.bestDeferredTranscript = ''
+    this.deferredFinalText = ''
     this.deferFinalUntilPlaybackDone = playbackPromise != null
     this.playbackFinished = playbackPromise == null
     this.finalizeWaitMs = finalizeWaitMs
@@ -1069,10 +1100,14 @@ export class ListenerUtteranceCollector {
     if (this.overallTimer) clearTimeout(this.overallTimer)
     if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
     if (this.progressTimer) clearInterval(this.progressTimer)
-    if (reason !== 'final' && this.verbose) {
-      console.log(`[listener] [STT] ${reason}: "${text.trim()}"`)
+    const trimmed = text.trim()
+    if (!reason.startsWith('final')) {
+      this.recordAcceptedUtteranceStats(trimmed)
     }
-    this.resolve?.(text.trim())
+    if (reason !== 'final' && this.verbose) {
+      console.log(`[listener] [STT] ${reason}: "${trimmed}"`)
+    }
+    this.resolve?.(trimmed)
     this.resolve = null
     this.reject = null
   }

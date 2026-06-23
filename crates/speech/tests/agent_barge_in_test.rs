@@ -936,6 +936,79 @@ async fn c2_partial_stall_no_pcm_forces_user_speech_final() {
     agent.stop().await.unwrap();
 }
 
+#[tokio::test]
+async fn c2_does_not_force_during_active_vad_speech() {
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::new(PartialOnlyFactory));
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    // Long min silence — no SpeechEnd during continuous loud frames.
+    vad.min_silence_duration_ms = 5000;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 100;
+    vad.utterance_finalize_timeout_ms = 200;
+    vad.barge_in.enabled = false;
+
+    let config = VoiceAgentConfig {
+        stt: Some(node_webrtc_rust_speech::SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: None,
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut events = agent.subscribe_events();
+    let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent
+        .attach(Arc::new(|| Ok(None)), writer)
+        .await
+        .unwrap();
+    agent.start().await.unwrap();
+
+    let loud = loud_stereo_frame();
+    for _ in 0..6 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+    for _ in 0..25 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+
+    let mut saw_partial = false;
+    let mut saw_final = false;
+    while let Ok(event) = events.try_recv() {
+        match event.kind {
+            SpeechEventKind::UserSpeechPartial => saw_partial = true,
+            SpeechEventKind::UserSpeechFinal => saw_final = true,
+            _ => {}
+        }
+    }
+    assert!(saw_partial, "expected partial during active speech");
+    assert!(
+        !saw_final,
+        "C2 must not force user_speech_final while VAD still sees speech"
+    );
+
+    agent.stop().await.unwrap();
+}
+
 async fn run_gated_utterance(agent: &VoiceAgent, loud: &[u8], silent: &[u8]) {
     for _ in 0..6 {
         agent

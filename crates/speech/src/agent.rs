@@ -89,6 +89,8 @@ struct AgentInner {
     utterance_finalize_deadline_ms: u32,
     /// Wall-clock anchor for C2 when inbound PCM stops (see `c2_wall_clock_ticker`).
     utterance_finalize_armed_at: Option<Instant>,
+    /// Last inbound frame wall time (real PCM received, including gate-closed skips).
+    last_inbound_pcm_at: Option<Instant>,
     /// Start C2 only after gate hold drains when `SpeechEnd` preceded partials.
     defer_utterance_finalize_until_hold: bool,
     /// Last partial text for C2 forced final fallback.
@@ -180,6 +182,7 @@ impl VoiceAgent {
                 stt_listen_deadline_ms: 0,
                 utterance_finalize_deadline_ms: 0,
                 utterance_finalize_armed_at: None,
+                last_inbound_pcm_at: None,
                 defer_utterance_finalize_until_hold: false,
                 last_partial_text: None,
                 partials_emitted_this_utterance: false,
@@ -208,16 +211,49 @@ impl VoiceAgent {
         inner.defer_utterance_finalize_until_hold = false;
     }
 
+    fn vad_is_speaking(inner: &AgentInner) -> bool {
+        inner
+            .vad
+            .as_ref()
+            .map(VadEngine::is_speaking)
+            .unwrap_or(false)
+    }
+
+    /// C2 applies only after the user turn has ended: hold drained and VAD not in speech.
+    fn c2_end_of_turn_ready(inner: &AgentInner) -> bool {
+        if !inner.partials_emitted_this_utterance || inner.stt_final_emitted_this_utterance {
+            return false;
+        }
+        if inner.defer_utterance_finalize_until_hold || inner.stt_gate_hold_ms > 0 {
+            return false;
+        }
+        !Self::vad_is_speaking(inner)
+    }
+
+    fn disarm_utterance_finalize_timer(inner: &mut AgentInner) {
+        inner.utterance_finalize_deadline_ms = 0;
+        inner.utterance_finalize_armed_at = None;
+    }
+
     fn arm_utterance_finalize_timer(inner: &mut AgentInner) {
-        if inner.partials_emitted_this_utterance && !inner.stt_final_emitted_this_utterance {
-            inner.utterance_finalize_deadline_ms =
-                inner.config.vad.utterance_finalize_timeout_ms;
-            inner.utterance_finalize_armed_at = Some(Instant::now());
-            inner.defer_utterance_finalize_until_hold = false;
-            voice_debug(format!(
-                "utterance finalize timer: {} ms",
-                inner.utterance_finalize_deadline_ms
-            ));
+        if !Self::c2_end_of_turn_ready(inner) {
+            Self::disarm_utterance_finalize_timer(inner);
+            return;
+        }
+        inner.utterance_finalize_deadline_ms =
+            inner.config.vad.utterance_finalize_timeout_ms;
+        inner.utterance_finalize_armed_at = Some(Instant::now());
+        voice_debug(format!(
+            "utterance finalize timer: {} ms (end-of-turn)",
+            inner.utterance_finalize_deadline_ms
+        ));
+    }
+
+    fn refresh_utterance_finalize_after_partial(inner: &mut AgentInner) {
+        if Self::c2_end_of_turn_ready(inner) {
+            Self::arm_utterance_finalize_timer(inner);
+        } else {
+            Self::disarm_utterance_finalize_timer(inner);
         }
     }
 
@@ -253,22 +289,31 @@ impl VoiceAgent {
     async fn c2_wall_clock_tick(&self) -> SpeechResult<()> {
         let should_force = {
             let inner = self.inner.lock().await;
-            if !inner.running
-                || inner.defer_utterance_finalize_until_hold
-                || inner.utterance_finalize_deadline_ms == 0
-            {
-                false
-            } else if let Some(armed_at) = inner.utterance_finalize_armed_at {
-                armed_at.elapsed()
-                    >= std::time::Duration::from_millis(
-                        inner.config.vad.utterance_finalize_timeout_ms as u64,
-                    )
-            } else {
-                false
+            if !inner.running || inner.utterance_finalize_deadline_ms == 0 {
+                return Ok(());
             }
+            if inner.defer_utterance_finalize_until_hold || inner.stt_gate_hold_ms > 0 {
+                return Ok(());
+            }
+            if Self::vad_is_speaking(&inner) {
+                return Ok(());
+            }
+            let Some(armed_at) = inner.utterance_finalize_armed_at else {
+                return Ok(());
+            };
+            let timeout_ms = inner.config.vad.utterance_finalize_timeout_ms as u64;
+            if armed_at.elapsed() < std::time::Duration::from_millis(timeout_ms) {
+                return Ok(());
+            }
+            // Safety net when RTP/inbound loop stops: only force if PCM actually stalled.
+            let pcm_stalled = inner
+                .last_inbound_pcm_at
+                .map(|t| t.elapsed() >= std::time::Duration::from_millis(timeout_ms))
+                .unwrap_or(true);
+            pcm_stalled
         };
         if should_force {
-            voice_debug("C2 wall-clock timeout (no inbound PCM)");
+            voice_debug("C2 wall-clock timeout (inbound PCM stalled after end-of-turn grace)");
             self.force_close_utterance().await?;
         }
         Ok(())
@@ -1022,6 +1067,11 @@ impl VoiceAgent {
             return Ok(());
         }
 
+        {
+            let mut inner = self.inner.lock().await;
+            inner.last_inbound_pcm_at = Some(Instant::now());
+        }
+
         let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
         let mono_bytes = i16_samples_to_bytes(&mono);
 
@@ -1119,6 +1169,8 @@ impl VoiceAgent {
                     } else {
                         inner.stt_gate_hold_ms = 0;
                         inner.stt_finalize_pending = false;
+                        inner.defer_utterance_finalize_until_hold = false;
+                        Self::disarm_utterance_finalize_timer(&mut inner);
                         voice_debug(
                             "STT gate hold cancelled: voice active again before hold expired",
                         );
@@ -1178,6 +1230,8 @@ impl VoiceAgent {
                 }
                 if inner.utterance_finalize_deadline_ms > 0
                     && !inner.defer_utterance_finalize_until_hold
+                    && !Self::vad_is_speaking(&inner)
+                    && inner.stt_gate_hold_ms == 0
                 {
                     inner.utterance_finalize_deadline_ms =
                         inner.utterance_finalize_deadline_ms.saturating_sub(duration_ms);
@@ -1229,6 +1283,8 @@ impl VoiceAgent {
                     inner.stt_gate_hold_ms = 0;
                     inner.stt_finalize_pending = false;
                     inner.stt_endpoint_closing_started = false;
+                    inner.defer_utterance_finalize_until_hold = false;
+                    Self::disarm_utterance_finalize_timer(&mut inner);
                 }
                 if gate_stt {
                     if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
@@ -1508,7 +1564,7 @@ impl VoiceAgent {
                         inner.partials_emitted_this_utterance = true;
                         inner.last_partial_text = Some(text.clone());
                         inner.stt_listen_deadline_ms = 0;
-                        Self::arm_utterance_finalize_timer(&mut inner);
+                        Self::refresh_utterance_finalize_after_partial(&mut inner);
                     }
                     self.emit_user_speaking_start_if_needed().await;
                     // Partial must precede barge_in in the event stream (semantic roundtrip E2E).

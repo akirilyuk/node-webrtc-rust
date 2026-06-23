@@ -141,7 +141,12 @@ function requireDirectory(path: string | undefined, envName: string, downloadHin
   return trimmed
 }
 
-export function resolveVoiceConfig(): ResolvedVoiceConfig {
+function resolveSherpaModelPaths(): {
+  sttModelPath: string
+  ttsModelPath: string
+  language: string
+  speaker: string
+} {
   const sttDownloadHint =
     'Run: npm run download-stt --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa'
   const ttsDownloadHint =
@@ -164,8 +169,24 @@ export function resolveVoiceConfig(): ResolvedVoiceConfig {
     inferLanguageFromPath(sttModelPath)
   const speaker = process.env.SHERPA_TTS_SPEAKER?.trim() || '0'
 
+  return { sttModelPath, ttsModelPath, language, speaker }
+}
+
+function buildLocalSherpaVoiceConfig(
+  sttModelPath: string,
+  ttsModelPath: string,
+  language: string,
+  speaker: string,
+): VoiceAgentConfig {
+  return applyVadEnvOverrides(
+    LOCAL_SHERPA_VOICE_CONFIG(sttModelPath, ttsModelPath, language, speaker),
+  )
+}
+
+export function resolveVoiceConfig(): ResolvedVoiceConfig {
+  const { sttModelPath, ttsModelPath, language, speaker } = resolveSherpaModelPaths()
   const config = applyVoiceDebugOverrides(
-    applyVadEnvOverrides(LOCAL_SHERPA_VOICE_CONFIG(sttModelPath, ttsModelPath, language, speaker)),
+    buildLocalSherpaVoiceConfig(sttModelPath, ttsModelPath, language, speaker),
   )
   logResolvedVoiceConfig('local-sherpa', config, {
     SHERPA_STT_MODEL_PATH: sttModelPath,
@@ -192,8 +213,27 @@ export function withRoundtripHarnessSilence(config: VoiceAgentConfig): VoiceAgen
   }
 }
 
-/** Sherpa roundtrip E2E scripts — agent post-TTS silence off; harness owns trailing PCM. */
+/**
+ * Sherpa roundtrip E2E scripts — agent post-TTS silence off; harness owns trailing PCM.
+ * Skips `applyVoiceDebugOverrides` so CI VOICE_DEBUG re-runs keep production VAD (1300 ms min silence).
+ */
 export function resolveRoundtripVoiceConfig(): ResolvedVoiceConfig {
-  const resolved = resolveVoiceConfig()
-  return { ...resolved, config: withRoundtripHarnessSilence(resolved.config) }
+  const { sttModelPath, ttsModelPath, language, speaker } = resolveSherpaModelPaths()
+  const config = withRoundtripHarnessSilence(
+    buildLocalSherpaVoiceConfig(sttModelPath, ttsModelPath, language, speaker),
+  )
+  logResolvedVoiceConfig('local-sherpa', config, {
+    SHERPA_STT_MODEL_PATH: sttModelPath,
+    SHERPA_TTS_MODEL_PATH: ttsModelPath,
+    SHERPA_STT_LANGUAGE: language,
+    SHERPA_TTS_SPEAKER: speaker,
+  })
+
+  return {
+    config,
+    label: `local Sherpa-ONNX (${language}, on-device STT + TTS)`,
+    sttModelPath,
+    ttsModelPath,
+    language,
+  }
 }

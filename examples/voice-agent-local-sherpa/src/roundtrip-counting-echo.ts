@@ -107,7 +107,10 @@ export function echoPayloadForCompare(text: string): string {
   const marker = 'you said'
   const idx = norm.indexOf(marker)
   if (idx === -1) return norm
-  return norm.slice(idx + marker.length).replace(/^[\s:]+/, '').trim()
+  return norm
+    .slice(idx + marker.length)
+    .replace(/^[\s:]+/, '')
+    .trim()
 }
 
 export function transcriptIncludesYouSaid(recognized: string): boolean {
@@ -305,11 +308,7 @@ export async function playTtsAndCollect(params: {
 }): Promise<string> {
   const preview = params.text.length > 100 ? `${params.text.slice(0, 100)}…` : params.text
   console.log(`[${params.logLabel}] TTS: "${preview}"`)
-  const recognizedPromise = params.listenerCollector.waitForNext(
-    params.timeoutMs,
-    params.finalizeWaitMs,
-  )
-  await playSpeakerTtsWithPostSilence({
+  const playbackPromise = playSpeakerTtsWithPostSilence({
     speaker: params.speaker,
     speakerOut: params.speakerOut,
     phrase: params.text,
@@ -317,15 +316,20 @@ export async function playTtsAndCollect(params: {
     playbackTimeoutMs: DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS,
     agentSpeakingEndLatch: params.agentSpeakingEndLatch,
   })
+  const recognizedPromise = params.listenerCollector.waitForNextAfterPlayback(
+    playbackPromise,
+    params.timeoutMs,
+    params.finalizeWaitMs,
+  )
+  await playbackPromise
   const recognized = await recognizedPromise
-  // Long echo TTS can trigger an early prefix final ("You said") then the full phrase — use the best transcript.
-  if (params.listenerCollector.stats.finals.length > 1) {
-    const best = params.listenerCollector.stats.finals.reduce((a, b) =>
-      a.trim().length >= b.trim().length ? a : b,
-    )
-    if (best.trim().length > recognized.trim().length) {
-      return best.trim()
-    }
+  // Long echo TTS can still emit a prefix final before playback ends — prefer longest transcript.
+  const best = params.listenerCollector.stats.finals.reduce(
+    (a, b) => (a.trim().length >= b.trim().length ? a : b),
+    recognized,
+  )
+  if (best.trim().length > recognized.trim().length) {
+    return best.trim()
   }
   return recognized
 }

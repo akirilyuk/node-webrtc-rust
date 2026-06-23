@@ -123,20 +123,25 @@ Coughs and pure tones during semantic barge often hit **C1** instead of `barge_i
 
 ### C2 — Partials but vendor final stalls
 
-After VAD `SpeechEnd` and/or the **last** `user_speech_partial`, **`utteranceFinalizeTimeoutMs`** (default 1500 ms) starts once **`sttGateHoldMs`** has drained when `gateStt` was holding the gate open (`defer_utterance_finalize_until_hold`). When the grace expires without a new partial or vendor final:
+C2 runs only in the **end-of-turn** phase: VAD is not in `SpeechStart`, **`sttGateHoldMs` has drained**, and the user turn has ended (`SpeechEnd` or equivalent). While the user is still speaking (VAD active or gate hold open), C2 is **disarmed** — a slow partial during a long phrase must not force `user_speech_final`.
+
+After hold drains (when `gateStt` deferred finalize on `SpeechEnd`), **`utteranceFinalizeTimeoutMs`** (default 1500 ms) arms. If the vendor final stalls:
 
 1. `stt_stream_end`
 2. `user_speaking_end` (if not already emitted)
 3. `user_stt_end`
 4. **`user_speech_final`** — vendor final if it arrived during finalize poll, else **last partial** text, else empty string
 
+A **wall-clock** safety net fires the same close when inbound PCM stops entirely (RTP ended) after C2 is armed — not when the gate is closed mid-phrase or PCM is still flowing on silence frames (PCM-clock path).
+
 **Invariant:** Any utterance with ≥1 `user_speech_partial` must eventually get `user_speaking_end` + `user_speech_final` (normal path or C2).
 
-| Timer                            | Role                                                                                                                |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **`sttGateHoldMs`**              | Keeps the STT **gate** open after internal VAD `SpeechEnd` for trailing phonemes / word gaps                        |
-| **`utteranceFinalizeTimeoutMs`** | After hold drains (or immediately if no hold), forces turn close so apps waiting on `user_speech_final` do not hang |
-| **`sttListenTimeoutMs`**         | After `vad_triggered` with no partial — C1 `user_stt_not_found`                                                     |
+| Timer                            | Role                                                                                                                                                        |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`sttGateHoldMs`**              | Keeps the STT **gate** open after internal VAD `SpeechEnd` for trailing phonemes / word gaps                                                                |
+| **`utteranceFinalizeTimeoutMs`** | After hold drains at end-of-turn, forces close if vendor final stalls; disarmed during active speech                                                        |
+| **`sttListenTimeoutMs`**         | After `vad_triggered` with no partial — C1 `user_stt_not_found`                                                                                             |
+| **`postUtteranceSilenceMs`**     | Agent streams trailing outbound silence after TTS (~`sttGateHoldMs + minSilenceDurationMs + 250`) so remote listeners see `SpeechEnd` without relying on C2 |
 
 Sherpa roundtrip harnesses assert these sequences — see [ROUNDTRIP.md § STT lifecycle evaluators](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md#stt-lifecycle-evaluators).
 

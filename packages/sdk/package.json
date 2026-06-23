@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/sdk",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Browser-compatible WebRTC and conference APIs for Node.js",
   "keywords": [
     "webrtc",

@@ -87,6 +87,14 @@ export class RTCDataChannel extends EventEmitter {
    */
   send(data: SendPayload): void {
     debugFn('sdk::RTCDataChannel', 'send', `label=${this.label}`)
+    if (this.readyState !== 'open') {
+      debugEvent(
+        'sdk::RTCDataChannel',
+        'send-dropped',
+        `label=${this.label}, state=${this.readyState}`,
+      )
+      return
+    }
     const byteLength = payloadByteLength(data)
     if (!this.native) {
       this.pendingSends.push(data)
@@ -156,12 +164,9 @@ export class RTCDataChannel extends EventEmitter {
     })
 
     native.setOnError((_err, message) => {
-      const event: RTCErrorEvent = {
-        type: 'error',
-        message: typeof message === 'string' ? message : String(_err ?? 'unknown error'),
-      }
-      this.onerror?.(event)
-      this.emit('error', event)
+      this.emitError(
+        typeof message === 'string' ? message : String(_err ?? 'unknown error'),
+      )
     })
 
     native.setOnBufferedAmountLow((_err) => {
@@ -182,7 +187,16 @@ export class RTCDataChannel extends EventEmitter {
   private emitError(error: unknown): void {
     const event = createErrorEvent(error)
     this.onerror?.(event)
-    this.emit('error', event)
+    // Node throws ERR_UNHANDLED_ERROR when 'error' is emitted with no listeners.
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', event)
+      return
+    }
+    debugEvent(
+      'sdk::RTCDataChannel',
+      'error',
+      `label=${this.label}, message=${event.message}`,
+    )
   }
 }
 

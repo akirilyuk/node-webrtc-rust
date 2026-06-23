@@ -19,6 +19,7 @@ Helpers patch: retry `onPeerConnected` when voice-control DataChannel opens afte
 ### Fixed
 
 - **`VoiceAgentSessionHost`** — call `maybeNotifyPeerConnected` on voice-control `onopen` (same as data-only mode). Fixes missed echo-agent `speak("ready")` / `agent_speak` when `startAgentSession` completes before the control DC is open (staging load-staging / parallel connect).
+- **`RTCDataChannel`** — drop sends when `readyState !== 'open'`; do not emit unhandled `error` when native send fails after peer disconnect (fixes runner crash `ERR_UNHANDLED_ERROR: data channel 'voice-control' is closed` during load churn).
 
 ---
 

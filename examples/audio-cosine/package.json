@@ -1,7 +1,7 @@
 {
   "name": "@node-webrtc-rust/example-audio-cosine",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Stream a generated cosine tone over a WebRTC audio track",
   "type": "module",
   "scripts": {
@@ -10,9 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@node-webrtc-rust/helpers": "0.6.1",
-    "@node-webrtc-rust/sdk": "0.6.1",
-    "@node-webrtc-rust/signaling": "0.6.1"
+    "@node-webrtc-rust/helpers": "0.6.2",
+    "@node-webrtc-rust/sdk": "0.6.2",
+    "@node-webrtc-rust/signaling": "0.6.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

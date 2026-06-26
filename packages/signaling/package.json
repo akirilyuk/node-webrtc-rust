@@ -46,6 +46,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@node-webrtc-rust/sdk": "0.6.3",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -60,7 +61,7 @@
   },
   "peerDependenciesMeta": {
     "@node-webrtc-rust/sdk": {
-      "optional": true
+      "optional": false
     }
   },
   "license": "MIT",

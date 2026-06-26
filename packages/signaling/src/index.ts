@@ -1,13 +1,22 @@
-/**
- * @packageDocumentation
- * WebSocket signaling helpers for node-webrtc-rust.
- *
- * Provides a minimal room-based SDP/ICE relay server, a client, and
- * {@link autoNegotiate} to wire {@link RTCPeerConnection} instances together.
- */
 export { SignalingServer } from './server'
 export { SignalingClient } from './client'
 export { autoNegotiate } from './auto-negotiate'
+export {
+  ConnectionError,
+  createConnectionError,
+  dispatchConnectionError,
+  formatConnectionErrorSource,
+  getRootConnectionErrorHandler,
+  reportConnectionError,
+  setRootConnectionErrorHandler,
+} from '@node-webrtc-rust/sdk'
+export type {
+  ConnectionErrorSource,
+  RootConnectionErrorHandler,
+  SessionErrorSource,
+  SignalingErrorSource,
+  WebRtcErrorSource,
+} from '@node-webrtc-rust/sdk'
 export type {
   SignalingServerOptions,
   SignalingClientOptions,

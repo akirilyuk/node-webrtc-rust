@@ -17,6 +17,22 @@ export { MediaStreamTrack } from './MediaStreamTrack'
 export { LocalAudioTrack } from './LocalAudioTrack'
 export { RemoteAudioTrack } from './RemoteAudioTrack'
 export { debugEvent, debugFn, isDebugEnabled, setDebugEnabled } from './debug'
+export {
+  ConnectionError,
+  createConnectionError,
+  dispatchConnectionError,
+  formatConnectionErrorSource,
+  getRootConnectionErrorHandler,
+  reportConnectionError,
+  setRootConnectionErrorHandler,
+} from './connection-errors'
+export type {
+  ConnectionErrorSource,
+  RootConnectionErrorHandler,
+  SessionErrorSource,
+  SignalingErrorSource,
+  WebRtcErrorSource,
+} from './connection-errors'
 export type {
   RTCConfiguration,
   RTCIceServer,

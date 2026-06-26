@@ -3,6 +3,10 @@ import { EventEmitter } from 'events'
 import type { JsRTCDataChannel as NativeDataChannel } from '@node-webrtc-rust/bindings'
 
 import { debugEvent, debugFn } from './debug'
+import {
+  createConnectionError,
+  dispatchConnectionError,
+} from './connection-errors'
 import type { MessageEvent, RTCDataChannelInit, RTCDataChannelState, RTCErrorEvent } from './types'
 
 type SendPayload = string | Buffer | ArrayBuffer | Uint8Array
@@ -74,9 +78,7 @@ export class RTCDataChannel extends EventEmitter {
         }
       })
       .catch((error: unknown) => {
-        const event = createErrorEvent(error)
-        channel.onerror?.(event)
-        channel.emit('error', event)
+        channel.emitChannelError(error)
       })
     return channel
   }
@@ -185,18 +187,23 @@ export class RTCDataChannel extends EventEmitter {
   }
 
   private emitError(error: unknown): void {
+    this.emitChannelError(error)
+  }
+
+  private emitChannelError(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error)
     const event = createErrorEvent(error)
-    this.onerror?.(event)
-    // Node throws ERR_UNHANDLED_ERROR when 'error' is emitted with no listeners.
-    if (this.listenerCount('error') > 0) {
-      this.emit('error', event)
-      return
-    }
-    debugEvent(
-      'sdk::RTCDataChannel',
-      'error',
-      `label=${this.label}, message=${event.message}`,
+    const tagged = createConnectionError(
+      message,
+      {
+        subsystem: 'webrtc',
+        kind: 'datachannel',
+        label: this.label,
+      },
+      error,
     )
+    this.onerror?.(event)
+    dispatchConnectionError(tagged, { emitter: this })
   }
 }
 

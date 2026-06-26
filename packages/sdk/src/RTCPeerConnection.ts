@@ -8,6 +8,11 @@ import {
 } from '@node-webrtc-rust/bindings'
 
 import { debugEvent, debugFn, setDebugEnabled } from './debug'
+import {
+  createConnectionError,
+  dispatchConnectionError,
+  type WebRtcErrorSource,
+} from './connection-errors'
 import { MediaStream } from './MediaStream'
 import { MediaStreamTrack } from './MediaStreamTrack'
 import type { LocalAudioTrack } from './LocalAudioTrack'
@@ -151,6 +156,12 @@ export class RTCPeerConnection extends EventEmitter {
 
     this.native.setOnConnectionStateChange((_err, state) => {
       debugEvent('sdk::RTCPeerConnection', 'connectionstatechange', String(state))
+      if (_err) {
+        this.reportWebRtcError('native connection state callback error', 'peer-connection', _err)
+      }
+      if (state === 'failed') {
+        this.reportWebRtcError('peer connection failed', 'peer-connection', _err)
+      }
       const event = new Event('connectionstatechange')
       this.onconnectionstatechange?.(event)
       this.emit('connectionstatechange', event)
@@ -158,6 +169,12 @@ export class RTCPeerConnection extends EventEmitter {
 
     this.native.setOnIceConnectionStateChange((_err, state) => {
       debugEvent('sdk::RTCPeerConnection', 'iceconnectionstatechange', String(state))
+      if (_err) {
+        this.reportWebRtcError('native ICE state callback error', 'ice', _err)
+      }
+      if (state === 'failed') {
+        this.reportWebRtcError('ICE connection failed', 'ice', _err)
+      }
       const event = new Event('iceconnectionstatechange')
       this.oniceconnectionstatechange?.(event)
       this.emit('iceconnectionstatechange', event)
@@ -366,12 +383,24 @@ export class RTCPeerConnection extends EventEmitter {
   close(): void {
     debugFn('sdk::RTCPeerConnection', 'close')
     void this.native.close().catch((error: unknown) => {
-      debugEvent(
-        'sdk::RTCPeerConnection',
-        'close-error',
-        `message=${error instanceof Error ? error.message : String(error)}`,
-      )
+      this.reportWebRtcError('peer connection close failed', 'disconnect', error)
     })
+  }
+
+  private reportWebRtcError(
+    message: string,
+    kind: WebRtcErrorSource['kind'],
+    cause?: unknown,
+  ): void {
+    const tagged = createConnectionError(
+      message,
+      {
+        subsystem: 'webrtc',
+        kind,
+      },
+      cause,
+    )
+    dispatchConnectionError(tagged, { emitter: this })
   }
 
   /** Last local description set or refreshed after gathering. */

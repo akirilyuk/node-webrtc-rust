@@ -10,6 +10,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.5] — 2026-06-26
+
+**Compare:** [`release/0.6.4…release/0.6.5`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.4...release/0.6.5)
+
+Align all publishable packages on `0.6.5` and ship root connection-error handling (`helpers@0.6.4` is already on npm).
+
+### Added
+
+- **`@node-webrtc-rust/sdk`** — `setRootConnectionErrorHandler`, `ConnectionError`, and `reportConnectionError` for voice/signaling/WebRTC failures (`source`: `signaling` | `session` | `webrtc`). `RTCPeerConnection` and `RTCDataChannel` bubble native errors to the root handler.
+- **`@node-webrtc-rust/signaling`** — `SignalingClient` dispatches WebSocket/transport errors through the SDK root handler; re-exports connection-error APIs.
+- **`docs/connection-errors.md`** — integration guide.
+
+### Changed
+
+- **All publishable packages** — version `0.6.5`; internal pins aligned so nested installs (e.g. via `@node-webrtc-rust/helpers`) resolve the same SDK/signaling build.
+
+---
+
 ## [0.6.4] — 2026-06-23
 
 **Compare:** [`release/0.6.3…release/0.6.4`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.3...release/0.6.4)

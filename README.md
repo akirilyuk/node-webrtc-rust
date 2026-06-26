@@ -26,6 +26,7 @@ Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate SFU
 - [Supported platforms](#supported-platforms)
 - [Development](#development)
 - [Debug logging](#debug-logging)
+- [Connection errors (root handler)](#connection-errors-root-handler)
 - [Releases](#releases)
 - [WebRTC API parity](#webrtc-api-parity)
 - [Roadmap](#roadmap)
@@ -477,6 +478,24 @@ const pc = new RTCPeerConnection({
 ```
 
 When `debug` is set on the config object, it overrides the `WEBRTC_DEBUG` environment variable for that process.
+
+---
+
+## Connection errors (root handler)
+
+Use a single process-wide handler for tagged errors from signaling, WebRTC, and (via
+`@voicethere/client`) session provisioning — without attaching `.on('error')` on every
+connection object.
+
+```typescript
+import { setRootConnectionErrorHandler } from '@node-webrtc-rust/sdk'
+
+setRootConnectionErrorHandler((error) => {
+  console.error(error.source.subsystem, error.source, error.message)
+})
+```
+
+Full guide: [`docs/connection-errors.md`](docs/connection-errors.md).
 
 ---
 

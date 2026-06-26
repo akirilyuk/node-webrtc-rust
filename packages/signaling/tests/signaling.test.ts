@@ -3,7 +3,13 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { RTCPeerConnection } from '../../sdk/src'
 import { waitForConnection, waitForOpen } from '../../sdk/tests/helpers'
 
-import { autoNegotiate, SignalingClient, SignalingServer } from '../src'
+import {
+  autoNegotiate,
+  ConnectionError,
+  setRootConnectionErrorHandler,
+  SignalingClient,
+  SignalingServer,
+} from '../src'
 
 const defaultIceConfig = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -37,6 +43,45 @@ describe('SignalingServer', () => {
     clientA.disconnect()
     clientB.disconnect()
     await server.close()
+  })
+})
+
+describe('SignalingClient', () => {
+  test('bubbles connect failures to the root handler as ConnectionError', async () => {
+    const server = new SignalingServer({ port: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const rootErrors: ConnectionError[] = []
+    setRootConnectionErrorHandler((error) => rootErrors.push(error))
+
+    const client = new SignalingClient({
+      url: `ws://localhost:${port}`,
+      room: 'error-after-connect',
+      peerId: 'a',
+    })
+    await client.connect()
+    client.disconnect()
+    await server.close()
+
+    const deadClient = new SignalingClient({
+      url: `ws://localhost:${port}`,
+      room: 'dead',
+      peerId: 'b',
+    })
+    await expect(deadClient.connect()).rejects.toThrow()
+
+    expect(rootErrors.length).toBeGreaterThan(0)
+    expect(
+      rootErrors.some(
+        (error) =>
+          ConnectionError.is(error) &&
+          error.source.subsystem === 'signaling' &&
+          error.source.phase === 'connect',
+      ),
+    ).toBe(true)
+
+    setRootConnectionErrorHandler(undefined)
   })
 })
 

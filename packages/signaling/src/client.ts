@@ -2,6 +2,10 @@ import { EventEmitter } from 'events'
 
 import WebSocket from 'ws'
 
+import {
+  createConnectionError,
+  dispatchConnectionError,
+} from '@node-webrtc-rust/sdk'
 import { debugEvent, debugFn } from './debug'
 import type {
   AnswerEvent,
@@ -32,6 +36,57 @@ export class SignalingClient extends EventEmitter {
     this.peerId = options.peerId ?? randomPeerId()
   }
 
+  private notifySocketError(error: Error, context: 'connect' | 'socket'): void {
+    debugEvent(
+      'signaling::SignalingClient',
+      'error',
+      `context=${context} message=${error.message}`,
+    )
+    const tagged = createConnectionError(
+      error.message,
+      {
+        subsystem: 'signaling',
+        room: this.room,
+        peerId: this.peerId,
+        phase: context,
+        url: this.url,
+      },
+      error,
+    )
+    dispatchConnectionError(tagged, { emitter: this })
+  }
+
+  private attachWebSocketHandlers(
+    ws: WebSocket,
+    connectHandlers?: {
+      onResolved?: () => void
+      onRejected?: (error: Error) => void
+    },
+  ): void {
+    let connectPending = connectHandlers != null
+
+    ws.once('open', () => {
+      connectPending = false
+      debugEvent('signaling::SignalingClient', 'connected')
+      this.send({ type: 'join', room: this.room, peerId: this.peerId })
+      this.emit('connected')
+      connectHandlers?.onResolved?.()
+    })
+    ws.on('error', (error) => {
+      const err = error instanceof Error ? error : new Error(String(error))
+      this.notifySocketError(err, connectPending ? 'connect' : 'socket')
+      if (connectPending) {
+        connectPending = false
+        connectHandlers?.onRejected?.(err)
+      }
+    })
+    ws.on('message', (raw) => this.handleMessage(raw.toString()))
+    ws.on('close', () => {
+      debugEvent('signaling::SignalingClient', 'disconnected')
+      this.emit('disconnected')
+    })
+  }
+
   /** Opens the WebSocket and sends a `join` message for {@link room}. */
   connect(): Promise<void> {
     debugFn('signaling::SignalingClient', 'connect', `url=${this.url}, room=${this.room}`)
@@ -39,22 +94,18 @@ export class SignalingClient extends EventEmitter {
       return Promise.resolve()
     }
 
+    if (this.ws) {
+      this.ws.removeAllListeners()
+      this.ws.close()
+      this.ws = null
+    }
+
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.url)
-      this.ws.once('open', () => {
-        debugEvent('signaling::SignalingClient', 'connected')
-        this.send({ type: 'join', room: this.room, peerId: this.peerId })
-        this.emit('connected')
-        resolve()
-      })
-      this.ws.once('error', (error) => {
-        this.emit('error', error)
-        reject(error)
-      })
-      this.ws.on('message', (raw) => this.handleMessage(raw.toString()))
-      this.ws.on('close', () => {
-        debugEvent('signaling::SignalingClient', 'disconnected')
-        this.emit('disconnected')
+      const ws = new WebSocket(this.url)
+      this.ws = ws
+      this.attachWebSocketHandlers(ws, {
+        onResolved: resolve,
+        onRejected: reject,
       })
     })
   }
@@ -62,8 +113,11 @@ export class SignalingClient extends EventEmitter {
   /** Closes the WebSocket connection. */
   disconnect(): void {
     debugFn('signaling::SignalingClient', 'disconnect')
-    this.ws?.close()
-    this.ws = null
+    if (this.ws) {
+      this.ws.removeAllListeners()
+      this.ws.close()
+      this.ws = null
+    }
   }
 
   /** Sends an SDP offer to a specific peer in the room. */

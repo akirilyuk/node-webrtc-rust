@@ -10,15 +10,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.6.4] — 2026-06-23
+## [0.6.4] — 2026-06-26
 
 **Compare:** [`release/0.6.3…release/0.6.4`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.3...release/0.6.4)
 
-Republish `@node-webrtc-rust/helpers` so npm installs `@node-webrtc-rust/sdk@0.6.3` (not 0.6.2). Staging runners that only bumped top-level `sdk` still crashed because `helpers@0.6.3` nested the pre-fix SDK.
+Unified release: align all publishable packages on `0.6.4`, republish `@node-webrtc-rust/helpers` with matching SDK/signaling pins, and ship root connection-error handling.
+
+### Added
+
+- **`@node-webrtc-rust/sdk`** — `setRootConnectionErrorHandler`, `ConnectionError`, and `reportConnectionError` for voice/signaling/WebRTC failures (`source`: `signaling` | `session` | `webrtc`). `RTCPeerConnection` and `RTCDataChannel` bubble native errors to the root handler.
+- **`@node-webrtc-rust/signaling`** — `SignalingClient` dispatches WebSocket/transport errors through the SDK root handler; re-exports connection-error APIs.
+- **`docs/connection-errors.md`** — integration guide.
 
 ### Fixed
 
-- **`@node-webrtc-rust/helpers`** — dependency `@node-webrtc-rust/sdk` `0.6.2` → `0.6.3` (includes closed DataChannel send fix).
+- **`@node-webrtc-rust/helpers`** — dependency pins `@node-webrtc-rust/sdk` / `@node-webrtc-rust/signaling` aligned to `0.6.4` (staging runners that only bumped top-level `sdk` still nested pre-fix SDK via helpers).
 
 ---
 

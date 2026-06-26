@@ -45,8 +45,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@node-webrtc-rust/sdk": "0.6.3",
-    "@node-webrtc-rust/signaling": "0.6.2"
+    "@node-webrtc-rust/sdk": "0.6.4",
+    "@node-webrtc-rust/signaling": "0.6.4"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

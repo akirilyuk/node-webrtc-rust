@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/bindings-darwin-x64",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "node-webrtc-rust native binding for macOS x64 (Intel)",
   "keywords": [
     "webrtc",

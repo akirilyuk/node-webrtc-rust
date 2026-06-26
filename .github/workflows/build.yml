@@ -267,10 +267,10 @@ jobs:
           cache_prefix: v1-pr-debug
           platform: 'false'
           zig: 'false'
-          # When compile-native runs, always rebuild — binding cache is for Test restore only.
-          skip_build_on_cache_hit: 'false'
+          skip_build_on_cache_hit: 'true'
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
           binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}
+          upload_artifact: 'true'
 
   build-ts:
     name: Build TypeScript
@@ -331,10 +331,6 @@ jobs:
           bash scripts/fix-rollup-native.sh
           bash scripts/ci/build-ts-workspace.sh
 
-  # Inline integration tests (not reusable-test.yml): workflow_call cannot download
-  # caller artifacts; compile-native runs in a container while Test runs on the
-  # self-hosted host — artifact handoff is unreliable. Test restores GHA cache and
-  # compiles in CI image when needed.
   test:
     name: Test
     needs: [changes, validate-package-lock, quality, compile-native, build-ts]
@@ -344,121 +340,15 @@ jobs:
       needs.validate-package-lock.result == 'success' &&
       needs.compile-native.result != 'failure' &&
       needs.build-ts.result != 'failure'
-    runs-on: self-hosted
-    env:
-      TURN_AVAILABLE: '1'
-      CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
-    steps:
-      - name: Resolve integration test gates
-        id: gate
-        run: |
-          if [ "${{ needs.changes.outputs.run_integration_test }}" = "true" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping integration tests — no source code changes in this PR."
-          fi
-          if [ "${{ needs.changes.outputs.run_compile_native }}" = "true" ] || [ "${{ needs.changes.outputs.needs_native_for_test }}" = "true" ]; then
-            echo "needs_native=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "needs_native=false" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "${{ needs.changes.outputs.needs_ts_for_test }}" = "true" ]; then
-            echo "needs_ts=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "needs_ts=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Require quality passed before integration tests
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && needs.quality.result != 'success'
-        run: |
-          echo "Typecheck & lint must pass before integration tests (quality=${{ needs.quality.result }})." >&2
-          exit 1
-
-      - name: Prepare workspace
-        if: steps.gate.outputs.skip != 'true'
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
-      - uses: actions/checkout@v4
-        if: steps.gate.outputs.skip != 'true'
-
-      - uses: ./.github/actions/native-binding-cache
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'
-        id: native-cache
-        with:
-          target: x86_64-unknown-linux-gnu
-          profile: debug
-
-      - name: Discard cached .node when Rust sources changed in PR
-        if: |
-          steps.gate.outputs.skip != 'true' &&
-          steps.gate.outputs.needs_native == 'true' &&
-          (needs.changes.outputs.native == 'true' || needs.changes.outputs.workflows_native == 'true')
-        run: |
-          shopt -s nullglob
-          files=(packages/bindings/*.node)
-          if [[ ${#files[@]} -gt 0 ]]; then
-            echo "::notice::Rust/native paths changed — removing restored .node so Test rebuilds against current sources."
-            rm -f packages/bindings/*.node
-          fi
-
-      - name: Build native binding in CI image when cache miss
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'
-        run: |
-          shopt -s nullglob
-          files=(packages/bindings/*.node)
-          if [[ ${#files[@]} -gt 0 ]]; then
-            echo "Native binding already present: $(basename "${files[0]}")"
-            exit 0
-          fi
-          echo "No cached .node — compiling in ${{ env.CI_IMAGE }}"
-          docker run --rm \
-            -v "${GITHUB_WORKSPACE}:/workspace" \
-            -w /workspace \
-            -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -e OPUS_STATIC=1 \
-            "${{ env.CI_IMAGE }}" \
-            bash -c '
-              set -euo pipefail
-              cd packages/bindings
-              npm ci --ignore-scripts
-              npx napi build --target x86_64-unknown-linux-gnu
-              npm run copy:local-node
-            '
-          files=(packages/bindings/*.node)
-          if [[ ${#files[@]} -eq 0 ]]; then
-            echo "Native build in CI image did not produce a .node file." >&2
-            exit 1
-          fi
-          echo "Built native binding: $(basename "${files[0]}")"
-
-      - name: Verify native binding in workspace
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'
-        run: |
-          shopt -s nullglob
-          files=(packages/bindings/*.node)
-          if [[ ${#files[@]} -eq 0 ]]; then
-            echo "No .node in packages/bindings after artifact/cache restore." >&2
-            exit 1
-          fi
-          echo "Native binding ready: $(basename "${files[0]}")"
-
-      - uses: ./.github/actions/ci-cache-ts-dist
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_ts == 'true'
-        id: ts-cache
-        with:
-          profile: pr
-
-      - uses: ./.github/actions/ci-run-integration-tests
-        if: steps.gate.outputs.skip != 'true'
-        with:
-          test_script: scripts/ci/run-pr-integration.sh
-          ci_image: ${{ env.CI_IMAGE }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          ts_dist_cache_hit: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      test_script: scripts/ci/run-pr-integration.sh
+      skip: ${{ needs.changes.outputs.run_integration_test != 'true' && 'true' || 'false' }}
+      quality_result: ${{ needs.quality.result }}
+      binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'bindings-x86_64-unknown-linux-gnu' || '' }}
+      binding_profile: debug
+      require_binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'true' || 'false' }}
+      needs_native_binding: ${{ (needs.changes.outputs.run_compile_native == 'true' || needs.changes.outputs.needs_native_for_test == 'true') && 'true' || 'false' }}
+      needs_ts_dist: ${{ needs.changes.outputs.needs_ts_for_test == 'true' && 'true' || 'false' }}
+      ts_dist_profile: pr
+    secrets: inherit

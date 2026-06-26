@@ -407,6 +407,9 @@ export class VoiceAgentSessionHost {
             }
           : undefined,
       })
+      // VoiceAgent may finish startAgentSession before the control DC opens; the first
+      // maybeNotifyPeerConnected then no-ops. Data-only mode already retries here.
+      this.maybeNotifyPeerConnected(peerId, session)
     }
 
     if (syncChannel) {

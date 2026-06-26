@@ -65,7 +65,7 @@ export interface SessionPodSessionInfo {
 }
 
 /** Default grace before tearing down an empty slot — same-session reconnect window. */
-export const DEFAULT_SESSION_REJOIN_GRACE_MS = 10_000
+export const DEFAULT_SESSION_REJOIN_GRACE_MS = 5_000
 
 interface SessionSlot {
   sessionId: string

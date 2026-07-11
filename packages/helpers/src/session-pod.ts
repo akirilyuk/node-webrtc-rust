@@ -22,6 +22,7 @@ import {
   type VoiceAgentSessionHostOptions,
 } from './voice-agent-session-host.js'
 import type { VoiceSessionHandler } from './voice-session-handler.js'
+import { SessionPodCapacityFullError } from './session-pod-errors.js'
 
 interface IceServerConfig {
   urls: string | string[]
@@ -71,17 +72,6 @@ export interface SessionPodSessionInfo {
 
 /** Default grace before tearing down an empty slot — same-session reconnect window. */
 export const DEFAULT_SESSION_REJOIN_GRACE_MS = 5_000
-
-export class SessionPodCapacityFullError extends Error {
-  readonly name = 'SessionPodCapacityFullError'
-
-  constructor(
-    readonly activeSlots: number,
-    readonly maxSlots: number,
-  ) {
-    super(`session pod capacity full (${activeSlots}/${maxSlots})`)
-  }
-}
 
 interface SessionSlot {
   sessionId: string

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { SessionPodCapacityFullError } from '../src/session-pod.js'
+import { SessionPodCapacityFullError } from '../src/session-pod-errors.js'
 
 describe('SessionPodCapacityFullError', () => {
   it('reports active and max slot counts', () => {

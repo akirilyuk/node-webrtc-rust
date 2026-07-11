@@ -19,11 +19,11 @@ export { type VoiceSessionContext, type VoiceSessionHandler, type DataChannelKin
 
 export {
   SessionPod,
-  SessionPodCapacityFullError,
   type SessionPodChangeEvent,
   type SessionPodOptions,
   type SessionPodSessionInfo,
 } from './session-pod.js'
+export { SessionPodCapacityFullError } from './session-pod-errors.js'
 
 export {
   VoiceSessionBudget,

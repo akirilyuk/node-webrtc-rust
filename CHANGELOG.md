@@ -10,6 +10,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.6] — 2026-07-11
+
+**Compare:** [`release/0.6.5…release/0.6.6`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.5...release/0.6.6)
+
+Cap prepared session slots in `SessionPod` so orchestrator prepare cannot exceed runner capacity.
+
+### Added
+
+- **`@node-webrtc-rust/helpers`** — `SessionPodOptions.maxPreparedSessions` and `SessionPodCapacityFullError` when `ensureSession` would exceed the cap (`0` = unlimited).
+
+---
+
 ## [0.6.5] — 2026-06-26
 
 **Compare:** [`release/0.6.4…release/0.6.5`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.4...release/0.6.5)

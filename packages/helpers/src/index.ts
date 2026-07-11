@@ -19,6 +19,7 @@ export { type VoiceSessionContext, type VoiceSessionHandler, type DataChannelKin
 
 export {
   SessionPod,
+  SessionPodCapacityFullError,
   type SessionPodChangeEvent,
   type SessionPodOptions,
   type SessionPodSessionInfo,

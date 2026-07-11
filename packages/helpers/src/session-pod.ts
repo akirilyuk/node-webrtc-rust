@@ -42,6 +42,11 @@ export interface SessionPodOptions {
   serverPeerId?: string
   /** Shared across all rooms in this pod (default: process env budget). */
   sessionBudget?: VoiceSessionBudget
+  /**
+   * Max prepared session slots (orchestrator `POST /api/sessions`).
+   * `0` means unlimited. Should match `VOICE_MAX_CONCURRENT_SESSIONS` on runners.
+   */
+  maxPreparedSessions?: number
   /** Per-tab STT/TTS logic (same handler instance for every room in this pod). */
   voiceHandler?: VoiceSessionHandler
   /** Optional binary sync data channel per WebRTC connection. */
@@ -66,6 +71,17 @@ export interface SessionPodSessionInfo {
 
 /** Default grace before tearing down an empty slot — same-session reconnect window. */
 export const DEFAULT_SESSION_REJOIN_GRACE_MS = 5_000
+
+export class SessionPodCapacityFullError extends Error {
+  readonly name = 'SessionPodCapacityFullError'
+
+  constructor(
+    readonly activeSlots: number,
+    readonly maxSlots: number,
+  ) {
+    super(`session pod capacity full (${activeSlots}/${maxSlots})`)
+  }
+}
 
 interface SessionSlot {
   sessionId: string
@@ -161,6 +177,11 @@ export class SessionPod {
 
   async ensureSession(sessionId: string): Promise<void> {
     if (this.slots.has(sessionId)) return
+
+    const maxPrepared = this.options.maxPreparedSessions ?? 0
+    if (maxPrepared > 0 && this.slots.size >= maxPrepared) {
+      throw new SessionPodCapacityFullError(this.slots.size, maxPrepared)
+    }
 
     const serverPeerId = this.options.serverPeerId ?? VOICE_AGENT_SERVER_PEER_ID
     const signaling = new SignalingClient({

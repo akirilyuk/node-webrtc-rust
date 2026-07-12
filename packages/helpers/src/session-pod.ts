@@ -173,6 +173,9 @@ export class SessionPod {
 
     const maxPrepared = this.options.maxPreparedSessions ?? 0
     if (maxPrepared > 0 && this.slots.size >= maxPrepared) {
+      this.log(
+        `[pod] session prepare rejected — slot capacity full (${this.slots.size}/${maxPrepared}) sessionId=${sessionId}; orchestrator should not assign here`,
+      )
       throw new SessionPodCapacityFullError(this.slots.size, maxPrepared)
     }
 

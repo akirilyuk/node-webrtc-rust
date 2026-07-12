@@ -229,6 +229,10 @@ export class VoiceAgentSessionHost {
   private async connectClient(peerId: string): Promise<void> {
     if (!this.sessionBudget.tryAcquire(peerId)) {
       const snap = this.sessionBudget.snapshot()
+      console.error(
+        '[voice-agent-session-host] session budget reject — peer was routed to this runner but process cap is full; check orchestrator assignment',
+        { peerId, budget: snap },
+      )
       this.log(
         `[voice ${peerId}] rejected — session budget full (${snap.active}/${snap.max}, rejectedTotal=${snap.rejectedTotal})`,
       )

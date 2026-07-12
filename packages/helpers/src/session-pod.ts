@@ -78,6 +78,9 @@ interface SessionSlot {
   signaling: SignalingClient
   host: VoiceAgentSessionHost
   pendingEndReason?: string
+  /** When false, a signaling `disconnected` event does not auto-rejoin (teardown). */
+  reconnectEnabled: boolean
+  reconnectInFlight: boolean
 }
 
 /**
@@ -170,6 +173,9 @@ export class SessionPod {
 
     const maxPrepared = this.options.maxPreparedSessions ?? 0
     if (maxPrepared > 0 && this.slots.size >= maxPrepared) {
+      this.log(
+        `[pod] session prepare rejected — slot capacity full (${this.slots.size}/${maxPrepared}) sessionId=${sessionId}; orchestrator should not assign here`,
+      )
       throw new SessionPodCapacityFullError(this.slots.size, maxPrepared)
     }
 
@@ -191,6 +197,14 @@ export class SessionPod {
       log: this.options.log,
     })
 
+    const slot: SessionSlot = {
+      sessionId,
+      signaling,
+      host,
+      reconnectEnabled: true,
+      reconnectInFlight: false,
+    }
+
     if (this.teardownIdle) {
       signaling.on('peer-joined', (peerId) => {
         if (!peerId.startsWith('client-')) return
@@ -198,7 +212,8 @@ export class SessionPod {
       })
     }
 
-    this.slots.set(sessionId, { sessionId, signaling, host })
+    this.bindAgentSignalingReconnect(slot)
+    this.slots.set(sessionId, slot)
     this.options.onSessionChange?.({
       sessionId,
       action: 'created',
@@ -215,6 +230,7 @@ export class SessionPod {
 
     const resolvedReason = endReason ?? slot.pendingEndReason
     slot.pendingEndReason = undefined
+    slot.reconnectEnabled = false
     this.cancelTeardownTimer(sessionId)
     await slot.host.close()
     slot.signaling.disconnect()
@@ -237,6 +253,39 @@ export class SessionPod {
       if (!slot || slot.host.activeClientCount > 0) return
       this.scheduleIdleTeardown(sessionId)
     }, 0)
+  }
+
+  private bindAgentSignalingReconnect(slot: SessionSlot): void {
+    slot.signaling.on('disconnected', () => {
+      if (!slot.reconnectEnabled) return
+      void this.reconnectAgentSignaling(slot)
+    })
+  }
+
+  private async reconnectAgentSignaling(slot: SessionSlot): Promise<void> {
+    if (!slot.reconnectEnabled || !this.slots.has(slot.sessionId)) return
+    if (slot.reconnectInFlight) return
+
+    slot.reconnectInFlight = true
+    try {
+      this.log(
+        `[pod] agent signaling disconnected — reconnecting session ${slot.sessionId}`,
+      )
+      await slot.signaling.connect()
+      this.log(`[pod] agent signaling rejoined session ${slot.sessionId}`)
+    } catch (error: unknown) {
+      console.error(
+        `Failed to reconnect agent signaling for ${slot.sessionId}:`,
+        error,
+      )
+      if (slot.reconnectEnabled && this.slots.has(slot.sessionId)) {
+        setTimeout(() => {
+          void this.reconnectAgentSignaling(slot)
+        }, 1_000)
+      }
+    } finally {
+      slot.reconnectInFlight = false
+    }
   }
 
   private wrapVoiceHandler(

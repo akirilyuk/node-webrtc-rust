@@ -121,6 +121,8 @@ export class VoiceAgentSessionHost {
   private readonly sessionMode: 'voice' | 'data-only'
   /** Per-peer WebRTC reconnect attempts after `connectionState=failed`. */
   private readonly reconnectAttempts = new Map<string, number>()
+  /** Peers that joined while the process session budget was full. */
+  private readonly pendingConnectPeers = new Set<string>()
 
   constructor(
     private readonly signaling: SignalingClient,
@@ -228,9 +230,10 @@ export class VoiceAgentSessionHost {
 
   private async connectClient(peerId: string): Promise<void> {
     if (!this.sessionBudget.tryAcquire(peerId)) {
+      this.pendingConnectPeers.add(peerId)
       const snap = this.sessionBudget.snapshot()
       this.log(
-        `[voice ${peerId}] rejected — session budget full (${snap.active}/${snap.max}, rejectedTotal=${snap.rejectedTotal})`,
+        `[voice ${peerId}] queued — session budget full (${snap.active}/${snap.max}, rejectedTotal=${snap.rejectedTotal})`,
       )
       return
     }
@@ -240,6 +243,21 @@ export class VoiceAgentSessionHost {
     } catch (error: unknown) {
       this.closeClient(peerId)
       throw error
+    }
+  }
+
+  private flushPendingConnectPeers(): void {
+    if (this.pendingConnectPeers.size === 0) return
+    for (const peerId of [...this.pendingConnectPeers]) {
+      const snap = this.sessionBudget.snapshot()
+      if (!this.sessionBudget.isUnlimited && snap.available <= 0) {
+        break
+      }
+      this.pendingConnectPeers.delete(peerId)
+      void this.connectClient(peerId).catch((error: unknown) => {
+        console.error(`Failed to connect queued client ${peerId}:`, error)
+        this.closeClient(peerId)
+      })
     }
   }
 
@@ -699,6 +717,8 @@ export class VoiceAgentSessionHost {
     const session = this.sessions.get(peerId)
     if (!session) {
       this.sessionBudget.release(peerId)
+      this.pendingConnectPeers.delete(peerId)
+      this.flushPendingConnectPeers()
       return
     }
     if (session.peerConnectedNotified) {
@@ -739,6 +759,8 @@ export class VoiceAgentSessionHost {
     session.pc.close()
     this.sessions.delete(peerId)
     this.sessionBudget.release(peerId)
+    this.pendingConnectPeers.delete(peerId)
+    this.flushPendingConnectPeers()
     const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
     this.log(`[${tag} ${peerId}] session stopped, connection closed`)
   }

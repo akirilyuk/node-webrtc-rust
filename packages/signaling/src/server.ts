@@ -148,19 +148,32 @@ export class SignalingServer extends EventEmitter {
             room = new Map()
             this.rooms.set(message.room, room)
           }
+          const peersBeforeJoin = room.size
           const existing = room.get(message.peerId)
           if (existing && existing.socket !== socket) {
             // Replace stale socket (tab refresh / reconnect with same peerId).
             existing.socket.close()
             room.delete(message.peerId)
           }
+          let peerJoinedNotifies = 0
           for (const other of room.values()) {
             if (other.id !== message.peerId) {
               send(other.socket, { type: 'peer-joined', peerId: message.peerId })
               send(socket, { type: 'peer-joined', peerId: other.id })
+              peerJoinedNotifies += 2
             }
           }
           room.set(message.peerId, peer)
+          if (message.peerId.startsWith('client-')) {
+            logSignalingRoom('join', {
+              room: message.room,
+              peerId: message.peerId,
+              peersBeforeJoin,
+              peersAfterJoin: room.size,
+              peerJoinedNotifies,
+              replacedStaleSocket: existing != null && existing.socket !== socket,
+            })
+          }
           break
         }
         case 'offer':
@@ -176,6 +189,9 @@ export class SignalingServer extends EventEmitter {
     socket.on('close', () => {
       if (!peer) return
       debugEvent('signaling::SignalingServer', 'disconnect', `peerId=${peer.id}`)
+      if (peer.id.startsWith('client-')) {
+        logSignalingRoom('disconnect', { room: peer.room, peerId: peer.id })
+      }
       const room = this.rooms.get(peer.room)
       room?.delete(peer.id)
       if (room && room.size === 0) {
@@ -235,4 +251,9 @@ function send(socket: WebSocket, message: SignalingMessage): void {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message))
   }
+}
+
+/** Always-on room events for Loki triage (join / disconnect). */
+function logSignalingRoom(event: string, detail: Record<string, unknown>): void {
+  console.log(`[signaling-room] ${event} ${JSON.stringify(detail)}`)
 }

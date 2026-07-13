@@ -135,6 +135,9 @@ export class VoiceAgentSessionHost {
     this.signaling.on('peer-joined', (peerId) => {
       if (peerId === VOICE_AGENT_SERVER_PEER_ID) return
       if (!peerId.startsWith(this.clientPeerIdPrefix)) return
+      this.log(
+        `[voice ${peerId}] peer-joined — connectClient starting (activeClients=${this.sessions.size}, mode=${this.sessionMode})`,
+      )
       // Same tab id can re-join after refresh without a clean peer-left (stale VoiceAgent/PC).
       if (this.sessions.has(peerId)) {
         this.log(`[voice ${peerId}] peer re-joined — replacing stale session`)
@@ -508,9 +511,7 @@ export class VoiceAgentSessionHost {
         const trimmed = text.trim()
         if (trimmed.length > 0 && controlChannel.readyState === 'open') {
           controlChannel.send(
-            JSON.stringify(
-              agentSpeakToControlMessage(trimmed, { ts: new Date().toISOString() }),
-            ),
+            JSON.stringify(agentSpeakToControlMessage(trimmed, { ts: new Date().toISOString() })),
           )
         }
         return agent.sendTextToTTS(text, options)

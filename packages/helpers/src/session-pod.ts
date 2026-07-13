@@ -88,6 +88,8 @@ interface SessionSlot {
  */
 export class SessionPod {
   private readonly slots = new Map<string, SessionSlot>()
+  /** Sessions mid-prepare (after capacity check, before slot is committed). */
+  private readonly preparingSessions = new Set<string>()
   private readonly teardownTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly teardownIdle: boolean
   private readonly rejoinGraceMs: number
@@ -170,15 +172,29 @@ export class SessionPod {
 
   async ensureSession(sessionId: string): Promise<void> {
     if (this.slots.has(sessionId)) return
+    if (this.preparingSessions.has(sessionId)) return
 
     const maxPrepared = this.options.maxPreparedSessions ?? 0
-    if (maxPrepared > 0 && this.slots.size >= maxPrepared) {
-      this.log(
-        `[pod] session prepare rejected — slot capacity full (${this.slots.size}/${maxPrepared}) sessionId=${sessionId}; orchestrator should not assign here`,
-      )
-      throw new SessionPodCapacityFullError(this.slots.size, maxPrepared)
-    }
+    this.preparingSessions.add(sessionId)
+    try {
+      if (maxPrepared > 0 && this.occupiedPrepareSlots() > maxPrepared) {
+        this.log(
+          `[pod] session prepare rejected — slot capacity full (${this.slots.size}/${maxPrepared}) sessionId=${sessionId}; orchestrator should not assign here`,
+        )
+        throw new SessionPodCapacityFullError(this.slots.size, maxPrepared)
+      }
 
+      await this.prepareSessionSlot(sessionId)
+    } finally {
+      this.preparingSessions.delete(sessionId)
+    }
+  }
+
+  private occupiedPrepareSlots(): number {
+    return this.slots.size + this.preparingSessions.size
+  }
+
+  private async prepareSessionSlot(sessionId: string): Promise<void> {
     const serverPeerId = this.options.serverPeerId ?? VOICE_AGENT_SERVER_PEER_ID
     const signaling = new SignalingClient({
       url: this.options.signalingUrl,

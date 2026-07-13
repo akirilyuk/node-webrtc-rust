@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/bindings-win32-x64-msvc",
-  "version": "0.6.6",
+  "version": "0.6.9",
   "description": "node-webrtc-rust native binding for Windows x64 (MSVC)",
   "keywords": [
     "webrtc",

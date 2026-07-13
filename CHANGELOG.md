@@ -10,6 +10,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.8] — 2026-07-13
+
+**Compare:** [`release/0.6.7…release/0.6.8`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.7...release/0.6.8)
+
+Reserve prepare slots synchronously before async signaling connect so concurrent runner prepares cannot exceed `maxPreparedSessions`.
+
+### Fixed
+
+- **`@node-webrtc-rust/helpers`** — `SessionPod.ensureSession` tracks in-flight prepares and rejects over-capacity before `await signaling.connect()`.
+
+---
+
 ## [0.6.6] — 2026-07-11
 
 **Compare:** [`release/0.6.5…release/0.6.6`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.5...release/0.6.6)

@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/signaling",
-  "version": "0.6.6",
+  "version": "0.6.9",
   "description": "TypeScript WebSocket signaling helpers for node-webrtc-rust",
   "keywords": [
     "webrtc",

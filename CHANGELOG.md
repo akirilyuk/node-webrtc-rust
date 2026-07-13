@@ -10,6 +10,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.9] — 2026-07-13
+
+### Added
+
+- **`@node-webrtc-rust/signaling`** — `[signaling-room] join|disconnect` logs for `client-*` peers (room peer counts) for Loki triage of join/WebRTC races.
+- **`@node-webrtc-rust/helpers`** — log when `peer-joined` starts `connectClient` before WebRTC negotiation.
+
+---
+
 ## [0.6.8] — 2026-07-13
 
 **Compare:** [`release/0.6.7…release/0.6.8`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.7...release/0.6.8)

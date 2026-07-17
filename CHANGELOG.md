@@ -10,6 +10,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.11] — 2026-07-17
+
+**Compare:** [`release/0.6.10…release/0.6.11`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.10...release/0.6.11) *(or `release/0.6.9…release/0.6.11` if 0.6.10 was helpers-only)*
+
+Optional OpenTelemetry for the voice pipeline (Cargo feature `otel`, default off) plus `VoiceSessionContext` / W3C `traceparent` on `VoiceAgent.start`.
+
+### Added
+
+- **`node-webrtc-rust-speech` / bindings** — Cargo feature `otel`: spans `voice.session`, `voice.vad`, `voice.stt`, `voice.tts`, `voice.gate_hold`, `voice.barge_in`; metrics `voice_stt_latency_ms`, `voice_tts_latency_ms`, `sherpa_pool_wait_ms`, `sherpa_pool_entries` (OTLP via standard `OTEL_*` env).
+- **`@node-webrtc-rust/sdk` / NAPI** — optional `VoiceSessionContext` (session/project/org/build ids + `traceparent`) on `VoiceAgent.start`.
+
+---
+
 ## [0.6.9] — 2026-07-13
 
 ### Added

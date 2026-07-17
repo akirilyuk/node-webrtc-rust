@@ -42,8 +42,9 @@ describe('SessionPod agent signaling reconnect', () => {
     await pod.ensureSession('session-a')
     expect(connectSpy).toHaveBeenCalledTimes(1)
 
-    const agentSignaling = (pod as SessionPodTestAccess).slots.get('session-a')
-      ?.signaling as SignalingClientTestAccess | undefined
+    const agentSignaling = (pod as SessionPodTestAccess).slots.get('session-a')?.signaling as
+      | SignalingClientTestAccess
+      | undefined
     expect(agentSignaling?.ws).toBeTruthy()
     agentSignaling!.ws!.close()
 

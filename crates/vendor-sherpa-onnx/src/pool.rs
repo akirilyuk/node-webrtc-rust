@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::otel;
 use sherpa_onnx::{OnlineRecognizer, OfflineTts};
 use tokio::sync::Semaphore;
 
@@ -113,6 +114,7 @@ impl SherpaModelPool {
         let recognizer = create_online_recognizer(config)?;
         let shared = Arc::new(SharedSttRecognizer::new(recognizer));
         map.insert(key, Arc::clone(&shared));
+        otel::set_sherpa_pool_entries((map.len() + self.tts.lock().expect("lock").len()) as i64);
         Ok(shared)
     }
 
@@ -131,6 +133,7 @@ impl SherpaModelPool {
             Arc::clone(&self.tts_semaphore),
         )?);
         map.insert(key, Arc::clone(&pool));
+        otel::set_sherpa_pool_entries((self.stt.lock().expect("lock").len() + map.len()) as i64);
         Ok(pool)
     }
 

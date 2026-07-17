@@ -11,6 +11,15 @@ default = ["energy-vad"]
 # Pin ort =2.0.0-rc.10 (matches silero-vad-rust); rc.12 breaks ndarray alignment.
 silero-vad = ["dep:silero-vad-rust", "dep:ort"]
 energy-vad = []
+# OpenTelemetry spans + metrics (off by default; enable for production runner builds).
+otel = [
+  "dep:tracing",
+  "dep:tracing-opentelemetry",
+  "dep:tracing-subscriber",
+  "dep:opentelemetry",
+  "dep:opentelemetry_sdk",
+  "dep:opentelemetry-otlp",
+]
 
 [dependencies]
 async-trait = "0.1"
@@ -19,6 +28,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { version = "0.1", optional = true }
+tracing-opentelemetry = { version = "0.29", optional = true }
+tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
+opentelemetry = { version = "0.28", optional = true }
+opentelemetry_sdk = { version = "0.28", optional = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.28", optional = true, features = ["grpc-tonic"] }
 silero-vad-rust = { version = "6.2.1", optional = true, default-features = false }
 ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["ndarray"] }
 

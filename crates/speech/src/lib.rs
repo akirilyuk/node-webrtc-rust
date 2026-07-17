@@ -47,6 +47,7 @@ pub mod agent;
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod otel;
 pub mod pcm;
 pub mod pipeline;
 pub mod registry;
@@ -58,7 +59,7 @@ pub use agent::{PcmReader, PcmWriter, VoiceAgent};
 pub use config::{
     resolved_post_utterance_silence_ms, BargeInConfig, EventDeliveryMode, EventsConfig,
     SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
-    VoiceAgentConfig,
+    VoiceAgentConfig, VoiceSessionContext,
 };
 pub use error::{SpeechError, SpeechResult};
 pub use events::{SpeechEvent, SpeechEventKind, SpeechEventBus};

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::otel;
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProvider};
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
@@ -100,8 +101,7 @@ impl TtsProvider for SherpaTts {
         let speed = self.speed;
         let text_len = trimmed.len();
         let tts_semaphore = self.pool.tts_semaphore();
-        let _permit = tts_semaphore
-            .acquire()
+        let _permit = otel::acquire_sherpa_permit(&tts_semaphore)
             .await
             .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
 

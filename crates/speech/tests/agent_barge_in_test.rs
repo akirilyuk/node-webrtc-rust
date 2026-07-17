@@ -124,7 +124,7 @@ async fn barge_in_during_tts_drain_truncates_outbound_pcm() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let long_text = "interrupt this mock playback please ".repeat(8);
     let expected_ms = mock_tts_duration_ms(&long_text);
@@ -216,7 +216,7 @@ async fn agent_playback_guard_suppresses_early_barge_in() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let long_text = "guard should protect this playback ".repeat(6);
     let expected_ms = mock_tts_duration_ms(&long_text);
@@ -293,7 +293,7 @@ async fn use_vad_false_skips_auto_barge_on_speech_start() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     for _ in 0..6 {
@@ -364,7 +364,7 @@ async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() 
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let long_text = "agent still speaking on outbound ".repeat(6);
     let loud = loud_stereo_frame();
@@ -514,7 +514,7 @@ async fn stt_partial_gated_barge_flushes_agent_tts_after_partial() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let long_text = "wait for stt partial before barge ".repeat(6);
     let expected_ms = mock_tts_duration_ms(&long_text);
@@ -607,7 +607,7 @@ async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let long_text = "tone should not barge without stt partial ".repeat(6);
     let expected_ms = mock_tts_duration_ms(&long_text);
@@ -687,7 +687,7 @@ async fn c1_no_partial_emits_user_stt_not_found() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = vec![0_u8; 3840];
@@ -815,7 +815,7 @@ async fn c2_partial_stall_forces_user_speech_final() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = vec![0_u8; 3840];
@@ -890,7 +890,7 @@ async fn c2_partial_stall_no_pcm_forces_user_speech_final() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = vec![0_u8; 3840];
@@ -973,7 +973,7 @@ async fn c2_does_not_force_during_active_vad_speech() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     for _ in 0..6 {
@@ -1066,7 +1066,7 @@ async fn second_turn_stt_finalizes_after_prior_utterance_final() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = vec![0_u8; 3840];
@@ -1138,7 +1138,7 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let long_text = "agent keeps talking ".repeat(6);
     let loud = loud_stereo_frame();
@@ -1239,7 +1239,7 @@ async fn barge_flush_during_slow_synthesis_discards_late_pcm() {
     });
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let long_text = "late synthesis must not replay after barge flush ".repeat(8);
     let expected_full_ms = mock_tts_duration_ms(&long_text);

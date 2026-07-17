@@ -10,6 +10,8 @@ description = "NAPI-RS bindings exposing WebRTC and mixing APIs to Node.js"
 default = []
 # Opt-in Silero VAD via ort load-dynamic — operators must install libonnxruntime locally (see VOICE-VAD-AND-BARGE-IN.md).
 silero-vad = ["node-webrtc-rust-speech/silero-vad"]
+# OpenTelemetry voice pipeline spans + metrics (see README observability section).
+otel = ["node-webrtc-rust-speech/otel"]
 
 [lib]
 crate-type = ["cdylib"]

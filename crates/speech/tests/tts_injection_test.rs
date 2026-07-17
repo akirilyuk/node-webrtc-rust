@@ -32,7 +32,7 @@ async fn tts_injection_writes_pcm_to_outbound() {
     });
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
     agent.send_text_to_tts("hello agent").await.unwrap();
     agent.wait_tts_playback_idle().await.unwrap();
     agent.stop().await.unwrap();
@@ -64,7 +64,7 @@ async fn tts_injection_emits_agent_speaking_events() {
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
     agent.send_text_to_tts("hi").await.unwrap();
     agent.wait_tts_playback_idle().await.unwrap();
 
@@ -142,7 +142,7 @@ async fn non_blocking_send_returns_before_slow_synthesis_finishes() {
     });
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let started = Instant::now();
     agent
@@ -188,7 +188,7 @@ async fn non_blocking_two_jobs_still_play_in_order() {
     });
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let opts = SendTextToTtsOptions {
         non_blocking: true,

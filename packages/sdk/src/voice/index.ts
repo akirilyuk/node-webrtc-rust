@@ -58,6 +58,7 @@ export type {
   VadSampleRate,
   VoiceAgentConfig,
   VoiceAttachOptions,
+  VoiceSessionContext,
 } from './types.js'
 
 /** Native binding version string. */

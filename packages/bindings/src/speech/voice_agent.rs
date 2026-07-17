@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, Mutex};
 use crate::media::JsLocalAudioTrack;
 use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
-use crate::speech::types::{speech_err, JsSpeechEvent, JsVoiceAgentConfig};
+use crate::speech::types::{speech_err, JsSpeechEvent, JsVoiceAgentConfig, JsVoiceSessionContext};
 
 fn voice_debug_enabled() -> bool {
     matches!(
@@ -82,8 +82,11 @@ impl JsVoiceAgent {
     }
 
     #[napi]
-    pub async fn start(&self) -> Result<()> {
-        self.inner.start().await.map_err(speech_err)
+    pub async fn start(&self, session_context: Option<JsVoiceSessionContext>) -> Result<()> {
+        self.inner
+            .start(session_context.map(Into::into))
+            .await
+            .map_err(speech_err)
     }
 
     #[napi]

@@ -298,6 +298,22 @@ pub struct VoiceAgentConfig {
     pub post_utterance_silence_ms: Option<u32>,
 }
 
+/// Session-scoped observability attributes and W3C trace propagation.
+///
+/// Passed to [`crate::VoiceAgent::start`] so voice spans join an upstream trace when
+/// `traceparent` is set (standard W3C `traceparent` header value).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceSessionContext {
+    pub session_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub project_id: Option<String>,
+    pub org_id: Option<String>,
+    pub build_id: Option<String>,
+    /// W3C `traceparent` header (e.g. `00-<trace-id>-<span-id>-01`).
+    pub traceparent: Option<String>,
+}
+
 /// Options for [`crate::VoiceAgent::send_text_to_tts_with_options`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -554,6 +554,34 @@ High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceiver
 
 ---
 
+## Observability (OpenTelemetry)
+
+Voice pipeline spans and metrics are available behind the Cargo feature **`otel`** on `node-webrtc-rust-speech` (and `node-webrtc-rust-bindings`). Default local builds leave it **off**; production agent runners should enable it when building the native module:
+
+```bash
+cd packages/bindings
+npm run build:debug:local -- --features otel
+# or: cargo build -p node-webrtc-rust-bindings --features otel
+```
+
+When enabled, `VoiceAgent::start` accepts optional session attributes (`session_id`, `trace_id`, `project_id`, `org_id`, `build_id`) and W3C **`traceparent`** so voice spans join an upstream trace.
+
+**Environment (standard OpenTelemetry):**
+
+| Variable | Purpose |
+| -------- | ------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC endpoint (e.g. `http://localhost:4317`) |
+| `OTEL_SERVICE_NAME` | Resource service name (default `node-webrtc-rust-voice`) |
+| `OTEL_SDK_DISABLED` | Set `true` to disable export while keeping the feature compiled |
+
+**Spans:** `voice.session`, `voice.vad`, `voice.stt`, `voice.tts`, `voice.gate_hold`, `voice.barge_in`
+
+**Metrics:** `voice_stt_latency_ms`, `voice_tts_latency_ms`, `sherpa_pool_wait_ms`, `sherpa_pool_entries` (histograms/gauge)
+
+Rust tests with OTel: `cargo test -p node-webrtc-rust-speech --features otel`
+
+---
+
 ## Roadmap
 
 Planned work (no version targets) lives in **[`ROADMAP.md`](ROADMAP.md)**. Summary:

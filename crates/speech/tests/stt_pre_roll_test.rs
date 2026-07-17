@@ -253,7 +253,7 @@ async fn gate_stt_pre_roll_ignores_leading_silence() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     for _ in 0..10 {
         agent
@@ -320,7 +320,7 @@ async fn gate_stt_hold_passes_trailing_speech_after_speech_end() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -392,7 +392,7 @@ async fn gate_stt_pending_gate_disabled_waits_for_speech_start() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let frame = loud_stereo_frame();
     agent
@@ -454,7 +454,7 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let frame = loud_stereo_frame();
     agent
@@ -518,7 +518,7 @@ async fn min_silence_default_300_requires_fifteen_silent_frames_to_end() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -577,7 +577,7 @@ async fn gate_stt_defers_user_speaking_end_until_hold_expires() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -653,7 +653,7 @@ async fn gate_stt_hold_cancelled_when_voice_returns_before_expiry() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -740,7 +740,7 @@ async fn gate_stt_hold_expiry_finalizes_on_same_frame_without_new_speech() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -810,7 +810,7 @@ async fn gate_stt_hold_skips_finalize_when_poll_already_emitted_final() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -878,7 +878,7 @@ async fn speaking_end_pairs_with_delayed_stt_final() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -963,7 +963,7 @@ async fn speech_start_completes_pending_utterance_before_new_speech() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -1056,7 +1056,7 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -1160,7 +1160,7 @@ async fn gate_stt_agent_tts_pre_roll_includes_pre_vad_lead_in() {
         .attach(Arc::new(|| Ok(None)), writer)
         .await
         .unwrap();
-    agent.start().await.unwrap();
+    agent.start(None).await.unwrap();
 
     let long_text = "agent keeps talking ".repeat(6);
     let loud = loud_stereo_frame();

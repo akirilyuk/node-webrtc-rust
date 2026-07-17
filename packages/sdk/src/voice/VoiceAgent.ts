@@ -11,6 +11,7 @@ import {
   type JsVadConfig,
   type JsVoiceAgent,
   type JsVoiceAgentConfig,
+  type JsVoiceSessionContext,
 } from '@node-webrtc-rust/bindings'
 
 import type { RemoteAudioTrack } from '../RemoteAudioTrack'
@@ -27,6 +28,7 @@ import type {
   VadConfig,
   VoiceAgentConfig,
   VoiceAttachOptions,
+  VoiceSessionContext,
   SendTextToTtsOptions,
 } from './types'
 
@@ -133,10 +135,21 @@ function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
   }
 }
 
+function toJsSessionContext(ctx?: VoiceSessionContext): JsVoiceSessionContext | undefined {
+  if (!ctx) return undefined
+  return {
+    sessionId: ctx.sessionId,
+    traceId: ctx.traceId,
+    projectId: ctx.projectId,
+    orgId: ctx.orgId,
+    buildId: ctx.buildId,
+    traceparent: ctx.traceparent,
+  }
+}
+
 function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
   if (!config) return undefined
-  const postUtteranceSilenceMs =
-    config.postUtteranceSilenceMs ?? config.tts?.postUtteranceSilenceMs
+  const postUtteranceSilenceMs = config.postUtteranceSilenceMs ?? config.tts?.postUtteranceSilenceMs
   return {
     vad: toJsVadConfig(config.vad),
     events: config.events?.mode ? { mode: eventModeToJs(config.events.mode) } : undefined,
@@ -242,9 +255,9 @@ export class VoiceAgent {
   }
 
   /** Starts STT, TTS drain, and the inbound PCM loop. Idempotent error if already running. */
-  async start(): Promise<void> {
+  async start(sessionContext?: VoiceSessionContext): Promise<void> {
     debugFn(MODULE, 'start')
-    await this.native.start()
+    await this.native.start(toJsSessionContext(sessionContext))
     this.running = true
     voiceDebugLog(MODULE, 'native start() complete — starting inbound PCM loop')
     this.startInboundLoop()

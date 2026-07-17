@@ -14,10 +14,11 @@ use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::config::{
     resolved_post_utterance_silence_ms, EventDeliveryMode, SendTextToTtsOptions, VadConfig,
-    VoiceAgentConfig,
+    VoiceAgentConfig, VoiceSessionContext,
 };
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
+use crate::otel;
 use crate::pcm::i16_samples_to_bytes;
 use crate::pipeline::{SttProvider, SttTranscript, TtsProvider};
 use crate::registry::VendorRegistry;
@@ -60,6 +61,7 @@ struct AgentInner {
     config: VoiceAgentConfig,
     attached: bool,
     running: bool,
+    otel: AgentOtelState,
     vad: Option<VadEngine>,
     stt_pre_roll: Option<SttPreRollBuffer>,
     /// Milliseconds of inbound audio still forwarded to STT after VAD speech end.
@@ -103,6 +105,23 @@ struct AgentInner {
     stt_barge_fired_this_agent_playback: bool,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
+}
+
+/// Per-session OpenTelemetry state (public for the `otel` module).
+pub struct AgentOtelState {
+    pub session_context: VoiceSessionContext,
+    #[cfg(feature = "otel")]
+    pub session_span: Option<tracing::Span>,
+}
+
+impl Default for AgentOtelState {
+    fn default() -> Self {
+        Self {
+            session_context: VoiceSessionContext::default(),
+            #[cfg(feature = "otel")]
+            session_span: None,
+        }
+    }
 }
 
 struct TtsSynthesisJob {
@@ -166,6 +185,7 @@ impl VoiceAgent {
                 config,
                 attached: false,
                 running: false,
+                otel: AgentOtelState::default(),
                 vad,
                 stt_pre_roll,
                 stt_gate_hold_ms: 0,
@@ -356,7 +376,10 @@ impl VoiceAgent {
     }
 
     /// Starts STT vendor and TTS drain worker. Inbound PCM is driven by the host via [`process_inbound_pcm`](Self::process_inbound_pcm).
-    pub async fn start(&self) -> SpeechResult<()> {
+    ///
+    /// Optional `session_context` carries session labels and W3C `traceparent` for OpenTelemetry
+    /// when the `otel` Cargo feature is enabled.
+    pub async fn start(&self, session_context: Option<VoiceSessionContext>) -> SpeechResult<()> {
         {
             let mut inner = self.inner.lock().await;
             if !inner.attached {
@@ -366,6 +389,10 @@ impl VoiceAgent {
                 return Err(SpeechError::AlreadyRunning);
             }
             inner.running = true;
+            otel::begin_session(
+                &mut inner.otel,
+                session_context.unwrap_or_default(),
+            );
         }
 
         voice_debug("VoiceAgent running=true");
@@ -427,6 +454,7 @@ impl VoiceAgent {
                 return Err(SpeechError::NotRunning);
             }
             inner.running = false;
+            otel::end_session(&mut inner.otel);
         }
 
         let mut stt = self.stt.lock().await;
@@ -552,13 +580,19 @@ impl VoiceAgent {
     ) -> SpeechResult<()> {
         let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let generation_at_start = tts_buffer.current_generation().await;
+        let tts_started = Instant::now();
         let chunks = {
             let tts_guard = tts.lock().await;
             let provider = tts_guard
                 .as_ref()
                 .ok_or_else(|| SpeechError::Config("TTS not configured".into()))?;
+            {
+                let ctx = inner.lock().await.otel.session_context.clone();
+                let _span = otel::voice_span("voice.tts", &ctx);
+            }
             provider.synthesize(text).await?
         };
+        otel::record_tts_latency_ms(tts_started.elapsed().as_secs_f64() * 1000.0);
 
         if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
             voice_debug("TTS synthesis discarded (invalidated during synthesize)");
@@ -730,6 +764,10 @@ impl VoiceAgent {
             "STT-gated barge-in: partial {:?}",
             partial_text.trim()
         ));
+        {
+            let ctx = self.inner.lock().await.otel.session_context.clone();
+            otel::record_barge_in(&ctx);
+        }
         handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
         self.cancel_pending_tts_synthesis().await;
         if barge_in.flush_tts {
@@ -1126,7 +1164,10 @@ impl VoiceAgent {
             if transitions.contains(&VadTransition::SpeechEnd) {
                 if gate_stt {
                     inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
-                    inner.stt_gate_hold_ms = inner.config.vad.stt_gate_hold_ms;
+                    let hold_ms = inner.config.vad.stt_gate_hold_ms;
+                    inner.stt_gate_hold_ms = hold_ms;
+                    let ctx = inner.otel.session_context.clone();
+                    otel::record_gate_hold_start(&ctx, hold_ms);
                     inner.stt_finalize_pending = true;
                     if inner.partials_emitted_this_utterance
                         && !inner.stt_final_emitted_this_utterance
@@ -1180,6 +1221,8 @@ impl VoiceAgent {
                     inner.stt_gate_hold_ms = before.saturating_sub(duration_ms);
                     let after = inner.stt_gate_hold_ms;
                     if before > 0 && after == 0 {
+                        let ctx = inner.otel.session_context.clone();
+                        otel::record_gate_hold_end(&ctx);
                         voice_debug(
                             "STT gate hold expired — utterance may finalize on next inbound frame",
                         );
@@ -1248,6 +1291,13 @@ impl VoiceAgent {
         }
         if c2_expired {
             self.force_close_utterance().await?;
+        }
+
+        {
+            let ctx = self.inner.lock().await.otel.session_context.clone();
+            for transition in &transitions {
+                otel::record_vad_transition(&ctx, transition);
+            }
         }
 
         if complete_previous_utterance {
@@ -1535,13 +1585,20 @@ impl VoiceAgent {
 
     async fn finalize_stt_utterance(&self) -> SpeechResult<()> {
         voice_debug("STT finalize_utterance: vendor finalize + poll");
+        let stt_started = Instant::now();
+        let ctx = self.inner.lock().await.otel.session_context.clone();
+        {
+            let _span = otel::voice_span("voice.stt", &ctx);
+        }
         {
             let mut stt = self.stt.lock().await;
             if let Some(stt) = stt.as_mut() {
                 stt.finalize_utterance().await?;
             }
         }
-        self.poll_stt_transcripts().await
+        self.poll_stt_transcripts().await?;
+        otel::record_stt_latency_ms(stt_started.elapsed().as_secs_f64() * 1000.0);
+        Ok(())
     }
 
     async fn poll_stt_transcripts(&self) -> SpeechResult<()> {

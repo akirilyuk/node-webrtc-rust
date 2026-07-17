@@ -173,6 +173,14 @@ export interface JsTtsConfig {
   apiKey?: string
   postUtteranceSilenceMs?: number
 }
+export interface JsVoiceSessionContext {
+  sessionId?: string
+  traceId?: string
+  projectId?: string
+  orgId?: string
+  buildId?: string
+  traceparent?: string
+}
 export interface JsVoiceAgentConfig {
   vad?: JsVadConfig
   events?: JsEventsConfig
@@ -352,7 +360,7 @@ export declare class JsVoiceAgent {
   constructor(config?: JsVoiceAgentConfig | undefined | null)
   /** Attaches outbound local audio track for TTS injection. */
   attach(outboundTrack: JsLocalAudioTrack): Promise<void>
-  start(): Promise<void>
+  start(sessionContext?: JsVoiceSessionContext | undefined | null): Promise<void>
   stop(): Promise<void>
   sendTextToTts(text: string, nonBlocking?: boolean | undefined | null): Promise<void>
   flushTts(): Promise<void>

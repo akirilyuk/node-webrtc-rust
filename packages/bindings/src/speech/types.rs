@@ -4,7 +4,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, SttConfig, SttVendor, TtsConfig, TtsVendor,
-    VadConfig, VadSampleRate, VoiceAgentConfig,
+    VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -241,6 +241,30 @@ impl From<JsTtsConfig> for TtsConfig {
             model_path: value.model_path,
             voice: value.voice,
             api_key: value.api_key,
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsVoiceSessionContext {
+    pub session_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub project_id: Option<String>,
+    pub org_id: Option<String>,
+    pub build_id: Option<String>,
+    pub traceparent: Option<String>,
+}
+
+impl From<JsVoiceSessionContext> for VoiceSessionContext {
+    fn from(value: JsVoiceSessionContext) -> Self {
+        Self {
+            session_id: value.session_id,
+            trace_id: value.trace_id,
+            project_id: value.project_id,
+            org_id: value.org_id,
+            build_id: value.build_id,
+            traceparent: value.traceparent,
         }
     }
 }

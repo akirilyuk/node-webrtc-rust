@@ -131,6 +131,19 @@ export interface VoiceAgentConfig {
   postUtteranceSilenceMs?: number
 }
 
+/**
+ * Session-scoped OpenTelemetry attributes and W3C trace propagation for {@link VoiceAgent.start}.
+ */
+export interface VoiceSessionContext {
+  sessionId?: string
+  traceId?: string
+  projectId?: string
+  orgId?: string
+  buildId?: string
+  /** W3C `traceparent` header value from upstream HTTP/gRPC. */
+  traceparent?: string
+}
+
 /** Options for {@link VoiceAgent.sendTextToTTS}. */
 export interface SendTextToTtsOptions {
   /** When true, resolve as soon as the utterance is queued. Default: wait for synthesis + playback. */

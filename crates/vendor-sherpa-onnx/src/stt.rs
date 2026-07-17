@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::SttConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::otel;
 use node_webrtc_rust_speech::pcm::mono_s16le_bytes_to_f32;
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 use sherpa_onnx::OnlineStream;
@@ -128,8 +129,7 @@ impl SttProvider for SherpaStt {
 
         let state = Arc::clone(&self.state);
         let decode_semaphore = self.pool.decode_semaphore();
-        let _permit = decode_semaphore
-            .acquire()
+        let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
             .await
             .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
 
@@ -173,8 +173,7 @@ impl SttProvider for SherpaStt {
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
         let state = Arc::clone(&self.state);
         let decode_semaphore = self.pool.decode_semaphore();
-        let _permit = decode_semaphore
-            .acquire()
+        let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
             .await
             .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
 
@@ -228,8 +227,7 @@ impl SttProvider for SherpaStt {
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         let state = Arc::clone(&self.state);
         let decode_semaphore = self.pool.decode_semaphore();
-        let _permit = decode_semaphore
-            .acquire()
+        let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
             .await
             .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
 

@@ -1,7 +1,7 @@
 {
   "name": "@node-webrtc-rust/example-voice-agent-multi-session-pod",
   "private": true,
-  "version": "0.6.9",
+  "version": "0.6.11",
   "description": "One Node pod: single signaling entry point, many concurrent voice sessions (one VoiceAgent per WebRTC connection)",
   "type": "module",
   "scripts": {
@@ -10,9 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@node-webrtc-rust/helpers": "0.6.9",
-    "@node-webrtc-rust/sdk": "0.6.9",
-    "@node-webrtc-rust/signaling": "0.6.9"
+    "@node-webrtc-rust/helpers": "0.6.11",
+    "@node-webrtc-rust/sdk": "0.6.11",
+    "@node-webrtc-rust/signaling": "0.6.11"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

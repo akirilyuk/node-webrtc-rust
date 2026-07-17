@@ -81,6 +81,12 @@ for opt in \
   bindings-linux-x64-musl \
   bindings-linux-arm64-gnu \
   bindings-win32-x64-msvc; do
+  # During release prep (SKIP_LOCK_REFRESH=1), keep optional platform packages
+  # pinned at the last version on npm so `npm ci` / release quality can resolve
+  # them. Publish + post-release lock sync rewrite these to $VERSION.
+  if [[ "${SKIP_LOCK_REFRESH:-0}" == "1" ]]; then
+    continue
+  fi
   set_json_field "$BINDINGS/package.json" "optionalDependencies.@node-webrtc-rust/${opt}" "$VERSION"
 done
 

@@ -134,12 +134,11 @@ export class SessionPod {
       this.teardownTimers.delete(sessionId)
       const current = this.slots.get(sessionId)
       if (!current || current.host.activeClientCount > 0) return
-      void this.teardownSession(
-        sessionId,
-        current.pendingEndReason ?? endReason,
-      ).catch((error: unknown) => {
-        console.error(`Failed to teardown idle session ${sessionId}:`, error)
-      })
+      void this.teardownSession(sessionId, current.pendingEndReason ?? endReason).catch(
+        (error: unknown) => {
+          console.error(`Failed to teardown idle session ${sessionId}:`, error)
+        },
+      )
     }, this.rejoinGraceMs)
     this.teardownTimers.set(sessionId, timer)
     this.log(
@@ -284,16 +283,11 @@ export class SessionPod {
 
     slot.reconnectInFlight = true
     try {
-      this.log(
-        `[pod] agent signaling disconnected — reconnecting session ${slot.sessionId}`,
-      )
+      this.log(`[pod] agent signaling disconnected — reconnecting session ${slot.sessionId}`)
       await slot.signaling.connect()
       this.log(`[pod] agent signaling rejoined session ${slot.sessionId}`)
     } catch (error: unknown) {
-      console.error(
-        `Failed to reconnect agent signaling for ${slot.sessionId}:`,
-        error,
-      )
+      console.error(`Failed to reconnect agent signaling for ${slot.sessionId}:`, error)
       if (slot.reconnectEnabled && this.slots.has(slot.sessionId)) {
         setTimeout(() => {
           void this.reconnectAgentSignaling(slot)

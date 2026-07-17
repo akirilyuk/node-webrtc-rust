@@ -21,6 +21,11 @@ export interface VoiceSessionContext {
   speak: (text: string, options?: SendTextToTtsOptions) => Promise<void>
   /** Send a JSON payload to the browser over the voice-control data channel. */
   sendToClient: (payload: unknown) => void
+  /**
+   * Wait for pending voice-control SCTP data to flush before tearing down WebRTC.
+   * Returns false when the channel closes or flush times out.
+   */
+  flushToClient?: () => Promise<boolean>
   /** Send raw bytes — prefers the sync channel when negotiated and open. */
   sendBinaryToClient: (data: Buffer | Uint8Array, channel?: DataChannelKind) => void
 }

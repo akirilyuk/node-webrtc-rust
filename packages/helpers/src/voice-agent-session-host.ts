@@ -39,6 +39,7 @@ import {
   type VoiceSessionBudget,
   type VoiceSessionBudgetSnapshot,
 } from './voice-session-budget.js'
+import { flushVoiceControlChannel } from './control-channel-flush.js'
 import type {
   VoiceSessionContext,
   VoiceSessionHandler,
@@ -520,6 +521,7 @@ export class VoiceAgentSessionHost {
         if (controlChannel.readyState !== 'open') return
         controlChannel.send(JSON.stringify(payload))
       },
+      flushToClient: () => flushVoiceControlChannel(controlChannel),
       sendBinaryToClient: (data, channel) => sendBinary(data, channel),
     }
   }

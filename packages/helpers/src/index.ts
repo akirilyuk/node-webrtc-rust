@@ -15,7 +15,17 @@ export {
   type VoiceAgentSessionHostOptions,
 } from './voice-agent-session-host.js'
 
-export { type VoiceSessionContext, type VoiceSessionHandler, type DataChannelKind } from './voice-session-handler.js'
+export {
+  type VoiceSessionContext,
+  type VoiceSessionHandler,
+  type DataChannelKind,
+} from './voice-session-handler.js'
+
+export {
+  flushVoiceControlChannel,
+  VOICE_CONTROL_FLUSH_POLL_MS,
+  VOICE_CONTROL_FLUSH_TIMEOUT_MS,
+} from './control-channel-flush.js'
 
 export {
   SessionPod,

@@ -116,7 +116,10 @@ pub fn init_from_env() -> SpeechResult<()> {
     let span_exporter = SpanExporter::builder()
         .with_http()
         .build()
-        .map_err(|err| SpeechError::Internal(format!("otel span exporter: {err}")))?;
+        .map_err(|err| {
+            eprintln!("[otel] init failed: span exporter: {err}");
+            SpeechError::Internal(format!("otel span exporter: {err}"))
+        })?;
 
     let tracer_provider = SdkTracerProvider::builder()
         .with_batch_exporter(span_exporter)
@@ -128,8 +131,12 @@ pub fn init_from_env() -> SpeechResult<()> {
     let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_http()
         .build()
-        .map_err(|err| SpeechError::Internal(format!("otel metric exporter: {err}")))?;
+        .map_err(|err| {
+            eprintln!("[otel] init failed: metric exporter: {err}");
+            SpeechError::Internal(format!("otel metric exporter: {err}"))
+        })?;
 
+    // Honors OTEL_METRIC_EXPORT_INTERVAL / OTEL_METRIC_EXPORT_TIMEOUT when unset here.
     let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(metric_exporter).build();
 
     let meter_provider = SdkMeterProvider::builder()
@@ -145,11 +152,22 @@ pub fn init_from_env() -> SpeechResult<()> {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,node_webrtc_rust_speech=debug"));
 
-    Registry::default()
+    match Registry::default()
         .with(filter)
         .with(telemetry)
         .try_init()
-        .map_err(|err| SpeechError::Internal(format!("otel tracing subscriber: {err}")))?;
+    {
+        Ok(()) => {}
+        Err(err) if err.to_string().contains("already been set") => {
+            eprintln!(
+                "[otel] tracing subscriber already set; continuing with OTLP providers"
+            );
+        }
+        Err(err) => {
+            eprintln!("[otel] init failed: tracing subscriber: {err}");
+            return Err(SpeechError::Internal(format!("otel tracing subscriber: {err}")));
+        }
+    }
 
     let _ = ensure_meter();
     OTEL_INIT.store(true, Ordering::SeqCst);

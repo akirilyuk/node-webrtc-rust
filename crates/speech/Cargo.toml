@@ -33,7 +33,7 @@ tracing-opentelemetry = { version = "0.29", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
 opentelemetry = { version = "0.28", optional = true }
 opentelemetry_sdk = { version = "0.28", optional = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.28", optional = true, features = ["http-proto", "reqwest-client"] }
+opentelemetry-otlp = { version = "0.28", optional = true, features = ["http-proto", "reqwest-rustls-webpki-roots"] }
 silero-vad-rust = { version = "6.2.1", optional = true, default-features = false }
 ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["ndarray"] }
 

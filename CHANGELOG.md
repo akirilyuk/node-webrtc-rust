@@ -10,6 +10,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.13] — 2026-07-18
+
+Fix OTLP export on Alpine/musl runners (`node:alpine` without OpenSSL).
+
+### Fixed
+
+- **OpenTelemetry** — OTLP HTTP client uses `reqwest-rustls-webpki-roots` instead of `reqwest-client` (native-tls), so exporter init succeeds on musl runners.
+- **OpenTelemetry** — Init failures log to stderr (`[otel] init failed: …`); if a global tracing subscriber is already set, metrics still enable via `OTEL_INIT`.
+
+---
+
 ## [0.6.12] — 2026-07-18
 
 Release NAPI builds always compile with `--features otel` so published `@node-webrtc-rust/bindings` ship OpenTelemetry instrumentation.

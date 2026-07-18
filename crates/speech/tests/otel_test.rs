@@ -54,8 +54,8 @@ fn init_from_env_is_idempotent() {
 
 #[test]
 fn metrics_record_without_panic() {
-    otel::record_stt_latency_ms(12.5);
-    otel::record_tts_latency_ms(34.0);
+    otel::record_stt_latency_ms(12.5, Some(SttVendor::Mock));
+    otel::record_tts_latency_ms(34.0, Some(TtsVendor::Mock));
     otel::record_sherpa_pool_wait_ms(2.0);
     otel::set_sherpa_pool_entries(3);
 }

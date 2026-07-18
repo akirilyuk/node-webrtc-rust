@@ -197,9 +197,9 @@ build_linux_target() {
     return
   fi
   if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
-    (cd "$BINDINGS" && npx napi build --platform --release --target "$target")
+    (cd "$BINDINGS" && npx napi build --platform --release --features otel --target "$target")
   else
-    (cd "$BINDINGS" && npx napi build --platform --release --target "$target" --zig)
+    (cd "$BINDINGS" && npx napi build --platform --release --features otel --target "$target" --zig)
   fi
   stage_build_output "$target"
 }
@@ -217,7 +217,7 @@ build_linux_musl_target() {
     -v "$ROOT:/workspace" \
     -w /workspace/packages/bindings \
     "$alpine_image" \
-    bash -lc 'npx napi build --platform --release --target '"$target"
+    bash -lc 'npx napi build --platform --release --features otel --target '"$target"
   docker run --rm \
     -e SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib \
     -e LD_LIBRARY_PATH=/opt/sherpa-musl/lib:/usr/lib \
@@ -230,7 +230,7 @@ build_linux_musl_target() {
 
 build_macos_target() {
   local target="$1"
-  (cd "$BINDINGS" && npx napi build --platform --release --target "$target")
+  (cd "$BINDINGS" && npx napi build --platform --release --features otel --target "$target")
   stage_build_output "$target"
 }
 

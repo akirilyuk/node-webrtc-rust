@@ -112,6 +112,10 @@ pub struct AgentOtelState {
     pub session_context: VoiceSessionContext,
     #[cfg(feature = "otel")]
     pub session_span: Option<tracing::Span>,
+    #[cfg(feature = "otel")]
+    pub stt_vendor: Option<crate::config::SttVendor>,
+    #[cfg(feature = "otel")]
+    pub tts_vendor: Option<crate::config::TtsVendor>,
 }
 
 impl Default for AgentOtelState {
@@ -120,6 +124,10 @@ impl Default for AgentOtelState {
             session_context: VoiceSessionContext::default(),
             #[cfg(feature = "otel")]
             session_span: None,
+            #[cfg(feature = "otel")]
+            stt_vendor: None,
+            #[cfg(feature = "otel")]
+            tts_vendor: None,
         }
     }
 }
@@ -260,8 +268,7 @@ impl VoiceAgent {
             Self::disarm_utterance_finalize_timer(inner);
             return;
         }
-        inner.utterance_finalize_deadline_ms =
-            inner.config.vad.utterance_finalize_timeout_ms;
+        inner.utterance_finalize_deadline_ms = inner.config.vad.utterance_finalize_timeout_ms;
         inner.utterance_finalize_armed_at = Some(Instant::now());
         voice_debug(format!(
             "utterance finalize timer: {} ms (end-of-turn)",
@@ -363,11 +370,7 @@ impl VoiceAgent {
     }
 
     /// Registers inbound (user) and outbound (agent TTS) PCM callbacks. Required before [`start`](Self::start).
-    pub async fn attach(
-        &self,
-        pcm_reader: PcmReader,
-        pcm_writer: PcmWriter,
-    ) -> SpeechResult<()> {
+    pub async fn attach(&self, pcm_reader: PcmReader, pcm_writer: PcmWriter) -> SpeechResult<()> {
         let mut inner = self.inner.lock().await;
         inner.pcm_reader = Some(pcm_reader);
         inner.pcm_writer = Some(pcm_writer);
@@ -389,9 +392,13 @@ impl VoiceAgent {
                 return Err(SpeechError::AlreadyRunning);
             }
             inner.running = true;
+            let stt_vendor = inner.config.stt.as_ref().map(|cfg| cfg.provider);
+            let tts_vendor = inner.config.tts.as_ref().map(|cfg| cfg.provider);
             otel::begin_session(
                 &mut inner.otel,
                 session_context.unwrap_or_default(),
+                stt_vendor,
+                tts_vendor,
             );
         }
 
@@ -586,13 +593,30 @@ impl VoiceAgent {
             let provider = tts_guard
                 .as_ref()
                 .ok_or_else(|| SpeechError::Config("TTS not configured".into()))?;
+            let (ctx, tts_vendor) = {
+                let inner_guard = inner.lock().await;
+                (
+                    inner_guard.otel.session_context.clone(),
+                    inner_guard.config.tts.as_ref().map(|cfg| cfg.provider),
+                )
+            };
             {
-                let ctx = inner.lock().await.otel.session_context.clone();
-                let _span = otel::voice_span("voice.tts", &ctx);
+                let _span = otel::voice_span(
+                    "voice.tts",
+                    &ctx,
+                    tts_vendor.map(crate::config::TtsVendor::as_str),
+                );
             }
             provider.synthesize(text).await?
         };
-        otel::record_tts_latency_ms(tts_started.elapsed().as_secs_f64() * 1000.0);
+        let tts_vendor = inner
+            .lock()
+            .await
+            .config
+            .tts
+            .as_ref()
+            .map(|cfg| cfg.provider);
+        otel::record_tts_latency_ms(tts_started.elapsed().as_secs_f64() * 1000.0, tts_vendor);
 
         if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
             voice_debug("TTS synthesis discarded (invalidated during synthesize)");
@@ -732,7 +756,10 @@ impl VoiceAgent {
         let (should_barge, barge_in) = {
             let inner = self.inner.lock().await;
             let barge_in_cfg = &inner.config.vad.barge_in;
-            if !barge_in_cfg.enabled || !barge_in_cfg.require_stt_partial || inner.config.stt.is_none() {
+            if !barge_in_cfg.enabled
+                || !barge_in_cfg.require_stt_partial
+                || inner.config.stt.is_none()
+            {
                 return Ok(());
             }
             if !inner.agent_speaking {
@@ -747,10 +774,7 @@ impl VoiceAgent {
             if inner.stt_barge_fired_this_agent_playback {
                 return Ok(());
             }
-            (
-                true,
-                barge_in_cfg.clone(),
-            )
+            (true, barge_in_cfg.clone())
         };
         if !should_barge {
             return Ok(());
@@ -859,9 +883,7 @@ impl VoiceAgent {
             if barge_in.require_stt_partial && has_stt {
                 let mut inner = self.inner.lock().await;
                 inner.barge_awaiting_stt_partial = true;
-                voice_debug(
-                    "barge-in deferred until qualifying STT partial (require_stt_partial)",
-                );
+                voice_debug("barge-in deferred until qualifying STT partial (require_stt_partial)");
                 return Ok(());
             }
             if !barge_in.require_stt_partial || !has_stt {
@@ -1027,8 +1049,7 @@ impl VoiceAgent {
             if !inner.config.vad.gate_stt || inner.config.stt.is_none() {
                 return Ok(());
             }
-            let needed =
-                inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance;
+            let needed = inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance;
             (
                 needed,
                 stt_endpoint_tail_ms(&inner.config.vad),
@@ -1038,9 +1059,7 @@ impl VoiceAgent {
         if !needed {
             return Ok(());
         }
-        voice_debug(
-            "STT: completing previous utterance (pending finalize before new speech)",
-        );
+        voice_debug("STT: completing previous utterance (pending finalize before new speech)");
         if !closing_started {
             {
                 let mut inner = self.inner.lock().await;
@@ -1101,7 +1120,9 @@ impl VoiceAgent {
             inner.running
         };
         if !running {
-            voice_debug(format!("process_inbound_pcm call={call} skipped: agent not running"));
+            voice_debug(format!(
+                "process_inbound_pcm call={call} skipped: agent not running"
+            ));
             return Ok(());
         }
 
@@ -1136,15 +1157,10 @@ impl VoiceAgent {
                 .as_ref()
                 .map(VadEngine::is_pending_speech)
                 .unwrap_or(false);
-            let vad_speaking = inner
-                .vad
-                .as_ref()
-                .map(|v| v.is_speaking())
-                .unwrap_or(false);
+            let vad_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
 
             if gate_stt {
-                let barge_listen =
-                    inner.agent_speaking && !inner.stt_stream_open;
+                let barge_listen = inner.agent_speaking && !inner.stt_stream_open;
                 if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                     // During agent TTS the STT gate is closed until VAD SpeechStart. User speech
                     // often begins before VAD confirms (agent bleed / echo). Keep a continuous
@@ -1233,10 +1249,7 @@ impl VoiceAgent {
                             inner.defer_utterance_finalize_until_hold = false;
                             Self::arm_utterance_finalize_timer(&mut inner);
                         }
-                    } else if before > 0
-                        && after > 0
-                        && (before / 500) != (after / 500)
-                    {
+                    } else if before > 0 && after > 0 && (before / 500) != (after / 500) {
                         voice_debug(format!("STT gate hold: {after} ms remaining"));
                     }
                 }
@@ -1276,8 +1289,9 @@ impl VoiceAgent {
                     && !Self::vad_is_speaking(&inner)
                     && inner.stt_gate_hold_ms == 0
                 {
-                    inner.utterance_finalize_deadline_ms =
-                        inner.utterance_finalize_deadline_ms.saturating_sub(duration_ms);
+                    inner.utterance_finalize_deadline_ms = inner
+                        .utterance_finalize_deadline_ms
+                        .saturating_sub(duration_ms);
                     if inner.utterance_finalize_deadline_ms == 0 {
                         c2 = true;
                     }
@@ -1411,10 +1425,7 @@ impl VoiceAgent {
                 if !inner.stt_stream_open {
                     false
                 } else {
-                    vad_speaking
-                        || inner.stt_gate_hold_ms > 0
-                        || pending_gate
-                        || utterance_closing
+                    vad_speaking || inner.stt_gate_hold_ms > 0 || pending_gate || utterance_closing
                 }
             } else if inner.stt_stream_open {
                 true
@@ -1437,8 +1448,7 @@ impl VoiceAgent {
 
         // When gate is closed: skip STT push/poll. During agent TTS we still run VAD every frame
         // (listening on the inbound track); only defer STT until VAD sees user voice.
-        let gate_closed_skip_stt =
-            gate_stt && !stt_poll_open && !should_finalize_utterance;
+        let gate_closed_skip_stt = gate_stt && !stt_poll_open && !should_finalize_utterance;
         if gate_closed_skip_stt {
             if call == 1 || call % 50 == 0 {
                 let agent_speaking = self.inner.lock().await.agent_speaking;
@@ -1586,9 +1596,19 @@ impl VoiceAgent {
     async fn finalize_stt_utterance(&self) -> SpeechResult<()> {
         voice_debug("STT finalize_utterance: vendor finalize + poll");
         let stt_started = Instant::now();
-        let ctx = self.inner.lock().await.otel.session_context.clone();
+        let (ctx, stt_vendor) = {
+            let inner = self.inner.lock().await;
+            (
+                inner.otel.session_context.clone(),
+                inner.config.stt.as_ref().map(|cfg| cfg.provider),
+            )
+        };
         {
-            let _span = otel::voice_span("voice.stt", &ctx);
+            let _span = otel::voice_span(
+                "voice.stt",
+                &ctx,
+                stt_vendor.map(crate::config::SttVendor::as_str),
+            );
         }
         {
             let mut stt = self.stt.lock().await;
@@ -1597,7 +1617,7 @@ impl VoiceAgent {
             }
         }
         self.poll_stt_transcripts().await?;
-        otel::record_stt_latency_ms(stt_started.elapsed().as_secs_f64() * 1000.0);
+        otel::record_stt_latency_ms(stt_started.elapsed().as_secs_f64() * 1000.0, stt_vendor);
         Ok(())
     }
 
@@ -1693,10 +1713,7 @@ impl VoiceAgent {
     ) -> SpeechResult<()> {
         let writer = {
             let guard = inner.lock().await;
-            guard
-                .pcm_writer
-                .clone()
-                .ok_or(SpeechError::NotAttached)?
+            guard.pcm_writer.clone().ok_or(SpeechError::NotAttached)?
         };
 
         let drain_generation = tts_buffer.current_generation().await;
@@ -1757,8 +1774,13 @@ impl VoiceAgent {
                 resolved_post_utterance_silence_ms(&guard.config)
             };
             if silence_ms > 0 {
-                Self::stream_post_utterance_silence(&writer, tts_buffer, drain_generation, silence_ms)
-                    .await?;
+                Self::stream_post_utterance_silence(
+                    &writer,
+                    tts_buffer,
+                    drain_generation,
+                    silence_ms,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -1789,7 +1811,10 @@ impl VoiceAgent {
         Ok(())
     }
 
-    async fn end_agent_speaking_inner(inner: &Arc<Mutex<AgentInner>>, arm_stt_hold_after_playback: bool) {
+    async fn end_agent_speaking_inner(
+        inner: &Arc<Mutex<AgentInner>>,
+        arm_stt_hold_after_playback: bool,
+    ) {
         let mut guard = inner.lock().await;
         guard.agent_speaking = false;
         guard.agent_speaking_since = None;

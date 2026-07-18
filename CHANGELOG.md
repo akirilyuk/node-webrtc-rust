@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenTelemetry** — OTLP export switched from gRPC (`:4317`) to **HTTP** (`:4318`); release NAPI builds always compile with `--features otel`; STT/TTS latency metrics and spans include `stt.vendor` / `tts.vendor` attributes for Grafana grouping.
+
 ---
 
 ## [0.6.11] — 2026-07-17

@@ -164,7 +164,7 @@ runs:
         rm -f *.node
         args=(build --target "${{ inputs.target }}")
         if [[ "${{ inputs.profile }}" == "release" ]]; then
-          args+=(--release)
+          args+=(--release --features otel)
         fi
         if [[ "${{ inputs.platform }}" == "true" ]]; then
           args+=(--platform)

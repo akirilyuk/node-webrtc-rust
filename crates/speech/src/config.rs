@@ -224,6 +224,20 @@ pub enum SttVendor {
     Mock,
 }
 
+impl SttVendor {
+    /// Serde wire name (matches JSON / SDK `provider` values).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Deepgram => "deepgram",
+            Self::Google => "google",
+            Self::Assemblyai => "assemblyai",
+            Self::LocalSherpa => "local-sherpa",
+            Self::Mock => "mock",
+        }
+    }
+}
+
 /// Supported TTS vendor identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -235,6 +249,20 @@ pub enum TtsVendor {
     #[serde(rename = "local-sherpa")]
     LocalSherpa,
     Mock,
+}
+
+impl TtsVendor {
+    /// Serde wire name (matches JSON / SDK `provider` values).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Elevenlabs => "elevenlabs",
+            Self::Google => "google",
+            Self::Cartesia => "cartesia",
+            Self::LocalSherpa => "local-sherpa",
+            Self::Mock => "mock",
+        }
+    }
 }
 
 /// STT vendor configuration.

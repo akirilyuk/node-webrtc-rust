@@ -556,7 +556,7 @@ High-level: ICE/SDP, data channels, P0–P1 parity, and Unified Plan transceiver
 
 ## Observability (OpenTelemetry)
 
-Voice pipeline spans and metrics are available behind the Cargo feature **`otel`** on `node-webrtc-rust-speech` (and `node-webrtc-rust-bindings`). Default local builds leave it **off**; production agent runners should enable it when building the native module:
+Voice pipeline spans and metrics are available behind the Cargo feature **`otel`** on `node-webrtc-rust-speech` (and `node-webrtc-rust-bindings`). **Release npm packages** ship with `otel` compiled in; local debug builds leave it off unless you pass the feature:
 
 ```bash
 cd packages/bindings
@@ -570,11 +570,18 @@ When enabled, `VoiceAgent::start` accepts optional session attributes (`session_
 
 | Variable | Purpose |
 | -------- | ------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC endpoint (e.g. `http://localhost:4317`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP endpoint (e.g. `http://localhost:4318`) |
 | `OTEL_SERVICE_NAME` | Resource service name (default `node-webrtc-rust-voice`) |
 | `OTEL_SDK_DISABLED` | Set `true` to disable export while keeping the feature compiled |
 
 **Spans:** `voice.session`, `voice.vad`, `voice.stt`, `voice.tts`, `voice.gate_hold`, `voice.barge_in`
+
+**Span / metric attributes for vendor grouping:**
+
+| Attribute | Spans / metrics | Values |
+| --------- | --------------- | ------ |
+| `stt.vendor` | `voice.session`, `voice.stt`, `voice_stt_latency_ms` | `openai`, `deepgram`, `google`, `assemblyai`, `local-sherpa`, `mock` |
+| `tts.vendor` | `voice.session`, `voice.tts`, `voice_tts_latency_ms` | `openai`, `elevenlabs`, `google`, `cartesia`, `local-sherpa`, `mock` |
 
 **Metrics:** `voice_stt_latency_ms`, `voice_tts_latency_ms`, `sherpa_pool_wait_ms`, `sherpa_pool_entries` (histograms/gauge)
 

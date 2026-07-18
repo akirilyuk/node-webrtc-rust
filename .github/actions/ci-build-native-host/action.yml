@@ -67,7 +67,7 @@ runs:
       env:
         CMAKE_POLICY_VERSION_MINIMUM: '3.5'
         OPUS_STATIC: '1'
-      run: npx napi build --platform --release ${{ inputs.build_args }}
+      run: npx napi build --platform --release --features otel ${{ inputs.build_args }}
 
     - name: Reuse cached native addon
       if: inputs.skip_build_on_cache_hit == 'true' && inputs.native_cache_hit == 'true'

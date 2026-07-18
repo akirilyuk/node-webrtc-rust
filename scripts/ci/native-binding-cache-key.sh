@@ -30,6 +30,7 @@ list_bindings_path_crates() {
 }
 
 {
+  echo "napi-release-features:otel"
   sha256sum Cargo.toml Cargo.lock scripts/ci/native-binding-cache-key.sh
   sha256sum \
     packages/bindings/Cargo.toml \

@@ -9,6 +9,7 @@ use opentelemetry::metrics::{Gauge, Histogram, Meter};
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::{TraceContextExt, TracerProvider};
 use opentelemetry::Context;
+use opentelemetry::KeyValue;
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
@@ -21,7 +22,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
 use crate::agent::AgentOtelState;
-use crate::config::VoiceSessionContext;
+use crate::config::{SttVendor, TtsVendor, VoiceSessionContext};
 use crate::error::{SpeechError, SpeechResult};
 use crate::otel::VoiceSpan;
 use crate::vad::VadTransition;
@@ -113,7 +114,7 @@ pub fn init_from_env() -> SpeechResult<()> {
         .build();
 
     let span_exporter = SpanExporter::builder()
-        .with_tonic()
+        .with_http()
         .build()
         .map_err(|err| SpeechError::Internal(format!("otel span exporter: {err}")))?;
 
@@ -125,7 +126,7 @@ pub fn init_from_env() -> SpeechResult<()> {
     global::set_tracer_provider(tracer_provider.clone());
 
     let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
-        .with_tonic()
+        .with_http()
         .build()
         .map_err(|err| SpeechError::Internal(format!("otel metric exporter: {err}")))?;
 
@@ -187,9 +188,35 @@ fn apply_session_fields(span: tracing::Span, ctx: &VoiceSessionContext) -> traci
     span
 }
 
-pub fn begin_session(state: &mut AgentOtelState, ctx: VoiceSessionContext) {
+fn apply_vendor_field(
+    span: tracing::Span,
+    span_name: &'static str,
+    vendor: Option<&str>,
+) -> tracing::Span {
+    if let Some(value) = vendor.filter(|v| !v.is_empty()) {
+        match span_name {
+            "voice.stt" => {
+                span.record("stt.vendor", value);
+            }
+            "voice.tts" => {
+                span.record("tts.vendor", value);
+            }
+            _ => {}
+        }
+    }
+    span
+}
+
+pub fn begin_session(
+    state: &mut AgentOtelState,
+    ctx: VoiceSessionContext,
+    stt_vendor: Option<SttVendor>,
+    tts_vendor: Option<TtsVendor>,
+) {
     let _ = init_from_env();
     state.session_context = ctx.clone();
+    state.stt_vendor = stt_vendor;
+    state.tts_vendor = tts_vendor;
 
     let span = tracing::info_span!(
         "voice.session",
@@ -198,9 +225,17 @@ pub fn begin_session(state: &mut AgentOtelState, ctx: VoiceSessionContext) {
         project_id = Empty,
         org_id = Empty,
         build_id = Empty,
+        stt.vendor = Empty,
+        tts.vendor = Empty,
     );
     span.set_parent(parent_context(&ctx));
     let span = apply_session_fields(span, &ctx);
+    if let Some(vendor) = stt_vendor {
+        span.record("stt.vendor", vendor.as_str());
+    }
+    if let Some(vendor) = tts_vendor {
+        span.record("tts.vendor", vendor.as_str());
+    }
     state.session_span = Some(span);
 }
 
@@ -208,7 +243,11 @@ pub fn end_session(state: &mut AgentOtelState) {
     state.session_span.take();
 }
 
-pub fn voice_span(name: &'static str, ctx: &VoiceSessionContext) -> VoiceSpan {
+pub fn voice_span(
+    name: &'static str,
+    ctx: &VoiceSessionContext,
+    vendor: Option<&str>,
+) -> VoiceSpan {
     let span = match name {
         "voice.stt" => tracing::info_span!(
             "voice.stt",
@@ -217,6 +256,7 @@ pub fn voice_span(name: &'static str, ctx: &VoiceSessionContext) -> VoiceSpan {
             project_id = Empty,
             org_id = Empty,
             build_id = Empty,
+            stt.vendor = Empty,
         ),
         "voice.tts" => tracing::info_span!(
             "voice.tts",
@@ -225,6 +265,7 @@ pub fn voice_span(name: &'static str, ctx: &VoiceSessionContext) -> VoiceSpan {
             project_id = Empty,
             org_id = Empty,
             build_id = Empty,
+            tts.vendor = Empty,
         ),
         _ => tracing::info_span!(
             "voice.operation",
@@ -237,6 +278,7 @@ pub fn voice_span(name: &'static str, ctx: &VoiceSessionContext) -> VoiceSpan {
         ),
     };
     let span = apply_session_fields(span, ctx);
+    let span = apply_vendor_field(span, name, vendor);
     VoiceSpan {
         _entered: span.entered(),
     }
@@ -297,15 +339,21 @@ pub fn record_barge_in(ctx: &VoiceSessionContext) {
     let _entered = apply_session_fields(span, ctx).entered();
 }
 
-pub fn record_stt_latency_ms(ms: f64) {
+pub fn record_stt_latency_ms(ms: f64, vendor: Option<SttVendor>) {
     if is_enabled() {
-        stt_latency_histogram().record(ms, &[]);
+        let attrs = vendor
+            .map(|v| vec![KeyValue::new("stt.vendor", v.as_str())])
+            .unwrap_or_default();
+        stt_latency_histogram().record(ms, &attrs);
     }
 }
 
-pub fn record_tts_latency_ms(ms: f64) {
+pub fn record_tts_latency_ms(ms: f64, vendor: Option<TtsVendor>) {
     if is_enabled() {
-        tts_latency_histogram().record(ms, &[]);
+        let attrs = vendor
+            .map(|v| vec![KeyValue::new("tts.vendor", v.as_str())])
+            .unwrap_or_default();
+        tts_latency_histogram().record(ms, &attrs);
     }
 }
 
@@ -349,10 +397,8 @@ mod tests {
 
     #[test]
     fn extract_trace_id_from_valid_traceparent() {
-        let trace_id = extract_trace_id(
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        )
-        .expect("trace id");
+        let trace_id = extract_trace_id("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+            .expect("trace id");
         assert_eq!(trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
     }
 

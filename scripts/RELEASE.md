@@ -352,6 +352,8 @@ Windows is never cross-compiled locally — copy from a Windows CI artifact or b
 
 ## Pre-release checks
 
+Release NAPI builds (CI `release.yml`, `build-main.yml`, and [`release-publish.sh`](release-publish.sh)) always pass **`--features otel`** so published `@node-webrtc-rust/bindings` include OpenTelemetry. Local `npm run build:native` / PR debug builds do not unless you pass the feature explicitly.
+
 Mirror PR CI locally:
 
 ```bash

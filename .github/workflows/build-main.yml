@@ -131,7 +131,7 @@ jobs:
       )
     uses: ./.github/workflows/reusable-build-linux.yml
     with:
-      cache_prefix: v2-release
+      cache_prefix: v3-release-otel
       linux_x64_matrix: ${{ needs.plan.outputs.linux_x64_matrix }}
       build_linux_arm64: ${{ needs.plan.outputs.build_linux_arm64 == 'true' }}
       build_linux_musl: ${{ needs.plan.outputs.build_linux_musl == 'true' }}
@@ -146,7 +146,7 @@ jobs:
       needs.plan.outputs.host_matrix != '[]'
     uses: ./.github/workflows/reusable-build-host.yml
     with:
-      cache_prefix: v2-release
+      cache_prefix: v3-release-otel
       host_matrix: ${{ needs.plan.outputs.host_matrix }}
     secrets: inherit
 

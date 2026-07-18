@@ -39,7 +39,7 @@ for target in "${TARGETS[@]}"; do
       -v "$ROOT:/workspace" \
       -w /workspace/packages/bindings \
       "$ALPINE_IMAGE" \
-      npx napi build --platform --release --target "$target"
+      npx napi build --platform --release --features otel --target "$target"
     docker run --rm \
       -e SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib \
       -e LD_LIBRARY_PATH=/opt/sherpa-musl/lib:/usr/lib \
@@ -59,7 +59,7 @@ for target in "${TARGETS[@]}"; do
       -v "$ROOT:/workspace" \
       -w /workspace/packages/bindings \
       "$IMAGE" \
-      npx napi build --platform --release --target "$target"
+      npx napi build --platform --release --features otel --target "$target"
     continue
   fi
 
@@ -70,7 +70,7 @@ for target in "${TARGETS[@]}"; do
     -v "$ROOT:/workspace" \
     -w /workspace/packages/bindings \
     "$IMAGE" \
-    npx napi build --platform --release --target "$target" "${zig_flag[@]}"
+    npx napi build --platform --release --features otel --target "$target" "${zig_flag[@]}"
 done
 
 echo "==> Linux CI native builds OK"

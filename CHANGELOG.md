@@ -8,9 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.6.12] — 2026-07-18
+
+Release NAPI builds always compile with `--features otel` so published `@node-webrtc-rust/bindings` ship OpenTelemetry instrumentation.
+
 ### Changed
 
-- **OpenTelemetry** — OTLP export switched from gRPC (`:4317`) to **HTTP** (`:4318`); release NAPI builds always compile with `--features otel`; STT/TTS latency metrics and spans include `stt.vendor` / `tts.vendor` attributes for Grafana grouping.
+- **OpenTelemetry** — OTLP export switched from gRPC (`:4317`) to **HTTP** (`:4318`) for collector parity on port 4318.
+- **OpenTelemetry** — STT/TTS latency metrics and spans include `stt.vendor` / `tts.vendor` attributes for Grafana grouping.
 
 ---
 

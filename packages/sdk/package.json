@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/sdk",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "description": "Browser-compatible WebRTC and conference APIs for Node.js",
   "keywords": [
     "webrtc",
@@ -65,8 +65,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@node-webrtc-rust/bindings": "0.6.11",
-    "@node-webrtc-rust/signaling": "0.6.11"
+    "@node-webrtc-rust/bindings": "0.6.12",
+    "@node-webrtc-rust/signaling": "0.6.12"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

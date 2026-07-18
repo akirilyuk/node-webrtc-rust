@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/helpers",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "description": "Reusable server-side helpers for voice agents, session pods, and PCM streaming",
   "keywords": [
     "webrtc",
@@ -45,8 +45,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@node-webrtc-rust/sdk": "0.6.11",
-    "@node-webrtc-rust/signaling": "0.6.11"
+    "@node-webrtc-rust/sdk": "0.6.12",
+    "@node-webrtc-rust/signaling": "0.6.12"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

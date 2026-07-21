@@ -112,10 +112,8 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 - **When compiling:** requires **Typecheck & lint** success.
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
-- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) restores a prior `.node` for the Test job, but **compile always runs `napi build`** when this job is not skipped (`skip_build_on_cache_hit: false`). Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **every `path = "../../crates/…"` dep in `packages/bindings/Cargo.toml`**, **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`**. No `restore-keys` prefix fallback.
-- **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) — host-style build runs `copy:local-node` so `index.js` loads the fresh `.node` instead of stale optional npm packages
-
-Populates the shared native cache used by the test job.
+- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) restores a prior `.node`; on exact key hit **compile is skipped** (`skip_build_on_cache_hit: true`, same as main/release). Cache key (`native-v2-*`) fingerprints **bindings Rust sources**, **every `path = "../../crates/…"` dep in `packages/bindings/Cargo.toml`**, **`Cargo.lock`**, and committed **`packages/bindings/index.d.ts`**. No `restore-keys` prefix fallback.
+- **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) — host-style build runs `copy:local-node`; uploads `bindings-x86_64-unknown-linux-gnu` artifact for the Test job
 
 ### 5. Build TypeScript
 
@@ -134,22 +132,19 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 - **Always runs** on every PR (for branch-protection required checks).
 - **When:** no source path filter matched — succeeds immediately (`skip: 'true'`). CI-only YAML edits do not run integration tests.
 - **When source code changed:** requires **Typecheck & lint** success (when it ran); restores `.node` / TS `dist/` only when needed.
-- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)
+- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (same handoff as main push)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 
 Before tests, the test job receives the native binding from the **same workflow run**:
 
-1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` artifact when **compile-native** ran in this workflow (`ran_compile` output). Skipped when compile was gated off (docs-only, TS-only, test-CI-only PRs).
-2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) when artifact download is skipped or failed (e.g. TS-only PR).
+1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` when **compile-native** ran (`ran_compile=true`).
+2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) when compile was gated off (TS-only PR) or artifact download failed.
 3. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
-4. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist).
+4. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) (`ts_dist_profile: pr`).
 
 Jobs do not share a workspace on self-hosted runners (each job checks out fresh). Only the `.node` binding is passed compile → test via artifact (~48 MB). `cargo test` runs inside the ci-build container and compiles Rust test deps there (registry cached via prior compile job on the same workspace is not shared across jobs).
 
-**Last resort inside the test script** (no artifact and no cache):
-
-- Compile debug `.node` if missing
-- Run `build:ts` if `dist/` missing
+**Last resort locally only** (not CI — `run-pr-integration.sh` exits if `.node` missing when `CI=true`):
 
 Test execution: runner **host Docker** → public `coturn/coturn:latest` sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`. A prepare step resets workspace ownership before checkout (container jobs write root-owned files).
 

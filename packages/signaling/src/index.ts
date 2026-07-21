@@ -1,6 +1,8 @@
 export { SignalingServer } from './server'
 export { SignalingClient } from './client'
 export { autoNegotiate } from './auto-negotiate'
+export { assertSdpHasIceCredentials, describeSdpIce } from './sdp-ice-guard'
+export type { SdpIceKind, SdpIceMeta } from './sdp-ice-guard'
 export {
   ConnectionError,
   createConnectionError,

@@ -2,11 +2,9 @@ import { EventEmitter } from 'events'
 
 import WebSocket from 'ws'
 
-import {
-  createConnectionError,
-  dispatchConnectionError,
-} from '@node-webrtc-rust/sdk'
+import { createConnectionError, dispatchConnectionError } from '@node-webrtc-rust/sdk'
 import { debugEvent, debugFn } from './debug'
+import { assertSdpHasIceCredentials } from './sdp-ice-guard'
 import type {
   AnswerEvent,
   IceCandidateEvent,
@@ -37,11 +35,7 @@ export class SignalingClient extends EventEmitter {
   }
 
   private notifySocketError(error: Error, context: 'connect' | 'socket'): void {
-    debugEvent(
-      'signaling::SignalingClient',
-      'error',
-      `context=${context} message=${error.message}`,
-    )
+    debugEvent('signaling::SignalingClient', 'error', `context=${context} message=${error.message}`)
     const tagged = createConnectionError(
       error.message,
       {
@@ -122,7 +116,12 @@ export class SignalingClient extends EventEmitter {
 
   /** Sends an SDP offer to a specific peer in the room. */
   sendOffer(targetPeerId: string, sdp: OfferEvent['sdp']): void {
-    debugFn('signaling::SignalingClient', 'sendOffer', `targetPeerId=${targetPeerId}`)
+    const meta = assertSdpHasIceCredentials(sdp?.sdp, 'offer')
+    debugFn(
+      'signaling::SignalingClient',
+      'sendOffer',
+      `targetPeerId=${targetPeerId} sdp_len=${meta.sdpLen} ice_ufrag=${meta.hasIceUfrag}`,
+    )
     this.send({
       type: 'offer',
       room: this.room,
@@ -134,7 +133,12 @@ export class SignalingClient extends EventEmitter {
 
   /** Sends an SDP answer to a specific peer in the room. */
   sendAnswer(targetPeerId: string, sdp: AnswerEvent['sdp']): void {
-    debugFn('signaling::SignalingClient', 'sendAnswer', `targetPeerId=${targetPeerId}`)
+    const meta = assertSdpHasIceCredentials(sdp?.sdp, 'answer')
+    debugFn(
+      'signaling::SignalingClient',
+      'sendAnswer',
+      `targetPeerId=${targetPeerId} sdp_len=${meta.sdpLen} ice_ufrag=${meta.hasIceUfrag}`,
+    )
     this.send({
       type: 'answer',
       room: this.room,

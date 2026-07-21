@@ -432,11 +432,13 @@ export class VoiceAgentSessionHost {
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
     await pc.gatheringComplete()
-    this.signaling.sendOffer(peerId, pc.localDescription!.toJSON())
+    const localInit = pc.localDescription!.toJSON()
+    this.signaling.sendOffer(peerId, localInit)
     session.offerSent = true
     const tag = dataOnly ? 'data' : 'voice'
+    const sdpLen = typeof localInit.sdp === 'string' ? localInit.sdp.length : 0
     this.log(
-      `[${tag} ${peerId}] offer sent (${dataOnly ? '' : 'audio + '}${VOICE_CONTROL_CHANNEL_LABEL} DC${syncChannel ? ` + ${syncChannel.label}` : ''})`,
+      `[${tag} ${peerId}] offer sent sdp_len=${sdpLen} (${dataOnly ? '' : 'audio + '}${VOICE_CONTROL_CHANNEL_LABEL} DC${syncChannel ? ` + ${syncChannel.label}` : ''})`,
     )
 
     if (session.pendingAnswer) {

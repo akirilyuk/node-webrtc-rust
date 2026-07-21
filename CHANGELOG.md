@@ -10,6 +10,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.14] — 2026-07-21
+
+Refuse outbound SDP offers/answers that lack ICE credentials so runners never poison clients under concurrent scale-up.
+
+### Fixed
+
+- **`@node-webrtc-rust/signaling`** — `sendOffer` / `sendAnswer` require `a=ice-ufrag` and `a=ice-pwd` before writing to the wire (rejects empty/truncated SDP that webrtc-rs would fail with `set_remote_description called with no ice-ufrag`).
+- **`@node-webrtc-rust/helpers`** — log `sdp_len=` when an offer is sent for load-test triage.
+
+---
+
 ## [0.6.13] — 2026-07-18
 
 Fix OTLP export on Alpine/musl runners (`node:alpine` without OpenSSL).

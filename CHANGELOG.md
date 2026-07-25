@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.6.15] — 2026-07-25
+
+Recover VoiceAgent TTS playback after drain writer failures and the 45s job-playback timeout so a later TTS job can synthesize again.
+
 ### Fixed
 
 - **Speech / TTS** — Drain writer errors and the 45s job-playback wait timeout now flush buffered PCM, reset `agent_speaking`, emit `SpeechEvent::error` (and a balanced `agent_speaking_end` when playback had started), and surface the original failure to the blocking `sendTextToTTS` caller so a later TTS job can recover.

@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.6.16] — 2026-07-25
+
+Split peer transport readiness from VoiceAgent attach/start so `onPeerConnected` is safe for `ctx.speak()`.
+
 ### Added
 
 - **`@node-webrtc-rust/helpers`** — `VoiceSessionHandler.onPeerTransportReady` when the peer connection is `connected` and the voice-control DataChannel is open (before VoiceAgent attach/start). Voice `onPeerConnected` now means agent-ready and is safe for `ctx.speak()`; data-only sessions emit transport-ready then connected together. Teardown after transport-ready uses `onPeerDisconnected` (not `onPeerSignalingLost`).

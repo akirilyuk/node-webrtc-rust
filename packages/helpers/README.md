@@ -31,7 +31,7 @@ npm run ci:pre-push
 | `VoiceAgentSessionHost`                | One signaling room; spawns one `VoiceAgent` + PC per browser client   |
 | `startMultiClientVoiceServer`          | One room, many tabs — wraps signaling + host + `/api/capacity`        |
 | `VoiceAgentSessionHost.broadcastSpeak` | TTS `text` on every connected client in the room                      |
-| `VoiceSessionHandler`                  | Per-tab hooks: `onSpeechEvent` (STT/VAD) and `onSpeakRequest` (TTS)   |
+| `VoiceSessionHandler`                  | Per-tab hooks: transport/agent lifecycle, STT/VAD, speak requests     |
 | `VoiceSessionBudget`                   | Process-wide cap (`VOICE_MAX_CONCURRENT_SESSIONS`)                    |
 | `VOICE_AGENT_SERVER_PEER_ID`           | Stable server peer id for signaling joins                             |
 | `createKickFrame`, PCM constants       | RTP prime / 20 ms frame conventions                                   |
@@ -120,10 +120,25 @@ Each browser tab = one `VoiceAgent`; Sherpa ONNX weights are pooled in the nativ
 
 Pass a `VoiceSessionHandler` (or set `hostOptions.voiceHandler` on the host). Use `ctx.speak(text)` to play TTS on that tab's outbound track.
 
+Peer lifecycle has two phases:
+
+1. **`onPeerTransportReady`** — `RTCPeerConnection` is `connected` and the voice-control DataChannel is open. Safe for billing/capacity; VoiceAgent may not be attached yet (do not call `ctx.speak` here in voice mode).
+2. **`onPeerConnected`** — voice: after `VoiceAgent.attach()` + `VoiceAgent.start()` (safe for `ctx.speak`); data-only: immediately after transport-ready.
+
+Teardown after transport-ready uses `onPeerDisconnected`. Only peers that never reached transport-ready get `onPeerSignalingLost`.
+
 ```typescript
 import { startMultiClientVoiceServer, type VoiceSessionHandler } from '@node-webrtc-rust/helpers'
 
 const voiceHandler: VoiceSessionHandler = {
+  async onPeerTransportReady(ctx) {
+    // PC + control channel ready — optional billing/capacity hook
+    console.log('transport ready', ctx.peerId)
+  },
+  async onPeerConnected(ctx) {
+    // VoiceAgent started — safe to speak
+    await ctx.speak('ready')
+  },
   async onSpeechEvent(ctx, event) {
     if (event.type === 'user_speech_final' && event.text) {
       await ctx.speak(`You said: ${event.text}`)
@@ -156,5 +171,6 @@ await localTrack.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
 ## Design notes
 
 - **One `VoiceAgent` per WebRTC connection** — intentional; no multiplexing inside the agent.
+- **Transport before agent** — billing/capacity can use `onPeerTransportReady`; app TTS belongs in `onPeerConnected`.
 - **Disconnect = cleanup** — `VoiceAgent.stop()` and `RTCPeerConnection.close()` run in `VoiceAgentSessionHost`.
 - **Scale pods by CPU/RAM**, not one process per call — see multi-session pod example README.

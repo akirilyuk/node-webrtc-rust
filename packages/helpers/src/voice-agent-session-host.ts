@@ -65,7 +65,11 @@ interface ClientSession {
   agent?: VoiceAgent
   agentOut?: LocalAudioTrack
   inboundTrack?: RemoteAudioTrack
+  /** True only after `VoiceAgent.attach()` + `VoiceAgent.start()` completed successfully. */
   agentStarted: boolean
+  /** Guards concurrent `startAgentSession` attempts; cleared on failure so a retry can proceed. */
+  agentStartInProgress: boolean
+  peerTransportReadyNotified: boolean
   peerConnectedNotified: boolean
   peerSignalingJoined: boolean
   unwireControl?: () => void
@@ -282,6 +286,8 @@ export class VoiceAgentSessionHost {
       syncChannel,
       agent,
       agentStarted: false,
+      agentStartInProgress: false,
+      peerTransportReadyNotified: false,
       peerConnectedNotified: false,
       peerSignalingJoined: true,
       remoteDescriptionSet: false,
@@ -337,9 +343,8 @@ export class VoiceAgentSessionHost {
       if (pc.connectionState === 'connected') {
         this.clearTransportDisconnectTimer(session)
         this.reconnectAttempts.delete(peerId)
-        if (dataOnly) {
-          this.maybeNotifyPeerConnected(peerId, session)
-        } else if (inboundPromise) {
+        this.maybeNotifyPeerLifecycle(peerId, session)
+        if (!dataOnly && inboundPromise) {
           void this.startAgentSession(peerId, inboundPromise).catch((error: unknown) => {
             console.error(`Failed to start VoiceAgent for ${peerId}:`, error)
           })
@@ -390,7 +395,7 @@ export class VoiceAgentSessionHost {
         session.unwireControl = () => {
           controlChannel.onmessage = previousOnMessage
         }
-        this.maybeNotifyPeerConnected(peerId, session)
+        this.maybeNotifyPeerLifecycle(peerId, session)
         return
       }
 
@@ -415,9 +420,8 @@ export class VoiceAgentSessionHost {
             }
           : undefined,
       })
-      // VoiceAgent may finish startAgentSession before the control DC opens; the first
-      // maybeNotifyPeerConnected then no-ops. Data-only mode already retries here.
-      this.maybeNotifyPeerConnected(peerId, session)
+      // Transport or agent start may complete before the control DC opens; retry here.
+      this.maybeNotifyPeerLifecycle(peerId, session)
     }
 
     if (syncChannel) {
@@ -448,22 +452,45 @@ export class VoiceAgentSessionHost {
     }
   }
 
-  private maybeNotifyPeerConnected(peerId: string, session: ClientSession): void {
-    if (session.peerConnectedNotified) return
+  /**
+   * Idempotent readiness transitions: transport-ready (PC + control open), then
+   * connected (voice: `agentStarted`; data-only: transport-ready alone).
+   * Safe to call from PC state changes, control `onopen`, and agent start completion.
+   */
+  private maybeNotifyPeerLifecycle(peerId: string, session: ClientSession): void {
     if (session.pc.connectionState !== 'connected') return
     if (session.controlChannel.readyState !== 'open') return
-    session.peerConnectedNotified = true
+
     const ctx = this.createSessionContext(
       peerId,
       session.agent,
       session.controlChannel,
       session.syncChannel,
     )
-    void Promise.resolve(this.options.voiceHandler?.onPeerConnected?.(ctx)).catch(
-      (error: unknown) => {
+    const voiceHandler = this.options.voiceHandler
+
+    if (!session.peerTransportReadyNotified) {
+      session.peerTransportReadyNotified = true
+      try {
+        void Promise.resolve(voiceHandler?.onPeerTransportReady?.(ctx)).catch((error: unknown) => {
+          console.error(`[session ${peerId}] voiceHandler.onPeerTransportReady failed:`, error)
+        })
+      } catch (error: unknown) {
+        console.error(`[session ${peerId}] voiceHandler.onPeerTransportReady failed:`, error)
+      }
+    }
+
+    const agentReady = this.sessionMode === 'data-only' || session.agentStarted
+    if (session.peerConnectedNotified || !agentReady) return
+
+    session.peerConnectedNotified = true
+    try {
+      void Promise.resolve(voiceHandler?.onPeerConnected?.(ctx)).catch((error: unknown) => {
         console.error(`[session ${peerId}] voiceHandler.onPeerConnected failed:`, error)
-      },
-    )
+      })
+    } catch (error: unknown) {
+      console.error(`[session ${peerId}] voiceHandler.onPeerConnected failed:`, error)
+    }
   }
 
   private async startAgentSession(
@@ -471,22 +498,52 @@ export class VoiceAgentSessionHost {
     inboundPromise: Promise<RemoteAudioTrack>,
   ): Promise<void> {
     const session = this.sessions.get(peerId)
-    if (!session || session.agentStarted || !session.agent || !session.agentOut) return
-    session.agentStarted = true
+    if (
+      !session ||
+      session.agentStarted ||
+      session.agentStartInProgress ||
+      !session.agent ||
+      !session.agentOut
+    ) {
+      return
+    }
+    session.agentStartInProgress = true
 
-    session.inboundTrack = await inboundPromise
-    await session.agent.attach({
-      inboundTrack: session.inboundTrack,
-      outboundTrack: session.agentOut,
-    })
-    await session.agent.start()
+    let agentRunning = false
+    try {
+      session.inboundTrack = await inboundPromise
+      const live = this.sessions.get(peerId)
+      if (!live || live !== session || !session.agent || !session.agentOut) return
 
-    session.unwireSpeechForward?.()
-    session.unwireSpeechForward = this.wireSpeechEvents(peerId, session)
+      await session.agent.attach({
+        inboundTrack: session.inboundTrack,
+        outboundTrack: session.agentOut,
+      })
+      await session.agent.start()
+      agentRunning = true
 
-    await session.agentOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
-    this.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
-    this.maybeNotifyPeerConnected(peerId, session)
+      if (this.sessions.get(peerId) !== session) {
+        await session.agent.stop().catch(() => undefined)
+        return
+      }
+
+      session.unwireSpeechForward?.()
+      session.unwireSpeechForward = this.wireSpeechEvents(peerId, session)
+
+      await session.agentOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
+      session.agentStarted = true
+      this.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
+      this.maybeNotifyPeerLifecycle(peerId, session)
+    } catch (error) {
+      if (agentRunning && !session.agentStarted) {
+        session.unwireSpeechForward?.()
+        session.unwireSpeechForward = undefined
+        await session.agent?.stop().catch(() => undefined)
+      }
+      throw error
+    } finally {
+      session.agentStartInProgress = false
+    }
   }
 
   private createSessionContext(
@@ -710,7 +767,7 @@ export class VoiceAgentSessionHost {
       this.sessionBudget.release(peerId)
       return
     }
-    if (session.peerConnectedNotified) {
+    if (session.peerTransportReadyNotified) {
       const ctx = this.createSessionContext(
         peerId,
         session.agent,

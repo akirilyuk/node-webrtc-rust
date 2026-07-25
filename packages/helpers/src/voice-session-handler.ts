@@ -34,15 +34,30 @@ export interface VoiceSessionContext {
  * Implement this in your app (see `examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`).
  */
 export interface VoiceSessionHandler {
-  /** Called when a browser peer's WebRTC session is ready (voice: after VoiceAgent start). */
+  /**
+   * Peer connection is `connected` and the voice-control DataChannel is open.
+   * `VoiceAgent` may not be attached/started yet — do **not** call {@link VoiceSessionContext.speak}
+   * here for voice sessions. Use for early billing/capacity signals.
+   *
+   * For data-only sessions this fires immediately before {@link onPeerConnected}.
+   */
+  onPeerTransportReady?: (ctx: VoiceSessionContext) => void | Promise<void>
+
+  /**
+   * Session is ready for app logic that needs the voice pipeline.
+   * Voice mode: fires after `VoiceAgent.attach()` and `VoiceAgent.start()` — safe for
+   * {@link VoiceSessionContext.speak}. Data-only: fires right after {@link onPeerTransportReady}.
+   */
   onPeerConnected?: (ctx: VoiceSessionContext) => void | Promise<void>
 
   /** Called when a browser peer disconnects (before teardown). */
   onPeerDisconnected?: (ctx: VoiceSessionContext) => void | Promise<void>
 
   /**
-   * Called when signaling/WebRTC setup started but billable connect never completed
-   * (peer-left or transport closed before {@link onPeerConnected}).
+   * Called when signaling/WebRTC setup started but transport readiness never completed
+   * (peer-left or transport closed before {@link onPeerTransportReady}).
+   * After transport-ready, teardown uses {@link onPeerDisconnected} even if
+   * {@link onPeerConnected} has not fired yet.
    */
   onPeerSignalingLost?: (ctx: VoiceSessionContext) => void | Promise<void>
 

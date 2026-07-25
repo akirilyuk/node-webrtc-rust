@@ -111,6 +111,17 @@ jobs:
       cached_host: ${{ steps.plan.outputs.cached_host }}
       all_cached: ${{ steps.plan.outputs.all_cached }}
     steps:
+      # Root-owned node_modules/target from prior Docker jobs break checkout clean
+      # (same pattern as release.yml plan job / PR #24).
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/plan-native-builds
@@ -124,6 +135,7 @@ jobs:
       !cancelled() &&
       needs.validate-package-lock.result == 'success' &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       (
         needs.plan.outputs.linux_x64_matrix != '[]' ||
         needs.plan.outputs.build_linux_arm64 == 'true' ||
@@ -143,6 +155,7 @@ jobs:
       !cancelled() &&
       needs.validate-package-lock.result == 'success' &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       needs.plan.outputs.host_matrix != '[]'
     uses: ./.github/workflows/reusable-build-host.yml
     with:
@@ -156,6 +169,7 @@ jobs:
       !cancelled() &&
       needs.validate-package-lock.result == 'success' &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       (
         needs.plan.outputs.cached_linux_x64 != '[]' ||
         needs.plan.outputs.cached_linux_arm64 == 'true' ||
@@ -184,6 +198,7 @@ jobs:
       !cancelled() &&
       needs.validate-package-lock.result == 'success' &&
       needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
       (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
       (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&

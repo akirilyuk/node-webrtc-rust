@@ -47,6 +47,14 @@ fn voice_debug(message: impl AsRef<str>) {
     }
 }
 
+/// Prefer the inner `Internal` payload so callers see the original drain/writer text once.
+fn playback_failure_message(error: &SpeechError) -> String {
+    match error {
+        SpeechError::Internal(message) => message.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Synthetic silence fed to STT before finalize — aligned with Sherpa roundtrip harness.
 fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
     vad.min_silence_duration_ms.max(400).min(600)
@@ -103,6 +111,10 @@ struct AgentInner {
     barge_awaiting_stt_partial: bool,
     /// Semantic barge already fired for the current agent playback generation.
     stt_barge_fired_this_agent_playback: bool,
+    /// Bumped when TTS drain fails or playback wait times out so blocking jobs observe the error.
+    tts_playback_failure_gen: u64,
+    /// Original failure text for the latest playback abort (paired with `tts_playback_failure_gen`).
+    tts_playback_last_error: Option<String>,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
 }
@@ -216,6 +228,8 @@ impl VoiceAgent {
                 partials_emitted_this_utterance: false,
                 barge_awaiting_stt_partial: false,
                 stt_barge_fired_this_agent_playback: false,
+                tts_playback_failure_gen: 0,
+                tts_playback_last_error: None,
                 pcm_writer: None,
                 pcm_reader: None,
             })),
@@ -643,7 +657,7 @@ impl VoiceAgent {
         )
         .await;
         tts_drain_wake.notify_one();
-        Self::wait_job_playback_idle(tts_buffer, inner).await
+        Self::wait_job_playback_idle(tts_buffer, inner, event_bus).await
     }
 
     async fn ensure_tts_drain_worker_shared(
@@ -667,26 +681,81 @@ impl VoiceAgent {
                 if let Err(error) = VoiceAgent::run_tts_drain(&tts_buffer, &inner, &event_bus).await
                 {
                     voice_debug(format!("TTS drain error: {error}"));
+                    let message = playback_failure_message(&error);
+                    VoiceAgent::abort_tts_playback_failure(
+                        &tts_buffer,
+                        &inner,
+                        &event_bus,
+                        message,
+                    )
+                    .await;
                 }
             }
         }));
     }
 
+    /// Flush buffered TTS, reset speaking state, emit error (+ speaking_end when needed), and
+    /// publish a failure generation so blocking waiters observe the original error.
+    async fn abort_tts_playback_failure(
+        tts_buffer: &TtsBuffer,
+        inner: &Arc<Mutex<AgentInner>>,
+        event_bus: &SpeechEventBus,
+        message: impl Into<String>,
+    ) {
+        let message = message.into();
+        // Record failure before clearing idle flags so waiters never treat abort as success.
+        let emit_speaking_end = {
+            let mut guard = inner.lock().await;
+            guard.tts_playback_failure_gen = guard.tts_playback_failure_gen.wrapping_add(1);
+            guard.tts_playback_last_error = Some(message.clone());
+            let was_speaking = guard.agent_speaking;
+            guard.agent_speaking = false;
+            guard.agent_speaking_since = None;
+            guard.barge_awaiting_stt_partial = false;
+            guard.stt_barge_fired_this_agent_playback = false;
+            was_speaking
+        };
+        tts_buffer.flush().await;
+        event_bus.emit(SpeechEvent::error(message.clone()));
+        if emit_speaking_end {
+            event_bus.emit(SpeechEvent::agent_speaking_end());
+        }
+        voice_debug(format!(
+            "TTS playback aborted: {message} (speaking_end={emit_speaking_end})"
+        ));
+    }
+
     async fn wait_job_playback_idle(
         tts_buffer: &TtsBuffer,
         inner: &Arc<Mutex<AgentInner>>,
+        event_bus: &SpeechEventBus,
     ) -> SpeechResult<()> {
+        let failure_gen_at_start = {
+            let guard = inner.lock().await;
+            guard.tts_playback_failure_gen
+        };
         let deadline = Instant::now() + std::time::Duration::from_secs(45);
         loop {
-            let agent_speaking = inner.lock().await.agent_speaking;
-            let queued = tts_buffer.is_speaking().await;
-            if !agent_speaking && !queued {
-                return Ok(());
+            {
+                let guard = inner.lock().await;
+                if guard.tts_playback_failure_gen != failure_gen_at_start {
+                    let message = guard
+                        .tts_playback_last_error
+                        .clone()
+                        .unwrap_or_else(|| "TTS playback failed".into());
+                    return Err(SpeechError::Internal(message));
+                }
+                let agent_speaking = guard.agent_speaking;
+                drop(guard);
+                let queued = tts_buffer.is_speaking().await;
+                if !agent_speaking && !queued {
+                    return Ok(());
+                }
             }
             if Instant::now() >= deadline {
-                return Err(SpeechError::Internal(
-                    "timed out waiting for TTS job playback".into(),
-                ));
+                let message = "timed out waiting for TTS job playback";
+                Self::abort_tts_playback_failure(tts_buffer, inner, event_bus, message).await;
+                return Err(SpeechError::Internal(message.into()));
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }

@@ -1,6 +1,7 @@
 /**
  * Echo voice handler — same semantics as e2e/fixtures/echo-agent and runner echo child:
- * - speak "ready" when a client peer connects
+ * - speak "ready" on `onPeerConnected` (agent-ready: VoiceAgent attach/start completed;
+ *   safe for `ctx.speak`. Transport-only readiness is `onPeerTransportReady` — unused here.)
  * - speak `echo:{text}` on user_speech_final
  * - speak `echo:{text}` on voice-control chat messages (except voice-control probes)
  *
@@ -38,6 +39,7 @@ async function speakToClient(ctx: VoiceSessionContext, text: string): Promise<vo
 }
 
 export const echoVoiceHandler: VoiceSessionHandler = {
+  // Agent-ready only — do not move ready TTS to onPeerTransportReady (VoiceAgent may not be attached).
   async onPeerConnected(ctx) {
     if (isSpeechEventLogEnabled()) {
       console.error(`[echo-pod] onPeerConnected peer=${ctx.peerId} room=${ctx.roomId}`)

@@ -305,6 +305,12 @@ export class SessionPod {
     if (!handler && !this.teardownIdle) return handler
     return {
       ...handler,
+      onPeerTransportReady: (ctx) => {
+        if (this.teardownIdle) {
+          this.cancelTeardownTimer(sessionId)
+        }
+        return handler?.onPeerTransportReady?.(ctx)
+      },
       onPeerConnected: (ctx) => {
         if (this.teardownIdle) {
           this.cancelTeardownTimer(sessionId)

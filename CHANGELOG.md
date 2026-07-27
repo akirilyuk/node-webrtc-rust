@@ -8,10 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.6.17] — 2026-07-27
+
+Awaitable peer cleanup so session capacity is not reused while native WebRTC or agent resources are still shutting down.
+
 ### Added
 
 - **`@node-webrtc-rust/sdk`** — `RTCPeerConnection.closeAsync()` awaits native peer cleanup. Standards `close(): void` remains fire-and-forget and shares the same single-flight promise (idempotent; concurrent `close`/`closeAsync` call native close once).
-- **`@node-webrtc-rust/helpers`** — `VoiceAgentSessionHost.disconnectPeer` / session teardown release session budget only after `closeAsync()` completes (bounded timeout so teardown cannot hang). `SessionPod.disconnectPeer` is awaitable.
+- **`@node-webrtc-rust/helpers`** — `VoiceAgentSessionHost.disconnectPeer` / session teardown release session budget only after `closeAsync()` completes (bounded timeout so teardown cannot hang). FIFO per-peer ops, opaque capacity leases, and awaitable `SessionPod.disconnectPeer`.
 
 ---
 

@@ -3,11 +3,18 @@
  *
  * Used by {@link VoiceAgentSessionHost} and {@link SessionPod} so one Node worker
  * can enforce `VOICE_MAX_CONCURRENT_SESSIONS` from the environment or an injected limit.
+ *
+ * Leases are opaque tokens — not keyed by peerId. Each successful acquire returns a
+ * unique lease; {@link release} requires that token. Cross-host / same-peerId sessions
+ * each hold independent leases and each count toward capacity.
  */
+
+/** Opaque lease id returned by {@link VoiceSessionBudget.tryAcquire}. */
+export type VoiceSessionLease = string
 
 /** Snapshot for health endpoints and orchestrator hooks. */
 export interface VoiceSessionBudgetSnapshot {
-  /** Active slots (one per connected client peer). */
+  /** Active slots (one per outstanding lease). */
   active: number
   /** Configured maximum (`0` means unlimited). */
   max: number
@@ -40,6 +47,7 @@ export interface VoiceSessionBudgetOptions {
 }
 
 let processBudget: VoiceSessionBudget | undefined
+let nextLeaseSeq = 1
 
 /**
  * Shared budget for this Node process (lazy-created from env on first use).
@@ -64,13 +72,19 @@ export function resolveMaxVoiceSessionsFromEnv(env: NodeJS.ProcessEnv = process.
   return Math.floor(parsed)
 }
 
+function mintLeaseId(): VoiceSessionLease {
+  const seq = nextLeaseSeq++
+  return `vlease-${seq}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 /**
  * Limits how many {@link VoiceAgentSessionHost} client connections may be active at once.
  */
 export class VoiceSessionBudget {
   private active = 0
   private rejectedTotal = 0
-  private readonly slots = new Map<string, number>()
+  /** Outstanding opaque leases. */
+  private readonly leases = new Set<VoiceSessionLease>()
 
   constructor(private readonly maxSessions: number) {}
 
@@ -87,34 +101,43 @@ export class VoiceSessionBudget {
   }
 
   /**
-   * Reserve a slot for `peerId`. Idempotent for the same peer (re-entrant connect).
+   * Reserve one capacity slot. Returns an opaque lease token, or `null` if full.
+   * Not keyed by peerId — callers store the token on their session.
    */
-  tryAcquire(peerId: string): boolean {
-    if (this.slots.has(peerId)) {
-      return true
-    }
+  tryAcquire(_peerId?: string): VoiceSessionLease | null {
     if (!this.isUnlimited && this.active >= this.maxSessions) {
       this.rejectedTotal += 1
-      return false
+      return null
     }
-    this.slots.set(peerId, 1)
+    const lease = mintLeaseId()
+    this.leases.add(lease)
     this.active += 1
-    return true
+    return lease
   }
 
   /**
    * Reserve a slot or throw {@link VoiceSessionBudgetFullError}.
    */
-  acquire(peerId: string): void {
-    if (!this.tryAcquire(peerId)) {
+  acquire(peerId?: string): VoiceSessionLease {
+    const lease = this.tryAcquire(peerId)
+    if (lease == null) {
       throw new VoiceSessionBudgetFullError(this.snapshot(), peerId)
     }
+    return lease
   }
 
-  /** Release a slot when the client disconnects. */
-  release(peerId: string): void {
-    if (!this.slots.delete(peerId)) return
+  /**
+   * Release a previously acquired lease. Unknown / already-released tokens are no-ops.
+   */
+  release(lease: VoiceSessionLease | null | undefined): void {
+    if (lease == null) return
+    if (!this.leases.delete(lease)) return
     this.active = Math.max(0, this.active - 1)
+  }
+
+  /** True when `lease` is currently held. */
+  hasLease(lease: VoiceSessionLease): boolean {
+    return this.leases.has(lease)
   }
 
   snapshot(): VoiceSessionBudgetSnapshot {

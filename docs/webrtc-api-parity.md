@@ -103,7 +103,8 @@ How closely `@node-webrtc-rust/sdk` matches the browser **WebRTC 1.0** APIs ([W3
 
 | API                                        | Status | Notes                                                           |
 | ------------------------------------------ | ------ | --------------------------------------------------------------- |
-| `close()`                                  | ✅     | Fire-and-forget async native close                              |
+| `close()`                                  | ✅     | Fire-and-forget; shares single-flight with `closeAsync()`       |
+| `closeAsync()`                             | ➕ ✅  | Awaitable native cleanup (Node SDK extension; not in browsers)  |
 | `restartIce()`                             | ✅     | Triggers native ICE restart + negotiation-needed                |
 | `getStats(selector?)`                      | ✅     | `selector` ignored; returns `Map` like browser `RTCStatsReport` |
 | `sctp` / `iceTransport` / `dtlsTransport`  | ❌     | No transport object exposure                                    |
@@ -203,20 +204,20 @@ Browser: `ontrack` → attach to `<audio>` or WebAudio.
 
 ## `RTCDataChannel`
 
-| API                                            | Status | Notes                                                           |
-| ---------------------------------------------- | ------ | --------------------------------------------------------------- |
-| `label`, `ordered`, `protocol`, `id`           | 🟡     | Init options partially forwarded                                |
-| `maxPacketLifeTime` / `maxRetransmits`         | 🟡     | In init type; verify native SCTP mapping                        |
-| `negotiated`                                   | 🟡     |                                                                 |
-| `readyState`                                   | ✅     |                                                                 |
-| `send(string \| Buffer \| ArrayBuffer \| Uint8Array)` | ✅     | `Buffer` passed through on send when already a Buffer           |
-| `close()`                                      | ✅     |                                                                 |
-| `binaryType`                                   | ✅     | `'arraybuffer'` returns `ArrayBuffer` on receive; default `Buffer` |
-| `bufferedAmount`                               | ✅     | Cached property synced from native after send and on low events |
-| `bufferedAmountLowThreshold`                   | ✅     | Forwarded to SCTP stack                                         |
-| `onopen` / `onmessage` / `onclose` / `onerror` | ✅     |                                                                 |
-| `onbufferedamountlow`                          | ✅     |                                                                 |
-| `send()` before open                           | ➕     | Queued until native channel ready                               |
+| API                                                   | Status | Notes                                                              |
+| ----------------------------------------------------- | ------ | ------------------------------------------------------------------ |
+| `label`, `ordered`, `protocol`, `id`                  | 🟡     | Init options partially forwarded                                   |
+| `maxPacketLifeTime` / `maxRetransmits`                | 🟡     | In init type; verify native SCTP mapping                           |
+| `negotiated`                                          | 🟡     |                                                                    |
+| `readyState`                                          | ✅     |                                                                    |
+| `send(string \| Buffer \| ArrayBuffer \| Uint8Array)` | ✅     | `Buffer` passed through on send when already a Buffer              |
+| `close()`                                             | ✅     |                                                                    |
+| `binaryType`                                          | ✅     | `'arraybuffer'` returns `ArrayBuffer` on receive; default `Buffer` |
+| `bufferedAmount`                                      | ✅     | Cached property synced from native after send and on low events    |
+| `bufferedAmountLowThreshold`                          | ✅     | Forwarded to SCTP stack                                            |
+| `onopen` / `onmessage` / `onclose` / `onerror`        | ✅     |                                                                    |
+| `onbufferedamountlow`                                 | ✅     |                                                                    |
+| `send()` before open                                  | ➕     | Queued until native channel ready                                  |
 
 ---
 

@@ -77,6 +77,8 @@ function fromNativeDescription(desc: JsRtcSessionDescription): RTCSessionDescrip
  */
 export class RTCPeerConnection extends EventEmitter {
   private readonly native: NativePeerConnection
+  /** Shared in-flight native close; makes close()/closeAsync() idempotent and single-flight. */
+  private closePromise: Promise<void> | null = null
   private _localDescription: RTCSessionDescription | null = null
   private _remoteDescription: RTCSessionDescription | null = null
   private _configuration: RTCConfiguration
@@ -379,12 +381,53 @@ export class RTCPeerConnection extends EventEmitter {
     return new Map(Object.entries(parsed))
   }
 
-  /** Closes the connection and releases native resources. */
+  /**
+   * Closes the connection and releases native resources.
+   *
+   * Signature-compatible with W3C `close(): void` (fire-and-forget). Native cleanup is
+   * asynchronous — this does **not** synchronously force `connectionState === "closed"`.
+   * Prefer {@link closeAsync} when session capacity must wait for native teardown.
+   */
   close(): void {
     debugFn('sdk::RTCPeerConnection', 'close')
-    void this.native.close().catch((error: unknown) => {
-      this.reportWebRtcError('peer connection close failed', 'disconnect', error)
+    void this.closeAsync().catch(() => {
+      // Errors are already reported inside closeAsync.
     })
+  }
+
+  /**
+   * Awaitable peer cleanup. Idempotent and single-flight with {@link close}: concurrent
+   * close/closeAsync callers share one native.close() and the same completion promise.
+   *
+   * The in-flight promise is registered **before** native work so synchronous reentrancy
+   * from error handlers cannot start a second native close. Rejects if native close fails
+   * (after reporting via the connection-error path).
+   */
+  closeAsync(): Promise<void> {
+    if (this.closePromise) {
+      return this.closePromise
+    }
+    debugFn('sdk::RTCPeerConnection', 'closeAsync')
+    let resolveFlight!: () => void
+    let rejectFlight!: (error: unknown) => void
+    this.closePromise = new Promise<void>((resolve, reject) => {
+      resolveFlight = resolve
+      rejectFlight = reject
+    })
+    void (async () => {
+      try {
+        await this.native.close()
+        resolveFlight()
+      } catch (error: unknown) {
+        try {
+          this.reportWebRtcError('peer connection close failed', 'disconnect', error)
+        } catch {
+          // Reporting / root listeners must not prevent settle.
+        }
+        rejectFlight(error)
+      }
+    })()
+    return this.closePromise
   }
 
   private reportWebRtcError(

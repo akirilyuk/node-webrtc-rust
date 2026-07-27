@@ -27,6 +27,7 @@ type FakeSession = {
   }
   agentOut?: { writeSample: ReturnType<typeof vi.fn> }
   inboundTrack?: unknown
+  budgetLease: string
   agentStarted: boolean
   agentStartInProgress: boolean
   peerTransportReadyNotified: boolean
@@ -46,7 +47,7 @@ type HostTestAccess = VoiceAgentSessionHost & {
   sessionMode: 'voice' | 'data-only'
   maybeNotifyPeerLifecycle: (peerId: string, session: FakeSession) => void
   startAgentSession: (peerId: string, inboundPromise: Promise<unknown>) => Promise<void>
-  closeClient: (peerId: string) => void
+  closeClientInner: (peerId: string) => Promise<void>
   createSessionContext: (
     peerId: string,
     agent: FakeSession['agent'],
@@ -71,7 +72,7 @@ function createHost(
     voiceHandler,
     sessionMode,
     sessionBudget: {
-      tryAcquire: () => true,
+      tryAcquire: () => 'lease-test',
       release: () => undefined,
       snapshot: () => ({ active: 0, max: 0, available: 0, rejectedTotal: 0 }),
     },
@@ -99,6 +100,7 @@ function createFakeSession(overrides: Partial<FakeSession> = {}): FakeSession {
     agentOut: {
       writeSample: vi.fn(async () => undefined),
     },
+    budgetLease: 'lease-test',
     agentStarted: false,
     agentStartInProgress: false,
     peerTransportReadyNotified: false,
@@ -237,7 +239,7 @@ describe('VoiceAgentSessionHost peer lifecycle', () => {
     consoleError.mockRestore()
   })
 
-  it('disconnect between transport-ready and agent-ready uses onPeerDisconnected', () => {
+  it('disconnect between transport-ready and agent-ready uses onPeerDisconnected', async () => {
     const disconnected: string[] = []
     const signalingLost: string[] = []
     const host = createHost({
@@ -256,13 +258,13 @@ describe('VoiceAgentSessionHost peer lifecycle', () => {
     expect(session.peerTransportReadyNotified).toBe(true)
     expect(session.peerConnectedNotified).toBe(false)
 
-    host.closeClient('client-mid')
+    await host.disconnectPeer('client-mid')
 
     expect(disconnected).toEqual(['client-mid'])
     expect(signalingLost).toEqual([])
   })
 
-  it('pre-transport teardown uses onPeerSignalingLost', () => {
+  it('pre-transport teardown uses onPeerSignalingLost', async () => {
     const disconnected: string[] = []
     const signalingLost: string[] = []
     const host = createHost({
@@ -282,7 +284,7 @@ describe('VoiceAgentSessionHost peer lifecycle', () => {
     host.maybeNotifyPeerLifecycle('client-early', session)
     expect(session.peerTransportReadyNotified).toBe(false)
 
-    host.closeClient('client-early')
+    await host.disconnectPeer('client-early')
 
     expect(signalingLost).toEqual(['client-early'])
     expect(disconnected).toEqual([])

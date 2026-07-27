@@ -38,6 +38,7 @@ import {
   getProcessVoiceSessionBudget,
   type VoiceSessionBudget,
   type VoiceSessionBudgetSnapshot,
+  type VoiceSessionLease,
 } from './voice-session-budget.js'
 import { flushVoiceControlChannel } from './control-channel-flush.js'
 import type {
@@ -48,6 +49,53 @@ import type {
 
 /** Debounce before tearing down a peer after ICE/PC disconnect (allows brief blips). */
 const PEER_TRANSPORT_DISCONNECT_GRACE_MS = 5_000
+/** Bound native peer cleanup so session budget release cannot hang forever. */
+const PEER_NATIVE_CLOSE_TIMEOUT_MS = 5_000
+
+type AwaitablePeerConnection = RTCPeerConnection & {
+  closeAsync?: () => Promise<void>
+}
+
+async function awaitPeerConnectionClosed(
+  pc: AwaitablePeerConnection,
+  timeoutMs: number,
+): Promise<{ status: 'closed' | 'timeout' | 'sync' | 'error'; error?: unknown }> {
+  if (typeof pc.closeAsync === 'function') {
+    let timedOut = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let error: unknown
+    const closeWork = (async () => {
+      try {
+        await pc.closeAsync!()
+      } catch (err: unknown) {
+        error = err
+      }
+    })()
+    try {
+      await Promise.race([
+        closeWork,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            timedOut = true
+            resolve()
+          }, timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+    if (timedOut) return { status: 'timeout' }
+    // closeWork finished (errors swallowed into `error`).
+    if (error !== undefined) return { status: 'error', error }
+    return { status: 'closed' }
+  }
+  try {
+    pc.close()
+  } catch (error: unknown) {
+    return { status: 'error', error }
+  }
+  return { status: 'sync' }
+}
 
 export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
 
@@ -65,6 +113,8 @@ interface ClientSession {
   agent?: VoiceAgent
   agentOut?: LocalAudioTrack
   inboundTrack?: RemoteAudioTrack
+  /** Opaque budget lease for this session (not peerId-keyed). */
+  budgetLease: VoiceSessionLease
   /** True only after `VoiceAgent.attach()` + `VoiceAgent.start()` completed successfully. */
   agentStarted: boolean
   /** Guards concurrent `startAgentSession` attempts; cleared on failure so a retry can proceed. */
@@ -126,6 +176,17 @@ export class VoiceAgentSessionHost {
   private readonly sessionMode: 'voice' | 'data-only'
   /** Per-peer WebRTC reconnect attempts after `connectionState=failed`. */
   private readonly reconnectAttempts = new Map<string, number>()
+  /** In-flight peer teardowns (counted for host close / idle teardown). */
+  private readonly closingPeers = new Map<string, Promise<void>>()
+  /** In-flight connects (counted for host close / idle teardown). */
+  private readonly connectingPeers = new Map<string, Promise<void>>()
+  /**
+   * Per-peer FIFO queue of connect/close work. Public signaling events enqueue;
+   * queued ops call private `*Inner` methods directly (no nested enqueue / depth bypass).
+   */
+  private readonly peerOpTail = new Map<string, Promise<unknown>>()
+  /** Host is shutting down — reject new connects. */
+  private hostClosing = false
 
   constructor(
     private readonly signaling: SignalingClient,
@@ -141,16 +202,26 @@ export class VoiceAgentSessionHost {
       if (peerId === VOICE_AGENT_SERVER_PEER_ID) return
       if (!peerId.startsWith(this.clientPeerIdPrefix)) return
       this.log(
-        `[voice ${peerId}] peer-joined — connectClient starting (activeClients=${this.sessions.size}, mode=${this.sessionMode})`,
+        `[voice ${peerId}] peer-joined — connectClient starting (activeClients=${this.activeClientCount}, mode=${this.sessionMode})`,
       )
-      // Same tab id can re-join after refresh without a clean peer-left (stale VoiceAgent/PC).
-      if (this.sessions.has(peerId)) {
-        this.log(`[voice ${peerId}] peer re-joined — replacing stale session`)
-        this.closeClient(peerId)
-      }
-      void this.connectClient(peerId).catch((error: unknown) => {
-        console.error(`Failed to connect client ${peerId}:`, error)
-        this.closeClient(peerId)
+      // Queued: close-during-connect runs after connect; reconnect-during-close waits then acquires a new lease.
+      void this.enqueuePeerOp(peerId, async () => {
+        if (this.hostClosing) {
+          this.log(`[voice ${peerId}] peer-joined ignored — host is closing`)
+          return
+        }
+        if (this.sessions.has(peerId)) {
+          this.log(`[voice ${peerId}] peer re-joined — replacing stale session`)
+          await this.closeClientInner(peerId)
+        }
+        try {
+          await this.connectClientInner(peerId)
+        } catch (error: unknown) {
+          console.error(`Failed to connect client ${peerId}:`, error)
+          await this.closeClientInner(peerId)
+        }
+      }).catch((error: unknown) => {
+        console.error(`Failed to handle peer-joined for ${peerId}:`, error)
       })
     })
 
@@ -163,18 +234,33 @@ export class VoiceAgentSessionHost {
     })
 
     this.signaling.on('peer-left', (peerId) => {
-      this.closeClient(peerId)
+      void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch(
+        (error: unknown) => {
+          console.error(`Failed to close client ${peerId} after peer-left:`, error)
+        },
+      )
     })
   }
 
-  /** Number of active browser clients (each owns one VoiceAgent + RTCPeerConnection). */
+  /**
+   * Active + connecting + closing browser peers (for idle teardown / capacity).
+   * Closing peers stay counted so SessionPod does not tear down early.
+   */
   get activeClientCount(): number {
-    return this.sessions.size
+    const ids = new Set<string>([
+      ...this.sessions.keys(),
+      ...this.closingPeers.keys(),
+      ...this.connectingPeers.keys(),
+    ])
+    return ids.size
   }
 
-  /** Disconnect one browser peer and release its session budget slot. */
-  disconnectPeer(peerId: string): void {
-    this.closeClient(peerId)
+  /**
+   * Disconnect one browser peer and release its session budget slot after native
+   * peer cleanup completes (or the bounded close timeout elapses).
+   */
+  async disconnectPeer(peerId: string): Promise<void> {
+    await this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId))
   }
 
   /** Current process session budget (active / max / rejected). */
@@ -229,13 +315,58 @@ export class VoiceAgentSessionHost {
   }
 
   async close(): Promise<void> {
-    for (const peerId of [...this.sessions.keys()]) {
-      this.closeClient(peerId)
+    this.hostClosing = true
+    const connecting = [...this.connectingPeers.values()]
+    if (connecting.length > 0) {
+      await Promise.allSettled(connecting)
+    }
+    const peerIds = new Set<string>([
+      ...this.sessions.keys(),
+      ...this.closingPeers.keys(),
+      ...this.connectingPeers.keys(),
+    ])
+    await Promise.all(
+      [...peerIds].map((peerId) =>
+        this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch((error: unknown) => {
+          console.error(`[voice ${peerId}] host close peer teardown failed:`, error)
+        }),
+      ),
+    )
+    const stillClosing = [...this.closingPeers.values()]
+    if (stillClosing.length > 0) {
+      await Promise.allSettled(stillClosing)
     }
   }
 
-  private async connectClient(peerId: string): Promise<void> {
-    if (!this.sessionBudget.tryAcquire(peerId)) {
+  /**
+   * FIFO per-peer serializer. Unrelated signaling events wait their turn.
+   * Callers must invoke private `*Inner` methods from `op` — never re-enter
+   * {@link enqueuePeerOp} for the same peer (avoids self-deadlock without depth bypass).
+   */
+  private enqueuePeerOp<T>(peerId: string, op: () => Promise<T>): Promise<T> {
+    const prev = this.peerOpTail.get(peerId) ?? Promise.resolve()
+    const run = prev.catch(() => undefined).then(op)
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.peerOpTail.set(peerId, tail)
+    void tail.finally(() => {
+      if (this.peerOpTail.get(peerId) === tail) {
+        this.peerOpTail.delete(peerId)
+      }
+    })
+    return run
+  }
+
+  private async connectClientInner(peerId: string): Promise<void> {
+    if (this.hostClosing) {
+      this.log(`[voice ${peerId}] connect skipped — host is closing`)
+      return
+    }
+
+    const budgetLease = this.sessionBudget.tryAcquire(peerId)
+    if (budgetLease == null) {
       const snap = this.sessionBudget.snapshot()
       console.error(
         '[voice-agent-session-host] session budget reject — peer was routed to this runner but process cap is full; check orchestrator assignment',
@@ -247,16 +378,89 @@ export class VoiceAgentSessionHost {
       return
     }
 
+    let resolveConnecting!: () => void
+    const connectingFlight = new Promise<void>((resolve) => {
+      resolveConnecting = resolve
+    })
+    this.connectingPeers.set(peerId, connectingFlight)
+
+    const partial: {
+      budgetLease: VoiceSessionLease
+      pc?: RTCPeerConnection
+      agent?: VoiceAgent
+      registered: boolean
+    } = { budgetLease, registered: false }
     try {
-      await this.connectClientInner(peerId)
+      await this.connectClientBuildSession(peerId, budgetLease, {
+        onPeerCreated: (pc) => {
+          partial.pc = pc
+        },
+        onAgentCreated: (agent) => {
+          partial.agent = agent
+        },
+        onRegistered: (built) => {
+          partial.pc = built.pc
+          partial.agent = built.agent
+          partial.registered = true
+        },
+      })
     } catch (error: unknown) {
-      this.closeClient(peerId)
+      await this.teardownPartialConnect(peerId, partial)
       throw error
+    } finally {
+      resolveConnecting()
+      this.connectingPeers.delete(peerId)
     }
   }
 
-  private async connectClientInner(peerId: string): Promise<void> {
+  private async teardownPartialConnect(
+    peerId: string,
+    partial: {
+      budgetLease: VoiceSessionLease
+      pc?: RTCPeerConnection
+      agent?: VoiceAgent
+      registered: boolean
+    },
+  ): Promise<void> {
+    if (partial.registered) {
+      // Registered sessions own the lease until closeClientInner releases it.
+      await this.closeClientInner(peerId)
+      return
+    }
+    try {
+      const stopAgent = (async () => {
+        if (!partial.agent) return
+        try {
+          await partial.agent.stop()
+        } catch {
+          /* ignore */
+        }
+      })()
+      const closePeer = partial.pc
+        ? awaitPeerConnectionClosed(partial.pc, PEER_NATIVE_CLOSE_TIMEOUT_MS)
+        : Promise.resolve({ status: 'sync' as const })
+      await Promise.race([
+        Promise.all([stopAgent, closePeer]),
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, PEER_NATIVE_CLOSE_TIMEOUT_MS)
+        }),
+      ])
+    } finally {
+      this.sessionBudget.release(partial.budgetLease)
+    }
+  }
+
+  private async connectClientBuildSession(
+    peerId: string,
+    budgetLease: VoiceSessionLease,
+    hooks: {
+      onPeerCreated: (pc: RTCPeerConnection) => void
+      onAgentCreated: (agent: VoiceAgent) => void
+      onRegistered: (built: { pc: RTCPeerConnection; agent?: VoiceAgent }) => void
+    },
+  ): Promise<void> {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers })
+    hooks.onPeerCreated(pc)
     const dataOnly = this.sessionMode === 'data-only'
 
     const controlChannel = pc.createDataChannel(VOICE_CONTROL_CHANNEL_LABEL, { ordered: true })
@@ -276,6 +480,7 @@ export class VoiceAgentSessionHost {
     } else {
       agentOut = new LocalAudioTrack(`agent-out-${peerId}`, 'voice-agent')
       agent = new VoiceAgent(this.options.voiceConfig)
+      hooks.onAgentCreated(agent)
       await pc.addTrack(agentOut)
     }
 
@@ -285,6 +490,7 @@ export class VoiceAgentSessionHost {
       controlChannel,
       syncChannel,
       agent,
+      budgetLease,
       agentStarted: false,
       agentStartInProgress: false,
       peerTransportReadyNotified: false,
@@ -296,6 +502,7 @@ export class VoiceAgentSessionHost {
       pendingIce: [],
     }
     this.sessions.set(peerId, session)
+    hooks.onRegistered({ pc, agent })
 
     if (!dataOnly && agent) {
       inboundPromise = new Promise<RemoteAudioTrack>((resolve, reject) => {
@@ -305,7 +512,7 @@ export class VoiceAgentSessionHost {
       void inboundPromise.catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         this.log(`[voice ${peerId}] ${message}`)
-        this.closeClient(peerId)
+        this.voidCloseClient(peerId)
       })
 
       pc.ontrack = (event) => {
@@ -333,7 +540,7 @@ export class VoiceAgentSessionHost {
         this.scheduleTransportDisconnect(peerId, session)
       } else if (iceState === 'failed' || iceState === 'closed') {
         this.clearTransportDisconnectTimer(session)
-        this.closeClient(peerId)
+        this.voidCloseClient(peerId)
       }
     }
 
@@ -354,7 +561,7 @@ export class VoiceAgentSessionHost {
       } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.clearTransportDisconnectTimer(session)
         this.log(`[${tag} ${peerId}] connection ${pc.connectionState} — closing peer`)
-        this.closeClient(peerId)
+        this.voidCloseClient(peerId)
       }
     }
 
@@ -362,7 +569,7 @@ export class VoiceAgentSessionHost {
       if (!this.sessions.has(peerId)) return
       const tag = dataOnly ? 'data' : 'voice'
       this.log(`[${tag} ${peerId}] control channel closed`)
-      this.closeClient(peerId)
+      this.voidCloseClient(peerId)
     }
 
     controlChannel.onopen = () => {
@@ -714,7 +921,7 @@ export class VoiceAgentSessionHost {
       this.log(`[${tag} ${peerId}] answer applied, connectionState=${session.pc.connectionState}`)
     } catch (error: unknown) {
       console.error(`Failed to apply answer from ${peerId}:`, error)
-      this.closeClient(peerId)
+      this.voidCloseClient(peerId)
     }
   }
 
@@ -756,56 +963,155 @@ export class VoiceAgentSessionHost {
         this.log(
           `[${tag} ${peerId}] transport still down after ${PEER_TRANSPORT_DISCONNECT_GRACE_MS}ms — closing peer`,
         )
-        this.closeClient(peerId)
+        this.voidCloseClient(peerId)
       }
     }, PEER_TRANSPORT_DISCONNECT_GRACE_MS)
   }
 
-  private closeClient(peerId: string): void {
-    const session = this.sessions.get(peerId)
-    if (!session) {
-      this.sessionBudget.release(peerId)
+  /** Fire-and-forget close queued on the per-peer serializer. */
+  private voidCloseClient(peerId: string): void {
+    void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch((error: unknown) => {
+      console.error(`[voice ${peerId}] closeClient failed:`, error)
+    })
+  }
+
+  /**
+   * Tear down one peer. Must be invoked from {@link enqueuePeerOp} (or already-queued work).
+   * Budget release happens after agent+peer teardown (or bounded timeout) in finally.
+   * Lifecycle hooks are nonblocking so they cannot stall cleanup.
+   */
+  private async closeClientInner(peerId: string): Promise<void> {
+    const inFlight = this.closingPeers.get(peerId)
+    if (inFlight) {
+      await inFlight
       return
     }
-    if (session.peerTransportReadyNotified) {
-      const ctx = this.createSessionContext(
-        peerId,
-        session.agent,
-        session.controlChannel,
-        session.syncChannel,
-      )
-      void Promise.resolve(this.options.voiceHandler?.onPeerDisconnected?.(ctx)).catch(
-        (error: unknown) => {
-          console.error(`[session ${peerId}] voiceHandler.onPeerDisconnected failed:`, error)
-        },
-      )
-    } else if (session.peerSignalingJoined) {
-      const ctx = this.createSessionContext(
-        peerId,
-        session.agent,
-        session.controlChannel,
-        session.syncChannel,
-      )
-      void Promise.resolve(this.options.voiceHandler?.onPeerSignalingLost?.(ctx)).catch(
-        (error: unknown) => {
-          console.error(`[session ${peerId}] voiceHandler.onPeerSignalingLost failed:`, error)
-        },
-      )
+
+    let resolveFlight!: () => void
+    const flight = new Promise<void>((resolve) => {
+      resolveFlight = resolve
+    })
+    this.closingPeers.set(peerId, flight)
+
+    try {
+      await this.closeClientTeardown(peerId)
+    } finally {
+      this.closingPeers.delete(peerId)
+      resolveFlight()
     }
-    this.clearMicTrackTimer(session)
-    this.clearTransportDisconnectTimer(session)
-    session.resolveMicTrack = undefined
-    session.rejectMicTrack = undefined
-    session.unwireControl?.()
-    session.unwireSync?.()
-    session.unwireSpeechForward?.()
-    if (session.agent) {
-      void session.agent.stop().catch(() => undefined)
+  }
+
+  private async closeClientTeardown(peerId: string): Promise<void> {
+    const session = this.sessions.get(peerId)
+    if (!session) {
+      return
     }
-    session.pc.close()
-    this.sessions.delete(peerId)
-    this.sessionBudget.release(peerId)
-    const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
-    this.log(`[${tag} ${peerId}] session stopped, connection closed`)
+    const budgetLease = session.budgetLease
+    const errors: unknown[] = []
+
+    // Outer finally always releases the lease — including when unwire/hooks throw.
+    try {
+      // Remove from the live map before teardown so reconnect can replace;
+      // peer stays counted via closingPeers until this flight finishes.
+      this.sessions.delete(peerId)
+
+      if (session.peerTransportReadyNotified) {
+        const ctx = this.createSessionContext(
+          peerId,
+          session.agent,
+          session.controlChannel,
+          session.syncChannel,
+        )
+        // Promise.resolve().then contains sync throws from the hook body.
+        void Promise.resolve()
+          .then(() => this.options.voiceHandler?.onPeerDisconnected?.(ctx))
+          .catch((error: unknown) => {
+            console.error(`[session ${peerId}] voiceHandler.onPeerDisconnected failed:`, error)
+          })
+      } else if (session.peerSignalingJoined) {
+        const ctx = this.createSessionContext(
+          peerId,
+          session.agent,
+          session.controlChannel,
+          session.syncChannel,
+        )
+        void Promise.resolve()
+          .then(() => this.options.voiceHandler?.onPeerSignalingLost?.(ctx))
+          .catch((error: unknown) => {
+            console.error(`[session ${peerId}] voiceHandler.onPeerSignalingLost failed:`, error)
+          })
+      }
+
+      this.clearMicTrackTimer(session)
+      this.clearTransportDisconnectTimer(session)
+      session.resolveMicTrack = undefined
+      session.rejectMicTrack = undefined
+      try {
+        session.unwireControl?.()
+      } catch (error: unknown) {
+        console.error(`[session ${peerId}] unwireControl failed:`, error)
+      }
+      try {
+        session.unwireSync?.()
+      } catch (error: unknown) {
+        console.error(`[session ${peerId}] unwireSync failed:`, error)
+      }
+      try {
+        session.unwireSpeechForward?.()
+      } catch (error: unknown) {
+        console.error(`[session ${peerId}] unwireSpeechForward failed:`, error)
+      }
+
+      const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+      const agent = session.agent
+      session.agent = undefined
+
+      let timedOut = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const stopAgent = (async () => {
+        if (!agent) return
+        try {
+          await agent.stop()
+        } catch (error: unknown) {
+          console.error(`[${tag} ${peerId}] VoiceAgent.stop failed:`, error)
+          errors.push(error)
+        }
+      })()
+      const closePeer = awaitPeerConnectionClosed(session.pc, PEER_NATIVE_CLOSE_TIMEOUT_MS)
+      try {
+        await Promise.race([
+          Promise.all([stopAgent, closePeer]),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              timedOut = true
+              resolve()
+            }, PEER_NATIVE_CLOSE_TIMEOUT_MS)
+          }),
+        ])
+      } finally {
+        if (timer) clearTimeout(timer)
+      }
+      if (timedOut) {
+        this.log(
+          `[${tag} ${peerId}] agent/peer teardown timed out after ${PEER_NATIVE_CLOSE_TIMEOUT_MS}ms — releasing session budget`,
+        )
+      } else {
+        const closeResult = await closePeer
+        if (closeResult.status === 'error' && closeResult.error !== undefined) {
+          console.error(`[${tag} ${peerId}] native peer close failed:`, closeResult.error)
+          errors.push(closeResult.error)
+        }
+        this.log(`[${tag} ${peerId}] session stopped, connection closed (${closeResult.status})`)
+      }
+    } finally {
+      this.sessionBudget.release(budgetLease)
+    }
+
+    if (errors.length === 1) {
+      throw errors[0]
+    }
+    if (errors.length > 1) {
+      throw new AggregateError(errors, `closeClient ${peerId} had ${errors.length} errors`)
+    }
   }
 }

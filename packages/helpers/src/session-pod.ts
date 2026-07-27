@@ -261,13 +261,25 @@ export class SessionPod {
     )
   }
 
+  /**
+   * Schedule idle teardown only after the host has no live, connecting, or closing peers.
+   * `onPeerDisconnected` runs mid-close while the peer is still counted as active.
+   */
   private maybeScheduleIdleTeardownAfterLastPeer(sessionId: string): void {
     if (!this.teardownIdle) return
-    setTimeout(() => {
+    const deadline = Date.now() + 15_000
+    const poll = (): void => {
       const slot = this.slots.get(sessionId)
-      if (!slot || slot.host.activeClientCount > 0) return
+      if (!slot) return
+      if (slot.host.activeClientCount > 0) {
+        if (Date.now() < deadline) {
+          setTimeout(poll, 25)
+        }
+        return
+      }
       this.scheduleIdleTeardown(sessionId)
-    }, 0)
+    }
+    setTimeout(poll, 0)
   }
 
   private bindAgentSignalingReconnect(slot: SessionSlot): void {
@@ -330,12 +342,13 @@ export class SessionPod {
 
   /**
    * Disconnect one browser peer. Tears down the room when this was the last peer.
+   * Awaits host peer cleanup (native close) before checking idle teardown.
    */
-  disconnectPeer(sessionId: string, peerId: string, endReason?: string): void {
+  async disconnectPeer(sessionId: string, peerId: string, endReason?: string): Promise<void> {
     const slot = this.slots.get(sessionId)
     if (!slot) return
 
-    slot.host.disconnectPeer(peerId)
+    await slot.host.disconnectPeer(peerId)
     if (slot.host.activeClientCount === 0) {
       this.scheduleIdleTeardown(sessionId, endReason)
     }

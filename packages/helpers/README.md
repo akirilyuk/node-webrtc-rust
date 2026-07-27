@@ -172,5 +172,5 @@ await localTrack.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
 
 - **One `VoiceAgent` per WebRTC connection** — intentional; no multiplexing inside the agent.
 - **Transport before agent** — billing/capacity can use `onPeerTransportReady`; app TTS belongs in `onPeerConnected`.
-- **Disconnect = cleanup** — `VoiceAgent.stop()` and `RTCPeerConnection.close()` run in `VoiceAgentSessionHost`.
+- **Disconnect = cleanup** — `VoiceAgent.stop()` and awaitable `RTCPeerConnection.closeAsync()` run in `VoiceAgentSessionHost`. Session budget slots are released only after native peer cleanup completes (or a bounded timeout), so capacity is not reused while TURN/ICE sockets are still draining.
 - **Scale pods by CPU/RAM**, not one process per call — see multi-session pod example README.

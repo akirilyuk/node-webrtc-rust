@@ -14,8 +14,9 @@ describe('three clients in one room (session budget)', () => {
   it('accepts three peers when unlimited', () => {
     const budget = new VoiceSessionBudget(0)
     const peers = ['client-tab1', 'client-tab2', 'client-tab3']
-    for (const peerId of peers) {
-      expect(budget.tryAcquire(peerId)).toBe(true)
+    const leases = peers.map((peerId) => budget.tryAcquire(peerId))
+    for (const lease of leases) {
+      expect(lease).toBeTypeOf('string')
     }
     expect(budget.snapshot().active).toBe(3)
     expect(budget.snapshot().rejectedTotal).toBe(0)
@@ -23,9 +24,9 @@ describe('three clients in one room (session budget)', () => {
 
   it('rejects the third peer when max is 2 (deployment cap)', () => {
     const budget = new VoiceSessionBudget(2)
-    expect(budget.tryAcquire('client-tab1')).toBe(true)
-    expect(budget.tryAcquire('client-tab2')).toBe(true)
-    expect(budget.tryAcquire('client-tab3')).toBe(false)
+    expect(budget.tryAcquire('client-tab1')).toBeTypeOf('string')
+    expect(budget.tryAcquire('client-tab2')).toBeTypeOf('string')
+    expect(budget.tryAcquire('client-tab3')).toBeNull()
 
     const snap = budget.snapshot()
     expect(snap.active).toBe(2)
@@ -36,12 +37,14 @@ describe('three clients in one room (session budget)', () => {
 
   it('allows a new tab after one disconnects', () => {
     const budget = new VoiceSessionBudget(2)
-    budget.tryAcquire('client-tab1')
-    budget.tryAcquire('client-tab2')
-    expect(budget.tryAcquire('client-tab3')).toBe(false)
+    const a = budget.tryAcquire('client-tab1')
+    const b = budget.tryAcquire('client-tab2')
+    expect(a).toBeTypeOf('string')
+    expect(b).toBeTypeOf('string')
+    expect(budget.tryAcquire('client-tab3')).toBeNull()
 
-    budget.release('client-tab1')
-    expect(budget.tryAcquire('client-tab3')).toBe(true)
+    budget.release(a!)
+    expect(budget.tryAcquire('client-tab3')).toBeTypeOf('string')
     expect(budget.snapshot().active).toBe(2)
   })
 })

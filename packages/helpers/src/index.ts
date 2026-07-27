@@ -43,6 +43,7 @@ export {
   resolveMaxVoiceSessionsFromEnv,
   type VoiceSessionBudgetOptions,
   type VoiceSessionBudgetSnapshot,
+  type VoiceSessionLease,
 } from './voice-session-budget.js'
 
 export {

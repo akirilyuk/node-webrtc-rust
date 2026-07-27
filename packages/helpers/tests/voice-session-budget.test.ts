@@ -14,17 +14,20 @@ describe('VoiceSessionBudget', () => {
 
   it('allows unlimited sessions when max is 0', () => {
     const budget = new VoiceSessionBudget(0)
-    expect(budget.tryAcquire('client-1')).toBe(true)
-    expect(budget.tryAcquire('client-2')).toBe(true)
+    expect(budget.tryAcquire('client-1')).toBeTypeOf('string')
+    expect(budget.tryAcquire('client-2')).toBeTypeOf('string')
     expect(budget.snapshot().max).toBe(0)
     expect(budget.snapshot().available).toBe(Number.POSITIVE_INFINITY)
   })
 
-  it('enforces max concurrent sessions', () => {
+  it('enforces max concurrent sessions via opaque leases', () => {
     const budget = new VoiceSessionBudget(2)
-    expect(budget.tryAcquire('client-1')).toBe(true)
-    expect(budget.tryAcquire('client-2')).toBe(true)
-    expect(budget.tryAcquire('client-3')).toBe(false)
+    const a = budget.tryAcquire('client-1')
+    const b = budget.tryAcquire('client-2')
+    expect(a).toBeTypeOf('string')
+    expect(b).toBeTypeOf('string')
+    expect(a).not.toBe(b)
+    expect(budget.tryAcquire('client-3')).toBeNull()
     expect(budget.snapshot()).toMatchObject({
       active: 2,
       max: 2,
@@ -33,20 +36,30 @@ describe('VoiceSessionBudget', () => {
     })
   })
 
-  it('releases slots on disconnect', () => {
+  it('releases only with the opaque lease token', () => {
     const budget = new VoiceSessionBudget(1)
-    expect(budget.tryAcquire('client-1')).toBe(true)
-    expect(budget.tryAcquire('client-2')).toBe(false)
-    budget.release('client-1')
-    expect(budget.tryAcquire('client-2')).toBe(true)
+    const lease = budget.tryAcquire('client-1')
+    expect(lease).toBeTypeOf('string')
+    expect(budget.tryAcquire('client-2')).toBeNull()
+    budget.release('not-a-real-lease')
     expect(budget.snapshot().active).toBe(1)
+    budget.release(lease!)
+    expect(budget.snapshot().active).toBe(0)
+    expect(budget.tryAcquire('client-2')).toBeTypeOf('string')
   })
 
-  it('tryAcquire is idempotent per peerId', () => {
-    const budget = new VoiceSessionBudget(1)
-    expect(budget.tryAcquire('client-1')).toBe(true)
-    expect(budget.tryAcquire('client-1')).toBe(true)
+  it('same peerId across hosts each consume capacity (opaque leases)', () => {
+    const budget = new VoiceSessionBudget(2)
+    const hostA = budget.tryAcquire('client-same')
+    const hostB = budget.tryAcquire('client-same')
+    expect(hostA).toBeTypeOf('string')
+    expect(hostB).toBeTypeOf('string')
+    expect(hostA).not.toBe(hostB)
+    expect(budget.snapshot().active).toBe(2)
+    expect(budget.tryAcquire('client-other')).toBeNull()
+    budget.release(hostA!)
     expect(budget.snapshot().active).toBe(1)
+    expect(budget.hasLease(hostB!)).toBe(true)
   })
 
   it('acquire throws VoiceSessionBudgetFullError', () => {

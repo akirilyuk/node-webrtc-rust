@@ -8,6 +8,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`@node-webrtc-rust/sdk`** — `RTCPeerConnection.closeAsync()` awaits native peer cleanup. Standards `close(): void` remains fire-and-forget and shares the same single-flight promise (idempotent; concurrent `close`/`closeAsync` call native close once).
+- **`@node-webrtc-rust/helpers`** — `VoiceAgentSessionHost.disconnectPeer` / session teardown release session budget only after `closeAsync()` completes (bounded timeout so teardown cannot hang). `SessionPod.disconnectPeer` is awaitable.
+
 ---
 
 ## [0.6.16] — 2026-07-25
@@ -65,7 +70,7 @@ Release NAPI builds always compile with `--features otel` so published `@node-we
 
 ## [0.6.11] — 2026-07-17
 
-**Compare:** [`release/0.6.10…release/0.6.11`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.10...release/0.6.11) *(or `release/0.6.9…release/0.6.11` if 0.6.10 was helpers-only)*
+**Compare:** [`release/0.6.10…release/0.6.11`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.10...release/0.6.11) _(or `release/0.6.9…release/0.6.11` if 0.6.10 was helpers-only)_
 
 Optional OpenTelemetry for the voice pipeline (Cargo feature `otel`, default off) plus `VoiceSessionContext` / W3C `traceparent` on `VoiceAgent.start`.
 
@@ -208,7 +213,7 @@ Concurrent Sherpa TTS across sessions, helpers billing/disconnect improvements (
 
 ## [0.5.11] — 2026-06-20
 
-**Compare:** [`@node-webrtc-rust/helpers@0.5.10…0.5.11`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.10...release/0.5.11) *(helpers-only release)*
+**Compare:** [`@node-webrtc-rust/helpers@0.5.10…0.5.11`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.10...release/0.5.11) _(helpers-only release)_
 
 Connection-gated billing: signal when a client leaves before billable WebRTC connect completes.
 
@@ -220,7 +225,7 @@ Connection-gated billing: signal when a client leaves before billable WebRTC con
 
 ## [0.5.10] — 2026-06-20
 
-**Compare:** [`@node-webrtc-rust/helpers@0.5.7…0.5.10`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.7...release/0.5.10) *(helpers + signaling server defaults)*
+**Compare:** [`@node-webrtc-rust/helpers@0.5.7…0.5.10`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.5.7...release/0.5.10) _(helpers + signaling server defaults)_
 
 Faster disconnect detection and shorter reconnect window for connection-gated session billing.
 

@@ -8,11 +8,19 @@ export {
   createKickFrame,
 } from './pcm.js'
 
+/**
+ * Capability marker for capacity-safe teardown / quarantine APIs.
+ * Runners must refuse startup when this export is missing or below 1.
+ */
+export const HELPERS_CAPACITY_SAFE_TEARDOWN = 1 as const
+
 export {
   VOICE_AGENT_SERVER_PEER_ID,
   SERVER_PEER_ID,
   VoiceAgentSessionHost,
   type VoiceAgentSessionHostOptions,
+  type PeerCloseOutcome,
+  type TeardownComponentStatus,
 } from './voice-agent-session-host.js'
 
 export {
@@ -30,10 +38,14 @@ export {
 export {
   SessionPod,
   type SessionPodChangeEvent,
+  type SessionPodCloseOutcome,
   type SessionPodOptions,
   type SessionPodSessionInfo,
 } from './session-pod.js'
-export { SessionPodCapacityFullError } from './session-pod-errors.js'
+export {
+  SessionPodCapacityFullError,
+  SessionPodRecycleRequiredError,
+} from './session-pod-errors.js'
 
 export {
   VoiceSessionBudget,

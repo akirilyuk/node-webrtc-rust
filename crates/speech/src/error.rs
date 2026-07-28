@@ -29,6 +29,11 @@ pub enum SpeechError {
     #[error("STT error: {0}")]
     Stt(String),
 
+    /// Tokio TTS worker join timed out (vendor `spawn_blocking` may still run).
+    /// Hosts must quarantine / recycle — do not treat as a clean stop.
+    #[error("TTS shutdown unhealthy: worker join timed out (recycle required)")]
+    TtsShutdownUnhealthy,
+
     #[error("internal error: {0}")]
     Internal(String),
 }

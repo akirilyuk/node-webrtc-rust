@@ -56,19 +56,62 @@ type AwaitablePeerConnection = RTCPeerConnection & {
   closeAsync?: () => Promise<void>
 }
 
+/** Per-component teardown status for capacity-safe close. */
+export type TeardownComponentStatus = 'ok' | 'timed_out' | 'failed' | 'absent'
+
+/** Strict combined outcome of peer close + agent stop (capacity-safe teardown). */
+export type PeerCloseOutcome =
+  | { status: 'closed'; pc: 'ok' | 'absent'; agent: 'ok' | 'absent' }
+  | {
+      status: 'timed_out'
+      quarantined: true
+      pc: TeardownComponentStatus
+      agent: TeardownComponentStatus
+    }
+  | {
+      status: 'failed'
+      quarantined: true
+      pc: TeardownComponentStatus
+      agent: TeardownComponentStatus
+      error?: unknown
+    }
+  | { status: 'absent' }
+
+type NativeCloseRaceResult = {
+  status: 'ok' | 'timed_out' | 'failed'
+  error?: unknown
+  /**
+   * When status is `timed_out`, settles later with the eventual native result so
+   * quarantine can clear exactly once if both PC and agent are confirmed safe.
+   */
+  pending?: Promise<'ok' | 'failed'>
+}
+
+type AgentStopRaceResult = {
+  status: 'ok' | 'timed_out' | 'failed' | 'absent'
+  error?: unknown
+  pending?: Promise<'ok' | 'failed'>
+}
+
 async function awaitPeerConnectionClosed(
   pc: AwaitablePeerConnection,
   timeoutMs: number,
-): Promise<{ status: 'closed' | 'timeout' | 'sync' | 'error'; error?: unknown }> {
+): Promise<NativeCloseRaceResult> {
   if (typeof pc.closeAsync === 'function') {
     let timedOut = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    let settlePending!: (value: 'ok' | 'failed') => void
+    const pending = new Promise<'ok' | 'failed'>((resolve) => {
+      settlePending = resolve
+    })
     let error: unknown
     const closeWork = (async () => {
       try {
         await pc.closeAsync!()
+        settlePending('ok')
       } catch (err: unknown) {
         error = err
+        settlePending('failed')
       }
     })()
     try {
@@ -84,17 +127,61 @@ async function awaitPeerConnectionClosed(
     } finally {
       if (timer) clearTimeout(timer)
     }
-    if (timedOut) return { status: 'timeout' }
-    // closeWork finished (errors swallowed into `error`).
-    if (error !== undefined) return { status: 'error', error }
-    return { status: 'closed' }
+    if (timedOut) return { status: 'timed_out', pending }
+    if (error !== undefined) return { status: 'failed', error }
+    return { status: 'ok' }
   }
   try {
     pc.close()
   } catch (error: unknown) {
-    return { status: 'error', error }
+    return { status: 'failed', error }
   }
-  return { status: 'sync' }
+  return { status: 'ok' }
+}
+
+async function awaitAgentStopped(
+  agent: { stop: () => Promise<void> } | undefined,
+  timeoutMs: number,
+): Promise<AgentStopRaceResult> {
+  if (!agent) {
+    return { status: 'absent' }
+  }
+  let timedOut = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let settlePending!: (value: 'ok' | 'failed') => void
+  const pending = new Promise<'ok' | 'failed'>((resolve) => {
+    settlePending = resolve
+  })
+  let error: unknown
+  const stopWork = (async () => {
+    try {
+      await agent.stop()
+      settlePending('ok')
+    } catch (err: unknown) {
+      error = err
+      settlePending('failed')
+    }
+  })()
+  try {
+    await Promise.race([
+      stopWork,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true
+          resolve()
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+  if (timedOut) return { status: 'timed_out', pending }
+  if (error !== undefined) return { status: 'failed', error }
+  return { status: 'ok' }
+}
+
+function componentOk(status: TeardownComponentStatus): boolean {
+  return status === 'ok' || status === 'absent'
 }
 
 export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
@@ -177,7 +264,7 @@ export class VoiceAgentSessionHost {
   /** Per-peer WebRTC reconnect attempts after `connectionState=failed`. */
   private readonly reconnectAttempts = new Map<string, number>()
   /** In-flight peer teardowns (counted for host close / idle teardown). */
-  private readonly closingPeers = new Map<string, Promise<void>>()
+  private readonly closingPeers = new Map<string, Promise<PeerCloseOutcome>>()
   /** In-flight connects (counted for host close / idle teardown). */
   private readonly connectingPeers = new Map<string, Promise<void>>()
   /**
@@ -187,6 +274,22 @@ export class VoiceAgentSessionHost {
   private readonly peerOpTail = new Map<string, Promise<unknown>>()
   /** Host is shutting down — reject new connects. */
   private hostClosing = false
+  /**
+   * Leases held after PC close and/or agent stop timed out / failed.
+   * Keeps budget occupied until both sides converge safely or process recycle.
+   */
+  private readonly quarantinedLeases = new Set<VoiceSessionLease>()
+  /** True while any quarantine remains — host must not admit replacement work. */
+  private recycleRequired = false
+  /** Late PC/agent convergence waiters keyed by lease (cleared on release). */
+  private readonly quarantineWaits = new Map<
+    VoiceSessionLease,
+    {
+      peerId: string
+      pc?: 'ok' | 'failed' | 'pending'
+      agent?: 'ok' | 'failed' | 'pending'
+    }
+  >()
 
   constructor(
     private readonly signaling: SignalingClient,
@@ -256,16 +359,35 @@ export class VoiceAgentSessionHost {
   }
 
   /**
-   * Disconnect one browser peer and release its session budget slot after native
-   * peer cleanup completes (or the bounded close timeout elapses).
+   * Disconnect one browser peer. Releases the session budget slot only after
+   * native peer cleanup confirms closed. Timed-out / failed native close
+   * quarantines the lease (capacity stays occupied; host becomes non-assignable).
    */
-  async disconnectPeer(peerId: string): Promise<void> {
-    await this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId))
+  async disconnectPeer(peerId: string): Promise<PeerCloseOutcome> {
+    return this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId))
   }
 
-  /** Current process session budget (active / max / rejected). */
+  /** Current process session budget plus host quarantine / recycle signal. */
   get sessionBudgetSnapshot(): VoiceSessionBudgetSnapshot {
-    return this.sessionBudget.snapshot()
+    const snap = this.sessionBudget.snapshot()
+    return {
+      ...snap,
+      quarantined: this.quarantinedLeases.size,
+      recycleRequired: this.recycleRequired,
+    }
+  }
+
+  /** Native-close quarantines that still occupy capacity. */
+  get quarantinedCount(): number {
+    return this.quarantinedLeases.size
+  }
+
+  /**
+   * True when this host must not accept new peers — orchestrator / SessionPod
+   * should treat the runner as non-assignable until recycle.
+   */
+  get isRecycleRequired(): boolean {
+    return this.recycleRequired
   }
 
   /**
@@ -364,6 +486,12 @@ export class VoiceAgentSessionHost {
       this.log(`[voice ${peerId}] connect skipped — host is closing`)
       return
     }
+    if (this.recycleRequired) {
+      this.log(
+        `[voice ${peerId}] connect skipped — host recycle required (quarantined=${this.quarantinedLeases.size})`,
+      )
+      return
+    }
 
     const budgetLease = this.sessionBudget.tryAcquire(peerId)
     if (budgetLease == null) {
@@ -427,26 +555,24 @@ export class VoiceAgentSessionHost {
       await this.closeClientInner(peerId)
       return
     }
-    try {
-      const stopAgent = (async () => {
-        if (!partial.agent) return
-        try {
-          await partial.agent.stop()
-        } catch {
-          /* ignore */
-        }
-      })()
-      const closePeer = partial.pc
+    this.reconnectAttempts.delete(peerId)
+    const [closeResult, agentResult] = await Promise.all([
+      partial.pc
         ? awaitPeerConnectionClosed(partial.pc, PEER_NATIVE_CLOSE_TIMEOUT_MS)
-        : Promise.resolve({ status: 'sync' as const })
-      await Promise.race([
-        Promise.all([stopAgent, closePeer]),
-        new Promise<void>((resolve) => {
-          setTimeout(resolve, PEER_NATIVE_CLOSE_TIMEOUT_MS)
-        }),
-      ])
-    } finally {
-      this.sessionBudget.release(partial.budgetLease)
+        : Promise.resolve({ status: 'ok' as const } satisfies NativeCloseRaceResult),
+      awaitAgentStopped(partial.agent, PEER_NATIVE_CLOSE_TIMEOUT_MS),
+    ])
+    const outcome = this.finalizeTeardownCapacity(
+      peerId,
+      partial.budgetLease,
+      closeResult,
+      agentResult,
+      'partial-connect',
+    )
+    if (outcome.status === 'failed' || outcome.status === 'timed_out') {
+      this.log(
+        `[voice ${peerId}] partial connect teardown quarantined (pc=${outcome.pc}, agent=${outcome.agent})`,
+      )
     }
   }
 
@@ -980,138 +1106,224 @@ export class VoiceAgentSessionHost {
    * Budget release happens after agent+peer teardown (or bounded timeout) in finally.
    * Lifecycle hooks are nonblocking so they cannot stall cleanup.
    */
-  private async closeClientInner(peerId: string): Promise<void> {
+  private async closeClientInner(peerId: string): Promise<PeerCloseOutcome> {
     const inFlight = this.closingPeers.get(peerId)
     if (inFlight) {
-      await inFlight
-      return
+      return inFlight
     }
 
-    let resolveFlight!: () => void
-    const flight = new Promise<void>((resolve) => {
-      resolveFlight = resolve
+    const flight = this.closeClientTeardown(peerId).finally(() => {
+      this.closingPeers.delete(peerId)
     })
     this.closingPeers.set(peerId, flight)
+    return flight
+  }
 
-    try {
-      await this.closeClientTeardown(peerId)
-    } finally {
-      this.closingPeers.delete(peerId)
-      resolveFlight()
+  private quarantineLease(lease: VoiceSessionLease, peerId: string, reason: string): void {
+    if (this.quarantinedLeases.has(lease)) return
+    this.quarantinedLeases.add(lease)
+    this.recycleRequired = true
+    this.log(
+      `[voice ${peerId}] quarantined lease after ${reason} (quarantined=${this.quarantinedLeases.size}) — capacity held; recycle required`,
+    )
+  }
+
+  private releaseQuarantinedLease(lease: VoiceSessionLease, peerId: string): void {
+    if (!this.quarantinedLeases.delete(lease)) return
+    this.quarantineWaits.delete(lease)
+    // Budget.release is token-idempotent — safe if already released.
+    this.sessionBudget.release(lease)
+    if (this.quarantinedLeases.size === 0) {
+      this.recycleRequired = false
+      this.log(`[voice ${peerId}] quarantine cleared — host assignable again`)
+    } else {
+      this.log(
+        `[voice ${peerId}] released one quarantine; ${this.quarantinedLeases.size} remain — recycle still required`,
+      )
     }
   }
 
-  private async closeClientTeardown(peerId: string): Promise<void> {
-    const session = this.sessions.get(peerId)
-    if (!session) {
+  /**
+   * Release capacity only when both PC close and agent stop are confirmed.
+   * Otherwise quarantine and optionally wait for late dual convergence.
+   */
+  private finalizeTeardownCapacity(
+    peerId: string,
+    lease: VoiceSessionLease,
+    closeResult: NativeCloseRaceResult,
+    agentResult: AgentStopRaceResult,
+    tag: string,
+  ): PeerCloseOutcome {
+    const pcStatus: TeardownComponentStatus = closeResult.status
+    const agentStatus: TeardownComponentStatus = agentResult.status
+    const bothOk = componentOk(pcStatus) && componentOk(agentStatus)
+
+    if (bothOk) {
+      this.sessionBudget.release(lease)
+      this.quarantinedLeases.delete(lease)
+      this.quarantineWaits.delete(lease)
+      if (this.quarantinedLeases.size === 0) {
+        this.recycleRequired = false
+      }
+      this.log(
+        `[${tag} ${peerId}] teardown confirmed (pc=${pcStatus}, agent=${agentStatus}) — capacity released`,
+      )
+      return {
+        status: 'closed',
+        // PC close race never yields `absent`; agent stop may.
+        pc: 'ok',
+        agent: agentStatus === 'absent' ? 'absent' : 'ok',
+      }
+    }
+
+    const reasonParts: string[] = []
+    if (!componentOk(pcStatus)) reasonParts.push(`pc=${pcStatus}`)
+    if (!componentOk(agentStatus)) reasonParts.push(`agent=${agentStatus}`)
+    const reason = reasonParts.join(', ')
+    this.quarantineLease(lease, peerId, reason)
+
+    const wait = {
+      peerId,
+      pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
+        | 'ok'
+        | 'failed'
+        | 'pending',
+      agent: (agentStatus === 'timed_out'
+        ? 'pending'
+        : componentOk(agentStatus)
+          ? 'ok'
+          : 'failed') as 'ok' | 'failed' | 'pending',
+    }
+    this.quarantineWaits.set(lease, wait)
+
+    if (closeResult.pending) {
+      void closeResult.pending
+        .then((result) => this.onLateTeardownComponent(lease, 'pc', result))
+        .catch((error: unknown) => {
+          console.error(`[voice ${peerId}] late PC close observer failed:`, error)
+          this.onLateTeardownComponent(lease, 'pc', 'failed')
+        })
+    }
+    if (agentResult.pending) {
+      void agentResult.pending
+        .then((result) => this.onLateTeardownComponent(lease, 'agent', result))
+        .catch((error: unknown) => {
+          console.error(`[voice ${peerId}] late agent stop observer failed:`, error)
+          this.onLateTeardownComponent(lease, 'agent', 'failed')
+        })
+    }
+
+    const error = agentResult.error ?? closeResult.error
+    if (pcStatus === 'failed' || agentStatus === 'failed') {
+      return {
+        status: 'failed',
+        quarantined: true,
+        pc: pcStatus,
+        agent: agentStatus,
+        ...(error !== undefined ? { error } : {}),
+      }
+    }
+    return {
+      status: 'timed_out',
+      quarantined: true,
+      pc: pcStatus,
+      agent: agentStatus,
+    }
+  }
+
+  private onLateTeardownComponent(
+    lease: VoiceSessionLease,
+    side: 'pc' | 'agent',
+    result: 'ok' | 'failed',
+  ): void {
+    const wait = this.quarantineWaits.get(lease)
+    if (!wait || !this.quarantinedLeases.has(lease)) return
+    wait[side] = result
+    if (result === 'failed') {
+      this.log(
+        `[voice ${wait.peerId}] late ${side} cleanup failed while quarantined — recycle remains required`,
+      )
       return
     }
+    if (wait.pc === 'ok' && wait.agent === 'ok') {
+      this.releaseQuarantinedLease(lease, wait.peerId)
+    }
+  }
+
+  private async closeClientTeardown(peerId: string): Promise<PeerCloseOutcome> {
+    const session = this.sessions.get(peerId)
+    if (!session) {
+      return { status: 'absent' }
+    }
     const budgetLease = session.budgetLease
-    const errors: unknown[] = []
 
-    // Outer finally always releases the lease — including when unwire/hooks throw.
+    // Remove from the live map before teardown so reconnect can replace;
+    // peer stays counted via closingPeers until this flight finishes.
+    this.sessions.delete(peerId)
+    this.reconnectAttempts.delete(peerId)
+
+    if (session.peerTransportReadyNotified) {
+      const ctx = this.createSessionContext(
+        peerId,
+        session.agent,
+        session.controlChannel,
+        session.syncChannel,
+      )
+      void Promise.resolve()
+        .then(() => this.options.voiceHandler?.onPeerDisconnected?.(ctx))
+        .catch((error: unknown) => {
+          console.error(`[session ${peerId}] voiceHandler.onPeerDisconnected failed:`, error)
+        })
+    } else if (session.peerSignalingJoined) {
+      const ctx = this.createSessionContext(
+        peerId,
+        session.agent,
+        session.controlChannel,
+        session.syncChannel,
+      )
+      void Promise.resolve()
+        .then(() => this.options.voiceHandler?.onPeerSignalingLost?.(ctx))
+        .catch((error: unknown) => {
+          console.error(`[session ${peerId}] voiceHandler.onPeerSignalingLost failed:`, error)
+        })
+    }
+
+    this.clearMicTrackTimer(session)
+    this.clearTransportDisconnectTimer(session)
+    session.resolveMicTrack = undefined
+    session.rejectMicTrack = undefined
     try {
-      // Remove from the live map before teardown so reconnect can replace;
-      // peer stays counted via closingPeers until this flight finishes.
-      this.sessions.delete(peerId)
-
-      if (session.peerTransportReadyNotified) {
-        const ctx = this.createSessionContext(
-          peerId,
-          session.agent,
-          session.controlChannel,
-          session.syncChannel,
-        )
-        // Promise.resolve().then contains sync throws from the hook body.
-        void Promise.resolve()
-          .then(() => this.options.voiceHandler?.onPeerDisconnected?.(ctx))
-          .catch((error: unknown) => {
-            console.error(`[session ${peerId}] voiceHandler.onPeerDisconnected failed:`, error)
-          })
-      } else if (session.peerSignalingJoined) {
-        const ctx = this.createSessionContext(
-          peerId,
-          session.agent,
-          session.controlChannel,
-          session.syncChannel,
-        )
-        void Promise.resolve()
-          .then(() => this.options.voiceHandler?.onPeerSignalingLost?.(ctx))
-          .catch((error: unknown) => {
-            console.error(`[session ${peerId}] voiceHandler.onPeerSignalingLost failed:`, error)
-          })
-      }
-
-      this.clearMicTrackTimer(session)
-      this.clearTransportDisconnectTimer(session)
-      session.resolveMicTrack = undefined
-      session.rejectMicTrack = undefined
-      try {
-        session.unwireControl?.()
-      } catch (error: unknown) {
-        console.error(`[session ${peerId}] unwireControl failed:`, error)
-      }
-      try {
-        session.unwireSync?.()
-      } catch (error: unknown) {
-        console.error(`[session ${peerId}] unwireSync failed:`, error)
-      }
-      try {
-        session.unwireSpeechForward?.()
-      } catch (error: unknown) {
-        console.error(`[session ${peerId}] unwireSpeechForward failed:`, error)
-      }
-
-      const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
-      const agent = session.agent
-      session.agent = undefined
-
-      let timedOut = false
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const stopAgent = (async () => {
-        if (!agent) return
-        try {
-          await agent.stop()
-        } catch (error: unknown) {
-          console.error(`[${tag} ${peerId}] VoiceAgent.stop failed:`, error)
-          errors.push(error)
-        }
-      })()
-      const closePeer = awaitPeerConnectionClosed(session.pc, PEER_NATIVE_CLOSE_TIMEOUT_MS)
-      try {
-        await Promise.race([
-          Promise.all([stopAgent, closePeer]),
-          new Promise<void>((resolve) => {
-            timer = setTimeout(() => {
-              timedOut = true
-              resolve()
-            }, PEER_NATIVE_CLOSE_TIMEOUT_MS)
-          }),
-        ])
-      } finally {
-        if (timer) clearTimeout(timer)
-      }
-      if (timedOut) {
-        this.log(
-          `[${tag} ${peerId}] agent/peer teardown timed out after ${PEER_NATIVE_CLOSE_TIMEOUT_MS}ms — releasing session budget`,
-        )
-      } else {
-        const closeResult = await closePeer
-        if (closeResult.status === 'error' && closeResult.error !== undefined) {
-          console.error(`[${tag} ${peerId}] native peer close failed:`, closeResult.error)
-          errors.push(closeResult.error)
-        }
-        this.log(`[${tag} ${peerId}] session stopped, connection closed (${closeResult.status})`)
-      }
-    } finally {
-      this.sessionBudget.release(budgetLease)
+      session.unwireControl?.()
+    } catch (error: unknown) {
+      console.error(`[session ${peerId}] unwireControl failed:`, error)
+    }
+    try {
+      session.unwireSync?.()
+    } catch (error: unknown) {
+      console.error(`[session ${peerId}] unwireSync failed:`, error)
+    }
+    try {
+      session.unwireSpeechForward?.()
+    } catch (error: unknown) {
+      console.error(`[session ${peerId}] unwireSpeechForward failed:`, error)
     }
 
-    if (errors.length === 1) {
-      throw errors[0]
+    const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+    const agent = session.agent
+    session.agent = undefined
+
+    // Bound PC close and agent stop independently; release only when both confirm.
+    const [closeResult, agentResult] = await Promise.all([
+      awaitPeerConnectionClosed(session.pc, PEER_NATIVE_CLOSE_TIMEOUT_MS),
+      awaitAgentStopped(agent, PEER_NATIVE_CLOSE_TIMEOUT_MS),
+    ])
+    if (agentResult.status === 'failed' && agentResult.error !== undefined) {
+      console.error(`[${tag} ${peerId}] VoiceAgent.stop failed:`, agentResult.error)
     }
-    if (errors.length > 1) {
-      throw new AggregateError(errors, `closeClient ${peerId} had ${errors.length} errors`)
+    if (closeResult.status === 'failed' && closeResult.error !== undefined) {
+      console.error(`[${tag} ${peerId}] native peer close failed:`, closeResult.error)
     }
+
+    return this.finalizeTeardownCapacity(peerId, budgetLease, closeResult, agentResult, tag)
   }
 }

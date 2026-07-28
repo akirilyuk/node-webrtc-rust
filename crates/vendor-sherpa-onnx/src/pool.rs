@@ -25,16 +25,69 @@ pub struct SttPoolKey(PathBuf);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TtsPoolKey(PathBuf);
 
+/// RAII counter for Sherpa active sessions — decrements exactly once on drop.
+///
+/// Covers constructor/init failures, inference errors, panics, and normal end.
+/// Double-drop / manual end is harmless (no underflow).
+pub struct ActiveSessionGuard {
+    counter: Arc<AtomicUsize>,
+    armed: bool,
+}
+
+impl ActiveSessionGuard {
+    fn acquire(counter: &Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self {
+            counter: Arc::clone(counter),
+            armed: true,
+        }
+    }
+
+    /// Explicit end (same as drop). Idempotent.
+    pub fn end(mut self) {
+        self.release_once();
+    }
+
+    fn release_once(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        // Saturating decrement — never underflow on double-end races.
+        let mut cur = self.counter.load(Ordering::SeqCst);
+        loop {
+            if cur == 0 {
+                return;
+            }
+            match self.counter.compare_exchange_weak(
+                cur,
+                cur - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(v) => cur = v,
+            }
+        }
+    }
+}
+
+impl Drop for ActiveSessionGuard {
+    fn drop(&mut self) {
+        self.release_once();
+    }
+}
+
 /// Shared streaming STT recognizer (one per model directory).
 pub struct SharedSttRecognizer {
     recognizer: Mutex<OnlineRecognizer>,
-    pub(crate) active_sessions: AtomicUsize,
+    pub(crate) active_sessions: Arc<AtomicUsize>,
 }
 
 /// Shared offline TTS engine (one slot in a [`TtsEnginePool`]).
 pub struct SharedTtsEngine {
     pub(crate) tts: Mutex<OfflineTts>,
-    pub(crate) active_sessions: AtomicUsize,
+    pub(crate) active_sessions: Arc<AtomicUsize>,
     tts_semaphore: Arc<Semaphore>,
 }
 
@@ -162,16 +215,37 @@ impl SharedSttRecognizer {
     fn new(recognizer: OnlineRecognizer) -> Self {
         Self {
             recognizer: Mutex::new(recognizer),
-            active_sessions: AtomicUsize::new(0),
+            active_sessions: Arc::new(AtomicUsize::new(0)),
         }
     }
 
+    /// Increment active sessions; pair with drop of the returned guard (RAII).
+    pub fn track_session(&self) -> ActiveSessionGuard {
+        ActiveSessionGuard::acquire(&self.active_sessions)
+    }
+
+    #[deprecated(note = "use track_session() RAII guard")]
     pub fn session_started(&self) {
         self.active_sessions.fetch_add(1, Ordering::SeqCst);
     }
 
+    #[deprecated(note = "use track_session() RAII guard")]
     pub fn session_ended(&self) {
-        self.active_sessions.fetch_sub(1, Ordering::SeqCst);
+        let mut cur = self.active_sessions.load(Ordering::SeqCst);
+        loop {
+            if cur == 0 {
+                return;
+            }
+            match self.active_sessions.compare_exchange_weak(
+                cur,
+                cur - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(v) => cur = v,
+            }
+        }
     }
 
     pub fn active_sessions(&self) -> usize {
@@ -199,7 +273,7 @@ impl SharedTtsEngine {
     fn new(tts: OfflineTts, tts_semaphore: Arc<Semaphore>) -> Self {
         Self {
             tts: Mutex::new(tts),
-            active_sessions: AtomicUsize::new(0),
+            active_sessions: Arc::new(AtomicUsize::new(0)),
             tts_semaphore,
         }
     }
@@ -208,12 +282,37 @@ impl SharedTtsEngine {
         Arc::clone(&self.tts_semaphore)
     }
 
+    /// Increment active sessions; pair with drop of the returned guard (RAII).
+    pub fn track_session(&self) -> ActiveSessionGuard {
+        ActiveSessionGuard::acquire(&self.active_sessions)
+    }
+
+    pub fn active_sessions(&self) -> usize {
+        self.active_sessions.load(Ordering::SeqCst)
+    }
+
+    #[deprecated(note = "use track_session() RAII guard")]
     pub fn session_started(&self) {
         self.active_sessions.fetch_add(1, Ordering::SeqCst);
     }
 
+    #[deprecated(note = "use track_session() RAII guard")]
     pub fn session_ended(&self) {
-        self.active_sessions.fetch_sub(1, Ordering::SeqCst);
+        let mut cur = self.active_sessions.load(Ordering::SeqCst);
+        loop {
+            if cur == 0 {
+                return;
+            }
+            match self.active_sessions.compare_exchange_weak(
+                cur,
+                cur - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(v) => cur = v,
+            }
+        }
     }
 }
 
@@ -363,6 +462,112 @@ mod tests {
         let a = SherpaModelPool::global();
         let b = SherpaModelPool::global();
         assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn active_session_guard_returns_to_baseline_on_drop() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        {
+            let _g = ActiveSessionGuard::acquire(&counter);
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+            {
+                let _g2 = ActiveSessionGuard::acquire(&counter);
+                assert_eq!(counter.load(Ordering::SeqCst), 2);
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn active_session_guard_end_is_idempotent_with_drop() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let g = ActiveSessionGuard::acquire(&counter);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        g.end();
+        // Drop of moved value already ran inside end(); counter stays at baseline.
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn active_session_guard_double_end_does_not_underflow() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let g = ActiveSessionGuard::acquire(&counter);
+        // Simulate a buggy second decrement path against the same counter.
+        let mut cur = counter.load(Ordering::SeqCst);
+        loop {
+            if cur == 0 {
+                break;
+            }
+            match counter.compare_exchange_weak(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(v) => cur = v,
+            }
+        }
+        // Guard drop must not underflow below zero.
+        drop(g);
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn shared_stt_track_session_baseline() {
+        // Use a throwaway recognizer-less counter path via ActiveSessionGuard only —
+        // SharedSttRecognizer::new needs a real OnlineRecognizer.
+        let counter = Arc::new(AtomicUsize::new(7));
+        let baseline = counter.load(Ordering::SeqCst);
+        {
+            let g = ActiveSessionGuard::acquire(&counter);
+            assert_eq!(counter.load(Ordering::SeqCst), baseline + 1);
+            // Early "error" path: drop without explicit end.
+            drop(g);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), baseline);
+    }
+
+    /// Mirrors Sherpa TTS: guard lifetime is inside `spawn_blocking`, so aborting
+    /// the parent await must not drop the active count while blocking work runs.
+    #[tokio::test]
+    async fn active_session_guard_inside_spawn_blocking_survives_parent_abort() {
+        use std::sync::Barrier;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+
+        let counter_blocking = Arc::clone(&counter);
+        let entered_blocking = Arc::clone(&entered);
+        let release_blocking = Arc::clone(&release);
+        let blocking = tokio::task::spawn_blocking(move || {
+            let _active = ActiveSessionGuard::acquire(&counter_blocking);
+            entered_blocking.wait();
+            release_blocking.wait();
+            // Guard drops here — after blocking work finishes.
+        });
+
+        // Wait until the guard is held inside the blocking thread.
+        entered.wait();
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        // Abort a parent task that was merely awaiting the JoinHandle — equivalent
+        // to VoiceAgent aborting its Tokio worker while OfflineTts still runs.
+        let waiter = tokio::spawn(async move {
+            let _ = blocking.await;
+        });
+        waiter.abort();
+        let _ = waiter.await;
+
+        // Guard must still be alive: aborting the waiter does not cancel spawn_blocking.
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "outer abort must not drop ActiveSessionGuard held inside spawn_blocking"
+        );
+
+        release.wait();
+        // Allow the blocking thread to finish and drop the guard.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 
 }

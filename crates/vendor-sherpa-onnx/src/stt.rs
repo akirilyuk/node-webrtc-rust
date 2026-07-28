@@ -12,7 +12,7 @@ use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 use sherpa_onnx::OnlineStream;
 use tokio::sync::Mutex;
 
-use crate::pool::{SharedSttRecognizer, SherpaModelPool};
+use crate::pool::{ActiveSessionGuard, SharedSttRecognizer, SherpaModelPool};
 
 pub(crate) const SAMPLE_RATE: i32 = 16_000;
 
@@ -33,6 +33,8 @@ fn voice_debug(message: impl AsRef<str>) {
 
 struct SttSessionState {
     shared: Arc<SharedSttRecognizer>,
+    /// Decrements pool active_sessions exactly once on drop (stop / error / panic).
+    _active: ActiveSessionGuard,
     stream: OnlineStream,
     last_emitted_text: String,
     pending: VecDeque<SttTranscript>,
@@ -63,11 +65,13 @@ impl SherpaStt {
 
     fn open_session(config: &SttConfig, pool: &crate::pool::SherpaModelPool) -> SpeechResult<SttSessionState> {
         let shared = pool.get_or_create_stt(config)?;
+        // Acquire before create_stream so a panic/error during stream init still decrements.
+        let active = shared.track_session();
         let stream = shared.create_stream();
-        shared.session_started();
         voice_debug("sherpa OnlineRecognizer ready (pooled)");
         Ok(SttSessionState {
             shared,
+            _active: active,
             stream,
             last_emitted_text: String::new(),
             pending: VecDeque::new(),
@@ -111,8 +115,8 @@ impl SttProvider for SherpaStt {
                 });
                 session.last_emitted_text.clear();
                 session.pending.clear();
-                session.shared.session_ended();
             }
+            // Dropping SttSessionState runs ActiveSessionGuard::drop (exactly once).
             guard.session = None;
         })
         .await

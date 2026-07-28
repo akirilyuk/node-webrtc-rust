@@ -10,6 +10,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.18] — 2026-07-28
+
+Capacity-safe teardown so session leases are not released until peer/agent cleanup is confirmed.
+
+### Added
+
+- **`@node-webrtc-rust/helpers`** — `HELPERS_CAPACITY_SAFE_TEARDOWN` capability export for runners that must fail closed without this release.
+- **`@node-webrtc-rust/helpers`** — sticky SessionPod quarantine/recycle across slot teardown; destroyed hooks awaited before capacity is freed.
+- **Speech / Sherpa** — `VoiceAgent.stop` fails when TTS shutdown is unhealthy; active-session guards stay alive for blocking vendor work.
+
+### Fixed
+
+- **`@node-webrtc-rust/helpers`** — partial-connect teardown uses the same strict close/quarantine path as registered sessions.
+- **Sherpa pool** — active session accounting no longer drops early on task abort.
+
 ## [0.6.17] — 2026-07-27
 
 Awaitable peer cleanup so session capacity is not reused while native WebRTC or agent resources are still shutting down.

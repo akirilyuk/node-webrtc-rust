@@ -22,6 +22,16 @@ export interface VoiceSessionBudgetSnapshot {
   available: number
   /** Cumulative rejections since process start. */
   rejectedTotal: number
+  /**
+   * Leases held after native peer close timed out or failed (host-level).
+   * Occupies capacity so orchestrator cannot place replacement work.
+   */
+  quarantined?: number
+  /**
+   * True when this host/pod must not accept new work until native convergence
+   * or process recycle. Set by {@link VoiceAgentSessionHost} on close failures.
+   */
+  recycleRequired?: boolean
 }
 
 export class VoiceSessionBudgetFullError extends Error {

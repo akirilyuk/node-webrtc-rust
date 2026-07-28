@@ -95,7 +95,6 @@ impl TtsProvider for SherpaTts {
 
         let engine_pool = self.ensure_engine_pool().await?;
         let shared = engine_pool.acquire();
-        shared.session_started();
         let input = trimmed.to_string();
         let speaker_id = self.speaker_id;
         let speed = self.speed;
@@ -109,7 +108,10 @@ impl TtsProvider for SherpaTts {
         let wall_start = std::time::Instant::now();
 
         let shared_for_blocking = Arc::clone(&shared);
+        // Guard MUST live inside spawn_blocking so an aborted outer future cannot
+        // drop the counter while OfflineTts::generate_with_config is still running.
         let chunk = tokio::task::spawn_blocking(move || -> SpeechResult<TtsAudioChunk> {
+            let _active = shared_for_blocking.track_session();
             let gen_config = GenerationConfig {
                 sid: speaker_id,
                 speed,
@@ -141,7 +143,6 @@ impl TtsProvider for SherpaTts {
             wall_start.elapsed().as_millis(),
             chunk.duration_ms
         ));
-        shared.session_ended();
         Ok(vec![chunk])
     }
 }

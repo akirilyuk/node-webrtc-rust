@@ -381,3 +381,105 @@ async fn successful_tts_playback_still_emits_balanced_speaking_events() {
     );
     agent.stop().await.unwrap();
 }
+
+#[tokio::test]
+async fn tts_worker_stress_enqueue_interrupt_close_returns_to_baseline() {
+    let mut registry = VendorRegistry::new();
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let agent = VoiceAgent::new(mock_tts_only_config(), Arc::new(registry)).unwrap();
+    let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    let reader = Arc::new(|| Ok(None));
+    agent.attach(reader, writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let baseline = agent.tts_worker_tasks_alive();
+    let opts = SendTextToTtsOptions { non_blocking: true };
+    for i in 0..8 {
+        agent
+            .send_text_to_tts_with_options(&format!("phrase {i}"), opts)
+            .await
+            .unwrap();
+        if i % 2 == 0 {
+            agent.flush_tts().await.unwrap();
+        }
+    }
+    agent.flush_tts().await.unwrap();
+    // Drain in-flight mock synthesis so stop joins without hitting the abort bound.
+    timeout(TokioDuration::from_secs(5), agent.wait_tts_playback_idle())
+        .await
+        .expect("idle wait timed out")
+        .expect("playback should idle after flush");
+    agent.stop().await.unwrap();
+
+    assert!(
+        !agent.is_tts_shutdown_unhealthy(),
+        "healthy mock TTS stop must not mark recycle"
+    );
+    assert_eq!(
+        agent.tts_worker_tasks_alive(),
+        0,
+        "all TTS workers must join; baseline was {baseline}"
+    );
+}
+
+#[tokio::test]
+async fn blocked_vendor_shutdown_is_bounded_and_reported_unhealthy() {
+    let mut registry = VendorRegistry::new();
+    registry.register_tts(
+        TtsVendor::Mock,
+        Arc::new(SlowMockFactory {
+            // Longer than TTS worker join bound (2s).
+            delay: Duration::from_secs(30),
+        }),
+    );
+
+    let agent = VoiceAgent::new(slow_tts_config(), Arc::new(registry)).unwrap();
+    let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    let reader = Arc::new(|| Ok(None));
+    agent.attach(reader, writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    agent
+        .send_text_to_tts_with_options(
+            "blocked synthesis",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    // Let the synthesis worker enter the blocking vendor call.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = Instant::now();
+    let stop_err = agent
+        .stop()
+        .await
+        .expect_err("unhealthy TTS shutdown must surface SpeechError");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "stop must be bounded while vendor is blocked, took {elapsed:?}"
+    );
+    assert!(
+        matches!(stop_err, SpeechError::TtsShutdownUnhealthy),
+        "expected TtsShutdownUnhealthy, got {stop_err:?}"
+    );
+    assert!(
+        agent.is_tts_shutdown_unhealthy(),
+        "blocked vendor join timeout must report unhealthy/recycle"
+    );
+    assert_eq!(
+        agent.tts_worker_tasks_alive(),
+        0,
+        "aborted Tokio worker must leave the worker-alive counter"
+    );
+    // Vendor inflight is tracked separately from JoinHandle abort — do not treat
+    // workers_alive==0 as a full native baseline while recycle is required.
+    let _vendor_inflight = agent.tts_vendor_calls_inflight();
+    let again = agent
+        .stop()
+        .await
+        .expect_err("idempotent unhealthy stop must keep surfacing recycle");
+    assert!(matches!(again, SpeechError::TtsShutdownUnhealthy));
+}

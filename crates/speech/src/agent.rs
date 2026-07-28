@@ -5,7 +5,7 @@
 //! `RemoteAudioTrack.readSample()` in a loop after [`VoiceAgent::start`].
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
@@ -33,6 +33,22 @@ pub type PcmWriter = Arc<dyn Fn(Bytes, u32) -> SpeechResult<()> + Send + Sync>;
 pub type PcmReader = Arc<dyn Fn() -> SpeechResult<Option<(Bytes, u32)>> + Send + Sync>;
 
 static INBOUND_PCM_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Decrements `tts_worker_tasks_alive` on task exit (including abort).
+struct TtsWorkerAliveGuard(Arc<AtomicUsize>);
+
+impl TtsWorkerAliveGuard {
+    fn enter(counter: &Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(counter))
+    }
+}
+
+impl Drop for TtsWorkerAliveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 fn voice_debug_enabled() -> bool {
     matches!(
@@ -169,6 +185,16 @@ pub struct VoiceAgent {
     tts_synthesis_busy: Arc<AtomicBool>,
     /// Incremented on barge/flush/cancel so in-flight ONNX synthesis can drop late PCM.
     tts_synthesis_epoch: Arc<AtomicU64>,
+    /// Set on stop/drop paths so synthesis/drain loops exit (no detached tasks).
+    tts_workers_shutdown: Arc<AtomicBool>,
+    /// Wakes workers blocked in `notified()` so stop cannot hang on idle wait.
+    tts_workers_shutdown_wake: Arc<Notify>,
+    /// True when a worker join timed out (blocked vendor) — host should recycle.
+    tts_shutdown_unhealthy: Arc<AtomicBool>,
+    /// Live synthesis + drain tokio tasks (tests / capacity diagnostics).
+    tts_worker_tasks_alive: Arc<AtomicUsize>,
+    /// In-flight async vendor `synthesize` calls (may outlive aborted Tokio workers).
+    tts_vendor_calls_inflight: Arc<AtomicUsize>,
     weak_self: Weak<VoiceAgent>,
     c2_ticker_started: AtomicBool,
 }
@@ -242,9 +268,30 @@ impl VoiceAgent {
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
+            tts_workers_shutdown: Arc::new(AtomicBool::new(false)),
+            tts_workers_shutdown_wake: Arc::new(Notify::new()),
+            tts_shutdown_unhealthy: Arc::new(AtomicBool::new(false)),
+            tts_worker_tasks_alive: Arc::new(AtomicUsize::new(0)),
+            tts_vendor_calls_inflight: Arc::new(AtomicUsize::new(0)),
             weak_self: weak.clone(),
             c2_ticker_started: AtomicBool::new(false),
         }))
+    }
+
+    /// Number of live TTS synthesis/drain tokio tasks (0 when workers have exited).
+    /// Does **not** include still-running `spawn_blocking` vendor work after abort.
+    pub fn tts_worker_tasks_alive(&self) -> usize {
+        self.tts_worker_tasks_alive.load(Ordering::SeqCst)
+    }
+
+    /// In-flight vendor `synthesize` calls observed by the agent (async layer).
+    pub fn tts_vendor_calls_inflight(&self) -> usize {
+        self.tts_vendor_calls_inflight.load(Ordering::SeqCst)
+    }
+
+    /// True when stop could not join a TTS worker within the bound (recycle signal).
+    pub fn is_tts_shutdown_unhealthy(&self) -> bool {
+        self.tts_shutdown_unhealthy.load(Ordering::SeqCst)
     }
 
     fn clear_utterance_finalize_timer(inner: &mut AgentInner) {
@@ -418,6 +465,9 @@ impl VoiceAgent {
 
         voice_debug("VoiceAgent running=true");
 
+        self.tts_workers_shutdown.store(false, Ordering::SeqCst);
+        self.tts_shutdown_unhealthy.store(false, Ordering::SeqCst);
+
         let mut stt = self.stt.lock().await;
         if let Some(stt) = stt.as_mut() {
             stt.start().await?;
@@ -437,6 +487,9 @@ impl VoiceAgent {
             &self.tts_buffer,
             &self.inner,
             &self.event_bus,
+            &self.tts_workers_shutdown,
+            &self.tts_workers_shutdown_wake,
+            &self.tts_worker_tasks_alive,
         )
         .await;
     }
@@ -469,20 +522,86 @@ impl VoiceAgent {
     }
 
     pub async fn stop(&self) -> SpeechResult<()> {
-        {
+        let was_running = {
             let mut inner = self.inner.lock().await;
             if !inner.running {
+                // Idempotent diagnostic: prior unhealthy stop remains visible.
+                if self.tts_shutdown_unhealthy.load(Ordering::SeqCst) {
+                    return Err(SpeechError::TtsShutdownUnhealthy);
+                }
                 return Err(SpeechError::NotRunning);
             }
             inner.running = false;
             otel::end_session(&mut inner.otel);
-        }
+            true
+        };
+        let _ = was_running;
 
-        let mut stt = self.stt.lock().await;
-        if let Some(stt) = stt.as_mut() {
-            stt.stop().await?;
+        // Cancel producers, wake consumers, join workers within a bound (no detached tasks).
+        self.tts_workers_shutdown.store(true, Ordering::SeqCst);
+        self.cancel_pending_tts_synthesis().await;
+        self.tts_buffer.flush().await;
+        self.tts_synthesis_wake.notify_waiters();
+        self.tts_drain_wake.notify_waiters();
+        self.tts_workers_shutdown_wake.notify_waiters();
+
+        let synth = self.tts_synthesis_worker.lock().await.take();
+        let drain = self.tts_drain_worker.lock().await.take();
+        // Join in parallel so drain pacing cannot stall synthesis join (and vice versa).
+        let (synth_join, drain_join) = tokio::join!(
+            Self::join_tts_worker_bounded(synth, "synthesis", &self.tts_shutdown_unhealthy),
+            Self::join_tts_worker_bounded(drain, "drain", &self.tts_shutdown_unhealthy),
+        );
+        let _ = (synth_join, drain_join);
+
+        let stt_result = {
+            let mut stt = self.stt.lock().await;
+            if let Some(stt) = stt.as_mut() {
+                stt.stop().await
+            } else {
+                Ok(())
+            }
+        };
+
+        voice_debug(format!(
+            "VoiceAgent stopped workers_alive={} vendor_inflight={} unhealthy={}",
+            self.tts_worker_tasks_alive(),
+            self.tts_vendor_calls_inflight(),
+            self.is_tts_shutdown_unhealthy()
+        ));
+
+        // Prefer recycle signal over STT stop errors so the JS host quarantines.
+        if self.tts_shutdown_unhealthy.load(Ordering::SeqCst) {
+            return Err(SpeechError::TtsShutdownUnhealthy);
         }
-        Ok(())
+        stt_result
+    }
+
+    async fn join_tts_worker_bounded(
+        handle: Option<tokio::task::JoinHandle<()>>,
+        name: &str,
+        unhealthy: &AtomicBool,
+    ) {
+        let Some(mut handle) = handle else {
+            return;
+        };
+        const JOIN_BOUND: std::time::Duration = std::time::Duration::from_millis(2_000);
+        tokio::select! {
+            result = &mut handle => {
+                if let Err(err) = result {
+                    voice_debug(format!("TTS {name} worker join error: {err}"));
+                }
+            }
+            _ = tokio::time::sleep(JOIN_BOUND) => {
+                handle.abort();
+                let _ = handle.await;
+                unhealthy.store(true, Ordering::SeqCst);
+                voice_debug(format!(
+                    "TTS {name} worker join timed out after {}ms — marked shutdown unhealthy (recycle)",
+                    JOIN_BOUND.as_millis()
+                ));
+            }
+        }
     }
 
     /// Synthesizes text and enqueues stereo 48 kHz PCM for real-time outbound drain.
@@ -539,6 +658,9 @@ impl VoiceAgent {
     }
 
     async fn ensure_tts_synthesis_worker(&self) {
+        if self.tts_workers_shutdown.load(Ordering::SeqCst) {
+            return;
+        }
         let mut slot = self.tts_synthesis_worker.lock().await;
         if slot.is_some() {
             return;
@@ -553,10 +675,33 @@ impl VoiceAgent {
         let event_bus = self.event_bus.clone();
         let synthesis_busy = Arc::clone(&self.tts_synthesis_busy);
         let synthesis_epoch = Arc::clone(&self.tts_synthesis_epoch);
+        let shutdown = Arc::clone(&self.tts_workers_shutdown);
+        let shutdown_wake = Arc::clone(&self.tts_workers_shutdown_wake);
+        let alive = Arc::clone(&self.tts_worker_tasks_alive);
+        let vendor_inflight = Arc::clone(&self.tts_vendor_calls_inflight);
+        let drain_shutdown = Arc::clone(&self.tts_workers_shutdown);
+        let drain_alive = Arc::clone(&self.tts_worker_tasks_alive);
         *slot = Some(tokio::spawn(async move {
+            let _alive_guard = TtsWorkerAliveGuard::enter(&alive);
             loop {
-                wake.notified().await;
+                // Level-triggered shutdown poll: notify_waiters is edge-triggered and
+                // can be lost while the worker is inside a vendor call / drain pass.
+                tokio::select! {
+                    _ = wake.notified() => {}
+                    _ = shutdown_wake.notified() => {}
+                    _ = async {
+                        while !shutdown.load(Ordering::SeqCst) {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                    } => {}
+                }
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
                 loop {
+                    if shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
                     let job = {
                         let mut pending = queue.lock().await;
                         pending.pop_front()
@@ -575,6 +720,10 @@ impl VoiceAgent {
                         &inner,
                         &event_bus,
                         &synthesis_epoch,
+                        &drain_shutdown,
+                        &shutdown_wake,
+                        &drain_alive,
+                        &vendor_inflight,
                     )
                     .await;
                     synthesis_busy.store(false, Ordering::SeqCst);
@@ -584,6 +733,16 @@ impl VoiceAgent {
                     } else if let Err(error) = result {
                         voice_debug(format!("non-blocking TTS synthesis error: {error}"));
                     }
+                }
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+            // Cancel any leftovers so waiters are not stranded.
+            let mut pending = queue.lock().await;
+            for job in pending.drain(..) {
+                if let Some(done) = job.done {
+                    let _ = done.send(Err(SpeechError::Internal("TTS cancelled".into())));
                 }
             }
         }));
@@ -598,6 +757,10 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
         synthesis_epoch: &Arc<AtomicU64>,
+        tts_workers_shutdown: &Arc<AtomicBool>,
+        tts_workers_shutdown_wake: &Arc<Notify>,
+        tts_worker_tasks_alive: &Arc<AtomicUsize>,
+        tts_vendor_calls_inflight: &Arc<AtomicUsize>,
     ) -> SpeechResult<()> {
         let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let generation_at_start = tts_buffer.current_generation().await;
@@ -621,7 +784,12 @@ impl VoiceAgent {
                     tts_vendor.map(crate::config::TtsVendor::as_str),
                 );
             }
-            provider.synthesize(text).await?
+            // Tracks async vendor calls separately from Tokio worker JoinHandles.
+            // Aborting the worker does not imply native/blocking synthesis has finished.
+            tts_vendor_calls_inflight.fetch_add(1, Ordering::SeqCst);
+            let synthesize_result = provider.synthesize(text).await;
+            tts_vendor_calls_inflight.fetch_sub(1, Ordering::SeqCst);
+            synthesize_result?
         };
         let tts_vendor = inner
             .lock()
@@ -654,6 +822,9 @@ impl VoiceAgent {
             tts_buffer,
             inner,
             event_bus,
+            tts_workers_shutdown,
+            tts_workers_shutdown_wake,
+            tts_worker_tasks_alive,
         )
         .await;
         tts_drain_wake.notify_one();
@@ -666,7 +837,13 @@ impl VoiceAgent {
         tts_buffer: &TtsBuffer,
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
+        shutdown: &Arc<AtomicBool>,
+        shutdown_wake: &Arc<Notify>,
+        alive: &Arc<AtomicUsize>,
     ) {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
         let mut guard = slot.lock().await;
         if guard.is_some() {
             return;
@@ -675,9 +852,24 @@ impl VoiceAgent {
         let tts_buffer = tts_buffer.clone();
         let inner = Arc::clone(inner);
         let event_bus = event_bus.clone();
+        let shutdown = Arc::clone(shutdown);
+        let shutdown_wake = Arc::clone(shutdown_wake);
+        let alive = Arc::clone(alive);
         *guard = Some(tokio::spawn(async move {
+            let _alive_guard = TtsWorkerAliveGuard::enter(&alive);
             loop {
-                wake.notified().await;
+                tokio::select! {
+                    _ = wake.notified() => {}
+                    _ = shutdown_wake.notified() => {}
+                    _ = async {
+                        while !shutdown.load(Ordering::SeqCst) {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                    } => {}
+                }
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
                 if let Err(error) = VoiceAgent::run_tts_drain(&tts_buffer, &inner, &event_bus).await
                 {
                     voice_debug(format!("TTS drain error: {error}"));
@@ -689,6 +881,9 @@ impl VoiceAgent {
                         message,
                     )
                     .await;
+                }
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
                 }
             }
         }));
@@ -738,6 +933,10 @@ impl VoiceAgent {
         loop {
             {
                 let guard = inner.lock().await;
+                // stop() clears running before joining workers — do not block shutdown.
+                if !guard.running {
+                    return Ok(());
+                }
                 if guard.tts_playback_failure_gen != failure_gen_at_start {
                     let message = guard
                         .tts_playback_last_error
@@ -1818,8 +2017,15 @@ impl VoiceAgent {
                     return Ok(());
                 }
                 writer(frame, duration_ms)?;
-                if !Self::pace_tts_drain_frame(tts_buffer, drain_generation, duration_ms).await {
-                    voice_debug("TTS drain stopped during frame pacing (barge-in flush)");
+                if !Self::pace_tts_drain_frame_while_running(
+                    tts_buffer,
+                    inner,
+                    drain_generation,
+                    duration_ms,
+                )
+                .await
+                {
+                    voice_debug("TTS drain stopped during frame pacing (barge-in flush / stop)");
                     let still_speaking = {
                         let guard = inner.lock().await;
                         guard.agent_speaking
@@ -1840,12 +2046,16 @@ impl VoiceAgent {
 
             let silence_ms = {
                 let guard = inner.lock().await;
+                if !guard.running {
+                    return Ok(());
+                }
                 resolved_post_utterance_silence_ms(&guard.config)
             };
             if silence_ms > 0 {
                 Self::stream_post_utterance_silence(
                     &writer,
                     tts_buffer,
+                    inner,
                     drain_generation,
                     silence_ms,
                 )
@@ -1858,6 +2068,7 @@ impl VoiceAgent {
     async fn stream_post_utterance_silence(
         writer: &PcmWriter,
         tts_buffer: &TtsBuffer,
+        inner: &Arc<Mutex<AgentInner>>,
         drain_generation: u64,
         silence_ms: u32,
     ) -> SpeechResult<()> {
@@ -1867,13 +2078,19 @@ impl VoiceAgent {
             "post-TTS outbound silence: {silence_ms} ms ({frame_count} frames)"
         ));
         for _ in 0..frame_count {
+            if !inner.lock().await.running {
+                voice_debug("post-TTS silence stopped (agent stop)");
+                return Ok(());
+            }
             if tts_buffer.current_generation().await != drain_generation {
                 voice_debug("post-TTS silence stopped (barge-in flush)");
                 return Ok(());
             }
             writer(silent.clone(), 20)?;
-            if !Self::pace_tts_drain_frame(tts_buffer, drain_generation, 20).await {
-                voice_debug("post-TTS silence stopped during pacing (barge-in flush)");
+            if !Self::pace_tts_drain_frame_while_running(tts_buffer, inner, drain_generation, 20)
+                .await
+            {
+                voice_debug("post-TTS silence stopped during pacing (barge-in flush / stop)");
                 return Ok(());
             }
         }
@@ -1894,14 +2111,18 @@ impl VoiceAgent {
         }
     }
 
-    /// Real-time pacing between PCM frames; returns false when the buffer was flushed (barge-in).
-    async fn pace_tts_drain_frame(
+    /// Real-time pacing between PCM frames; returns false when flushed (barge-in) or stopped.
+    async fn pace_tts_drain_frame_while_running(
         tts_buffer: &TtsBuffer,
+        inner: &Arc<Mutex<AgentInner>>,
         drain_generation: u64,
         duration_ms: u32,
     ) -> bool {
         let mut remaining = duration_ms;
         while remaining > 0 {
+            if !inner.lock().await.running {
+                return false;
+            }
             let slice = remaining.min(20);
             tokio::time::sleep(std::time::Duration::from_millis(slice as u64)).await;
             if tts_buffer.current_generation().await != drain_generation {

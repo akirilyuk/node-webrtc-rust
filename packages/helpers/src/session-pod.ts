@@ -22,7 +22,10 @@ import {
   type VoiceAgentSessionHostOptions,
 } from './voice-agent-session-host.js'
 import type { VoiceSessionHandler } from './voice-session-handler.js'
-import { SessionPodCapacityFullError } from './session-pod-errors.js'
+import {
+  SessionPodCapacityFullError,
+  SessionPodRecycleRequiredError,
+} from './session-pod-errors.js'
 
 interface IceServerConfig {
   urls: string | string[]
@@ -35,8 +38,14 @@ export interface SessionPodOptions {
   voiceConfig: VoiceAgentConfig
   /** When true (default), tear down the session slot once the last client disconnects. */
   teardownIdleSessions?: boolean
-  /** Called after a session slot is created or destroyed (metrics, orchestrator hooks). */
-  onSessionChange?: (event: SessionPodChangeEvent) => void
+  /**
+   * Called after a session slot is created or destroyed (metrics, orchestrator hooks).
+   * May return a Promise — teardown awaits `destroyed` so child `session_end` can
+   * finish before capacity/slot release. Sync callbacks remain supported.
+   */
+  onSessionChange?: (
+    event: SessionPodChangeEvent,
+  ) => void | Promise<void>
   /** Hold the runner slot after the last client leaves so same-session reconnect can succeed. */
   rejoinGraceMs?: number
   /** Server-side signaling peer id (default {@link VOICE_AGENT_SERVER_PEER_ID}). */
@@ -86,11 +95,24 @@ interface SessionSlot {
 /**
  * Manages many independent voice sessions inside one Node process.
  */
+export type SessionPodCloseOutcome = {
+  recycleRequired: boolean
+  quarantined: number
+  failures: unknown[]
+}
+
 export class SessionPod {
   private readonly slots = new Map<string, SessionSlot>()
   /** Sessions mid-prepare (after capacity check, before slot is committed). */
   private readonly preparingSessions = new Set<string>()
   private readonly teardownTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Single-flight teardown per session (idle / forced / drain share one destroy). */
+  private readonly teardownFlights = new Map<string, Promise<void>>()
+  /**
+   * Hosts retired from `slots` that still hold quarantined leases.
+   * Keeps recycle/quarantine visible after teardownSession deletes the slot.
+   */
+  private readonly retiredHosts = new Map<string, VoiceAgentSessionHost>()
   private readonly teardownIdle: boolean
   private readonly rejoinGraceMs: number
   private readonly log: (message: string) => void
@@ -104,6 +126,14 @@ export class SessionPod {
     this.rejoinGraceMs = options.rejoinGraceMs ?? DEFAULT_SESSION_REJOIN_GRACE_MS
     this.log = options.log ?? ((message) => console.log(message))
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
+  }
+
+  private pruneRetiredHosts(): void {
+    for (const [sessionId, host] of this.retiredHosts) {
+      if (!host.isRecycleRequired && host.quarantinedCount === 0) {
+        this.retiredHosts.delete(sessionId)
+      }
+    }
   }
 
   private cancelTeardownTimer(sessionId: string): void {
@@ -147,7 +177,13 @@ export class SessionPod {
   }
 
   get sessionBudgetSnapshot(): VoiceSessionBudgetSnapshot {
-    return this.sessionBudget.snapshot()
+    this.pruneRetiredHosts()
+    const snap = this.sessionBudget.snapshot()
+    return {
+      ...snap,
+      quarantined: this.quarantinedPeerCount,
+      recycleRequired: this.isRecycleRequired,
+    }
   }
 
   get activeSessionCount(): number {
@@ -162,6 +198,31 @@ export class SessionPod {
     return total
   }
 
+  /** Live + retired host quarantines (capacity occupied, not placeable). */
+  get quarantinedPeerCount(): number {
+    this.pruneRetiredHosts()
+    let total = 0
+    for (const slot of this.slots.values()) {
+      total += slot.host.quarantinedCount
+    }
+    for (const host of this.retiredHosts.values()) {
+      total += host.quarantinedCount
+    }
+    return total
+  }
+
+  /** True when any live or retired host requires recycle / is non-assignable. */
+  get isRecycleRequired(): boolean {
+    this.pruneRetiredHosts()
+    for (const slot of this.slots.values()) {
+      if (slot.host.isRecycleRequired) return true
+    }
+    for (const host of this.retiredHosts.values()) {
+      if (host.isRecycleRequired) return true
+    }
+    return false
+  }
+
   listSessions(): SessionPodSessionInfo[] {
     return [...this.slots.values()].map((slot) => ({
       sessionId: slot.sessionId,
@@ -172,6 +233,14 @@ export class SessionPod {
   async ensureSession(sessionId: string): Promise<void> {
     if (this.slots.has(sessionId)) return
     if (this.preparingSessions.has(sessionId)) return
+
+    if (this.isRecycleRequired) {
+      const quarantined = this.quarantinedPeerCount
+      this.log(
+        `[pod] session prepare rejected — recycle required (quarantined=${quarantined}) sessionId=${sessionId}; orchestrator should not assign here`,
+      )
+      throw new SessionPodRecycleRequiredError(quarantined)
+    }
 
     const maxPrepared = this.options.maxPreparedSessions ?? 0
     this.preparingSessions.add(sessionId)
@@ -229,17 +298,42 @@ export class SessionPod {
 
     this.bindAgentSignalingReconnect(slot)
     this.slots.set(sessionId, slot)
-    this.options.onSessionChange?.({
-      sessionId,
-      action: 'created',
-      activeSessions: this.activeSessionCount,
-    })
+    await Promise.resolve(
+      this.options.onSessionChange?.({
+        sessionId,
+        action: 'created',
+        activeSessions: this.activeSessionCount,
+      }),
+    )
     this.log(
       `[pod] session ready: ${sessionId} (sessions=${this.activeSessionCount}, connections=${this.activeConnectionCount})`,
     )
   }
 
   async teardownSession(sessionId: string, endReason?: string): Promise<void> {
+    const inFlight = this.teardownFlights.get(sessionId)
+    if (inFlight) {
+      if (endReason) {
+        const slot = this.slots.get(sessionId)
+        if (slot && !slot.pendingEndReason) {
+          slot.pendingEndReason = endReason
+        }
+      }
+      return inFlight
+    }
+    // Already torn down (including sticky retired quarantine) — no second destroy event.
+    if (!this.slots.has(sessionId)) {
+      return
+    }
+
+    const flight = this.teardownSessionOnce(sessionId, endReason).finally(() => {
+      this.teardownFlights.delete(sessionId)
+    })
+    this.teardownFlights.set(sessionId, flight)
+    return flight
+  }
+
+  private async teardownSessionOnce(sessionId: string, endReason?: string): Promise<void> {
     const slot = this.slots.get(sessionId)
     if (!slot) return
 
@@ -249,15 +343,39 @@ export class SessionPod {
     this.cancelTeardownTimer(sessionId)
     await slot.host.close()
     slot.signaling.disconnect()
+    // Keep slot in `slots` while awaiting destroyed so concurrent heartbeat/getters
+    // cannot observe capacity freed mid-hook. Pass prospective count (size - 1).
+    // Do NOT move host into retiredHosts before the hook — rejection must retain
+    // the host solely as a live slot (no double-count with retiredHosts).
+    const prospectiveActiveSessions = Math.max(0, this.slots.size - 1)
+    try {
+      await Promise.resolve(
+        this.options.onSessionChange?.({
+          sessionId,
+          action: 'destroyed',
+          activeSessions: prospectiveActiveSessions,
+          endReason: resolvedReason,
+        }),
+      )
+    } catch (error: unknown) {
+      // Fail-closed: retain slot/capacity so a retry can still find the session.
+      this.log(
+        `[pod] session destroyed hook failed — retaining slot ${sessionId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+      throw error
+    }
+    // Persist quarantine only after destroyed succeeds, with slot deletion.
+    if (slot.host.isRecycleRequired || slot.host.quarantinedCount > 0) {
+      this.retiredHosts.set(sessionId, slot.host)
+      this.log(
+        `[pod] session ${sessionId} retired with quarantine (quarantined=${slot.host.quarantinedCount}) — recycle required until convergence or process recycle`,
+      )
+    }
     this.slots.delete(sessionId)
-    this.options.onSessionChange?.({
-      sessionId,
-      action: 'destroyed',
-      activeSessions: this.activeSessionCount,
-      endReason: resolvedReason,
-    })
     this.log(
-      `[pod] session torn down: ${sessionId} (sessions=${this.activeSessionCount}, connections=${this.activeConnectionCount})`,
+      `[pod] session torn down: ${sessionId} (sessions=${this.activeSessionCount}, connections=${this.activeConnectionCount}, recycleRequired=${this.isRecycleRequired})`,
     )
   }
 
@@ -354,10 +472,34 @@ export class SessionPod {
     }
   }
 
-  async close(): Promise<void> {
-    for (const sessionId of [...this.slots.keys()]) {
-      await this.teardownSession(sessionId)
+  async close(): Promise<SessionPodCloseOutcome> {
+    const failures: unknown[] = []
+    const sessionIds = [...this.slots.keys()]
+    await Promise.all(
+      sessionIds.map(async (sessionId) => {
+        try {
+          await this.teardownSession(sessionId)
+        } catch (error: unknown) {
+          failures.push(error)
+          console.error(`Failed to teardown session ${sessionId} during pod close:`, error)
+        }
+      }),
+    )
+    try {
+      await this.signalingServer.close()
+    } catch (error: unknown) {
+      failures.push(error)
     }
-    await this.signalingServer.close()
+    const outcome: SessionPodCloseOutcome = {
+      recycleRequired: this.isRecycleRequired,
+      quarantined: this.quarantinedPeerCount,
+      failures,
+    }
+    if (outcome.recycleRequired) {
+      this.log(
+        `[pod] close complete with recycle required (quarantined=${outcome.quarantined}, failures=${failures.length})`,
+      )
+    }
+    return outcome
   }
 }

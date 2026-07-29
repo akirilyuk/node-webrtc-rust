@@ -4,7 +4,8 @@
 # Usage (from repo root):
 #   bash scripts/ci/run-sherpa-example-ci.sh typecheck
 #   bash scripts/ci/run-sherpa-example-ci.sh vitest    # no models / .node
-#   bash scripts/ci/run-sherpa-example-ci.sh e2e       # all start:roundtrip-* (models + .node)
+#   bash scripts/ci/run-sherpa-example-ci.sh e2e       # models + rust ignored TTS cache + roundtrips
+#   bash scripts/ci/run-sherpa-example-ci.sh rust      # models + vendor ignored cargo tests only
 #   bash scripts/ci/run-sherpa-example-ci.sh all       # typecheck + vitest + e2e
 set -euo pipefail
 
@@ -16,6 +17,8 @@ CI_STEP="$ROOT/scripts/ci/ci-step.sh"
 # Long scripts and failure re-runs (VOICE_DEBUG) need headroom — see sherpa_roundtrip_timeout_sec.
 DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC="${CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC:-180}"
 DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC="${CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC:-900}"
+# Cold compile of vendor-sherpa-onnx + several Piper synths.
+DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC="${CI_SHERPA_RUST_IGNORED_TIMEOUT_SEC:-420}"
 
 sherpa_roundtrip_timeout_sec() {
   local script="$1"
@@ -103,11 +106,26 @@ ensure_sherpa_models() {
   fi
 }
 
+# Model-backed vendor tests kept #[ignore] in default cargo test (no weights in PR quality).
+run_rust_ignored() {
+  if [[ -z "${SHERPA_TTS_MODEL_PATH:-}" ]] || [[ ! -d "$SHERPA_TTS_MODEL_PATH" ]]; then
+    echo "SHERPA_TTS_MODEL_PATH missing or not a directory (run ensure_sherpa_models first)." >&2
+    echo "  SHERPA_TTS_MODEL_PATH=${SHERPA_TTS_MODEL_PATH:-}" >&2
+    exit 1
+  fi
+  echo "==> cargo ignored TTS phrase cache tests (SHERPA_TTS_MODEL_PATH=$SHERPA_TTS_MODEL_PATH)"
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust tts_phrase_cache_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_phrase_cache_test -- \
+      --ignored --nocapture --test-threads=1
+}
+
 run_e2e() {
   ensure_native_node
   ensure_ts_dist
   bash "$ROOT/scripts/ci/sync-workspace-bindings.sh"
   ensure_sherpa_models
+  run_rust_ignored
 
   local total="${#SHERPA_ROUNDTRIP_E2E[@]}"
   local idx=0
@@ -121,18 +139,24 @@ run_e2e() {
   done
 }
 
+run_rust() {
+  ensure_sherpa_models
+  run_rust_ignored
+}
+
 mode="${1:-all}"
 case "$mode" in
   typecheck) run_typecheck ;;
   vitest) run_vitest ;;
   e2e) run_e2e ;;
+  rust) run_rust ;;
   all)
     run_typecheck
     run_vitest
     run_e2e
     ;;
   *)
-    echo "Usage: $0 {typecheck|vitest|e2e|all}" >&2
+    echo "Usage: $0 {typecheck|vitest|e2e|rust|all}" >&2
     exit 2
     ;;
 esac

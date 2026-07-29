@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **SDK / bindings** — `LocalAudioTrack.setWriteSampleTee` listens to every PCM frame written, including VoiceAgent TTS drain (which bypasses JS `writeSample` patches). Enables accurate client-side session audio capture.
+
 ---
 
 ## [0.6.22] — 2026-07-29

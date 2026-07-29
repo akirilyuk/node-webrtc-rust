@@ -60,11 +60,15 @@ impl JsVoiceAgent {
     #[napi]
     pub async fn attach(&self, outbound_track: &JsLocalAudioTrack) -> Result<()> {
         let outbound = outbound_track.inner();
+        // Live Arc so `setWriteSampleTee` after attach still receives TTS frames.
+        let write_tee = outbound_track.write_tee_handle();
         let pcm_writer: PcmWriter = {
             let track = Arc::clone(&outbound);
             Arc::new(move |pcm, duration_ms| {
                 let track = Arc::clone(&track);
+                let write_tee = Arc::clone(&write_tee);
                 let bytes = pcm;
+                crate::media::notify_write_tee_handle(&write_tee, bytes.as_ref(), duration_ms);
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async move {
                         track

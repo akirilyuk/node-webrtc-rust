@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`@node-webrtc-rust/sdk` / helpers** — After ICE gathering, validate local offer/answer for `a=ice-ufrag` / `a=ice-pwd` and retry with `iceRestart` when credentials are missing (scale-up concurrent `createOffer` could signal truncated SDP). SDP ICE guard helpers live in sdk so the CI bootstrap build does not depend on signaling dist.
+
 ---
 
 ## [0.6.18] — 2026-07-28

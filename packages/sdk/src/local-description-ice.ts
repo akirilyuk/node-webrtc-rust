@@ -3,7 +3,7 @@ import {
   describeSdpIce,
   type SdpIceKind,
   type SdpIceMeta,
-} from '@node-webrtc-rust/signaling'
+} from './sdp-ice-guard'
 
 import type { RTCSessionDescription } from './RTCSessionDescription'
 import type { RTCOfferOptions } from './types'

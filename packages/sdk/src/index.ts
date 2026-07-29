@@ -17,6 +17,8 @@ export { MediaStreamTrack } from './MediaStreamTrack'
 export { LocalAudioTrack } from './LocalAudioTrack'
 export { RemoteAudioTrack } from './RemoteAudioTrack'
 export { debugEvent, debugFn, isDebugEnabled, setDebugEnabled } from './debug'
+export { assertSdpHasIceCredentials, describeSdpIce } from './sdp-ice-guard'
+export type { SdpIceKind, SdpIceMeta } from './sdp-ice-guard'
 export {
   ensureLocalDescriptionHasIceCredentials,
   LOCAL_DESCRIPTION_ICE_MAX_RETRIES,

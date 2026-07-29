@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Core / Opus** — Local PCM→Opus encode uses `Application::Audio` at **192 kbps** (complexity 10) instead of VoIP @ 64 kbps; SDP advertises `stereo=1;maxaveragebitrate=192000` for clearer TTS over WebRTC.
+
 ---
 
 ## [0.6.21] — 2026-07-29

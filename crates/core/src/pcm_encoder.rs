@@ -13,6 +13,16 @@ use crate::error::CoreError;
 
 const OPUS_OUTPUT_CAPACITY: usize = 4_000;
 
+/// Target Opus encode bitrate (stereo Audio mode). Keep in sync with SDP `maxaveragebitrate`.
+pub const OPUS_TARGET_BITRATE_BPS: i32 = 192_000;
+
+/// Opus SDP fmtp advertised on local PCM tracks (FEC + stereo + bitrate cap).
+pub fn opus_sdp_fmtp_line() -> String {
+    format!(
+        "minptime=10;useinbandfec=1;stereo=1;maxaveragebitrate={OPUS_TARGET_BITRATE_BPS}"
+    )
+}
+
 /// Audio format agreed during SDP negotiation for one track binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NegotiatedAudioFormat {
@@ -69,11 +79,14 @@ struct OpusEncoderState {
 impl PcmEncoder {
     pub fn new() -> Result<Self, CoreError> {
         let mut encoder =
-            Encoder::new(SampleRate::Hz48000, Channels::Stereo, Application::Voip)
+            Encoder::new(SampleRate::Hz48000, Channels::Stereo, Application::Audio)
                 .map_err(|e| CoreError::Track(format!("Opus encoder init: {e}")))?;
         encoder
-            .set_bitrate(Bitrate::BitsPerSecond(64_000))
+            .set_bitrate(Bitrate::BitsPerSecond(OPUS_TARGET_BITRATE_BPS))
             .map_err(|e| CoreError::Track(format!("Opus encoder bitrate: {e}")))?;
+        encoder
+            .set_complexity(10)
+            .map_err(|e| CoreError::Track(format!("Opus encoder complexity: {e}")))?;
 
         Ok(Self {
             opus: Arc::new(Mutex::new(OpusEncoderState {
@@ -182,6 +195,15 @@ mod tests {
     use audiopus::{MutSignals, SampleRate};
 
     #[test]
+    fn opus_sdp_fmtp_advertises_target_bitrate() {
+        let line = opus_sdp_fmtp_line();
+        assert!(line.contains("useinbandfec=1"));
+        assert!(line.contains("stereo=1"));
+        assert!(line.contains(&format!("maxaveragebitrate={OPUS_TARGET_BITRATE_BPS}")));
+        assert_eq!(OPUS_TARGET_BITRATE_BPS, 192_000);
+    }
+
+    #[test]
     fn encodes_pcm_for_advertised_opus() {
         let encoder = PcmEncoder::new().unwrap();
         let format = NegotiatedAudioFormat::advertised_opus();
@@ -201,7 +223,7 @@ mod tests {
                 mime_type: MIME_TYPE_OPUS.to_owned(),
                 clock_rate: 48_000,
                 channels: 2,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                sdp_fmtp_line: opus_sdp_fmtp_line(),
                 ..Default::default()
             },
             ..Default::default()

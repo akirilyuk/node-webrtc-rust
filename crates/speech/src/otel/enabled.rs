@@ -24,7 +24,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 use crate::agent::AgentOtelState;
 use crate::config::{SttVendor, TtsVendor, VoiceSessionContext};
 use crate::error::{SpeechError, SpeechResult};
-use crate::otel::{SherpaTtsMetricAttrs, VoiceSpan};
+use crate::otel::{SherpaTtsMetricAttrs, SttMetricAttrs, VoiceSpan};
 use crate::vad::VadTransition;
 
 static OTEL_INIT: AtomicBool = AtomicBool::new(false);
@@ -162,11 +162,31 @@ fn otel_label(value: &str, fallback: &str) -> String {
     }
 }
 
-fn sherpa_tts_metric_attrs(attrs: &SherpaTtsMetricAttrs) -> [KeyValue; 4] {
+fn sherpa_tts_metric_attrs(attrs: &SherpaTtsMetricAttrs) -> [KeyValue; 5] {
     [
+        KeyValue::new("tts.model", otel_label(&attrs.tts_model, "unknown")),
+        KeyValue::new("tts.model_dir", otel_label(&attrs.tts_model_dir, "unknown")),
+        KeyValue::new("tts.language", otel_label(&attrs.tts_language, "unset")),
+        KeyValue::new("tts.voice", otel_label(&attrs.tts_voice, "0")),
+        KeyValue::new("project_id", otel_label(&attrs.project_id, "unknown")),
+    ]
+}
+
+fn tts_latency_metric_attrs(attrs: &SherpaTtsMetricAttrs) -> [KeyValue; 5] {
+    [
+        KeyValue::new("tts.vendor", otel_label(&attrs.tts_vendor, "unknown")),
         KeyValue::new("tts.model", otel_label(&attrs.tts_model, "unknown")),
         KeyValue::new("tts.language", otel_label(&attrs.tts_language, "unset")),
         KeyValue::new("tts.voice", otel_label(&attrs.tts_voice, "0")),
+        KeyValue::new("project_id", otel_label(&attrs.project_id, "unknown")),
+    ]
+}
+
+fn stt_latency_metric_attrs(attrs: &SttMetricAttrs) -> [KeyValue; 4] {
+    [
+        KeyValue::new("stt.vendor", otel_label(&attrs.stt_vendor, "unknown")),
+        KeyValue::new("stt.model", otel_label(&attrs.stt_model, "unknown")),
+        KeyValue::new("stt.language", otel_label(&attrs.stt_language, "unset")),
         KeyValue::new("project_id", otel_label(&attrs.project_id, "unknown")),
     ]
 }
@@ -422,27 +442,31 @@ pub fn record_barge_in(ctx: &VoiceSessionContext) {
     let _entered = apply_session_fields(span, ctx).entered();
 }
 
-pub fn record_stt_latency_ms(ms: f64, vendor: Option<SttVendor>) {
+pub fn record_stt_latency_ms(ms: f64, attrs: &SttMetricAttrs) {
     if is_enabled() {
-        let attrs = vendor
-            .map(|v| vec![KeyValue::new("stt.vendor", v.as_str())])
-            .unwrap_or_default();
-        stt_latency_histogram().record(ms, &attrs);
+        let kv = stt_latency_metric_attrs(attrs);
+        stt_latency_histogram().record(ms, &kv);
     }
 }
 
-pub fn record_tts_latency_ms(ms: f64, vendor: Option<TtsVendor>) {
+pub fn record_tts_latency_ms(ms: f64, attrs: &SherpaTtsMetricAttrs) {
     if is_enabled() {
-        let attrs = vendor
-            .map(|v| vec![KeyValue::new("tts.vendor", v.as_str())])
-            .unwrap_or_default();
-        tts_latency_histogram().record(ms, &attrs);
+        let kv = tts_latency_metric_attrs(attrs);
+        tts_latency_histogram().record(ms, &kv);
     }
 }
 
-pub fn record_sherpa_pool_wait_ms(ms: f64) {
+pub fn record_sherpa_pool_wait_ms(ms: f64, attrs: Option<&SherpaTtsMetricAttrs>) {
     if is_enabled() {
-        pool_wait_histogram().record(ms, &[]);
+        match attrs {
+            Some(attrs) => {
+                let kv = sherpa_tts_metric_attrs(attrs);
+                pool_wait_histogram().record(ms, &kv);
+            }
+            None => {
+                pool_wait_histogram().record(ms, &[]);
+            }
+        }
     }
 }
 
@@ -492,7 +516,7 @@ pub async fn acquire_sherpa_permit(
 ) -> Result<tokio::sync::SemaphorePermit<'_>, tokio::sync::AcquireError> {
     let start = Instant::now();
     let permit = semaphore.acquire().await?;
-    record_sherpa_pool_wait_ms(start.elapsed().as_secs_f64() * 1000.0);
+    record_sherpa_pool_wait_ms(start.elapsed().as_secs_f64() * 1000.0, None);
     Ok(permit)
 }
 

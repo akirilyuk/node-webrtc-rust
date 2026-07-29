@@ -142,7 +142,7 @@ impl SherpaTts {
             .await
             .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
         let queue_wait_ms = queue_wait_start.elapsed().as_secs_f64() * 1000.0;
-        otel::record_sherpa_pool_wait_ms(queue_wait_ms);
+        otel::record_sherpa_pool_wait_ms(queue_wait_ms, Some(attrs));
         otel::record_sherpa_tts_queue_wait_ms(queue_wait_ms, attrs);
 
         voice_debug(format!("tts synthesis start text_len={text_len}"));
@@ -247,8 +247,15 @@ impl TtsProvider for SherpaTts {
         let project_id = self.session_project_id();
         let language = self.language_label();
         let voice = self.voice_label();
+        let model_id = self
+            .config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
         let cache_key = build_cache_key(&project_id, &model_dir, &language, &voice, &normalized);
-        let attrs = build_metric_attrs(&project_id, &model_dir, &language, &voice);
+        let attrs = build_metric_attrs(&project_id, model_id, &model_dir, &language, &voice);
 
         if phrase_cache_enabled() {
             if let Some(chunk) = lookup(&cache_key, &attrs) {

@@ -169,12 +169,21 @@ pub fn build_cache_key(
 
 pub fn build_metric_attrs(
     project_id: &str,
+    model_id: &str,
     model_dir: &str,
     language: &str,
     voice: &str,
 ) -> SherpaTtsMetricAttrs {
+    let model_dir_basename = otel::path_basename(model_dir);
+    let catalog_id = model_id.trim();
     SherpaTtsMetricAttrs {
-        tts_model: model_dir.to_string(),
+        tts_vendor: "local-sherpa".to_string(),
+        tts_model: if catalog_id.is_empty() {
+            model_dir_basename.clone()
+        } else {
+            catalog_id.to_string()
+        },
+        tts_model_dir: model_dir_basename,
         tts_language: language.to_string(),
         tts_voice: voice.to_string(),
         project_id: project_id.to_string(),
@@ -190,7 +199,9 @@ pub fn reset_for_test(max_entries: usize) {
     otel::set_sherpa_tts_phrase_cache_entries(
         0,
         &SherpaTtsMetricAttrs {
+            tts_vendor: String::new(),
             tts_model: String::new(),
+            tts_model_dir: String::new(),
             tts_language: String::new(),
             tts_voice: String::new(),
             project_id: String::new(),
@@ -220,11 +231,34 @@ mod tests {
 
     fn attrs() -> SherpaTtsMetricAttrs {
         SherpaTtsMetricAttrs {
-            tts_model: "/models/piper".into(),
+            tts_vendor: "local-sherpa".into(),
+            tts_model: "en-amy-medium".into(),
+            tts_model_dir: "piper".into(),
             tts_language: String::new(),
             tts_voice: "0".into(),
             project_id: "proj-a".into(),
         }
+    }
+
+    #[test]
+    fn build_metric_attrs_prefers_catalog_model_id() {
+        let attrs = build_metric_attrs(
+            "proj-a",
+            "en-amy-medium",
+            "/models/vits-piper-en_US-amy-medium",
+            "",
+            "0",
+        );
+        assert_eq!(attrs.tts_model, "en-amy-medium");
+        assert_eq!(attrs.tts_model_dir, "vits-piper-en_US-amy-medium");
+        assert_eq!(attrs.tts_vendor, "local-sherpa");
+    }
+
+    #[test]
+    fn build_metric_attrs_falls_back_to_dir_basename() {
+        let attrs = build_metric_attrs("proj-a", "", "/models/vits-piper-en_US-amy-medium", "", "0");
+        assert_eq!(attrs.tts_model, "vits-piper-en_US-amy-medium");
+        assert_eq!(attrs.tts_model_dir, "vits-piper-en_US-amy-medium");
     }
 
     #[test]

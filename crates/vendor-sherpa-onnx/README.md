@@ -110,7 +110,16 @@ Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_D
 
 **Phrase cache:** keys are `(project_id, model_dir, language, voice, normalized_text)`. Cache hits skip the TTS semaphore and ONNX `generate`. Disable with `SHERPA_TTS_PHRASE_CACHE=0` (also `false` / `off`).
 
-**OpenTelemetry metrics** (feature `otel` on `node-webrtc-rust-speech`): `sherpa_tts_phrase_cache_entries`, `sherpa_tts_phrase_cache_hits`, `sherpa_tts_phrase_cache_misses`, `sherpa_tts_queue_wait_ms`, `sherpa_tts_synth_wall_ms` — shared attrs `tts.model`, `tts.language`, `tts.voice`, `project_id`.
+**OpenTelemetry metrics** (feature `otel` on `node-webrtc-rust-speech`):
+
+| Metric | Labels |
+|--------|--------|
+| `voice_stt_latency_ms` | `stt.vendor`, `stt.model` (catalog id), `stt.language`, `project_id` |
+| `voice_tts_latency_ms` | `tts.vendor`, `tts.model` (catalog id), `tts.language`, `tts.voice`, `project_id` |
+| `sherpa_pool_wait_ms` | TTS path: same as phrase-cache attrs below; STT decode permit: unlabeled |
+| `sherpa_tts_phrase_cache_*` / `sherpa_tts_queue_wait_ms` / `sherpa_tts_synth_wall_ms` | `tts.model` (catalog id), `tts.model_dir` (dir basename), `tts.language`, `tts.voice`, `project_id` |
+
+Use `tts.model` / `stt.model` to compare catalog entries (e.g. `en-amy-medium` vs `en-lessac-high`).
 
 Design notes and RAM/CPU tables: `development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md`
 

@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
 
+# Rapid successive pushes to main cancel the prior in-flight run.
+concurrency:
+  group: build-main-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: read

@@ -184,7 +184,6 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
     const outcome = await host.disconnectPeer('client-1')
     expect(outcome).toMatchObject({
       status: 'failed',
-      quarantined: true,
       pc: 'failed',
       agent: 'ok',
     })
@@ -393,6 +392,47 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
     expect(release).toHaveBeenCalledWith('lease-agent')
   })
 
+  it('releases capacity without quarantine when pre-transport teardown times out', async () => {
+    vi.useFakeTimers()
+    try {
+      const release = vi.fn()
+      const host = createHost(
+        {},
+        {
+          tryAcquire: () => 'lease-pre-transport',
+          release,
+          snapshot: () => ({ active: 1, max: 1, available: 0, rejectedTotal: 0 }),
+        },
+      )
+
+      const closeAsync = vi.fn(() => new Promise<void>(() => undefined))
+      host.sessions.set(
+        'client-pre-transport',
+        createFakeSession({
+          budgetLease: 'lease-pre-transport',
+          peerTransportReadyNotified: false,
+          peerConnectedNotified: false,
+          pc: { connectionState: 'connected', close: vi.fn(), closeAsync },
+        }),
+      )
+
+      const closing = host.disconnectPeer('client-pre-transport')
+      await vi.advanceTimersByTimeAsync(5_000)
+      const outcome = await closing
+      expect(outcome).toEqual({
+        status: 'closed',
+        incomplete: true,
+        pc: 'timed_out',
+        agent: 'ok',
+      })
+      expect(release).toHaveBeenCalledWith('lease-pre-transport')
+      expect(host.isRecycleRequired).toBe(false)
+      expect(host.quarantinedCount).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('quarantines after bounded timeout when closeAsync hangs (no placement)', async () => {
     vi.useFakeTimers()
     try {
@@ -421,7 +461,6 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
       const outcome = await closing
       expect(outcome).toEqual({
         status: 'timed_out',
-        quarantined: true,
         pc: 'timed_out',
         agent: 'ok',
       })
@@ -471,7 +510,6 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
     const outcome = await host.disconnectPeer('client-stop-fail')
     expect(outcome).toMatchObject({
       status: 'failed',
-      quarantined: true,
       pc: 'ok',
       agent: 'failed',
     })
@@ -519,7 +557,6 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
       const outcome = await closing
       expect(outcome).toEqual({
         status: 'timed_out',
-        quarantined: true,
         pc: 'ok',
         agent: 'timed_out',
       })
@@ -558,7 +595,6 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
       const outcome = await closing
       expect(outcome).toEqual({
         status: 'timed_out',
-        quarantined: true,
         pc: 'timed_out',
         agent: 'ok',
       })
@@ -667,7 +703,6 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
       const outcome = await closing
       expect(outcome).toEqual({
         status: 'timed_out',
-        quarantined: true,
         pc: 'ok',
         agent: 'timed_out',
       })
@@ -849,7 +884,7 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
     expect(budget.snapshot().active).toBe(0)
   })
 
-  it('partial close timeout does not release lease', async () => {
+  it('partial close timeout soft-releases lease without quarantine', async () => {
     vi.useFakeTimers()
     try {
       const budget = new VoiceSessionBudget(1)
@@ -865,15 +900,15 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
       const rejection = expect(failing).rejects.toThrow('partial boom')
       await vi.advanceTimersByTimeAsync(5_000)
       await rejection
-      expect(budget.snapshot().active).toBe(1)
-      expect(host.isRecycleRequired).toBe(true)
-      expect(host.quarantinedCount).toBe(1)
+      expect(budget.snapshot().active).toBe(0)
+      expect(host.isRecycleRequired).toBe(false)
+      expect(host.quarantinedCount).toBe(0)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('partial agent stop reject does not release lease', async () => {
+  it('partial agent stop reject soft-releases lease without quarantine', async () => {
     const budget = new VoiceSessionBudget(1)
     const host = createHost({}, budget)
     const stop = vi.fn(async () => {
@@ -892,8 +927,8 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
     )
     expect(stop).toHaveBeenCalledTimes(1)
     expect(closeAsync).toHaveBeenCalledTimes(1)
-    expect(budget.snapshot().active).toBe(1)
-    expect(host.isRecycleRequired).toBe(true)
+    expect(budget.snapshot().active).toBe(0)
+    expect(host.isRecycleRequired).toBe(false)
   })
 
   it('partial addTrack failure stops agent, closes pc, releases lease concurrently', async () => {

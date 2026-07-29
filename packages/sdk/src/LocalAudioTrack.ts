@@ -55,4 +55,13 @@ export class LocalAudioTrack extends MediaStreamTrack {
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
     await this.native.writeSample(buffer, durationMs)
   }
+
+  /**
+   * Optional listener for every PCM frame written to this track — including
+   * VoiceAgent TTS drain (which bypasses JS `writeSample` monkey-patches).
+   * Pass `null` to clear.
+   */
+  setWriteSampleTee(callback: ((data: Buffer, durationMs: number) => void) | null): void {
+    this.native.setWriteSampleTee(callback ?? undefined)
+  }
 }

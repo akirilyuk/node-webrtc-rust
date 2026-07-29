@@ -1,11 +1,20 @@
 //! MediaStream and MediaStreamTrack NAPI bindings.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::JsFunction;
+use napi::JsUnknown;
 use napi_derive::napi;
-use node_webrtc_rust_core::{LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind, debug_call};
+use node_webrtc_rust_core::{debug_call, LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind};
+
+use crate::config::to_js_unknown;
+use crate::events::create_event_callback;
+
+/// Optional JS listener for every PCM frame written (JS `writeSample` + VoiceAgent TTS drain).
+type WriteSampleTee = ThreadsafeFunction<(Vec<u8>, u32)>;
 
 /// Media stream track exposed to JavaScript.
 #[napi]
@@ -101,6 +110,7 @@ fn track_kind_to_string(kind: TrackKind) -> String {
 #[napi]
 pub struct JsLocalAudioTrack {
     inner: Arc<LocalAudioTrack>,
+    write_tee: Arc<Mutex<Option<WriteSampleTee>>>,
 }
 
 #[napi]
@@ -110,7 +120,37 @@ impl JsLocalAudioTrack {
         debug_call!("bindings::media", "LocalAudioTrack::new", "id={id}, stream_id={stream_id}");
         Self {
             inner: Arc::new(LocalAudioTrack::new(&id, &stream_id)),
+            write_tee: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Registers a non-blocking listener for PCM written via {@link writeSample} or VoiceAgent TTS.
+    /// Pass `null` to clear. Used by load-test stereo WAV capture (native TTS bypasses JS patches).
+    #[napi]
+    pub fn set_write_sample_tee(&self, env: Env, callback: Option<JsFunction>) -> Result<()> {
+        let mut slot = self
+            .write_tee
+            .lock()
+            .map_err(|e| Error::from_reason(format!("write_sample_tee lock: {e}")))?;
+        *slot = match callback {
+            Some(cb) => {
+                let tsfn = create_event_callback(
+                    &env,
+                    cb,
+                    |ctx| -> Result<Vec<JsUnknown>> {
+                        let (data, duration_ms) = ctx.value;
+                        let buffer = Buffer::from(data);
+                        let buf_js = to_js_unknown(&ctx.env, buffer)?;
+                        let dur_js =
+                            to_js_unknown(&ctx.env, ctx.env.create_uint32(duration_ms)?)?;
+                        Ok(vec![buf_js, dur_js])
+                    },
+                )?;
+                Some(tsfn)
+            }
+            None => None,
+        };
+        Ok(())
     }
 
     #[napi(getter)]
@@ -148,6 +188,7 @@ impl JsLocalAudioTrack {
             "bytes={}, duration_ms={duration_ms}",
             data.len()
         );
+        self.notify_write_tee(data.as_ref(), duration_ms);
         let bytes = bytes::Bytes::copy_from_slice(data.as_ref());
         self.inner
             .write_sample(bytes, Duration::from_millis(duration_ms as u64))
@@ -160,4 +201,29 @@ impl JsLocalAudioTrack {
     pub(crate) fn inner(&self) -> Arc<LocalAudioTrack> {
         Arc::clone(&self.inner)
     }
+
+    pub(crate) fn write_tee_handle(&self) -> Arc<Mutex<Option<WriteSampleTee>>> {
+        Arc::clone(&self.write_tee)
+    }
+
+    pub(crate) fn notify_write_tee(&self, pcm: &[u8], duration_ms: u32) {
+        notify_write_tee_handle(&self.write_tee, pcm, duration_ms);
+    }
+}
+
+pub(crate) fn notify_write_tee_handle(
+    tee: &Mutex<Option<WriteSampleTee>>,
+    pcm: &[u8],
+    duration_ms: u32,
+) {
+    let Ok(guard) = tee.lock() else {
+        return;
+    };
+    let Some(tsfn) = guard.as_ref() else {
+        return;
+    };
+    let _ = tsfn.call(
+        Ok((pcm.to_vec(), duration_ms)),
+        ThreadsafeFunctionCallMode::NonBlocking,
+    );
 }

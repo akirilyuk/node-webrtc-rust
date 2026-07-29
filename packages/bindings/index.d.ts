@@ -288,6 +288,11 @@ export declare class JsMediaStream {
 /** Local audio track for sending media to a peer connection. */
 export declare class JsLocalAudioTrack {
   constructor(id: string, streamId: string)
+  /**
+   * Registers a non-blocking listener for PCM written via {@link writeSample} or VoiceAgent TTS.
+   * Pass `null` to clear. Used by load-test stereo WAV capture (native TTS bypasses JS patches).
+   */
+  setWriteSampleTee(callback?: (...args: any[]) => any | undefined | null): void
   get id(): string
   get kind(): string
   get streamId(): string

@@ -144,9 +144,10 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 ### 6. Test
 
 - **Always runs** on every PR (for branch-protection required checks).
+- **Required check name:** a thin `Test` job in [`build.yml`](../../.github/workflows/build.yml) propagates the reusable workflow result. `workflow_call` jobs alone report as `Integration tests / Test`, which does **not** satisfy the required `Test` context.
 - **When:** no source path filter matched — succeeds immediately (`skip: 'true'`). CI-only YAML edits do not run integration tests.
 - **When source code changed:** requires **Typecheck & lint** success (when it ran); restores `.node` / TS `dist/` only when needed.
-- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)
+- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (called as **Integration tests**)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 
 Before tests, the test job receives the native binding from the **same workflow run**:

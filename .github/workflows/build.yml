@@ -336,8 +336,11 @@ jobs:
           bash scripts/fix-rollup-native.sh
           bash scripts/ci/build-ts-workspace.sh
 
-  test:
-    name: Test
+  # Reusable workflow_call checks are named "<caller> / <job>" (e.g. "Integration
+  # tests / Test"). Branch protection requires a check named exactly "Test"; without
+  # a thin gate job PRs stick on "Expected — Waiting for status to be reported".
+  integration-test:
+    name: Integration tests
     needs: [changes, validate-package-lock, quality, compile-native, build-ts]
     if: |
       always() &&
@@ -357,3 +360,18 @@ jobs:
       needs_ts_dist: ${{ needs.changes.outputs.needs_ts_for_test == 'true' && 'true' || 'false' }}
       ts_dist_profile: pr
     secrets: inherit
+
+  test:
+    name: Test
+    needs: [integration-test]
+    if: always() && !cancelled()
+    runs-on: self-hosted
+    steps:
+      - name: Require integration tests
+        run: |
+          result="${{ needs.integration-test.result }}"
+          echo "integration-test result: ${result}"
+          if [[ "${result}" == "success" ]]; then
+            exit 0
+          fi
+          exit 1

@@ -105,6 +105,12 @@ Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_D
 | `SHERPA_POOL_MAX_CONCURRENT_TTS`    | `2`               | Cap parallel TTS generations                        |
 | `SHERPA_STT_NUM_THREADS`            | ORT default       | `OnlineRecognizer` intra-op threads (`0` = default) |
 | `SHERPA_TTS_NUM_THREADS`            | `2`               | `OfflineTts` intra-op threads                       |
+| `SHERPA_TTS_PHRASE_CACHE`           | `1` (on)          | In-memory LRU PCM cache for repeated phrases        |
+| `SHERPA_TTS_PHRASE_CACHE_MAX_ENTRIES` | `128`           | Max cached phrases (LRU eviction)                   |
+
+**Phrase cache:** keys are `(project_id, model_dir, language, voice, normalized_text)`. Cache hits skip the TTS semaphore and ONNX `generate`. Disable with `SHERPA_TTS_PHRASE_CACHE=0` (also `false` / `off`).
+
+**OpenTelemetry metrics** (feature `otel` on `node-webrtc-rust-speech`): `sherpa_tts_phrase_cache_entries`, `sherpa_tts_phrase_cache_hits`, `sherpa_tts_phrase_cache_misses`, `sherpa_tts_queue_wait_ms`, `sherpa_tts_synth_wall_ms` — shared attrs `tts.model`, `tts.language`, `tts.voice`, `project_id`.
 
 Design notes and RAM/CPU tables: `development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md`
 
@@ -118,6 +124,7 @@ Sherpa C API calls run inside `tokio::task::spawn_blocking`. Do not invoke `Onli
 
 ```bash
 cargo test -p node-webrtc-rust-vendor-sherpa-onnx
+cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_phrase_cache_test -- --ignored
 ```
 
 No model weights required for unit tests (factory + missing-path errors).

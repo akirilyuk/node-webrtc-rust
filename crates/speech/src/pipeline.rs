@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::config::{SttConfig, TtsConfig};
+use crate::config::{SttConfig, TtsConfig, VoiceSessionContext};
 use crate::error::SpeechResult;
 
 /// Chunk of synthesized PCM ready for outbound injection.
@@ -45,6 +45,9 @@ pub trait SttProvider: Send + Sync {
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
     fn vendor_name(&self) -> &'static str;
+
+    /// Optional hook when a voice session starts (e.g. Sherpa phrase-cache project scope).
+    fn bind_session_context(&self, _ctx: &VoiceSessionContext) {}
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>>;
 }

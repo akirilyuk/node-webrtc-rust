@@ -1,15 +1,22 @@
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
-use node_webrtc_rust_speech::config::TtsConfig;
+use node_webrtc_rust_speech::config::{TtsConfig, VoiceSessionContext};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::otel;
+use node_webrtc_rust_speech::otel::{self, SherpaTtsMetricAttrs};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProvider};
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
 use crate::audio::f32_mono_to_stereo_48k_s16le;
+use crate::phrase_cache::{
+    build_cache_key, build_metric_attrs, lookup, normalize_phrase_text, phrase_cache_enabled, store,
+};
 use crate::pool::{SherpaModelPool, TtsEnginePool};
+use crate::tts_model_paths::resolve_tts_model_dir_path;
+
+static TTS_GENERATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn voice_debug_enabled() -> bool {
     matches!(
@@ -30,6 +37,8 @@ pub struct SherpaTts {
     engine_pool: Arc<Mutex<Option<Arc<TtsEnginePool>>>>,
     speaker_id: i32,
     speed: f32,
+    project_id: Arc<StdMutex<String>>,
+    resolved_model_dir: Arc<Mutex<Option<String>>>,
 }
 
 impl SherpaTts {
@@ -40,6 +49,8 @@ impl SherpaTts {
             engine_pool: Arc::new(Mutex::new(None)),
             speaker_id: parse_speaker_id(config),
             speed: parse_speed(config),
+            project_id: Arc::new(StdMutex::new(String::new())),
+            resolved_model_dir: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -56,6 +67,106 @@ impl SherpaTts {
             .map_err(|err| SpeechError::Internal(err.to_string()))??;
         *guard = Some(Arc::clone(&engine_pool));
         Ok(engine_pool)
+    }
+
+    async fn resolved_model_dir(&self) -> SpeechResult<String> {
+        let mut guard = self.resolved_model_dir.lock().await;
+        if let Some(path) = guard.as_ref() {
+            return Ok(path.clone());
+        }
+        let config = self.config.clone();
+        let model_dir = tokio::task::spawn_blocking(move || resolve_tts_model_dir_path(&config))
+            .await
+            .map_err(|err| SpeechError::Internal(err.to_string()))??
+            .display()
+            .to_string();
+        *guard = Some(model_dir.clone());
+        Ok(model_dir)
+    }
+
+    fn session_project_id(&self) -> String {
+        self.project_id
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    fn voice_label(&self) -> String {
+        self.config
+            .voice
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("0")
+            .to_string()
+    }
+
+    fn language_label(&self) -> String {
+        String::new()
+    }
+
+    async fn synthesize_miss(
+        &self,
+        normalized: &str,
+        attrs: &SherpaTtsMetricAttrs,
+    ) -> SpeechResult<TtsAudioChunk> {
+        let engine_pool = self.ensure_engine_pool().await?;
+        let shared = engine_pool.acquire();
+        let input = normalized.to_string();
+        let speaker_id = self.speaker_id;
+        let speed = self.speed;
+        let text_len = normalized.len();
+        let tts_semaphore = self.pool.tts_semaphore();
+
+        let queue_wait_start = std::time::Instant::now();
+        let _permit = tts_semaphore
+            .acquire()
+            .await
+            .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
+        let queue_wait_ms = queue_wait_start.elapsed().as_secs_f64() * 1000.0;
+        otel::record_sherpa_pool_wait_ms(queue_wait_ms);
+        otel::record_sherpa_tts_queue_wait_ms(queue_wait_ms, attrs);
+
+        voice_debug(format!("tts synthesis start text_len={text_len}"));
+        let wall_start = std::time::Instant::now();
+
+        let shared_for_blocking = Arc::clone(&shared);
+        let chunk = tokio::task::spawn_blocking(move || -> SpeechResult<TtsAudioChunk> {
+            let _active = shared_for_blocking.track_session();
+            let gen_config = GenerationConfig {
+                sid: speaker_id,
+                speed,
+                ..Default::default()
+            };
+
+            let tts = shared_for_blocking
+                .tts
+                .lock()
+                .map_err(|_| SpeechError::Internal("sherpa TTS engine lock poisoned".into()))?;
+
+            TTS_GENERATE_COUNT.fetch_add(1, Ordering::SeqCst);
+            let audio = tts
+                .generate_with_config(&input, &gen_config, None::<fn(&[f32], f32) -> bool>)
+                .ok_or_else(|| SpeechError::Vendor {
+                    vendor: "local-sherpa".into(),
+                    message: "OfflineTts generation returned no audio".into(),
+                })?;
+
+            let src_rate = audio.sample_rate().max(1) as u32;
+            let (pcm, duration_ms) = f32_mono_to_stereo_48k_s16le(audio.samples(), src_rate);
+
+            Ok(TtsAudioChunk { pcm, duration_ms })
+        })
+        .await
+        .map_err(|err| SpeechError::Internal(err.to_string()))??;
+
+        otel::record_sherpa_tts_synth_wall_ms(wall_start.elapsed().as_secs_f64() * 1000.0, attrs);
+        voice_debug(format!(
+            "tts synthesis done wall_ms={} audio_duration_ms={}",
+            wall_start.elapsed().as_millis(),
+            chunk.duration_ms
+        ));
+        Ok(chunk)
     }
 }
 
@@ -81,68 +192,61 @@ pub(crate) fn parse_speed(config: &TtsConfig) -> f32 {
         .clamp(0.5, 2.0)
 }
 
+pub fn tts_generate_count() -> usize {
+    TTS_GENERATE_COUNT.load(Ordering::SeqCst)
+}
+
+pub fn reset_tts_generate_count() {
+    TTS_GENERATE_COUNT.store(0, Ordering::SeqCst);
+}
+
 #[async_trait]
 impl TtsProvider for SherpaTts {
     fn vendor_name(&self) -> &'static str {
         "local-sherpa"
     }
 
+    fn bind_session_context(&self, ctx: &VoiceSessionContext) {
+        let project_id = ctx
+            .project_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("")
+            .to_string();
+        if let Ok(mut guard) = self.project_id.lock() {
+            *guard = project_id;
+        }
+    }
+
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
+        let normalized = normalize_phrase_text(text);
+        if normalized.is_empty() {
             return Ok(Vec::new());
         }
 
-        let engine_pool = self.ensure_engine_pool().await?;
-        let shared = engine_pool.acquire();
-        let input = trimmed.to_string();
-        let speaker_id = self.speaker_id;
-        let speed = self.speed;
-        let text_len = trimmed.len();
-        let tts_semaphore = self.pool.tts_semaphore();
-        let _permit = otel::acquire_sherpa_permit(&tts_semaphore)
-            .await
-            .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
+        let model_dir = self.resolved_model_dir().await?;
+        let project_id = self.session_project_id();
+        let language = self.language_label();
+        let voice = self.voice_label();
+        let cache_key = build_cache_key(&project_id, &model_dir, &language, &voice, &normalized);
+        let attrs = build_metric_attrs(&project_id, &model_dir, &language, &voice);
 
-        voice_debug(format!("tts synthesis start text_len={text_len}"));
-        let wall_start = std::time::Instant::now();
+        if phrase_cache_enabled() {
+            if let Some(chunk) = lookup(&cache_key, &attrs) {
+                voice_debug(format!(
+                    "tts phrase cache hit text_len={} project_id={project_id}",
+                    normalized.len()
+                ));
+                return Ok(vec![chunk]);
+            }
+        }
 
-        let shared_for_blocking = Arc::clone(&shared);
-        // Guard MUST live inside spawn_blocking so an aborted outer future cannot
-        // drop the counter while OfflineTts::generate_with_config is still running.
-        let chunk = tokio::task::spawn_blocking(move || -> SpeechResult<TtsAudioChunk> {
-            let _active = shared_for_blocking.track_session();
-            let gen_config = GenerationConfig {
-                sid: speaker_id,
-                speed,
-                ..Default::default()
-            };
-
-            let tts = shared_for_blocking
-                .tts
-                .lock()
-                .map_err(|_| SpeechError::Internal("sherpa TTS engine lock poisoned".into()))?;
-
-            let audio = tts
-                .generate_with_config(&input, &gen_config, None::<fn(&[f32], f32) -> bool>)
-                .ok_or_else(|| SpeechError::Vendor {
-                    vendor: "local-sherpa".into(),
-                    message: "OfflineTts generation returned no audio".into(),
-                })?;
-
-            let src_rate = audio.sample_rate().max(1) as u32;
-            let (pcm, duration_ms) = f32_mono_to_stereo_48k_s16le(audio.samples(), src_rate);
-
-            Ok(TtsAudioChunk { pcm, duration_ms })
-        })
-        .await
-        .map_err(|err| SpeechError::Internal(err.to_string()))??;
-
-        voice_debug(format!(
-            "tts synthesis done wall_ms={} audio_duration_ms={}",
-            wall_start.elapsed().as_millis(),
-            chunk.duration_ms
-        ));
+        otel::record_sherpa_tts_phrase_cache_miss(&attrs);
+        let chunk = self.synthesize_miss(&normalized, &attrs).await?;
+        if phrase_cache_enabled() {
+            store(cache_key, chunk.clone(), &attrs);
+        }
         Ok(vec![chunk])
     }
 }

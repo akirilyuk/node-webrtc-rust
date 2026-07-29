@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use opentelemetry::global;
-use opentelemetry::metrics::{Gauge, Histogram, Meter};
+use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter};
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::{TraceContextExt, TracerProvider};
 use opentelemetry::Context;
@@ -24,7 +24,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 use crate::agent::AgentOtelState;
 use crate::config::{SttVendor, TtsVendor, VoiceSessionContext};
 use crate::error::{SpeechError, SpeechResult};
-use crate::otel::VoiceSpan;
+use crate::otel::{SherpaTtsMetricAttrs, VoiceSpan};
 use crate::vad::VadTransition;
 
 static OTEL_INIT: AtomicBool = AtomicBool::new(false);
@@ -33,6 +33,11 @@ static STT_LATENCY: OnceLock<Histogram<f64>> = OnceLock::new();
 static TTS_LATENCY: OnceLock<Histogram<f64>> = OnceLock::new();
 static POOL_WAIT: OnceLock<Histogram<f64>> = OnceLock::new();
 static POOL_ENTRIES: OnceLock<Gauge<i64>> = OnceLock::new();
+static TTS_PHRASE_CACHE_ENTRIES: OnceLock<Gauge<i64>> = OnceLock::new();
+static TTS_PHRASE_CACHE_HITS: OnceLock<Counter<u64>> = OnceLock::new();
+static TTS_PHRASE_CACHE_MISSES: OnceLock<Counter<u64>> = OnceLock::new();
+static TTS_QUEUE_WAIT: OnceLock<Histogram<f64>> = OnceLock::new();
+static TTS_SYNTH_WALL: OnceLock<Histogram<f64>> = OnceLock::new();
 
 struct TraceparentExtractor<'a> {
     traceparent: &'a str,
@@ -99,6 +104,62 @@ fn pool_entries_gauge() -> &'static Gauge<i64> {
     })
 }
 
+fn tts_phrase_cache_entries_gauge() -> &'static Gauge<i64> {
+    TTS_PHRASE_CACHE_ENTRIES.get_or_init(|| {
+        ensure_meter()
+            .i64_gauge("sherpa_tts_phrase_cache_entries")
+            .with_description("Sherpa TTS in-memory phrase cache entry count")
+            .build()
+    })
+}
+
+fn tts_phrase_cache_hits_counter() -> &'static Counter<u64> {
+    TTS_PHRASE_CACHE_HITS.get_or_init(|| {
+        ensure_meter()
+            .u64_counter("sherpa_tts_phrase_cache_hits")
+            .with_description("Sherpa TTS phrase cache hits")
+            .build()
+    })
+}
+
+fn tts_phrase_cache_misses_counter() -> &'static Counter<u64> {
+    TTS_PHRASE_CACHE_MISSES.get_or_init(|| {
+        ensure_meter()
+            .u64_counter("sherpa_tts_phrase_cache_misses")
+            .with_description("Sherpa TTS phrase cache misses")
+            .build()
+    })
+}
+
+fn tts_queue_wait_histogram() -> &'static Histogram<f64> {
+    TTS_QUEUE_WAIT.get_or_init(|| {
+        ensure_meter()
+            .f64_histogram("sherpa_tts_queue_wait_ms")
+            .with_description("Sherpa TTS semaphore wait in milliseconds (cache miss path)")
+            .build()
+    })
+}
+
+fn tts_synth_wall_histogram() -> &'static Histogram<f64> {
+    TTS_SYNTH_WALL.get_or_init(|| {
+        ensure_meter()
+            .f64_histogram("sherpa_tts_synth_wall_ms")
+            .with_description(
+                "Sherpa TTS ONNX synthesis wall time in milliseconds (cache miss path)",
+            )
+            .build()
+    })
+}
+
+fn sherpa_tts_metric_attrs(attrs: &SherpaTtsMetricAttrs) -> [KeyValue; 4] {
+    [
+        KeyValue::new("tts.model", attrs.tts_model.clone()),
+        KeyValue::new("tts.language", attrs.tts_language.clone()),
+        KeyValue::new("tts.voice", attrs.tts_voice.clone()),
+        KeyValue::new("project_id", attrs.project_id.clone()),
+    ]
+}
+
 pub fn init_from_env() -> SpeechResult<()> {
     if OTEL_INIT.load(Ordering::SeqCst) || otel_disabled_by_env() {
         return Ok(());
@@ -113,13 +174,10 @@ pub fn init_from_env() -> SpeechResult<()> {
         .with_attribute(opentelemetry::KeyValue::new("service.name", service_name))
         .build();
 
-    let span_exporter = SpanExporter::builder()
-        .with_http()
-        .build()
-        .map_err(|err| {
-            eprintln!("[otel] init failed: span exporter: {err}");
-            SpeechError::Internal(format!("otel span exporter: {err}"))
-        })?;
+    let span_exporter = SpanExporter::builder().with_http().build().map_err(|err| {
+        eprintln!("[otel] init failed: span exporter: {err}");
+        SpeechError::Internal(format!("otel span exporter: {err}"))
+    })?;
 
     let tracer_provider = SdkTracerProvider::builder()
         .with_batch_exporter(span_exporter)
@@ -152,20 +210,16 @@ pub fn init_from_env() -> SpeechResult<()> {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,node_webrtc_rust_speech=debug"));
 
-    match Registry::default()
-        .with(filter)
-        .with(telemetry)
-        .try_init()
-    {
+    match Registry::default().with(filter).with(telemetry).try_init() {
         Ok(()) => {}
         Err(err) if err.to_string().contains("already been set") => {
-            eprintln!(
-                "[otel] tracing subscriber already set; continuing with OTLP providers"
-            );
+            eprintln!("[otel] tracing subscriber already set; continuing with OTLP providers");
         }
         Err(err) => {
             eprintln!("[otel] init failed: tracing subscriber: {err}");
-            return Err(SpeechError::Internal(format!("otel tracing subscriber: {err}")));
+            return Err(SpeechError::Internal(format!(
+                "otel tracing subscriber: {err}"
+            )));
         }
     }
 
@@ -384,6 +438,41 @@ pub fn record_sherpa_pool_wait_ms(ms: f64) {
 pub fn set_sherpa_pool_entries(count: i64) {
     if is_enabled() {
         pool_entries_gauge().record(count, &[]);
+    }
+}
+
+pub fn record_sherpa_tts_phrase_cache_hit(attrs: &SherpaTtsMetricAttrs) {
+    if is_enabled() {
+        let kv = sherpa_tts_metric_attrs(attrs);
+        tts_phrase_cache_hits_counter().add(1, &kv);
+    }
+}
+
+pub fn record_sherpa_tts_phrase_cache_miss(attrs: &SherpaTtsMetricAttrs) {
+    if is_enabled() {
+        let kv = sherpa_tts_metric_attrs(attrs);
+        tts_phrase_cache_misses_counter().add(1, &kv);
+    }
+}
+
+pub fn set_sherpa_tts_phrase_cache_entries(count: i64, attrs: &SherpaTtsMetricAttrs) {
+    if is_enabled() {
+        let kv = sherpa_tts_metric_attrs(attrs);
+        tts_phrase_cache_entries_gauge().record(count, &kv);
+    }
+}
+
+pub fn record_sherpa_tts_queue_wait_ms(ms: f64, attrs: &SherpaTtsMetricAttrs) {
+    if is_enabled() {
+        let kv = sherpa_tts_metric_attrs(attrs);
+        tts_queue_wait_histogram().record(ms, &kv);
+    }
+}
+
+pub fn record_sherpa_tts_synth_wall_ms(ms: f64, attrs: &SherpaTtsMetricAttrs) {
+    if is_enabled() {
+        let kv = sherpa_tts_metric_attrs(attrs);
+        tts_synth_wall_histogram().record(ms, &kv);
     }
 }
 

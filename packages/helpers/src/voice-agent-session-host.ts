@@ -571,6 +571,7 @@ export class VoiceAgentSessionHost {
       closeResult,
       agentResult,
       'partial-connect',
+      true,
     )
     if (outcome.status === 'failed' || outcome.status === 'timed_out') {
       this.log(
@@ -1177,6 +1178,7 @@ export class VoiceAgentSessionHost {
   /**
    * Release capacity only when both PC close and agent stop are confirmed.
    * Otherwise quarantine and optionally wait for late dual convergence.
+   * Peers that never reached transport-ready skip quarantine on timeout/failure.
    */
   private finalizeTeardownCapacity(
     peerId: string,
@@ -1184,6 +1186,7 @@ export class VoiceAgentSessionHost {
     closeResult: NativeCloseRaceResult,
     agentResult: AgentStopRaceResult,
     tag: string,
+    hadLiveSession: boolean,
   ): PeerCloseOutcome {
     const pcStatus: TeardownComponentStatus = closeResult.status
     const agentStatus: TeardownComponentStatus = agentResult.status
@@ -1211,6 +1214,30 @@ export class VoiceAgentSessionHost {
     if (!componentOk(pcStatus)) reasonParts.push(`pc=${pcStatus}`)
     if (!componentOk(agentStatus)) reasonParts.push(`agent=${agentStatus}`)
     const reason = reasonParts.join(', ')
+
+    if (!hadLiveSession) {
+      this.sessionBudget.release(lease)
+      this.quarantinedLeases.delete(lease)
+      this.quarantineWaits.delete(lease)
+      this.log(
+        `[${tag} ${peerId}] pre-transport teardown incomplete (${reason}) — capacity released without quarantine`,
+      )
+      const error = agentResult.error ?? closeResult.error
+      if (pcStatus === 'failed' || agentStatus === 'failed') {
+        return {
+          status: 'failed',
+          pc: pcStatus,
+          agent: agentStatus,
+          ...(error !== undefined ? { error } : {}),
+        }
+      }
+      return {
+        status: 'timed_out',
+        pc: pcStatus,
+        agent: agentStatus,
+      }
+    }
+
     this.quarantineLease(lease, peerId, reason)
 
     const wait = {
@@ -1356,6 +1383,13 @@ export class VoiceAgentSessionHost {
       console.error(`[${tag} ${peerId}] native peer close failed:`, closeResult.error)
     }
 
-    return this.finalizeTeardownCapacity(peerId, budgetLease, closeResult, agentResult, tag)
+    return this.finalizeTeardownCapacity(
+      peerId,
+      budgetLease,
+      closeResult,
+      agentResult,
+      tag,
+      session.peerTransportReadyNotified,
+    )
   }
 }

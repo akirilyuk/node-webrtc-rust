@@ -393,6 +393,46 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
     expect(release).toHaveBeenCalledWith('lease-agent')
   })
 
+  it('releases capacity without quarantine when pre-transport teardown times out', async () => {
+    vi.useFakeTimers()
+    try {
+      const release = vi.fn()
+      const host = createHost(
+        {},
+        {
+          tryAcquire: () => 'lease-pre-transport',
+          release,
+          snapshot: () => ({ active: 1, max: 1, available: 0, rejectedTotal: 0 }),
+        },
+      )
+
+      const closeAsync = vi.fn(() => new Promise<void>(() => undefined))
+      host.sessions.set(
+        'client-pre-transport',
+        createFakeSession({
+          budgetLease: 'lease-pre-transport',
+          peerTransportReadyNotified: false,
+          peerConnectedNotified: false,
+          pc: { connectionState: 'connected', close: vi.fn(), closeAsync },
+        }),
+      )
+
+      const closing = host.disconnectPeer('client-pre-transport')
+      await vi.advanceTimersByTimeAsync(5_000)
+      const outcome = await closing
+      expect(outcome).toEqual({
+        status: 'timed_out',
+        pc: 'timed_out',
+        agent: 'ok',
+      })
+      expect(release).toHaveBeenCalledWith('lease-pre-transport')
+      expect(host.isRecycleRequired).toBe(false)
+      expect(host.quarantinedCount).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('quarantines after bounded timeout when closeAsync hangs (no placement)', async () => {
     vi.useFakeTimers()
     try {

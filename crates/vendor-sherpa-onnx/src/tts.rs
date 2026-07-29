@@ -85,9 +85,20 @@ impl SherpaTts {
     }
 
     fn session_project_id(&self) -> String {
-        self.project_id
+        let from_session = self
+            .project_id
             .lock()
             .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let trimmed = from_session.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+        // Runner pods set PROJECT_ID; covers TTS before/without bind_session_context.
+        std::env::var("PROJECT_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
             .unwrap_or_default()
     }
 
@@ -102,7 +113,14 @@ impl SherpaTts {
     }
 
     fn language_label(&self) -> String {
-        String::new()
+        // Piper/Sherpa local TTS has no language field on TtsConfig; default en so
+        // OTel `tts.language` is never dropped (empty attrs are omitted in Prometheus).
+        std::env::var("SHERPA_TTS_LANGUAGE")
+            .ok()
+            .or_else(|| std::env::var("SHERPA_LANGUAGE").ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "en".to_string())
     }
 
     async fn synthesize_miss(

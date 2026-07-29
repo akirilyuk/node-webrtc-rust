@@ -151,12 +151,23 @@ fn tts_synth_wall_histogram() -> &'static Histogram<f64> {
     })
 }
 
+/// Prometheus/OTel drop empty attribute values — always emit a non-empty label so
+/// Grafana `label_values` / `label=~".*"` All-filters keep matching the series.
+fn otel_label(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn sherpa_tts_metric_attrs(attrs: &SherpaTtsMetricAttrs) -> [KeyValue; 4] {
     [
-        KeyValue::new("tts.model", attrs.tts_model.clone()),
-        KeyValue::new("tts.language", attrs.tts_language.clone()),
-        KeyValue::new("tts.voice", attrs.tts_voice.clone()),
-        KeyValue::new("project_id", attrs.project_id.clone()),
+        KeyValue::new("tts.model", otel_label(&attrs.tts_model, "unknown")),
+        KeyValue::new("tts.language", otel_label(&attrs.tts_language, "unset")),
+        KeyValue::new("tts.voice", otel_label(&attrs.tts_voice, "0")),
+        KeyValue::new("project_id", otel_label(&attrs.project_id, "unknown")),
     ]
 }
 

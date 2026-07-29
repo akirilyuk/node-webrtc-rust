@@ -422,6 +422,7 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
       const outcome = await closing
       expect(outcome).toEqual({
         status: 'timed_out',
+        quarantined: false,
         pc: 'timed_out',
         agent: 'ok',
       })

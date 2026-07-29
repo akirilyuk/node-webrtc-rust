@@ -65,13 +65,15 @@ export type PeerCloseOutcome =
   | { status: 'closed'; pc: 'ok' | 'absent'; agent: 'ok' | 'absent' }
   | {
       status: 'timed_out'
-      quarantined: true
+      /** false when capacity was released without pod quarantine (pre-transport). */
+      quarantined: boolean
       pc: TeardownComponentStatus
       agent: TeardownComponentStatus
     }
   | {
       status: 'failed'
-      quarantined: true
+      /** false when capacity was released without pod quarantine (pre-transport). */
+      quarantined: boolean
       pc: TeardownComponentStatus
       agent: TeardownComponentStatus
       error?: unknown
@@ -1226,6 +1228,7 @@ export class VoiceAgentSessionHost {
       if (pcStatus === 'failed' || agentStatus === 'failed') {
         return {
           status: 'failed',
+          quarantined: false,
           pc: pcStatus,
           agent: agentStatus,
           ...(error !== undefined ? { error } : {}),
@@ -1233,6 +1236,7 @@ export class VoiceAgentSessionHost {
       }
       return {
         status: 'timed_out',
+        quarantined: false,
         pc: pcStatus,
         agent: agentStatus,
       }

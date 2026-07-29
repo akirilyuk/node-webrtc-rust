@@ -27,6 +27,17 @@ Reusable workflows (called via `workflow_call`, not triggered directly):
 
 Composite actions live in [`.github/actions/`](../../.github/actions/).
 
+## Concurrency (cancel in-progress)
+
+PR and main build workflows use GitHub `concurrency` with `cancel-in-progress: true` so a new push to the same PR (or to `main`) cancels the previous in-flight run and starts a fresh one with the updated commit.
+
+| Workflow | Group key | Cancel in progress |
+| -------- | --------- | ------------------ |
+| **Build & Test (PR)** | `build-pr-<PR number>` | yes |
+| **Build & Test (main)** | `build-main-<ref>` | yes |
+| **CI Docker image** | `ci-image-<ref>` | yes |
+| **Release** | *(none)* | no — do not cancel mid-publish |
+
 ## Runners
 
 | Platform               | `runs-on`                                  | Workflows                                                                                       |

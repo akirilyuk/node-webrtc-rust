@@ -1,8 +1,5 @@
-import {
-  describeSdpIce,
-  LOCAL_DESCRIPTION_ICE_MAX_RETRIES,
-  RTCPeerConnection,
-} from '@node-webrtc-rust/sdk'
+import { describeSdpIce, LOCAL_DESCRIPTION_ICE_MAX_RETRIES } from '@node-webrtc-rust/sdk'
+import type { RTCPeerConnection } from '@node-webrtc-rust/sdk'
 
 function isMissingIceCredentialError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)

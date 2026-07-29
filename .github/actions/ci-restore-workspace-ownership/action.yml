@@ -1,5 +1,7 @@
 name: Restore workspace ownership
-description: Reset root-owned files left by container jobs using Docker (no sudo)
+description: >
+  Reset root-owned files left by container jobs (Docker chown + drop target/node_modules).
+  Safe to run before or after checkout on self-hosted runners.
 
 runs:
   using: composite
@@ -7,10 +9,42 @@ runs:
     - name: Restore workspace ownership
       shell: bash
       run: |
-        target="${RUNNER_WORKSPACE:-${GITHUB_WORKSPACE:-}}"
-        if [[ -n "$target" && -d "$target" ]]; then
-          docker run --rm \
-            -v "${target}:${target}" \
-            alpine:3.20 \
-            chown -R "$(id -u):$(id -g)" "${target}" || true
+        set -euo pipefail
+        uid="$(id -u)"
+        gid="$(id -g)"
+        declare -a roots=()
+        add_root() {
+          local p="${1:-}"
+          [[ -n "$p" && -d "$p" ]] || return 0
+          local existing
+          for existing in "${roots[@]+"${roots[@]}"}"; do
+            [[ "$existing" == "$p" ]] && return 0
+          done
+          roots+=("$p")
+        }
+        add_root "${RUNNER_WORKSPACE:-}"
+        add_root "${GITHUB_WORKSPACE:-}"
+        if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
+          add_root "$(dirname "${GITHUB_WORKSPACE}")"
         fi
+        if [[ ${#roots[@]} -eq 0 ]]; then
+          echo "No workspace root to reset (RUNNER_WORKSPACE/GITHUB_WORKSPACE unset)."
+          exit 0
+        fi
+        for root in "${roots[@]}"; do
+          echo "Resetting permissions under ${root} (uid=${uid} gid=${gid})"
+          docker run --rm \
+            -v "${root}:${root}" \
+            alpine:3.20 \
+            sh -c "rm -rf \
+              \"${root}/target\" \
+              \"${root}/node_modules\" \
+              \"${root}/node-webrtc-rust/target\" \
+              \"${root}/node-webrtc-rust/node_modules\" \
+              \"${root}/packages\"/*/node_modules \
+              \"${root}/examples\"/*/node_modules \
+              \"${root}/node-webrtc-rust/packages\"/*/node_modules \
+              \"${root}/node-webrtc-rust/examples\"/*/node_modules \
+              2>/dev/null || true; \
+              chown -R ${uid}:${gid} \"${root}\""
+        done

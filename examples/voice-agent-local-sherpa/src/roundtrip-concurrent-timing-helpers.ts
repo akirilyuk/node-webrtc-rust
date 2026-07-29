@@ -28,8 +28,21 @@ export function evaluateConcurrentWindow(
   return { passed: failures.length === 0, spreadMs, failures }
 }
 
+/**
+ * Known Sherpa STT confusions for concurrent-roundtrip keywords.
+ * Keys and values are matched after {@link normalizeForKeyword}.
+ */
+const KEYWORD_ALIASES: Record<string, readonly string[]> = {
+  // "delta" often lands as "belta" / "belt a" under concurrent TTS crosstalk.
+  delta: ['belta', 'belt a'],
+}
+
 export function finalContainsKeyword(finalText: string, keyword: string): boolean {
-  return normalizeForKeyword(finalText).includes(normalizeForKeyword(keyword))
+  const haystack = normalizeForKeyword(finalText)
+  const needle = normalizeForKeyword(keyword)
+  if (haystack.includes(needle)) return true
+  const aliases = KEYWORD_ALIASES[needle] ?? []
+  return aliases.some((alias) => haystack.includes(normalizeForKeyword(alias)))
 }
 
 function normalizeForKeyword(text: string): string {

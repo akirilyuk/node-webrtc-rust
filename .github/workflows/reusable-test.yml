@@ -35,6 +35,10 @@ on:
         description: When 'true', restore TS dist cache before integration tests
         type: string
         default: 'false'
+      ts_dist_profile:
+        description: ci-cache-ts-dist profile namespace (pr or release)
+        type: string
+        default: release
 
 jobs:
   test:
@@ -84,12 +88,45 @@ jobs:
       - name: Prepare workspace
         if: steps.gate.outputs.skip != 'true'
         run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          set -euo pipefail
+          uid="$(id -u)"
+          gid="$(id -g)"
+          declare -a roots=()
+          add_root() {
+            local p="${1:-}"
+            [[ -n "$p" && -d "$p" ]] || return 0
+            local existing
+            for existing in "${roots[@]+"${roots[@]}"}"; do
+              [[ "$existing" == "$p" ]] && return 0
+            done
+            roots+=("$p")
+          }
+          add_root "${RUNNER_WORKSPACE:-}"
+          add_root "${GITHUB_WORKSPACE:-}"
+          if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
+            add_root "$(dirname "${GITHUB_WORKSPACE}")"
           fi
+          if [[ ${#roots[@]} -eq 0 ]]; then
+            echo "No workspace root to reset (RUNNER_WORKSPACE/GITHUB_WORKSPACE unset)."
+            exit 0
+          fi
+          for root in "${roots[@]}"; do
+            echo "Resetting permissions under ${root} (uid=${uid} gid=${gid})"
+            docker run --rm \
+              -v "${root}:${root}" \
+              alpine:3.20 \
+              sh -c "rm -rf \
+                \"${root}/target\" \
+                \"${root}/node_modules\" \
+                \"${root}/node-webrtc-rust/target\" \
+                \"${root}/node-webrtc-rust/node_modules\" \
+                \"${root}/packages\"/*/node_modules \
+                \"${root}/examples\"/*/node_modules \
+                \"${root}/node-webrtc-rust/packages\"/*/node_modules \
+                \"${root}/node-webrtc-rust/examples\"/*/node_modules \
+                2>/dev/null || true; \
+                chown -R ${uid}:${gid} \"${root}\""
+          done
 
       - uses: actions/checkout@v4
         if: steps.gate.outputs.skip != 'true'
@@ -126,7 +163,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_ts == 'true'
         id: ts-cache
         with:
-          profile: release
+          profile: ${{ inputs.ts_dist_profile }}
 
       - uses: ./.github/actions/ci-run-integration-tests
         if: steps.gate.outputs.skip != 'true'

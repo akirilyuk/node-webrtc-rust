@@ -24,6 +24,12 @@ describe('roundtrip-concurrent-timing-helpers', () => {
     expect(finalContainsKeyword('bravo team', 'alpha')).toBe(false)
   })
 
+  it('finalContainsKeyword accepts delta STT aliases', () => {
+    expect(finalContainsKeyword('Belta seven eight nine', 'delta')).toBe(true)
+    expect(finalContainsKeyword('Belt a seven eight nine', 'delta')).toBe(true)
+    expect(finalContainsKeyword('Alpha one two three', 'delta')).toBe(false)
+  })
+
   it('evaluateConcurrentRoundtrip checks enqueue and keyword routing', () => {
     const evaluation = evaluateConcurrentRoundtrip({
       legs: [

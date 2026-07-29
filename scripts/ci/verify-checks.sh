@@ -27,6 +27,9 @@ if [[ -n "$USE_DOCKER" ]]; then
   docker build -t "$IMAGE" "$ROOT/docker/ci" >/dev/null
 fi
 
+echo "==> native-binding-cache-key"
+run "bash scripts/ci/native-binding-cache-key.test.sh"
+
 echo "==> npm ci"
 run "bash scripts/ci/npm-ci-workspace.sh"
 

@@ -29,15 +29,31 @@ list_bindings_path_crates() {
     | sort -u
 }
 
+# Top-level "version" is release metadata only — must not invalidate a byte-identical .node.
+hash_bindings_package_json() {
+  python3 - <<'PY'
+import hashlib
+import json
+import sys
+
+with open("packages/bindings/package.json", "rb") as f:
+    data = json.load(f)
+data.pop("version", None)
+normalized = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+digest = hashlib.sha256(normalized).hexdigest()
+sys.stdout.write(f"{digest}  packages/bindings/package.json (no version)\n")
+PY
+}
+
 {
   echo "napi-release-features:otel"
   sha256sum Cargo.toml Cargo.lock scripts/ci/native-binding-cache-key.sh
   sha256sum \
     packages/bindings/Cargo.toml \
     packages/bindings/build.rs \
-    packages/bindings/package.json \
     packages/bindings/index.d.ts \
     packages/bindings/index.js
+  hash_bindings_package_json
 
   if [[ -d packages/bindings/src ]]; then
     find packages/bindings/src -type f | sort | xargs sha256sum

@@ -10,6 +10,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.21] — 2026-07-29
+
+Defer VoiceAgent session start until the voice-control DataChannel is open so concurrent Sherpa attach cannot starve SCTP under load.
+
+### Fixed
+
+- **`@node-webrtc-rust/helpers`** — `VoiceAgentSessionHost` waits for PeerConnection `connected` **and** control DataChannel `open` before `startAgentSession` (retry from control `onopen`). Prevents load-staging `voice-control ready timed out` when VoiceAgent started on PC connected alone.
+
+---
+
 ## [0.6.20] — 2026-07-29
 
 In-memory Sherpa TTS phrase PCM cache so repeated short phrases (e.g. echo-agent `ready`) skip re-synthesis under concurrent sessions.

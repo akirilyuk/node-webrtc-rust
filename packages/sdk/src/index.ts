@@ -18,6 +18,14 @@ export { LocalAudioTrack } from './LocalAudioTrack'
 export { RemoteAudioTrack } from './RemoteAudioTrack'
 export { debugEvent, debugFn, isDebugEnabled, setDebugEnabled } from './debug'
 export {
+  ensureLocalDescriptionHasIceCredentials,
+  LOCAL_DESCRIPTION_ICE_MAX_RETRIES,
+} from './local-description-ice'
+export type {
+  LocalDescriptionIceRetryDeps,
+  LocalDescriptionIceRetryOptions,
+} from './local-description-ice'
+export {
   ConnectionError,
   createConnectionError,
   dispatchConnectionError,

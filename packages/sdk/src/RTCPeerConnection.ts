@@ -8,6 +8,7 @@ import {
 } from '@node-webrtc-rust/bindings'
 
 import { debugEvent, debugFn, setDebugEnabled } from './debug'
+import { ensureLocalDescriptionHasIceCredentials } from './local-description-ice'
 import {
   createConnectionError,
   dispatchConnectionError,
@@ -342,11 +343,39 @@ export class RTCPeerConnection extends EventEmitter {
   /**
    * Blocks until ICE gathering completes and refreshes {@link localDescription}
    * with gathered candidates. Call after {@link setLocalDescription} before sending SDP.
+   *
+   * Validates `a=ice-ufrag` / `a=ice-pwd` on the local offer or answer and retries
+   * with ICE restart when credentials are missing after gather.
    */
   async gatheringComplete(): Promise<void> {
     debugFn('sdk::RTCPeerConnection', 'gatheringComplete')
+    await this.gatherAndRefreshLocalDescription()
+    await ensureLocalDescriptionHasIceCredentials(this.localDescriptionIceDeps(), {
+      onRetry: (attempt, meta) => {
+        debugFn(
+          'sdk::RTCPeerConnection',
+          'gatheringComplete',
+          `local SDP missing ICE credentials (sdp_len=${meta.sdpLen}), retry ${attempt} with iceRestart`,
+        )
+      },
+    })
+  }
+
+  /** Native gather + refresh localDescription without ICE credential validation. */
+  async gatherAndRefreshLocalDescription(): Promise<void> {
     await this.native.gatheringComplete()
     await this.refreshLocalDescription()
+  }
+
+  private localDescriptionIceDeps() {
+    return {
+      createOffer: (options?: RTCOfferOptions) => this.createOffer(options),
+      createAnswer: () => this.createAnswer(),
+      setLocalDescription: (desc: RTCSessionDescription) => this.setLocalDescription(desc),
+      gatherAndRefreshLocalDescription: () => this.gatherAndRefreshLocalDescription(),
+      restartIce: () => this.restartIce(),
+      getLocalDescription: () => this._localDescription,
+    }
   }
 
   /**

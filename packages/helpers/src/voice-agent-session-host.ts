@@ -33,6 +33,7 @@ import {
 } from '@node-webrtc-rust/sdk/voice'
 import type { SignalingClient } from '@node-webrtc-rust/signaling'
 
+import { createOfferGatherWithIceCredentials } from './offer-ice-gather.js'
 import { createKickFrame, PCM_KICK_DURATION_MS } from './pcm.js'
 import {
   getProcessVoiceSessionBudget,
@@ -766,13 +767,17 @@ export class VoiceAgentSessionHost {
       session.unwireSync = this.wireSyncChannel(peerId, session, syncChannel)
     }
 
-    const offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    await pc.gatheringComplete()
+    const tag = dataOnly ? 'data' : 'voice'
+    await createOfferGatherWithIceCredentials(pc, {
+      onRetry: (attempt, sdpLen) => {
+        this.log(
+          `[${tag} ${peerId}] offer SDP missing ICE credentials (sdp_len=${sdpLen}), retry ${attempt}/2 with iceRestart`,
+        )
+      },
+    })
     const localInit = pc.localDescription!.toJSON()
     this.signaling.sendOffer(peerId, localInit)
     session.offerSent = true
-    const tag = dataOnly ? 'data' : 'voice'
     const sdpLen = typeof localInit.sdp === 'string' ? localInit.sdp.length : 0
     this.log(
       `[${tag} ${peerId}] offer sent sdp_len=${sdpLen} (${dataOnly ? '' : 'audio + '}${VOICE_CONTROL_CHANNEL_LABEL} DC${syncChannel ? ` + ${syncChannel.label}` : ''})`,

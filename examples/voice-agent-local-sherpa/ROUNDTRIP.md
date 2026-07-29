@@ -510,7 +510,8 @@ Passing **unit tests alone** (`npm run test:roundtrip-counting`) does **not** ru
 cd node-webrtc-rust
 npm run build:native
 bash scripts/ci/run-sherpa-example-ci.sh vitest   # evaluators only
-bash scripts/ci/run-sherpa-example-ci.sh e2e      # all seven start:roundtrip-* scripts
+bash scripts/ci/run-sherpa-example-ci.sh rust     # models + TTS phrase-cache ignored cargo tests
+bash scripts/ci/run-sherpa-example-ci.sh e2e      # models + phrase-cache tests + all start:roundtrip-* scripts
 # or: bash scripts/ci/run-pr-tests-full.sh        # full PR quality + integration
 ```
 
@@ -521,9 +522,9 @@ Sherpa roundtrips run on every PR and on `main` when the **Test** job executes [
 | Job         | Script                                                                                                                                                   | Sherpa roundtrip coverage                                                                      |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | **Quality** | [`run-pr-quality.sh`](../../scripts/ci/run-pr-quality.sh) → [`run-sherpa-example-ci.sh typecheck`](../../scripts/ci/run-sherpa-example-ci.sh) + `vitest` | Typecheck + **Vitest evaluators** (`test:roundtrip-counting`) — no model download              |
-| **Test**    | [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh) → [`run-sherpa-example-ci.sh e2e`](../../scripts/ci/run-sherpa-example-ci.sh)          | Downloads EN Kroko STT + Piper TTS, then runs **all** `start:roundtrip*` entry points in order |
+| **Test**    | [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh) → [`run-sherpa-example-ci.sh e2e`](../../scripts/ci/run-sherpa-example-ci.sh)          | Downloads EN Kroko STT + Piper TTS, runs **TTS phrase-cache** ignored cargo tests, then **all** `start:roundtrip*` entry points |
 
-E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh)): counting → utterance-timing → two-phrases → **barge-in** → counting-echo → counting-barge-recovery → batch roundtrip.
+E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh)): phrase-cache rust tests → counting → utterance-timing → two-phrases → **barge-in** → counting-echo → counting-barge-recovery → concurrent-multi-client → batch roundtrip.
 
 Path filter: changes under `examples/**` trigger the **examples** filter and run quality + test when other filters also match — see [`scripts/ci/README.md`](../../scripts/ci/README.md#sherpa-roundtrip-e2e-integration-job).
 

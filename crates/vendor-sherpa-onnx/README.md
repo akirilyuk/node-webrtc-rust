@@ -114,7 +114,15 @@ Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_D
 
 Design notes and RAM/CPU tables: `development/node-webrtc-rust/plans/2026-05-31-sherpa-shared-model-pool.md`
 
-Integration tests (require downloaded weights): `cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test pool_sharing -- --ignored`
+Integration tests (require downloaded weights):
+
+```bash
+cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test pool_sharing -- --ignored
+cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_phrase_cache_test -- \
+  --ignored --test-threads=1
+```
+
+CI runs the phrase-cache suite after model download in [`scripts/ci/run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh) (`e2e` / `rust` modes; used by the PR integration job).
 
 ## Threading
 
@@ -124,7 +132,8 @@ Sherpa C API calls run inside `tokio::task::spawn_blocking`. Do not invoke `Onli
 
 ```bash
 cargo test -p node-webrtc-rust-vendor-sherpa-onnx
-cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_phrase_cache_test -- --ignored
+# With models (or via Sherpa CI):
+bash scripts/ci/run-sherpa-example-ci.sh rust
 ```
 
-No model weights required for unit tests (factory + missing-path errors).
+No model weights required for unit tests (factory + missing-path errors / in-memory phrase cache).

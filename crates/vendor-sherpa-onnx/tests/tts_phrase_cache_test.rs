@@ -1,7 +1,11 @@
-//! Sherpa TTS phrase cache behavior (unit + optional model integration).
+//! Sherpa TTS phrase cache behavior (model integration).
+//!
+//! Kept `#[ignore]` for default `cargo test` (needs Piper/VITS weights). CI runs them via
+//! `bash scripts/ci/run-sherpa-example-ci.sh rust|e2e` after model download.
+//! Share process-wide `tts_generate_count` — run with `--test-threads=1`.
 
 use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor, VoiceSessionContext};
-use node_webrtc_rust_speech::pipeline::{TtsProvider, VendorFactory};
+use node_webrtc_rust_speech::pipeline::VendorFactory;
 use node_webrtc_rust_vendor_sherpa_onnx::{
     reset_tts_generate_count, tts_generate_count, SherpaFactory,
 };

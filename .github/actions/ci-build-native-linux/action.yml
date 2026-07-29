@@ -221,3 +221,10 @@ runs:
         name: bindings-${{ inputs.target }}
         path: packages/bindings/*.node
         if-no-files-found: error
+
+    # Container jobs write root-owned target/; the next host job's checkout then
+    # fails with EACCES. GHA already has the binding cache — drop the tree here.
+    - name: Remove Cargo target/ from workspace
+      if: always() && steps.resolve.outputs.build_required == 'true'
+      shell: bash
+      run: rm -rf target

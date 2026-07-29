@@ -11,6 +11,10 @@ on:
       - 'scripts/ci/install-alpine-native-toolchain.sh'
   workflow_dispatch:
 
+concurrency:
+  group: ci-image-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
   CI_ALPINE_IMAGE: ghcr.io/${{ github.repository }}/ci-build-alpine:latest

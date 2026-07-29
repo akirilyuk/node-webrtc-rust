@@ -4,7 +4,7 @@
 use node_webrtc_rust_speech::config::{
     SttConfig, SttVendor, TtsConfig, TtsVendor, VoiceAgentConfig, VoiceSessionContext,
 };
-use node_webrtc_rust_speech::otel::{self, extract_trace_id};
+use node_webrtc_rust_speech::otel::{self, extract_trace_id, SherpaTtsMetricAttrs};
 use node_webrtc_rust_speech::{PcmWriter, VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
 
@@ -58,6 +58,17 @@ fn metrics_record_without_panic() {
     otel::record_tts_latency_ms(34.0, Some(TtsVendor::Mock));
     otel::record_sherpa_pool_wait_ms(2.0);
     otel::set_sherpa_pool_entries(3);
+    let attrs = SherpaTtsMetricAttrs {
+        tts_model: "piper-en".into(),
+        tts_language: String::new(),
+        tts_voice: "0".into(),
+        project_id: "proj-1".into(),
+    };
+    otel::record_sherpa_tts_phrase_cache_hit(&attrs);
+    otel::record_sherpa_tts_phrase_cache_miss(&attrs);
+    otel::set_sherpa_tts_phrase_cache_entries(4);
+    otel::record_sherpa_tts_queue_wait_ms(1.5, &attrs);
+    otel::record_sherpa_tts_synth_wall_ms(42.0, &attrs);
 }
 
 #[tokio::test]

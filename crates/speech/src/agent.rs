@@ -473,6 +473,12 @@ impl VoiceAgent {
             stt.start().await?;
             voice_debug(format!("STT started ({})", stt.vendor_name()));
         }
+        {
+            let ctx = self.inner.lock().await.otel.session_context.clone();
+            if let Some(tts) = self.tts.lock().await.as_ref() {
+                tts.bind_session_context(&ctx);
+            }
+        }
         self.ensure_tts_drain_worker().await;
         if let Some(this) = self.weak_self.upgrade() {
             this.ensure_c2_wall_clock_ticker();

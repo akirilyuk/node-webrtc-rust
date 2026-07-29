@@ -2,6 +2,15 @@
 //!
 //! Enable with Cargo feature `otel` (off by default). When disabled, all hooks are no-ops.
 
+/// Shared Sherpa TTS metric attributes (also used when `otel` feature is disabled).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SherpaTtsMetricAttrs {
+    pub tts_model: String,
+    pub tts_language: String,
+    pub tts_voice: String,
+    pub project_id: String,
+}
+
 #[cfg(feature = "otel")]
 mod enabled;
 
@@ -33,8 +42,10 @@ impl VoiceSpan {
 pub use enabled::{
     acquire_sherpa_permit, begin_session, end_session, init_from_env, is_enabled, record_barge_in,
     record_gate_hold_end, record_gate_hold_start, record_sherpa_pool_wait_ms,
-    record_stt_latency_ms, record_tts_latency_ms, record_vad_transition, set_sherpa_pool_entries,
-    voice_span,
+    record_sherpa_tts_phrase_cache_hit, record_sherpa_tts_phrase_cache_miss,
+    record_sherpa_tts_queue_wait_ms, record_sherpa_tts_synth_wall_ms, record_stt_latency_ms,
+    record_tts_latency_ms, record_vad_transition, set_sherpa_pool_entries,
+    set_sherpa_tts_phrase_cache_entries, voice_span,
 };
 
 #[cfg(not(feature = "otel"))]
@@ -96,6 +107,21 @@ pub fn record_sherpa_pool_wait_ms(_ms: f64) {}
 
 #[cfg(not(feature = "otel"))]
 pub fn set_sherpa_pool_entries(_count: i64) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_sherpa_tts_phrase_cache_hit(_attrs: &SherpaTtsMetricAttrs) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_sherpa_tts_phrase_cache_miss(_attrs: &SherpaTtsMetricAttrs) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn set_sherpa_tts_phrase_cache_entries(_count: i64) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_sherpa_tts_queue_wait_ms(_ms: f64, _attrs: &SherpaTtsMetricAttrs) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_sherpa_tts_synth_wall_ms(_ms: f64, _attrs: &SherpaTtsMetricAttrs) {}
 
 #[cfg(not(feature = "otel"))]
 pub async fn acquire_sherpa_permit(

@@ -331,6 +331,9 @@ jobs:
     runs-on: self-hosted
     outputs:
       ran_compile: ${{ steps.gate.outputs.run }}
+      # Artifact handoff only on same-run compile miss. Cache hits skip download+upload;
+      # Test restores the .node from the Actions cache instead.
+      use_binding_artifact: ${{ steps.handoff.outputs.use_artifact == 'true' && 'true' || 'false' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:
@@ -356,25 +359,39 @@ jobs:
       - uses: actions/checkout@v4
         if: steps.gate.outputs.run == 'true'
 
+      # Probe only — do not download the ~162MB .node when the key is already warm.
       - uses: ./.github/actions/native-binding-cache
         if: steps.gate.outputs.run == 'true'
         id: native-cache
         with:
           target: x86_64-unknown-linux-gnu
           profile: debug
+          mode: probe
 
       - uses: ./.github/actions/ci-build-native-linux
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' && steps.native-cache.outputs.cache-hit != 'true'
         with:
           target: x86_64-unknown-linux-gnu
           profile: debug
           cache_prefix: v1-pr-debug
           platform: 'false'
           zig: 'false'
-          skip_build_on_cache_hit: 'true'
-          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
+          skip_build_on_cache_hit: 'false'
+          native_cache_hit: 'false'
           binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}
           upload_artifact: 'true'
+
+      - name: Export binding handoff for Test
+        id: handoff
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          if [ "${{ steps.native-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "use_artifact=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cache hit — Test restores .node from GHA cache (no artifact upload)."
+          else
+            echo "use_artifact=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cache miss — Test downloads bindings artifact from this run."
+          fi
 
   build-ts:
     name: Build TypeScript
@@ -485,9 +502,9 @@ jobs:
       test_script: scripts/ci/run-pr-integration.sh
       skip: ${{ needs.changes.outputs.run_integration_test != 'true' && 'true' || 'false' }}
       quality_result: ${{ needs.quality.result }}
-      binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'bindings-x86_64-unknown-linux-gnu' || '' }}
+      binding_artifact: ${{ needs.compile-native.outputs.use_binding_artifact == 'true' && 'bindings-x86_64-unknown-linux-gnu' || '' }}
       binding_profile: debug
-      require_binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'true' || 'false' }}
+      require_binding_artifact: ${{ needs.compile-native.outputs.use_binding_artifact == 'true' && 'true' || 'false' }}
       needs_native_binding: ${{ (needs.changes.outputs.run_compile_native == 'true' || needs.changes.outputs.needs_native_for_test == 'true') && 'true' || 'false' }}
       needs_ts_dist: ${{ needs.changes.outputs.needs_ts_for_test == 'true' && 'true' || 'false' }}
       ts_dist_profile: pr

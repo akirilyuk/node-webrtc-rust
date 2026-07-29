@@ -1,5 +1,7 @@
 name: Native binding cache
-description: Restore per-target .node keyed by native inputs + index.d.ts; validate NAPI surface
+description: >
+  Probe or restore per-target .node keyed by native inputs + index.d.ts.
+  Probe mode checks the Actions Cache API without downloading (~162MB).
 
 inputs:
   target:
@@ -9,11 +11,17 @@ inputs:
     description: Cargo/napi profile (debug or release)
     required: false
     default: release
+  mode:
+    description: >
+      restore = download + validate (default). probe = Actions Cache API existence
+      check only (no download); Test restores later when the key is already warm.
+    required: false
+    default: restore
 
 outputs:
   cache-hit:
-    description: Restored .node matches index.d.ts and is safe to reuse
-    value: ${{ steps.validate.outputs.cache-usable }}
+    description: Cache usable (probe found key, or restore validated .node)
+    value: ${{ steps.result.outputs.cache-usable }}
   cache-key:
     description: Exact cache key (pass to cache/save after compile)
     value: ${{ steps.key.outputs.cache-key }}
@@ -29,8 +37,42 @@ runs:
         echo "cache-key=native-v2-${{ inputs.profile }}-${{ inputs.target }}-${hash}" >> "$GITHUB_OUTPUT"
         echo "Native binding cache key hash=${hash}"
 
+    - name: Probe native binding cache (no download)
+      id: probe
+      if: inputs.mode == 'probe'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        CACHE_KEY: ${{ steps.key.outputs.cache-key }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        # key= is a prefix match; require an exact key hit.
+        enc_key="$(printf '%s' "$CACHE_KEY" | python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
+        url="https://api.github.com/repos/${REPO}/actions/caches?per_page=100&key=${enc_key}"
+        body="$(curl -fsSL \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "$url")"
+        hits="$(CACHE_KEY="$CACHE_KEY" python3 -c '
+        import json, os, sys
+        data = json.load(sys.stdin)
+        key = os.environ["CACHE_KEY"]
+        n = sum(1 for c in data.get("actions_caches") or [] if c.get("key") == key)
+        print(n)
+        ' <<<"$body")"
+        if [[ "$hits" -gt 0 ]]; then
+          echo "cache-present=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Native binding cache key present (${hits} entr(y/ies)) — skipping download; Test will restore."
+        else
+          echo "cache-present=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::Native binding cache key miss — will compile and upload artifact for Test."
+        fi
+
     - name: Restore native binding cache
       id: restore
+      if: inputs.mode != 'probe'
       uses: actions/cache/restore@v4
       with:
         path: packages/bindings/*.node
@@ -38,6 +80,7 @@ runs:
 
     - name: Validate restored .node against index.d.ts
       id: validate
+      if: inputs.mode != 'probe'
       shell: bash
       run: |
         set -euo pipefail
@@ -54,4 +97,18 @@ runs:
           echo "Cached .node stale vs index.d.ts — removing and forcing compile."
           rm -f packages/bindings/*.node
           echo "cache-usable=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Export cache-hit
+      id: result
+      shell: bash
+      run: |
+        if [[ "${{ inputs.mode }}" == "probe" ]]; then
+          if [[ "${{ steps.probe.outputs.cache-present }}" == "true" ]]; then
+            echo "cache-usable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cache-usable=false" >> "$GITHUB_OUTPUT"
+          fi
+        else
+          echo "cache-usable=${{ steps.validate.outputs.cache-usable }}" >> "$GITHUB_OUTPUT"
         fi

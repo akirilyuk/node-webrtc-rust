@@ -57,8 +57,18 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Resolve build required
+      id: resolve
+      shell: bash
+      run: |
+        if [[ "${{ inputs.skip_build_on_cache_hit }}" == "true" && "${{ inputs.native_cache_hit }}" == "true" ]]; then
+          echo "build_required=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "build_required=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Install Linux build dependencies
-      if: inputs.setup_host_toolchain == 'true'
+      if: inputs.setup_host_toolchain == 'true' && steps.resolve.outputs.build_required == 'true'
       shell: bash
       run: |
         sudo apt-get update
@@ -70,7 +80,7 @@ runs:
           pkg-config
 
     - name: Setup Node.js
-      if: inputs.setup_host_toolchain == 'true'
+      if: inputs.setup_host_toolchain == 'true' && steps.resolve.outputs.build_required == 'true'
       uses: actions/setup-node@v4
       with:
         node-version: 20
@@ -78,12 +88,13 @@ runs:
         cache-dependency-path: package-lock.json
 
     - name: Install Rust toolchain
-      if: inputs.setup_host_toolchain == 'true'
+      if: inputs.setup_host_toolchain == 'true' && steps.resolve.outputs.build_required == 'true'
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ inputs.target }}
 
     - name: Restore Cargo target/ (cross-run warm start)
+      if: steps.resolve.outputs.build_required == 'true'
       id: target-restore
       uses: actions/cache/restore@v4
       with:
@@ -93,13 +104,14 @@ runs:
           ${{ inputs.cache_prefix }}-target-${{ inputs.cache_target_label }}-
 
     - name: Drop stale target/ on inexact cache restore
-      if: steps.target-restore.outputs.cache-hit != 'true'
+      if: steps.resolve.outputs.build_required == 'true' && steps.target-restore.outputs.cache-hit != 'true'
       shell: bash
       run: |
         echo "target/ cache key miss (cache-hit=${{ steps.target-restore.outputs.cache-hit }}) — removing partial restore"
         rm -rf target
 
     - name: Cache Cargo registry
+      if: steps.resolve.outputs.build_required == 'true'
       uses: Swatinem/rust-cache@v2
       with:
         prefix-key: ${{ inputs.cache_prefix }}
@@ -109,19 +121,16 @@ runs:
         add-job-id-key: false
         add-rust-environment-hash-key: false
 
-    - name: Cache npm
-      if: inputs.use_npm_cache == 'true'
+    - name: Cache npm download store
+      if: inputs.use_npm_cache == 'true' && steps.resolve.outputs.build_required == 'true'
       uses: actions/cache@v4
       with:
-        path: |
-          ~/.npm
-          node_modules
-          packages/bindings/node_modules
+        path: ~/.npm
         key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
         restore-keys: npm-
 
     - name: Cache napi-rs Zig toolchain
-      if: inputs.zig == 'true'
+      if: inputs.zig == 'true' && steps.resolve.outputs.build_required == 'true'
       uses: actions/cache@v4
       with:
         path: /github/home/.cache/napi-rs-nodejs
@@ -129,6 +138,7 @@ runs:
         restore-keys: napi-zig-${{ runner.os }}-
 
     - name: Install bindings dependencies
+      if: steps.resolve.outputs.build_required == 'true'
       shell: bash
       working-directory: packages/bindings
       run: |
@@ -141,12 +151,12 @@ runs:
         npm install --ignore-scripts --no-save --omit=optional @napi-rs/cli@^2.18.0
 
     - name: Reuse cached native addon
-      if: inputs.skip_build_on_cache_hit == 'true' && inputs.native_cache_hit == 'true'
+      if: steps.resolve.outputs.build_required != 'true'
       shell: bash
-      run: echo "Skipping compile for ${{ inputs.target }} — native binding cache hit"
+      run: echo "::notice::Reusing cached native addon for ${{ inputs.target }} — skipping Rust/npm setup and compile"
 
     - name: Build native addon
-      if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
+      if: steps.resolve.outputs.build_required == 'true'
       shell: bash
       working-directory: packages/bindings
       env:
@@ -180,7 +190,7 @@ runs:
         fi
 
     - name: Verify native NAPI surface
-      if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
+      if: steps.resolve.outputs.build_required == 'true'
       shell: bash
       run: |
         unset SHERPA_ONNX_LIB_DIR
@@ -191,16 +201,12 @@ runs:
         node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"
 
     - name: Verify musl runtime on Alpine
-      if: |
-        (inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true') &&
-        inputs.target == 'x86_64-unknown-linux-musl'
+      if: steps.resolve.outputs.build_required == 'true' && inputs.target == 'x86_64-unknown-linux-musl'
       shell: bash
       run: bash scripts/ci/verify-musl-runtime.sh
 
     - name: Save native binding cache
-      if: |
-        inputs.binding_cache_key != '' &&
-        (inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true')
+      if: inputs.binding_cache_key != '' && steps.resolve.outputs.build_required == 'true'
       uses: actions/cache/save@v4
       with:
         path: packages/bindings/*.node

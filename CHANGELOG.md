@@ -10,6 +10,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.20] — 2026-07-29
+
+In-memory Sherpa TTS phrase PCM cache so repeated short phrases (e.g. echo-agent `ready`) skip re-synthesis under concurrent sessions.
+
+### Added
+
+- **Speech / Sherpa** — Process-local TTS phrase PCM cache (on by default), keyed by project, model directory, language, voice, and normalized text. ENV: `SHERPA_TTS_PHRASE_CACHE`, `SHERPA_TTS_PHRASE_CACHE_MAX_ENTRIES` (default 128).
+- **Speech / OTel** — Metrics for phrase-cache hits/misses/entries plus TTS queue-wait and synth wall-time, with TTS model/language/voice and `project_id` attributes.
+
+---
+
 ## [0.6.19] — 2026-07-29
 
 Retry incomplete local offer SDP under concurrent ICE gather so scale-up signaling does not send offers without `a=ice-ufrag`.

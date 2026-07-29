@@ -222,6 +222,8 @@ interface ClientSession {
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
   resolveMicTrack?: (track: RemoteAudioTrack) => void
   rejectMicTrack?: (error: Error) => void
+  /** Held until PC connected + control DC open; consumed by {@link maybeStartAgentWhenTransportReady}. */
+  inboundPromise?: Promise<RemoteAudioTrack>
 }
 
 export interface VoiceAgentSessionHostOptions {
@@ -679,9 +681,8 @@ export class VoiceAgentSessionHost {
         this.reconnectAttempts.delete(peerId)
         this.maybeNotifyPeerLifecycle(peerId, session)
         if (!dataOnly && inboundPromise) {
-          void this.startAgentSession(peerId, inboundPromise).catch((error: unknown) => {
-            console.error(`Failed to start VoiceAgent for ${peerId}:`, error)
-          })
+          session.inboundPromise = inboundPromise
+          this.maybeStartAgentWhenTransportReady(peerId, session)
         }
       } else if (pc.connectionState === 'disconnected') {
         this.scheduleTransportDisconnect(peerId, session)
@@ -756,6 +757,7 @@ export class VoiceAgentSessionHost {
       })
       // Transport or agent start may complete before the control DC opens; retry here.
       this.maybeNotifyPeerLifecycle(peerId, session)
+      this.maybeStartAgentWhenTransportReady(peerId, session)
     }
 
     if (syncChannel) {
@@ -829,6 +831,30 @@ export class VoiceAgentSessionHost {
     } catch (error: unknown) {
       console.error(`[session ${peerId}] voiceHandler.onPeerConnected failed:`, error)
     }
+  }
+
+  /**
+   * Starts VoiceAgent only when SCTP transport and control DataChannel are both ready.
+   * Defers native agent work until the control DC is open so SCTP is not starved under load.
+   */
+  private maybeStartAgentWhenTransportReady(peerId: string, session: ClientSession): void {
+    if (this.sessionMode === 'data-only') return
+    if (
+      session.agentStarted ||
+      session.agentStartInProgress ||
+      !session.agent ||
+      !session.inboundPromise
+    ) {
+      return
+    }
+    if (session.pc.connectionState !== 'connected') return
+    if (session.controlChannel.readyState !== 'open') return
+
+    const inboundPromise = session.inboundPromise
+    delete session.inboundPromise
+    void this.startAgentSession(peerId, inboundPromise).catch((error: unknown) => {
+      console.error(`Failed to start VoiceAgent for ${peerId}:`, error)
+    })
   }
 
   private async startAgentSession(
@@ -1297,6 +1323,7 @@ export class VoiceAgentSessionHost {
     this.clearTransportDisconnectTimer(session)
     session.resolveMicTrack = undefined
     session.rejectMicTrack = undefined
+    delete session.inboundPromise
     try {
       session.unwireControl?.()
     } catch (error: unknown) {

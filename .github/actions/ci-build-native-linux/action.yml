@@ -121,13 +121,26 @@ runs:
         add-job-id-key: false
         add-rust-environment-hash-key: false
 
-    - name: Cache npm download store
+    # Exact key only (restore + conditional save). `actions/cache@v4` with
+    # `restore-keys: npm-` was pulling multi-GB stores from main into the job and
+    # then re-uploading them in Post under the PR merge ref (~2–3 minutes).
+    - name: Restore npm download store
       if: inputs.use_npm_cache == 'true' && steps.resolve.outputs.build_required == 'true'
-      uses: actions/cache@v4
+      id: npm-cache
+      uses: actions/cache/restore@v4
       with:
         path: ~/.npm
         key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
-        restore-keys: npm-
+
+    - name: Save npm download store
+      if: |
+        inputs.use_npm_cache == 'true' &&
+        steps.resolve.outputs.build_required == 'true' &&
+        steps.npm-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.npm
+        key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
 
     - name: Cache napi-rs Zig toolchain
       if: inputs.zig == 'true' && steps.resolve.outputs.build_required == 'true'

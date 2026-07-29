@@ -176,7 +176,8 @@ After `cargo test` and `npm test`, [`run-pr-integration.sh`](run-pr-integration.
 
 1. Download STT (`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`) and TTS (`vits-piper-en_US-amy-low`) into `examples/voice-agent-local-sherpa/.models/`
 2. Set `SHERPA_STT_MODEL_PATH` / `SHERPA_TTS_MODEL_PATH`
-3. Run each `start:roundtrip*` script in order (exit on first failure). Each step uses [`run-sherpa-roundtrip-e2e.sh`](run-sherpa-roundtrip-e2e.sh): streams **`[speech]` events** (browser parity) with **`[voice-debug]` / topology off**; **automatic re-run with `VOICE_DEBUG=1`** if that pass fails. Wrapped in [`run-with-timeout.sh`](run-with-timeout.sh) (default **180s** per script; override `CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC`). Model downloads cap at **900s** (`CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC`).
+3. Run ignored Rust vendor tests that need those weights: `cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_phrase_cache_test -- --ignored` (asserts ONNX `generate` is skipped on cache hit). Timeout **420s** (`CI_SHERPA_RUST_IGNORED_TIMEOUT_SEC`). Models-only path: `bash scripts/ci/run-sherpa-example-ci.sh rust`.
+4. Run each `start:roundtrip*` script in order (exit on first failure). Each step uses [`run-sherpa-roundtrip-e2e.sh`](run-sherpa-roundtrip-e2e.sh): streams **`[speech]` events** (browser parity) with **`[voice-debug]` / topology off**; **automatic re-run with `VOICE_DEBUG=1`** if that pass fails. Wrapped in [`run-with-timeout.sh`](run-with-timeout.sh) (default **180s** per script; override `CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC`). Model downloads cap at **900s** (`CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC`).
 
 | Quality job ([`run-pr-quality.sh`](run-pr-quality.sh))                              | Integration job ([`run-pr-integration.sh`](run-pr-integration.sh)) |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
@@ -198,7 +199,8 @@ After `cargo test` and `npm test`, [`run-pr-integration.sh`](run-pr-integration.
 ```bash
 cd node-webrtc-rust
 bash scripts/ci/run-sherpa-example-ci.sh vitest   # quality parity, no models
-bash scripts/ci/run-sherpa-example-ci.sh e2e      # all seven E2E scripts
+bash scripts/ci/run-sherpa-example-ci.sh rust     # download models + TTS phrase-cache ignored cargo tests
+bash scripts/ci/run-sherpa-example-ci.sh e2e      # models + phrase-cache tests + all roundtrip E2E scripts
 bash scripts/ci/run-pr-tests-full.sh              # quality + integration (full PR test job)
 ```
 

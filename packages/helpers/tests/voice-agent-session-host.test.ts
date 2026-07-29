@@ -40,12 +40,14 @@ type FakeSession = {
   offerSent: boolean
   pendingAnswer: null
   pendingIce: never[]
+  inboundPromise?: Promise<unknown>
 }
 
 type HostTestAccess = VoiceAgentSessionHost & {
   sessions: Map<string, FakeSession>
   sessionMode: 'voice' | 'data-only'
   maybeNotifyPeerLifecycle: (peerId: string, session: FakeSession) => void
+  maybeStartAgentWhenTransportReady: (peerId: string, session: FakeSession) => void
   startAgentSession: (peerId: string, inboundPromise: Promise<unknown>) => Promise<void>
   closeClientInner: (peerId: string) => Promise<void>
   createSessionContext: (
@@ -359,5 +361,79 @@ describe('VoiceAgentSessionHost peer lifecycle', () => {
     expect(session.agentStartInProgress).toBe(false)
     expect(session.peerConnectedNotified).toBe(false)
     expect(connected).not.toHaveBeenCalled()
+  })
+})
+
+describe('VoiceAgentSessionHost deferred agent start', () => {
+  it('does not start VoiceAgent when PC is connected but control DC is not open yet', () => {
+    const host = createHost({ onSpeechEvent: () => undefined })
+    const session = createFakeSession({
+      pc: { connectionState: 'connected', close: vi.fn() },
+      controlChannel: { readyState: 'connecting', send: vi.fn() },
+    })
+    session.inboundPromise = Promise.resolve({ kind: 'audio' })
+    host.sessions.set('client-dc-wait', session)
+
+    host.maybeStartAgentWhenTransportReady('client-dc-wait', session)
+
+    expect(session.agent?.start).not.toHaveBeenCalled()
+    expect(session.agent?.attach).not.toHaveBeenCalled()
+    expect(session.inboundPromise).toBeDefined()
+  })
+
+  it('starts VoiceAgent when control DC opens after PC is already connected', async () => {
+    const host = createHost({ onSpeechEvent: () => undefined })
+    const session = createFakeSession({
+      pc: { connectionState: 'connected', close: vi.fn() },
+      controlChannel: { readyState: 'connecting', send: vi.fn() },
+    })
+    let resolveInbound!: (track: unknown) => void
+    const inboundPromise = new Promise((resolve) => {
+      resolveInbound = resolve
+    })
+    session.inboundPromise = inboundPromise
+    host.sessions.set('client-dc-late', session)
+
+    host.maybeStartAgentWhenTransportReady('client-dc-late', session)
+    expect(session.agent?.start).not.toHaveBeenCalled()
+    expect(session.inboundPromise).toBe(inboundPromise)
+
+    session.controlChannel.readyState = 'open'
+    host.maybeStartAgentWhenTransportReady('client-dc-late', session)
+    expect(session.inboundPromise).toBeUndefined()
+
+    resolveInbound({ kind: 'audio' })
+    await vi.waitFor(() => {
+      expect(session.agent?.start).toHaveBeenCalledTimes(1)
+    })
+    expect(session.agent?.attach).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts VoiceAgent when control DC is already open when PC becomes connected', async () => {
+    const host = createHost({ onSpeechEvent: () => undefined })
+    const session = createFakeSession({
+      pc: { connectionState: 'connecting', close: vi.fn() },
+      controlChannel: { readyState: 'open', send: vi.fn() },
+    })
+    let resolveInbound!: (track: unknown) => void
+    const inboundPromise = new Promise((resolve) => {
+      resolveInbound = resolve
+    })
+    session.inboundPromise = inboundPromise
+    host.sessions.set('client-pc-late', session)
+
+    host.maybeStartAgentWhenTransportReady('client-pc-late', session)
+    expect(session.agent?.start).not.toHaveBeenCalled()
+    expect(session.inboundPromise).toBe(inboundPromise)
+
+    session.pc.connectionState = 'connected'
+    host.maybeStartAgentWhenTransportReady('client-pc-late', session)
+    expect(session.inboundPromise).toBeUndefined()
+
+    resolveInbound({ kind: 'audio' })
+    await vi.waitFor(() => {
+      expect(session.agent?.start).toHaveBeenCalledTimes(1)
+    })
+    expect(session.agent?.attach).toHaveBeenCalledTimes(1)
   })
 })

@@ -80,8 +80,6 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: 20
-        cache: npm
-        cache-dependency-path: package-lock.json
 
     - name: Install Rust toolchain
       if: inputs.setup_host_toolchain == 'true' && steps.resolve.outputs.build_required == 'true'

@@ -123,7 +123,7 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 - **When compiling:** requires **Typecheck & lint** success.
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
-- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) `mode: probe` checks the Actions Cache API for an exact `native-v2-debug-*` key (**no download**). On hit, skip build and artifact upload — Test restores from cache. On miss, [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) compiles, saves the cache, and uploads the artifact for same-run Test. Cache key fingerprints bindings Rust sources, every `path = "../../crates/…"` dep, `Cargo.lock`, committed NAPI surface (`index.d.ts`, `index.js`), and bindings `package.json` **excluding top-level `version`**. No `restore-keys` prefix fallback.
+- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) restores + validates a prior `.node`. On hit, [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) skips `napi build` but still **uploads the artifact** for Test (`workflow_call` jobs often cannot restore the same GHA cache). On miss, compile, save cache, upload. Cache key fingerprints bindings Rust sources, every `path = "../../crates/…"` dep, `Cargo.lock`, committed NAPI surface (`index.d.ts`, `index.js`), and bindings `package.json` **excluding top-level `version`**. No `restore-keys` prefix fallback.
 - **npm:** no GHA `~/.npm` cache — bindings `npm ci --omit=optional` only installs `@napi-rs/cli` (~6MB, typically &lt;1s). Caching `~/.npm` previously re-uploaded multi-GB polluted stores in Post.
 - **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) — host-style build runs `copy:local-node` so `index.js` loads the fresh `.node` instead of stale optional npm packages
 
@@ -152,13 +152,12 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 
 Before tests, the test job receives the native binding as follows:
 
-1. **Compile native (probe):** Actions Cache API check for the exact `native-v2-debug-*` key — **no download**. On hit, compile skips build and artifact upload; Test restores from GHA cache.
-2. **Compile native (miss):** `napi build`, save GHA cache, upload `bindings-x86_64-unknown-linux-gnu` for **same-run** Test (GHA cache is not always visible to `workflow_call` jobs in the same run).
-3. **Test:** download artifact when `use_binding_artifact=true`; otherwise [`native-binding-cache`](../../.github/actions/native-binding-cache) restore + validate (TS-only / compile gated off / compile cache hit).
-4. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
-5. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) (`ts_dist_profile: pr` on PR builds).
+1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` when **compile-native** ran (`ran_compile`). Compile restores from GHA cache on hit (skips `napi build`) or compiles on miss, then always uploads the artifact — required because `reusable-test` (`workflow_call`) often cannot restore the same GHA cache.
+2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) when compile was gated off (docs-only / TS-only / test-CI-only).
+3. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
+4. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) (`ts_dist_profile: pr` on PR builds).
 
-Jobs do not share a workspace on self-hosted runners (each job checks out fresh). Same-run miss uses artifact handoff (~162 MB); warm-cache hits avoid that upload/download pair. **`cargo test`** runs inside the ci-build container and compiles Rust **test** deps in a separate profile from the NAPI addon — there is no `target/` handoff between jobs; compile-native’s Cargo `target/` cache applies only on cache-miss builds in that job.
+Jobs do not share a workspace on self-hosted runners (each job checks out fresh). Artifact handoff is ~162 MB. **`cargo test`** runs inside the ci-build container and compiles Rust **test** deps in a separate profile from the NAPI addon — there is no `target/` handoff between jobs; compile-native’s Cargo `target/` cache applies only on cache-miss builds in that job.
 
 **Last resort locally only** (not CI — `run-pr-integration.sh` exits if `.node` is missing when `CI=true`):
 
@@ -410,8 +409,9 @@ After changing `docker/ci/Dockerfile`, rebuild and push to the `ci` branch befor
 | -------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Native binding             | `Cargo.lock`, crates, NAPI surface, bindings `package.json` minus top-level `version` | `packages/bindings/*.node`                              | compile-native, release/main/host matrix, test; exact hit skips Rust/npm/compile                                                                                                  |
 | TS dist                    | sdk/signaling sources + tsconfigs                                                     | `packages/*/dist`                                       | build-ts, test                                                                                                                                                                    |
-| npm                        | `package-lock.json`                                                                   | `~/.npm` (download store only in native compile action) | setup-node jobs, native compile on cache miss                                                                                                                                     |
 | Rust target (restore-only) | `Cargo.lock`, workspace `Cargo.toml` (per target label)                               | `target/`                                               | compile/build-linux warm start only; **no cross-label restore-keys**; `rm -rf target` when cache key is not an exact hit (avoids stale artifacts after feature/toolchain changes) |
+
+`actions/setup-node` **`cache: npm` is disabled** — `node-cache-*-npm-*` blobs grew to ~1.2GB+ and were slower than `npm ci`. Native compile also does not cache `~/.npm`.
 
 PR native cache profile: **debug** (`v1-pr-debug`). Main/release: **release** (`v2-release` — bumped after Sherpa link-static/shared split in #55).
 

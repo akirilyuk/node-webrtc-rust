@@ -245,7 +245,7 @@ impl TtsProvider for SherpaTts {
         otel::record_sherpa_tts_phrase_cache_miss(&attrs);
         let chunk = self.synthesize_miss(&normalized, &attrs).await?;
         if phrase_cache_enabled() {
-            store(cache_key, chunk.clone());
+            store(cache_key, chunk.clone(), &attrs);
         }
         Ok(vec![chunk])
     }

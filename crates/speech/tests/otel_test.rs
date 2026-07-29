@@ -66,7 +66,7 @@ fn metrics_record_without_panic() {
     };
     otel::record_sherpa_tts_phrase_cache_hit(&attrs);
     otel::record_sherpa_tts_phrase_cache_miss(&attrs);
-    otel::set_sherpa_tts_phrase_cache_entries(4);
+    otel::set_sherpa_tts_phrase_cache_entries(4, &attrs);
     otel::record_sherpa_tts_queue_wait_ms(1.5, &attrs);
     otel::record_sherpa_tts_synth_wall_ms(42.0, &attrs);
 }

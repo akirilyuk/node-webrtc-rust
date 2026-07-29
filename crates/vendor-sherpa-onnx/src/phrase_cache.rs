@@ -38,6 +38,24 @@ impl PhraseCacheState {
         self.map.len()
     }
 
+    fn count_for_attrs(
+        &self,
+        project_id: &str,
+        model_dir: &str,
+        language: &str,
+        voice: &str,
+    ) -> usize {
+        self.map
+            .keys()
+            .filter(|key| {
+                key.project_id == project_id
+                    && key.model_dir == model_dir
+                    && key.language == language
+                    && key.voice == voice
+            })
+            .count()
+    }
+
     fn touch(&mut self, key: &PhraseCacheKey) {
         if let Some(index) = self.order.iter().position(|existing| existing == key) {
             self.order.remove(index);
@@ -118,13 +136,19 @@ pub fn lookup(key: &PhraseCacheKey, attrs: &SherpaTtsMetricAttrs) -> Option<TtsA
     hit
 }
 
-pub fn store(key: PhraseCacheKey, chunk: TtsAudioChunk) {
+pub fn store(key: PhraseCacheKey, chunk: TtsAudioChunk, attrs: &SherpaTtsMetricAttrs) {
     if !phrase_cache_enabled() {
         return;
     }
     let mut cache = global_cache().lock().expect("phrase cache lock poisoned");
-    cache.insert(key, chunk);
-    otel::set_sherpa_tts_phrase_cache_entries(cache.len() as i64);
+    cache.insert(key.clone(), chunk);
+    let count = cache.count_for_attrs(
+        &key.project_id,
+        &key.model_dir,
+        &key.language,
+        &key.voice,
+    );
+    otel::set_sherpa_tts_phrase_cache_entries(count as i64, attrs);
 }
 
 pub fn build_cache_key(
@@ -163,7 +187,15 @@ pub fn reset_for_test(max_entries: usize) {
     cache.map.clear();
     cache.order.clear();
     cache.max_entries = max_entries.max(1);
-    otel::set_sherpa_tts_phrase_cache_entries(0);
+    otel::set_sherpa_tts_phrase_cache_entries(
+        0,
+        &SherpaTtsMetricAttrs {
+            tts_model: String::new(),
+            tts_language: String::new(),
+            tts_voice: String::new(),
+            project_id: String::new(),
+        },
+    );
 }
 
 #[cfg(test)]
@@ -207,7 +239,7 @@ mod tests {
         reset_for_test(128);
         let key = build_cache_key("proj-a", "/models/piper", "", "0", "hello");
         let attrs = attrs();
-        store(key.clone(), sample_chunk("first"));
+        store(key.clone(), sample_chunk("first"), &attrs);
         let hit = lookup(&key, &attrs).expect("cache hit");
         assert_eq!(hit.pcm.as_ref(), b"first");
     }
@@ -219,8 +251,8 @@ mod tests {
         let attrs = attrs();
         let key_a = build_cache_key("proj-a", "/models/piper", "", "0", "hello");
         let key_b = build_cache_key("proj-a", "/models/piper", "", "0", "goodbye");
-        store(key_a.clone(), sample_chunk("a"));
-        store(key_b.clone(), sample_chunk("b"));
+        store(key_a.clone(), sample_chunk("a"), &attrs);
+        store(key_b.clone(), sample_chunk("b"), &attrs);
         assert_eq!(lookup(&key_a, &attrs).expect("a").pcm.as_ref(), b"a");
         assert_eq!(lookup(&key_b, &attrs).expect("b").pcm.as_ref(), b"b");
     }
@@ -232,8 +264,8 @@ mod tests {
         let attrs = attrs();
         let key_a = build_cache_key("proj-a", "/models/piper", "", "0", "hello");
         let key_b = build_cache_key("proj-b", "/models/piper", "", "0", "hello");
-        store(key_a.clone(), sample_chunk("a"));
-        store(key_b.clone(), sample_chunk("b"));
+        store(key_a.clone(), sample_chunk("a"), &attrs);
+        store(key_b.clone(), sample_chunk("b"), &attrs);
         assert_eq!(lookup(&key_a, &attrs).expect("a").pcm.as_ref(), b"a");
         assert_eq!(lookup(&key_b, &attrs).expect("b").pcm.as_ref(), b"b");
     }
@@ -246,9 +278,9 @@ mod tests {
         let key_a = build_cache_key("proj-a", "/models/piper", "", "0", "one");
         let key_b = build_cache_key("proj-a", "/models/piper", "", "0", "two");
         let key_c = build_cache_key("proj-a", "/models/piper", "", "0", "three");
-        store(key_a.clone(), sample_chunk("a"));
-        store(key_b.clone(), sample_chunk("b"));
-        store(key_c.clone(), sample_chunk("c"));
+        store(key_a.clone(), sample_chunk("a"), &attrs);
+        store(key_b.clone(), sample_chunk("b"), &attrs);
+        store(key_c.clone(), sample_chunk("c"), &attrs);
         assert!(lookup(&key_a, &attrs).is_none(), "oldest entry evicted");
         assert!(lookup(&key_b, &attrs).is_some());
         assert!(lookup(&key_c, &attrs).is_some());
@@ -262,7 +294,7 @@ mod tests {
         assert!(!phrase_cache_enabled());
         let cache_key = build_cache_key("proj-a", "/models/piper", "", "0", "hello");
         let attrs = attrs();
-        store(cache_key.clone(), sample_chunk("first"));
+        store(cache_key.clone(), sample_chunk("first"), &attrs);
         assert!(lookup(&cache_key, &attrs).is_none());
         unsafe { std::env::remove_var("SHERPA_TTS_PHRASE_CACHE") };
     }

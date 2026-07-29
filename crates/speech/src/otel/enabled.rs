@@ -455,9 +455,10 @@ pub fn record_sherpa_tts_phrase_cache_miss(attrs: &SherpaTtsMetricAttrs) {
     }
 }
 
-pub fn set_sherpa_tts_phrase_cache_entries(count: i64) {
+pub fn set_sherpa_tts_phrase_cache_entries(count: i64, attrs: &SherpaTtsMetricAttrs) {
     if is_enabled() {
-        tts_phrase_cache_entries_gauge().record(count, &[]);
+        let kv = sherpa_tts_metric_attrs(attrs);
+        tts_phrase_cache_entries_gauge().record(count, &kv);
     }
 }
 

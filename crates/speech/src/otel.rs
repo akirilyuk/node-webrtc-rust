@@ -115,7 +115,7 @@ pub fn record_sherpa_tts_phrase_cache_hit(_attrs: &SherpaTtsMetricAttrs) {}
 pub fn record_sherpa_tts_phrase_cache_miss(_attrs: &SherpaTtsMetricAttrs) {}
 
 #[cfg(not(feature = "otel"))]
-pub fn set_sherpa_tts_phrase_cache_entries(_count: i64) {}
+pub fn set_sherpa_tts_phrase_cache_entries(_count: i64, _attrs: &SherpaTtsMetricAttrs) {}
 
 #[cfg(not(feature = "otel"))]
 pub fn record_sherpa_tts_queue_wait_ms(_ms: f64, _attrs: &SherpaTtsMetricAttrs) {}

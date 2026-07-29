@@ -60,20 +60,29 @@ type AwaitablePeerConnection = RTCPeerConnection & {
 /** Per-component teardown status for capacity-safe close. */
 export type TeardownComponentStatus = 'ok' | 'timed_out' | 'failed' | 'absent'
 
-/** Strict combined outcome of peer close + agent stop (capacity-safe teardown). */
+/**
+ * Combined outcome of peer close + agent stop (capacity-safe teardown).
+ * - `closed` — capacity released (clean teardown, or soft-release with `incomplete: true`)
+ * - `timed_out` / `failed` — hard quarantine (lease held, recycle required)
+ * - `absent` — no session
+ */
 export type PeerCloseOutcome =
   | { status: 'closed'; pc: 'ok' | 'absent'; agent: 'ok' | 'absent' }
   | {
+      status: 'closed'
+      /** Capacity released without quarantine; PC/agent teardown did not fully confirm. */
+      incomplete: true
+      pc: TeardownComponentStatus
+      agent: TeardownComponentStatus
+      error?: unknown
+    }
+  | {
       status: 'timed_out'
-      /** false when capacity was released without pod quarantine (pre-transport). */
-      quarantined: boolean
       pc: TeardownComponentStatus
       agent: TeardownComponentStatus
     }
   | {
       status: 'failed'
-      /** false when capacity was released without pod quarantine (pre-transport). */
-      quarantined: boolean
       pc: TeardownComponentStatus
       agent: TeardownComponentStatus
       error?: unknown
@@ -567,17 +576,22 @@ export class VoiceAgentSessionHost {
         : Promise.resolve({ status: 'ok' as const } satisfies NativeCloseRaceResult),
       awaitAgentStopped(partial.agent, PEER_NATIVE_CLOSE_TIMEOUT_MS),
     ])
+    // Setup never reached transport-ready — soft-release on incomplete teardown.
     const outcome = this.finalizeTeardownCapacity(
       peerId,
       partial.budgetLease,
       closeResult,
       agentResult,
       'partial-connect',
-      true,
+      false,
     )
     if (outcome.status === 'failed' || outcome.status === 'timed_out') {
       this.log(
         `[voice ${peerId}] partial connect teardown quarantined (pc=${outcome.pc}, agent=${outcome.agent})`,
+      )
+    } else if (outcome.status === 'closed' && 'incomplete' in outcome && outcome.incomplete) {
+      this.log(
+        `[voice ${peerId}] partial connect teardown soft-released (pc=${outcome.pc}, agent=${outcome.agent})`,
       )
     }
   }
@@ -1225,20 +1239,12 @@ export class VoiceAgentSessionHost {
         `[${tag} ${peerId}] pre-transport teardown incomplete (${reason}) — capacity released without quarantine`,
       )
       const error = agentResult.error ?? closeResult.error
-      if (pcStatus === 'failed' || agentStatus === 'failed') {
-        return {
-          status: 'failed',
-          quarantined: false,
-          pc: pcStatus,
-          agent: agentStatus,
-          ...(error !== undefined ? { error } : {}),
-        }
-      }
       return {
-        status: 'timed_out',
-        quarantined: false,
+        status: 'closed',
+        incomplete: true,
         pc: pcStatus,
         agent: agentStatus,
+        ...(error !== undefined ? { error } : {}),
       }
     }
 
@@ -1279,7 +1285,6 @@ export class VoiceAgentSessionHost {
     if (pcStatus === 'failed' || agentStatus === 'failed') {
       return {
         status: 'failed',
-        quarantined: true,
         pc: pcStatus,
         agent: agentStatus,
         ...(error !== undefined ? { error } : {}),
@@ -1287,7 +1292,6 @@ export class VoiceAgentSessionHost {
     }
     return {
       status: 'timed_out',
-      quarantined: true,
       pc: pcStatus,
       agent: agentStatus,
     }

@@ -124,7 +124,7 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
 - **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) restores a prior `.node`; on an **exact validated hit** with `skip_build_on_cache_hit: true`, [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) skips Rust/npm setup, Cargo `target/` restore, npm install, and `napi build` — only verifies the restored `.node`, uploads the binding artifact, and saves cache when compile ran. Cache key fingerprints bindings Rust sources, every `path = "../../crates/…"` dep, `Cargo.lock`, committed NAPI surface (`index.d.ts`, `index.js`), and bindings `package.json` **excluding top-level `version`** (release prep version bumps alone do not invalidate a byte-identical addon). No `restore-keys` prefix fallback.
-- **npm cache:** only the download store (`~/.npm`) — not root or `packages/bindings` `node_modules` (recreated by `npm ci`). Exact key restore/save only (no `restore-keys` prefix) so Post does not re-upload multi-GB stores inherited from `main`.
+- **npm:** no GHA `~/.npm` cache — bindings `npm ci --omit=optional` only installs `@napi-rs/cli` (~6MB, typically &lt;1s). Caching `~/.npm` previously re-uploaded multi-GB polluted stores in Post.
 - **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) — host-style build runs `copy:local-node` so `index.js` loads the fresh `.node` instead of stale optional npm packages
 
 Uploads `bindings-x86_64-unknown-linux-gnu` for the Test job when compile-native ran.

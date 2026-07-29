@@ -45,10 +45,6 @@ inputs:
     description: Upload bindings artifact
     required: false
     default: 'true'
-  use_npm_cache:
-    description: Restore npm cache (disable on Alpine — BusyBox tar lacks GNU tar -P)
-    required: false
-    default: 'true'
   sherpa_onnx_lib_dir:
     description: SHERPA_ONNX_LIB_DIR for musl builds (musl Sherpa shared libs)
     required: false
@@ -121,26 +117,8 @@ runs:
         add-job-id-key: false
         add-rust-environment-hash-key: false
 
-    # Exact key only (restore + conditional save). `actions/cache@v4` with
-    # `restore-keys: npm-` was pulling multi-GB stores from main into the job and
-    # then re-uploading them in Post under the PR merge ref (~2–3 minutes).
-    - name: Restore npm download store
-      if: inputs.use_npm_cache == 'true' && steps.resolve.outputs.build_required == 'true'
-      id: npm-cache
-      uses: actions/cache/restore@v4
-      with:
-        path: ~/.npm
-        key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
-
-    - name: Save npm download store
-      if: |
-        inputs.use_npm_cache == 'true' &&
-        steps.resolve.outputs.build_required == 'true' &&
-        steps.npm-cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
-      with:
-        path: ~/.npm
-        key: npm-${{ hashFiles('package-lock.json', 'packages/bindings/package.json') }}
+    # No ~/.npm GHA cache: bindings only needs @napi-rs/cli (~6MB); npm ci is
+    # typically <1s, while caching ~/.npm re-uploaded multi-GB polluted stores.
 
     - name: Cache napi-rs Zig toolchain
       if: inputs.zig == 'true' && steps.resolve.outputs.build_required == 'true'

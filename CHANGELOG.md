@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.6.24] — 2026-07-30
+
 ### Fixed
 
 - **SDK / bindings** — `LocalAudioTrack.setWriteSampleTee` now uses a Fatal TSFN so the JS callback is `(data, durationMs)` instead of Node-style `(err, data, durationMs)`. Callers that treated `args[0]` as PCM were recording silence / throwing on `null`.
@@ -17,10 +21,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **Core / Opus** — `WEBRTC_OPUS_BITRATE_BPS` (6000–510000, default 192000) and `WEBRTC_OPUS_APPLICATION` (`audio` | `voip` | `lowdelay`, default `audio`) tune PCM→Opus encode and SDP `maxaveragebitrate`.
+- **Speech / OTel** — Sherpa TTS/STT metrics labeled with catalog model id for staging latency comparisons by voice model.
 
 ### Changed
 
 - **Bindings** — `LocalAudioTrack.writeSample` no longer invokes the write-sample tee; VoiceAgent TTS drain still notifies the tee so JS `writeSample` wrappers are not double-fed.
+
+**Compare:** [`release/0.6.23…release/0.6.24`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.23...release/0.6.24)
 
 ---
 

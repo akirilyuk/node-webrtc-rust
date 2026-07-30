@@ -486,7 +486,14 @@ Set `requireSttPartial: false` to restore immediate energy-VAD barge on the same
 | ----- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | None                                                   | Full phrase received on `userInbound`                                                                                                                                     |
 | 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; optional **C1** path; received audio ≥ ~75% of phase 1                                                                                                 |
-| 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` → `barge_in` → `agent_speaking_end`**; partial includes **lead word**; `user_speech_final` ≥ **75%** word similarity |
+| 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` (≥2 tokens) → `barge_in` → `agent_speaking_end`**; partial includes **lead word**; `user_speech_final` ≥ **75%** word similarity |
+
+CI runs the same harness twice:
+
+| npm script | `VOICE_TTS_STREAM_CHUNKS` | Purpose |
+| ---------- | ------------------------- | ------- |
+| `start:roundtrip-barge-in` | `1` (streaming) | Product default progressive TTS enqueue |
+| `start:roundtrip-barge-in-buffered` | `0` | Legacy fully-buffered TTS path |
 
 Between phases 2 and 3 the harness streams **`interPhaseSttDrainSeconds(config)`** (~3.15 s with the 1300 ms / 1000 ms preset) of silence on `userOut` so the listener STT stream from the tone phase fully closes before Phase 3 — otherwise Phase 3 can barge without a fresh `vad_triggered`.
 
@@ -495,6 +502,7 @@ npm run build:native
 npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run test:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run start:roundtrip-barge-in-buffered --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
 Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) + [`src/roundtrip-stt-lifecycle-helpers.ts`](./src/roundtrip-stt-lifecycle-helpers.ts) (Vitest, no Sherpa models).

@@ -120,6 +120,11 @@ export interface JsBargeInConfig {
   useVad?: boolean
   flushTts?: boolean
   requireSttPartial?: boolean
+  /** Minimum whitespace-separated tokens in an STT partial before semantic barge. Default 2. */
+  minSttPartialTokens?: number
+  /**
+   * @deprecated Use `minSttPartialTokens`. Legacy alias with the same meaning (token count).
+   */
   minSttPartialChars?: number
   agentPlaybackGuardMs?: number
 }

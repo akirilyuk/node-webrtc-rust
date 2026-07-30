@@ -132,7 +132,7 @@ describe('evaluateSttLifecycleOnBargePath', () => {
       ev(SPEECH_EVENT_TYPE.vadTriggered, 800),
       ev(SPEECH_EVENT_TYPE.userSttStart, 800),
       ev(SPEECH_EVENT_TYPE.sttStreamStart, 801),
-      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 1400, 'stop'),
+      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 1400, 'stop now'),
       ev(SPEECH_EVENT_TYPE.bargeIn, 1450),
       ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 1500),
     ]
@@ -146,7 +146,7 @@ describe('evaluateSttLifecycleOnBargePath', () => {
       ev(SPEECH_EVENT_TYPE.userSttStart, 200),
       ev(SPEECH_EVENT_TYPE.sttStreamStart, 201),
       ev(SPEECH_EVENT_TYPE.vadTriggered, 800),
-      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 1400, 'stop'),
+      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 1400, 'stop now'),
       ev(SPEECH_EVENT_TYPE.bargeIn, 1450),
       ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 1500),
     ]
@@ -172,7 +172,7 @@ describe('evaluateSttLifecycleOnBargePath', () => {
   it('rejects partial before stt_stream_start', () => {
     const events = [
       ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 0),
-      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 500, 'stop'),
+      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 500, 'stop now'),
       ev(SPEECH_EVENT_TYPE.vadTriggered, 800),
       ev(SPEECH_EVENT_TYPE.sttStreamStart, 801),
     ]
@@ -226,7 +226,7 @@ describe('composite lifecycle evaluators', () => {
       ev(SPEECH_EVENT_TYPE.vadTriggered, 800),
       ev(SPEECH_EVENT_TYPE.userSttStart, 800),
       ev(SPEECH_EVENT_TYPE.sttStreamStart, 801),
-      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 1400, 'stop'),
+      ev(SPEECH_EVENT_TYPE.userSpeechPartial, 1400, 'stop now'),
       ev(SPEECH_EVENT_TYPE.bargeIn, 1450),
       ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 1500),
       ev(SPEECH_EVENT_TYPE.sttStreamEnd, 3000),

@@ -1214,12 +1214,8 @@ impl VoiceAgent {
     }
 
     fn stt_partial_qualifies_for_barge(inner: &AgentInner, text: &str) -> bool {
-        let trimmed = text.trim();
-        let min_chars = inner.config.vad.barge_in.min_stt_partial_chars.max(1) as usize;
-        if trimmed.len() < min_chars {
-            return false;
-        }
-        trimmed.chars().any(|c| c.is_alphanumeric())
+        let min_tokens = inner.config.vad.barge_in.min_stt_partial_tokens.max(1) as usize;
+        crate::config::stt_partial_token_count(text) >= min_tokens
     }
 
     async fn try_stt_gated_barge_in(&self, partial_text: &str) -> SpeechResult<()> {

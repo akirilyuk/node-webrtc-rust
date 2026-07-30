@@ -44,7 +44,9 @@ impl Default for EventsConfig {
 ///   STT returns a non-empty partial (semantic interrupt). Coughs and tones open the STT gate via
 ///   VAD but typically produce no transcript, so playback continues. Requires `stt` on the agent;
 ///   when STT is disabled, VAD barge-in behaves as if this flag were false.
-/// - `min_stt_partial_chars` — minimum trimmed partial length to trigger barge (default 2).
+/// - `min_stt_partial_tokens` — minimum whitespace-separated tokens (with ≥1 alphanumeric) in the
+///   partial before barge (default **2**). Rejects mid-word fragments like `"St"` and single-token
+///   noise. Legacy JSON/JS key `minSttPartialChars` maps to this same token count.
 ///
 /// `agent_playback_guard_ms` — optional: for this many ms after agent TTS starts, VAD barge-in
 /// does not flush playback (mitigates speaker→mic echo on some setups). Default **0** = barge
@@ -60,13 +62,20 @@ pub struct BargeInConfig {
     pub flush_tts: bool,
     #[serde(default = "default_true")]
     pub require_stt_partial: bool,
-    #[serde(default = "default_min_stt_partial_chars")]
-    pub min_stt_partial_chars: u32,
+    /// Minimum STT partial token count to barge when `require_stt_partial` is true.
+    ///
+    /// Serde also accepts legacy `minSttPartialChars` / `min_stt_partial_chars` as this field.
+    #[serde(
+        default = "default_min_stt_partial_tokens",
+        alias = "minSttPartialChars",
+        alias = "min_stt_partial_chars"
+    )]
+    pub min_stt_partial_tokens: u32,
     #[serde(default = "default_agent_playback_guard_ms")]
     pub agent_playback_guard_ms: u32,
 }
 
-fn default_min_stt_partial_chars() -> u32 {
+fn default_min_stt_partial_tokens() -> u32 {
     2
 }
 
@@ -81,9 +90,68 @@ impl Default for BargeInConfig {
             use_vad: true,
             flush_tts: true,
             require_stt_partial: true,
-            min_stt_partial_chars: default_min_stt_partial_chars(),
+            min_stt_partial_tokens: default_min_stt_partial_tokens(),
             agent_playback_guard_ms: default_agent_playback_guard_ms(),
         }
+    }
+}
+
+/// Prefer `minSttPartialTokens`; fall back to legacy `minSttPartialChars` (same numeric meaning:
+/// token count, not character length). Default **2**.
+pub fn resolve_min_stt_partial_tokens(tokens: Option<u32>, legacy_chars: Option<u32>) -> u32 {
+    tokens
+        .or(legacy_chars)
+        .unwrap_or_else(default_min_stt_partial_tokens)
+        .max(1)
+}
+
+/// Count whitespace-separated tokens that contain at least one alphanumeric character.
+pub fn stt_partial_token_count(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|tok| tok.chars().any(|c| c.is_alphanumeric()))
+        .count()
+}
+
+#[cfg(test)]
+mod min_stt_partial_tokens_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_prefers_tokens_over_legacy_chars() {
+        assert_eq!(
+            resolve_min_stt_partial_tokens(Some(2), Some(9)),
+            2,
+            "explicit tokens must win over legacy chars"
+        );
+    }
+
+    #[test]
+    fn resolve_legacy_chars_maps_to_tokens() {
+        assert_eq!(
+            resolve_min_stt_partial_tokens(None, Some(3)),
+            3,
+            "legacy minSttPartialChars must set minSttPartialTokens"
+        );
+    }
+
+    #[test]
+    fn resolve_default_is_two_tokens() {
+        assert_eq!(resolve_min_stt_partial_tokens(None, None), 2);
+    }
+
+    #[test]
+    fn serde_legacy_min_stt_partial_chars_alias() {
+        let cfg: BargeInConfig =
+            serde_json::from_str(r#"{"minSttPartialChars":4}"#).expect("deserialize");
+        assert_eq!(cfg.min_stt_partial_tokens, 4);
+    }
+
+    #[test]
+    fn token_count_ignores_punctuation_only_and_mid_word_fragments() {
+        assert_eq!(stt_partial_token_count("St"), 1);
+        assert_eq!(stt_partial_token_count("stop now"), 2);
+        assert_eq!(stt_partial_token_count("Stop now, please"), 3);
+        assert_eq!(stt_partial_token_count("  ...  "), 0);
     }
 }
 

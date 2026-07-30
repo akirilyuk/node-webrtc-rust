@@ -1,18 +1,22 @@
 /**
  * E2E semantic barge-in (Sherpa STT + TTS) — loopback with production VAD preset.
  *
- * **UX:** barge-in fires when STT recognizes words (`bargeIn.requireSttPartial`, default true),
- * not on coughs/tones that only trip energy VAD.
+ * **UX:** barge-in fires when STT recognizes ≥ `minSttPartialTokens` (default **2**) words
+ * (`bargeIn.requireSttPartial`), not on coughs/tones or mid-word fragments like `"St"`.
  *
  * Phases:
  *   1. Full agent TTS playback (no interrupt).
  *   2. Random tone on user leg mid-playback → must **not** emit `barge_in`; playback ~full length.
  *   3. User-leg Sherpa TTS ("stop now please") mid-playback → must emit `barge_in`; playback truncated.
  *
- * Run:
+ * Run (streaming TTS chunks — product default):
  *   npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *
- * Env: SHERPA_BARGE_IN_PHRASE, SHERPA_BARGE_IN_BARGE_PHRASE, SHERPA_BARGE_IN_DELAY_MS, …
+ * Run (legacy fully-buffered TTS):
+ *   npm run start:roundtrip-barge-in-buffered --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+ *
+ * Env: SHERPA_BARGE_IN_PHRASE, SHERPA_BARGE_IN_BARGE_PHRASE, SHERPA_BARGE_IN_DELAY_MS,
+ *      VOICE_TTS_STREAM_CHUNKS (`1` / unset = streaming, `0` = buffered), …
  * Logs every speech event with phase-relative timestamps; see ROUNDTRIP.md § Semantic barge-in E2E.
  */
 
@@ -321,17 +325,29 @@ async function main(): Promise<void> {
 
   const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
 
+  const streamEnv = (process.env.VOICE_TTS_STREAM_CHUNKS ?? '').trim().toLowerCase()
+  const ttsStreamMode =
+    streamEnv === '0' || streamEnv === 'false' || streamEnv === 'off' || streamEnv === 'no'
+      ? 'buffered'
+      : 'streaming'
+  const minTokens =
+    config.vad?.bargeIn?.minSttPartialTokens ?? config.vad?.bargeIn?.minSttPartialChars ?? 2
+
   console.log('=== Sherpa semantic barge-in E2E ===')
   logRoundtripScriptBanner({
     script: 'roundtrip-barge-in',
     pipeline: label,
     extra: [
       `requireSttPartial=${config.vad?.bargeIn?.requireSttPartial !== false}`,
+      `minSttPartialTokens=${minTokens}`,
+      `ttsStream=${ttsStreamMode}`,
       `bargeDelayMs=${bargeDelayMs} maxPhaseMs=${maxPhaseMs}`,
     ],
   })
   console.log(`Pipeline: ${label}`)
   console.log(`requireSttPartial=${config.vad?.bargeIn?.requireSttPartial !== false}`)
+  console.log(`minSttPartialTokens=${minTokens}`)
+  console.log(`VOICE_TTS_STREAM_CHUNKS mode: ${ttsStreamMode}`)
   console.log(`Agent phrase: ${agentPhrase.slice(0, 80)}…`)
   console.log(`Barge phrase (TTS): "${bargePhrase}"`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)

@@ -33,16 +33,22 @@ function lastIndexOfType(events: LifecycleSpeechEvent[], type: SpeechEventType):
   return -1
 }
 
+function partialTokenCount(text: string | undefined): number {
+  return (text ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter((tok) => tok.length > 0 && /[0-9A-Za-z]/.test(tok)).length
+}
+
 function qualifyingPartialIndex(
   events: LifecycleSpeechEvent[],
   afterIndex: number,
-  minChars: number,
+  minTokens: number,
 ): number {
   for (let i = afterIndex + 1; i < events.length; i++) {
     const e = events[i]!
     if (e.type !== SPEECH_EVENT_TYPE.userSpeechPartial) continue
-    const t = e.text?.trim() ?? ''
-    if (t.length >= minChars) return i
+    if (partialTokenCount(e.text) >= minTokens) return i
   }
   return -1
 }
@@ -218,19 +224,22 @@ export function evaluateSttLifecycleOnBargePath(params: {
   events: LifecycleSpeechEvent[]
   maxVadToSttStreamMs?: number
   maxSttStreamToPartialMs?: number
+  /** Minimum whitespace tokens for a qualifying partial (default 2). */
+  minPartialTokens?: number
+  /** @deprecated Use `minPartialTokens`. */
   minPartialChars?: number
   label?: string
 }): LifecycleEvalResult {
   const who = prefix(params.label)
   const failures: string[] = []
-  const minChars = params.minPartialChars ?? 2
+  const minTokens = params.minPartialTokens ?? params.minPartialChars ?? 2
   const agentStartIdx = indexOfType(params.events, SPEECH_EVENT_TYPE.agentSpeakingStart)
   if (agentStartIdx < 0) {
     return { passed: false, failures: [`${who}missing agent_speaking_start`] }
   }
   const afterStart = params.events.slice(agentStartIdx + 1)
   const vadIdx = afterStart.findIndex((e) => e.type === SPEECH_EVENT_TYPE.vadTriggered)
-  const partialIdx = qualifyingPartialIndex(params.events, agentStartIdx, minChars)
+  const partialIdx = qualifyingPartialIndex(params.events, agentStartIdx, minTokens)
 
   if (vadIdx < 0) {
     failures.push(`${who}missing vad_triggered after agent_speaking_start`)
@@ -290,7 +299,9 @@ export function evaluateSttLifecycleOnBargePath(params: {
       const maxVadGap = params.maxVadToSttStreamMs ?? DEFAULT_MAX_VAD_TO_STT_STREAM_MS
       const gap = params.events[vadAbs + sttRel]!.atMs - params.events[vadAbs]!.atMs
       if (gap > maxVadGap) {
-        failures.push(`${who}vad_triggered → stt_stream_start gap ${gap} ms exceeds ${maxVadGap} ms`)
+        failures.push(
+          `${who}vad_triggered → stt_stream_start gap ${gap} ms exceeds ${maxVadGap} ms`,
+        )
       }
     }
   }

@@ -48,6 +48,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-utterance-timing
   start:roundtrip-two-phrases
   start:roundtrip-barge-in
+  start:roundtrip-barge-in-buffered
   start:roundtrip-counting-echo
   start:roundtrip-counting-barge-recovery
   start:roundtrip-concurrent-multi-client

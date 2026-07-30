@@ -59,7 +59,8 @@ pub mod vad;
 
 pub use agent::{PcmReader, PcmWriter, VoiceAgent};
 pub use config::{
-    resolved_post_utterance_silence_ms, BargeInConfig, EventDeliveryMode, EventsConfig,
+    resolved_post_utterance_silence_ms, resolve_min_stt_partial_tokens, stt_partial_token_count,
+    BargeInConfig, EventDeliveryMode, EventsConfig,
     SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
     VoiceAgentConfig, VoiceSessionContext,
 };

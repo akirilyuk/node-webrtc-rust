@@ -87,6 +87,51 @@ pub fn opus_sdp_fmtp_line() -> String {
     )
 }
 
+/// Rewrite Opus `a=fmtp:` lines to our encode/advertise params.
+///
+/// Needed for answers: webrtc-rs copies the remote offer's weak default fmtp
+/// (`minptime=10;useinbandfec=1`) even when the local MediaEngine has 192 kbps.
+pub fn enrich_opus_sdp_fmtp(sdp: &str) -> String {
+    let target = opus_sdp_fmtp_line();
+    let mut opus_pts = std::collections::HashSet::new();
+    for line in sdp.lines() {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        let Some(rest) = trimmed.strip_prefix("a=rtpmap:") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let (Some(pt), Some(codec)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if codec.to_ascii_lowercase().starts_with("opus/") {
+            opus_pts.insert(pt.to_string());
+        }
+    }
+    if opus_pts.is_empty() {
+        return sdp.to_string();
+    }
+
+    let nl = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut out = Vec::new();
+    for line in sdp.lines() {
+        let trimmed = line.trim_end_matches('\r');
+        if let Some(rest) = trimmed.strip_prefix("a=fmtp:") {
+            if let Some((pt, _)) = rest.split_once(|c: char| c.is_whitespace()) {
+                if opus_pts.contains(pt) {
+                    out.push(format!("a=fmtp:{pt} {target}"));
+                    continue;
+                }
+            }
+        }
+        out.push(trimmed.to_string());
+    }
+    let mut joined = out.join(nl);
+    if sdp.ends_with('\n') {
+        joined.push_str(nl);
+    }
+    joined
+}
+
 /// Audio format agreed during SDP negotiation for one track binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NegotiatedAudioFormat {
@@ -267,6 +312,22 @@ mod tests {
         assert!(line.contains(&format!("maxaveragebitrate={}", opus_target_bitrate_bps())));
         assert_eq!(opus_target_bitrate_bps(), OPUS_TARGET_BITRATE_BPS);
         assert_eq!(OPUS_TARGET_BITRATE_BPS, 192_000);
+    }
+
+    #[test]
+    fn enrich_opus_sdp_fmtp_upgrades_weak_answer_fmtp() {
+        let sdp = "\
+a=rtpmap:111 opus/48000/2\r\n\
+a=fmtp:111 minptime=10;useinbandfec=1\r\n\
+a=rtpmap:9 G722/8000\r\n\
+";
+        let enriched = enrich_opus_sdp_fmtp(sdp);
+        assert!(enriched.contains(&format!(
+            "a=fmtp:111 {}",
+            opus_sdp_fmtp_line()
+        )));
+        assert!(enriched.contains("maxaveragebitrate=192000"));
+        assert!(enriched.contains("a=rtpmap:9 G722/8000"));
     }
 
     #[test]

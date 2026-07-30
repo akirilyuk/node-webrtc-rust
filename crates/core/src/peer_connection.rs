@@ -30,7 +30,7 @@ use crate::config::PeerConnectionConfig;
 use crate::offer_answer::{AnswerOptions, OfferOptions};
 use crate::data_channel::{DataChannel, DataChannelOptions};
 use crate::debug_call;
-use crate::pcm_encoder::opus_sdp_fmtp_line;
+use crate::pcm_encoder::{enrich_opus_sdp_fmtp, opus_sdp_fmtp_line};
 use crate::debug_evt;
 use crate::error::{is_benign_teardown_error, CoreError};
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
@@ -101,6 +101,11 @@ impl From<RTCSessionDescription> for SessionDescription {
             sdp: desc.sdp,
         }
     }
+}
+
+fn with_enriched_opus_fmtp(mut desc: SessionDescription) -> SessionDescription {
+    desc.sdp = enrich_opus_sdp_fmtp(&desc.sdp);
+    desc
 }
 
 /// ICE candidate for trickle ICE.
@@ -346,7 +351,7 @@ impl PeerConnection {
             voice_activity_detection: options.voice_activity_detection,
         };
         let desc = self.inner.create_offer(Some(rtc_options)).await?;
-        Ok(desc.into())
+        Ok(with_enriched_opus_fmtp(desc.into()))
     }
 
     /// Creates an SDP answer.
@@ -359,7 +364,9 @@ impl PeerConnection {
             voice_activity_detection: options.voice_activity_detection,
         };
         let desc = self.inner.create_answer(Some(rtc_options)).await?;
-        Ok(desc.into())
+        // Answer SDP normally mirrors the remote offer's Opus fmtp; enrich so we still
+        // advertise stereo + maxaveragebitrate when answering a pre-fix staging offer.
+        Ok(with_enriched_opus_fmtp(desc.into()))
     }
 
     async fn ensure_recv_transceiver(&self, kind: RTPCodecType) -> Result<(), CoreError> {

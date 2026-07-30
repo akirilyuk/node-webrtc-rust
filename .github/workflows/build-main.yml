@@ -248,6 +248,10 @@ jobs:
 
       - uses: ./.github/actions/ci-restore-workspace-ownership
 
+      # Bundle assembly recomputes every target fingerprint with `cargo metadata`.
+      - name: Install Rust metadata toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Download all binding artifacts
         uses: actions/download-artifact@v4
         with:

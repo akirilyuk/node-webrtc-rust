@@ -1,5 +1,7 @@
 {
   "releaseBase": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models",
+  "releaseTagUrl": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models",
+  "notes": "Browse models at releaseTagUrl. Download each bundle as ${releaseBase}/<bundle>.tar.bz2 (the bare …/download/tts-models path is not a page and returns 404).",
   "defaultModelId": "en",
   "exampleWorkspace": "@node-webrtc-rust/example-voice-agent-local-sherpa",
   "models": [
@@ -13,6 +15,42 @@
       "approxMb": "~40"
     },
     {
+      "id": "en-amy-medium",
+      "label": "English (Amy, Piper medium)",
+      "bundle": "vits-piper-en_US-amy-medium",
+      "language": "en",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~60"
+    },
+    {
+      "id": "en-lessac",
+      "label": "English (Lessac, Piper medium)",
+      "bundle": "vits-piper-en_US-lessac-medium",
+      "language": "en",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~60"
+    },
+    {
+      "id": "en-lessac-high",
+      "label": "English (Lessac, Piper high)",
+      "bundle": "vits-piper-en_US-lessac-high",
+      "language": "en",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~110"
+    },
+    {
+      "id": "en-lessac-low",
+      "label": "English (Lessac, Piper low)",
+      "bundle": "vits-piper-en_US-lessac-low",
+      "language": "en",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~40"
+    },
+    {
       "id": "en-glados",
       "label": "English (GLaDOS, single speaker)",
       "bundle": "vits-piper-en_US-glados",
@@ -20,6 +58,15 @@
       "kind": "vits",
       "speakerId": 0,
       "approxMb": "~64"
+    },
+    {
+      "id": "en-glados-high",
+      "label": "English (GLaDOS high)",
+      "bundle": "vits-piper-en_US-glados-high",
+      "language": "en",
+      "kind": "vits",
+      "speakerId": 0,
+      "approxMb": "~110"
     },
     {
       "id": "es",

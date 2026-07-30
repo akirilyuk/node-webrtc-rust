@@ -103,11 +103,6 @@ impl From<RTCSessionDescription> for SessionDescription {
     }
 }
 
-fn with_enriched_opus_fmtp(mut desc: SessionDescription) -> SessionDescription {
-    desc.sdp = enrich_opus_sdp_fmtp(&desc.sdp);
-    desc
-}
-
 /// ICE candidate for trickle ICE.
 #[derive(Debug, Clone, Default)]
 pub struct IceCandidate {
@@ -351,7 +346,7 @@ impl PeerConnection {
             voice_activity_detection: options.voice_activity_detection,
         };
         let desc = self.inner.create_offer(Some(rtc_options)).await?;
-        Ok(with_enriched_opus_fmtp(desc.into()))
+        Ok(desc.into())
     }
 
     /// Creates an SDP answer.
@@ -364,9 +359,7 @@ impl PeerConnection {
             voice_activity_detection: options.voice_activity_detection,
         };
         let desc = self.inner.create_answer(Some(rtc_options)).await?;
-        // Answer SDP normally mirrors the remote offer's Opus fmtp; enrich so we still
-        // advertise stereo + maxaveragebitrate when answering a pre-fix staging offer.
-        Ok(with_enriched_opus_fmtp(desc.into()))
+        Ok(desc.into())
     }
 
     async fn ensure_recv_transceiver(&self, kind: RTPCodecType) -> Result<(), CoreError> {
@@ -406,7 +399,7 @@ impl PeerConnection {
     /// Sets the remote session description.
     pub async fn set_remote_description(
         &self,
-        desc: SessionDescription,
+        mut desc: SessionDescription,
     ) -> Result<(), CoreError> {
         debug_call!(
             "core::peer_connection",
@@ -414,6 +407,13 @@ impl PeerConnection {
             "type={:?}",
             desc.sdp_type
         );
+        // Answers mirror the remote offer's Opus fmtp. Staging offers still ship webrtc-rs
+        // defaults (`minptime=10;useinbandfec=1`). Enriching the offer *before* setRemote
+        // makes createAnswer advertise stereo + maxaveragebitrate without SDP-munging the
+        // answer (webrtc-rs rejects setLocalDescription when answer SDP was rewritten).
+        if matches!(desc.sdp_type, SdpType::Offer) {
+            desc.sdp = enrich_opus_sdp_fmtp(&desc.sdp);
+        }
         self.inner.set_remote_description(desc.into_rtc()?).await?;
         Ok(())
     }

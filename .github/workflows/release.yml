@@ -103,6 +103,11 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # Bundle resolution computes the current contract with `cargo metadata`
+      # before the fallback planner composite action runs.
+      - name: Install Rust metadata toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Resolve native-main-bundle from successful main
         id: resolve
         shell: bash
@@ -199,6 +204,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/ci-restore-workspace-ownership
+
+      # Validation recomputes the current six-target native contract.
+      - name: Install Rust metadata toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Download native-main-bundle from producer run
         uses: actions/download-artifact@v4

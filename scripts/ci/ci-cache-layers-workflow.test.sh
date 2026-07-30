@@ -12,6 +12,8 @@ host=".github/actions/ci-build-native-host/action.yml"
 image=".github/workflows/ci-image.yml"
 smoke=".github/workflows/native-cache-smoke.yml"
 plan=".github/actions/plan-native-builds/action.yml"
+main=".github/workflows/build-main.yml"
+release=".github/workflows/release.yml"
 summary=scripts/ci/write-native-ci-summary.sh
 
 # --- Plan runner: cargo metadata is required on bare self-hosted hosts ---
@@ -20,6 +22,46 @@ toolchain_line="$(grep -n 'dtolnay/rust-toolchain@stable' "$plan" | cut -d: -f1)
 plan_line="$(grep -n 'name: Plan per-target native builds' "$plan" | cut -d: -f1)"
 [[ "$toolchain_line" -lt "$plan_line" ]] || fail "Rust toolchain must be installed before native planning"
 echo "ok: plan installs Cargo before fingerprint metadata"
+
+# Every bare self-hosted job that computes or validates the native contract must
+# install Cargo before its contract step. GitHub-hosted native build jobs already
+# provide/install their target toolchains.
+python3 - "$main" "$release" "$smoke" <<'PY' || fail "bare native-contract job missing Cargo setup"
+from pathlib import Path
+import re
+import sys
+
+
+def job(text: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
+        text,
+    )
+    if not match:
+        raise SystemExit(f"missing workflow job: {name}")
+    return match.group(1)
+
+
+def require_toolchain_before(path: str, job_name: str, marker: str) -> None:
+    block = job(Path(path).read_text(encoding="utf-8"), job_name)
+    toolchain = block.find("dtolnay/rust-toolchain@stable")
+    contract = block.find(marker)
+    if contract < 0:
+        raise SystemExit(f"{path}:{job_name}: missing contract marker {marker!r}")
+    if toolchain < 0 or toolchain > contract:
+        raise SystemExit(
+            f"{path}:{job_name}: Rust toolchain must precede {marker!r}"
+        )
+
+
+main, release, smoke = sys.argv[1:]
+require_toolchain_before(main, "assemble-native-bundle", "native-artifact-bundle.sh assemble")
+require_toolchain_before(release, "plan", "resolve-native-main-bundle.sh")
+require_toolchain_before(release, "reuse-bundle", "native-artifact-bundle.sh validate")
+require_toolchain_before(smoke, "assemble-smoke-bundle", "native-artifact-bundle.sh assemble")
+require_toolchain_before(smoke, "resolve-release-style", "resolve-native-main-bundle.sh")
+PY
+echo "ok: all bare native-contract jobs install Cargo first"
 
 # --- Cargo: no broad restore-keys on target/; exact save present ---
 if grep -A20 'Restore Cargo target' "$linux" | grep -q 'restore-keys:'; then

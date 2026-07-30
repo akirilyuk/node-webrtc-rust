@@ -43,6 +43,9 @@ jobs:
           target: ${{ matrix.target }}
           profile: ${{ inputs.profile }}
 
+      - name: Install Rust metadata toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Require cached native artifact + manifest
         shell: bash
         env:
@@ -93,6 +96,9 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install Rust metadata toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Require cached native artifact + manifest
         shell: bash
         env:
@@ -142,6 +148,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Install Rust metadata toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Require cached native artifact + manifest
         shell: bash

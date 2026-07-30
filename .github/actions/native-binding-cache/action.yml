@@ -122,7 +122,9 @@ runs:
         eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "${{ inputs.target }}")"
         man="packages/bindings/native-manifests/${{ inputs.target }}.json"
         if [[ -f "$man" ]]; then
-          if ! bash scripts/ci/native-artifact-manifest.sh validate --manifest "$man"; then
+          if ! bash scripts/ci/native-artifact-manifest.sh validate \
+            --manifest "$man" \
+            --allow-distribution-drift; then
             echo "Cached manifest invalid — removing and forcing compile."
             rm -f packages/bindings/*.node "$man"
             echo "cache-usable=false" >> "$GITHUB_OUTPUT"

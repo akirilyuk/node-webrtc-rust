@@ -12,6 +12,7 @@ host=".github/actions/ci-build-native-host/action.yml"
 image=".github/workflows/ci-image.yml"
 smoke=".github/workflows/native-cache-smoke.yml"
 plan=".github/actions/plan-native-builds/action.yml"
+stage_cached=".github/workflows/reusable-stage-cached-bindings.yml"
 main=".github/workflows/build-main.yml"
 release=".github/workflows/release.yml"
 pr=".github/workflows/build.yml"
@@ -64,6 +65,39 @@ require_toolchain_before(smoke, "assemble-smoke-bundle", "native-artifact-bundle
 require_toolchain_before(smoke, "resolve-release-style", "resolve-native-main-bundle.sh")
 PY
 echo "ok: all bare native-contract jobs install Cargo first"
+
+grep -q 'allow-distribution-drift' .github/actions/native-binding-cache/action.yml \
+  || fail "native-binding-cache must tolerate distribution drift on restore"
+grep -q 'dtolnay/rust-toolchain@stable' "$stage_cached" \
+  || fail "stage-cached workflow must install Cargo before manifest refresh"
+python3 - "$stage_cached" <<'PY' || fail "stage-cached must install Cargo before write-native-artifact-manifest"
+from pathlib import Path
+import re
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+for job in ("stage-linux-x64", "stage-linux-arm64", "stage-host"):
+    match = re.search(
+        rf"(?ms)^  {re.escape(job)}:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
+        text,
+    )
+    if not match:
+        raise SystemExit(f"missing job: {job}")
+    block = match.group(1)
+    toolchain = block.find("dtolnay/rust-toolchain@stable")
+    manifest = block.find("write-native-artifact-manifest.sh")
+    if manifest < 0:
+        raise SystemExit(f"{job}: missing manifest refresh")
+    if toolchain < 0 or toolchain > manifest:
+        raise SystemExit(f"{job}: Rust toolchain must precede manifest refresh")
+PY
+echo "ok: stage-cached jobs install Cargo before manifest refresh"
+
+grep -q 'Install Rust metadata toolchain' "$host" \
+  || fail "host build must install Cargo metadata for manifest refresh"
+grep -q "build_required != 'true'" "$host" \
+  || fail "host build must install metadata toolchain on cache-hit skip path"
+echo "ok: host cache-hit path installs Cargo before manifest write"
 
 # --- Compile recipe: only byte-affecting inputs invalidate native artifacts ---
 grep -q "$compile_recipe" "$linux" || fail "linux build must delegate to canonical compile recipe"

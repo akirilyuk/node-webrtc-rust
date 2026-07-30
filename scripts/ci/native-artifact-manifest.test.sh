@@ -116,6 +116,22 @@ fi
 rg -q "features mismatch" /tmp/native-manifest-validate.err
 echo "ok: feature mismatch rejected"
 
+echo "==> accept distribution-only drift with flag"
+python3 - <<PY
+import json
+from pathlib import Path
+m = json.loads(Path("$MANIFEST").read_text(encoding="utf-8"))
+m["distribution_digest"] = "0" * 64
+Path("$MANIFEST_BAD").write_text(json.dumps(m) + "\n", encoding="utf-8")
+PY
+if bash "$MAN" validate --manifest "$MANIFEST_BAD" 2>/tmp/native-manifest-validate.err; then
+  echo "FAIL: validate accepted distribution drift without flag" >&2
+  exit 1
+fi
+rg -q "distribution_digest mismatch" /tmp/native-manifest-validate.err
+bash "$MAN" validate --manifest "$MANIFEST_BAD" --allow-distribution-drift
+echo "ok: distribution drift accepted with flag"
+
 echo "==> reject truncated / non-hex digest"
 python3 - <<PY
 import json

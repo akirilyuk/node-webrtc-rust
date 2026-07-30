@@ -771,6 +771,7 @@ def validate_manifest(
     recompute_input: bool = True,
     require_node: bool = True,
     node_path: Path | None = None,
+    allow_distribution_drift: bool = False,
 ) -> None:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -892,11 +893,14 @@ def validate_manifest(
         if "distribution_digest" in manifest:
             expected_dist = distribution_digest(root, target)
             if manifest["distribution_digest"] != expected_dist:
-                raise SystemExit(
-                    "validate-manifest: distribution_digest mismatch\n"
-                    f"  manifest:  {manifest['distribution_digest']}\n"
-                    f"  recomputed:{expected_dist}"
-                )
+                if allow_distribution_drift:
+                    pass
+                else:
+                    raise SystemExit(
+                        "validate-manifest: distribution_digest mismatch\n"
+                        f"  manifest:  {manifest['distribution_digest']}\n"
+                        f"  recomputed:{expected_dist}"
+                    )
 
 
 def assemble_native_bundle(
@@ -1265,6 +1269,7 @@ def cmd_validate_manifest(args: argparse.Namespace) -> int:
         Path(args.manifest).resolve(),
         recompute_input=not args.skip_recompute,
         require_node=not args.allow_missing_node,
+        allow_distribution_drift=args.allow_distribution_drift,
     )
     print("ok: manifest valid")
     return 0
@@ -1369,6 +1374,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-missing-node",
         action="store_true",
         help="Skip on-disk .node checksum (schema/field checks only)",
+    )
+    sp.add_argument(
+        "--allow-distribution-drift",
+        action="store_true",
+        help="Accept npm/surface distribution drift when native input digest matches",
     )
     sp.set_defaults(func=cmd_validate_manifest)
 

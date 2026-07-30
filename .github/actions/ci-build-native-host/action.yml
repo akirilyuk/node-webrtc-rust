@@ -114,6 +114,10 @@ runs:
           exit 1
         fi
 
+    - name: Install Rust metadata toolchain
+      if: steps.resolve.outputs.build_required != 'true'
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Write provenance manifest
       shell: bash
       env:

@@ -52,11 +52,13 @@ case "$cmd" in
     manifest=""
     skip_recompute=0
     allow_missing_node=0
+    allow_distribution_drift=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --manifest) manifest="${2:-}"; shift 2 ;;
         --skip-recompute) skip_recompute=1; shift ;;
         --allow-missing-node) allow_missing_node=1; shift ;;
+        --allow-distribution-drift) allow_distribution_drift=1; shift ;;
         *)
           echo "native-artifact-manifest validate: unknown argument: $1" >&2
           exit 1
@@ -73,6 +75,9 @@ case "$cmd" in
     fi
     if [[ "$allow_missing_node" -eq 1 ]]; then
       args+=(--allow-missing-node)
+    fi
+    if [[ "$allow_distribution_drift" -eq 1 ]]; then
+      args+=(--allow-distribution-drift)
     fi
     exec python3 "$PY" "${args[@]}"
     ;;

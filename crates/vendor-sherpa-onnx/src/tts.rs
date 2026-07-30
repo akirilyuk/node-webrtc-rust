@@ -207,7 +207,7 @@ pub(crate) fn parse_speed(config: &TtsConfig) -> f32 {
                 .and_then(|value| value.parse().ok())
         })
         .unwrap_or(1.0)
-        .clamp(0.5, 2.0)
+        .clamp(0.2, 2.0)
 }
 
 pub fn tts_generate_count() -> usize {

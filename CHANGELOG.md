@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Core / Opus** — Decouple SDP `maxaveragebitrate` from encode bitrate. When `WEBRTC_OPUS_BITRATE_BPS` is unset, SDP advertises `minptime=10;useinbandfec=1;stereo=1` without `maxaveragebitrate`; encode defaults to **400 kbps** (was 192 kbps). Set the env var to include a clamped `maxaveragebitrate` in SDP and override encode bitrate.
+
 ---
 
 ## [0.7.0] — 2026-07-30

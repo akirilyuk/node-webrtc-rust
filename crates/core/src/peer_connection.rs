@@ -278,9 +278,9 @@ fn shared_api() -> Result<Arc<API>, CoreError> {
     }
 
     let mut media_engine = MediaEngine::default();
-    // Register Opus first with our fmtp (stereo + maxaveragebitrate). Default Opus uses the
+    // Register Opus first with our fmtp (stereo + FEC; optional maxaveragebitrate). Default Opus uses the
     // same PT 111 and is skipped by MediaEngine::add_codec — otherwise offer/answer SDP only
-    // gets webrtc-rs defaults (`minptime=10;useinbandfec=1`) and never advertises 192 kbps.
+    // gets webrtc-rs defaults (`minptime=10;useinbandfec=1`) without stereo.
     media_engine.register_codec(
         RTCRtpCodecParameters {
             capability: RTCRtpCodecCapability {
@@ -409,7 +409,7 @@ impl PeerConnection {
         );
         // Answers mirror the remote offer's Opus fmtp. Staging offers still ship webrtc-rs
         // defaults (`minptime=10;useinbandfec=1`). Enriching the offer *before* setRemote
-        // makes createAnswer advertise stereo + maxaveragebitrate without SDP-munging the
+        // makes createAnswer advertise stereo + FEC without SDP-munging the
         // answer (webrtc-rs rejects setLocalDescription when answer SDP was rewritten).
         if matches!(desc.sdp_type, SdpType::Offer) {
             desc.sdp = enrich_opus_sdp_fmtp(&desc.sdp);

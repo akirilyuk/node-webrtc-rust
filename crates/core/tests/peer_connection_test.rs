@@ -383,7 +383,7 @@ async fn test_offer_to_receive_audio_adds_audio_mline() {
 }
 
 #[tokio::test]
-async fn test_offer_sdp_advertises_opus_maxaveragebitrate() {
+async fn test_offer_sdp_opus_fmtp_without_maxaveragebitrate_when_env_unset() {
     let pc = PeerConnection::new(test_config())
         .await
         .expect("create pc");
@@ -393,14 +393,15 @@ async fn test_offer_sdp_advertises_opus_maxaveragebitrate() {
         .expect("add track");
     let desc = pc.create_offer(None).await.expect("create offer");
     assert!(
-        desc.sdp.contains("maxaveragebitrate=192000"),
-        "offer SDP must advertise Opus maxaveragebitrate from MediaEngine (got fmtp lines: {:?})",
+        !desc.sdp.contains("maxaveragebitrate"),
+        "offer SDP must omit maxaveragebitrate when WEBRTC_OPUS_BITRATE_BPS is unset (got fmtp lines: {:?})",
         desc.sdp
             .lines()
             .filter(|l| l.contains("fmtp") || l.contains("opus"))
             .collect::<Vec<_>>(),
     );
     assert!(desc.sdp.contains("stereo=1"));
+    assert!(desc.sdp.contains("useinbandfec=1"));
     close_single_peer(&pc).await;
 }
 

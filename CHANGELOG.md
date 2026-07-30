@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **SDK / bindings** — `LocalAudioTrack.setWriteSampleTee` now uses a Fatal TSFN so the JS callback is `(data, durationMs)` instead of Node-style `(err, data, durationMs)`. Callers that treated `args[0]` as PCM were recording silence / throwing on `null`.
+
 ### Added
 
 - **Core / Opus** — `WEBRTC_OPUS_BITRATE_BPS` (6000–510000, default 192000) and `WEBRTC_OPUS_APPLICATION` (`audio` | `voip` | `lowdelay`, default `audio`) tune PCM→Opus encode and SDP `maxaveragebitrate`.

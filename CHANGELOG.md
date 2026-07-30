@@ -8,6 +8,42 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **SDK / bindings** — `LocalAudioTrack.setWriteSampleTee` now uses a Fatal TSFN so the JS callback is `(data, durationMs)` instead of Node-style `(err, data, durationMs)`. Callers that treated `args[0]` as PCM were recording silence / throwing on `null`.
+- **Core / Opus SDP** — Register Opus on the MediaEngine with `stereo=1;maxaveragebitrate=…` _before_ `register_default_codecs()`. Otherwise webrtc-rs keeps its default `minptime=10;useinbandfec=1` fmtp and offer/answer never advertise the 192 kbps encode path (track `sdp_fmtp_line` alone does not win).
+- **Core / Opus SDP** — On `setRemoteDescription(offer)`, rewrite Opus `a=fmtp` to our params so `createAnswer` advertises `stereo=1;maxaveragebitrate=…`. Answers mirror the remote offer’s fmtp; munging the answer breaks webrtc-rs `setLocalDescription` (“new sdp does not match previous answer”).
+
+### Added
+
+- **Core / Opus** — `WEBRTC_OPUS_BITRATE_BPS` (6000–510000, default 192000) and `WEBRTC_OPUS_APPLICATION` (`audio` | `voip` | `lowdelay`, default `audio`) tune PCM→Opus encode and SDP `maxaveragebitrate`.
+
+### Changed
+
+- **Bindings** — `LocalAudioTrack.writeSample` no longer invokes the write-sample tee; VoiceAgent TTS drain still notifies the tee so JS `writeSample` wrappers are not double-fed.
+
+---
+
+## [0.6.23] — 2026-07-30
+
+### Added
+
+- **SDK / bindings** — `LocalAudioTrack.setWriteSampleTee` listens to every PCM frame written, including VoiceAgent TTS drain (which bypasses JS `writeSample` patches). Enables accurate client-side session audio capture.
+
+**Compare:** [`release/0.6.22…release/0.6.23`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.22...release/0.6.23)
+
+---
+
+## [0.6.22] — 2026-07-29
+
+Clearer WebRTC TTS audio via higher-quality Opus encode defaults.
+
+### Changed
+
+- **Core / Opus** — Local PCM→Opus encode uses `Application::Audio` at **192 kbps** (complexity 10) instead of VoIP @ 64 kbps; SDP advertises `stereo=1;maxaveragebitrate=192000` for clearer TTS over WebRTC.
+
+**Compare:** [`release/0.6.21…release/0.6.22`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.21...release/0.6.22)
+
 ---
 
 ## [0.6.21] — 2026-07-29

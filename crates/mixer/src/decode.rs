@@ -78,10 +78,11 @@ mod tests {
 
     fn encode_test_frame(samples: &[i16]) -> Vec<u8> {
         let mut encoder =
-            Encoder::new(SampleRate::Hz48000, Channels::Stereo, Application::Voip).unwrap();
+            Encoder::new(SampleRate::Hz48000, Channels::Stereo, Application::Audio).unwrap();
         encoder
-            .set_bitrate(Bitrate::BitsPerSecond(64_000))
+            .set_bitrate(Bitrate::BitsPerSecond(192_000))
             .unwrap();
+        encoder.set_complexity(10).unwrap();
         let mut output = vec![0u8; 4_000];
         let len = encoder.encode(samples, &mut output).unwrap();
         output.truncate(len);

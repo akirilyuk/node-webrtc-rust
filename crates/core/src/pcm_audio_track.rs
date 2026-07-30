@@ -18,7 +18,7 @@ use webrtc::track::track_local::{TrackLocal, TrackLocalContext};
 
 use crate::debug_call;
 use crate::error::CoreError;
-use crate::pcm_encoder::{NegotiatedAudioFormat, PcmEncoder};
+use crate::pcm_encoder::{opus_sdp_fmtp_line, NegotiatedAudioFormat, PcmEncoder};
 
 /// Underlying track local: PCM in, negotiated codec out.
 pub struct PcmAudioTrackLocal {
@@ -34,7 +34,7 @@ impl PcmAudioTrackLocal {
                 mime_type: MIME_TYPE_OPUS.to_owned(),
                 clock_rate: 48_000,
                 channels: 2,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                sdp_fmtp_line: opus_sdp_fmtp_line(),
                 ..Default::default()
             },
             id.to_owned(),

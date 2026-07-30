@@ -588,10 +588,8 @@ def cache_key_for_target(root: Path, target: str, profile: str) -> str:
 
 
 def aggregate_native_digest(root: Path, profile: str) -> str:
-    lines = []
-    for target in list_release_targets(root):
-        lines.append(f"{target}={native_input_digest(root, target, profile)}")
-    return sha256_text("\n".join(lines) + "\n")
+    targets = list_release_targets(root)
+    return aggregate_digest_from_digests(targets, per_target_digests(root, profile))
 
 
 def per_target_digests(root: Path, profile: str) -> dict[str, str]:
@@ -599,6 +597,13 @@ def per_target_digests(root: Path, profile: str) -> dict[str, str]:
         target: native_input_digest(root, target, profile)
         for target in list_release_targets(root)
     }
+
+
+def aggregate_digest_from_digests(
+    targets: list[str], digests: dict[str, str]
+) -> str:
+    lines = "\n".join(f"{target}={digests[target]}" for target in targets)
+    return sha256_text(lines + "\n")
 
 
 def build_distribution_contract(root: Path, target: str) -> dict[str, Any]:
@@ -759,6 +764,7 @@ def validate_manifest(
     *,
     recompute_input: bool = True,
     require_node: bool = True,
+    node_path: Path | None = None,
 ) -> None:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -814,16 +820,25 @@ def validate_manifest(
         raise SystemExit("validate-manifest: input_digest must be 64 lowercase hex")
 
     if require_node:
-        rel = node_meta.get("path")
-        artifact = Path(rel) if rel and Path(rel).is_absolute() else root / str(rel or "")
-        if not rel or not artifact.is_file():
-            # Try canonical locations
-            found = find_node_artifact(root, target)
-            if found is None:
+        if node_path is not None:
+            artifact = node_path
+            if not artifact.is_file():
                 raise SystemExit(
-                    f"validate-manifest: .node missing for {target} (path={rel!r})"
+                    f"validate-manifest: explicit .node missing for {target}: {artifact}"
                 )
-            artifact = found
+        else:
+            rel = node_meta.get("path")
+            artifact = (
+                Path(rel) if rel and Path(rel).is_absolute() else root / str(rel or "")
+            )
+            if not rel or not artifact.is_file():
+                # Try canonical locations for standalone/cache validation.
+                found = find_node_artifact(root, target)
+                if found is None:
+                    raise SystemExit(
+                        f"validate-manifest: .node missing for {target} (path={rel!r})"
+                    )
+                artifact = found
         actual_sha = sha256_file(artifact)
         actual_size = artifact.stat().st_size
         if actual_sha != node_meta["sha256"]:
@@ -892,7 +907,7 @@ def assemble_native_bundle(
     """
     targets = list_release_targets(root)
     digests = per_target_digests(root, profile)
-    aggregate = aggregate_native_digest(root, profile)
+    aggregate = aggregate_digest_from_digests(targets, digests)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     target_meta: dict[str, Any] = {}
@@ -906,11 +921,12 @@ def assemble_native_bundle(
         if not src_dir.is_dir():
             raise SystemExit(f"assemble-bundle: missing directory for {target}: {src_dir}")
 
-        nodes = sorted(src_dir.glob("*.node"))
-        if not nodes:
-            raise SystemExit(f"assemble-bundle: no .node in {src_dir}")
         preferred = src_dir / mapping["node_basename"]
-        node_path = preferred if preferred.is_file() else nodes[0]
+        if not preferred.is_file():
+            raise SystemExit(
+                f"assemble-bundle: canonical .node missing for {target}: {preferred}"
+            )
+        node_path = preferred
 
         dest = output_dir / target
         dest.mkdir(parents=True, exist_ok=True)
@@ -924,8 +940,22 @@ def assemble_native_bundle(
         else:
             produce_manifest(root, target, profile, manifest_dest, node_path=dest_node)
 
-        validate_manifest(root, manifest_dest, recompute_input=True, require_node=True)
+        # Producer manifests record paths in the producer workspace. Validate the
+        # bytes copied into the portable bundle, never that stale source path.
+        validate_manifest(
+            root,
+            manifest_dest,
+            recompute_input=True,
+            require_node=True,
+            node_path=dest_node,
+        )
         manifest = json.loads(manifest_dest.read_text(encoding="utf-8"))
+        if manifest["target"] != target or manifest["profile"] != profile:
+            raise SystemExit(
+                "assemble-bundle: manifest identity mismatch "
+                f"target={manifest['target']!r} profile={manifest['profile']!r} "
+                f"expected_target={target!r} expected_profile={profile!r}"
+            )
         if manifest["input_digest"] != digests[target]:
             raise SystemExit(
                 f"assemble-bundle: input_digest mismatch for {target}\n"
@@ -998,7 +1028,8 @@ def validate_native_bundle(
             f"validate-bundle: target set incomplete missing={missing} extra={extra}"
         )
 
-    current_aggregate = aggregate_native_digest(root, profile)
+    current_digests = per_target_digests(root, profile)
+    current_aggregate = aggregate_digest_from_digests(expected_targets, current_digests)
     if expect_aggregate is None:
         expect_aggregate = current_aggregate
     if meta.get("aggregate_digest") != expect_aggregate:
@@ -1016,14 +1047,35 @@ def validate_native_bundle(
 
     for target in expected_targets:
         tdir = bundle_dir / target
+        mapping = RELEASE_TARGET_MAP[target]
+        node_path = tdir / mapping["node_basename"]
         manifest_path = tdir / "manifest.json"
         if not manifest_path.is_file():
             raise SystemExit(f"validate-bundle: missing manifest for {target}")
-        validate_manifest(root, manifest_path, recompute_input=True, require_node=True)
+        validate_manifest(
+            root,
+            manifest_path,
+            recompute_input=True,
+            require_node=True,
+            node_path=node_path,
+        )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest["input_digest"] != targets[target].get("input_digest"):
+        target_meta = targets[target]
+        if not isinstance(target_meta, dict):
+            raise SystemExit(f"validate-bundle: meta target entry is not an object: {target}")
+        if manifest["target"] != target or manifest["profile"] != profile:
+            raise SystemExit(f"validate-bundle: manifest identity mismatch for {target}")
+        if target_meta.get("node_basename") != mapping["node_basename"]:
+            raise SystemExit(f"validate-bundle: node_basename mismatch for {target}")
+        if target_meta.get("npm_package") != mapping["npm_package"]:
+            raise SystemExit(f"validate-bundle: npm_package mismatch for {target}")
+        if target_meta.get("node_sha256") != manifest["node_artifact"]["sha256"]:
+            raise SystemExit(f"validate-bundle: meta/manifest node sha256 drift for {target}")
+        if target_meta.get("node_size") != manifest["node_artifact"]["size"]:
+            raise SystemExit(f"validate-bundle: meta/manifest node size drift for {target}")
+        if manifest["input_digest"] != target_meta.get("input_digest"):
             raise SystemExit(f"validate-bundle: meta/manifest digest drift for {target}")
-        if manifest["input_digest"] != per_target_digests(root, profile)[target]:
+        if manifest["input_digest"] != current_digests[target]:
             raise SystemExit(
                 f"validate-bundle: target {target} does not match current fingerprint"
             )
@@ -1033,13 +1085,46 @@ def validate_native_bundle(
 def stage_bundle_to_bindings_artifacts(bundle_dir: Path, out_root: Path) -> None:
     """Copy bundle targets into bindings-<triple>/ dirs for napi artifacts / upload."""
     meta = json.loads((bundle_dir / "meta.json").read_text(encoding="utf-8"))
-    for target, info in meta["targets"].items():
+    if meta.get("schema") != BUNDLE_SCHEMA:
+        raise SystemExit("stage-bundle: unsupported bundle schema")
+    profile = meta.get("profile")
+    if profile not in ("debug", "release"):
+        raise SystemExit("stage-bundle: invalid profile")
+    targets = meta.get("targets")
+    expected_targets = list(RELEASE_TARGET_MAP.keys())
+    if not isinstance(targets, dict) or set(targets) != set(expected_targets):
+        raise SystemExit("stage-bundle: invalid target set")
+    for target in expected_targets:
+        info = targets[target]
+        mapping = RELEASE_TARGET_MAP[target]
+        if not isinstance(info, dict):
+            raise SystemExit(f"stage-bundle: invalid target metadata for {target}")
+        if info.get("node_basename") != mapping["node_basename"]:
+            raise SystemExit(f"stage-bundle: node_basename mismatch for {target}")
+        if info.get("npm_package") != mapping["npm_package"]:
+            raise SystemExit(f"stage-bundle: npm_package mismatch for {target}")
         src = bundle_dir / target
+        node_name = mapping["node_basename"]
+        src_node = src / node_name
+        manifest_path = src / "manifest.json"
+        if not src_node.is_file() or not manifest_path.is_file():
+            raise SystemExit(f"stage-bundle: incomplete target directory for {target}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("target") != target or manifest.get("profile") != profile:
+            raise SystemExit(f"stage-bundle: manifest identity mismatch for {target}")
+        node_meta = manifest.get("node_artifact")
+        if not isinstance(node_meta, dict):
+            raise SystemExit(f"stage-bundle: invalid node metadata for {target}")
+        actual_sha = sha256_file(src_node)
+        actual_size = src_node.stat().st_size
+        if node_meta.get("sha256") != actual_sha or info.get("node_sha256") != actual_sha:
+            raise SystemExit(f"stage-bundle: node sha256 mismatch for {target}")
+        if node_meta.get("size") != actual_size or info.get("node_size") != actual_size:
+            raise SystemExit(f"stage-bundle: node size mismatch for {target}")
         dest = out_root / f"bindings-{target}"
         dest.mkdir(parents=True, exist_ok=True)
-        node_name = info["node_basename"]
-        (dest / node_name).write_bytes((src / node_name).read_bytes())
-        (dest / "manifest.json").write_bytes((src / "manifest.json").read_bytes())
+        (dest / node_name).write_bytes(src_node.read_bytes())
+        (dest / "manifest.json").write_bytes(manifest_path.read_bytes())
 
 
 def check_release_targets(root: Path) -> None:

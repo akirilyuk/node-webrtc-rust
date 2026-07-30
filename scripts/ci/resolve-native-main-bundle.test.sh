@@ -91,6 +91,70 @@ Path("$path").write_text(json.dumps({"workflow_runs": runs}) + "\n", encoding="u
 PY
 }
 
+echo "==> exact-SHA valid portable bundle is reused"
+VALID_ART="$TMP/valid-artifacts"
+VALID_BUNDLE="$TMP/valid-bundle"
+mkdir -p "$VALID_ART"
+while IFS= read -r target; do
+  [[ -z "$target" ]] && continue
+  dir="$VALID_ART/bindings-${target}"
+  mkdir -p "$dir"
+  base="$(python3 - <<PY
+import sys
+sys.path.insert(0, "scripts/ci")
+import native_build_contract as nbc
+print(nbc.RELEASE_TARGET_MAP["$target"]["node_basename"])
+PY
+)"
+  printf 'resolver-node-for-%s\n' "$target" >"$dir/$base"
+  NATIVE_TOOL_MODE=declared python3 scripts/ci/native_build_contract.py produce-manifest \
+    --target "$target" --profile release --output "$dir/manifest.json" --node "$dir/$base"
+  python3 - <<PY
+import json
+from pathlib import Path
+p = Path("$dir/manifest.json")
+m = json.loads(p.read_text(encoding="utf-8"))
+m["node_artifact"]["path"] = "packages/bindings/producer-only/$base"
+p.write_text(json.dumps(m) + "\n", encoding="utf-8")
+PY
+done < <(bash scripts/ci/list-release-targets.sh)
+NATIVE_TOOL_MODE=declared bash scripts/ci/native-artifact-bundle.sh assemble \
+  --artifacts-root "$VALID_ART" --output "$VALID_BUNDLE" --profile release >/dev/null
+
+FIX="$TMP/fix-valid"
+mkdir -p "$FIX"
+write_runs "$FIX/workflow_runs.json"
+python3 - <<PY
+import json
+import zipfile
+from pathlib import Path
+
+Path("$FIX/run-100-artifacts.json").write_text(json.dumps({
+  "artifacts": [{"id": 1001, "name": "native-main-bundle", "expired": False}]
+}) + "\n", encoding="utf-8")
+Path("$FIX/run-90-artifacts.json").write_text(
+    json.dumps({"artifacts": []}) + "\n", encoding="utf-8"
+)
+bundle = Path("$VALID_BUNDLE")
+with zipfile.ZipFile("$FIX/artifact-1001.zip", "w") as zf:
+    for path in bundle.rglob("*"):
+        if path.is_file():
+            zf.write(path, path.relative_to(bundle))
+PY
+out="$(
+  bash scripts/ci/resolve-native-main-bundle.sh \
+    --profile release \
+    --download-dir "$TMP/dl-valid" \
+    --fixture-dir "$FIX" \
+    --sha "$CURRENT_SHA"
+)"
+echo "$out" | rg -q '^bundle_reused=true$'
+echo "$out" | rg -q '^run_id=100$'
+echo "$out" | rg -q '^exact_sha=true$'
+echo "$out" | rg -q '^preference=exact_sha$'
+test -f "$TMP/dl-valid/extract-100/meta.json"
+echo "ok: exact-SHA portable bundle reused and validated"
+
 echo "==> reject wrong workflow / branch (no usable artifact → fallback)"
 FIX="$TMP/fix1"
 mkdir -p "$FIX"

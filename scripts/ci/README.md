@@ -438,11 +438,11 @@ Key shape: `native-v3-{profile}-{target}-{input_digest}`.
 
 ### Provenance manifests
 
-Produced/validated on every build and stage path (`write-native-artifact-manifest.sh`). Uploaded beside `.node` inside `bindings-<triple>/` artifacts (`*.node` + `manifest.json`) so `napi artifacts` still works.
+Produced/validated on every build and stage path (`write-native-artifact-manifest.sh`). Uploaded beside `.node` inside `bindings-<triple>/` artifacts (`*.node` + `manifest.json`) so `napi artifacts` still works. Producer-workspace paths are informational after upload: assembly and bundle validation explicitly bind each manifest checksum to the canonical `.node` beside it.
 
 ### Main bundle (authoritative reusable artifact)
 
-After a successful main Test job, [`build-main.yml`](../../.github/workflows/build-main.yml) assembles all six `bindings-*` artifacts into **`native-main-bundle`** (retention **90 days**) keyed by `meta.json` → `aggregate_digest`. Release deliverables are **not** stored only in Actions Cache.
+After a successful main Test job, [`build-main.yml`](../../.github/workflows/build-main.yml) assembles all six `bindings-*` artifacts into **`native-main-bundle`** (retention **90 days**) keyed by `meta.json` → `aggregate_digest`. Assembly validates the copied bundle bytes, manifest identity, and metadata/checksum agreement before upload. Release deliverables are **not** stored only in Actions Cache.
 
 ### Release reuse (trust boundaries)
 

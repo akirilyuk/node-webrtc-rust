@@ -8,6 +8,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Speech / barge-in** — `minSttPartialChars` (character length) is replaced by **`minSttPartialTokens`** (whitespace token count, default **2**). Semantic barge waits for ≥2 tokens so mid-word STT fragments like `"St"` do not interrupt. Legacy **`minSttPartialChars`** still accepted and maps to the same token threshold (`tokens` wins when both are set).
+
+### Added
+
+- **Examples / CI** — `start:roundtrip-barge-in-buffered` (`VOICE_TTS_STREAM_CHUNKS=0`) alongside streaming `start:roundtrip-barge-in`.
+
 ---
 
 ## [0.6.24] — 2026-07-30

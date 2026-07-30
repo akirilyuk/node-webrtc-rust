@@ -113,15 +113,22 @@ export function phase3EventsComplete(events: RecordedSpeechEvent[]): boolean {
   return agentEnded && hasFinal
 }
 
+function partialTokenCount(text: string | undefined): number {
+  return (text ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter((tok) => tok.length > 0 && /[0-9A-Za-z]/.test(tok)).length
+}
+
 function qualifyingPartialAfter(
   events: RecordedSpeechEvent[],
   agentStart: number,
-  minChars = 2,
+  minTokens = 2,
 ): boolean {
   for (let i = agentStart + 1; i < events.length; i++) {
     const e = events[i]!
     if (e.type !== SPEECH_EVENT_TYPE.userSpeechPartial) continue
-    if ((e.text?.trim().length ?? 0) >= minChars) return true
+    if (partialTokenCount(e.text) >= minTokens) return true
   }
   return false
 }
@@ -187,13 +194,12 @@ function lastIndexOfType(events: RecordedSpeechEvent[], type: SpeechEventType): 
 function qualifyingPartialIndex(
   events: RecordedSpeechEvent[],
   afterIndex: number,
-  minChars: number,
+  minTokens: number,
 ): number {
   for (let i = afterIndex + 1; i < events.length; i++) {
     const e = events[i]!
     if (e.type !== SPEECH_EVENT_TYPE.userSpeechPartial) continue
-    const t = e.text?.trim() ?? ''
-    if (t.length >= minChars) return i
+    if (partialTokenCount(e.text) >= minTokens) return i
   }
   return -1
 }
@@ -214,13 +220,16 @@ export interface SemanticBargeOrderResult {
 export function evaluateSemanticBargeEventOrder(params: {
   events: RecordedSpeechEvent[]
   expectedPhrase?: string
+  /** Minimum whitespace tokens for a qualifying partial (default 2; matches product). */
+  minPartialTokens?: number
+  /** @deprecated Use `minPartialTokens`. */
   minPartialChars?: number
   maxPartialToBargeMs?: number
   maxBargeToAgentEndMs?: number
   label?: string
 }): SemanticBargeOrderResult {
   const who = params.label ? `${params.label}: ` : ''
-  const minChars = params.minPartialChars ?? 2
+  const minTokens = params.minPartialTokens ?? params.minPartialChars ?? 2
   const maxPartialToBarge = params.maxPartialToBargeMs ?? DEFAULT_MAX_PARTIAL_TO_BARGE_MS
   const maxBargeToEnd = params.maxBargeToAgentEndMs ?? DEFAULT_MAX_BARGE_TO_AGENT_END_MS
   const failures: string[] = []
@@ -238,7 +247,7 @@ export function evaluateSemanticBargeEventOrder(params: {
     }
   }
 
-  const partialIdx = qualifyingPartialIndex(params.events, agentStartIdx, minChars)
+  const partialIdx = qualifyingPartialIndex(params.events, agentStartIdx, minTokens)
   if (partialIdx < 0) {
     failures.push(`${who}missing qualifying user_speech_partial after agent_speaking_start`)
   }

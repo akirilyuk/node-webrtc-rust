@@ -435,7 +435,7 @@ impl SttProvider for PartialOnPollStt {
             return Ok(None);
         }
         *emitted = true;
-        Ok(Some(SttTranscript::Partial("stop".into())))
+        Ok(Some(SttTranscript::Partial("stop now".into())))
     }
 
     async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {

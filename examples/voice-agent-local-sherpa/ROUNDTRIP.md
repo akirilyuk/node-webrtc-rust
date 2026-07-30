@@ -67,6 +67,7 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **Counting echo**     | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                                               |
 | **Barge recovery**    | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)                               |
 | **Concurrent 3-leg**  | `npm run start:roundtrip-concurrent-multi-client` — 3 speakers enqueue TTS with `nonBlocking: true`, STT finals overlap (see below)  |
+| **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths       |
 | **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                     |
 | **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                       |
 | **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                        |
@@ -167,10 +168,32 @@ npm run start:roundtrip-counting-barge-recovery --workspace=@node-webrtc-rust/ex
 | `SHERPA_BARGE_RECOVERY_DELAY_MS`         | `400`                                  | Ms after Agent2 TTS starts before barge TTS on `agentOut`         |
 | `SHERPA_BARGE_RECOVERY_BARGE_PHRASE`     | `stop now please`                      | Sherpa TTS phrase Agent1 plays to barge Agent2                    |
 | `SHERPA_BARGE_RECOVERY_TONE_S`           | `1.0`                                  | Silence tail after barge TTS on `agentOut`                        |
-| `SHERPA_BARGE_RECOVERY_MAX_NUMBER_WORDS` | `6`                                    | Max number tokens on interrupted leg B                            |
-| `SHERPA_BARGE_RECOVERY_MAX_SIMILARITY`   | `0.55`                                 | Max word similarity vs full `You said: …` text on interrupted leg |
+| `SHERPA_BARGE_RECOVERY_MAX_NUMBER_WORDS` | `7`                                    | Max number tokens on interrupted leg B (allows 2-token barge latency) |
+| `SHERPA_BARGE_RECOVERY_MAX_SIMILARITY`   | `0.70`                                 | Max word similarity vs full `You said: …` text on interrupted leg     |
 
 Unit tests include `roundtrip-counting-barge-recovery.test.ts` in `npm run test:roundtrip-counting`.
+
+## TTS stream-chunks roundtrip (`VOICE_TTS_STREAM_CHUNKS`)
+
+[`src/roundtrip-tts-stream.ts`](./src/roundtrip-tts-stream.ts) runs the same **TTS → WebRTC → STT** loopback as other roundtrips, twice on one session:
+
+1. **Buffered** — `VOICE_TTS_STREAM_CHUNKS=0` (legacy full-synth-then-play)
+2. **Streaming** — `VOICE_TTS_STREAM_CHUNKS=1` (default; Sherpa progress-callback chunks)
+
+| Check | Requirement |
+| ----- | ----------- |
+| First audio | Streaming `agent_speaking_start` beats buffered by ≥ `SHERPA_TTS_STREAM_MIN_IMPROVEMENT_MS` (default **40**), allowing `SHERPA_TTS_STREAM_MAX_REGRESSION_MS` jitter (default **80**) |
+| STT | Both modes recognize the phrase (word list + similarity ≥ 0.9) |
+| Cache | Forces `SHERPA_TTS_PHRASE_CACHE=0` so the second mode is not served from cache |
+
+Also covered by ignored Rust tests (`tts_stream_chunks_integration_test`) in `run-sherpa-example-ci.sh rust|e2e`.
+
+```bash
+npm run build:native
+npm run start:roundtrip-tts-stream --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Vitest (no models): `roundtrip-tts-stream.test.ts` in `npm run test:roundtrip-counting`.
 
 ## Concurrent multi-client roundtrip (3 legs, overlapping TTS)
 
@@ -463,7 +486,14 @@ Set `requireSttPartial: false` to restore immediate energy-VAD barge on the same
 | ----- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | None                                                   | Full phrase received on `userInbound`                                                                                                                                     |
 | 2     | 440 Hz tone on `userOut`                               | **No** `barge_in`; optional **C1** path; received audio ≥ ~75% of phase 1                                                                                                 |
-| 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` → `barge_in` → `agent_speaking_end`**; partial includes **lead word**; `user_speech_final` ≥ **75%** word similarity |
+| 3     | Sherpa TTS `SHERPA_BARGE_IN_BARGE_PHRASE` on `userOut` | **`vad_triggered` → STT open → `user_speech_partial` (≥2 tokens) → `barge_in` → `agent_speaking_end`**; partial includes **lead word**; `user_speech_final` ≥ **75%** word similarity |
+
+CI runs the same harness twice:
+
+| npm script | `VOICE_TTS_STREAM_CHUNKS` | Purpose |
+| ---------- | ------------------------- | ------- |
+| `start:roundtrip-barge-in` | `1` (streaming) | Product default progressive TTS enqueue |
+| `start:roundtrip-barge-in-buffered` | `0` | Legacy fully-buffered TTS path |
 
 Between phases 2 and 3 the harness streams **`interPhaseSttDrainSeconds(config)`** (~3.15 s with the 1300 ms / 1000 ms preset) of silence on `userOut` so the listener STT stream from the tone phase fully closes before Phase 3 — otherwise Phase 3 can barge without a fresh `vad_triggered`.
 
@@ -472,6 +502,7 @@ npm run build:native
 npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run test:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run start:roundtrip-barge-in-buffered --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
 Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) + [`src/roundtrip-stt-lifecycle-helpers.ts`](./src/roundtrip-stt-lifecycle-helpers.ts) (Vitest, no Sherpa models).
@@ -482,7 +513,7 @@ Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-i
 | `SHERPA_BARGE_IN_BARGE_PHRASE`         | `stop now please` | User-leg TTS for phase 3                    |
 | `SHERPA_BARGE_IN_DELAY_MS`             | `700`             | Ms after agent TTS starts before interrupt  |
 | `SHERPA_BARGE_IN_TONE_S`               | `1.0`             | Phase 2 tone duration                       |
-| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65`            | Phase 3 max `cutMs / fullMs`                |
+| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65` local / `0.80` CI | Phase 3 max inbound-meter `cutMs / fullMs` (same clock as Phase 1) |
 | `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`            | Phase 2 min `cutMs / fullMs`                |
 | `SHERPA_BARGE_IN_MIN_SIMILARITY`       | `0.75`            | Phase 3 min word similarity vs barge phrase |
 | `SHERPA_BARGE_IN_VERBOSE`              | off               | Log listener speech events                  |

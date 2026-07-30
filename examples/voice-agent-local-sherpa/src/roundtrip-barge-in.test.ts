@@ -22,7 +22,7 @@ describe('evaluateBargeUtteranceFinal', () => {
   it('passes when barge phrase is recognized with paired end and final', () => {
     const events: RecordedSpeechEvent[] = [
       { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
-      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop' },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop now' },
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
       { type: SPEECH_EVENT_TYPE.userSpeakingEnd, atMs: 3000 },
@@ -58,7 +58,7 @@ describe('evaluateBargeUtteranceFinal', () => {
   it('fails when barge-trigger partial omits lead word', () => {
     const events: RecordedSpeechEvent[] = [
       { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 439 },
-      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 2509, text: 'Now' },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 2509, text: 'Now please' },
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 2509 },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 2509 },
     ]
@@ -71,6 +71,24 @@ describe('evaluateBargeUtteranceFinal', () => {
     expect(
       result.failures.some((f) => f.includes('barge-trigger partial missing lead word "stop"')),
     ).toBe(true)
+  })
+
+  it('does not treat mid-word partial "St" as qualifying (needs ≥2 tokens)', () => {
+    const events: RecordedSpeechEvent[] = [
+      { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'St' },
+      { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
+      { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
+    ]
+    const result = evaluateSemanticBargeEventOrder({
+      events,
+      expectedPhrase: 'stop now please',
+      label: 'Phase 3',
+    })
+    expect(result.passed).toBe(false)
+    expect(result.failures.some((f) => f.includes('missing qualifying user_speech_partial'))).toBe(
+      true,
+    )
   })
 
   it('phraseLeadWord and textContainsWholeWord helpers', () => {
@@ -118,7 +136,7 @@ describe('roundtrip-barge-in helpers', () => {
 
     const barge: RecordedSpeechEvent[] = [
       { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
-      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop' },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop now' },
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
       { type: SPEECH_EVENT_TYPE.userSpeakingEnd, atMs: 3000 },
@@ -170,7 +188,7 @@ describe('roundtrip-barge-in helpers', () => {
       { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 200 },
       { type: SPEECH_EVENT_TYPE.userSpeakingStart, atMs: 1200 },
-      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 5000, text: 'stop' },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 5000, text: 'stop now' },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 5100 },
     ]
     const result = evaluateSemanticBargeEventOrder({ events })
@@ -181,7 +199,7 @@ describe('roundtrip-barge-in helpers', () => {
   it('rejects agent_speaking_end before barge_in', () => {
     const events: RecordedSpeechEvent[] = [
       { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
-      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop' },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop now' },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 5000 },
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 5100 },
     ]
@@ -193,7 +211,7 @@ describe('roundtrip-barge-in helpers', () => {
   it('rejects large gap between partial and barge_in', () => {
     const events: RecordedSpeechEvent[] = [
       { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
-      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1000, text: 'stop' },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1000, text: 'stop now' },
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 2000 },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 2100 },
     ]
@@ -233,7 +251,7 @@ describe('roundtrip-barge-in helpers', () => {
   it('evaluateNoPartialWithoutFinal rejects orphan partial after barge', () => {
     const events: RecordedSpeechEvent[] = [
       { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
-      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop' },
+      { type: SPEECH_EVENT_TYPE.userSpeechPartial, atMs: 1400, text: 'stop now' },
       { type: SPEECH_EVENT_TYPE.bargeIn, atMs: 1450 },
       { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1500 },
     ]

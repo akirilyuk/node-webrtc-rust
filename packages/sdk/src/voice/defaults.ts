@@ -30,7 +30,7 @@ export const DEFAULT_VOICE_AGENT_VAD: VadConfig = {
     useVad: true,
     flushTts: true,
     requireSttPartial: true,
-    minSttPartialChars: 2,
+    minSttPartialTokens: 2,
     /** 0 = no playback guard; rely on requireSttPartial for noise rejection. */
     agentPlaybackGuardMs: 0,
   },

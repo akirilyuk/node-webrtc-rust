@@ -24,28 +24,29 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
     expect(echoPayloadForCompare('You said one two three')).toBe('one two three')
   })
 
-  it('evaluateInterruptedEchoLeg passes CI-like partial echo (5 number words, 50% payload sim)', () => {
+  it('evaluateInterruptedEchoLeg passes CI-like partial echo after 2-token barge (~60% sim)', () => {
     const echoText = formatAgent2EchoReply('one two three four five six seven eight nine ten')
     const result = evaluateInterruptedEchoLeg({
       echoText,
-      recognized: 'You said one two three four five',
-      maxNumberWords: 6,
-      maxSimilarity: 0.55,
+      recognized: 'said one two three four five seven',
+      maxNumberWords: 7,
+      maxSimilarity: 0.7,
     })
     expect(result.passed).toBe(true)
-    expect(result.similarity).toBe(0.5)
+    expect(result.similarity).toBe(0.6)
+    expect(result.numberWordsFound).toBe(6)
   })
 
-  it('evaluateInterruptedEchoLeg fails when six number words exceed similarity cap', () => {
+  it('evaluateInterruptedEchoLeg fails when too much of the echo is heard', () => {
     const echoText = formatAgent2EchoReply('one two three four five six seven eight nine ten')
     const result = evaluateInterruptedEchoLeg({
       echoText,
-      recognized: 'you said one two three four five six',
-      maxNumberWords: 6,
-      maxSimilarity: 0.55,
+      recognized: 'you said one two three four five six seven eight',
+      maxNumberWords: 7,
+      maxSimilarity: 0.7,
     })
     expect(result.passed).toBe(false)
-    expect(result.similarity).toBeGreaterThan(0.55)
+    expect(result.similarity).toBeGreaterThan(0.7)
   })
 
   it('evaluateInterruptedEchoLeg passes when transcript is a short tail', () => {
@@ -53,11 +54,11 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
     const result = evaluateInterruptedEchoLeg({
       echoText,
       recognized: 'you said one two three four',
-      maxNumberWords: 6,
-      maxSimilarity: 0.55,
+      maxNumberWords: 7,
+      maxSimilarity: 0.7,
     })
     expect(result.passed).toBe(true)
-    expect(result.numberWordsFound).toBeLessThanOrEqual(6)
+    expect(result.numberWordsFound).toBeLessThanOrEqual(7)
   })
 
   it('evaluateInterruptedEchoLeg fails when full echo is heard', () => {
@@ -66,8 +67,8 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
     const result = evaluateInterruptedEchoLeg({
       echoText,
       recognized: `you said ${heard}`,
-      maxNumberWords: 6,
-      maxSimilarity: 0.55,
+      maxNumberWords: 7,
+      maxSimilarity: 0.7,
     })
     expect(result.passed).toBe(false)
     expect(result.failures.length).toBeGreaterThan(0)

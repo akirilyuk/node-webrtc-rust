@@ -38,7 +38,16 @@ export interface BargeInConfig {
    * (semantic interrupt). Default true. Requires STT on the agent.
    */
   requireSttPartial?: boolean
-  /** Minimum trimmed partial length to trigger barge when `requireSttPartial` is true. Default 2. */
+  /**
+   * Minimum whitespace-separated tokens (with ≥1 alphanumeric) in the STT partial before
+   * barge when `requireSttPartial` is true. Default **2** — rejects mid-word fragments
+   * (`"St"`) and single-token noise.
+   */
+  minSttPartialTokens?: number
+  /**
+   * @deprecated Use {@link minSttPartialTokens}. Legacy alias — same numeric meaning
+   * (token count, not character length). Ignored when `minSttPartialTokens` is set.
+   */
   minSttPartialChars?: number
   /**
    * Optional: ignore VAD barge for this many ms after agent TTS starts (speaker echo).

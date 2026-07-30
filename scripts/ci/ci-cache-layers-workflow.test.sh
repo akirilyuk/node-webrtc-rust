@@ -74,6 +74,12 @@ fi
 if grep -qE 'inputs\.(platform|zig|sherpa_onnx_lib_dir|build_args)' "$linux" "$host"; then
   fail "compile-semantic inputs must be derived inside the fingerprinted recipe"
 fi
+if grep -q 'napi-zig\|napi-rs-nodejs' "$host" "$linux"; then
+  fail "unused zig cache path must not remain (Path Validation on empty dir)"
+fi
+grep -q 'ensure-gnu-tar-alpine.sh' "$linux" || fail "musl linux build must ensure GNU tar before Actions cache"
+grep -q 'ensure-gnu-tar-alpine.sh' .github/actions/native-binding-cache/action.yml \
+  || fail "native-binding-cache must ensure GNU tar before musl restore"
 python3 - "$pr" <<'PY' || fail "PR native path filter over-invalidates Rust builds"
 from pathlib import Path
 import re

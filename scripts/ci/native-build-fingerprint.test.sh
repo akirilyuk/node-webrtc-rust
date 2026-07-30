@@ -106,6 +106,35 @@ tmp.unlink(missing_ok=True)
 print("ok: sha256_text_file ignores CRLF vs LF")
 PY
 
+echo "==> Windows backslash relative paths must not change native digest"
+python3 - <<'PY'
+import importlib.util
+import json
+import os
+from pathlib import Path
+
+root = Path(".").resolve()
+spec = importlib.util.spec_from_file_location(
+    "native_build_contract", root / "scripts/ci/native_build_contract.py"
+)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+os.environ["NATIVE_TOOL_MODE"] = "declared"
+os.environ["GITHUB_REPOSITORY"] = "akirilyuk/node-webrtc-rust"
+
+contract = mod.build_native_contract(root, "x86_64-pc-windows-msvc", "release")
+for crate in contract["local_crates"]:
+    for _h, rel in crate["files"]:
+        assert "\\" not in rel, rel
+posix = mod.sha256_text(mod.stable_json(contract))
+mutated = json.loads(json.dumps(contract))
+for crate in mutated["local_crates"]:
+    crate["files"] = [[h, p.replace("/", "\\")] for h, p in crate["files"]]
+win_naive = mod.sha256_text(mod.stable_json(mutated))
+assert posix != win_naive
+print("ok: contract relative paths are posix; backslash would skew digests")
+PY
+
 echo "==> artifact orchestration does not invalidate compiled bytes"
 contract_backup="$(mktemp)"
 cp "$PY" "$contract_backup"

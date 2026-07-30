@@ -428,6 +428,10 @@ CI uses `NATIVE_TOOL_MODE=declared` so plan/build share per-target tool contract
 
 **Force-rebuild all native digests:** bump [`native-cache-epoch`](native-cache-epoch) (committed) or set env `NATIVE_CACHE_EPOCH` for a one-off run. Any compile-semantic change outside the canonical recipe (runner image/toolchain contract, linker environment, target wiring) must update its declared contract or bump this epoch; orchestration-only changes must not.
 
+**Alpine / musl Actions cache:** BusyBox `/bin/tar` rejects GNU options (`--posix`, `-P`) used by `actions/cache` and Swatinem. Install/link GNU tar via [`install-alpine-native-toolchain.sh`](install-alpine-native-toolchain.sh) and runtime [`ensure-gnu-tar-alpine.sh`](ensure-gnu-tar-alpine.sh) before musl restore/save.
+
+**Windows path stability:** contract relative paths always use forward slashes (`Path.as_posix()`), so Linux planners and Windows producers share one `native-v3-*` key.
+
 ### Per-target Actions cache (rebuild accelerator only)
 
 Key shape: `native-v3-{profile}-{target}-{input_digest}`.

@@ -29,6 +29,7 @@ fi
 
 echo "==> native build contract (fingerprint / manifest / release targets / resolver / caches)"
 run "bash scripts/ci/build-native-addon.test.sh"
+run "bash scripts/ci/ensure-gnu-tar-alpine.test.sh"
 run "bash scripts/ci/native-build-fingerprint.test.sh"
 run "bash scripts/ci/native-artifact-manifest.test.sh"
 run "bash scripts/ci/native-artifact-bundle.test.sh"

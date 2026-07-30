@@ -7,6 +7,8 @@ if ! grep -qi alpine /etc/os-release 2>/dev/null; then
   exit 1
 fi
 
+# `tar` + `gzip`: GNU tar is required by actions/cache / Swatinem (BusyBox tar
+# rejects --posix/-P and breaks musl native + Cargo cache save/restore).
 apk add --no-cache \
   bash \
   build-base \
@@ -14,10 +16,24 @@ apk add --no-cache \
   cmake \
   curl \
   git \
+  gzip \
   linux-headers \
   openssl-dev \
   pkgconfig \
-  python3
+  python3 \
+  tar
+
+# actions/cache invokes /bin/tar; replace BusyBox applet when needed.
+if ! /bin/tar --version 2>/dev/null | head -n 1 | grep -qi 'gnu tar'; then
+  if [[ -x /usr/bin/tar ]] && /usr/bin/tar --version 2>/dev/null | head -n 1 | grep -qi 'gnu tar'; then
+    ln -sfn /usr/bin/tar /bin/tar
+  fi
+fi
+if ! /bin/tar --version 2>/dev/null | head -n 1 | grep -qi 'gnu tar'; then
+  echo "install-alpine-native-toolchain: /bin/tar must be GNU tar for Actions cache" >&2
+  /bin/tar --version 2>&1 | head -n 5 >&2 || true
+  exit 1
+fi
 
 export RUSTUP_HOME="${RUSTUP_HOME:-/usr/local/rustup}"
 export CARGO_HOME="${CARGO_HOME:-/usr/local/cargo}"

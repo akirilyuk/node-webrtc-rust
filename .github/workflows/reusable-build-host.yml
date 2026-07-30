@@ -16,9 +16,9 @@ on:
         type: boolean
         default: true
       host_matrix:
-        description: JSON array of {target,os,build-args} to compile
+        description: JSON array of {target,os} to compile
         type: string
-        default: '[{"target":"x86_64-apple-darwin","os":"macos-latest","build-args":"--target x86_64-apple-darwin"},{"target":"aarch64-apple-darwin","os":"macos-latest","build-args":"--target aarch64-apple-darwin"},{"target":"x86_64-pc-windows-msvc","os":"windows-latest","build-args":"--target x86_64-pc-windows-msvc"}]'
+        default: '[{"target":"x86_64-apple-darwin","os":"macos-latest"},{"target":"aarch64-apple-darwin","os":"macos-latest"},{"target":"x86_64-pc-windows-msvc","os":"windows-latest"}]'
 
 jobs:
   build-host:
@@ -42,7 +42,6 @@ jobs:
       - uses: ./.github/actions/ci-build-native-host
         with:
           target: ${{ matrix.target }}
-          build_args: ${{ matrix.build-args }}
           profile: release
           cache_prefix: ${{ inputs.cache_prefix }}
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}

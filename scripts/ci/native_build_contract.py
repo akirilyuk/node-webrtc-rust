@@ -74,27 +74,18 @@ MUSL_ONLY_PATHS = (
     "docker/ci/Dockerfile.alpine",
     "scripts/ci/install-alpine-native-toolchain.sh",
     "scripts/ci/build-sherpa-onnx-musl-libs.sh",
-    "scripts/ci/verify-musl-runtime.sh",
 )
 
 GNU_LINUX_PATHS = (
     "docker/ci/Dockerfile",
 )
 
-# Build recipe / action inputs that affect compiled native bytes.
+# Only the canonical compile recipe and explicit epoch affect compiled bytes.
+# Cache, fingerprint, manifest, bundle, resolver, and workflow orchestration
+# must not invalidate an otherwise identical Rust binary.
 RECIPE_PATHS = (
-    "scripts/ci/native_build_contract.py",
-    "scripts/ci/native-build-fingerprint.sh",
-    "scripts/ci/native-binding-cache-key.sh",
+    "scripts/ci/build-native-addon.sh",
     "scripts/ci/native-cache-epoch",
-    "scripts/ci/list-release-targets.sh",
-    "scripts/ci/collect-native-tool-identity.sh",
-    "scripts/ci/write-native-artifact-manifest.sh",
-    "scripts/ci/native-artifact-bundle.sh",
-    "scripts/ci/resolve_native_main_bundle.py",
-    ".github/actions/ci-build-native-linux/action.yml",
-    ".github/actions/ci-build-native-host/action.yml",
-    ".github/actions/native-binding-cache/action.yml",
 )
 
 # Distribution-only inputs (not part of native-byte digest).
@@ -382,10 +373,8 @@ def build_env_contract(target: str, profile: str, root: Path | None = None) -> d
         sherpa_state = {"state": "set", "value": sherpa}
 
     return {
-        "CMAKE_POLICY_VERSION_MINIMUM": os.environ.get(
-            "NATIVE_CMAKE_POLICY_VERSION_MINIMUM", "3.5"
-        ),
-        "OPUS_STATIC": os.environ.get("NATIVE_OPUS_STATIC", "1"),
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+        "OPUS_STATIC": "1",
         "SHERPA_ONNX_LIB_DIR": sherpa_state,
         "napi_features_flag": features,
         "tool_identity": tool_identity_for_fingerprint(target, root),

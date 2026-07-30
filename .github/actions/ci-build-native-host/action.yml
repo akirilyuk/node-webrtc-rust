@@ -5,9 +5,6 @@ inputs:
   target:
     description: Rust triple (e.g. x86_64-apple-darwin)
     required: true
-  build_args:
-    description: Extra napi build arguments (e.g. --target x86_64-apple-darwin)
-    required: true
   profile:
     description: napi profile (debug or release)
     required: false
@@ -100,18 +97,10 @@ runs:
     - name: Build native addon
       if: steps.resolve.outputs.build_required == 'true'
       shell: bash
-      working-directory: packages/bindings
-      env:
-        CMAKE_POLICY_VERSION_MINIMUM: '3.5'
-        OPUS_STATIC: '1'
       run: |
-        set -euo pipefail
-        rm -f *.node
-        if [[ "${{ inputs.profile }}" == "release" ]]; then
-          npx napi build --platform --release --features otel ${{ inputs.build_args }}
-        else
-          npx napi build --platform ${{ inputs.build_args }}
-        fi
+        bash scripts/ci/build-native-addon.sh \
+          --target "${{ inputs.target }}" \
+          --profile "${{ inputs.profile }}"
 
     - name: Reuse cached native addon
       if: steps.resolve.outputs.build_required != 'true'

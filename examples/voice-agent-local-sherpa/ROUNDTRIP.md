@@ -513,7 +513,7 @@ Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-i
 | `SHERPA_BARGE_IN_BARGE_PHRASE`         | `stop now please` | User-leg TTS for phase 3                    |
 | `SHERPA_BARGE_IN_DELAY_MS`             | `700`             | Ms after agent TTS starts before interrupt  |
 | `SHERPA_BARGE_IN_TONE_S`               | `1.0`             | Phase 2 tone duration                       |
-| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65`            | Phase 3 max `cutMs / fullMs`                |
+| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65` local / `0.80` CI | Phase 3 max inbound-meter `cutMs / fullMs` (same clock as Phase 1) |
 | `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`            | Phase 2 min `cutMs / fullMs`                |
 | `SHERPA_BARGE_IN_MIN_SIMILARITY`       | `0.75`            | Phase 3 min word similarity vs barge phrase |
 | `SHERPA_BARGE_IN_VERBOSE`              | off               | Log listener speech events                  |

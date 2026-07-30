@@ -20,7 +20,9 @@ use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::otel;
 use crate::pcm::i16_samples_to_bytes;
-use crate::pipeline::{SttProvider, SttTranscript, TtsProvider};
+use crate::pipeline::{
+    tts_stream_chunks_enabled, SttProvider, SttTranscript, TtsProgressiveSink, TtsProvider,
+};
 use crate::registry::VendorRegistry;
 use crate::stt_pre_roll::SttPreRollBuffer;
 use crate::tts_buffer::TtsBuffer;
@@ -185,6 +187,8 @@ pub struct VoiceAgent {
     tts_synthesis_busy: Arc<AtomicBool>,
     /// Incremented on barge/flush/cancel so in-flight ONNX synthesis can drop late PCM.
     tts_synthesis_epoch: Arc<AtomicU64>,
+    /// Set on barge/flush so progressive generators (Sherpa callback) can stop early.
+    tts_generate_cancel: Arc<AtomicBool>,
     /// Set on stop/drop paths so synthesis/drain loops exit (no detached tasks).
     tts_workers_shutdown: Arc<AtomicBool>,
     /// Wakes workers blocked in `notified()` so stop cannot hang on idle wait.
@@ -268,6 +272,7 @@ impl VoiceAgent {
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
+            tts_generate_cancel: Arc::new(AtomicBool::new(false)),
             tts_workers_shutdown: Arc::new(AtomicBool::new(false)),
             tts_workers_shutdown_wake: Arc::new(Notify::new()),
             tts_shutdown_unhealthy: Arc::new(AtomicBool::new(false)),
@@ -409,6 +414,7 @@ impl VoiceAgent {
 
     fn invalidate_inflight_tts_synthesis(&self) {
         self.tts_synthesis_epoch.fetch_add(1, Ordering::SeqCst);
+        self.tts_generate_cancel.store(true, Ordering::SeqCst);
     }
 
     pub fn event_bus(&self) -> &SpeechEventBus {
@@ -681,6 +687,7 @@ impl VoiceAgent {
         let event_bus = self.event_bus.clone();
         let synthesis_busy = Arc::clone(&self.tts_synthesis_busy);
         let synthesis_epoch = Arc::clone(&self.tts_synthesis_epoch);
+        let generate_cancel = Arc::clone(&self.tts_generate_cancel);
         let shutdown = Arc::clone(&self.tts_workers_shutdown);
         let shutdown_wake = Arc::clone(&self.tts_workers_shutdown_wake);
         let alive = Arc::clone(&self.tts_worker_tasks_alive);
@@ -726,6 +733,7 @@ impl VoiceAgent {
                         &inner,
                         &event_bus,
                         &synthesis_epoch,
+                        &generate_cancel,
                         &drain_shutdown,
                         &shutdown_wake,
                         &drain_alive,
@@ -763,6 +771,59 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
         synthesis_epoch: &Arc<AtomicU64>,
+        generate_cancel: &Arc<AtomicBool>,
+        tts_workers_shutdown: &Arc<AtomicBool>,
+        tts_workers_shutdown_wake: &Arc<Notify>,
+        tts_worker_tasks_alive: &Arc<AtomicUsize>,
+        tts_vendor_calls_inflight: &Arc<AtomicUsize>,
+    ) -> SpeechResult<()> {
+        if tts_stream_chunks_enabled() {
+            Self::run_tts_synthesis_job_streaming(
+                text,
+                tts,
+                tts_buffer,
+                tts_drain_wake,
+                tts_drain_worker,
+                inner,
+                event_bus,
+                synthesis_epoch,
+                generate_cancel,
+                tts_workers_shutdown,
+                tts_workers_shutdown_wake,
+                tts_worker_tasks_alive,
+                tts_vendor_calls_inflight,
+            )
+            .await
+        } else {
+            Self::run_tts_synthesis_job_buffered(
+                text,
+                tts,
+                tts_buffer,
+                tts_drain_wake,
+                tts_drain_worker,
+                inner,
+                event_bus,
+                synthesis_epoch,
+                tts_workers_shutdown,
+                tts_workers_shutdown_wake,
+                tts_worker_tasks_alive,
+                tts_vendor_calls_inflight,
+            )
+            .await
+        }
+    }
+
+    /// Legacy path: fully synthesize, then enqueue all PCM, then drain.
+    /// Enabled with `VOICE_TTS_STREAM_CHUNKS=0`.
+    async fn run_tts_synthesis_job_buffered(
+        text: &str,
+        tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
+        tts_buffer: &TtsBuffer,
+        tts_drain_wake: &Arc<Notify>,
+        tts_drain_worker: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        inner: &Arc<Mutex<AgentInner>>,
+        event_bus: &SpeechEventBus,
+        synthesis_epoch: &Arc<AtomicU64>,
         tts_workers_shutdown: &Arc<AtomicBool>,
         tts_workers_shutdown_wake: &Arc<Notify>,
         tts_worker_tasks_alive: &Arc<AtomicUsize>,
@@ -790,29 +851,12 @@ impl VoiceAgent {
                     tts_vendor.map(crate::config::TtsVendor::as_str),
                 );
             }
-            // Tracks async vendor calls separately from Tokio worker JoinHandles.
-            // Aborting the worker does not imply native/blocking synthesis has finished.
             tts_vendor_calls_inflight.fetch_add(1, Ordering::SeqCst);
             let synthesize_result = provider.synthesize(text).await;
             tts_vendor_calls_inflight.fetch_sub(1, Ordering::SeqCst);
             synthesize_result?
         };
-        let tts_attrs = {
-            let guard = inner.lock().await;
-            let project_id = guard
-                .otel
-                .session_context
-                .project_id
-                .as_deref()
-                .unwrap_or("");
-            guard
-                .config
-                .tts
-                .as_ref()
-                .map(|cfg| otel::SherpaTtsMetricAttrs::from_tts_config(cfg, project_id))
-                .unwrap_or_default()
-        };
-        otel::record_tts_latency_ms(tts_started.elapsed().as_secs_f64() * 1000.0, &tts_attrs);
+        Self::record_tts_job_latency(inner, tts_started).await;
 
         if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
             voice_debug("TTS synthesis discarded (invalidated during synthesize)");
@@ -822,6 +866,11 @@ impl VoiceAgent {
         if chunks.is_empty() {
             return Ok(());
         }
+
+        let failure_gen_at_start = {
+            let guard = inner.lock().await;
+            guard.tts_playback_failure_gen
+        };
 
         if !tts_buffer
             .enqueue_if_generation(chunks, Some(generation_at_start))
@@ -842,7 +891,149 @@ impl VoiceAgent {
         )
         .await;
         tts_drain_wake.notify_one();
-        Self::wait_job_playback_idle(tts_buffer, inner, event_bus).await
+        Self::wait_job_playback_idle(tts_buffer, inner, event_bus, failure_gen_at_start).await
+    }
+
+    /// Default path: stream PCM chunks into the buffer while synthesis runs so
+    /// drain can start before the full utterance is ready (`VOICE_TTS_STREAM_CHUNKS`).
+    async fn run_tts_synthesis_job_streaming(
+        text: &str,
+        tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
+        tts_buffer: &TtsBuffer,
+        tts_drain_wake: &Arc<Notify>,
+        tts_drain_worker: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        inner: &Arc<Mutex<AgentInner>>,
+        event_bus: &SpeechEventBus,
+        synthesis_epoch: &Arc<AtomicU64>,
+        generate_cancel: &Arc<AtomicBool>,
+        tts_workers_shutdown: &Arc<AtomicBool>,
+        tts_workers_shutdown_wake: &Arc<Notify>,
+        tts_worker_tasks_alive: &Arc<AtomicUsize>,
+        tts_vendor_calls_inflight: &Arc<AtomicUsize>,
+    ) -> SpeechResult<()> {
+        let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
+        let generation_at_start = tts_buffer.current_generation().await;
+        // Capture before drain can abort this job's PCM (streaming starts drain early).
+        let failure_gen_at_start = {
+            let guard = inner.lock().await;
+            guard.tts_playback_failure_gen
+        };
+        generate_cancel.store(false, Ordering::SeqCst);
+
+        Self::ensure_tts_drain_worker_shared(
+            tts_drain_worker,
+            tts_drain_wake,
+            tts_buffer,
+            inner,
+            event_bus,
+            tts_workers_shutdown,
+            tts_workers_shutdown_wake,
+            tts_worker_tasks_alive,
+        )
+        .await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = TtsProgressiveSink {
+            tx,
+            cancel: Arc::clone(generate_cancel),
+        };
+
+        tts_buffer.set_producing(true).await;
+        tts_drain_wake.notify_one();
+
+        let enqueue_buffer = tts_buffer.clone();
+        let enqueue_wake = Arc::clone(tts_drain_wake);
+        let enqueue_task = tokio::spawn(async move {
+            while let Some(chunk) = rx.recv().await {
+                if !enqueue_buffer
+                    .enqueue_if_generation(vec![chunk], Some(generation_at_start))
+                    .await
+                {
+                    voice_debug("TTS progressive chunk discarded (buffer flushed)");
+                    break;
+                }
+                enqueue_wake.notify_one();
+            }
+        });
+
+        let tts_started = Instant::now();
+        let synth_result = {
+            let tts_guard = tts.lock().await;
+            let provider = tts_guard
+                .as_ref()
+                .ok_or_else(|| SpeechError::Config("TTS not configured".into()))?;
+            let (ctx, tts_vendor) = {
+                let inner_guard = inner.lock().await;
+                (
+                    inner_guard.otel.session_context.clone(),
+                    inner_guard.config.tts.as_ref().map(|cfg| cfg.provider),
+                )
+            };
+            {
+                let _span = otel::voice_span(
+                    "voice.tts",
+                    &ctx,
+                    tts_vendor.map(crate::config::TtsVendor::as_str),
+                );
+            }
+            tts_vendor_calls_inflight.fetch_add(1, Ordering::SeqCst);
+            let result = provider.synthesize_progressive(text, Some(sink)).await;
+            tts_vendor_calls_inflight.fetch_sub(1, Ordering::SeqCst);
+            result
+        };
+        Self::record_tts_job_latency(inner, tts_started).await;
+
+        // Dropping the last sender happens when synthesize_progressive returns
+        // (sink moved into the call). Wait for the enqueue task to drain.
+        let _ = enqueue_task.await;
+        tts_buffer.set_producing(false).await;
+        tts_drain_wake.notify_one();
+
+        match synth_result {
+            Ok(chunks) => {
+                if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
+                    voice_debug("TTS streaming synthesis discarded (invalidated)");
+                    return Ok(());
+                }
+                if chunks.is_empty()
+                    && !tts_buffer.is_speaking().await
+                    && tts_buffer.pending_count().await == 0
+                {
+                    return Ok(());
+                }
+                Self::wait_job_playback_idle(
+                    tts_buffer,
+                    inner,
+                    event_bus,
+                    failure_gen_at_start,
+                )
+                .await
+            }
+            Err(error) => {
+                tts_buffer.set_producing(false).await;
+                tts_drain_wake.notify_one();
+                Err(error)
+            }
+        }
+    }
+
+    async fn record_tts_job_latency(inner: &Arc<Mutex<AgentInner>>, started: Instant) {
+        let tts_attrs = {
+            let guard = inner.lock().await;
+            let project_id = guard
+                .otel
+                .session_context
+                .project_id
+                .as_deref()
+                .unwrap_or("");
+            guard
+                .config
+                .tts
+                .as_ref()
+                .map(|cfg| otel::SherpaTtsMetricAttrs::from_tts_config(cfg, project_id))
+                .unwrap_or_default()
+        };
+        otel::record_tts_latency_ms(started.elapsed().as_secs_f64() * 1000.0, &tts_attrs);
     }
 
     async fn ensure_tts_drain_worker_shared(
@@ -938,11 +1129,8 @@ impl VoiceAgent {
         tts_buffer: &TtsBuffer,
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
+        failure_gen_at_start: u64,
     ) -> SpeechResult<()> {
-        let failure_gen_at_start = {
-            let guard = inner.lock().await;
-            guard.tts_playback_failure_gen
-        };
         let deadline = Instant::now() + std::time::Duration::from_secs(45);
         loop {
             {
@@ -2012,61 +2200,79 @@ impl VoiceAgent {
         };
 
         let drain_generation = tts_buffer.current_generation().await;
-        let mut agent_start_emitted = false;
+        // Resume mid-utterance drain passes without re-emitting agent_speaking_start.
+        let mut agent_start_emitted = {
+            let guard = inner.lock().await;
+            guard.agent_speaking
+        };
+        let mut played_any = false;
+        // Carry incomplete frames across progressive chunks / drain wakeups.
+        // Do not pad mid-utterance — that inserts silence and drops STT words.
+        let mut frame_carry = tts_buffer.take_frame_carry().await;
 
-        while let Some(chunk) = tts_buffer.pop_chunk().await {
-            if !agent_start_emitted {
+        loop {
+            let Some(chunk) = tts_buffer.pop_chunk().await else {
+                // Progressive synth may still be producing — wait for the next wake
+                // instead of ending the utterance early.
+                if tts_buffer.is_producing().await
+                    && tts_buffer.current_generation().await == drain_generation
                 {
-                    let mut guard = inner.lock().await;
-                    guard.agent_speaking = true;
-                    guard.agent_speaking_since = Some(Instant::now());
-                    guard.stt_barge_fired_this_agent_playback = false;
-                    guard.barge_awaiting_stt_partial = false;
-                    // Drop any user-turn pre-roll so agent echo does not reach STT on barge.
-                    guard.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+                    tts_buffer.store_frame_carry(frame_carry).await;
+                    voice_debug("TTS drain paused (awaiting more progressive chunks)");
+                    return Ok(());
                 }
-                event_bus.emit(SpeechEvent::agent_speaking_start());
-                voice_debug("agent_speaking_start (first outbound PCM frame)");
-                agent_start_emitted = true;
+                break;
+            };
+
+            frame_carry.extend_from_slice(&chunk.pcm);
+            let frames = take_complete_stereo_frames(&mut frame_carry);
+            if frames.is_empty() {
+                continue;
             }
 
-            for (frame, duration_ms) in split_stereo_pcm_frames(&chunk.pcm, chunk.duration_ms) {
-                if tts_buffer.current_generation().await != drain_generation {
-                    voice_debug("TTS drain stopped (barge-in flush)");
-                    let still_speaking = {
-                        let guard = inner.lock().await;
-                        guard.agent_speaking
-                    };
-                    if still_speaking {
-                        Self::end_agent_speaking_inner(inner, false).await;
-                        event_bus.emit(SpeechEvent::agent_speaking_end());
-                    }
-                    return Ok(());
-                }
-                writer(frame, duration_ms)?;
-                if !Self::pace_tts_drain_frame_while_running(
-                    tts_buffer,
-                    inner,
-                    drain_generation,
-                    duration_ms,
-                )
-                .await
-                {
-                    voice_debug("TTS drain stopped during frame pacing (barge-in flush / stop)");
-                    let still_speaking = {
-                        let guard = inner.lock().await;
-                        guard.agent_speaking
-                    };
-                    if still_speaking {
-                        Self::end_agent_speaking_inner(inner, false).await;
-                        event_bus.emit(SpeechEvent::agent_speaking_end());
-                    }
-                    return Ok(());
-                }
+            match Self::write_paced_tts_frames(
+                &writer,
+                tts_buffer,
+                inner,
+                event_bus,
+                drain_generation,
+                &mut agent_start_emitted,
+                &mut played_any,
+                frames,
+            )
+            .await?
+            {
+                TtsDrainWrite::Continued => {}
+                TtsDrainWrite::Stopped => return Ok(()),
             }
         }
 
-        if agent_start_emitted {
+        // End of utterance — pad any trailing partial frame once (same as buffered path).
+        if !frame_carry.is_empty()
+            && !tts_buffer.is_producing().await
+            && tts_buffer.current_generation().await == drain_generation
+        {
+            let (frame, duration_ms) = pad_stereo_frame_20ms(&frame_carry);
+            frame_carry.clear();
+            match Self::write_paced_tts_frames(
+                &writer,
+                tts_buffer,
+                inner,
+                event_bus,
+                drain_generation,
+                &mut agent_start_emitted,
+                &mut played_any,
+                vec![(frame, duration_ms)],
+            )
+            .await?
+            {
+                TtsDrainWrite::Continued => {}
+                TtsDrainWrite::Stopped => return Ok(()),
+            }
+        }
+        tts_buffer.store_frame_carry(frame_carry).await;
+
+        if played_any && agent_start_emitted && !tts_buffer.is_producing().await {
             Self::end_agent_speaking_inner(inner, true).await;
             voice_debug("agent_speaking=false (TTS drained)");
             event_bus.emit(SpeechEvent::agent_speaking_end());
@@ -2090,6 +2296,70 @@ impl VoiceAgent {
             }
         }
         Ok(())
+    }
+
+    /// Write paced 20 ms frames. Writer failures propagate; barge/stop returns [`TtsDrainWrite::Stopped`].
+    async fn write_paced_tts_frames(
+        writer: &PcmWriter,
+        tts_buffer: &TtsBuffer,
+        inner: &Arc<Mutex<AgentInner>>,
+        event_bus: &SpeechEventBus,
+        drain_generation: u64,
+        agent_start_emitted: &mut bool,
+        played_any: &mut bool,
+        frames: Vec<(Bytes, u32)>,
+    ) -> SpeechResult<TtsDrainWrite> {
+        for (frame, duration_ms) in frames {
+            *played_any = true;
+            if !*agent_start_emitted {
+                {
+                    let mut guard = inner.lock().await;
+                    guard.agent_speaking = true;
+                    guard.agent_speaking_since = Some(Instant::now());
+                    guard.stt_barge_fired_this_agent_playback = false;
+                    guard.barge_awaiting_stt_partial = false;
+                    // Drop any user-turn pre-roll so agent echo does not reach STT on barge.
+                    guard.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+                }
+                event_bus.emit(SpeechEvent::agent_speaking_start());
+                voice_debug("agent_speaking_start (first outbound PCM frame)");
+                *agent_start_emitted = true;
+            }
+
+            if tts_buffer.current_generation().await != drain_generation {
+                voice_debug("TTS drain stopped (barge-in flush)");
+                let still_speaking = {
+                    let guard = inner.lock().await;
+                    guard.agent_speaking
+                };
+                if still_speaking {
+                    Self::end_agent_speaking_inner(inner, false).await;
+                    event_bus.emit(SpeechEvent::agent_speaking_end());
+                }
+                return Ok(TtsDrainWrite::Stopped);
+            }
+            writer(frame, duration_ms)?;
+            if !Self::pace_tts_drain_frame_while_running(
+                tts_buffer,
+                inner,
+                drain_generation,
+                duration_ms,
+            )
+            .await
+            {
+                voice_debug("TTS drain stopped during frame pacing (barge-in flush / stop)");
+                let still_speaking = {
+                    let guard = inner.lock().await;
+                    guard.agent_speaking
+                };
+                if still_speaking {
+                    Self::end_agent_speaking_inner(inner, false).await;
+                    event_bus.emit(SpeechEvent::agent_speaking_end());
+                }
+                return Ok(TtsDrainWrite::Stopped);
+            }
+        }
+        Ok(TtsDrainWrite::Continued)
     }
 
     async fn stream_post_utterance_silence(
@@ -2163,6 +2433,11 @@ impl VoiceAgent {
 
 const STEREO_FRAME_20MS_BYTES: usize = 3840;
 
+enum TtsDrainWrite {
+    Continued,
+    Stopped,
+}
+
 /// Pad to a full 20 ms stereo frame so Opus always receives 960 samples/channel.
 fn pad_stereo_frame_20ms(frame: &[u8]) -> (Bytes, u32) {
     if frame.len() == STEREO_FRAME_20MS_BYTES {
@@ -2174,17 +2449,30 @@ fn pad_stereo_frame_20ms(frame: &[u8]) -> (Bytes, u32) {
     (Bytes::from(padded), 20)
 }
 
+/// Drain complete 20 ms frames from `carry`; leave a short remainder unpadded.
+fn take_complete_stereo_frames(carry: &mut Vec<u8>) -> Vec<(Bytes, u32)> {
+    let complete = (carry.len() / STEREO_FRAME_20MS_BYTES) * STEREO_FRAME_20MS_BYTES;
+    if complete == 0 {
+        return Vec::new();
+    }
+    let data: Vec<u8> = carry.drain(..complete).collect();
+    data.chunks(STEREO_FRAME_20MS_BYTES)
+        .map(|frame| (Bytes::copy_from_slice(frame), 20_u32))
+        .collect()
+}
+
+/// Legacy helper: split and pad every partial chunk (unit tests only).
+#[cfg(test)]
 fn split_stereo_pcm_frames(pcm: &Bytes, _total_duration_ms: u32) -> Vec<(Bytes, u32)> {
     if pcm.is_empty() {
         return Vec::new();
     }
-    if pcm.len() <= STEREO_FRAME_20MS_BYTES {
-        return vec![pad_stereo_frame_20ms(pcm)];
+    let mut carry = pcm.to_vec();
+    let mut frames = take_complete_stereo_frames(&mut carry);
+    if !carry.is_empty() {
+        frames.push(pad_stereo_frame_20ms(&carry));
     }
-
-    pcm.chunks(STEREO_FRAME_20MS_BYTES)
-        .map(pad_stereo_frame_20ms)
-        .collect()
+    frames
 }
 
 pub fn version() -> &'static str {
@@ -2223,6 +2511,23 @@ mod tests {
         assert_eq!(frames[0].1, 20);
         assert_eq!(frames[1].0.len(), STEREO_FRAME_20MS_BYTES);
         assert_eq!(frames[1].1, 20);
+    }
+
+    #[test]
+    fn take_complete_stereo_frames_does_not_pad_partial_midstream() {
+        let mut carry = vec![1_u8; 1000];
+        assert!(take_complete_stereo_frames(&mut carry).is_empty());
+        assert_eq!(carry.len(), 1000);
+
+        carry.extend(std::iter::repeat_n(2_u8, STEREO_FRAME_20MS_BYTES));
+        let frames = take_complete_stereo_frames(&mut carry);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].0.len(), STEREO_FRAME_20MS_BYTES);
+        // Remainder kept for the next progressive chunk (no silence pad).
+        assert_eq!(carry.len(), 1000 + STEREO_FRAME_20MS_BYTES - STEREO_FRAME_20MS_BYTES);
+        // 1000 bytes from the first partial remain after taking one full frame from the join.
+        // carry was 1000+3840; drained 3840 → 1000 left.
+        assert_eq!(carry.len(), 1000);
     }
 
     #[tokio::test]

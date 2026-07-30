@@ -13,6 +13,8 @@
 //!
 //! 1. **Inbound** — WebRTC stereo 48 kHz PCM → mono 16 kHz → optional VAD → optional STT gate → STT.
 //! 2. **Outbound** — TTS synthesize → buffer → 20 ms frames to PCM writer → `agent_speaking_*` events.
+//!    Progressive chunk streaming is **on by default** (`VOICE_TTS_STREAM_CHUNKS`); set to `0` for
+//!    the legacy fully-buffered path (synthesize all PCM, then drain).
 //! 3. **Barge-in** — During agent TTS the inbound track is always processed (VAD every frame).
 //!    STT is fed only when VAD opens the gate (pending/speaking/hold). Semantic barge (`require_stt_partial`)
 //!    flushes TTS on a qualifying STT partial; VAD-only barge applies when STT is disabled.
@@ -64,7 +66,10 @@ pub use config::{
 pub use error::{SpeechError, SpeechResult};
 pub use events::{SpeechEvent, SpeechEventKind, SpeechEventBus};
 pub use pcm::{stereo_48k_to_mono_16k, pcm_rms_i16};
-pub use pipeline::{SttProvider, SttTranscript, TtsAudioChunk, TtsProvider, VendorFactory};
+pub use pipeline::{
+    tts_stream_chunks_enabled, SttProvider, SttTranscript, TtsAudioChunk, TtsProgressiveSink,
+    TtsProvider, VendorFactory,
+};
 pub use registry::VendorRegistry;
 pub use tts_buffer::TtsBuffer;
 pub use vad::{handle_barge_in, VadEngine, VadTransition, VoiceActivityDetector};

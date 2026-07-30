@@ -51,6 +51,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-counting-echo
   start:roundtrip-counting-barge-recovery
   start:roundtrip-concurrent-multi-client
+  start:roundtrip-tts-stream
   start:roundtrip
 )
 
@@ -106,10 +107,14 @@ run_rust_ignored() {
     echo "  SHERPA_TTS_MODEL_PATH=${SHERPA_TTS_MODEL_PATH:-}" >&2
     exit 1
   fi
-  echo "==> cargo ignored TTS phrase cache tests (SHERPA_TTS_MODEL_PATH=$SHERPA_TTS_MODEL_PATH)"
+  echo "==> cargo ignored TTS phrase cache + stream-chunks tests (SHERPA_TTS_MODEL_PATH=$SHERPA_TTS_MODEL_PATH)"
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust tts_phrase_cache_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_phrase_cache_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust tts_stream_chunks_integration_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_stream_chunks_integration_test -- \
       --ignored --nocapture --test-threads=1
 }
 

@@ -67,6 +67,7 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **Counting echo**     | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                                               |
 | **Barge recovery**    | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)                               |
 | **Concurrent 3-leg**  | `npm run start:roundtrip-concurrent-multi-client` — 3 speakers enqueue TTS with `nonBlocking: true`, STT finals overlap (see below)  |
+| **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths       |
 | **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                     |
 | **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                       |
 | **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                        |
@@ -171,6 +172,28 @@ npm run start:roundtrip-counting-barge-recovery --workspace=@node-webrtc-rust/ex
 | `SHERPA_BARGE_RECOVERY_MAX_SIMILARITY`   | `0.55`                                 | Max word similarity vs full `You said: …` text on interrupted leg |
 
 Unit tests include `roundtrip-counting-barge-recovery.test.ts` in `npm run test:roundtrip-counting`.
+
+## TTS stream-chunks roundtrip (`VOICE_TTS_STREAM_CHUNKS`)
+
+[`src/roundtrip-tts-stream.ts`](./src/roundtrip-tts-stream.ts) runs the same **TTS → WebRTC → STT** loopback as other roundtrips, twice on one session:
+
+1. **Buffered** — `VOICE_TTS_STREAM_CHUNKS=0` (legacy full-synth-then-play)
+2. **Streaming** — `VOICE_TTS_STREAM_CHUNKS=1` (default; Sherpa progress-callback chunks)
+
+| Check | Requirement |
+| ----- | ----------- |
+| First audio | Streaming `agent_speaking_start` beats buffered by ≥ `SHERPA_TTS_STREAM_MIN_IMPROVEMENT_MS` (default **40**), allowing `SHERPA_TTS_STREAM_MAX_REGRESSION_MS` jitter (default **80**) |
+| STT | Both modes recognize the phrase (word list + similarity ≥ 0.9) |
+| Cache | Forces `SHERPA_TTS_PHRASE_CACHE=0` so the second mode is not served from cache |
+
+Also covered by ignored Rust tests (`tts_stream_chunks_integration_test`) in `run-sherpa-example-ci.sh rust|e2e`.
+
+```bash
+npm run build:native
+npm run start:roundtrip-tts-stream --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Vitest (no models): `roundtrip-tts-stream.test.ts` in `npm run test:roundtrip-counting`.
 
 ## Concurrent multi-client roundtrip (3 legs, overlapping TTS)
 

@@ -27,8 +27,16 @@ if [[ -n "$USE_DOCKER" ]]; then
   docker build -t "$IMAGE" "$ROOT/docker/ci" >/dev/null
 fi
 
-echo "==> native-binding-cache-key"
+echo "==> native build contract (fingerprint / manifest / release targets / resolver / caches)"
+run "bash scripts/ci/native-build-fingerprint.test.sh"
+run "bash scripts/ci/native-artifact-manifest.test.sh"
+run "bash scripts/ci/native-artifact-bundle.test.sh"
+run "bash scripts/ci/resolve-native-main-bundle.test.sh"
+run "bash scripts/ci/check-release-targets.test.sh"
 run "bash scripts/ci/native-binding-cache-key.test.sh"
+run "bash scripts/ci/ts-dist-cache-key.test.sh"
+run "bash scripts/ci/sherpa-models-cache.test.sh"
+run "bash scripts/ci/ci-cache-layers-workflow.test.sh"
 
 echo "==> npm ci"
 run "bash scripts/ci/npm-ci-workspace.sh"

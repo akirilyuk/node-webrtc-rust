@@ -1,5 +1,5 @@
 name: Build native addon (Linux)
-description: Cache, compile, verify, and optionally upload a Linux .node binding
+description: Cache, compile, verify, manifest, and optionally upload a Linux .node binding
 
 inputs:
   target:
@@ -63,6 +63,20 @@ runs:
           echo "build_required=true" >> "$GITHUB_OUTPUT"
         fi
 
+    - name: Resolve binding cache key
+      id: cachekey
+      shell: bash
+      env:
+        NATIVE_TOOL_MODE: declared
+      run: |
+        set -euo pipefail
+        key="${{ inputs.binding_cache_key }}"
+        if [[ -z "$key" ]]; then
+          eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "${{ inputs.target }}")"
+          key="$(python3 scripts/ci/native_build_contract.py cache-key --target "${{ inputs.target }}" --profile "${{ inputs.profile }}")"
+        fi
+        echo "cache-key=${key}" >> "$GITHUB_OUTPUT"
+
     - name: Install Linux build dependencies
       if: inputs.setup_host_toolchain == 'true' && steps.resolve.outputs.build_required == 'true'
       shell: bash
@@ -87,36 +101,27 @@ runs:
       with:
         targets: ${{ inputs.target }}
 
-    - name: Restore Cargo target/ (cross-run warm start)
+    # Exact target/ restore only — no restore-keys (stale cross-target/Sherpa
+    # trees previously caused link failures). Registry via Swatinem alone
+    # (no overlapping actions/cache for registry).
+    - name: Restore Cargo target/ (exact key)
       if: steps.resolve.outputs.build_required == 'true'
       id: target-restore
       uses: actions/cache/restore@v4
       with:
         path: target
-        key: ${{ inputs.cache_prefix }}-target-${{ inputs.cache_target_label }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
-        restore-keys: |
-          ${{ inputs.cache_prefix }}-target-${{ inputs.cache_target_label }}-
+        key: cargo-tgt-v1-${{ inputs.profile }}-${{ inputs.target }}-${{ inputs.cache_prefix }}-${{ hashFiles('Cargo.lock', 'docker/ci/Dockerfile', 'docker/ci/Dockerfile.alpine', 'scripts/ci/install-alpine-native-toolchain.sh', 'scripts/ci/build-sherpa-onnx-musl-libs.sh') }}
 
-    - name: Drop stale target/ on inexact cache restore
-      if: steps.resolve.outputs.build_required == 'true' && steps.target-restore.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        echo "target/ cache key miss (cache-hit=${{ steps.target-restore.outputs.cache-hit }}) — removing partial restore"
-        rm -rf target
-
-    - name: Cache Cargo registry
+    - name: Cache Cargo registry (Swatinem; targets disabled)
       if: steps.resolve.outputs.build_required == 'true'
       uses: Swatinem/rust-cache@v2
       with:
-        prefix-key: ${{ inputs.cache_prefix }}
+        prefix-key: cargo-reg-v1-${{ inputs.cache_prefix }}-${{ inputs.profile }}
         cache-targets: 'false'
         workspaces: .
         shared-key: registry
         add-job-id-key: false
         add-rust-environment-hash-key: false
-
-    # No ~/.npm GHA cache: bindings only needs @napi-rs/cli (~6MB); npm ci is
-    # typically <1s, while caching ~/.npm re-uploaded multi-GB polluted stores.
 
     - name: Cache napi-rs Zig toolchain
       if: inputs.zig == 'true' && steps.resolve.outputs.build_required == 'true'
@@ -153,8 +158,6 @@ runs:
         OPUS_STATIC: '1'
       run: |
         set -euo pipefail
-        # Never export empty SHERPA_ONNX_LIB_DIR — sherpa-onnx-sys treats a set-but-empty
-        # value as shared mode and panics (breaks gnu/arm64 when musl input is unset).
         unset SHERPA_ONNX_LIB_DIR
         if [[ -n "${{ inputs.sherpa_onnx_lib_dir }}" ]]; then
           export SHERPA_ONNX_LIB_DIR="${{ inputs.sherpa_onnx_lib_dir }}"
@@ -172,8 +175,6 @@ runs:
           args+=(--zig)
         fi
         npx napi "${args[@]}"
-        # Host-style build emits node-webrtc-rust.node; index.js loads *.linux-x64-gnu.node
-        # (or falls back to published optional deps). Mirror local build:debug:local.
         if [[ "${{ inputs.platform }}" != "true" ]]; then
           npm run copy:local-node
         fi
@@ -194,13 +195,6 @@ runs:
       shell: bash
       run: bash scripts/ci/verify-musl-runtime.sh
 
-    - name: Save native binding cache
-      if: inputs.binding_cache_key != '' && steps.resolve.outputs.build_required == 'true'
-      uses: actions/cache/save@v4
-      with:
-        path: packages/bindings/*.node
-        key: ${{ inputs.binding_cache_key }}
-
     - name: Require native artifact
       shell: bash
       working-directory: packages/bindings
@@ -212,16 +206,58 @@ runs:
           exit 1
         fi
 
+    - name: Write provenance manifest
+      shell: bash
+      env:
+        NATIVE_TOOL_MODE: declared
+        NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
+        NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
+        NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
+        SHERPA_ONNX_LIB_DIR: ${{ inputs.sherpa_onnx_lib_dir }}
+      run: |
+        set -euo pipefail
+        if [[ -n "${{ inputs.sherpa_onnx_lib_dir }}" ]]; then
+          export SHERPA_ONNX_LIB_DIR="${{ inputs.sherpa_onnx_lib_dir }}"
+          export NATIVE_SHERPA_ONNX_LIB_DIR="$SHERPA_ONNX_LIB_DIR"
+        fi
+        bash scripts/ci/write-native-artifact-manifest.sh \
+          --target "${{ inputs.target }}" \
+          --profile "${{ inputs.profile }}"
+
+    - name: Save native binding cache
+      if: steps.resolve.outputs.build_required == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          packages/bindings/*.node
+          packages/bindings/native-manifests/${{ inputs.target }}.json
+        key: ${{ steps.cachekey.outputs.cache-key }}
+
+    - name: Save Cargo target/ (exact key; miss only)
+      if: steps.resolve.outputs.build_required == 'true' && steps.target-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: target
+        key: cargo-tgt-v1-${{ inputs.profile }}-${{ inputs.target }}-${{ inputs.cache_prefix }}-${{ hashFiles('Cargo.lock', 'docker/ci/Dockerfile', 'docker/ci/Dockerfile.alpine', 'scripts/ci/install-alpine-native-toolchain.sh', 'scripts/ci/build-sherpa-onnx-musl-libs.sh') }}
+
+    - name: Stage artifact directory
+      if: inputs.upload_artifact == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        dest="ci-native-out/bindings-${{ inputs.target }}"
+        mkdir -p "$dest"
+        cp packages/bindings/*.node "$dest/"
+        cp "packages/bindings/native-manifests/${{ inputs.target }}.json" "$dest/manifest.json"
+
     - name: Upload bindings artifact
       if: inputs.upload_artifact == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: bindings-${{ inputs.target }}
-        path: packages/bindings/*.node
+        path: ci-native-out/bindings-${{ inputs.target }}/
         if-no-files-found: error
 
-    # Container jobs write root-owned target/; the next host job's checkout then
-    # fails with EACCES. GHA already has the binding cache — drop the tree here.
     - name: Remove Cargo target/ from workspace
       if: always() && steps.resolve.outputs.build_required == 'true'
       shell: bash

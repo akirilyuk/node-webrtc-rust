@@ -1,5 +1,5 @@
 name: Plan native release builds
-description: Per-target cache hash check; outputs dynamic build matrices and cached target list
+description: Per-target fingerprint cache check; outputs dynamic build matrices and cached target list
 
 inputs:
   profile:
@@ -13,8 +13,14 @@ inputs:
 
 outputs:
   native_hash:
-    description: Source hash fingerprint for native-v2 cache keys
+    description: Aggregate six-target native digest
     value: ${{ steps.plan.outputs.native_hash }}
+  aggregate_digest:
+    description: Aggregate six-target native digest
+    value: ${{ steps.plan.outputs.aggregate_digest }}
+  per_target_digests:
+    description: JSON object of target → input digest
+    value: ${{ steps.plan.outputs.per_target_digests }}
   linux_x64_matrix:
     description: JSON array of {target,zig} needing linux-x64 compile
     value: ${{ steps.plan.outputs.linux_x64_matrix }}
@@ -42,6 +48,9 @@ outputs:
   all_cached:
     description: All release targets hit cache for current hash
     value: ${{ steps.plan.outputs.all_cached }}
+  rebuilt_targets:
+    description: JSON array of targets that need compile (cache misses)
+    value: ${{ steps.plan.outputs.rebuilt_targets }}
   main_validated:
     description: build-main.yml succeeded for this commit (when check_main_success)
     value: ${{ steps.main.outputs.main_validated }}
@@ -54,11 +63,16 @@ runs:
       shell: bash
       env:
         PLAN_NATIVE_PROFILE: ${{ inputs.profile }}
+        GITHUB_TOKEN: ${{ github.token }}
+        NATIVE_TOOL_MODE: declared
+        CI_IMAGE: ${{ env.CI_IMAGE }}
       run: bash scripts/ci/plan-native-builds.sh
 
     - name: Check main CI success
       id: main
       shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         if [[ "${{ inputs.check_main_success }}" == "true" ]]; then
           bash scripts/ci/check-main-ci-success.sh

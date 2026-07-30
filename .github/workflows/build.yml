@@ -13,7 +13,9 @@ permissions:
   contents: read
   pull-requests: read
   packages: read
-  actions: read
+  # write: same-repo PRs may save Actions caches after compile/TS/Sherpa misses.
+  # Fork PRs remain low-trust — GitHub isolates fork caches from the base branch.
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -190,11 +192,22 @@ jobs:
             workflows_native:
               - '.github/actions/ci-build-native-*'
               - '.github/actions/native-binding-cache/**'
+              - '.github/actions/plan-native-builds/**'
               - 'docker/ci/**'
               - 'scripts/ci/native-binding-cache-key.sh'
+              - 'scripts/ci/native_build_contract.py'
+              - 'scripts/ci/native-build-fingerprint.sh'
+              - 'scripts/ci/native-artifact-*.sh'
+              - 'scripts/ci/native-cache-epoch'
+              - 'scripts/ci/collect-native-tool-identity.sh'
+              - 'scripts/ci/write-native-artifact-manifest.sh'
+              - 'scripts/ci/resolve-native-main-bundle.sh'
+              - 'scripts/ci/resolve_native_main_bundle.py'
+              - 'scripts/ci/plan-native-builds.sh'
               - 'scripts/ci/verify-native-binding-surface.mjs'
             workflows_test:
               - '.github/actions/ci-run-integration-tests/**'
+              - '.github/actions/ci-cache-sherpa-models/**'
               - '.github/workflows/reusable-test.yml'
               - 'scripts/ci/run-pr-integration.sh'
               - 'scripts/ci/run-pr-tests-full.sh'
@@ -202,9 +215,13 @@ jobs:
               - 'scripts/ci/run-sherpa-roundtrip-e2e.sh'
               - 'scripts/ci/run-pr-test-job-docker.sh'
               - 'scripts/ci/compute-pr-job-gates.sh'
+              - 'scripts/ci/ensure-sherpa-models.sh'
+              - 'scripts/ci/validate-sherpa-model-dirs.sh'
+              - 'scripts/ci/sherpa-models-cache-key.sh'
             workflows_ts:
               - '.github/actions/ci-cache-ts-dist/**'
               - 'scripts/ci/build-ts-workspace.sh'
+              - 'scripts/ci/ensure-ts-dist.sh'
               - 'scripts/ci/verify-release-publish-ts.sh'
               - 'scripts/ci/ts-dist-cache-key.sh'
 
@@ -457,6 +474,8 @@ jobs:
       - uses: ./.github/actions/ci-cache-ts-dist
         if: steps.gate.outputs.run == 'true'
         id: ts-cache
+        with:
+          node_major: '20'
 
       - name: Build TypeScript packages
         if: steps.gate.outputs.run == 'true' && steps.ts-cache.outputs.cache-hit != 'true'
@@ -488,7 +507,6 @@ jobs:
       require_binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'true' || 'false' }}
       needs_native_binding: ${{ (needs.changes.outputs.run_compile_native == 'true' || needs.changes.outputs.needs_native_for_test == 'true') && 'true' || 'false' }}
       needs_ts_dist: ${{ needs.changes.outputs.needs_ts_for_test == 'true' && 'true' || 'false' }}
-      ts_dist_profile: pr
     secrets: inherit
 
   test:

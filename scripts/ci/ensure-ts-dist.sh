@@ -18,6 +18,8 @@ REQUIRED=(
   packages/helpers/dist/cjs/index.js
 )
 
+# Match ci-cache-ts-dist Node major discriminator (ci-build = Node 20).
+export TS_DIST_NODE_MAJOR="${TS_DIST_NODE_MAJOR:-20}"
 KEY="$(bash "$ROOT/scripts/ci/ts-dist-cache-key.sh")"
 
 dist_ok=true

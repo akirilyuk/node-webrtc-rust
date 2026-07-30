@@ -3,6 +3,10 @@ name: Release
 # Builds all targets, runs tests, publishes to npm, and creates a GitHub Release.
 # Trigger by pushing a tag: git tag release/0.1.0 && git push origin refs/tags/release/0.1.0
 # Prep PRs use branch release-prep/X.Y.Z (see scripts/RELEASE.md) — not the same ref as the tag.
+#
+# Native reuse: prefer a validated native-main-bundle from a successful Build & Test (main)
+# run (exact SHA, then matching aggregate fingerprint). Missing/invalid → rebuild matrix.
+# Integration tests skip only when this exact SHA already passed main.
 
 on:
   push:
@@ -12,15 +16,17 @@ permissions:
   contents: write
   packages: read
   id-token: write
-  actions: read
+  actions: write
   pull-requests: write
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+  CI_IMAGE_ALPINE: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
   OPUS_STATIC: '1'
+  NATIVE_TOOL_MODE: declared
 
 jobs:
   validate-package-lock:
@@ -71,15 +77,20 @@ jobs:
     needs: [validate-package-lock, quality]
     runs-on: self-hosted
     outputs:
-      linux_x64_matrix: ${{ steps.plan.outputs.linux_x64_matrix }}
-      build_linux_arm64: ${{ steps.plan.outputs.build_linux_arm64 }}
-      build_linux_musl: ${{ steps.plan.outputs.build_linux_musl }}
-      host_matrix: ${{ steps.plan.outputs.host_matrix }}
-      cached_linux_x64: ${{ steps.plan.outputs.cached_linux_x64 }}
-      cached_linux_arm64: ${{ steps.plan.outputs.cached_linux_arm64 }}
-      cached_host: ${{ steps.plan.outputs.cached_host }}
-      all_cached: ${{ steps.plan.outputs.all_cached }}
-      main_validated: ${{ steps.plan.outputs.main_validated }}
+      linux_x64_matrix: ${{ steps.matrices.outputs.linux_x64_matrix }}
+      build_linux_arm64: ${{ steps.matrices.outputs.build_linux_arm64 }}
+      build_linux_musl: ${{ steps.matrices.outputs.build_linux_musl }}
+      host_matrix: ${{ steps.matrices.outputs.host_matrix }}
+      cached_linux_x64: ${{ steps.matrices.outputs.cached_linux_x64 }}
+      cached_linux_arm64: ${{ steps.matrices.outputs.cached_linux_arm64 }}
+      cached_host: ${{ steps.matrices.outputs.cached_host }}
+      all_cached: ${{ steps.matrices.outputs.all_cached }}
+      main_validated: ${{ steps.main.outputs.main_validated }}
+      bundle_reused: ${{ steps.resolve.outputs.bundle_reused }}
+      bundle_run_id: ${{ steps.resolve.outputs.run_id }}
+      bundle_exact_sha: ${{ steps.resolve.outputs.exact_sha }}
+      aggregate_digest: ${{ steps.resolve.outputs.aggregate_digest }}
+      fallback_reason: ${{ steps.resolve.outputs.fallback_reason }}
     steps:
       - name: Prepare workspace
         run: |
@@ -92,10 +103,187 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/plan-native-builds
+      - name: Resolve native-main-bundle from successful main
+        id: resolve
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NATIVE_TOOL_MODE: declared
+        run: bash scripts/ci/resolve-native-main-bundle.sh --profile release
+
+      - name: Plan per-target cache rebuilds (fallback / accelerator)
         id: plan
+        if: steps.resolve.outputs.bundle_reused != 'true'
+        uses: ./.github/actions/plan-native-builds
         with:
-          check_main_success: 'true'
+          check_main_success: 'false'
+
+      - name: Check main CI success (exact SHA — test skip gate)
+        id: main
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/check-main-ci-success.sh
+
+      - name: Export matrices
+        id: matrices
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.resolve.outputs.bundle_reused }}" == "true" ]]; then
+            echo "linux_x64_matrix=[]" >> "$GITHUB_OUTPUT"
+            echo "build_linux_arm64=false" >> "$GITHUB_OUTPUT"
+            echo "build_linux_musl=false" >> "$GITHUB_OUTPUT"
+            echo "host_matrix=[]" >> "$GITHUB_OUTPUT"
+            echo "cached_linux_x64=[]" >> "$GITHUB_OUTPUT"
+            echo "cached_linux_arm64=false" >> "$GITHUB_OUTPUT"
+            echo "cached_host=[]" >> "$GITHUB_OUTPUT"
+            echo "all_cached=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "linux_x64_matrix=${{ steps.plan.outputs.linux_x64_matrix }}" >> "$GITHUB_OUTPUT"
+            echo "build_linux_arm64=${{ steps.plan.outputs.build_linux_arm64 }}" >> "$GITHUB_OUTPUT"
+            echo "build_linux_musl=${{ steps.plan.outputs.build_linux_musl }}" >> "$GITHUB_OUTPUT"
+            echo "host_matrix<<EOF" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.plan.outputs.host_matrix }}" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "cached_linux_x64<<EOF" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.plan.outputs.cached_linux_x64 }}" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "cached_linux_arm64=${{ steps.plan.outputs.cached_linux_arm64 }}" >> "$GITHUB_OUTPUT"
+            echo "cached_host<<EOF" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.plan.outputs.cached_host }}" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "all_cached=${{ steps.plan.outputs.all_cached }}" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "${{ steps.resolve.outputs.bundle_reused }}" == "true" ]]; then
+            all_cached_sum=true
+            cached_sum='["*bundle*"]'
+            rebuilt_sum='[]'
+          else
+            all_cached_sum="${{ steps.plan.outputs.all_cached }}"
+            cached_sum='${{ steps.plan.outputs.cached_targets }}'
+            rebuilt_sum='${{ steps.plan.outputs.rebuilt_targets }}'
+          fi
+          SUMMARY_TITLE="Release native plan" \
+          AGGREGATE_DIGEST="${{ steps.resolve.outputs.aggregate_digest }}" \
+          ALL_CACHED="$all_cached_sum" \
+          CACHED_TARGETS_JSON="$cached_sum" \
+          REBUILT_TARGETS_JSON="$rebuilt_sum" \
+          BUNDLE_REUSED="${{ steps.resolve.outputs.bundle_reused }}" \
+          PREFERENCE="${{ steps.resolve.outputs.preference }}" \
+          PRODUCER_SHA="${{ steps.resolve.outputs.head_sha }}" \
+          PRODUCER_RUN_ID="${{ steps.resolve.outputs.run_id }}" \
+          FALLBACK_REASON="${{ steps.resolve.outputs.fallback_reason }}" \
+          MAIN_VALIDATED="${{ steps.main.outputs.main_validated }}" \
+          bash scripts/ci/write-native-ci-summary.sh
+
+  reuse-bundle:
+    name: Stage reused native-main-bundle
+    needs: [quality, plan]
+    if: |
+      !cancelled() &&
+      needs.quality.result == 'success' &&
+      needs.plan.result == 'success' &&
+      needs.plan.outputs.bundle_reused == 'true'
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ci-restore-workspace-ownership
+
+      - name: Download native-main-bundle from producer run
+        uses: actions/download-artifact@v4
+        with:
+          name: native-main-bundle
+          path: native-main-bundle
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.plan.outputs.bundle_run_id }}
+
+      - name: Validate bundle against current contract
+        shell: bash
+        env:
+          NATIVE_TOOL_MODE: declared
+        run: |
+          set -euo pipefail
+          bash scripts/ci/native-artifact-bundle.sh validate \
+            --bundle native-main-bundle \
+            --profile release \
+            --expect-aggregate "${{ needs.plan.outputs.aggregate_digest }}"
+
+      - name: Stage bindings-* for current run
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-native-out
+          python3 scripts/ci/native_build_contract.py stage-bundle \
+            --bundle native-main-bundle \
+            --output ci-native-out
+
+      - name: Upload staged binding artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          # upload-artifact@v4 does not support multiple names in one step;
+          # upload each bindings-* directory via a small loop job alternative:
+          # use a single archive artifact then expand in publish — but publish
+          # expects bindings-* names. Use matrix via bash + multiple uploads.
+          name: reused-native-staging
+          path: ci-native-out/
+          if-no-files-found: error
+
+      # Re-upload each target under the canonical bindings-<triple> name for publish/napi.
+      - name: Upload per-target bindings artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # actions/upload-artifact cannot loop natively; use gh api? Prefer
+          # @actions/upload-artifact via a node script is heavy. Use the
+          # undocumented pattern: one artifact per dir with a composite approach.
+          echo "Per-target uploads follow"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-x86_64-unknown-linux-gnu
+          path: ci-native-out/bindings-x86_64-unknown-linux-gnu/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-x86_64-unknown-linux-musl
+          path: ci-native-out/bindings-x86_64-unknown-linux-musl/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-aarch64-unknown-linux-gnu
+          path: ci-native-out/bindings-aarch64-unknown-linux-gnu/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-x86_64-apple-darwin
+          path: ci-native-out/bindings-x86_64-apple-darwin/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-aarch64-apple-darwin
+          path: ci-native-out/bindings-aarch64-apple-darwin/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-x86_64-pc-windows-msvc
+          path: ci-native-out/bindings-x86_64-pc-windows-msvc/
+          if-no-files-found: error
 
   build-linux:
     needs: [quality, plan]
@@ -103,6 +291,7 @@ jobs:
       !cancelled() &&
       needs.quality.result == 'success' &&
       needs.plan.result == 'success' &&
+      needs.plan.outputs.bundle_reused != 'true' &&
       needs.plan.outputs.all_cached != 'true' &&
       (
         needs.plan.outputs.linux_x64_matrix != '[]' ||
@@ -123,6 +312,7 @@ jobs:
       !cancelled() &&
       needs.quality.result == 'success' &&
       needs.plan.result == 'success' &&
+      needs.plan.outputs.bundle_reused != 'true' &&
       needs.plan.outputs.all_cached != 'true' &&
       needs.plan.outputs.host_matrix != '[]'
     uses: ./.github/workflows/reusable-build-host.yml
@@ -137,6 +327,7 @@ jobs:
       !cancelled() &&
       needs.quality.result == 'success' &&
       needs.plan.result == 'success' &&
+      needs.plan.outputs.bundle_reused != 'true' &&
       (
         needs.plan.outputs.cached_linux_x64 != '[]' ||
         needs.plan.outputs.cached_linux_arm64 == 'true' ||
@@ -150,15 +341,16 @@ jobs:
     secrets: inherit
 
   test:
-    needs: [quality, plan, build-linux, build-host, stage-cached]
+    needs: [quality, plan, build-linux, build-host, stage-cached, reuse-bundle]
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
       needs.plan.result == 'success' &&
-      !(needs.plan.outputs.all_cached == 'true' && needs.plan.outputs.main_validated == 'true') &&
+      needs.plan.outputs.main_validated != 'true' &&
       (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
-      (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped')
+      (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped') &&
+      (needs.reuse-bundle.result == 'success' || needs.reuse-bundle.result == 'skipped')
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
@@ -172,7 +364,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [quality, plan, build-linux, build-host, stage-cached, test]
+    needs: [quality, plan, build-linux, build-host, stage-cached, reuse-bundle, test]
     if: |
       !cancelled() &&
       needs.quality.result == 'success' &&
@@ -180,7 +372,8 @@ jobs:
       (needs.test.result == 'success' || needs.test.result == 'skipped') &&
       (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
-      (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped')
+      (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped') &&
+      (needs.reuse-bundle.result == 'success' || needs.reuse-bundle.result == 'skipped')
     runs-on: self-hosted
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -191,7 +384,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ci-build container user ≠ checkout owner; napi version invokes git
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
@@ -213,15 +405,57 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ci-artifacts
+          pattern: bindings-*
+          merge-multiple: false
+
+      - name: Validate staged binding manifests
+        shell: bash
+        env:
+          NATIVE_TOOL_MODE: declared
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r target; do
+            dir="ci-artifacts/bindings-${target}"
+            if [[ ! -d "$dir" ]]; then
+              echo "Missing current-run artifact dir: $dir" >&2
+              missing=1
+              continue
+            fi
+            shopt -s nullglob
+            nodes=("$dir"/*.node)
+            if [[ ${#nodes[@]} -eq 0 ]]; then
+              echo "Missing .node in $dir" >&2
+              missing=1
+              continue
+            fi
+            if [[ -f "$dir/manifest.json" ]]; then
+              mkdir -p packages/bindings/native-manifests
+              cp "$dir"/*.node packages/bindings/
+              cp "$dir/manifest.json" "packages/bindings/native-manifests/${target}.json"
+              bash scripts/ci/native-artifact-manifest.sh validate \
+                --manifest "packages/bindings/native-manifests/${target}.json" || missing=1
+            else
+              echo "::warning::No manifest.json in $dir — proceeding with .node only"
+            fi
+          done < <(bash scripts/ci/list-release-targets.sh)
+          if [[ "$missing" -ne 0 ]]; then
+            echo "Publish blocked: incomplete/invalid current-run native artifacts" >&2
+            exit 1
+          fi
 
       - name: Stage binding artifacts
         shell: bash
         working-directory: packages/bindings
         run: |
+          # napi artifacts crawls recursively and matches *.node basenames.
+          # Copy only .node files — leave provenance manifest.json out of the tree.
           mkdir -p artifacts
           shopt -s nullglob
           for dir in ../../ci-artifacts/bindings-*; do
-            cp -r "$dir" "artifacts/$(basename "$dir")"
+            dest="artifacts/$(basename "$dir")"
+            mkdir -p "$dest"
+            cp "$dir"/*.node "$dest/"
           done
           npx napi artifacts --dir artifacts
 
@@ -238,9 +472,6 @@ jobs:
       - name: Build TypeScript packages
         run: bash scripts/ci/build-ts-workspace.sh
 
-      # napi artifacts + napi version already stage per-platform packages.
-      # Do not run `napi prepublish` here — it tries to npm publish and create a
-      # GitHub release before auth is configured (see release-local.sh).
       - name: Verify binding packages are staged
         shell: bash
         working-directory: packages/bindings
@@ -340,7 +571,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # After npm publish: align main package.json + package-lock.json with registry and open a PR.
   sync-main-package-lock:
     name: Sync main package-lock (PR)
     needs: publish
@@ -388,8 +618,8 @@ jobs:
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.REPO_SYNC_PAT != '' && secrets.REPO_SYNC_PAT || github.token }}
-          commit-message: "chore(ci): sync package-lock after release ${{ steps.version.outputs.version }}"
-          title: "chore(ci): sync package-lock after release ${{ steps.version.outputs.version }}"
+          commit-message: 'chore(ci): sync package-lock after release ${{ steps.version.outputs.version }}'
+          title: 'chore(ci): sync package-lock after release ${{ steps.version.outputs.version }}'
           body: |
             Automated follow-up to tag `${{ github.ref_name }}` after npm publish.
 

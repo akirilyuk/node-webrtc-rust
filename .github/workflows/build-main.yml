@@ -12,20 +12,23 @@ concurrency:
 permissions:
   contents: read
   packages: read
-  actions: read
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+  CI_IMAGE_ALPINE: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
   OPUS_STATIC: '1'
+  NATIVE_TOOL_MODE: declared
 
 jobs:
   validate-package-lock:
     name: Package-lock optional bindings
     runs-on: self-hosted
     steps:
+      # Composite ownership action needs a checkout; pre-checkout reset stays inline.
       - name: Prepare workspace
         run: |
           if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
@@ -88,7 +91,7 @@ jobs:
       - uses: ./.github/actions/ci-cache-ts-dist
         id: ts-cache
         with:
-          profile: release
+          node_major: '20'
 
       - name: Build TypeScript packages
         if: steps.ts-cache.outputs.cache-hit != 'true'
@@ -111,9 +114,8 @@ jobs:
       cached_linux_arm64: ${{ steps.plan.outputs.cached_linux_arm64 }}
       cached_host: ${{ steps.plan.outputs.cached_host }}
       all_cached: ${{ steps.plan.outputs.all_cached }}
+      aggregate_digest: ${{ steps.plan.outputs.aggregate_digest }}
     steps:
-      # Root-owned node_modules/target from prior Docker jobs break checkout clean
-      # (same pattern as release.yml plan job / PR #24).
       - name: Prepare workspace
         run: |
           if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
@@ -129,6 +131,18 @@ jobs:
         id: plan
         with:
           check_main_success: 'false'
+
+      - name: Plan summary
+        shell: bash
+        env:
+          SUMMARY_TITLE: Native build plan (main)
+          AGGREGATE_DIGEST: ${{ steps.plan.outputs.aggregate_digest }}
+          ALL_CACHED: ${{ steps.plan.outputs.all_cached }}
+          CACHED_TARGETS_JSON: ${{ steps.plan.outputs.cached_targets }}
+          REBUILT_TARGETS_JSON: ${{ steps.plan.outputs.rebuilt_targets }}
+          PRODUCER_SHA: ${{ github.sha }}
+          PRODUCER_RUN_ID: ${{ github.run_id }}
+        run: bash scripts/ci/write-native-ci-summary.sh
 
   build-linux:
     needs: [validate-package-lock, quality, build-ts, plan]
@@ -185,16 +199,7 @@ jobs:
 
   test:
     name: Test
-    needs:
-      [
-        validate-package-lock,
-        quality,
-        build-ts,
-        plan,
-        build-linux,
-        build-host,
-        stage-cached,
-      ]
+    needs: [validate-package-lock, quality, build-ts, plan, build-linux, build-host, stage-cached]
     if: |
       !cancelled() &&
       needs.validate-package-lock.result == 'success' &&
@@ -214,3 +219,72 @@ jobs:
       needs_native_binding: 'true'
       needs_ts_dist: 'true'
     secrets: inherit
+
+  assemble-native-bundle:
+    name: Assemble native main bundle
+    needs: [plan, build-linux, build-host, stage-cached, test]
+    if: |
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.test.result == 'success' &&
+      (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
+      (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
+      (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped')
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ci-restore-workspace-ownership
+
+      - name: Download all binding artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ci-artifacts
+          pattern: bindings-*
+          merge-multiple: false
+
+      - name: Assemble + validate six-target bundle
+        id: bundle
+        shell: bash
+        env:
+          NATIVE_TOOL_MODE: declared
+          NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
+          NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
+          NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
+        run: |
+          set -euo pipefail
+          mkdir -p native-main-bundle
+          agg="$(bash scripts/ci/native-artifact-bundle.sh assemble \
+            --artifacts-root ci-artifacts \
+            --output native-main-bundle \
+            --profile release)"
+          bash scripts/ci/native-artifact-bundle.sh validate \
+            --bundle native-main-bundle \
+            --profile release
+          echo "aggregate_digest=${agg}" >> "$GITHUB_OUTPUT"
+          SUMMARY_TITLE="Native main bundle" \
+          AGGREGATE_DIGEST="$agg" \
+          PRODUCER_SHA="${{ github.sha }}" \
+          PRODUCER_RUN_ID="${{ github.run_id }}" \
+          FALLBACK_REASON="assembled_this_run" \
+          bash scripts/ci/write-native-ci-summary.sh
+
+      - name: Upload native-main-bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-main-bundle
+          path: native-main-bundle/
+          if-no-files-found: error
+          retention-days: 90

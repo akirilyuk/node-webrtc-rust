@@ -90,20 +90,13 @@ run_vitest() {
 
 ensure_sherpa_models() {
   echo "==> Sherpa STT/TTS model weights ($WORKSPACE)"
-  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
-    "sherpa download-stt" -- npm run download-stt:en --workspace="$WORKSPACE"
-  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
-    "sherpa download-tts" -- npm run download-tts:en --workspace="$WORKSPACE"
-
+  # ensure-sherpa-models.sh validates/downloads in a subprocess — re-export paths here.
+  CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC="$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
+    SHERPA_EXAMPLE_WORKSPACE="$WORKSPACE" \
+    bash "$ROOT/scripts/ci/ensure-sherpa-models.sh"
+  unset SHERPA_STT_MODEL_PATH SHERPA_TTS_MODEL_PATH SHERPA_STT_LANGUAGE
   # shellcheck source=/dev/null
   source "$ROOT/scripts/export-sherpa-local-models.sh"
-
-  if [[ ! -d "$SHERPA_STT_MODEL_PATH" ]] || [[ ! -d "$SHERPA_TTS_MODEL_PATH" ]]; then
-    echo "Sherpa model directories missing after download." >&2
-    echo "  STT: $SHERPA_STT_MODEL_PATH" >&2
-    echo "  TTS: $SHERPA_TTS_MODEL_PATH" >&2
-    exit 1
-  fi
 }
 
 # Model-backed vendor tests kept #[ignore] in default cargo test (no weights in PR quality).

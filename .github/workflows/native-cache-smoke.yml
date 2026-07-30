@@ -1,0 +1,275 @@
+name: Native cache smoke
+
+# Manual, non-publishing validation of native cache + release-style bundle resolve.
+# NEVER publishes npm packages or GitHub Releases.
+#
+# Two-dispatch procedure (documented outputs make this explicit):
+#   1) workflow_dispatch phase=first-build  — plan, compile cache misses, stage hits,
+#      assemble native-smoke-bundle (not native-main-bundle), summarize rebuilt targets.
+#   2) workflow_dispatch phase=reuse-check  — fail unless all_cached=true (zero native
+#      compile); run resolve-native-main-bundle (read-only against main) without publish.
+#
+# Safe defaults: workflow_dispatch only; no push/PR triggers; no npm/GitHub release jobs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: first-build (compile misses + smoke bundle) or reuse-check (require all_cached + resolve)
+        type: choice
+        options:
+          - first-build
+          - reuse-check
+        default: first-build
+
+concurrency:
+  group: native-cache-smoke-${{ github.ref }}-${{ inputs.phase }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+  actions: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+  CI_IMAGE_ALPINE: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+  OPUS_STATIC: '1'
+  NATIVE_TOOL_MODE: declared
+
+jobs:
+  plan:
+    name: Plan native builds
+    runs-on: self-hosted
+    outputs:
+      aggregate_digest: ${{ steps.plan.outputs.aggregate_digest }}
+      all_cached: ${{ steps.plan.outputs.all_cached }}
+      linux_x64_matrix: ${{ steps.plan.outputs.linux_x64_matrix }}
+      build_linux_arm64: ${{ steps.plan.outputs.build_linux_arm64 }}
+      build_linux_musl: ${{ steps.plan.outputs.build_linux_musl }}
+      host_matrix: ${{ steps.plan.outputs.host_matrix }}
+      cached_linux_x64: ${{ steps.plan.outputs.cached_linux_x64 }}
+      cached_linux_arm64: ${{ steps.plan.outputs.cached_linux_arm64 }}
+      cached_host: ${{ steps.plan.outputs.cached_host }}
+      cached_targets: ${{ steps.plan.outputs.cached_targets }}
+      rebuilt_targets: ${{ steps.plan.outputs.rebuilt_targets }}
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/plan-native-builds
+        id: plan
+        with:
+          check_main_success: 'false'
+
+      - name: Enforce reuse-check zero-compile
+        if: inputs.phase == 'reuse-check'
+        shell: bash
+        env:
+          ALL_CACHED: ${{ steps.plan.outputs.all_cached }}
+          REBUILT: ${{ steps.plan.outputs.rebuilt_targets }}
+        run: |
+          set -euo pipefail
+          if [[ "$ALL_CACHED" != "true" ]]; then
+            echo "reuse-check failed: expected all_cached=true (zero native compile)." >&2
+            echo "  all_cached=${ALL_CACHED}" >&2
+            echo "  rebuilt_targets=${REBUILT}" >&2
+            echo "Run phase=first-build on this ref first, then re-dispatch reuse-check." >&2
+            exit 1
+          fi
+          SUMMARY_TITLE="Native cache smoke (reuse-check)" \
+          PHASE=reuse-check \
+          AGGREGATE_DIGEST="${{ steps.plan.outputs.aggregate_digest }}" \
+          ALL_CACHED=true \
+          CACHED_TARGETS_JSON="${{ steps.plan.outputs.cached_targets }}" \
+          REBUILT_TARGETS_JSON='[]' \
+          FALLBACK_REASON=none \
+          PRODUCER_SHA="${{ github.sha }}" \
+          PRODUCER_RUN_ID="${{ github.run_id }}" \
+          bash scripts/ci/write-native-ci-summary.sh
+
+      - name: first-build plan summary
+        if: inputs.phase == 'first-build'
+        shell: bash
+        env:
+          SUMMARY_TITLE: Native cache smoke (first-build)
+          PHASE: first-build
+          AGGREGATE_DIGEST: ${{ steps.plan.outputs.aggregate_digest }}
+          ALL_CACHED: ${{ steps.plan.outputs.all_cached }}
+          CACHED_TARGETS_JSON: ${{ steps.plan.outputs.cached_targets }}
+          REBUILT_TARGETS_JSON: ${{ steps.plan.outputs.rebuilt_targets }}
+          PRODUCER_SHA: ${{ github.sha }}
+          PRODUCER_RUN_ID: ${{ github.run_id }}
+          FALLBACK_REASON: ${{ steps.plan.outputs.all_cached == 'true' && 'all_cache_hits' || 'compile_misses' }}
+        run: bash scripts/ci/write-native-ci-summary.sh
+
+  build-linux:
+    needs: plan
+    if: |
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      inputs.phase == 'first-build' &&
+      (
+        needs.plan.outputs.linux_x64_matrix != '[]' ||
+        needs.plan.outputs.build_linux_arm64 == 'true' ||
+        needs.plan.outputs.build_linux_musl == 'true'
+      )
+    uses: ./.github/workflows/reusable-build-linux.yml
+    with:
+      cache_prefix: v3-release-otel
+      linux_x64_matrix: ${{ needs.plan.outputs.linux_x64_matrix }}
+      build_linux_arm64: ${{ needs.plan.outputs.build_linux_arm64 == 'true' }}
+      build_linux_musl: ${{ needs.plan.outputs.build_linux_musl == 'true' }}
+    secrets: inherit
+
+  build-host:
+    needs: plan
+    if: |
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      inputs.phase == 'first-build' &&
+      needs.plan.outputs.host_matrix != '[]'
+    uses: ./.github/workflows/reusable-build-host.yml
+    with:
+      cache_prefix: v3-release-otel
+      host_matrix: ${{ needs.plan.outputs.host_matrix }}
+    secrets: inherit
+
+  stage-cached:
+    needs: plan
+    if: |
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      inputs.phase == 'first-build' &&
+      (
+        needs.plan.outputs.cached_linux_x64 != '[]' ||
+        needs.plan.outputs.cached_linux_arm64 == 'true' ||
+        needs.plan.outputs.cached_host != '[]'
+      )
+    uses: ./.github/workflows/reusable-stage-cached-bindings.yml
+    with:
+      cached_linux_x64: ${{ needs.plan.outputs.cached_linux_x64 }}
+      cached_linux_arm64: ${{ needs.plan.outputs.cached_linux_arm64 == 'true' }}
+      cached_host: ${{ needs.plan.outputs.cached_host }}
+    secrets: inherit
+
+  assemble-smoke-bundle:
+    name: Assemble native-smoke-bundle
+    needs: [plan, build-linux, build-host, stage-cached]
+    if: |
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      inputs.phase == 'first-build' &&
+      (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
+      (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
+      (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped')
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci-restore-workspace-ownership
+
+      - name: Download binding artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ci-artifacts
+          pattern: bindings-*
+          merge-multiple: false
+
+      - name: Assemble + validate smoke bundle
+        shell: bash
+        env:
+          NATIVE_TOOL_MODE: declared
+          NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
+          NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
+          NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
+        run: |
+          set -euo pipefail
+          mkdir -p native-smoke-bundle
+          agg="$(bash scripts/ci/native-artifact-bundle.sh assemble \
+            --artifacts-root ci-artifacts \
+            --output native-smoke-bundle \
+            --profile release)"
+          bash scripts/ci/native-artifact-bundle.sh validate \
+            --bundle native-smoke-bundle \
+            --profile release
+          SUMMARY_TITLE="Native smoke bundle" \
+          PHASE=first-build \
+          AGGREGATE_DIGEST="$agg" \
+          PRODUCER_SHA="${{ github.sha }}" \
+          PRODUCER_RUN_ID="${{ github.run_id }}" \
+          FALLBACK_REASON="smoke_bundle_not_for_release" \
+          bash scripts/ci/write-native-ci-summary.sh
+
+      - name: Upload native-smoke-bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-smoke-bundle
+          path: native-smoke-bundle/
+          if-no-files-found: error
+          retention-days: 14
+
+  resolve-release-style:
+    name: Release-style bundle resolve (no publish)
+    needs: plan
+    if: |
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      (inputs.phase == 'reuse-check' || inputs.phase == 'first-build')
+    runs-on: self-hosted
+    steps:
+      - name: Prepare workspace
+        run: |
+          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
+            docker run --rm \
+              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
+              alpine:3.20 \
+              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve native-main-bundle (read-only; never publish)
+        id: resolve
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NATIVE_TOOL_MODE: declared
+        # Resolver only reads successful build-main.yml artifacts — exit 0 on fallback.
+        run: bash scripts/ci/resolve-native-main-bundle.sh --profile release
+
+      - name: Resolve summary
+        shell: bash
+        env:
+          SUMMARY_TITLE: Release-style resolve (smoke; no publish)
+          PHASE: ${{ inputs.phase }}
+          AGGREGATE_DIGEST: ${{ needs.plan.outputs.aggregate_digest }}
+          BUNDLE_REUSED: ${{ steps.resolve.outputs.bundle_reused }}
+          PREFERENCE: ${{ steps.resolve.outputs.preference }}
+          PRODUCER_SHA: ${{ steps.resolve.outputs.head_sha }}
+          PRODUCER_RUN_ID: ${{ steps.resolve.outputs.run_id }}
+          FALLBACK_REASON: ${{ steps.resolve.outputs.fallback_reason }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/write-native-ci-summary.sh
+          echo "Smoke path complete. This workflow has no npm publish / gh-release steps."
+          echo "Next: if phase was first-build, dispatch again with phase=reuse-check."

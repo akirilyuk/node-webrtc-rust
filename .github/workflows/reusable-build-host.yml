@@ -43,6 +43,8 @@ jobs:
         with:
           target: ${{ matrix.target }}
           build_args: ${{ matrix.build-args }}
+          profile: release
           cache_prefix: ${{ inputs.cache_prefix }}
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
+          binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}

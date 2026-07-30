@@ -7,5 +7,10 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src/**/*", "../voice-agent-browser/src/session-host.ts", "../shared/**/*.ts"]
+  "include": [
+    "src/**/*",
+    "../voice-agent-browser/src/session-host.ts",
+    "../shared/**/*.ts",
+    "../shared/sherpa-tts-model-catalog.json"
+  ]
 }

@@ -4,7 +4,9 @@
 use node_webrtc_rust_speech::config::{
     SttConfig, SttVendor, TtsConfig, TtsVendor, VoiceAgentConfig, VoiceSessionContext,
 };
-use node_webrtc_rust_speech::otel::{self, extract_trace_id, SherpaTtsMetricAttrs};
+use node_webrtc_rust_speech::otel::{
+    self, extract_trace_id, SherpaTtsMetricAttrs, SttMetricAttrs,
+};
 use node_webrtc_rust_speech::{PcmWriter, VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
 
@@ -54,21 +56,30 @@ fn init_from_env_is_idempotent() {
 
 #[test]
 fn metrics_record_without_panic() {
-    otel::record_stt_latency_ms(12.5, Some(SttVendor::Mock));
-    otel::record_tts_latency_ms(34.0, Some(TtsVendor::Mock));
-    otel::record_sherpa_pool_wait_ms(2.0);
-    otel::set_sherpa_pool_entries(3);
-    let attrs = SherpaTtsMetricAttrs {
-        tts_model: "piper-en".into(),
+    let stt_attrs = SttMetricAttrs {
+        stt_vendor: "mock".into(),
+        stt_model: "en".into(),
+        stt_language: "en".into(),
+        project_id: "proj-1".into(),
+    };
+    let tts_attrs = SherpaTtsMetricAttrs {
+        tts_vendor: "mock".into(),
+        tts_model: "en-amy-medium".into(),
+        tts_model_dir: "vits-piper-en_US-amy-medium".into(),
         tts_language: String::new(),
         tts_voice: "0".into(),
         project_id: "proj-1".into(),
     };
-    otel::record_sherpa_tts_phrase_cache_hit(&attrs);
-    otel::record_sherpa_tts_phrase_cache_miss(&attrs);
-    otel::set_sherpa_tts_phrase_cache_entries(4, &attrs);
-    otel::record_sherpa_tts_queue_wait_ms(1.5, &attrs);
-    otel::record_sherpa_tts_synth_wall_ms(42.0, &attrs);
+    otel::record_stt_latency_ms(12.5, &stt_attrs);
+    otel::record_tts_latency_ms(34.0, &tts_attrs);
+    otel::record_sherpa_pool_wait_ms(2.0, Some(&tts_attrs));
+    otel::record_sherpa_pool_wait_ms(1.0, None);
+    otel::set_sherpa_pool_entries(3);
+    otel::record_sherpa_tts_phrase_cache_hit(&tts_attrs);
+    otel::record_sherpa_tts_phrase_cache_miss(&tts_attrs);
+    otel::set_sherpa_tts_phrase_cache_entries(4, &tts_attrs);
+    otel::record_sherpa_tts_queue_wait_ms(1.5, &tts_attrs);
+    otel::record_sherpa_tts_synth_wall_ms(42.0, &tts_attrs);
 }
 
 #[tokio::test]

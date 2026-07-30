@@ -797,14 +797,22 @@ impl VoiceAgent {
             tts_vendor_calls_inflight.fetch_sub(1, Ordering::SeqCst);
             synthesize_result?
         };
-        let tts_vendor = inner
-            .lock()
-            .await
-            .config
-            .tts
-            .as_ref()
-            .map(|cfg| cfg.provider);
-        otel::record_tts_latency_ms(tts_started.elapsed().as_secs_f64() * 1000.0, tts_vendor);
+        let tts_attrs = {
+            let guard = inner.lock().await;
+            let project_id = guard
+                .otel
+                .session_context
+                .project_id
+                .as_deref()
+                .unwrap_or("");
+            guard
+                .config
+                .tts
+                .as_ref()
+                .map(|cfg| otel::SherpaTtsMetricAttrs::from_tts_config(cfg, project_id))
+                .unwrap_or_default()
+        };
+        otel::record_tts_latency_ms(tts_started.elapsed().as_secs_f64() * 1000.0, &tts_attrs);
 
         if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
             voice_debug("TTS synthesis discarded (invalidated during synthesize)");
@@ -1870,11 +1878,24 @@ impl VoiceAgent {
     async fn finalize_stt_utterance(&self) -> SpeechResult<()> {
         voice_debug("STT finalize_utterance: vendor finalize + poll");
         let stt_started = Instant::now();
-        let (ctx, stt_vendor) = {
+        let (ctx, stt_vendor, stt_attrs) = {
             let inner = self.inner.lock().await;
+            let project_id = inner
+                .otel
+                .session_context
+                .project_id
+                .as_deref()
+                .unwrap_or("");
+            let stt_attrs = inner
+                .config
+                .stt
+                .as_ref()
+                .map(|cfg| otel::SttMetricAttrs::from_stt_config(cfg, project_id))
+                .unwrap_or_default();
             (
                 inner.otel.session_context.clone(),
                 inner.config.stt.as_ref().map(|cfg| cfg.provider),
+                stt_attrs,
             )
         };
         {
@@ -1891,7 +1912,7 @@ impl VoiceAgent {
             }
         }
         self.poll_stt_transcripts().await?;
-        otel::record_stt_latency_ms(stt_started.elapsed().as_secs_f64() * 1000.0, stt_vendor);
+        otel::record_stt_latency_ms(stt_started.elapsed().as_secs_f64() * 1000.0, &stt_attrs);
         Ok(())
     }
 

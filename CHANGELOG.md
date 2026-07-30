@@ -8,13 +8,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
+---
 
-- **Speech / barge-in** — `minSttPartialChars` (character length) is replaced by **`minSttPartialTokens`** (whitespace token count, default **2**). Semantic barge waits for ≥2 tokens so mid-word STT fragments like `"St"` do not interrupt. Legacy **`minSttPartialChars`** still accepted and maps to the same token threshold (`tokens` wins when both are set).
+## [0.7.0] — 2026-07-30
+
+Streaming Sherpa TTS for lower time-to-first-audio, token-gated semantic barge-in, and wider TTS speed range.
 
 ### Added
 
-- **Examples / CI** — `start:roundtrip-barge-in-buffered` (`VOICE_TTS_STREAM_CHUNKS=0`) alongside streaming `start:roundtrip-barge-in`.
+- **Speech / Sherpa TTS** — Stream PCM chunks during VITS/ONNX generate (`VOICE_TTS_STREAM_CHUNKS` on by default) so playback starts before full synthesis finishes. Continuous resample + drain frame carry keep STT quality on par with the buffered path; set env to `0` for legacy synthesize-then-drain.
+- **Examples / CI** — `start:roundtrip-tts-stream` and `start:roundtrip-barge-in-buffered` (`VOICE_TTS_STREAM_CHUNKS=0`) alongside streaming `start:roundtrip-barge-in`.
+- **Examples** — Lessac high Piper TTS catalog ids (`en-lessac-high` / aliases) for e2e model downloads.
+
+### Changed
+
+- **Speech / barge-in** — `minSttPartialChars` (character length) is replaced by **`minSttPartialTokens`** (whitespace token count, default **2**). Semantic barge waits for ≥2 tokens so mid-word STT fragments like `"St"` do not interrupt. Legacy **`minSttPartialChars`** still accepted and maps to the same token threshold (`tokens` wins when both are set).
+- **Speech / Sherpa TTS** — Speaking-rate clamp widened to **0.2–2.0** (was narrower) for slower Piper rates under load.
+
+### Fixed / CI
+
+- Native artifact reuse across releases, Alpine/Windows cache fixes, and portable native bundle validation (see PRs #149–#156).
+
+**Compare:** [`release/0.6.24…release/0.7.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.24...release/0.7.0)
 
 ---
 

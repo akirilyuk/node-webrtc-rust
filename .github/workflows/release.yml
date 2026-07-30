@@ -130,12 +130,39 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/ci/check-main-ci-success.sh
 
+      # Pass JSON via env — never echo "${{ … }}" with nested quotes (bash strips them
+      # and fromJson fails, so build-host / stage-linux-x64 never start).
       - name: Export matrices
         id: matrices
         shell: bash
+        env:
+          BUNDLE_REUSED: ${{ steps.resolve.outputs.bundle_reused }}
+          LINUX_X64_MATRIX: ${{ steps.plan.outputs.linux_x64_matrix }}
+          BUILD_LINUX_ARM64: ${{ steps.plan.outputs.build_linux_arm64 }}
+          BUILD_LINUX_MUSL: ${{ steps.plan.outputs.build_linux_musl }}
+          HOST_MATRIX: ${{ steps.plan.outputs.host_matrix }}
+          CACHED_LINUX_X64: ${{ steps.plan.outputs.cached_linux_x64 }}
+          CACHED_LINUX_ARM64: ${{ steps.plan.outputs.cached_linux_arm64 }}
+          CACHED_HOST: ${{ steps.plan.outputs.cached_host }}
+          ALL_CACHED_PLAN: ${{ steps.plan.outputs.all_cached }}
+          CACHED_TARGETS: ${{ steps.plan.outputs.cached_targets }}
+          REBUILT_TARGETS: ${{ steps.plan.outputs.rebuilt_targets }}
+          AGGREGATE_DIGEST: ${{ steps.resolve.outputs.aggregate_digest }}
+          PREFERENCE: ${{ steps.resolve.outputs.preference }}
+          PRODUCER_SHA: ${{ steps.resolve.outputs.head_sha }}
+          PRODUCER_RUN_ID: ${{ steps.resolve.outputs.run_id }}
+          FALLBACK_REASON: ${{ steps.resolve.outputs.fallback_reason }}
+          MAIN_VALIDATED: ${{ steps.main.outputs.main_validated }}
         run: |
           set -euo pipefail
-          if [[ "${{ steps.resolve.outputs.bundle_reused }}" == "true" ]]; then
+          write_json_out() {
+            local key="$1"
+            local value="$2"
+            echo "${key}<<EOF" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "${value}" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          }
+          if [[ "${BUNDLE_REUSED}" == "true" ]]; then
             echo "linux_x64_matrix=[]" >> "$GITHUB_OUTPUT"
             echo "build_linux_arm64=false" >> "$GITHUB_OUTPUT"
             echo "build_linux_musl=false" >> "$GITHUB_OUTPUT"
@@ -145,41 +172,35 @@ jobs:
             echo "cached_host=[]" >> "$GITHUB_OUTPUT"
             echo "all_cached=true" >> "$GITHUB_OUTPUT"
           else
-            echo "linux_x64_matrix=${{ steps.plan.outputs.linux_x64_matrix }}" >> "$GITHUB_OUTPUT"
-            echo "build_linux_arm64=${{ steps.plan.outputs.build_linux_arm64 }}" >> "$GITHUB_OUTPUT"
-            echo "build_linux_musl=${{ steps.plan.outputs.build_linux_musl }}" >> "$GITHUB_OUTPUT"
-            echo "host_matrix<<EOF" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.plan.outputs.host_matrix }}" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
-            echo "cached_linux_x64<<EOF" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.plan.outputs.cached_linux_x64 }}" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
-            echo "cached_linux_arm64=${{ steps.plan.outputs.cached_linux_arm64 }}" >> "$GITHUB_OUTPUT"
-            echo "cached_host<<EOF" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.plan.outputs.cached_host }}" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
-            echo "all_cached=${{ steps.plan.outputs.all_cached }}" >> "$GITHUB_OUTPUT"
+            write_json_out linux_x64_matrix "${LINUX_X64_MATRIX:-[]}"
+            echo "build_linux_arm64=${BUILD_LINUX_ARM64:-false}" >> "$GITHUB_OUTPUT"
+            echo "build_linux_musl=${BUILD_LINUX_MUSL:-false}" >> "$GITHUB_OUTPUT"
+            write_json_out host_matrix "${HOST_MATRIX:-[]}"
+            write_json_out cached_linux_x64 "${CACHED_LINUX_X64:-[]}"
+            echo "cached_linux_arm64=${CACHED_LINUX_ARM64:-false}" >> "$GITHUB_OUTPUT"
+            write_json_out cached_host "${CACHED_HOST:-[]}"
+            echo "all_cached=${ALL_CACHED_PLAN:-false}" >> "$GITHUB_OUTPUT"
           fi
-          if [[ "${{ steps.resolve.outputs.bundle_reused }}" == "true" ]]; then
+          if [[ "${BUNDLE_REUSED}" == "true" ]]; then
             all_cached_sum=true
             cached_sum='["*bundle*"]'
             rebuilt_sum='[]'
           else
-            all_cached_sum="${{ steps.plan.outputs.all_cached }}"
-            cached_sum='${{ steps.plan.outputs.cached_targets }}'
-            rebuilt_sum='${{ steps.plan.outputs.rebuilt_targets }}'
+            all_cached_sum="${ALL_CACHED_PLAN:-false}"
+            cached_sum="${CACHED_TARGETS:-[]}"
+            rebuilt_sum="${REBUILT_TARGETS:-[]}"
           fi
           SUMMARY_TITLE="Release native plan" \
-          AGGREGATE_DIGEST="${{ steps.resolve.outputs.aggregate_digest }}" \
+          AGGREGATE_DIGEST="${AGGREGATE_DIGEST}" \
           ALL_CACHED="$all_cached_sum" \
           CACHED_TARGETS_JSON="$cached_sum" \
           REBUILT_TARGETS_JSON="$rebuilt_sum" \
-          BUNDLE_REUSED="${{ steps.resolve.outputs.bundle_reused }}" \
-          PREFERENCE="${{ steps.resolve.outputs.preference }}" \
-          PRODUCER_SHA="${{ steps.resolve.outputs.head_sha }}" \
-          PRODUCER_RUN_ID="${{ steps.resolve.outputs.run_id }}" \
-          FALLBACK_REASON="${{ steps.resolve.outputs.fallback_reason }}" \
-          MAIN_VALIDATED="${{ steps.main.outputs.main_validated }}" \
+          BUNDLE_REUSED="${BUNDLE_REUSED}" \
+          PREFERENCE="${PREFERENCE}" \
+          PRODUCER_SHA="${PRODUCER_SHA}" \
+          PRODUCER_RUN_ID="${PRODUCER_RUN_ID}" \
+          FALLBACK_REASON="${FALLBACK_REASON}" \
+          MAIN_VALIDATED="${MAIN_VALIDATED}" \
           bash scripts/ci/write-native-ci-summary.sh
 
   reuse-bundle:

@@ -29,6 +29,7 @@ Streaming Sherpa TTS for lower time-to-first-audio, token-gated semantic barge-i
 ### Fixed / CI
 
 - Native artifact reuse across releases, Alpine/Windows cache fixes, and portable native bundle validation (see PRs #149–#156).
+- **Release workflow** — `Export matrices` no longer embeds plan JSON inside `echo "…"` (bash stripped quotes so `fromJson` failed and `build-host` / linux-x64 stage jobs never started). Pass JSON via step `env` + heredoc instead.
 
 **Compare:** [`release/0.6.24…release/0.7.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.6.24...release/0.7.0)
 

@@ -24,6 +24,7 @@ Streaming Sherpa TTS for lower time-to-first-audio, token-gated semantic barge-i
 
 - **Speech / barge-in** — `minSttPartialChars` (character length) is replaced by **`minSttPartialTokens`** (whitespace token count, default **2**). Semantic barge waits for ≥2 tokens so mid-word STT fragments like `"St"` do not interrupt. Legacy **`minSttPartialChars`** still accepted and maps to the same token threshold (`tokens` wins when both are set).
 - **Speech / Sherpa TTS** — Speaking-rate clamp widened to **0.2–2.0** (was narrower) for slower Piper rates under load.
+- **Core / Opus** — Decouple SDP `maxaveragebitrate` from encode bitrate. When `WEBRTC_OPUS_BITRATE_BPS` is unset, SDP advertises `minptime=10;useinbandfec=1;stereo=1` without `maxaveragebitrate`; encode defaults to **400 kbps** (was 192 kbps). Set the env var to include a clamped `maxaveragebitrate` in SDP and override encode bitrate.
 
 ### Fixed / CI
 

@@ -13,23 +13,31 @@ use crate::error::CoreError;
 
 const OPUS_OUTPUT_CAPACITY: usize = 4_000;
 
-/// Target Opus encode bitrate (stereo Audio mode). Keep in sync with SDP `maxaveragebitrate`.
-pub const OPUS_TARGET_BITRATE_BPS: i32 = 192_000;
+/// Default Opus encode bitrate (stereo Audio mode) when `WEBRTC_OPUS_BITRATE_BPS` is unset.
+pub const OPUS_TARGET_BITRATE_BPS: i32 = 400_000;
 
 const OPUS_BITRATE_MIN_BPS: i32 = 6_000;
 const OPUS_BITRATE_MAX_BPS: i32 = 510_000;
 
-static RESOLVED_OPUS_BITRATE_BPS: OnceLock<i32> = OnceLock::new();
+static RESOLVED_OPUS_BITRATE_BPS_FROM_ENV: OnceLock<Option<i32>> = OnceLock::new();
 static RESOLVED_OPUS_APPLICATION: OnceLock<Application> = OnceLock::new();
 
-/// Resolved Opus target bitrate from `WEBRTC_OPUS_BITRATE_BPS` (process-wide, read once).
-pub fn opus_target_bitrate_bps() -> i32 {
-    *RESOLVED_OPUS_BITRATE_BPS.get_or_init(|| {
+/// Parsed `WEBRTC_OPUS_BITRATE_BPS` (process-wide, read once).
+///
+/// `None` when unset, blank, or invalid — SDP omits `maxaveragebitrate`; encode uses
+/// [`OPUS_TARGET_BITRATE_BPS`].
+pub fn opus_bitrate_bps_from_env() -> Option<i32> {
+    *RESOLVED_OPUS_BITRATE_BPS_FROM_ENV.get_or_init(|| {
         match std::env::var("WEBRTC_OPUS_BITRATE_BPS") {
-            Ok(raw) => parse_opus_bitrate_bps(Some(raw.as_str())),
-            Err(_) => OPUS_TARGET_BITRATE_BPS,
+            Ok(raw) => parse_opus_bitrate_bps_from_env(Some(raw.as_str())),
+            Err(_) => None,
         }
     })
+}
+
+/// Opus encode bitrate: env override when set, otherwise [`OPUS_TARGET_BITRATE_BPS`].
+pub fn opus_target_bitrate_bps() -> i32 {
+    opus_bitrate_bps_from_env().unwrap_or(OPUS_TARGET_BITRATE_BPS)
 }
 
 fn resolved_opus_application() -> Application {
@@ -41,21 +49,21 @@ fn resolved_opus_application() -> Application {
     })
 }
 
-fn parse_opus_bitrate_bps(raw: Option<&str>) -> i32 {
+fn parse_opus_bitrate_bps_from_env(raw: Option<&str>) -> Option<i32> {
     let Some(raw) = raw else {
-        return OPUS_TARGET_BITRATE_BPS;
+        return None;
     };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return OPUS_TARGET_BITRATE_BPS;
+        return None;
     }
     match trimmed.parse::<i32>() {
-        Ok(v) => v.clamp(OPUS_BITRATE_MIN_BPS, OPUS_BITRATE_MAX_BPS),
+        Ok(v) => Some(v.clamp(OPUS_BITRATE_MIN_BPS, OPUS_BITRATE_MAX_BPS)),
         Err(_) => {
             eprintln!(
-                "WEBRTC_OPUS_BITRATE_BPS={trimmed:?} invalid; using default {OPUS_TARGET_BITRATE_BPS}"
+                "WEBRTC_OPUS_BITRATE_BPS={trimmed:?} invalid; omitting maxaveragebitrate from SDP and using encode default {OPUS_TARGET_BITRATE_BPS}"
             );
-            OPUS_TARGET_BITRATE_BPS
+            None
         }
     }
 }
@@ -79,18 +87,19 @@ fn parse_opus_application(raw: Option<&str>) -> Application {
     }
 }
 
-/// Opus SDP fmtp advertised on local PCM tracks (FEC + stereo + bitrate cap).
+/// Opus SDP fmtp advertised on local PCM tracks (FEC + stereo; optional bitrate cap).
 pub fn opus_sdp_fmtp_line() -> String {
-    format!(
-        "minptime=10;useinbandfec=1;stereo=1;maxaveragebitrate={}",
-        opus_target_bitrate_bps()
-    )
+    let mut line = "minptime=10;useinbandfec=1;stereo=1".to_string();
+    if let Some(bps) = opus_bitrate_bps_from_env() {
+        line.push_str(&format!(";maxaveragebitrate={bps}"));
+    }
+    line
 }
 
 /// Rewrite Opus `a=fmtp:` lines to our encode/advertise params.
 ///
 /// Needed for answers: webrtc-rs copies the remote offer's weak default fmtp
-/// (`minptime=10;useinbandfec=1`) even when the local MediaEngine has 192 kbps.
+/// (`minptime=10;useinbandfec=1`) even when the local MediaEngine has stereo + FEC fmtp.
 pub fn enrich_opus_sdp_fmtp(sdp: &str) -> String {
     let target = opus_sdp_fmtp_line();
     let mut opus_pts = std::collections::HashSet::new();
@@ -305,13 +314,15 @@ mod tests {
     use audiopus::{MutSignals, SampleRate};
 
     #[test]
-    fn opus_sdp_fmtp_advertises_target_bitrate() {
+    fn opus_sdp_fmtp_omits_maxaveragebitrate_when_env_unset() {
         let line = opus_sdp_fmtp_line();
+        assert_eq!(line, "minptime=10;useinbandfec=1;stereo=1");
+        assert!(!line.contains("maxaveragebitrate"));
         assert!(line.contains("useinbandfec=1"));
         assert!(line.contains("stereo=1"));
-        assert!(line.contains(&format!("maxaveragebitrate={}", opus_target_bitrate_bps())));
+        assert_eq!(opus_bitrate_bps_from_env(), None);
         assert_eq!(opus_target_bitrate_bps(), OPUS_TARGET_BITRATE_BPS);
-        assert_eq!(OPUS_TARGET_BITRATE_BPS, 192_000);
+        assert_eq!(OPUS_TARGET_BITRATE_BPS, 400_000);
     }
 
     #[test]
@@ -326,19 +337,26 @@ a=rtpmap:9 G722/8000\r\n\
             "a=fmtp:111 {}",
             opus_sdp_fmtp_line()
         )));
-        assert!(enriched.contains("maxaveragebitrate=192000"));
+        assert!(!enriched.contains("maxaveragebitrate"));
+        assert!(enriched.contains("stereo=1"));
         assert!(enriched.contains("a=rtpmap:9 G722/8000"));
     }
 
     #[test]
-    fn parse_opus_bitrate_bps_defaults_and_clamps() {
-        assert_eq!(parse_opus_bitrate_bps(None), OPUS_TARGET_BITRATE_BPS);
-        assert_eq!(parse_opus_bitrate_bps(Some("")), OPUS_TARGET_BITRATE_BPS);
-        assert_eq!(parse_opus_bitrate_bps(Some(" 192000 ")), 192_000);
-        assert_eq!(parse_opus_bitrate_bps(Some("64000")), 64_000);
-        assert_eq!(parse_opus_bitrate_bps(Some("1000")), OPUS_BITRATE_MIN_BPS);
-        assert_eq!(parse_opus_bitrate_bps(Some("999999")), OPUS_BITRATE_MAX_BPS);
-        assert_eq!(parse_opus_bitrate_bps(Some("not-a-number")), OPUS_TARGET_BITRATE_BPS);
+    fn parse_opus_bitrate_bps_from_env_unset_blank_clamps_and_rejects_invalid() {
+        assert_eq!(parse_opus_bitrate_bps_from_env(None), None);
+        assert_eq!(parse_opus_bitrate_bps_from_env(Some("")), None);
+        assert_eq!(parse_opus_bitrate_bps_from_env(Some(" 192000 ")), Some(192_000));
+        assert_eq!(parse_opus_bitrate_bps_from_env(Some("64000")), Some(64_000));
+        assert_eq!(
+            parse_opus_bitrate_bps_from_env(Some("1000")),
+            Some(OPUS_BITRATE_MIN_BPS)
+        );
+        assert_eq!(
+            parse_opus_bitrate_bps_from_env(Some("999999")),
+            Some(OPUS_BITRATE_MAX_BPS)
+        );
+        assert_eq!(parse_opus_bitrate_bps_from_env(Some("not-a-number")), None);
     }
 
     #[test]

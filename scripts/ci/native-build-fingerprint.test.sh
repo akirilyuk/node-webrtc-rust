@@ -82,6 +82,30 @@ if [[ "$d1" != "$d2" ]]; then
 fi
 echo "ok: deterministic fingerprint"
 
+echo "==> CRLF vs LF text hashing is platform-stable"
+python3 - <<'PY'
+import importlib.util
+from pathlib import Path
+
+root = Path(".").resolve()
+spec = importlib.util.spec_from_file_location(
+    "native_build_contract", root / "scripts/ci/native_build_contract.py"
+)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+sample = root / "packages/bindings/src/lib.rs"
+raw = sample.read_bytes()
+assert b"\r\n" not in raw, "fixture must be checked out as LF"
+crlf = raw.replace(b"\n", b"\r\n")
+assert mod.sha256_bytes(raw) != mod.sha256_bytes(crlf)
+tmp = Path("/tmp/native-fingerprint-crlf-lib.rs")
+tmp.write_bytes(crlf)
+assert mod.sha256_text_file(sample) == mod.sha256_text_file(tmp)
+tmp.unlink(missing_ok=True)
+print("ok: sha256_text_file ignores CRLF vs LF")
+PY
+
 echo "==> artifact orchestration does not invalidate compiled bytes"
 contract_backup="$(mktemp)"
 cp "$PY" "$contract_backup"

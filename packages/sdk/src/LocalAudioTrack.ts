@@ -57,8 +57,8 @@ export class LocalAudioTrack extends MediaStreamTrack {
   }
 
   /**
-   * Optional listener for every PCM frame written to this track — including
-   * VoiceAgent TTS drain (which bypasses JS `writeSample` monkey-patches).
+   * Optional listener for VoiceAgent TTS PCM drain (bypasses JS `writeSample` patches).
+   * Callback is `(data, durationMs)` — not Node-style `(err, data, …)`.
    * Pass `null` to clear.
    */
   setWriteSampleTee(callback: ((data: Buffer, durationMs: number) => void) | null): void {

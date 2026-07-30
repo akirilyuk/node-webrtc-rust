@@ -4,17 +4,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
-use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::threadsafe_function::{
+    ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode,
+};
 use napi::JsFunction;
 use napi::JsUnknown;
 use napi_derive::napi;
 use node_webrtc_rust_core::{debug_call, LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind};
 
 use crate::config::to_js_unknown;
-use crate::events::create_event_callback;
 
-/// Optional JS listener for every PCM frame written (JS `writeSample` + VoiceAgent TTS drain).
-type WriteSampleTee = ThreadsafeFunction<(Vec<u8>, u32)>;
+/// Optional JS listener for VoiceAgent TTS PCM (and future native writers).
+/// Uses {@link ErrorStrategy::Fatal} so the JS callback is `(data, durationMs)` —
+/// not Node-style `(err, data, durationMs)` (CalleeHandled default prepends `null`).
+type WriteSampleTee = ThreadsafeFunction<(Vec<u8>, u32), ErrorStrategy::Fatal>;
 
 /// Media stream track exposed to JavaScript.
 #[napi]
@@ -127,16 +130,15 @@ impl JsLocalAudioTrack {
     /// Registers a non-blocking listener for PCM written via {@link writeSample} or VoiceAgent TTS.
     /// Pass `null` to clear. Used by load-test stereo WAV capture (native TTS bypasses JS patches).
     #[napi]
-    pub fn set_write_sample_tee(&self, env: Env, callback: Option<JsFunction>) -> Result<()> {
+    pub fn set_write_sample_tee(&self, _env: Env, callback: Option<JsFunction>) -> Result<()> {
         let mut slot = self
             .write_tee
             .lock()
             .map_err(|e| Error::from_reason(format!("write_sample_tee lock: {e}")))?;
         *slot = match callback {
             Some(cb) => {
-                let tsfn = create_event_callback(
-                    &env,
-                    cb,
+                let tsfn: WriteSampleTee = cb.create_threadsafe_function(
+                    0,
                     |ctx| -> Result<Vec<JsUnknown>> {
                         let (data, duration_ms) = ctx.value;
                         let buffer = Buffer::from(data);
@@ -188,7 +190,8 @@ impl JsLocalAudioTrack {
             "bytes={}, duration_ms={duration_ms}",
             data.len()
         );
-        self.notify_write_tee(data.as_ref(), duration_ms);
+        // Tee is not notified here: JS callers often wrap writeSample for capture; VoiceAgent
+        // TTS drain calls notify_write_tee_handle directly so outbound agent audio is still tee'd.
         let bytes = bytes::Bytes::copy_from_slice(data.as_ref());
         self.inner
             .write_sample(bytes, Duration::from_millis(duration_ms as u64))
@@ -223,7 +226,7 @@ pub(crate) fn notify_write_tee_handle(
         return;
     };
     let _ = tsfn.call(
-        Ok((pcm.to_vec(), duration_ms)),
+        (pcm.to_vec(), duration_ms),
         ThreadsafeFunctionCallMode::NonBlocking,
     );
 }

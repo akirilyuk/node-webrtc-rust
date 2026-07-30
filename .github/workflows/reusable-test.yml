@@ -177,12 +177,31 @@ jobs:
 
       # Sherpa model weights before Docker E2E — separate from native/Cargo caches.
       - uses: ./.github/actions/ci-cache-sherpa-models
+        id: sherpa-cache
         if: steps.gate.outputs.skip != 'true'
 
       - uses: ./.github/actions/ci-run-integration-tests
+        id: integration
         if: steps.gate.outputs.skip != 'true'
         with:
           test_script: ${{ inputs.test_script }}
           ci_image: ${{ env.CI_IMAGE }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ts_dist_cache_hit: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
+
+      # The download happens inside ci-build, where npm is available. Save only
+      # after successful integration so partial/corrupt model dirs never persist.
+      - name: Save repaired/downloaded Sherpa model dirs
+        if: |
+          steps.gate.outputs.skip != 'true' &&
+          steps.integration.outcome == 'success' &&
+          (
+            steps.sherpa-cache.outputs.cache-hit != 'true' ||
+            steps.sherpa-cache.outputs.cache-valid != 'true'
+          )
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
+            examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
+          key: ${{ steps.sherpa-cache.outputs.cache-key }}

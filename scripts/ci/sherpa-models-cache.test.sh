@@ -23,12 +23,17 @@ if ! grep -q 'sherpa-models-v1-' "$action"; then
   echo "FAIL: action missing sherpa-models-v1 key" >&2
   exit 1
 fi
-if ! grep -q 'ensure-sherpa-models.sh' "$action"; then
-  echo "FAIL: action must validate/ensure after restore" >&2
+if ! grep -q 'actions/cache/restore@v4' "$action"; then
+  echo "FAIL: action must restore without saving before Docker" >&2
   exit 1
 fi
-if ! grep -q 'redownloaded' "$action"; then
-  echo "FAIL: action must re-save after corrupt-cache redownload" >&2
+if ! grep -q 'validate-sherpa-model-dirs.sh' "$action" \
+  || ! grep -q 'cache-valid' "$action"; then
+  echo "FAIL: action must validate restored model directories" >&2
+  exit 1
+fi
+if grep -qE 'ensure-sherpa-models\.sh|npm run download-' "$action"; then
+  echo "FAIL: host cache restore must not download models without Node/npm" >&2
   exit 1
 fi
 # Must not share paths with Cargo/native caches
@@ -36,7 +41,7 @@ if grep -qiE 'packages/bindings|^\s*target\b|Cargo\.lock' "$action"; then
   echo "FAIL: Sherpa model cache must stay separate from native/Cargo" >&2
   exit 1
 fi
-echo "ok: action key + ensure + separation"
+echo "ok: action key + restore-only validation + separation"
 
 # Validation fails on missing dirs (USE_ENV keeps injected paths)
 tmpdir="$(mktemp -d)"
@@ -78,11 +83,16 @@ else
   echo "ok: ambient bogus paths ignored"
 fi
 
-# reusable-test wires the action
+# reusable-test restores before Docker and saves only after integration succeeds
 if ! grep -q 'ci-cache-sherpa-models' .github/workflows/reusable-test.yml; then
   echo "FAIL: reusable-test must restore Sherpa models before Docker" >&2
   exit 1
 fi
-echo "ok: reusable-test wires Sherpa model cache"
+if ! grep -q 'Save repaired/downloaded Sherpa model dirs' .github/workflows/reusable-test.yml \
+  || ! grep -q 'steps.integration.outcome == .success.' .github/workflows/reusable-test.yml; then
+  echo "FAIL: reusable-test must save models after successful Docker integration" >&2
+  exit 1
+fi
+echo "ok: reusable-test restores before Docker and saves after success"
 
 echo "sherpa-models-cache.test.sh: all checks passed"

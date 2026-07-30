@@ -5,6 +5,9 @@ outputs:
   cache-hit:
     description: Exact Actions cache key match
     value: ${{ steps.models.outputs.cache-hit }}
+  cache-valid:
+    description: Restored model directories passed integrity validation
+    value: ${{ steps.validate.outputs.cache-valid }}
   cache-key:
     description: Exact Actions cache key
     value: ${{ steps.key.outputs.cache-key }}
@@ -23,21 +26,34 @@ runs:
 
     - name: Restore Sherpa model dirs
       id: models
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: |
           examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
           examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
         key: ${{ steps.key.outputs.cache-key }}
 
-    - name: Ensure models valid (redownload on corrupt/miss)
-      id: ensure
+    # The self-hosted runner does not provide Node/npm. Validate here using
+    # shell only; run-sherpa-example-ci.sh downloads a miss inside ci-build.
+    - name: Validate restored Sherpa model dirs
+      id: validate
       shell: bash
-      run: bash scripts/ci/ensure-sherpa-models.sh
+      run: |
+        set -euo pipefail
+        if bash scripts/ci/validate-sherpa-model-dirs.sh; then
+          echo "cache-valid=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "::notice::Sherpa model cache missing or invalid; Docker integration will download it."
+        rm -rf \
+          examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06 \
+          examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
+        echo "cache-valid=false" >> "$GITHUB_OUTPUT"
 
-    # Exact-hit + corrupt restore cannot overwrite the same key; delete then save.
+    # An exact corrupt hit is immutable. Delete it now so the caller can save
+    # the repaired models after Docker integration downloads and validates them.
     - name: Evict corrupt Sherpa model cache entry
-      if: steps.models.outputs.cache-hit == 'true' && steps.ensure.outputs.redownloaded == 'true'
+      if: steps.models.outputs.cache-hit == 'true' && steps.validate.outputs.cache-valid != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -66,12 +82,3 @@ runs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true
         done
-
-    - name: Save Sherpa model dirs
-      if: steps.models.outputs.cache-hit != 'true' || steps.ensure.outputs.redownloaded == 'true'
-      uses: actions/cache/save@v4
-      with:
-        path: |
-          examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
-          examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
-        key: ${{ steps.key.outputs.cache-key }}

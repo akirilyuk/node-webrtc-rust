@@ -188,7 +188,8 @@ impl JsLocalAudioTrack {
             "bytes={}, duration_ms={duration_ms}",
             data.len()
         );
-        self.notify_write_tee(data.as_ref(), duration_ms);
+        // Tee is not notified here: JS callers often wrap writeSample for capture; VoiceAgent
+        // TTS drain calls notify_write_tee_handle directly so outbound agent audio is still tee'd.
         let bytes = bytes::Bytes::copy_from_slice(data.as_ref());
         self.inner
             .write_sample(bytes, Duration::from_millis(duration_ms as u64))

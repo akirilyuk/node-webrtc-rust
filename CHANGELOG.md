@@ -8,6 +8,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Core / Opus** — `WEBRTC_OPUS_BITRATE_BPS` (6000–510000, default 192000) and `WEBRTC_OPUS_APPLICATION` (`audio` | `voip` | `lowdelay`, default `audio`) tune PCM→Opus encode and SDP `maxaveragebitrate`.
+
+### Changed
+
+- **Bindings** — `LocalAudioTrack.writeSample` no longer invokes the write-sample tee; VoiceAgent TTS drain still notifies the tee so JS `writeSample` wrappers are not double-fed.
+
 ---
 
 ## [0.6.23] — 2026-07-30

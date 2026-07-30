@@ -1,6 +1,6 @@
 //! PCM → negotiated RTP payload encoding.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use audiopus::coder::Encoder;
@@ -16,10 +16,74 @@ const OPUS_OUTPUT_CAPACITY: usize = 4_000;
 /// Target Opus encode bitrate (stereo Audio mode). Keep in sync with SDP `maxaveragebitrate`.
 pub const OPUS_TARGET_BITRATE_BPS: i32 = 192_000;
 
+const OPUS_BITRATE_MIN_BPS: i32 = 6_000;
+const OPUS_BITRATE_MAX_BPS: i32 = 510_000;
+
+static RESOLVED_OPUS_BITRATE_BPS: OnceLock<i32> = OnceLock::new();
+static RESOLVED_OPUS_APPLICATION: OnceLock<Application> = OnceLock::new();
+
+/// Resolved Opus target bitrate from `WEBRTC_OPUS_BITRATE_BPS` (process-wide, read once).
+pub fn opus_target_bitrate_bps() -> i32 {
+    *RESOLVED_OPUS_BITRATE_BPS.get_or_init(|| {
+        match std::env::var("WEBRTC_OPUS_BITRATE_BPS") {
+            Ok(raw) => parse_opus_bitrate_bps(Some(raw.as_str())),
+            Err(_) => OPUS_TARGET_BITRATE_BPS,
+        }
+    })
+}
+
+fn resolved_opus_application() -> Application {
+    *RESOLVED_OPUS_APPLICATION.get_or_init(|| {
+        match std::env::var("WEBRTC_OPUS_APPLICATION") {
+            Ok(raw) => parse_opus_application(Some(raw.as_str())),
+            Err(_) => Application::Audio,
+        }
+    })
+}
+
+fn parse_opus_bitrate_bps(raw: Option<&str>) -> i32 {
+    let Some(raw) = raw else {
+        return OPUS_TARGET_BITRATE_BPS;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return OPUS_TARGET_BITRATE_BPS;
+    }
+    match trimmed.parse::<i32>() {
+        Ok(v) => v.clamp(OPUS_BITRATE_MIN_BPS, OPUS_BITRATE_MAX_BPS),
+        Err(_) => {
+            eprintln!(
+                "WEBRTC_OPUS_BITRATE_BPS={trimmed:?} invalid; using default {OPUS_TARGET_BITRATE_BPS}"
+            );
+            OPUS_TARGET_BITRATE_BPS
+        }
+    }
+}
+
+fn parse_opus_application(raw: Option<&str>) -> Application {
+    let Some(raw) = raw else {
+        return Application::Audio;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Application::Audio;
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "audio" => Application::Audio,
+        "voip" => Application::Voip,
+        "lowdelay" => Application::LowDelay,
+        other => {
+            eprintln!("WEBRTC_OPUS_APPLICATION={other:?} invalid; using default \"audio\"");
+            Application::Audio
+        }
+    }
+}
+
 /// Opus SDP fmtp advertised on local PCM tracks (FEC + stereo + bitrate cap).
 pub fn opus_sdp_fmtp_line() -> String {
     format!(
-        "minptime=10;useinbandfec=1;stereo=1;maxaveragebitrate={OPUS_TARGET_BITRATE_BPS}"
+        "minptime=10;useinbandfec=1;stereo=1;maxaveragebitrate={}",
+        opus_target_bitrate_bps()
     )
 }
 
@@ -78,11 +142,12 @@ struct OpusEncoderState {
 
 impl PcmEncoder {
     pub fn new() -> Result<Self, CoreError> {
-        let mut encoder =
-            Encoder::new(SampleRate::Hz48000, Channels::Stereo, Application::Audio)
-                .map_err(|e| CoreError::Track(format!("Opus encoder init: {e}")))?;
+        let application = resolved_opus_application();
+        let bitrate_bps = opus_target_bitrate_bps();
+        let mut encoder = Encoder::new(SampleRate::Hz48000, Channels::Stereo, application)
+            .map_err(|e| CoreError::Track(format!("Opus encoder init: {e}")))?;
         encoder
-            .set_bitrate(Bitrate::BitsPerSecond(OPUS_TARGET_BITRATE_BPS))
+            .set_bitrate(Bitrate::BitsPerSecond(bitrate_bps))
             .map_err(|e| CoreError::Track(format!("Opus encoder bitrate: {e}")))?;
         encoder
             .set_complexity(10)
@@ -199,8 +264,32 @@ mod tests {
         let line = opus_sdp_fmtp_line();
         assert!(line.contains("useinbandfec=1"));
         assert!(line.contains("stereo=1"));
-        assert!(line.contains(&format!("maxaveragebitrate={OPUS_TARGET_BITRATE_BPS}")));
+        assert!(line.contains(&format!("maxaveragebitrate={}", opus_target_bitrate_bps())));
+        assert_eq!(opus_target_bitrate_bps(), OPUS_TARGET_BITRATE_BPS);
         assert_eq!(OPUS_TARGET_BITRATE_BPS, 192_000);
+    }
+
+    #[test]
+    fn parse_opus_bitrate_bps_defaults_and_clamps() {
+        assert_eq!(parse_opus_bitrate_bps(None), OPUS_TARGET_BITRATE_BPS);
+        assert_eq!(parse_opus_bitrate_bps(Some("")), OPUS_TARGET_BITRATE_BPS);
+        assert_eq!(parse_opus_bitrate_bps(Some(" 192000 ")), 192_000);
+        assert_eq!(parse_opus_bitrate_bps(Some("64000")), 64_000);
+        assert_eq!(parse_opus_bitrate_bps(Some("1000")), OPUS_BITRATE_MIN_BPS);
+        assert_eq!(parse_opus_bitrate_bps(Some("999999")), OPUS_BITRATE_MAX_BPS);
+        assert_eq!(parse_opus_bitrate_bps(Some("not-a-number")), OPUS_TARGET_BITRATE_BPS);
+    }
+
+    #[test]
+    fn parse_opus_application_case_insensitive() {
+        assert_eq!(parse_opus_application(None), Application::Audio);
+        assert_eq!(parse_opus_application(Some("")), Application::Audio);
+        assert_eq!(parse_opus_application(Some("audio")), Application::Audio);
+        assert_eq!(parse_opus_application(Some("AUDIO")), Application::Audio);
+        assert_eq!(parse_opus_application(Some("VoIP")), Application::Voip);
+        assert_eq!(parse_opus_application(Some("lowdelay")), Application::LowDelay);
+        assert_eq!(parse_opus_application(Some("LowDelay")), Application::LowDelay);
+        assert_eq!(parse_opus_application(Some("music")), Application::Audio);
     }
 
     #[test]

@@ -64,6 +64,13 @@ runs:
         fi
         echo "cache-key=${key}" >> "$GITHUB_OUTPUT"
 
+    # BusyBox tar on Alpine rejects actions/cache --posix/-P; install/link GNU tar
+    # before any restore/save (covers stale ci-build-alpine images too).
+    - name: Ensure GNU tar for Actions cache (Alpine)
+      if: inputs.target == 'x86_64-unknown-linux-musl'
+      shell: bash
+      run: bash scripts/ci/ensure-gnu-tar-alpine.sh
+
     - name: Install Linux build dependencies
       if: inputs.setup_host_toolchain == 'true' && steps.resolve.outputs.build_required == 'true'
       shell: bash

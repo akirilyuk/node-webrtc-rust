@@ -80,14 +80,6 @@ runs:
         shared-key: ${{ inputs.target }}
         add-job-id-key: false
 
-    - name: Cache napi-rs Zig toolchain (macOS)
-      if: runner.os == 'macOS' && steps.resolve.outputs.build_required == 'true'
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/napi-rs-nodejs
-        key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-        restore-keys: napi-zig-${{ runner.os }}-
-
     - name: Install bindings dependencies
       if: steps.resolve.outputs.build_required == 'true'
       shell: bash

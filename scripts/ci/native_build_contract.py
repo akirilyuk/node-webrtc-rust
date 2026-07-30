@@ -104,9 +104,14 @@ def repo_root() -> Path:
 
 def _relpath_or_abs(path: Path, root: Path) -> str:
     try:
-        return str(path.resolve().relative_to(root.resolve()))
+        return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
-        return str(path)
+        return Path(path).as_posix()
+
+
+def rel_posix(root: Path, path: Path) -> str:
+    """Stable forward-slash relative path for fingerprints (Windows-safe)."""
+    return path.resolve().relative_to(root.resolve()).as_posix()
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -466,17 +471,17 @@ def hash_tree_files(root: Path, crate_root: Path) -> list[list[str]]:
     manifest = crate_root / "Cargo.toml"
     if not manifest.is_file():
         raise SystemExit(f"native_build_contract: missing {manifest}")
-    rows.append([sha256_text_file(manifest), str(manifest.relative_to(root))])
+    rows.append([sha256_text_file(manifest), rel_posix(root, manifest)])
 
     build_rs = crate_root / "build.rs"
     if build_rs.is_file():
-        rows.append([sha256_text_file(build_rs), str(build_rs.relative_to(root))])
+        rows.append([sha256_text_file(build_rs), rel_posix(root, build_rs)])
 
     src = crate_root / "src"
     if src.is_dir():
         for path in sorted(src.rglob("*.rs")):
             if path.is_file():
-                rows.append([sha256_text_file(path), str(path.relative_to(root))])
+                rows.append([sha256_text_file(path), rel_posix(root, path)])
     return rows
 
 
@@ -486,7 +491,8 @@ def hash_paths(root: Path, rel_paths: Iterable[str]) -> list[list[str]]:
         path = root / rel
         if not path.is_file():
             raise SystemExit(f"native_build_contract: missing required path {rel}")
-        rows.append([sha256_text_file(path), rel])
+        # Keep declared recipe paths as forward-slash literals for stability.
+        rows.append([sha256_text_file(path), Path(rel).as_posix()])
     return rows
 
 

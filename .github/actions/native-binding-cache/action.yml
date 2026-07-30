@@ -49,6 +49,12 @@ runs:
         echo "input-digest=${digest}" >> "$GITHUB_OUTPUT"
         echo "Native binding cache key=${key}"
 
+    # BusyBox tar on Alpine rejects actions/cache --posix/-P (musl jobs).
+    - name: Ensure GNU tar for Actions cache (Alpine)
+      if: inputs.mode != 'probe' && inputs.target == 'x86_64-unknown-linux-musl'
+      shell: bash
+      run: bash scripts/ci/ensure-gnu-tar-alpine.sh
+
     - name: Probe native binding cache (no download)
       id: probe
       if: inputs.mode == 'probe'

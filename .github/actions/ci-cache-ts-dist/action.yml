@@ -1,20 +1,38 @@
 name: Cache TypeScript dist
-description: Restore/save sdk, signaling, and helpers dist/ keyed by TS sources
+description: Restore/save sdk, signaling, and helpers dist/ keyed by full TS build contract
 
 inputs:
-  profile:
-    description: Cache namespace (e.g. pr or release)
+  node_major:
+    description: Node major version discriminator (must match setup-node / ci-build)
     required: false
-    default: pr
+    default: '20'
+  profile:
+    description: Deprecated unused namespace (PR/release outputs are identical)
+    required: false
+    default: ''
 
 outputs:
   cache-hit:
-    description: Whether dist/ cache matched
+    description: Whether dist/ cache matched the exact key
     value: ${{ steps.ts.outputs.cache-hit }}
+  cache-key:
+    description: Exact Actions cache key
+    value: ${{ steps.key.outputs.cache-key }}
 
 runs:
   using: composite
   steps:
+    - name: Resolve TS dist cache key
+      id: key
+      shell: bash
+      env:
+        TS_DIST_NODE_MAJOR: ${{ inputs.node_major }}
+      run: |
+        set -euo pipefail
+        digest="$(bash scripts/ci/ts-dist-cache-key.sh)"
+        echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+        echo "cache-key=ts-dist-v2-node${{ inputs.node_major }}-${digest}" >> "$GITHUB_OUTPUT"
+
     - name: Restore TypeScript dist cache
       id: ts
       uses: actions/cache@v4
@@ -23,4 +41,5 @@ runs:
           packages/sdk/dist
           packages/signaling/dist
           packages/helpers/dist
-        key: ts-dist-${{ inputs.profile }}-${{ hashFiles('packages/sdk/src/**', 'packages/signaling/src/**', 'packages/helpers/src/**', 'packages/sdk/tsconfig*.json', 'packages/signaling/tsconfig*.json', 'packages/helpers/tsconfig*.json', 'tsconfig.base.json') }}
+        key: ${{ steps.key.outputs.cache-key }}
+        # Exact key only — partial restore-keys left stale dist that ensure-ts-dist must rebuild.

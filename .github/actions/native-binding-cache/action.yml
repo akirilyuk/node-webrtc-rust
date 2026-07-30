@@ -1,6 +1,6 @@
 name: Native binding cache
 description: >
-  Probe or restore per-target .node keyed by native inputs + index.d.ts.
+  Probe or restore per-target .node keyed by native-v3 target-specific fingerprint.
   Probe mode checks the Actions Cache API without downloading (~162MB).
 
 inputs:
@@ -25,6 +25,9 @@ outputs:
   cache-key:
     description: Exact cache key (pass to cache/save after compile)
     value: ${{ steps.key.outputs.cache-key }}
+  input-digest:
+    description: Native input digest for this target
+    value: ${{ steps.key.outputs.input-digest }}
 
 runs:
   using: composite
@@ -32,10 +35,19 @@ runs:
     - name: Compute native binding cache key
       id: key
       shell: bash
+      env:
+        NATIVE_TOOL_MODE: declared
+        CI_IMAGE: ${{ env.CI_IMAGE }}
+        CI_IMAGE_ALPINE: ${{ env.CI_IMAGE_ALPINE }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
       run: |
-        hash="$(bash scripts/ci/native-binding-cache-key.sh)"
-        echo "cache-key=native-v2-${{ inputs.profile }}-${{ inputs.target }}-${hash}" >> "$GITHUB_OUTPUT"
-        echo "Native binding cache key hash=${hash}"
+        set -euo pipefail
+        eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "${{ inputs.target }}")"
+        key="$(python3 scripts/ci/native_build_contract.py cache-key --target "${{ inputs.target }}" --profile "${{ inputs.profile }}")"
+        digest="${key##*-}"
+        echo "cache-key=${key}" >> "$GITHUB_OUTPUT"
+        echo "input-digest=${digest}" >> "$GITHUB_OUTPUT"
+        echo "Native binding cache key=${key}"
 
     - name: Probe native binding cache (no download)
       id: probe
@@ -47,7 +59,6 @@ runs:
         REPO: ${{ github.repository }}
       run: |
         set -euo pipefail
-        # key= is a prefix match; require an exact key hit.
         enc_key="$(printf '%s' "$CACHE_KEY" | python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
         url="https://api.github.com/repos/${REPO}/actions/caches?per_page=100&key=${enc_key}"
         body="$(curl -fsSL \
@@ -75,13 +86,17 @@ runs:
       if: inputs.mode != 'probe'
       uses: actions/cache/restore@v4
       with:
-        path: packages/bindings/*.node
+        path: |
+          packages/bindings/*.node
+          packages/bindings/native-manifests/${{ inputs.target }}.json
         key: ${{ steps.key.outputs.cache-key }}
 
-    - name: Validate restored .node against index.d.ts
+    - name: Validate restored .node against index.d.ts + manifest
       id: validate
       if: inputs.mode != 'probe'
       shell: bash
+      env:
+        NATIVE_TOOL_MODE: declared
       run: |
         set -euo pipefail
         shopt -s nullglob
@@ -91,13 +106,27 @@ runs:
           echo "cache-usable=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        if node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"; then
-          echo "cache-usable=true" >> "$GITHUB_OUTPUT"
-        else
+        if ! node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"; then
           echo "Cached .node stale vs index.d.ts — removing and forcing compile."
           rm -f packages/bindings/*.node
+          rm -f "packages/bindings/native-manifests/${{ inputs.target }}.json"
           echo "cache-usable=false" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
+        eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "${{ inputs.target }}")"
+        man="packages/bindings/native-manifests/${{ inputs.target }}.json"
+        if [[ -f "$man" ]]; then
+          if ! bash scripts/ci/native-artifact-manifest.sh validate --manifest "$man"; then
+            echo "Cached manifest invalid — removing and forcing compile."
+            rm -f packages/bindings/*.node "$man"
+            echo "cache-usable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        else
+          # Older cache entries without manifest: accept surface check, produce manifest later.
+          echo "::notice::Cache hit without provenance manifest — will refresh on save path."
+        fi
+        echo "cache-usable=true" >> "$GITHUB_OUTPUT"
 
     - name: Export cache-hit
       id: result

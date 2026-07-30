@@ -38,26 +38,42 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/native-binding-cache
+        id: native-cache
         with:
           target: ${{ matrix.target }}
           profile: ${{ inputs.profile }}
 
-      - name: Require cached native artifact
+      - name: Require cached native artifact + manifest
         shell: bash
-        working-directory: packages/bindings
+        env:
+          NATIVE_TOOL_MODE: declared
+          NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
+          NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
+          NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(*.node)
+          files=(packages/bindings/*.node)
           if [[ ${#files[@]} -eq 0 ]]; then
-            echo "Expected cached .node for ${{ matrix.target }}." >&2
+            echo "Expected cached .node for ${{ matrix.target }} (exact key restore failed)." >&2
             exit 1
           fi
+          if [[ "${{ steps.native-cache.outputs.cache-hit }}" != "true" ]]; then
+            echo "Cache reported miss while staging ${{ matrix.target }} — failing closed." >&2
+            exit 1
+          fi
+          bash scripts/ci/write-native-artifact-manifest.sh \
+            --target "${{ matrix.target }}" \
+            --profile "${{ inputs.profile }}"
+          dest="ci-native-out/bindings-${{ matrix.target }}"
+          mkdir -p "$dest"
+          cp packages/bindings/*.node "$dest/"
+          cp "packages/bindings/native-manifests/${{ matrix.target }}.json" "$dest/manifest.json"
 
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.target }}
-          path: packages/bindings/*.node
+          path: ci-native-out/bindings-${{ matrix.target }}/
           if-no-files-found: error
 
   stage-linux-arm64:
@@ -68,26 +84,42 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/native-binding-cache
+        id: native-cache
         with:
           target: aarch64-unknown-linux-gnu
           profile: ${{ inputs.profile }}
 
-      - name: Require cached native artifact
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Require cached native artifact + manifest
         shell: bash
-        working-directory: packages/bindings
+        env:
+          NATIVE_TOOL_MODE: declared
+          NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
+          NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
+          NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(*.node)
-          if [[ ${#files[@]} -eq 0 ]]; then
+          files=(packages/bindings/*.node)
+          if [[ ${#files[@]} -eq 0 || "${{ steps.native-cache.outputs.cache-hit }}" != "true" ]]; then
             echo "Expected cached .node for aarch64-unknown-linux-gnu." >&2
             exit 1
           fi
+          bash scripts/ci/write-native-artifact-manifest.sh \
+            --target aarch64-unknown-linux-gnu \
+            --profile "${{ inputs.profile }}"
+          dest="ci-native-out/bindings-aarch64-unknown-linux-gnu"
+          mkdir -p "$dest"
+          cp packages/bindings/*.node "$dest/"
+          cp packages/bindings/native-manifests/aarch64-unknown-linux-gnu.json "$dest/manifest.json"
 
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-aarch64-unknown-linux-gnu
-          path: packages/bindings/*.node
+          path: ci-native-out/bindings-aarch64-unknown-linux-gnu/
           if-no-files-found: error
 
   stage-host:
@@ -102,24 +134,40 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/native-binding-cache
+        id: native-cache
         with:
           target: ${{ matrix.target }}
           profile: ${{ inputs.profile }}
 
-      - name: Require cached native artifact
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Require cached native artifact + manifest
         shell: bash
-        working-directory: packages/bindings
+        env:
+          NATIVE_TOOL_MODE: declared
+          NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
+          NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
+          NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(*.node)
-          if [[ ${#files[@]} -eq 0 ]]; then
+          files=(packages/bindings/*.node)
+          if [[ ${#files[@]} -eq 0 || "${{ steps.native-cache.outputs.cache-hit }}" != "true" ]]; then
             echo "Expected cached .node for ${{ matrix.target }}." >&2
             exit 1
           fi
+          bash scripts/ci/write-native-artifact-manifest.sh \
+            --target "${{ matrix.target }}" \
+            --profile "${{ inputs.profile }}"
+          dest="ci-native-out/bindings-${{ matrix.target }}"
+          mkdir -p "$dest"
+          cp packages/bindings/*.node "$dest/"
+          cp "packages/bindings/native-manifests/${{ matrix.target }}.json" "$dest/manifest.json"
 
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.target }}
-          path: packages/bindings/*.node
+          path: ci-native-out/bindings-${{ matrix.target }}/
           if-no-files-found: error

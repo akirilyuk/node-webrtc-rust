@@ -1,0 +1,84 @@
+name: Cache Sherpa E2E models
+description: Restore/save English Sherpa STT/TTS model dirs used by integration E2E (separate from native/Cargo)
+
+outputs:
+  cache-hit:
+    description: Exact Actions cache key match
+    value: ${{ steps.models.outputs.cache-hit }}
+  cache-valid:
+    description: Restored model directories passed integrity validation
+    value: ${{ steps.validate.outputs.cache-valid }}
+  cache-key:
+    description: Exact Actions cache key
+    value: ${{ steps.key.outputs.cache-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve Sherpa models cache key
+      id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        digest="$(bash scripts/ci/sherpa-models-cache-key.sh)"
+        echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+        echo "cache-key=sherpa-models-v1-${digest}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Sherpa model dirs
+      id: models
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
+          examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
+        key: ${{ steps.key.outputs.cache-key }}
+
+    # The self-hosted runner does not provide Node/npm. Validate here using
+    # shell only; run-sherpa-example-ci.sh downloads a miss inside ci-build.
+    - name: Validate restored Sherpa model dirs
+      id: validate
+      shell: bash
+      run: |
+        set -euo pipefail
+        if bash scripts/ci/validate-sherpa-model-dirs.sh; then
+          echo "cache-valid=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "::notice::Sherpa model cache missing or invalid; Docker integration will download it."
+        rm -rf \
+          examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06 \
+          examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
+        echo "cache-valid=false" >> "$GITHUB_OUTPUT"
+
+    # An exact corrupt hit is immutable. Delete it now so the caller can save
+    # the repaired models after Docker integration downloads and validates them.
+    - name: Evict corrupt Sherpa model cache entry
+      if: steps.models.outputs.cache-hit == 'true' && steps.validate.outputs.cache-valid != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CACHE_KEY: ${{ steps.key.outputs.cache-key }}
+      run: |
+        set -euo pipefail
+        enc="$(printf '%s' "$CACHE_KEY" | python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
+        body="$(curl -fsSL \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100&key=${enc}" || true)"
+        ids="$(
+          BODY="$body" CACHE_KEY="$CACHE_KEY" python3 -c '
+        import json, os
+        data = json.loads(os.environ.get("BODY") or "{}")
+        key = os.environ["CACHE_KEY"]
+        print(" ".join(str(c["id"]) for c in (data.get("actions_caches") or []) if c.get("key") == key and c.get("id") is not None))
+        '
+        )"
+        for id in $ids; do
+          echo "Deleting corrupt cache id=${id} key=${CACHE_KEY}"
+          curl -fsSL -X DELETE \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true
+        done

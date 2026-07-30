@@ -35,10 +35,6 @@ on:
         description: When 'true', restore TS dist cache before integration tests
         type: string
         default: 'false'
-      ts_dist_profile:
-        description: ci-cache-ts-dist profile namespace (pr or release)
-        type: string
-        default: release
 
 jobs:
   test:
@@ -137,8 +133,22 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.binding_artifact }}
-          path: packages/bindings
+          path: ci-binding-artifact
         continue-on-error: ${{ inputs.require_binding_artifact != 'true' }}
+
+      - name: Stage downloaded .node into packages/bindings
+        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && inputs.binding_artifact != '' && steps.binding-artifact.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          # Supports flat (*.node) and directory (bindings-*/ *.node) artifact layouts.
+          nodes=(ci-binding-artifact/*.node ci-binding-artifact/**/*.node)
+          if [[ ${#nodes[@]} -eq 0 ]]; then
+            echo "Downloaded artifact had no .node files" >&2
+            exit 1
+          fi
+          cp "${nodes[0]}" packages/bindings/
 
       # GHA cache restore often misses in workflow_call jobs even after a hit in the
       # caller (compile-native). Artifact download is the reliable same-run path.
@@ -163,12 +173,35 @@ jobs:
         if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_ts == 'true'
         id: ts-cache
         with:
-          profile: ${{ inputs.ts_dist_profile }}
+          node_major: '20'
+
+      # Sherpa model weights before Docker E2E — separate from native/Cargo caches.
+      - uses: ./.github/actions/ci-cache-sherpa-models
+        id: sherpa-cache
+        if: steps.gate.outputs.skip != 'true'
 
       - uses: ./.github/actions/ci-run-integration-tests
+        id: integration
         if: steps.gate.outputs.skip != 'true'
         with:
           test_script: ${{ inputs.test_script }}
           ci_image: ${{ env.CI_IMAGE }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ts_dist_cache_hit: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
+
+      # The download happens inside ci-build, where npm is available. Save only
+      # after successful integration so partial/corrupt model dirs never persist.
+      - name: Save repaired/downloaded Sherpa model dirs
+        if: |
+          steps.gate.outputs.skip != 'true' &&
+          steps.integration.outcome == 'success' &&
+          (
+            steps.sherpa-cache.outputs.cache-hit != 'true' ||
+            steps.sherpa-cache.outputs.cache-valid != 'true'
+          )
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
+            examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
+          key: ${{ steps.sherpa-cache.outputs.cache-key }}

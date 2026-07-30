@@ -5,6 +5,10 @@ development/
 target/
 **/*.rs.bk
 
+# Python bytecode (CI contract helpers under scripts/ci/)
+__pycache__/
+*.py[cod]
+
 # Node
 node_modules/
 dist/

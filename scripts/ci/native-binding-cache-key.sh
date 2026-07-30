@@ -1,73 +1,57 @@
 #!/usr/bin/env bash
-# Fingerprint inputs that change the native .node binary or committed NAPI surface.
-# Used by CI native-binding-cache (exact key match only — no restore-key prefix fallback).
+# Native binding cache key — thin wrapper over native-v3 cache-key contract.
+#
+# Requires --target (or NATIVE_TARGET). Active CI callers always pass a target.
+#
+#   bash scripts/ci/native-binding-cache-key.sh --target TRIPLE [--profile release]
+#   NATIVE_TARGET=… NATIVE_PROFILE=release bash scripts/ci/native-binding-cache-key.sh
+#
+# Optional: --aggregate prints the six-target aggregate digest (not a cache key).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-hash_crate_sources() {
-  local crate_dir="$1"
-  if [[ ! -f "${crate_dir}/Cargo.toml" ]]; then
-    echo "native-binding-cache-key: missing ${crate_dir}/Cargo.toml" >&2
-    exit 1
-  fi
-  sha256sum "${crate_dir}/Cargo.toml"
-  if [[ -d "${crate_dir}/src" ]]; then
-    find "${crate_dir}/src" -type f -name '*.rs' | sort | xargs sha256sum
-  fi
-  if [[ -f "${crate_dir}/build.rs" ]]; then
-    sha256sum "${crate_dir}/build.rs"
-  fi
-}
+target="${NATIVE_TARGET:-}"
+profile="${NATIVE_PROFILE:-release}"
+aggregate=0
 
-list_bindings_path_crates() {
-  # Path deps from packages/bindings/Cargo.toml → repo-relative crate roots.
-  grep -E 'path = "\.\./\.\./crates/' packages/bindings/Cargo.toml \
-    | awk -F'"' '{ print $2 }' \
-    | sed 's|^\.\./\.\./||' \
-    | sort -u
-}
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target)
+      target="${2:-}"
+      shift 2
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    --aggregate)
+      aggregate=1
+      shift
+      ;;
+    -h | --help)
+      sed -n '2,14p' "$0" | sed 's/^# \?//'
+      exit 0
+      ;;
+    *)
+      echo "native-binding-cache-key: unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
 
-# Top-level "version" is release metadata only — must not invalidate a byte-identical .node.
-hash_bindings_package_json() {
-  python3 - <<'PY'
-import hashlib
-import json
-import sys
+export NATIVE_TOOL_MODE="${NATIVE_TOOL_MODE:-declared}"
 
-with open("packages/bindings/package.json", "rb") as f:
-    data = json.load(f)
-data.pop("version", None)
-normalized = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
-digest = hashlib.sha256(normalized).hexdigest()
-sys.stdout.write(f"{digest}  packages/bindings/package.json (no version)\n")
-PY
-}
+if [[ "$aggregate" -eq 1 ]]; then
+  exec python3 scripts/ci/native_build_contract.py aggregate-digest --profile "$profile"
+fi
 
-{
-  echo "napi-release-features:otel"
-  sha256sum Cargo.toml Cargo.lock scripts/ci/native-binding-cache-key.sh
-  sha256sum \
-    packages/bindings/Cargo.toml \
-    packages/bindings/build.rs \
-    packages/bindings/index.d.ts \
-    packages/bindings/index.js
-  hash_bindings_package_json
+if [[ -z "$target" ]]; then
+  echo "native-binding-cache-key: --target (or NATIVE_TARGET) is required" >&2
+  exit 1
+fi
 
-  if [[ -d packages/bindings/src ]]; then
-    find packages/bindings/src -type f | sort | xargs sha256sum
-  fi
-
-  while IFS= read -r crate_dir; do
-    [[ -z "$crate_dir" ]] && continue
-    hash_crate_sources "$crate_dir"
-  done < <(list_bindings_path_crates)
-
-  # Musl prebuilds must rebuild when Alpine native toolchain changes (not Zig cross).
-  sha256sum \
-    docker/ci/Dockerfile.alpine \
-    scripts/ci/install-alpine-native-toolchain.sh \
-    scripts/ci/build-sherpa-onnx-musl-libs.sh \
-    scripts/ci/verify-musl-runtime.sh
-} | sha256sum | awk '{print $1}'
+eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "$target")"
+# Print input digest only (Actions key prefix is added by native-binding-cache).
+exec python3 scripts/ci/native_build_contract.py fingerprint --target "$target" --profile "$profile"

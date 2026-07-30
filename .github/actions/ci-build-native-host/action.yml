@@ -1,5 +1,5 @@
 name: Build native addon (macOS / Windows)
-description: Setup toolchain, compile, verify, and optionally upload a host .node binding
+description: Setup toolchain, compile, verify, manifest, cache save, and upload a host .node binding
 
 inputs:
   target:
@@ -8,6 +8,10 @@ inputs:
   build_args:
     description: Extra napi build arguments (e.g. --target x86_64-apple-darwin)
     required: true
+  profile:
+    description: napi profile (debug or release)
+    required: false
+    default: release
   cache_prefix:
     description: Prefix for Swatinem/rust-cache
     required: false
@@ -20,6 +24,10 @@ inputs:
     description: Value from native-binding-cache output
     required: false
     default: 'false'
+  binding_cache_key:
+    description: Exact cache key from native-binding-cache (enables save after compile)
+    required: false
+    default: ''
   upload_artifact:
     description: Upload bindings artifact
     required: false
@@ -28,25 +36,55 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Resolve build required
+      id: resolve
+      shell: bash
+      run: |
+        if [[ "${{ inputs.skip_build_on_cache_hit }}" == "true" && "${{ inputs.native_cache_hit }}" == "true" ]]; then
+          echo "build_required=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "build_required=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Resolve binding cache key
+      id: cachekey
+      shell: bash
+      env:
+        NATIVE_TOOL_MODE: declared
+      run: |
+        set -euo pipefail
+        key="${{ inputs.binding_cache_key }}"
+        if [[ -z "$key" ]]; then
+          eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "${{ inputs.target }}")"
+          key="$(python3 scripts/ci/native_build_contract.py cache-key --target "${{ inputs.target }}" --profile "${{ inputs.profile }}")"
+        fi
+        echo "cache-key=${key}" >> "$GITHUB_OUTPUT"
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: 20
 
     - name: Install Rust toolchain
+      if: steps.resolve.outputs.build_required == 'true'
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ inputs.target }}
 
-    - name: Cache Cargo (registry + target)
+    # Single Swatinem entry for registry + this target's target/ — do not also
+    # add actions/cache for target/ (would duplicate overlapping keys).
+    - name: Cache Cargo (registry + target for this triple)
+      if: steps.resolve.outputs.build_required == 'true'
       uses: Swatinem/rust-cache@v2
       with:
-        prefix-key: ${{ inputs.cache_prefix }}
+        prefix-key: cargo-v1-${{ inputs.cache_prefix }}-${{ inputs.profile }}
         cache-targets: ${{ inputs.target }}
         workspaces: .
+        shared-key: ${{ inputs.target }}
+        add-job-id-key: false
 
     - name: Cache napi-rs Zig toolchain (macOS)
-      if: runner.os == 'macOS'
+      if: runner.os == 'macOS' && steps.resolve.outputs.build_required == 'true'
       uses: actions/cache@v4
       with:
         path: ~/.cache/napi-rs-nodejs
@@ -54,23 +92,35 @@ runs:
         restore-keys: napi-zig-${{ runner.os }}-
 
     - name: Install bindings dependencies
+      if: steps.resolve.outputs.build_required == 'true'
       shell: bash
       working-directory: packages/bindings
       run: npm ci --ignore-scripts
 
     - name: Build native addon
-      if: inputs.skip_build_on_cache_hit != 'true' || inputs.native_cache_hit != 'true'
+      if: steps.resolve.outputs.build_required == 'true'
       shell: bash
       working-directory: packages/bindings
       env:
         CMAKE_POLICY_VERSION_MINIMUM: '3.5'
         OPUS_STATIC: '1'
-      run: npx napi build --platform --release --features otel ${{ inputs.build_args }}
+      run: |
+        set -euo pipefail
+        rm -f *.node
+        if [[ "${{ inputs.profile }}" == "release" ]]; then
+          npx napi build --platform --release --features otel ${{ inputs.build_args }}
+        else
+          npx napi build --platform ${{ inputs.build_args }}
+        fi
 
     - name: Reuse cached native addon
-      if: inputs.skip_build_on_cache_hit == 'true' && inputs.native_cache_hit == 'true'
+      if: steps.resolve.outputs.build_required != 'true'
       shell: bash
-      run: echo "Skipping compile for ${{ inputs.target }} — native binding cache hit"
+      run: echo "::notice::Skipping compile for ${{ inputs.target }} — native binding cache hit"
+
+    - name: Verify native NAPI surface
+      shell: bash
+      run: node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"
 
     - name: Require native artifact
       shell: bash
@@ -83,10 +133,41 @@ runs:
           exit 1
         fi
 
+    - name: Write provenance manifest
+      shell: bash
+      env:
+        NATIVE_TOOL_MODE: declared
+        NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
+        NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
+        NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
+      run: |
+        bash scripts/ci/write-native-artifact-manifest.sh \
+          --target "${{ inputs.target }}" \
+          --profile "${{ inputs.profile }}"
+
+    - name: Save native binding cache
+      if: steps.resolve.outputs.build_required == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          packages/bindings/*.node
+          packages/bindings/native-manifests/${{ inputs.target }}.json
+        key: ${{ steps.cachekey.outputs.cache-key }}
+
+    - name: Stage artifact directory
+      if: inputs.upload_artifact == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        dest="ci-native-out/bindings-${{ inputs.target }}"
+        mkdir -p "$dest"
+        cp packages/bindings/*.node "$dest/"
+        cp "packages/bindings/native-manifests/${{ inputs.target }}.json" "$dest/manifest.json"
+
     - name: Upload bindings artifact
       if: inputs.upload_artifact == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: bindings-${{ inputs.target }}
-        path: packages/bindings/*.node
+        path: ci-native-out/bindings-${{ inputs.target }}/
         if-no-files-found: error

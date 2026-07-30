@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Plan which release native targets need compile vs reuse GitHub Actions cache.
+# Plan which release native targets need compile vs per-target Actions cache.
 #
-# Uses exact cache keys (native-v2-{profile}-{target}-{hash}) — same as native-binding-cache.
+# Uses exact cache keys (native-v3-{profile}-{target}-{digest}) — same as
+# native-binding-cache. Exact key match via GitHub REST (curl); never trusts
+# prefix total_count alone. On API/restore uncertainty → schedule build.
+#
 # Outputs multiline GITHUB_OUTPUT for workflow matrices.
 set -euo pipefail
 
@@ -10,36 +13,79 @@ cd "$ROOT"
 
 PROFILE="${PLAN_NATIVE_PROFILE:-release}"
 REPO="${GITHUB_REPOSITORY:-}"
+TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
 if [[ -z "$REPO" ]]; then
   echo "GITHUB_REPOSITORY is required" >&2
   exit 1
 fi
 
-HASH="$(bash scripts/ci/native-binding-cache-key.sh)"
+export NATIVE_TOOL_MODE="${NATIVE_TOOL_MODE:-declared}"
 
-cache_exists() {
+cache_key_for() {
   local target="$1"
-  local key="native-v2-${PROFILE}-${target}-${HASH}"
-  local count
-  count="$(
-    gh api -H "Accept: application/vnd.github+json" \
-      "/repos/${REPO}/actions/caches?key=${key}" \
-      --jq '.total_count // 0' 2>/dev/null || echo 0
+  eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "$target")"
+  python3 scripts/ci/native_build_contract.py cache-key --target "$target" --profile "$PROFILE"
+}
+
+exact_cache_exists() {
+  local target="$1"
+  local key="$2"
+  if [[ -z "$TOKEN" ]]; then
+    echo "  cache probe skipped (no token): $target → build" >&2
+    return 1
+  fi
+  local enc_key body hits
+  enc_key="$(printf '%s' "$key" | python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
+  body="$(
+    curl -fsSL \
+      -H "Authorization: Bearer ${TOKEN}" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "https://api.github.com/repos/${REPO}/actions/caches?per_page=100&key=${enc_key}" \
+      2>/dev/null || true
   )"
-  [[ "${count:-0}" -gt 0 ]]
+  if [[ -z "$body" ]]; then
+    echo "  cache API error: $target → build" >&2
+    return 1
+  fi
+  hits="$(
+    CACHE_KEY="$key" python3 -c '
+import json, os, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(0)
+    raise SystemExit
+key = os.environ["CACHE_KEY"]
+n = sum(1 for c in (data.get("actions_caches") or []) if c.get("key") == key)
+print(n)
+' <<<"$body" 2>/dev/null || echo 0
+  )"
+  [[ "${hits:-0}" -gt 0 ]]
 }
 
 need_gnu=false
 need_musl=false
 need_arm64=false
 cached_targets=()
+DIGEST_LINES=""
+
+AGGREGATE="$(
+  eval "$(bash scripts/ci/collect-native-tool-identity.sh --target x86_64-unknown-linux-gnu)"
+  # Aggregate helper applies per-target declared tools internally when GITHUB_ACTIONS/NATIVE_TOOL_MODE set.
+  NATIVE_TOOL_MODE=declared python3 scripts/ci/native_build_contract.py aggregate-digest --profile "$PROFILE"
+)"
 
 while IFS= read -r target; do
   [[ -z "$target" ]] && continue
-  if cache_exists "$target"; then
+  key="$(cache_key_for "$target")"
+  digest="${key##*-}"
+  DIGEST_LINES="${DIGEST_LINES}${target}=${digest}"$'\n'
+  echo "  key: $target → ${key}"
+  if exact_cache_exists "$target" "$key"; then
     cached_targets+=("$target")
-    echo "  cache hit: $target"
+    echo "  cache hit (exact): $target"
   else
     echo "  need build: $target"
     case "$target" in
@@ -60,10 +106,18 @@ if [[ "$need_musl" == true ]]; then
   build_linux_musl=true
 fi
 
+is_cached() {
+  local target="$1" t
+  for t in "${cached_targets[@]+"${cached_targets[@]}"}"; do
+    [[ "$t" == "$target" ]] && return 0
+  done
+  return 1
+}
+
 host_matrix=()
 host_entry() {
   local target="$1" os="$2" args="$3"
-  if ! cache_exists "$target"; then
+  if ! is_cached "$target"; then
     host_matrix+=("{\"target\":\"${target}\",\"os\":\"${os}\",\"build-args\":\"${args}\"}")
   fi
 }
@@ -87,7 +141,7 @@ cached_linux_x64=()
 cached_linux_arm64=false
 cached_host=()
 
-for t in "${cached_targets[@]}"; do
+for t in "${cached_targets[@]+"${cached_targets[@]}"}"; do
   case "$t" in
     x86_64-unknown-linux-gnu|x86_64-unknown-linux-musl)
       cached_linux_x64+=("\"${t}\"")
@@ -124,8 +178,37 @@ if [[ ${#cached_targets[@]} -eq 6 ]]; then
   all_cached=true
 fi
 
+per_target_json="$(
+  DIGEST_LINES="$DIGEST_LINES" python3 - <<'PY'
+import json, os
+out = {}
+for line in os.environ.get("DIGEST_LINES", "").splitlines():
+    if not line or "=" not in line:
+        continue
+    t, d = line.split("=", 1)
+    out[t] = d
+print(json.dumps(out, sort_keys=True))
+PY
+)"
+
+rebuilt_json="$(
+  CACHED_JSON="$cached_json" python3 - <<'PY'
+import json, os, subprocess
+from pathlib import Path
+root = Path(".")
+targets = subprocess.check_output(["bash", "scripts/ci/list-release-targets.sh"], text=True)
+all_t = [t.strip() for t in targets.splitlines() if t.strip()]
+cached = set(json.loads(os.environ.get("CACHED_JSON") or "[]"))
+print(json.dumps([t for t in all_t if t not in cached]))
+PY
+)"
+
 {
-  echo "native_hash=${HASH}"
+  echo "native_hash=${AGGREGATE}"
+  echo "aggregate_digest=${AGGREGATE}"
+  echo "per_target_digests<<EOF"
+  echo "$per_target_json"
+  echo "EOF"
   echo "linux_x64_matrix<<EOF"
   echo "$linux_x64_json"
   echo "EOF"
@@ -145,12 +228,28 @@ fi
   echo "$cached_host_json"
   echo "EOF"
   echo "all_cached=${all_cached}"
+  echo "rebuilt_targets<<EOF"
+  echo "$rebuilt_json"
+  echo "EOF"
 } >> "${GITHUB_OUTPUT:-/dev/stdout}"
 
-echo "==> Native build plan (hash=${HASH})"
+echo "==> Native build plan (aggregate=${AGGREGATE})"
 echo "    all_cached=${all_cached}"
 echo "    linux_x64_matrix=${linux_x64_json}"
 echo "    build_linux_arm64=${need_arm64}"
 echo "    build_linux_musl=${build_linux_musl}"
 echo "    host_matrix=${host_json}"
 echo "    cached_targets=${cached_json}"
+echo "    rebuilt_targets=${rebuilt_json}"
+
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  SUMMARY_TITLE="${PLAN_SUMMARY_TITLE:-Native build plan}" \
+  AGGREGATE_DIGEST="$AGGREGATE" \
+  ALL_CACHED="$all_cached" \
+  CACHED_TARGETS_JSON="$cached_json" \
+  REBUILT_TARGETS_JSON="$rebuilt_json" \
+  FALLBACK_REASON="${PLAN_FALLBACK_REASON:-}" \
+  PRODUCER_SHA="${NATIVE_PRODUCER_GIT_SHA:-}" \
+  PRODUCER_RUN_ID="${NATIVE_PRODUCER_RUN_ID:-}" \
+  bash scripts/ci/write-native-ci-summary.sh
+fi

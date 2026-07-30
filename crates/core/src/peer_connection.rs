@@ -3,7 +3,7 @@
 use std::sync::{Arc, OnceLock};
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::api::API;
@@ -19,7 +19,9 @@ use webrtc::peer_connection::offer_answer_options::{RTCAnswerOptions, RTCOfferOp
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+};
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::TrackLocal;
@@ -28,6 +30,7 @@ use crate::config::PeerConnectionConfig;
 use crate::offer_answer::{AnswerOptions, OfferOptions};
 use crate::data_channel::{DataChannel, DataChannelOptions};
 use crate::debug_call;
+use crate::pcm_encoder::opus_sdp_fmtp_line;
 use crate::debug_evt;
 use crate::error::{is_benign_teardown_error, CoreError};
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
@@ -275,6 +278,23 @@ fn shared_api() -> Result<Arc<API>, CoreError> {
     }
 
     let mut media_engine = MediaEngine::default();
+    // Register Opus first with our fmtp (stereo + maxaveragebitrate). Default Opus uses the
+    // same PT 111 and is skipped by MediaEngine::add_codec — otherwise offer/answer SDP only
+    // gets webrtc-rs defaults (`minptime=10;useinbandfec=1`) and never advertises 192 kbps.
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_OPUS.to_owned(),
+                clock_rate: 48_000,
+                channels: 2,
+                sdp_fmtp_line: opus_sdp_fmtp_line(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 111,
+            ..Default::default()
+        },
+        RTPCodecType::Audio,
+    )?;
     media_engine.register_default_codecs()?;
 
     let mut registry = Registry::new();

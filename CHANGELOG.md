@@ -11,6 +11,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **SDK / bindings** — `LocalAudioTrack.setWriteSampleTee` now uses a Fatal TSFN so the JS callback is `(data, durationMs)` instead of Node-style `(err, data, durationMs)`. Callers that treated `args[0]` as PCM were recording silence / throwing on `null`.
+- **Core / Opus SDP** — Register Opus on the MediaEngine with `stereo=1;maxaveragebitrate=…` _before_ `register_default_codecs()`. Otherwise webrtc-rs keeps its default `minptime=10;useinbandfec=1` fmtp and offer/answer never advertise the 192 kbps encode path (track `sdp_fmtp_line` alone does not win).
 
 ### Added
 

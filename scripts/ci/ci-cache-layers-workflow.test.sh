@@ -11,7 +11,15 @@ linux=".github/actions/ci-build-native-linux/action.yml"
 host=".github/actions/ci-build-native-host/action.yml"
 image=".github/workflows/ci-image.yml"
 smoke=".github/workflows/native-cache-smoke.yml"
+plan=".github/actions/plan-native-builds/action.yml"
 summary=scripts/ci/write-native-ci-summary.sh
+
+# --- Plan runner: cargo metadata is required on bare self-hosted hosts ---
+grep -q 'dtolnay/rust-toolchain@stable' "$plan" || fail "plan action must install Cargo for metadata"
+toolchain_line="$(grep -n 'dtolnay/rust-toolchain@stable' "$plan" | cut -d: -f1)"
+plan_line="$(grep -n 'name: Plan per-target native builds' "$plan" | cut -d: -f1)"
+[[ "$toolchain_line" -lt "$plan_line" ]] || fail "Rust toolchain must be installed before native planning"
+echo "ok: plan installs Cargo before fingerprint metadata"
 
 # --- Cargo: no broad restore-keys on target/; exact save present ---
 if grep -A20 'Restore Cargo target' "$linux" | grep -q 'restore-keys:'; then

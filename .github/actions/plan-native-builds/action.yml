@@ -58,6 +58,11 @@ outputs:
 runs:
   using: composite
   steps:
+    # Fingerprinting walks the resolved local dependency graph with
+    # `cargo metadata`. Self-hosted plan runners do not provide Cargo.
+    - name: Install Rust metadata toolchain
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Plan per-target native builds
       id: plan
       shell: bash

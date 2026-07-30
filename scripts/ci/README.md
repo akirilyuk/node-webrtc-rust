@@ -257,7 +257,7 @@ flowchart TD
 ```
 
 1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh)
-2. **plan** — [`plan-native-builds`](../../.github/actions/plan-native-builds) probes exact `native-v3-release-{target}-{digest}` keys (curl + equality); matrices only for misses
+2. **plan** — [`plan-native-builds`](../../.github/actions/plan-native-builds) installs the Rust metadata toolchain on the bare self-hosted runner, then probes exact `native-v3-release-{target}-{digest}` keys (curl + equality); matrices only for misses
 3. **build-linux / build-host** — compile misses; **always save** per-target `.node`+manifest after compile; upload `bindings-<triple>/`
 4. **stage-cached** — restore exact cache hits, refresh manifests, upload same artifact layout
 5. **test** — [`run-pr-integration.sh`](run-pr-integration.sh)

@@ -192,18 +192,11 @@ jobs:
             workflows_native:
               - '.github/actions/ci-build-native-*'
               - '.github/actions/native-binding-cache/**'
-              - '.github/actions/plan-native-builds/**'
               - 'docker/ci/**'
-              - 'scripts/ci/native-binding-cache-key.sh'
-              - 'scripts/ci/native_build_contract.py'
-              - 'scripts/ci/native-build-fingerprint.sh'
-              - 'scripts/ci/native-artifact-*.sh'
+              - 'scripts/ci/build-native-addon.sh'
+              - 'scripts/ci/build-sherpa-onnx-musl-libs.sh'
+              - 'scripts/ci/install-alpine-native-toolchain.sh'
               - 'scripts/ci/native-cache-epoch'
-              - 'scripts/ci/collect-native-tool-identity.sh'
-              - 'scripts/ci/write-native-artifact-manifest.sh'
-              - 'scripts/ci/resolve-native-main-bundle.sh'
-              - 'scripts/ci/resolve_native_main_bundle.py'
-              - 'scripts/ci/plan-native-builds.sh'
               - 'scripts/ci/verify-native-binding-surface.mjs'
             workflows_test:
               - '.github/actions/ci-run-integration-tests/**'
@@ -386,8 +379,6 @@ jobs:
           target: x86_64-unknown-linux-gnu
           profile: debug
           cache_prefix: v1-pr-debug
-          platform: 'false'
-          zig: 'false'
           skip_build_on_cache_hit: 'true'
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
           binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}

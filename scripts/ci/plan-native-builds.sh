@@ -98,7 +98,7 @@ done < <(bash scripts/ci/list-release-targets.sh)
 
 linux_x64_matrix=()
 if [[ "$need_gnu" == true ]]; then
-  linux_x64_matrix+=('{"target":"x86_64-unknown-linux-gnu","zig":"false"}')
+  linux_x64_matrix+=('{"target":"x86_64-unknown-linux-gnu"}')
 fi
 
 build_linux_musl=false
@@ -116,15 +116,15 @@ is_cached() {
 
 host_matrix=()
 host_entry() {
-  local target="$1" os="$2" args="$3"
+  local target="$1" os="$2"
   if ! is_cached "$target"; then
-    host_matrix+=("{\"target\":\"${target}\",\"os\":\"${os}\",\"build-args\":\"${args}\"}")
+    host_matrix+=("{\"target\":\"${target}\",\"os\":\"${os}\"}")
   fi
 }
 
-host_entry x86_64-apple-darwin macos-latest '--target x86_64-apple-darwin'
-host_entry aarch64-apple-darwin macos-latest '--target aarch64-apple-darwin'
-host_entry x86_64-pc-windows-msvc windows-latest '--target x86_64-pc-windows-msvc'
+host_entry x86_64-apple-darwin macos-latest
+host_entry aarch64-apple-darwin macos-latest
+host_entry x86_64-pc-windows-msvc windows-latest
 
 linux_x64_json='[]'
 if [[ ${#linux_x64_matrix[@]} -gt 0 ]]; then

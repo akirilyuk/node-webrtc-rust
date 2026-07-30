@@ -27,7 +27,7 @@ classify_path() {
     run_quality=true
     return 0
   fi
-  if [[ "$path" == .github/actions/ci-build-native-* || "$path" == .github/actions/native-binding-cache/* || "$path" == docker/ci/* || "$path" == scripts/ci/native-binding-cache-key.sh || "$path" == scripts/ci/verify-native-binding-surface.mjs ]]; then
+  if [[ "$path" == .github/actions/ci-build-native-* || "$path" == .github/actions/native-binding-cache/* || "$path" == docker/ci/* || "$path" == scripts/ci/build-native-addon.sh || "$path" == scripts/ci/build-sherpa-onnx-musl-libs.sh || "$path" == scripts/ci/install-alpine-native-toolchain.sh || "$path" == scripts/ci/native-cache-epoch || "$path" == scripts/ci/verify-native-binding-surface.mjs ]]; then
     run_compile=true
     run_quality=true
     return 0

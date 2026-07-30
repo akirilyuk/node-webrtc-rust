@@ -21,14 +21,6 @@ inputs:
     description: Install Node/Rust/apt deps on GitHub-hosted Linux (no ci-build container)
     required: false
     default: 'false'
-  platform:
-    description: Pass --platform to napi build
-    required: false
-    default: 'true'
-  zig:
-    description: Pass --zig to napi build
-    required: false
-    default: 'true'
   skip_build_on_cache_hit:
     description: Skip compile when native-binding-cache hit
     required: false
@@ -45,11 +37,6 @@ inputs:
     description: Upload bindings artifact
     required: false
     default: 'true'
-  sherpa_onnx_lib_dir:
-    description: SHERPA_ONNX_LIB_DIR for musl builds (musl Sherpa shared libs)
-    required: false
-    default: ''
-
 runs:
   using: composite
   steps:
@@ -123,14 +110,6 @@ runs:
         add-job-id-key: false
         add-rust-environment-hash-key: false
 
-    - name: Cache napi-rs Zig toolchain
-      if: inputs.zig == 'true' && steps.resolve.outputs.build_required == 'true'
-      uses: actions/cache@v4
-      with:
-        path: /github/home/.cache/napi-rs-nodejs
-        key: napi-zig-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-        restore-keys: napi-zig-${{ runner.os }}-
-
     - name: Install bindings dependencies
       if: steps.resolve.outputs.build_required == 'true'
       shell: bash
@@ -152,40 +131,18 @@ runs:
     - name: Build native addon
       if: steps.resolve.outputs.build_required == 'true'
       shell: bash
-      working-directory: packages/bindings
-      env:
-        CMAKE_POLICY_VERSION_MINIMUM: '3.5'
-        OPUS_STATIC: '1'
       run: |
-        set -euo pipefail
-        unset SHERPA_ONNX_LIB_DIR
-        if [[ -n "${{ inputs.sherpa_onnx_lib_dir }}" ]]; then
-          export SHERPA_ONNX_LIB_DIR="${{ inputs.sherpa_onnx_lib_dir }}"
-          export LD_LIBRARY_PATH="${SHERPA_ONNX_LIB_DIR}:/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-        fi
-        rm -f *.node
-        args=(build --target "${{ inputs.target }}")
-        if [[ "${{ inputs.profile }}" == "release" ]]; then
-          args+=(--release --features otel)
-        fi
-        if [[ "${{ inputs.platform }}" == "true" ]]; then
-          args+=(--platform)
-        fi
-        if [[ "${{ inputs.zig }}" == "true" ]]; then
-          args+=(--zig)
-        fi
-        npx napi "${args[@]}"
-        if [[ "${{ inputs.platform }}" != "true" ]]; then
-          npm run copy:local-node
-        fi
+        bash scripts/ci/build-native-addon.sh \
+          --target "${{ inputs.target }}" \
+          --profile "${{ inputs.profile }}"
 
     - name: Verify native NAPI surface
       if: steps.resolve.outputs.build_required == 'true'
       shell: bash
       run: |
         unset SHERPA_ONNX_LIB_DIR
-        if [[ -n "${{ inputs.sherpa_onnx_lib_dir }}" ]]; then
-          export SHERPA_ONNX_LIB_DIR="${{ inputs.sherpa_onnx_lib_dir }}"
+        if [[ "${{ inputs.target }}" == "x86_64-unknown-linux-musl" ]]; then
+          export SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib
           export LD_LIBRARY_PATH="${SHERPA_ONNX_LIB_DIR}:/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
         fi
         node scripts/ci/verify-native-binding-surface.mjs --target "${{ inputs.target }}"
@@ -213,11 +170,10 @@ runs:
         NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
         NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
         NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
-        SHERPA_ONNX_LIB_DIR: ${{ inputs.sherpa_onnx_lib_dir }}
       run: |
         set -euo pipefail
-        if [[ -n "${{ inputs.sherpa_onnx_lib_dir }}" ]]; then
-          export SHERPA_ONNX_LIB_DIR="${{ inputs.sherpa_onnx_lib_dir }}"
+        if [[ "${{ inputs.target }}" == "x86_64-unknown-linux-musl" ]]; then
+          export SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib
           export NATIVE_SHERPA_ONNX_LIB_DIR="$SHERPA_ONNX_LIB_DIR"
         fi
         bash scripts/ci/write-native-artifact-manifest.sh \

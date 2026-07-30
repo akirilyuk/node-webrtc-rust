@@ -16,9 +16,9 @@ on:
         type: boolean
         default: true
       linux_x64_matrix:
-        description: JSON array of {target,zig} for glibc x64 (gnu only)
+        description: JSON array of {target} for glibc x64 (gnu only)
         type: string
-        default: '[{"target":"x86_64-unknown-linux-gnu","zig":"false"}]'
+        default: '[{"target":"x86_64-unknown-linux-gnu"}]'
       build_linux_musl:
         description: Compile x86_64-unknown-linux-musl natively on Alpine (no Zig)
         type: boolean
@@ -58,8 +58,6 @@ jobs:
           profile: release
           cache_prefix: ${{ inputs.cache_prefix }}
           cache_target_label: Linux-x64
-          platform: 'true'
-          zig: ${{ matrix.zig }}
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
           binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}
@@ -92,9 +90,6 @@ jobs:
           profile: release
           cache_prefix: ${{ inputs.cache_prefix }}
           cache_target_label: Linux-x64-musl
-          platform: 'true'
-          zig: 'false'
-          sherpa_onnx_lib_dir: /opt/sherpa-musl/lib
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
           binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}
@@ -120,8 +115,6 @@ jobs:
           cache_prefix: ${{ inputs.cache_prefix }}
           cache_target_label: Linux-arm64
           setup_host_toolchain: 'true'
-          platform: 'true'
-          zig: 'false'
           skip_build_on_cache_hit: ${{ inputs.use_native_cache && 'true' || 'false' }}
           native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
           binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}

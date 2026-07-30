@@ -22,7 +22,7 @@ outputs:
     description: JSON object of target → input digest
     value: ${{ steps.plan.outputs.per_target_digests }}
   linux_x64_matrix:
-    description: JSON array of {target,zig} needing linux-x64 compile
+    description: JSON array of {target} needing linux-x64 compile
     value: ${{ steps.plan.outputs.linux_x64_matrix }}
   build_linux_arm64:
     description: Whether aarch64-unknown-linux-gnu needs compile
@@ -31,7 +31,7 @@ outputs:
     description: Whether x86_64-unknown-linux-musl needs compile (Alpine native)
     value: ${{ steps.plan.outputs.build_linux_musl }}
   host_matrix:
-    description: JSON array of {target,os,build-args} needing host compile
+    description: JSON array of {target,os} needing host compile
     value: ${{ steps.plan.outputs.host_matrix }}
   cached_targets:
     description: JSON array of targets with valid cache entries

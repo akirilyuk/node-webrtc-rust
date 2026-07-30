@@ -74,27 +74,18 @@ MUSL_ONLY_PATHS = (
     "docker/ci/Dockerfile.alpine",
     "scripts/ci/install-alpine-native-toolchain.sh",
     "scripts/ci/build-sherpa-onnx-musl-libs.sh",
-    "scripts/ci/verify-musl-runtime.sh",
 )
 
 GNU_LINUX_PATHS = (
     "docker/ci/Dockerfile",
 )
 
-# Build recipe / action inputs that affect compiled native bytes.
+# Only the canonical compile recipe and explicit epoch affect compiled bytes.
+# Cache, fingerprint, manifest, bundle, resolver, and workflow orchestration
+# must not invalidate an otherwise identical Rust binary.
 RECIPE_PATHS = (
-    "scripts/ci/native_build_contract.py",
-    "scripts/ci/native-build-fingerprint.sh",
-    "scripts/ci/native-binding-cache-key.sh",
+    "scripts/ci/build-native-addon.sh",
     "scripts/ci/native-cache-epoch",
-    "scripts/ci/list-release-targets.sh",
-    "scripts/ci/collect-native-tool-identity.sh",
-    "scripts/ci/write-native-artifact-manifest.sh",
-    "scripts/ci/native-artifact-bundle.sh",
-    "scripts/ci/resolve_native_main_bundle.py",
-    ".github/actions/ci-build-native-linux/action.yml",
-    ".github/actions/ci-build-native-host/action.yml",
-    ".github/actions/native-binding-cache/action.yml",
 )
 
 # Distribution-only inputs (not part of native-byte digest).
@@ -123,11 +114,22 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def sha256_file(path: Path) -> str:
+    """Raw binary SHA-256 (use for .node artifacts; never normalize)."""
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def sha256_text_file(path: Path) -> str:
+    """SHA-256 of text with CRLF/CR normalized to LF.
+
+    Windows runners checkout with CRLF; Linux/macOS use LF. Native input
+    digests must match across producers and the bare-host assemble job.
+    """
+    data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return sha256_bytes(data)
 
 
 def sha256_text(text: str) -> str:
@@ -225,7 +227,7 @@ def _ci_image_content_ref(root: Path, repo: str, kind: str) -> str:
     if env_ref and re.search(r":[0-9a-f]{40}$", env_ref):
         return env_ref
 
-    rows = [[sha256_file(root / p), p] for p in paths]
+    rows = [[sha256_text_file(root / p), p] for p in paths]
     content = sha256_text(stable_json(rows))[:16]
     return f"ghcr.io/{repo}/{name}@content:{content}"
 
@@ -382,10 +384,8 @@ def build_env_contract(target: str, profile: str, root: Path | None = None) -> d
         sherpa_state = {"state": "set", "value": sherpa}
 
     return {
-        "CMAKE_POLICY_VERSION_MINIMUM": os.environ.get(
-            "NATIVE_CMAKE_POLICY_VERSION_MINIMUM", "3.5"
-        ),
-        "OPUS_STATIC": os.environ.get("NATIVE_OPUS_STATIC", "1"),
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+        "OPUS_STATIC": "1",
         "SHERPA_ONNX_LIB_DIR": sherpa_state,
         "napi_features_flag": features,
         "tool_identity": tool_identity_for_fingerprint(target, root),
@@ -466,17 +466,17 @@ def hash_tree_files(root: Path, crate_root: Path) -> list[list[str]]:
     manifest = crate_root / "Cargo.toml"
     if not manifest.is_file():
         raise SystemExit(f"native_build_contract: missing {manifest}")
-    rows.append([sha256_file(manifest), str(manifest.relative_to(root))])
+    rows.append([sha256_text_file(manifest), str(manifest.relative_to(root))])
 
     build_rs = crate_root / "build.rs"
     if build_rs.is_file():
-        rows.append([sha256_file(build_rs), str(build_rs.relative_to(root))])
+        rows.append([sha256_text_file(build_rs), str(build_rs.relative_to(root))])
 
     src = crate_root / "src"
     if src.is_dir():
         for path in sorted(src.rglob("*.rs")):
             if path.is_file():
-                rows.append([sha256_file(path), str(path.relative_to(root))])
+                rows.append([sha256_text_file(path), str(path.relative_to(root))])
     return rows
 
 
@@ -486,7 +486,7 @@ def hash_paths(root: Path, rel_paths: Iterable[str]) -> list[list[str]]:
         path = root / rel
         if not path.is_file():
             raise SystemExit(f"native_build_contract: missing required path {rel}")
-        rows.append([sha256_file(path), rel])
+        rows.append([sha256_text_file(path), rel])
     return rows
 
 
@@ -566,8 +566,8 @@ def build_native_contract(root: Path, target: str, profile: str) -> dict[str, An
         "features": features,
         "cache_epoch": read_cache_epoch(root),
         "workspace_cargo_version": workspace_cargo_version(root),
-        "cargo_lock": sha256_file(root / "Cargo.lock"),
-        "workspace_manifest": sha256_file(root / "Cargo.toml"),
+        "cargo_lock": sha256_text_file(root / "Cargo.lock"),
+        "workspace_manifest": sha256_text_file(root / "Cargo.toml"),
         "local_crates": crate_rows,
         "recipe_files": hash_paths(root, RECIPE_PATHS),
         "target_files": hash_paths(root, target_native_paths(target)),

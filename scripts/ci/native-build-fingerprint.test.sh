@@ -9,7 +9,8 @@ FP="$ROOT/scripts/ci/native-build-fingerprint.sh"
 KEY="$ROOT/scripts/ci/native-binding-cache-key.sh"
 PY="$ROOT/scripts/ci/native_build_contract.py"
 EPOCH="$ROOT/scripts/ci/native-cache-epoch"
-MUSL_SCRIPT="$ROOT/scripts/ci/verify-musl-runtime.sh"
+COMPILE_RECIPE="$ROOT/scripts/ci/build-native-addon.sh"
+MUSL_SCRIPT="$ROOT/scripts/ci/build-sherpa-onnx-musl-libs.sh"
 PKG="$ROOT/packages/bindings/package.json"
 DTS="$ROOT/packages/bindings/index.d.ts"
 CARGO_WS="$ROOT/Cargo.toml"
@@ -29,6 +30,8 @@ dts_backup=""
 epoch_backup=""
 musl_backup=""
 cargo_backup=""
+contract_backup=""
+compile_recipe_backup=""
 
 cleanup() {
   if [[ -n "$pkg_backup" && -f "$pkg_backup" ]]; then
@@ -51,6 +54,14 @@ cleanup() {
     cp "$cargo_backup" "$CARGO_WS"
     rm -f "$cargo_backup"
   fi
+  if [[ -n "$contract_backup" && -f "$contract_backup" ]]; then
+    cp "$contract_backup" "$PY"
+    rm -f "$contract_backup"
+  fi
+  if [[ -n "$compile_recipe_backup" && -f "$compile_recipe_backup" ]]; then
+    cp "$compile_recipe_backup" "$COMPILE_RECIPE"
+    rm -f "$compile_recipe_backup"
+  fi
 }
 trap cleanup EXIT
 
@@ -70,6 +81,58 @@ if [[ "$d1" != "$d2" ]]; then
   exit 1
 fi
 echo "ok: deterministic fingerprint"
+
+echo "==> CRLF vs LF text hashing is platform-stable"
+python3 - <<'PY'
+import importlib.util
+from pathlib import Path
+
+root = Path(".").resolve()
+spec = importlib.util.spec_from_file_location(
+    "native_build_contract", root / "scripts/ci/native_build_contract.py"
+)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+sample = root / "packages/bindings/src/lib.rs"
+raw = sample.read_bytes()
+assert b"\r\n" not in raw, "fixture must be checked out as LF"
+crlf = raw.replace(b"\n", b"\r\n")
+assert mod.sha256_bytes(raw) != mod.sha256_bytes(crlf)
+tmp = Path("/tmp/native-fingerprint-crlf-lib.rs")
+tmp.write_bytes(crlf)
+assert mod.sha256_text_file(sample) == mod.sha256_text_file(tmp)
+tmp.unlink(missing_ok=True)
+print("ok: sha256_text_file ignores CRLF vs LF")
+PY
+
+echo "==> artifact orchestration does not invalidate compiled bytes"
+contract_backup="$(mktemp)"
+cp "$PY" "$contract_backup"
+echo "# orchestration-only fingerprint test marker" >>"$PY"
+orchestration_after="$(digest "$GNU")"
+if [[ "$orchestration_after" != "$d1" ]]; then
+  echo "FAIL: fingerprint implementation edit invalidated native bytes" >&2
+  exit 1
+fi
+cp "$contract_backup" "$PY"
+rm -f "$contract_backup"
+contract_backup=""
+echo "ok: cache/fingerprint implementation excluded from native digest"
+
+echo "==> canonical compile recipe invalidates"
+compile_recipe_backup="$(mktemp)"
+cp "$COMPILE_RECIPE" "$compile_recipe_backup"
+echo "# compile recipe fingerprint test marker" >>"$COMPILE_RECIPE"
+compile_recipe_after="$(digest "$GNU")"
+if [[ "$compile_recipe_after" == "$d1" ]]; then
+  echo "FAIL: canonical compile recipe edit did not invalidate native bytes" >&2
+  exit 1
+fi
+cp "$compile_recipe_backup" "$COMPILE_RECIPE"
+rm -f "$compile_recipe_backup"
+compile_recipe_backup=""
+echo "ok: canonical compile recipe invalidates native digest"
 
 echo "==> profile features invalidate"
 debug_d="$(digest "$GNU" debug)"

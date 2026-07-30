@@ -52,6 +52,9 @@ pub struct JsBargeInConfig {
     pub use_vad: Option<bool>,
     pub flush_tts: Option<bool>,
     pub require_stt_partial: Option<bool>,
+    /// Minimum whitespace-separated tokens in an STT partial before semantic barge (default 2).
+    pub min_stt_partial_tokens: Option<u32>,
+    /// Legacy alias for [`Self::min_stt_partial_tokens`] (same meaning: token count, not chars).
     pub min_stt_partial_chars: Option<u32>,
     pub agent_playback_guard_ms: Option<u32>,
 }
@@ -63,9 +66,10 @@ impl From<JsBargeInConfig> for BargeInConfig {
             use_vad: value.use_vad.unwrap_or(true),
             flush_tts: value.flush_tts.unwrap_or(true),
             require_stt_partial: value.require_stt_partial.unwrap_or(true),
-            min_stt_partial_chars: value
-                .min_stt_partial_chars
-                .unwrap_or_else(default_min_stt_partial_chars),
+            min_stt_partial_tokens: node_webrtc_rust_speech::resolve_min_stt_partial_tokens(
+                value.min_stt_partial_tokens,
+                value.min_stt_partial_chars,
+            ),
             agent_playback_guard_ms: value
                 .agent_playback_guard_ms
                 .unwrap_or_else(default_agent_playback_guard_ms),
@@ -73,12 +77,41 @@ impl From<JsBargeInConfig> for BargeInConfig {
     }
 }
 
-fn default_min_stt_partial_chars() -> u32 {
-    2
-}
-
 fn default_agent_playback_guard_ms() -> u32 {
     0
+}
+
+#[cfg(test)]
+mod barge_in_config_from_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_min_stt_partial_chars_maps_to_tokens() {
+        let cfg: BargeInConfig = JsBargeInConfig {
+            min_stt_partial_chars: Some(3),
+            min_stt_partial_tokens: None,
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(cfg.min_stt_partial_tokens, 3);
+    }
+
+    #[test]
+    fn min_stt_partial_tokens_wins_over_legacy_chars() {
+        let cfg: BargeInConfig = JsBargeInConfig {
+            min_stt_partial_chars: Some(9),
+            min_stt_partial_tokens: Some(2),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(cfg.min_stt_partial_tokens, 2);
+    }
+
+    #[test]
+    fn default_min_stt_partial_tokens_is_two() {
+        let cfg: BargeInConfig = JsBargeInConfig::default().into();
+        assert_eq!(cfg.min_stt_partial_tokens, 2);
+    }
 }
 
 #[napi(string_enum)]

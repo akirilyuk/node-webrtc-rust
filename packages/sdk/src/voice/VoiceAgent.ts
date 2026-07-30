@@ -68,6 +68,7 @@ function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
           useVad: vad.bargeIn.useVad,
           flushTts: vad.bargeIn.flushTts,
           requireSttPartial: vad.bargeIn.requireSttPartial,
+          minSttPartialTokens: vad.bargeIn.minSttPartialTokens,
           minSttPartialChars: vad.bargeIn.minSttPartialChars,
           agentPlaybackGuardMs: vad.bargeIn.agentPlaybackGuardMs,
         }

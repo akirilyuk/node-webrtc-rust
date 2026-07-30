@@ -118,7 +118,8 @@ interface VoiceAgentConfig {
       useVad?: boolean // auto barge on VAD SpeechStart (default true); false = flushTts() only
       flushTts?: boolean // clear TTS buffer when barge-in runs (default true)
       requireSttPartial?: boolean // while agent TTS plays: barge only after STT partial (default true)
-      minSttPartialChars?: number // min partial length for semantic barge (default 2)
+      minSttPartialTokens?: number // min whitespace tokens for semantic barge (default 2)
+      minSttPartialChars?: number // legacy alias for minSttPartialTokens (same meaning)
       agentPlaybackGuardMs?: number // optional ms to ignore VAD barge after TTS starts (default 0)
     }
     gateStt?: boolean // only feed STT while gate is open (default false)

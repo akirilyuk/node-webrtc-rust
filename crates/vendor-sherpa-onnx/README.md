@@ -107,8 +107,11 @@ Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_D
 | `SHERPA_TTS_NUM_THREADS`            | `2`               | `OfflineTts` intra-op threads                       |
 | `SHERPA_TTS_PHRASE_CACHE`           | `1` (on)          | In-memory LRU PCM cache for repeated phrases        |
 | `SHERPA_TTS_PHRASE_CACHE_MAX_ENTRIES` | `128`           | Max cached phrases (LRU eviction)                   |
+| `VOICE_TTS_STREAM_CHUNKS`           | `1` (on)          | Stream PCM into the drain buffer during ONNX generate (lower time-to-first-audio). Set `0` / `false` / `off` for the legacy fully-buffered path (synthesize all, then play). |
 
 **Phrase cache:** keys are `(project_id, model_dir, language, voice, normalized_text)`. Cache hits skip the TTS semaphore and ONNX `generate`. Disable with `SHERPA_TTS_PHRASE_CACHE=0` (also `false` / `off`).
+
+**TTS streaming:** With `VOICE_TTS_STREAM_CHUNKS` on (default), Sherpa uses the `generate_with_config` progress callback to enqueue PCM while synthesis runs; playback can start before the full utterance is ready. VITS/Piper callbacks are **per-sentence sample chunks** (not a cumulative buffer). Chunks share a **continuous** linear resampler to 48 kHz, and the drain carries partial 20 ms frames (pad only at utterance end) so streaming STT quality matches buffered. The TTS semaphore / engine lock is still held for the whole generate. Disable streaming to restore the previous synthesize-then-drain behavior.
 
 **OpenTelemetry metrics** (feature `otel` on `node-webrtc-rust-speech`):
 
@@ -131,7 +134,7 @@ cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_phrase_cache_test -
   --ignored --test-threads=1
 ```
 
-CI runs the phrase-cache suite after model download in [`scripts/ci/run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh) (`e2e` / `rust` modes; used by the PR integration job).
+CI runs the phrase-cache and TTS stream-chunks suites after model download in [`scripts/ci/run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh) (`e2e` / `rust` modes; used by the PR integration job). Full TTS→STT latency compare: `npm run start:roundtrip-tts-stream --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`.
 
 ## Threading
 

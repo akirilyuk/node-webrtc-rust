@@ -104,7 +104,7 @@ stateDiagram-v2
 | Flow       | Config                                                            | STT on VAD         | Barge / flush                                                   |
 | ---------- | ----------------------------------------------------------------- | ------------------ | --------------------------------------------------------------- |
 | **A**      | `bargeIn` on, `requireSttPartial: false`, agent speaking          | Immediate          | Same `SpeechStart` as `vad_triggered`                           |
-| **B**      | `bargeIn` on, `requireSttPartial: true` (default), agent speaking | Immediate          | After qualifying `user_speech_partial` (≥ `minSttPartialChars`) |
+| **B**      | `bargeIn` on, `requireSttPartial: true` (default), agent speaking | Immediate          | After qualifying `user_speech_partial` (≥ `minSttPartialTokens`) |
 | **D**      | `bargeIn` off during agent TTS                                    | Immediate          | Never auto — agent keeps talking                                |
 | **Normal** | Agent not speaking                                                | On `vad_triggered` | No barge                                                        |
 
@@ -382,7 +382,7 @@ bargeIn: {
   useVad: true,
   flushTts: true,
   requireSttPartial: true, // default — semantic interrupt (see below)
-  minSttPartialChars: 2,
+  minSttPartialTokens: 2, // ≥2 words; legacy minSttPartialChars maps here
   agentPlaybackGuardMs: 0,
 }
 ```
@@ -398,8 +398,8 @@ bargeIn: {
 While **agent TTS is playing** (`agent_speaking == true`) and STT is configured:
 
 1. VAD `SpeechStart` → `vad_triggered` → `user_stt_start` → `stt_stream_start` (STT opens on VAD, not continuous pre-VAD feed).
-2. **`user_speech_partial` must precede `barge_in`** in the event stream — coughs and tones that do not transcribe emit `user_stt_not_found` (C1) instead of interrupting playback.
-3. First qualifying **`user_speech_partial`** → flush TTS → `barge_in` → `agent_speaking_end` (once per playback).
+2. **`user_speech_partial` must precede `barge_in`** in the event stream — coughs and tones that do not transcribe emit `user_stt_not_found` (C1) instead of interrupting playback. Mid-word fragments below `minSttPartialTokens` (default **2**) also do not barge.
+3. First qualifying **`user_speech_partial`** (≥ `minSttPartialTokens` whitespace tokens) → flush TTS → `barge_in` → `agent_speaking_end` (once per playback).
 
 When `bargeIn.enabled` is **false** during agent TTS, step 1 still runs (overlap listen) but **no** `barge_in` or TTS flush.
 

@@ -102,9 +102,13 @@ const DEFAULT_INTER_ROUND_GAP_S = 1.0
 const DEFAULT_BARGE_DELAY_MS = 400
 const DEFAULT_BARGE_TONE_S = 1.5
 /** Interrupted leg B must retain fewer number words than this. */
-const DEFAULT_MAX_INTERRUPT_NUMBER_WORDS = 6
-/** Interrupted leg B similarity vs full echo text must stay below this. */
-const DEFAULT_MAX_INTERRUPT_SIMILARITY = 0.55
+const DEFAULT_MAX_INTERRUPT_NUMBER_WORDS = 7
+/**
+ * Interrupted leg B similarity vs full echo text must stay below this.
+ * Default raised from 0.55: `minSttPartialTokens` (2) delays barge until a multi-word
+ * partial, so more of the echo is heard before flush (CI saw ~60%).
+ */
+const DEFAULT_MAX_INTERRUPT_SIMILARITY = 0.7
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))

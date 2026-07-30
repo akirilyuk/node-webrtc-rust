@@ -275,7 +275,7 @@ Other **streaming transducer** bundles work if they include `tokens.txt` + encod
 | `SHERPA_TTS_MODEL_PATH` | **Yes**  | TTS directory with Piper/VITS `.onnx`, `tokens.txt`, `espeak-ng-data/` |
 | `SHERPA_STT_LANGUAGE`   | No       | BCP-47-ish tag for `stt.language` (inferred from path when omitted)    |
 | `SHERPA_TTS_SPEAKER`    | No       | Piper speaker id for `tts.voice` (default `0`)                         |
-| `SHERPA_TTS_SPEED`      | No       | Speech speed multiplier passed via `tts.model` or env (default `1.0`)  |
+| `SHERPA_TTS_SPEED`      | No       | Speech speed multiplier via `tts.model` or env (default `1.0`, clamp `0.2`–`2.0`) |
 | `PORT`                  | No       | HTTP + WebSocket port (default `3002`)                                 |
 
 ### VoiceAgent config (TypeScript)

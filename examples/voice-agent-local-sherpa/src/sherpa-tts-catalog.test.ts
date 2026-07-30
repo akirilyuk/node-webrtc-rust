@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { getSherpaTtsModelEntry } from '../scripts/sherpa-tts-model-catalog.mjs'
+import catalog from '../../shared/sherpa-tts-model-catalog.json'
 
 describe('sherpa TTS catalog', () => {
   it('includes en-lessac-high for e2e / load-staging downloads', () => {
-    const entry = getSherpaTtsModelEntry('en-lessac-high')
-    expect(entry?.bundle).toBe('vits-piper-en_US-lessac-high')
-    expect(getSherpaTtsModelEntry('en')?.bundle).toBe('vits-piper-en_US-amy-low')
+    const lessacHigh = catalog.models.find((entry) => entry.id === 'en-lessac-high')
+    const enDefault = catalog.models.find((entry) => entry.id === 'en')
+    expect(lessacHigh?.bundle).toBe('vits-piper-en_US-lessac-high')
+    expect(enDefault?.bundle).toBe('vits-piper-en_US-amy-low')
+    expect(catalog.defaultModelId).toBe('en')
   })
 })

@@ -82,24 +82,35 @@ if manifest["napi_surface_digest"] != expected:
     raise SystemExit(
         "napi_surface_digest must match HEAD index.js/index.d.ts at produce time"
     )
-# Simulate post-napi drift then produce via write script path (restores first).
+# Simulate post-napi drift then restore via snapshot (container-safe path).
 index = Path("packages/bindings/index.js")
 original = index.read_text(encoding="utf-8")
+snap = Path(".napi-surface-snapshot-test")
+snap.mkdir(exist_ok=True)
+for name in ("index.js", "index.d.ts"):
+    src = Path("packages/bindings") / name
+    (snap / name).write_bytes(src.read_bytes())
 index.write_text(original + "\n// produce-time drift probe\n", encoding="utf-8")
 try:
     drifted = nbc.napi_surface_digest(root)
     if drifted == expected:
         raise SystemExit("drift probe did not change napi_surface_digest")
+    env = dict(**{k: v for k, v in __import__("os").environ.items()})
+    env["NAPI_SURFACE_SNAPSHOT_DIR"] = str(snap.resolve())
     subprocess.run(
-        ["bash", "scripts/ci/restore-bindings-napi-surface-from-head.sh"],
+        ["bash", "scripts/ci/bindings-napi-surface.sh", "restore"],
         check=True,
+        env=env,
     )
     restored = nbc.napi_surface_digest(root)
     if restored != expected:
-        raise SystemExit("restore did not return napi_surface_digest to HEAD")
+        raise SystemExit("snapshot restore did not return napi_surface_digest")
 finally:
     index.write_text(original, encoding="utf-8")
-print("ok: napi_surface_digest matches committed surface after restore")
+    for p in snap.glob("*"):
+        p.unlink()
+    snap.rmdir()
+print("ok: napi_surface_digest matches committed surface after snapshot restore")
 PY
 
 echo "==> validate accepts good manifest"

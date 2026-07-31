@@ -10,12 +10,14 @@
  * Run (Opus in Ogg @ NWR_RECORD_BITRATE_BPS, default 256000):
  *   NWR_RECORD_FORMAT=opus npm run start:record --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *
- * Output:
- *   .recordings/sherpa-roundtrip-record.wav | .ogg
- *   Printed as LISTEN_BACK_WAV=… or LISTEN_BACK_OPUS=… on success.
+ * Output (default — unique per run):
+ *   .recordings/sherpa-roundtrip-record-<ISO-stamp>.wav | .ogg
+ * Fixed path override (still deleted before write + mtime check):
+ *   NWR_RECORD_OUTPUT_PATH=/tmp/call.ogg
+ * Printed as LISTEN_BACK_WAV=… or LISTEN_BACK_OPUS=… on success.
  */
 
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, unlinkSync, existsSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -52,8 +54,41 @@ const RECORDINGS_DIR = resolve(__dirname, '../.recordings')
 export const DEFAULT_RECORD_WAV_PATH = resolve(RECORDINGS_DIR, 'sherpa-roundtrip-record.wav')
 export const DEFAULT_RECORD_OPUS_PATH = resolve(RECORDINGS_DIR, 'sherpa-roundtrip-record.ogg')
 
-function defaultRecordPath(format: SessionRecorderFormat): string {
-  return format === 'opus' ? DEFAULT_RECORD_OPUS_PATH : DEFAULT_RECORD_WAV_PATH
+/** ISO-ish stamp safe for filenames: 2026-07-31T07-30-00-123Z */
+export function recordingStamp(nowMs = Date.now()): string {
+  return new Date(nowMs).toISOString().replace(/[:.]/g, '-')
+}
+
+function defaultRecordPath(format: SessionRecorderFormat, stamp: string): string {
+  const ext = format === 'opus' ? 'ogg' : 'wav'
+  return resolve(RECORDINGS_DIR, `sherpa-roundtrip-record-${stamp}.${ext}`)
+}
+
+/**
+ * Ensure the path we print is from *this* run:
+ * - unlink any pre-existing file at the target path
+ * - after write, require mtime >= runStartedAtMs
+ */
+export function prepareFreshRecordPath(outputPath: string): void {
+  if (existsSync(outputPath)) {
+    unlinkSync(outputPath)
+  }
+}
+
+export function assertFreshRecording(outputPath: string, runStartedAtMs: number): void {
+  if (!existsSync(outputPath)) {
+    throw new Error(`recording missing after finalize: ${outputPath}`)
+  }
+  const st = statSync(outputPath)
+  if (st.size <= 0) {
+    throw new Error(`recording empty after finalize: ${outputPath}`)
+  }
+  // Allow 1s clock skew; still fails if we left an old file in place.
+  if (st.mtimeMs + 1000 < runStartedAtMs) {
+    throw new Error(
+      `recording mtime ${new Date(st.mtimeMs).toISOString()} is older than run start ${new Date(runStartedAtMs).toISOString()} — refusing stale file at ${outputPath}`,
+    )
+  }
 }
 
 const DEFAULT_TIMEOUT_MS = 45_000
@@ -110,12 +145,17 @@ async function main(): Promise<void> {
   const finalizeWaitMs = sttFinalizeWaitMs(config)
   const postTtsSilenceS = postTtsSilenceSeconds(config)
   const verbose = process.env.SHERPA_COUNTING_VERBOSE === '1'
+  const runStartedAtMs = Date.now()
 
   const recorderOptions = resolveSessionRecorderOptionsFromEnv()
   const format: SessionRecorderFormat = recorderOptions.format ?? 'opus'
   recorderOptions.format = format
+  // Default: unique stamped path each run (never reopen yesterday's file by mistake).
+  // Override with NWR_RECORD_OUTPUT_PATH for a fixed path (still unlinked before write).
   const outputPath =
-    process.env.NWR_RECORD_OUTPUT_PATH?.trim() || defaultRecordPath(format)
+    process.env.NWR_RECORD_OUTPUT_PATH?.trim() ||
+    defaultRecordPath(format, recordingStamp(runStartedAtMs))
+  prepareFreshRecordPath(outputPath)
 
   console.log('=== Sherpa roundtrip + session record ===')
   console.log(`Pipeline: ${label}`)
@@ -126,7 +166,7 @@ async function main(): Promise<void> {
   console.log(
     `Record: format=${format} bitrateBps=${recorderOptions.opusBitrateBps ?? 256_000} maxSec=${(recorderOptions.maxDurationMs ?? 90_000) / 1000}`,
   )
-  console.log(`Output path: ${outputPath}`)
+  console.log(`Output path (fresh): ${outputPath}`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log('')
@@ -213,6 +253,23 @@ async function main(): Promise<void> {
   }
 
   const absOut = resolve(outputPath)
+  try {
+    assertFreshRecording(absOut, runStartedAtMs)
+  } catch (error) {
+    exitSherpaRoundtripFailure({
+      reason: 'recording freshness check failed',
+      error,
+      legs: [
+        {
+          label: 'listener',
+          phrase,
+          recognized: evaluation.recognized,
+          stats: evaluation.stats,
+        },
+      ],
+    })
+  }
+  const outStat = statSync(absOut)
   let channelEval = { passed: true, warnings: [] as string[] }
   if (format === 'wav') {
     const { readFileSync } = await import('node:fs')
@@ -235,6 +292,9 @@ async function main(): Promise<void> {
   console.log(`Recognized: "${evaluation.recognized}"`)
   console.log(
     `Record: format=${recordResult.format} duration_ms=${recordResult.durationMs} out_frames=${recordResult.outboundFrames} in_frames=${recordResult.inboundFrames}`,
+  )
+  console.log(
+    `Recording bytes=${outStat.size} mtime=${new Date(outStat.mtimeMs).toISOString()} (run_start=${new Date(runStartedAtMs).toISOString()})`,
   )
   if (format === 'opus') {
     console.log(`LISTEN_BACK_OPUS=${absOut}`)

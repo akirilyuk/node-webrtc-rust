@@ -17,6 +17,8 @@ main=".github/workflows/build-main.yml"
 release=".github/workflows/release.yml"
 pr=".github/workflows/build.yml"
 compile_recipe="scripts/ci/build-native-addon.sh"
+surface_tool="scripts/ci/bindings-napi-surface.sh"
+manifest_write="scripts/ci/write-native-artifact-manifest.sh"
 summary=scripts/ci/write-native-ci-summary.sh
 
 # --- Plan runner: cargo metadata is required on bare self-hosted hosts ---
@@ -105,6 +107,33 @@ grep -q "$compile_recipe" "$host" || fail "host build must delegate to canonical
 if grep -qE '\bnpx napi build\b' "$linux" "$host"; then
   fail "native compile commands must live only in the fingerprinted recipe script"
 fi
+grep -q "$surface_tool" "$linux" || fail "linux build must snapshot/restore napi surface around compile"
+grep -q "$surface_tool" "$host" || fail "host build must snapshot/restore napi surface around compile"
+grep -q 'bindings-napi-surface.sh snapshot' "$linux" "$host" \
+  || fail "linux/host must snapshot napi surface before compile"
+grep -q 'bindings-napi-surface.sh restore' "$linux" "$host" \
+  || fail "linux/host must restore napi surface after compile"
+grep -q 'bindings-napi-surface.sh restore' "$manifest_write" \
+  || fail "manifest write must restore from snapshot when present"
+python3 - "$linux" "$host" <<'PY' || fail "napi surface snapshot/restore order wrong"
+from pathlib import Path
+import sys
+
+for path in sys.argv[1:]:
+    text = Path(path).read_text(encoding="utf-8")
+    snap = text.find("bindings-napi-surface.sh snapshot")
+    build = text.find("build-native-addon.sh")
+    restore = text.find("bindings-napi-surface.sh restore")
+    manifest = text.find("write-native-artifact-manifest.sh")
+    if min(snap, build, restore, manifest) < 0:
+        raise SystemExit(f"{path}: missing snapshot/build/restore/manifest")
+    if not (snap < build < restore < manifest):
+        raise SystemExit(
+            f"{path}: expected snapshot → build → restore → manifest"
+        )
+print("ok: napi surface snapshot between build and manifest")
+PY
+echo "ok: napi surface snapshot/restore wired in linux/host actions + manifest write"
 if grep -qE 'inputs\.(platform|zig|sherpa_onnx_lib_dir|build_args)' "$linux" "$host"; then
   fail "compile-semantic inputs must be derived inside the fingerprinted recipe"
 fi

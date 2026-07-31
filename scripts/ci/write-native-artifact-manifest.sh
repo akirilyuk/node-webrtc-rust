@@ -26,6 +26,12 @@ fi
 export NATIVE_TOOL_MODE=declared
 eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "$target")"
 
+# If a pre-build snapshot exists (compile jobs), restore published surface bytes.
+# Cache-hit / stage paths have no snapshot and never ran napi — leave checkout as-is.
+if [[ -d "${NAPI_SURFACE_SNAPSHOT_DIR:-$ROOT/.napi-surface-snapshot}" ]]; then
+  bash scripts/ci/bindings-napi-surface.sh restore
+fi
+
 mkdir -p packages/bindings/native-manifests
 out="packages/bindings/native-manifests/${target}.json"
 bash scripts/ci/native-artifact-manifest.sh produce \

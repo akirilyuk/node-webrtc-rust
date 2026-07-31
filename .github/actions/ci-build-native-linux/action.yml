@@ -135,6 +135,11 @@ runs:
       shell: bash
       run: echo "::notice::Reusing cached native addon for ${{ inputs.target }} — skipping Rust/npm setup and compile"
 
+    - name: Snapshot bindings napi surface
+      if: steps.resolve.outputs.build_required == 'true'
+      shell: bash
+      run: bash scripts/ci/bindings-napi-surface.sh snapshot
+
     - name: Build native addon
       if: steps.resolve.outputs.build_required == 'true'
       shell: bash
@@ -142,6 +147,12 @@ runs:
         bash scripts/ci/build-native-addon.sh \
           --target "${{ inputs.target }}" \
           --profile "${{ inputs.profile }}"
+
+    # napi build rewrites index.js/d.ts; restore pre-build bytes (no git — container jobs).
+    - name: Restore bindings napi surface
+      if: steps.resolve.outputs.build_required == 'true'
+      shell: bash
+      run: bash scripts/ci/bindings-napi-surface.sh restore
 
     - name: Verify native NAPI surface
       if: steps.resolve.outputs.build_required == 'true'

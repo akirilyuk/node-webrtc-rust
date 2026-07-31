@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { JsConferenceRoom, JsConferenceServer, JsMuteScope, JsRtcDataChannel, JsMediaStreamTrack, JsMediaStream, JsLocalAudioTrack, JsPeerConnection, JsRtpReceiver, JsRtpSender, JsRtpTransceiver, JsEventDeliveryMode, JsVadSampleRate, JsSttVendor, JsTtsVendor, JsSpeechEventType, JsSessionAudioFormat, JsSessionRecorder, JsVoiceAgent, version } = nativeBinding
+const { JsConferenceRoom, JsConferenceServer, JsMuteScope, JsRtcDataChannel, JsMediaStreamTrack, JsMediaStream, JsLocalAudioTrack, JsPeerConnection, JsRtpReceiver, JsRtpSender, JsRtpTransceiver, JsSessionAudioFormat, JsSessionRecorder, JsEventDeliveryMode, JsVadSampleRate, JsSttVendor, JsTtsVendor, JsSpeechEventType, JsVoiceAgent, version } = nativeBinding
 
 module.exports.JsConferenceRoom = JsConferenceRoom
 module.exports.JsConferenceServer = JsConferenceServer
@@ -323,12 +323,12 @@ module.exports.JsPeerConnection = JsPeerConnection
 module.exports.JsRtpReceiver = JsRtpReceiver
 module.exports.JsRtpSender = JsRtpSender
 module.exports.JsRtpTransceiver = JsRtpTransceiver
+module.exports.JsSessionAudioFormat = JsSessionAudioFormat
+module.exports.JsSessionRecorder = JsSessionRecorder
 module.exports.JsEventDeliveryMode = JsEventDeliveryMode
 module.exports.JsVadSampleRate = JsVadSampleRate
 module.exports.JsSttVendor = JsSttVendor
 module.exports.JsTtsVendor = JsTtsVendor
 module.exports.JsSpeechEventType = JsSpeechEventType
-module.exports.JsSessionAudioFormat = JsSessionAudioFormat
-module.exports.JsSessionRecorder = JsSessionRecorder
 module.exports.JsVoiceAgent = JsVoiceAgent
 module.exports.version = version

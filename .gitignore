@@ -25,4 +25,5 @@ Thumbs.db
 # Build artifacts
 *.log
 .test-logs/
+.napi-surface-snapshot/
 .npmrc_release

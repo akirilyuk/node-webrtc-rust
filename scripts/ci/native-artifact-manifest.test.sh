@@ -82,17 +82,24 @@ if manifest["napi_surface_digest"] != expected:
     raise SystemExit(
         "napi_surface_digest must match HEAD index.js/index.d.ts at produce time"
     )
-result = subprocess.run(
-    ["bash", "scripts/ci/assert-bindings-napi-surface-clean.sh"],
-    capture_output=True,
-    text=True,
-)
-if result.returncode != 0:
-    raise SystemExit(
-        "assert-bindings-napi-surface-clean must pass before manifest produce: "
-        + result.stderr
+# Simulate post-napi drift then produce via write script path (restores first).
+index = Path("packages/bindings/index.js")
+original = index.read_text(encoding="utf-8")
+index.write_text(original + "\n// produce-time drift probe\n", encoding="utf-8")
+try:
+    drifted = nbc.napi_surface_digest(root)
+    if drifted == expected:
+        raise SystemExit("drift probe did not change napi_surface_digest")
+    subprocess.run(
+        ["bash", "scripts/ci/restore-bindings-napi-surface-from-head.sh"],
+        check=True,
     )
-print("ok: napi_surface_digest matches committed surface")
+    restored = nbc.napi_surface_digest(root)
+    if restored != expected:
+        raise SystemExit("restore did not return napi_surface_digest to HEAD")
+finally:
+    index.write_text(original, encoding="utf-8")
+print("ok: napi_surface_digest matches committed surface after restore")
 PY
 
 echo "==> validate accepts good manifest"

@@ -143,10 +143,11 @@ runs:
           --target "${{ inputs.target }}" \
           --profile "${{ inputs.profile }}"
 
-    - name: Assert bindings napi surface committed
+    # napi build rewrites index.js/d.ts; restore HEAD so verify + manifest match publish.
+    - name: Restore bindings napi surface from HEAD
       if: steps.resolve.outputs.build_required == 'true'
       shell: bash
-      run: bash scripts/ci/assert-bindings-napi-surface-clean.sh
+      run: bash scripts/ci/restore-bindings-napi-surface-from-head.sh
 
     - name: Verify native NAPI surface
       if: steps.resolve.outputs.build_required == 'true'

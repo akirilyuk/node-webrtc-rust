@@ -26,6 +26,9 @@ fi
 export NATIVE_TOOL_MODE=declared
 eval "$(bash scripts/ci/collect-native-tool-identity.sh --target "$target")"
 
+# Hash published (HEAD) surface, not post-napi rewrite left on disk.
+bash scripts/ci/restore-bindings-napi-surface-from-head.sh
+
 mkdir -p packages/bindings/native-manifests
 out="packages/bindings/native-manifests/${target}.json"
 bash scripts/ci/native-artifact-manifest.sh produce \

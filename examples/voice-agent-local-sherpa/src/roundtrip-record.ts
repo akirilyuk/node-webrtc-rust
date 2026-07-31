@@ -164,7 +164,7 @@ async function main(): Promise<void> {
   )
   console.log(`Phrase: "${phrase}"`)
   console.log(
-    `Record: format=${format} bitrateBps=${recorderOptions.opusBitrateBps ?? 256_000} maxSec=${(recorderOptions.maxDurationMs ?? 90_000) / 1000}`,
+    `Record: format=${format} bitrateBps=${recorderOptions.bitrateBps ?? 256_000} maxSec=${(recorderOptions.maxDurationMs ?? 90_000) / 1000}`,
   )
   console.log(`Output path (fresh): ${outputPath}`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)

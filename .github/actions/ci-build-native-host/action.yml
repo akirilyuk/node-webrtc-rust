@@ -94,6 +94,11 @@ runs:
           --target "${{ inputs.target }}" \
           --profile "${{ inputs.profile }}"
 
+    - name: Assert bindings napi surface committed
+      if: steps.resolve.outputs.build_required == 'true'
+      shell: bash
+      run: bash scripts/ci/assert-bindings-napi-surface-clean.sh
+
     - name: Reuse cached native addon
       if: steps.resolve.outputs.build_required != 'true'
       shell: bash

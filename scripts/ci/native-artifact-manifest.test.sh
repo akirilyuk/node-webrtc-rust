@@ -66,6 +66,35 @@ assert m["node_artifact"]["size"] > 0
 print("ok: manifest fields present")
 PY
 
+echo "==> napi_surface_digest matches committed surface at produce time"
+python3 - <<PY
+import json
+import subprocess
+import sys
+sys.path.insert(0, "scripts/ci")
+from pathlib import Path
+import native_build_contract as nbc
+
+root = Path(".")
+manifest = json.loads(Path("$MANIFEST").read_text(encoding="utf-8"))
+expected = nbc.napi_surface_digest(root)
+if manifest["napi_surface_digest"] != expected:
+    raise SystemExit(
+        "napi_surface_digest must match HEAD index.js/index.d.ts at produce time"
+    )
+result = subprocess.run(
+    ["bash", "scripts/ci/assert-bindings-napi-surface-clean.sh"],
+    capture_output=True,
+    text=True,
+)
+if result.returncode != 0:
+    raise SystemExit(
+        "assert-bindings-napi-surface-clean must pass before manifest produce: "
+        + result.stderr
+    )
+print("ok: napi_surface_digest matches committed surface")
+PY
+
 echo "==> validate accepts good manifest"
 bash "$MAN" validate --manifest "$MANIFEST"
 echo "ok: validate good manifest"

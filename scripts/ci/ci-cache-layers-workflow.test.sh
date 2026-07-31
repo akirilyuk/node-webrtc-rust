@@ -17,6 +17,8 @@ main=".github/workflows/build-main.yml"
 release=".github/workflows/release.yml"
 pr=".github/workflows/build.yml"
 compile_recipe="scripts/ci/build-native-addon.sh"
+assert_surface="scripts/ci/assert-bindings-napi-surface-clean.sh"
+manifest_write="scripts/ci/write-native-artifact-manifest.sh"
 summary=scripts/ci/write-native-ci-summary.sh
 
 # --- Plan runner: cargo metadata is required on bare self-hosted hosts ---
@@ -105,6 +107,27 @@ grep -q "$compile_recipe" "$host" || fail "host build must delegate to canonical
 if grep -qE '\bnpx napi build\b' "$linux" "$host"; then
   fail "native compile commands must live only in the fingerprinted recipe script"
 fi
+grep -q "$assert_surface" "$linux" || fail "linux build must assert napi surface matches HEAD before manifest"
+grep -q "$assert_surface" "$host" || fail "host build must assert napi surface matches HEAD before manifest"
+python3 - "$linux" "$host" <<'PY' || fail "assert surface step must follow build and precede manifest write"
+from pathlib import Path
+import sys
+
+for path in sys.argv[1:]:
+    text = Path(path).read_text(encoding="utf-8")
+    build = text.find("build-native-addon.sh")
+    assert_step = text.find("assert-bindings-napi-surface-clean.sh")
+    manifest = text.find("write-native-artifact-manifest.sh")
+    if build < 0 or assert_step < 0 or manifest < 0:
+        raise SystemExit(f"{path}: missing build, assert, or manifest step")
+    if not (build < assert_step < manifest):
+        raise SystemExit(
+            f"{path}: assert-bindings-napi-surface-clean must follow build "
+            "and precede write-native-artifact-manifest"
+        )
+print("ok: napi surface assert between build and manifest")
+PY
+echo "ok: napi surface assert wired in linux/host actions"
 if grep -qE 'inputs\.(platform|zig|sherpa_onnx_lib_dir|build_args)' "$linux" "$host"; then
   fail "compile-semantic inputs must be derived inside the fingerprinted recipe"
 fi

@@ -64,3 +64,14 @@ export {
   type MultiClientVoiceServerHandle,
   type MultiClientVoiceServerOptions,
 } from './multi-client-voice-server.js'
+
+export {
+  SessionRecorder,
+  pcmFromWriteSampleTeeArgs,
+  resolveSessionRecorderOptionsFromEnv,
+  SESSION_RECORDER_DEFAULT_MAX_SEC,
+  SESSION_RECORDER_DEFAULT_OPUS_BITRATE_BPS,
+  type SessionRecorderFinalizeResult,
+  type SessionRecorderFormat,
+  type SessionRecorderOptions,
+} from './session-recorder.js'

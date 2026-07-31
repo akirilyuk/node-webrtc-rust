@@ -30,9 +30,9 @@ pub use rtp_receiver::JsRtpReceiver;
 pub use rtp_sender::JsRtpSender;
 pub use rtp_transceiver::{JsRTCRtpTransceiverInit, JsRtpTransceiver};
 pub use speech::{
-    JsBargeInConfig, JsEventDeliveryMode, JsSpeechEvent, JsSpeechEventType, JsSttConfig,
-    JsSttVendor, JsTtsConfig, JsTtsVendor, JsVadConfig, JsVadSampleRate, JsVoiceAgent,
-    JsVoiceAgentConfig,
+    JsBargeInConfig, JsEventDeliveryMode, JsSessionAudioFormat, JsSessionFinalizeResult,
+    JsSessionRecorder, JsSpeechEvent, JsSpeechEventType, JsSttConfig, JsSttVendor, JsTtsConfig,
+    JsTtsVendor, JsVadConfig, JsVadSampleRate, JsVoiceAgent, JsVoiceAgentConfig,
 };
 
 #[napi]

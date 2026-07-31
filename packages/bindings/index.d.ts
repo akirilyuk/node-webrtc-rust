@@ -107,6 +107,19 @@ export interface JsRtcDataChannelInit {
 export interface JsRtcRtpTransceiverInit {
   direction?: string
 }
+/** Export format for {@link JsSessionRecorder.finalize}. */
+export const enum JsSessionAudioFormat {
+  Wav = 'Wav',
+  Opus = 'Opus'
+}
+/** Finalized session audio payload (WAV PCM or Opus-in-Ogg). */
+export interface JsSessionFinalizeResult {
+  format: JsSessionAudioFormat
+  data: Buffer
+  durationMs: number
+  outboundFrames: number
+  inboundFrames: number
+}
 export const enum JsEventDeliveryMode {
   Callback = 'callback',
   Stream = 'stream',
@@ -362,6 +375,20 @@ export declare class JsRtpTransceiver {
   get receiver(): JsRtpReceiver
   setDirection(direction: string): Promise<void>
   stop(): Promise<void>
+}
+/** Vendor-agnostic stereo session recorder (L=outbound, R=inbound @ 48 kHz). */
+export declare class JsSessionRecorder {
+  /** Creates a recorder. `maxDurationMs` defaults to 90_000 (90 s cap). */
+  constructor(maxDurationMs?: number | undefined | null)
+  get isClosed(): boolean
+  /** Push client outbound PCM (mic / TTS). Accepts mono or stereo s16le @ 48 kHz. */
+  pushOutbound(pcm: Buffer): void
+  /** Push agent inbound PCM (ready TTS + echo). Accepts mono or stereo s16le @ 48 kHz. */
+  pushInbound(pcm: Buffer): void
+  /** Build stereo WAV bytes without closing the recorder. */
+  buildWav(): Buffer
+  /** Finalize capture. Default format is WAV; pass `Opus` for Ogg/Opus @ 256 kbps. */
+  finalize(format?: JsSessionAudioFormat | undefined | null): JsSessionFinalizeResult
 }
 /** Voice agent with VAD, STT/TTS orchestration for one peer connection session. */
 export declare class JsVoiceAgent {

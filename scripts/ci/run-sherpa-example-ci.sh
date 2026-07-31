@@ -45,6 +45,7 @@ WORKSPACE="@node-webrtc-rust/example-voice-agent-local-sherpa"
 # Sherpa roundtrip E2E entry points (see examples/voice-agent-local-sherpa/ROUNDTRIP.md).
 SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-counting
+  start:record
   start:roundtrip-utterance-timing
   start:roundtrip-two-phrases
   start:roundtrip-barge-in

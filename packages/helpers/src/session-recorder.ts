@@ -116,7 +116,9 @@ export class SessionRecorder {
     this.inner.pushInbound(Buffer.from(pcm))
   }
 
-  wrapOutboundTrack<T extends { writeSample: Function }>(track: T): T {
+  wrapOutboundTrack<
+    T extends { writeSample: (data: Uint8Array, durationMs: number) => Promise<void> },
+  >(track: T): T {
     const flagged = track as T & { [WRAPPED_OUT]?: boolean }
     if (flagged[WRAPPED_OUT]) return track
 

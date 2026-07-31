@@ -23,7 +23,9 @@ otel = [
 
 [dependencies]
 async-trait = "0.1"
+audiopus = "0.3.0-rc.0"
 bytes = { workspace = true }
+ogg = "0.9"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

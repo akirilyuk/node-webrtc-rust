@@ -39,6 +39,7 @@
     "start:roundtrip-counting-barge-recovery": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-counting-barge-recovery.ts",
     "start:roundtrip-utterance-timing": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-utterance-timing.ts",
     "start:roundtrip-two-phrases": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-two-phrases.ts",
+    "start:record": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-record.ts",
     "start:roundtrip-barge-in": "VOICE_TTS_STREAM_CHUNKS=1 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-barge-in.ts",
     "start:roundtrip-barge-in-buffered": "VOICE_TTS_STREAM_CHUNKS=0 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-barge-in.ts",
     "start:roundtrip-concurrent-multi-client": "bash ../../scripts/export-sherpa-local-models.sh -- tsx src/roundtrip-concurrent-multi-client.ts",

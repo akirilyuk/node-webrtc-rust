@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { JsSessionRecorder } from '@node-webrtc-rust/bindings'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -10,6 +11,14 @@ import {
   SESSION_RECORDER_DEFAULT_OPUS_BITRATE_BPS,
   SessionRecorder,
 } from '../src/session-recorder.js'
+
+/**
+ * Quality / pre-push helpers vitest runs without a freshly built `.node`.
+ * Published optional bindings (e.g. 0.7.0) may load but omit {@link JsSessionRecorder}
+ * until the next bindings release — skip native fidelity until the symbol is a constructor.
+ * Integration (`npm test` after compile-native) rebuilds from source and runs these.
+ */
+const sessionRecorderNativeAvailable = typeof JsSessionRecorder === 'function'
 
 const envBackup = { ...process.env }
 
@@ -78,7 +87,7 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-describe('SessionRecorder WAV fidelity', () => {
+describe.skipIf(!sessionRecorderNativeAvailable)('SessionRecorder WAV fidelity', () => {
   it('orders inbound A → outbound B → inbound C on L/R without mid-utterance clipping', async () => {
     const recorder = new SessionRecorder({ format: 'wav', maxDurationMs: 5_000 })
     // Wall gaps mirror e2e serializeSpeechTurnsByWallTime fixture (ready → client → echo).

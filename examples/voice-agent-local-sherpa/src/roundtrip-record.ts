@@ -1,22 +1,29 @@
 /**
  * Sherpa roundtrip with session audio recording for human listen-back.
  *
- * Captures stereo WAV (L=speaker outbound TTS, R=listener inbound) via
+ * Captures stereo audio (L=speaker outbound TTS, R=listener inbound) via
  * {@link SessionRecorder} from `@node-webrtc-rust/helpers`.
  *
- * Run:
+ * Run (WAV — bit-exact listen-back):
  *   NWR_RECORD_FORMAT=wav npm run start:record --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *
+ * Run (Opus in Ogg @ NWR_RECORD_BITRATE_BPS, default 256000):
+ *   NWR_RECORD_FORMAT=opus npm run start:record --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+ *
  * Output:
- *   examples/voice-agent-local-sherpa/.recordings/sherpa-roundtrip-record.wav
- *   Printed as LISTEN_BACK_WAV=/absolute/path/… on success.
+ *   .recordings/sherpa-roundtrip-record.wav | .ogg
+ *   Printed as LISTEN_BACK_WAV=… or LISTEN_BACK_OPUS=… on success.
  */
 
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { resolveSessionRecorderOptionsFromEnv, SessionRecorder } from '@node-webrtc-rust/helpers'
+import {
+  resolveSessionRecorderOptionsFromEnv,
+  SessionRecorder,
+  type SessionRecorderFormat,
+} from '@node-webrtc-rust/helpers'
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 
@@ -40,10 +47,14 @@ import {
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-export const DEFAULT_RECORD_WAV_PATH = resolve(
-  __dirname,
-  '../.recordings/sherpa-roundtrip-record.wav',
-)
+const RECORDINGS_DIR = resolve(__dirname, '../.recordings')
+
+export const DEFAULT_RECORD_WAV_PATH = resolve(RECORDINGS_DIR, 'sherpa-roundtrip-record.wav')
+export const DEFAULT_RECORD_OPUS_PATH = resolve(RECORDINGS_DIR, 'sherpa-roundtrip-record.ogg')
+
+function defaultRecordPath(format: SessionRecorderFormat): string {
+  return format === 'opus' ? DEFAULT_RECORD_OPUS_PATH : DEFAULT_RECORD_WAV_PATH
+}
 
 const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_MIN_NUMBER_WORDS = 6
@@ -99,22 +110,23 @@ async function main(): Promise<void> {
   const finalizeWaitMs = sttFinalizeWaitMs(config)
   const postTtsSilenceS = postTtsSilenceSeconds(config)
   const verbose = process.env.SHERPA_COUNTING_VERBOSE === '1'
-  const wavPath = process.env.NWR_RECORD_OUTPUT_PATH?.trim() || DEFAULT_RECORD_WAV_PATH
 
   const recorderOptions = resolveSessionRecorderOptionsFromEnv()
-  // Human listen-back requires PCM WAV regardless of default env (`opus`).
-  recorderOptions.format = 'wav'
+  const format: SessionRecorderFormat = recorderOptions.format ?? 'opus'
+  recorderOptions.format = format
+  const outputPath =
+    process.env.NWR_RECORD_OUTPUT_PATH?.trim() || defaultRecordPath(format)
 
-  console.log('=== Sherpa roundtrip + session record (listen-back WAV) ===')
+  console.log('=== Sherpa roundtrip + session record ===')
   console.log(`Pipeline: ${label}`)
   console.log(
     `Listener: gateStt=${config.vad?.gateStt !== false}  sttGateHold=${config.vad?.sttGateHoldMs ?? VOICE_AGENT_VAD_PRESET.sttGateHoldMs}ms`,
   )
   console.log(`Phrase: "${phrase}"`)
   console.log(
-    `Record: format=${recorderOptions.format} maxSec=${(recorderOptions.maxDurationMs ?? 90_000) / 1000}`,
+    `Record: format=${format} bitrateBps=${recorderOptions.opusBitrateBps ?? 256_000} maxSec=${(recorderOptions.maxDurationMs ?? 90_000) / 1000}`,
   )
-  console.log(`WAV path: ${wavPath}`)
+  console.log(`Output path: ${outputPath}`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log('')
@@ -181,10 +193,10 @@ async function main(): Promise<void> {
   await speaker.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)
 
-  mkdirSync(dirname(wavPath), { recursive: true })
+  mkdirSync(dirname(outputPath), { recursive: true })
   let recordResult
   try {
-    recordResult = recorder.finalize(wavPath)
+    recordResult = recorder.finalize(outputPath)
   } catch (error) {
     exitSherpaRoundtripFailure({
       reason: 'session recorder finalize failed',
@@ -200,32 +212,46 @@ async function main(): Promise<void> {
     })
   }
 
-  const { readFileSync } = await import('node:fs')
-  const wavBytes = readFileSync(wavPath)
-  const channelEval = evaluateRecordedWavChannels({
-    wav: wavBytes,
-    outboundFrames: recordResult.outboundFrames,
-    inboundFrames: recordResult.inboundFrames,
-  })
+  const absOut = resolve(outputPath)
+  let channelEval = { passed: true, warnings: [] as string[] }
+  if (format === 'wav') {
+    const { readFileSync } = await import('node:fs')
+    channelEval = evaluateRecordedWavChannels({
+      wav: readFileSync(outputPath),
+      outboundFrames: recordResult.outboundFrames,
+      inboundFrames: recordResult.inboundFrames,
+    })
+  } else if (recordResult.outboundFrames === 0 || recordResult.inboundFrames === 0) {
+    channelEval = {
+      passed: false,
+      warnings: [
+        `frame counts L=${recordResult.outboundFrames} R=${recordResult.inboundFrames} (soft-assert for opus)`,
+      ],
+    }
+  }
 
   console.log('')
   console.log('=== Results ===')
   console.log(`Recognized: "${evaluation.recognized}"`)
   console.log(
-    `Record: duration_ms=${recordResult.durationMs} out_frames=${recordResult.outboundFrames} in_frames=${recordResult.inboundFrames}`,
+    `Record: format=${recordResult.format} duration_ms=${recordResult.durationMs} out_frames=${recordResult.outboundFrames} in_frames=${recordResult.inboundFrames}`,
   )
-  console.log(`LISTEN_BACK_WAV=${resolve(wavPath)}`)
+  if (format === 'opus') {
+    console.log(`LISTEN_BACK_OPUS=${absOut}`)
+  } else {
+    console.log(`LISTEN_BACK_WAV=${absOut}`)
+  }
   console.log('Channels: L=speaker outbound (TTS)  R=listener inbound (received audio)')
 
   if (channelEval.warnings.length > 0) {
-    console.warn('[record] WAV channel warnings:')
+    console.warn('[record] channel warnings:')
     for (const w of channelEval.warnings) console.warn(`  - ${w}`)
   }
 
   if (!evaluation.passed) {
-    console.warn('[record] STT assertions failed but WAV was written for listen-back')
+    console.warn('[record] STT assertions failed but recording was written for listen-back')
     exitSherpaRoundtripFailure({
-      reason: 'counting leg assertions failed (WAV written)',
+      reason: 'counting leg assertions failed (recording written)',
       failures: evaluation.failures,
       legs: [
         {
@@ -239,7 +265,7 @@ async function main(): Promise<void> {
   }
 
   if (!channelEval.passed) {
-    console.warn('[record] WAV channel soft-assert failed — file still available for listen-back')
+    console.warn('[record] channel soft-assert failed — file still available for listen-back')
   }
 
   console.log('\nSherpa record roundtrip OK.')

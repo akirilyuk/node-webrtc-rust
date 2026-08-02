@@ -697,9 +697,12 @@ export class VoiceAgentSessionHost {
         this.clearTransportDisconnectTimer(session)
         this.reconnectAttempts.delete(peerId)
         this.maybeNotifyPeerLifecycle(peerId, session)
-        if (!dataOnly && inboundPromise) {
-          session.inboundPromise = inboundPromise
-          this.maybeStartAgentWhenTransportReady(peerId, session)
+        if (!dataOnly) {
+          this.startMicTrackTimer(peerId, session)
+          if (inboundPromise) {
+            session.inboundPromise = inboundPromise
+            this.maybeStartAgentWhenTransportReady(peerId, session)
+          }
         }
       } else if (pc.connectionState === 'disconnected') {
         this.scheduleTransportDisconnect(peerId, session)
@@ -1088,9 +1091,6 @@ export class VoiceAgentSessionHost {
         await session.pc.addIceCandidate(new RTCIceCandidate(candidate))
       }
       session.pendingIce = []
-      if (this.sessionMode !== 'data-only') {
-        this.startMicTrackTimer(peerId, session)
-      }
       const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
       this.log(`[${tag} ${peerId}] answer applied, connectionState=${session.pc.connectionState}`)
     } catch (error: unknown) {

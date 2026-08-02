@@ -43,11 +43,14 @@ export interface SessionPodOptions {
    * May return a Promise — teardown awaits `destroyed` so child `session_end` can
    * finish before capacity/slot release. Sync callbacks remain supported.
    */
-  onSessionChange?: (
-    event: SessionPodChangeEvent,
-  ) => void | Promise<void>
+  onSessionChange?: (event: SessionPodChangeEvent) => void | Promise<void>
   /** Hold the runner slot after the last client leaves so same-session reconnect can succeed. */
   rejoinGraceMs?: number
+  /**
+   * Longer idle grace when a peer leaves before transport was ready (signaling-only join).
+   * Gives half-open / slow DTLS reconnect time to find voice-agent-server.
+   */
+  neverConnectedRejoinGraceMs?: number
   /** Server-side signaling peer id (default {@link VOICE_AGENT_SERVER_PEER_ID}). */
   serverPeerId?: string
   /** Shared across all rooms in this pod (default: process env budget). */
@@ -82,6 +85,9 @@ export interface SessionPodSessionInfo {
 /** Default grace before tearing down an empty slot — same-session reconnect window. */
 export const DEFAULT_SESSION_REJOIN_GRACE_MS = 5_000
 
+/** Grace when the last peer left before WebRTC transport was ready (pre-DTLS reconnect). */
+export const DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS = 60_000
+
 interface SessionSlot {
   sessionId: string
   signaling: SignalingClient
@@ -115,6 +121,7 @@ export class SessionPod {
   private readonly retiredHosts = new Map<string, VoiceAgentSessionHost>()
   private readonly teardownIdle: boolean
   private readonly rejoinGraceMs: number
+  private readonly neverConnectedRejoinGraceMs: number
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
 
@@ -124,6 +131,8 @@ export class SessionPod {
   ) {
     this.teardownIdle = options.teardownIdleSessions ?? true
     this.rejoinGraceMs = options.rejoinGraceMs ?? DEFAULT_SESSION_REJOIN_GRACE_MS
+    this.neverConnectedRejoinGraceMs =
+      options.neverConnectedRejoinGraceMs ?? DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS
     this.log = options.log ?? ((message) => console.log(message))
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
   }
@@ -144,7 +153,11 @@ export class SessionPod {
     }
   }
 
-  private scheduleIdleTeardown(sessionId: string, endReason?: string): void {
+  private scheduleIdleTeardown(
+    sessionId: string,
+    endReason?: string,
+    graceMs: number = this.rejoinGraceMs,
+  ): void {
     if (!this.teardownIdle) return
     const slot = this.slots.get(sessionId)
     if (slot && endReason) {
@@ -154,7 +167,7 @@ export class SessionPod {
     if (this.teardownTimers.has(sessionId)) {
       return
     }
-    if (this.rejoinGraceMs <= 0) {
+    if (graceMs <= 0) {
       void this.teardownSession(sessionId, endReason).catch((error: unknown) => {
         console.error(`Failed to teardown idle session ${sessionId}:`, error)
       })
@@ -169,11 +182,9 @@ export class SessionPod {
           console.error(`Failed to teardown idle session ${sessionId}:`, error)
         },
       )
-    }, this.rejoinGraceMs)
+    }, graceMs)
     this.teardownTimers.set(sessionId, timer)
-    this.log(
-      `[pod] session ${sessionId} idle — teardown in ${this.rejoinGraceMs}ms unless client rejoins`,
-    )
+    this.log(`[pod] session ${sessionId} idle — teardown in ${graceMs}ms unless client rejoins`)
   }
 
   get sessionBudgetSnapshot(): VoiceSessionBudgetSnapshot {
@@ -383,7 +394,10 @@ export class SessionPod {
    * Schedule idle teardown only after the host has no live, connecting, or closing peers.
    * `onPeerDisconnected` runs mid-close while the peer is still counted as active.
    */
-  private maybeScheduleIdleTeardownAfterLastPeer(sessionId: string): void {
+  private maybeScheduleIdleTeardownAfterLastPeer(
+    sessionId: string,
+    graceMs: number = this.rejoinGraceMs,
+  ): void {
     if (!this.teardownIdle) return
     const deadline = Date.now() + 15_000
     const poll = (): void => {
@@ -395,7 +409,7 @@ export class SessionPod {
         }
         return
       }
-      this.scheduleIdleTeardown(sessionId)
+      this.scheduleIdleTeardown(sessionId, undefined, graceMs)
     }
     setTimeout(poll, 0)
   }
@@ -452,7 +466,7 @@ export class SessionPod {
         return handler?.onPeerDisconnected?.(ctx)
       },
       onPeerSignalingLost: (ctx) => {
-        this.maybeScheduleIdleTeardownAfterLastPeer(sessionId)
+        this.maybeScheduleIdleTeardownAfterLastPeer(sessionId, this.neverConnectedRejoinGraceMs)
         return handler?.onPeerSignalingLost?.(ctx)
       },
     }

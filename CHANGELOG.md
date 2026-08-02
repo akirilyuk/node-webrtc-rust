@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **helpers** — Defer the 30s mic-track wait until the peer connection reaches `connected`, so half-open WebRTC sessions are not torn down while DTLS/ICE is still negotiating. Extend never-connected (pre-transport) session rejoin grace to 60s (configurable via `neverConnectedRejoinGraceMs`) so same-session reconnect can find voice-agent-server; post-transport disconnects keep the 5s default.
+
 ---
 
 ## [0.7.0] — 2026-07-30

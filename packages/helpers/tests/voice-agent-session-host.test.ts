@@ -41,6 +41,9 @@ type FakeSession = {
   pendingAnswer: null
   pendingIce: never[]
   inboundPromise?: Promise<unknown>
+  micTrackTimer?: ReturnType<typeof setTimeout>
+  resolveMicTrack?: (track: unknown) => void
+  rejectMicTrack?: (error: Error) => void
 }
 
 type HostTestAccess = VoiceAgentSessionHost & {
@@ -56,6 +59,8 @@ type HostTestAccess = VoiceAgentSessionHost & {
     controlChannel: FakeControlChannel,
     syncChannel?: undefined,
   ) => VoiceSessionContext
+  applyAnswer: (peerId: string, sdp: { type: string; sdp?: string }) => Promise<void>
+  startMicTrackTimer: (peerId: string, session: FakeSession) => void
 }
 
 function createStubSignaling() {
@@ -435,5 +440,73 @@ describe('VoiceAgentSessionHost deferred agent start', () => {
       expect(session.agent?.start).toHaveBeenCalledTimes(1)
     })
     expect(session.agent?.attach).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('VoiceAgentSessionHost mic track timer', () => {
+  it('does not start mic track timer when answer is applied before PC is connected', async () => {
+    vi.useFakeTimers()
+    try {
+      const host = createHost({})
+      const session = createFakeSession({
+        pc: {
+          connectionState: 'connecting',
+          close: vi.fn(),
+          setRemoteDescription: vi.fn(async () => undefined),
+          addIceCandidate: vi.fn(async () => undefined),
+        } as FakeSession['pc'],
+        resolveMicTrack: vi.fn(),
+        rejectMicTrack: vi.fn(),
+      })
+      host.sessions.set('client-half-open', session)
+
+      await host.applyAnswer('client-half-open', { type: 'answer', sdp: 'v=0' })
+
+      expect(session.micTrackTimer).toBeUndefined()
+      expect(session.remoteDescriptionSet).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts mic track timer when PC becomes connected', () => {
+    vi.useFakeTimers()
+    try {
+      const host = createHost({})
+      const session = createFakeSession({
+        pc: { connectionState: 'connected', close: vi.fn() },
+        resolveMicTrack: vi.fn(),
+        rejectMicTrack: vi.fn(),
+      })
+      host.sessions.set('client-connected', session)
+
+      host.startMicTrackTimer('client-connected', session)
+
+      expect(session.micTrackTimer).toBeDefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not start mic track timer for data-only when answer is applied', async () => {
+    vi.useFakeTimers()
+    try {
+      const host = createHost({}, 'data-only')
+      const session = createFakeSession({
+        pc: {
+          connectionState: 'connecting',
+          close: vi.fn(),
+          setRemoteDescription: vi.fn(async () => undefined),
+          addIceCandidate: vi.fn(async () => undefined),
+        } as FakeSession['pc'],
+      })
+      host.sessions.set('client-data', session)
+
+      await host.applyAnswer('client-data', { type: 'answer', sdp: 'v=0' })
+
+      expect(session.micTrackTimer).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

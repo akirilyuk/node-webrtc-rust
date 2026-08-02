@@ -106,12 +106,14 @@ describe.skipIf(!sessionRecorderNativeAvailable)('SessionRecorder WAV fidelity',
       expect(result.durationMs).toBeGreaterThanOrEqual(19)
 
       const view = readWavPcm(readFileSync(wavPath))
+      const totalFrames = Math.floor(view.byteLength / 4)
       // First segment: R ready (L silent).
       expect(leftPeakAtFrame(view, 0)).toBeLessThan(500)
       expect(rightPeakAtFrame(view, 0)).toBeGreaterThan(8000)
-      // Client on L — search after ready (~480 frames + wall silence).
+      // Client on L after ready + ~100ms wall silence (~480 + 4800 frames at 48kHz).
+      // Search the full capture — a hard upper bound of 5000 missed client when sleep ≥100ms (release CI flake).
       let clientFrame = -1
-      for (let i = 400; i < 5000; i++) {
+      for (let i = 400; i < totalFrames; i++) {
         if (leftPeakAtFrame(view, i) > 4000) {
           clientFrame = i
           break
@@ -120,7 +122,6 @@ describe.skipIf(!sessionRecorderNativeAvailable)('SessionRecorder WAV fidelity',
       expect(clientFrame).toBeGreaterThan(400)
       expect(rightPeakAtFrame(view, clientFrame)).toBeLessThan(500)
       // Echo on R after client — search remainder of capture.
-      const totalFrames = Math.floor(view.byteLength / 4)
       let echoFrame = -1
       for (let i = clientFrame + 400; i < totalFrames; i++) {
         if (rightPeakAtFrame(view, i) > 7000) {

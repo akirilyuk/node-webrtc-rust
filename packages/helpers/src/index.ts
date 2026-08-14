@@ -15,6 +15,12 @@ export {
 export const HELPERS_CAPACITY_SAFE_TEARDOWN = 1 as const
 
 export {
+  parseIceTransportPolicy,
+  resolveIceTransportPolicy,
+  type IceTransportPolicy,
+} from './ice-transport-policy.js'
+
+export {
   VOICE_AGENT_SERVER_PEER_ID,
   SERVER_PEER_ID,
   VoiceAgentSessionHost,

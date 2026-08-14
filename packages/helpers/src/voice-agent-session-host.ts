@@ -34,6 +34,7 @@ import {
 import type { SignalingClient } from '@node-webrtc-rust/signaling'
 
 import { createOfferGatherWithIceCredentials } from './offer-ice-gather.js'
+import { resolveIceTransportPolicy, type IceTransportPolicy } from './ice-transport-policy.js'
 import { createKickFrame, PCM_KICK_DURATION_MS } from './pcm.js'
 import {
   getProcessVoiceSessionBudget,
@@ -264,6 +265,11 @@ export interface VoiceAgentSessionHostOptions {
    * Shared across rooms when using {@link SessionPod}.
    */
   sessionBudget?: VoiceSessionBudget
+  /**
+   * ICE candidate filter for this host's peer connections.
+   * When omitted, `WEBRTC_ICE_TRANSPORT_POLICY` (`all` | `relay`) then `all`.
+   */
+  iceTransportPolicy?: IceTransportPolicy
 }
 
 /**
@@ -605,7 +611,10 @@ export class VoiceAgentSessionHost {
       onRegistered: (built: { pc: RTCPeerConnection; agent?: VoiceAgent }) => void
     },
   ): Promise<void> {
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers })
+    const pc = new RTCPeerConnection({
+      iceServers: this.iceServers,
+      iceTransportPolicy: resolveIceTransportPolicy(this.options.iceTransportPolicy),
+    })
     hooks.onPeerCreated(pc)
     const dataOnly = this.sessionMode === 'data-only'
 

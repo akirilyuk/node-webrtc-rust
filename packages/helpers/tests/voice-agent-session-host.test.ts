@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
+import {
+  VoiceAgentSessionHost,
+  type VoiceAgentSessionHostOptions,
+} from '../src/voice-agent-session-host.js'
 import type { VoiceSessionContext, VoiceSessionHandler } from '../src/voice-session-handler.js'
 
 /** True when SDP negotiates an audio m-line (used by data-only mode tests). */
@@ -73,6 +76,7 @@ function createStubSignaling() {
 function createHost(
   voiceHandler: VoiceSessionHandler,
   sessionMode: 'voice' | 'data-only' = 'voice',
+  hostOptions: Partial<VoiceAgentSessionHostOptions> = {},
 ): HostTestAccess {
   const host = new VoiceAgentSessionHost(createStubSignaling() as never, [], {
     voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
@@ -83,6 +87,7 @@ function createHost(
       release: () => undefined,
       snapshot: () => ({ active: 0, max: 0, available: 0, rejectedTotal: 0 }),
     },
+    ...hostOptions,
   })
   return host as unknown as HostTestAccess
 }
@@ -366,6 +371,72 @@ describe('VoiceAgentSessionHost peer lifecycle', () => {
     expect(session.agentStartInProgress).toBe(false)
     expect(session.peerConnectedNotified).toBe(false)
     expect(connected).not.toHaveBeenCalled()
+  })
+})
+
+describe('VoiceAgentSessionHost session hooks', () => {
+  it('calls wrapAudioTracks before attach and attach sees wrapped tracks', async () => {
+    const inbound = { kind: 'audio', id: 'inbound-raw' }
+    const outbound = { kind: 'audio', id: 'outbound-raw', writeSample: vi.fn(async () => undefined) }
+    const wrappedInbound = { kind: 'audio', id: 'inbound-wrapped' }
+    const wrappedOutbound = { kind: 'audio', id: 'outbound-wrapped', writeSample: vi.fn(async () => undefined) }
+    const wrapAudioTracks = vi.fn(({ inbound: inTrack, outbound: outTrack }) => ({
+      inbound: wrappedInbound,
+      outbound: wrappedOutbound,
+    }))
+    const host = createHost({ onSpeechEvent: () => undefined }, 'voice', { wrapAudioTracks })
+    const session = createFakeSession({
+      agentOut: outbound,
+    })
+    host.sessions.set('client-wrap', session)
+
+    await host.startAgentSession('client-wrap', Promise.resolve(inbound))
+
+    expect(wrapAudioTracks).toHaveBeenCalledWith({
+      sessionId: 'test-room',
+      peerId: 'client-wrap',
+      inbound,
+      outbound,
+    })
+    expect(session.agent?.attach).toHaveBeenCalledWith({
+      inboundTrack: wrappedInbound,
+      outboundTrack: wrappedOutbound,
+    })
+    expect(session.inboundTrack).toBe(wrappedInbound)
+    expect(session.agentOut).toBe(wrappedOutbound)
+  })
+
+  it('passes resolveVoiceAgentSessionContext result to agent.start', async () => {
+    const startCtx = {
+      sessionId: 'otel-session',
+      traceId: 'trace-abc',
+      projectId: 'proj-1',
+    }
+    const resolveVoiceAgentSessionContext = vi.fn(() => startCtx)
+    const host = createHost({ onSpeechEvent: () => undefined }, 'voice', {
+      resolveVoiceAgentSessionContext,
+    })
+    const session = createFakeSession()
+    host.sessions.set('client-otel', session)
+
+    await host.startAgentSession('client-otel', Promise.resolve({ kind: 'audio' }))
+
+    expect(resolveVoiceAgentSessionContext).toHaveBeenCalledWith({
+      sessionId: 'test-room',
+      peerId: 'client-otel',
+    })
+    expect(session.agent?.start).toHaveBeenCalledWith(startCtx)
+  })
+
+  it('calls agent.start with no args when hooks are omitted', async () => {
+    const host = createHost({ onSpeechEvent: () => undefined })
+    const session = createFakeSession()
+    host.sessions.set('client-plain', session)
+
+    await host.startAgentSession('client-plain', Promise.resolve({ kind: 'audio' }))
+
+    expect(session.agent?.start).toHaveBeenCalledTimes(1)
+    expect(session.agent?.start).toHaveBeenCalledWith()
   })
 })
 

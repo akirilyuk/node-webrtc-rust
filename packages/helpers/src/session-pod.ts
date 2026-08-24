@@ -68,6 +68,10 @@ export interface SessionPodOptions {
   sessionMode?: 'voice' | 'data-only'
   /** Passed to each room's {@link VoiceAgentSessionHost} (or `WEBRTC_ICE_TRANSPORT_POLICY`). */
   iceTransportPolicy?: VoiceAgentSessionHostOptions['iceTransportPolicy']
+  /** Passed to each room's {@link VoiceAgentSessionHost}. */
+  wrapAudioTracks?: VoiceAgentSessionHostOptions['wrapAudioTracks']
+  /** Passed to each room's {@link VoiceAgentSessionHost}. */
+  resolveVoiceAgentSessionContext?: VoiceAgentSessionHostOptions['resolveVoiceAgentSessionContext']
   log?: (message: string) => void
 }
 
@@ -292,6 +296,8 @@ export class SessionPod {
       voiceHandler,
       syncChannel: this.options.syncChannel,
       iceTransportPolicy: this.options.iceTransportPolicy,
+      wrapAudioTracks: this.options.wrapAudioTracks,
+      resolveVoiceAgentSessionContext: this.options.resolveVoiceAgentSessionContext,
       log: this.options.log,
     })
 

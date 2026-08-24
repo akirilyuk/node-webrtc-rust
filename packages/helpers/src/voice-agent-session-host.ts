@@ -30,6 +30,7 @@ import {
   wireVoiceAgentToDataChannel,
   type SpeechEvent,
   type VoiceAgentConfig,
+  type VoiceSessionContext as VoiceAgentStartContext,
 } from '@node-webrtc-rust/sdk/voice'
 import type { SignalingClient } from '@node-webrtc-rust/signaling'
 
@@ -270,6 +271,26 @@ export interface VoiceAgentSessionHostOptions {
    * When omitted, `WEBRTC_ICE_TRANSPORT_POLICY` (`all` | `relay`) then `all`.
    */
   iceTransportPolicy?: IceTransportPolicy
+  /**
+   * Tap or replace inbound/outbound audio tracks after mic attach and before
+   * {@link VoiceAgent.attach} (e.g. session recording wrappers).
+   */
+  wrapAudioTracks?: (ctx: {
+    sessionId: string
+    peerId: string
+    inbound: RemoteAudioTrack | undefined
+    outbound: LocalAudioTrack
+  }) =>
+    | { inbound?: RemoteAudioTrack; outbound: LocalAudioTrack }
+    | Promise<{ inbound?: RemoteAudioTrack; outbound: LocalAudioTrack }>
+  /**
+   * Resolve SDK OTel / trace context passed to {@link VoiceAgent.start}.
+   * Distinct from helpers {@link VoiceSessionContext} in voice-session-handler.ts.
+   */
+  resolveVoiceAgentSessionContext?: (input: {
+    sessionId: string
+    peerId: string
+  }) => VoiceAgentStartContext | undefined
 }
 
 /**
@@ -908,11 +929,37 @@ export class VoiceAgentSessionHost {
       const live = this.sessions.get(peerId)
       if (!live || live !== session || !session.agent || !session.agentOut) return
 
+      let inboundTrack = session.inboundTrack
+      let outboundTrack = session.agentOut
+      if (this.options.wrapAudioTracks) {
+        const wrapped = await this.options.wrapAudioTracks({
+          sessionId: this.signaling.room,
+          peerId,
+          inbound: inboundTrack,
+          outbound: outboundTrack,
+        })
+        if (wrapped.inbound !== undefined) {
+          inboundTrack = wrapped.inbound
+          session.inboundTrack = inboundTrack
+        }
+        outboundTrack = wrapped.outbound
+        session.agentOut = outboundTrack
+      }
+
       await session.agent.attach({
-        inboundTrack: session.inboundTrack,
-        outboundTrack: session.agentOut,
+        inboundTrack,
+        outboundTrack,
       })
-      await session.agent.start()
+
+      const startCtx = this.options.resolveVoiceAgentSessionContext?.({
+        sessionId: this.signaling.room,
+        peerId,
+      })
+      if (startCtx !== undefined) {
+        await session.agent.start(startCtx)
+      } else {
+        await session.agent.start()
+      }
       agentRunning = true
 
       if (this.sessions.get(peerId) !== session) {

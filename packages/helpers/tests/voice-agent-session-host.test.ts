@@ -380,7 +380,7 @@ describe('VoiceAgentSessionHost session hooks', () => {
     const outbound = { kind: 'audio', id: 'outbound-raw', writeSample: vi.fn(async () => undefined) }
     const wrappedInbound = { kind: 'audio', id: 'inbound-wrapped' }
     const wrappedOutbound = { kind: 'audio', id: 'outbound-wrapped', writeSample: vi.fn(async () => undefined) }
-    const wrapAudioTracks = vi.fn(({ inbound: inTrack, outbound: outTrack }) => ({
+    const wrapAudioTracks = vi.fn(({ inbound: _inTrack, outbound: _outTrack }) => ({
       inbound: wrappedInbound,
       outbound: wrappedOutbound,
     }))

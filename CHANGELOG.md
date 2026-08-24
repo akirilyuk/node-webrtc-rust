@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-24
+
 ### Added
 
 - **helpers** — `VoiceAgentSessionHost` / `SessionPod` options `wrapAudioTracks` (tap inbound/outbound audio before `VoiceAgent.attach`) and `resolveVoiceAgentSessionContext` (SDK OTel context for `VoiceAgent.start`), so runners no longer need prototype patches.

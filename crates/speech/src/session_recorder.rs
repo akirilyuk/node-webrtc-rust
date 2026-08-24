@@ -626,12 +626,18 @@ pub fn encode_opus_ogg(
         frame_start += samples_per_frame;
     }
 
-    mux_opus_packets_to_ogg(&opus_packets, channels)
+    let preskip = encoder
+        .lookahead()
+        .map_err(|e| SessionRecorderError::OpusEncode(e.to_string()))?;
+    let preskip_u16 = preskip.min(u16::MAX as u32) as u16;
+
+    mux_opus_packets_to_ogg(&opus_packets, channels, preskip_u16)
 }
 
 fn mux_opus_packets_to_ogg(
     opus_packets: &[Vec<u8>],
     channels: u16,
+    preskip: u16,
 ) -> SessionRecorderResult<Vec<u8>> {
     use ogg::{PacketWriteEndInfo, PacketWriter};
 
@@ -639,7 +645,7 @@ fn mux_opus_packets_to_ogg(
     let mut writer = PacketWriter::new(&mut output);
     let serial = 0x4F50_5553u32; // "OPUS"
 
-    let head = build_opus_head(channels as u8, 0, SESSION_AUDIO_SAMPLE_RATE);
+    let head = build_opus_head(channels as u8, preskip, SESSION_AUDIO_SAMPLE_RATE);
     let tags = build_opus_tags("node-webrtc-rust-session-recorder");
 
     writer
@@ -649,13 +655,15 @@ fn mux_opus_packets_to_ogg(
         .write_packet(tags, serial, PacketWriteEndInfo::EndPage, 0)
         .map_err(|e| SessionRecorderError::OggMux(e.to_string()))?;
 
-    let mut granule = 0u64;
+    // RFC 7845 granule timeline: preskip + cumulative 48 kHz samples per completed packet.
+    // EndPage per audio packet avoids 255-segment pages that split packets with wrong granulepos.
+    let mut granule = preskip as u64;
     for (idx, packet) in opus_packets.iter().enumerate() {
         granule = granule.saturating_add(OPUS_FRAME_SAMPLES_PER_CHANNEL as u64);
         let end_info = if idx + 1 == opus_packets.len() {
             PacketWriteEndInfo::EndStream
         } else {
-            PacketWriteEndInfo::NormalPacket
+            PacketWriteEndInfo::EndPage
         };
         writer
             .write_packet(packet, serial, end_info, granule)
@@ -918,5 +926,117 @@ mod tests {
         assert_eq!(mono.len(), 2);
         assert_eq!(mono[0], 2000);
         assert_eq!(mono[1], 0);
+    }
+
+    struct OggPageHeader {
+        header_type: u8,
+        granule_pos: i64,
+        lacing: Vec<u8>,
+    }
+
+    fn parse_ogg_page_headers(ogg: &[u8]) -> Vec<OggPageHeader> {
+        let mut pages = Vec::new();
+        let mut offset = 0usize;
+        while offset + 27 <= ogg.len() {
+            if &ogg[offset..offset + 4] != b"OggS" {
+                break;
+            }
+            let header_type = ogg[offset + 5];
+            let granule_pos = i64::from_le_bytes(
+                ogg[offset + 6..offset + 14]
+                    .try_into()
+                    .expect("granule slice"),
+            );
+            let segment_count = ogg[offset + 26] as usize;
+            let lacing_start = offset + 27;
+            let lacing_end = lacing_start + segment_count;
+            if lacing_end > ogg.len() {
+                break;
+            }
+            let lacing = ogg[lacing_start..lacing_end].to_vec();
+            let body_size = lacing.iter().map(|segment| *segment as usize).sum::<usize>();
+            pages.push(OggPageHeader {
+                header_type,
+                granule_pos,
+                lacing,
+            });
+            offset = lacing_end + body_size;
+        }
+        pages
+    }
+
+    fn opus_head_preskip(ogg: &[u8]) -> u16 {
+        let head_offset = ogg
+            .windows(8)
+            .position(|window| window == b"OpusHead")
+            .expect("OpusHead packet");
+        u16::from_le_bytes([ogg[head_offset + 10], ogg[head_offset + 11]])
+    }
+
+    fn packet_continues_beyond_page(lacing: &[u8]) -> bool {
+        matches!(lacing.last(), Some(255))
+    }
+
+    #[test]
+    fn opus_ogg_mux_sets_preskip_and_valid_granule_timeline() {
+        let encoder = Encoder::new(SampleRate::Hz48000, Channels::Stereo, Application::Audio)
+            .expect("encoder");
+        let expected_preskip = encoder.lookahead().expect("lookahead") as u16;
+
+        let pcm_seconds = 2.0;
+        let frame_count = (pcm_seconds * SESSION_AUDIO_SAMPLE_RATE as f64
+            / OPUS_FRAME_SAMPLES_PER_CHANNEL as f64)
+            .round() as usize;
+        let pcm = stereo_tone_frame(5000, frame_count * OPUS_FRAME_SAMPLES_PER_CHANNEL);
+        let ogg = encode_opus_ogg(
+            &pcm,
+            SESSION_AUDIO_SAMPLE_RATE,
+            SESSION_AUDIO_CHANNELS,
+            SESSION_RECORDER_DEFAULT_OPUS_BITRATE_BPS,
+        )
+        .expect("encode opus ogg");
+
+        let preskip = opus_head_preskip(&ogg);
+        assert!(preskip > 0, "OpusHead pre_skip must be encoder lookahead");
+        assert_eq!(preskip, expected_preskip, "OpusHead pre_skip must match lookahead");
+
+        let pages = parse_ogg_page_headers(&ogg);
+        assert!(
+            pages.len() >= 4,
+            "expected head + tags + audio pages, got {}",
+            pages.len()
+        );
+
+        for page in &pages {
+            if packet_continues_beyond_page(&page.lacing) {
+                assert_eq!(
+                    page.granule_pos,
+                    -1,
+                    "incomplete continuation page must use granulepos -1"
+                );
+            }
+        }
+
+        let continued_pages = pages
+            .iter()
+            .filter(|page| page.header_type & 0x01 != 0)
+            .count();
+        assert_eq!(
+            continued_pages,
+            0,
+            "EndPage-per-packet mux should not produce continuation pages"
+        );
+
+        let last_granule = pages
+            .last()
+            .expect("last page")
+            .granule_pos
+            .max(0) as u64;
+        let duration_sec =
+            (last_granule - preskip as u64) as f64 / SESSION_AUDIO_SAMPLE_RATE as f64;
+        assert!(
+            (duration_sec - pcm_seconds).abs() < 0.05,
+            "granule-derived duration {duration_sec}s should match PCM ~{pcm_seconds}s"
+        );
     }
 }

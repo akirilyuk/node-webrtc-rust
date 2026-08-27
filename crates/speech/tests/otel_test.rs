@@ -4,6 +4,7 @@
 use node_webrtc_rust_speech::config::{
     SttConfig, SttVendor, TtsConfig, TtsVendor, VoiceAgentConfig, VoiceSessionContext,
 };
+use node_webrtc_rust_speech::vad::VadTransition;
 use node_webrtc_rust_speech::otel::{
     self, extract_trace_id, SherpaTtsMetricAttrs, SttMetricAttrs,
 };
@@ -80,6 +81,18 @@ fn metrics_record_without_panic() {
     otel::set_sherpa_tts_phrase_cache_entries(4, &tts_attrs);
     otel::record_sherpa_tts_queue_wait_ms(1.5, &tts_attrs);
     otel::record_sherpa_tts_synth_wall_ms(42.0, &tts_attrs);
+
+    let ctx = VoiceSessionContext {
+        session_id: Some("sess-1".into()),
+        trace_id: Some("4bf92f3577b34da6a3ce929d0e0e4736".into()),
+        project_id: Some("proj-1".into()),
+        org_id: Some("org-1".into()),
+        build_id: Some("build-1".into()),
+        traceparent: None,
+    };
+    otel::record_barge_in(&ctx);
+    otel::record_vad_transition(&ctx, &VadTransition::SpeechStart);
+    otel::record_vad_transition(&ctx, &VadTransition::SpeechEnd);
 }
 
 #[tokio::test]

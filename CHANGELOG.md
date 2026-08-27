@@ -8,6 +8,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-08-27
+
+### Added
+
+- **Speech / OTel** — Counters `voice_barge_in` and `voice_vad_transitions` (`vad.transition` = `speech_start` | `speech_end`) labeled with `project_id`, so Prometheus can scrape barge-in and VAD rates (previously spans only).
+
+## [0.7.3] - 2026-08-24
+
+### Fixed
+
+- **SessionRecorder Ogg Opus** — EndPage-per-packet mux + encoder `pre_skip` so macOS QuickTime / AVFoundation report correct duration (was ~9× inflated).
+
+
 ## [0.7.2] — 2026-08-24
 
 ### Added

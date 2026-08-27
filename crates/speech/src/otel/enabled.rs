@@ -38,6 +38,8 @@ static TTS_PHRASE_CACHE_HITS: OnceLock<Counter<u64>> = OnceLock::new();
 static TTS_PHRASE_CACHE_MISSES: OnceLock<Counter<u64>> = OnceLock::new();
 static TTS_QUEUE_WAIT: OnceLock<Histogram<f64>> = OnceLock::new();
 static TTS_SYNTH_WALL: OnceLock<Histogram<f64>> = OnceLock::new();
+static VOICE_BARGE_IN: OnceLock<Counter<u64>> = OnceLock::new();
+static VOICE_VAD_TRANSITIONS: OnceLock<Counter<u64>> = OnceLock::new();
 
 struct TraceparentExtractor<'a> {
     traceparent: &'a str,
@@ -151,6 +153,24 @@ fn tts_synth_wall_histogram() -> &'static Histogram<f64> {
     })
 }
 
+fn voice_barge_in_counter() -> &'static Counter<u64> {
+    VOICE_BARGE_IN.get_or_init(|| {
+        ensure_meter()
+            .u64_counter("voice_barge_in")
+            .with_description("Voice agent barge-in events")
+            .build()
+    })
+}
+
+fn voice_vad_transitions_counter() -> &'static Counter<u64> {
+    VOICE_VAD_TRANSITIONS.get_or_init(|| {
+        ensure_meter()
+            .u64_counter("voice_vad_transitions")
+            .with_description("VAD speech start/end transitions")
+            .build()
+    })
+}
+
 /// Prometheus/OTel drop empty attribute values — always emit a non-empty label so
 /// Grafana `label_values` / `label=~".*"` All-filters keep matching the series.
 fn otel_label(value: &str, fallback: &str) -> String {
@@ -188,6 +208,23 @@ fn stt_latency_metric_attrs(attrs: &SttMetricAttrs) -> [KeyValue; 4] {
         KeyValue::new("stt.model", otel_label(&attrs.stt_model, "unknown")),
         KeyValue::new("stt.language", otel_label(&attrs.stt_language, "unset")),
         KeyValue::new("project_id", otel_label(&attrs.project_id, "unknown")),
+    ]
+}
+
+fn voice_session_project_id(ctx: &VoiceSessionContext) -> [KeyValue; 1] {
+    [KeyValue::new(
+        "project_id",
+        otel_label(ctx.project_id.as_deref().unwrap_or(""), "unknown"),
+    )]
+}
+
+fn voice_vad_transition_attrs(ctx: &VoiceSessionContext, transition: &'static str) -> [KeyValue; 2] {
+    [
+        KeyValue::new(
+            "project_id",
+            otel_label(ctx.project_id.as_deref().unwrap_or(""), "unknown"),
+        ),
+        KeyValue::new("vad.transition", transition),
     ]
 }
 
@@ -402,6 +439,10 @@ pub fn record_vad_transition(ctx: &VoiceSessionContext, transition: &VadTransiti
         vad.transition = transition_name,
     );
     let _entered = apply_session_fields(span, ctx).entered();
+    if is_enabled() {
+        let kv = voice_vad_transition_attrs(ctx, transition_name);
+        voice_vad_transitions_counter().add(1, &kv);
+    }
 }
 
 pub fn record_gate_hold_start(ctx: &VoiceSessionContext, hold_ms: u32) {
@@ -440,6 +481,10 @@ pub fn record_barge_in(ctx: &VoiceSessionContext) {
         build_id = Empty,
     );
     let _entered = apply_session_fields(span, ctx).entered();
+    if is_enabled() {
+        let kv = voice_session_project_id(ctx);
+        voice_barge_in_counter().add(1, &kv);
+    }
 }
 
 pub fn record_stt_latency_ms(ms: f64, attrs: &SttMetricAttrs) {

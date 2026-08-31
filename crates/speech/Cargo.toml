@@ -7,7 +7,8 @@ repository.workspace = true
 description = "Voice agent orchestration: VAD, STT/TTS pipeline, and speech events"
 
 [features]
-default = ["energy-vad"]
+default = ["energy-vad", "rnnoise"]
+rnnoise = []
 # Pin ort =2.0.0-rc.10 (matches silero-vad-rust); rc.12 breaks ndarray alignment.
 silero-vad = ["dep:silero-vad-rust", "dep:ort"]
 energy-vad = []
@@ -38,6 +39,7 @@ opentelemetry_sdk = { version = "0.28", optional = true, features = ["rt-tokio"]
 opentelemetry-otlp = { version = "0.28", optional = true, features = ["http-proto", "reqwest-rustls-webpki-roots"] }
 silero-vad-rust = { version = "6.2.1", optional = true, default-features = false }
 ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["ndarray"] }
+node-webrtc-rust-denoise = { path = "../denoise" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

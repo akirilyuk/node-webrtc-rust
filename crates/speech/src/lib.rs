@@ -11,7 +11,7 @@
 //!
 //! ## Core flow
 //!
-//! 1. **Inbound** — WebRTC stereo 48 kHz PCM → mono 16 kHz → optional VAD → optional STT gate → STT.
+//! 1. **Inbound** — WebRTC stereo 48 kHz PCM → optional RNNoise → mono 16 kHz → optional VAD → optional STT gate → STT.
 //! 2. **Outbound** — TTS synthesize → buffer → 20 ms frames to PCM writer → `agent_speaking_*` events.
 //!    Progressive chunk streaming is **on by default** (`VOICE_TTS_STREAM_CHUNKS`); set to `0` for
 //!    the legacy fully-buffered path (synthesize all PCM, then drain).
@@ -51,36 +51,36 @@ pub mod error;
 pub mod events;
 pub mod otel;
 pub mod pcm;
-pub mod session_recorder;
 pub mod pipeline;
 pub mod registry;
+pub mod session_recorder;
 pub mod stt_pre_roll;
 pub mod tts_buffer;
 pub mod vad;
 
 pub use agent::{PcmReader, PcmWriter, VoiceAgent};
 pub use config::{
-    resolved_post_utterance_silence_ms, resolve_min_stt_partial_tokens, stt_partial_token_count,
-    BargeInConfig, EventDeliveryMode, EventsConfig,
-    SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
-    VoiceAgentConfig, VoiceSessionContext,
+    resolve_min_stt_partial_tokens, resolved_post_utterance_silence_ms, stt_partial_token_count,
+    BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
+    NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor,
+    VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 pub use error::{SpeechError, SpeechResult};
-pub use events::{SpeechEvent, SpeechEventKind, SpeechEventBus};
-pub use pcm::{stereo_48k_to_mono_16k, pcm_rms_i16};
-pub use session_recorder::{
-    encode_pcm16le_wav, is_nearly_silent_mono, mix_stereo_timeline, pcm_to_mono_s16,
-    resolve_media_clock_offset_ms, serialize_speech_turns_by_wall_time, MediaClockState,
-    ResolveMediaClockParams, ResolveMediaClockResult, SessionAudioBuild, SessionAudioFormat,
-    SessionFinalizeResult, SessionRecorder, SessionRecorderError,
-    SESSION_AUDIO_CHANNELS, SESSION_AUDIO_SAMPLE_RATE,
-    SESSION_RECORDER_DEFAULT_OPUS_BITRATE_BPS,
-};
+pub use events::{SpeechEvent, SpeechEventBus, SpeechEventKind};
+pub use node_webrtc_rust_denoise::Stereo48kRnnoise;
+pub use pcm::{pcm_rms_i16, stereo_48k_to_mono_16k};
 pub use pipeline::{
     tts_stream_chunks_enabled, SttProvider, SttTranscript, TtsAudioChunk, TtsProgressiveSink,
     TtsProvider, VendorFactory,
 };
 pub use registry::VendorRegistry;
+pub use session_recorder::{
+    encode_pcm16le_wav, is_nearly_silent_mono, mix_stereo_timeline, pcm_to_mono_s16,
+    resolve_media_clock_offset_ms, serialize_speech_turns_by_wall_time, MediaClockState,
+    ResolveMediaClockParams, ResolveMediaClockResult, SessionAudioBuild, SessionAudioFormat,
+    SessionFinalizeResult, SessionRecorder, SessionRecorderError, SESSION_AUDIO_CHANNELS,
+    SESSION_AUDIO_SAMPLE_RATE, SESSION_RECORDER_DEFAULT_OPUS_BITRATE_BPS,
+};
 pub use tts_buffer::TtsBuffer;
 pub use vad::{handle_barge_in, VadEngine, VadTransition, VoiceActivityDetector};
 

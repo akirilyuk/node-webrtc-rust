@@ -3,12 +3,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use node_webrtc_rust_core::{debug_call, debug_evt, IceServer, PeerConnection, PeerConnectionConfig};
+use node_webrtc_rust_core::{
+    debug_call, debug_evt, IceServer, PeerConnection, PeerConnectionConfig,
+};
 use node_webrtc_rust_mixer::{Frame, MixGraph};
 use tokio::sync::Mutex;
 
 use crate::error::ConferenceError;
-use crate::events::{MixingEnabledChanged, ParticipantJoined, ParticipantKicked, ParticipantLeft, ParticipantMuted, RoomEventSenders, RoomEvents};
+use crate::events::{
+    MixingEnabledChanged, ParticipantJoined, ParticipantKicked, ParticipantLeft, ParticipantMuted,
+    RoomEventSenders, RoomEvents,
+};
 use crate::mute::{MuteMatrix, MuteScope};
 use crate::participant::Participant;
 use crate::signaling::{SignalingMessage, SignalingResponse};
@@ -18,6 +23,8 @@ use crate::signaling::{SignalingMessage, SignalingResponse};
 pub struct RoomConfig {
     pub max_participants: usize,
     pub ice_servers: Vec<IceServer>,
+    /// When true, inbound PCM is denoised before mixing (RNNoise).
+    pub noise_suppression: bool,
 }
 
 impl Default for RoomConfig {
@@ -25,6 +32,7 @@ impl Default for RoomConfig {
         Self {
             max_participants: 32,
             ice_servers: Vec::new(),
+            noise_suppression: true,
         }
     }
 }
@@ -134,10 +142,12 @@ impl Room {
             participant_id.to_owned(),
             pc,
             Arc::clone(&self.mix_graph),
+            self.config.noise_suppression,
         )
         .await?;
 
-        self.participants.insert(participant_id.to_owned(), participant);
+        self.participants
+            .insert(participant_id.to_owned(), participant);
         debug_evt!(
             "conference::room",
             "participant_joined",
@@ -149,7 +159,10 @@ impl Room {
     }
 
     /// Removes a participant and tears down their peer connection.
-    pub async fn remove_participant(&mut self, participant_id: &str) -> Result<(), ConferenceError> {
+    pub async fn remove_participant(
+        &mut self,
+        participant_id: &str,
+    ) -> Result<(), ConferenceError> {
         self.remove_participant_inner(participant_id, true).await
     }
 
@@ -215,9 +228,7 @@ impl Room {
         if let Some(listener) = listener_id {
             self.ensure_participant_exists(listener)?;
         }
-        self.mute_matrix
-            .unmute(target_id, scope, listener_id)
-            .await
+        self.mute_matrix.unmute(target_id, scope, listener_id).await
     }
 
     /// Returns participant summaries for admin/list APIs.
@@ -272,7 +283,10 @@ impl Room {
                     sdp: local_offer.sdp,
                 }])
             }
-            SignalingMessage::Answer { participant_id, sdp } => {
+            SignalingMessage::Answer {
+                participant_id,
+                sdp,
+            } => {
                 let participant = self.participant_mut(&participant_id)?;
                 participant
                     .peer_connection()
@@ -283,7 +297,10 @@ impl Room {
                     .await?;
                 Ok(Vec::new())
             }
-            SignalingMessage::Offer { participant_id, sdp } => {
+            SignalingMessage::Offer {
+                participant_id,
+                sdp,
+            } => {
                 let participant = self.participant_mut(&participant_id)?;
                 participant
                     .peer_connection()
@@ -377,15 +394,12 @@ impl Room {
             self.id
         );
 
-        let mut participant = self
-            .participants
-            .remove(participant_id)
-            .ok_or_else(|| {
-                ConferenceError::participant_not_found(format!(
-                    "participant {participant_id} not in room {}",
-                    self.id
-                ))
-            })?;
+        let mut participant = self.participants.remove(participant_id).ok_or_else(|| {
+            ConferenceError::participant_not_found(format!(
+                "participant {participant_id} not in room {}",
+                self.id
+            ))
+        })?;
 
         participant.shutdown(&self.mix_graph).await?;
         if emit_left {
@@ -411,7 +425,10 @@ impl Room {
         }
     }
 
-    fn participant_mut(&mut self, participant_id: &str) -> Result<&mut Participant, ConferenceError> {
+    fn participant_mut(
+        &mut self,
+        participant_id: &str,
+    ) -> Result<&mut Participant, ConferenceError> {
         self.participants.get_mut(participant_id).ok_or_else(|| {
             ConferenceError::participant_not_found(format!(
                 "participant {participant_id} not in room {}",

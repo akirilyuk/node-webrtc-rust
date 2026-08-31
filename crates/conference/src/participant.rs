@@ -7,7 +7,8 @@ use bytes::Bytes;
 use node_webrtc_rust_core::{
     debug_call, debug_evt, ConnectionState, LocalAudioTrack, PeerConnection, RemoteTrack,
 };
-use node_webrtc_rust_mixer::{MixGraph, OpusDecoder, FRAME_MS};
+use node_webrtc_rust_denoise::Stereo48kRnnoise;
+use node_webrtc_rust_mixer::{Frame, MixGraph, OpusDecoder, FRAME_MS};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -32,21 +33,13 @@ impl Participant {
         id: String,
         pc: PeerConnection,
         mix_graph: Arc<Mutex<MixGraph>>,
+        noise_suppression: bool,
     ) -> Result<Self, ConferenceError> {
-        debug_call!(
-            "conference::participant",
-            "spawn",
-            "id={}",
-            id
-        );
+        debug_call!("conference::participant", "spawn", "id={}", id);
 
-        let outbound_track = LocalAudioTrack::new(
-            &format!("{id}-mix-out"),
-            &format!("{id}-mix-stream"),
-        );
-        let _ = pc
-            .add_track(outbound_track.as_track_local())
-            .await?;
+        let outbound_track =
+            LocalAudioTrack::new(&format!("{id}-mix-out"), &format!("{id}-mix-stream"));
+        let _ = pc.add_track(outbound_track.as_track_local()).await?;
 
         let participant_id = id.clone();
         let mix_for_handler = Arc::clone(&mix_graph);
@@ -60,7 +53,7 @@ impl Participant {
             );
             let mix_graph = Arc::clone(&mix_for_handler);
             let id = participant_id.clone();
-            tokio::spawn(run_inbound_loop(id, track, mix_graph));
+            tokio::spawn(run_inbound_loop(id, track, mix_graph, noise_suppression));
         });
 
         {
@@ -99,13 +92,11 @@ impl Participant {
     }
 
     /// Stops tasks, removes the mixer input, and closes the peer connection.
-    pub async fn shutdown(&mut self, mix_graph: &Arc<Mutex<MixGraph>>) -> Result<(), ConferenceError> {
-        debug_call!(
-            "conference::participant",
-            "shutdown",
-            "id={}",
-            self.id
-        );
+    pub async fn shutdown(
+        &mut self,
+        mix_graph: &Arc<Mutex<MixGraph>>,
+    ) -> Result<(), ConferenceError> {
+        debug_call!("conference::participant", "shutdown", "id={}", self.id);
 
         self.outbound_task.abort();
 
@@ -119,10 +110,22 @@ impl Participant {
     }
 }
 
+/// Applies optional RNNoise to a mixer frame (testable without RTP).
+pub fn apply_noise_suppression(denoiser: Option<&mut Stereo48kRnnoise>, frame: Frame) -> Frame {
+    match denoiser {
+        None => frame,
+        Some(denoise) => {
+            let pcm = Bytes::from(denoise.process_s16le_stereo(frame.pcm.as_ref()));
+            Frame::new(pcm, frame.timestamp_us)
+        }
+    }
+}
+
 async fn run_inbound_loop(
     participant_id: String,
     track: RemoteTrack,
     mix_graph: Arc<Mutex<MixGraph>>,
+    noise_suppression: bool,
 ) {
     debug_evt!(
         "conference::participant",
@@ -136,12 +139,19 @@ async fn run_inbound_loop(
         Err(_) => return,
     };
 
+    let mut denoiser = if noise_suppression {
+        Some(Stereo48kRnnoise::new())
+    } else {
+        None
+    };
+
     loop {
         match track.read_rtp().await {
             Ok(packet) => {
                 let mixing_enabled = mix_graph.lock().await.mixing_enabled();
                 if mixing_enabled {
                     let frame = decoder.decode_payload(&packet.payload);
+                    let frame = apply_noise_suppression(denoiser.as_mut(), frame);
                     let mut graph = mix_graph.lock().await;
                     graph.push_frame(&participant_id, frame);
                 }
@@ -225,4 +235,44 @@ fn spawn_outbound_task(
             participant_id
         );
     })
+}
+
+#[cfg(test)]
+mod noise_suppression_tests {
+    use super::*;
+    use node_webrtc_rust_denoise::{stereo_pcm_rms, Stereo48kRnnoise};
+    use node_webrtc_rust_mixer::{FRAME_BYTES, SAMPLES_PER_FRAME};
+
+    fn white_noise_frame(seed: u32) -> Frame {
+        let mut state = seed.max(1);
+        let mut pcm = vec![0u8; FRAME_BYTES];
+        for i in 0..SAMPLES_PER_FRAME {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let sample = ((state >> 16) as i16).wrapping_mul(4);
+            pcm[i * 2..i * 2 + 2].copy_from_slice(&sample.to_le_bytes());
+        }
+        Frame::new(Bytes::from(pcm), None)
+    }
+
+    #[test]
+    fn disabled_noise_suppression_is_identity() {
+        let frame = white_noise_frame(1);
+        let out = apply_noise_suppression(None, frame.clone());
+        assert_eq!(out.pcm, frame.pcm);
+    }
+
+    #[test]
+    fn enabled_noise_suppression_reduces_white_noise_rms_after_warmup() {
+        let mut denoiser = Stereo48kRnnoise::new();
+        for i in 0..5 {
+            let warm = white_noise_frame(i);
+            let _ = apply_noise_suppression(Some(&mut denoiser), warm);
+        }
+        let noisy = white_noise_frame(99);
+        let input_rms = stereo_pcm_rms(noisy.pcm.as_ref());
+        let out = apply_noise_suppression(Some(&mut denoiser), noisy);
+        let output_rms = stereo_pcm_rms(out.pcm.as_ref());
+        assert!(input_rms > 0.05);
+        assert!(output_rms < input_rms);
+    }
 }

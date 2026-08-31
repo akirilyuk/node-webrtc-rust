@@ -13,11 +13,11 @@ mod signaling;
 
 pub use error::{ConferenceError, ConferenceErrorCode};
 pub use events::{
-    MixingEnabledChanged, ParticipantJoined, ParticipantKicked, ParticipantLeft,
-    ParticipantMuted, RoomError, RoomEvents,
+    MixingEnabledChanged, ParticipantJoined, ParticipantKicked, ParticipantLeft, ParticipantMuted,
+    RoomError, RoomEvents,
 };
 pub use mute::{MuteMatrix, MuteScope};
-pub use participant::Participant;
+pub use participant::{apply_noise_suppression, Participant};
 pub use room::{ParticipantInfo, Room, RoomConfig};
 pub use server::ConferenceServer;
 pub use signaling::{SignalingMessage, SignalingResponse};

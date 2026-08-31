@@ -23,6 +23,11 @@ export interface RoomOptions {
   maxParticipants?: number
   /** ICE servers used when creating server-side peer connections. */
   iceServers?: RTCIceServer[]
+  /**
+   * Per-participant inbound RNNoise on the mix bus. Omit for `'rnnoise'` (default on).
+   * Set `'none'` to disable denoise for this room.
+   */
+  noiseSuppression?: 'none' | 'rnnoise'
 }
 
 /** Summary of one connected participant. */

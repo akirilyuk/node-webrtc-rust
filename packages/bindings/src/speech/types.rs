@@ -3,8 +3,9 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_speech::{
-    BargeInConfig, EventDeliveryMode, EventsConfig, SttConfig, SttVendor, TtsConfig, TtsVendor,
-    VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
+    NoiseSuppressionProvider, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig,
+    VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -278,6 +279,70 @@ impl From<JsTtsConfig> for TtsConfig {
     }
 }
 
+#[napi(string_enum)]
+#[derive(Debug)]
+pub enum JsNoiseSuppressionProvider {
+    #[napi(value = "none")]
+    None,
+    #[napi(value = "rnnoise")]
+    Rnnoise,
+}
+
+impl From<JsNoiseSuppressionProvider> for NoiseSuppressionProvider {
+    fn from(value: JsNoiseSuppressionProvider) -> Self {
+        match value {
+            JsNoiseSuppressionProvider::None => Self::None,
+            JsNoiseSuppressionProvider::Rnnoise => Self::Rnnoise,
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsNoiseSuppressionConfig {
+    pub provider: Option<JsNoiseSuppressionProvider>,
+}
+
+impl From<JsNoiseSuppressionConfig> for NoiseSuppressionConfig {
+    fn from(value: JsNoiseSuppressionConfig) -> Self {
+        Self {
+            provider: value
+                .provider
+                .map(Into::into)
+                .unwrap_or(NoiseSuppressionProvider::None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod noise_suppression_config_from_tests {
+    use super::*;
+
+    #[test]
+    fn omitted_provider_maps_to_none() {
+        let cfg: NoiseSuppressionConfig = JsNoiseSuppressionConfig {
+            provider: None,
+        }
+        .into();
+        assert_eq!(cfg.provider, NoiseSuppressionProvider::None);
+    }
+
+    #[test]
+    fn rnnoise_provider_maps_to_rnnoise() {
+        let cfg: NoiseSuppressionConfig = JsNoiseSuppressionConfig {
+            provider: Some(JsNoiseSuppressionProvider::Rnnoise),
+        }
+        .into();
+        assert_eq!(cfg.provider, NoiseSuppressionProvider::Rnnoise);
+    }
+
+    #[test]
+    fn voice_agent_omitted_noise_suppression_defaults_to_none() {
+        let cfg: VoiceAgentConfig = JsVoiceAgentConfig::default().into();
+        assert_eq!(cfg.noise_suppression.provider, NoiseSuppressionProvider::None);
+    }
+}
+
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
 pub struct JsVoiceSessionContext {
@@ -310,6 +375,7 @@ pub struct JsVoiceAgentConfig {
     pub stt: Option<JsSttConfig>,
     pub tts: Option<JsTtsConfig>,
     pub post_utterance_silence_ms: Option<u32>,
+    pub noise_suppression: Option<JsNoiseSuppressionConfig>,
 }
 
 impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
@@ -323,6 +389,10 @@ impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
             stt: value.stt.map(Into::into),
             tts: value.tts.map(Into::into),
             post_utterance_silence_ms,
+            noise_suppression: value
+                .noise_suppression
+                .map(Into::into)
+                .unwrap_or_default(),
         }
     }
 }

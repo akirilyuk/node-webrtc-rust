@@ -14,9 +14,9 @@ export interface JsIceServer {
 export interface JsRoomOptions {
   maxParticipants?: number
   iceServers?: Array<JsIceServer>
-  /** `'rnnoise'` when omitted (mix default on). Set `'none'` to disable per-participant RNNoise. */
   noiseSuppression?: JsRoomNoiseSuppression
 }
+/** Per-participant inbound RNNoise toggle for conference mixing. */
 export const enum JsRoomNoiseSuppression {
   None = 'none',
   Rnnoise = 'rnnoise'
@@ -195,6 +195,13 @@ export interface JsTtsConfig {
   apiKey?: string
   postUtteranceSilenceMs?: number
 }
+export const enum JsNoiseSuppressionProvider {
+  None = 'none',
+  Rnnoise = 'rnnoise'
+}
+export interface JsNoiseSuppressionConfig {
+  provider?: JsNoiseSuppressionProvider
+}
 export interface JsVoiceSessionContext {
   sessionId?: string
   traceId?: string
@@ -202,13 +209,6 @@ export interface JsVoiceSessionContext {
   orgId?: string
   buildId?: string
   traceparent?: string
-}
-export const enum JsNoiseSuppressionProvider {
-  None = 'none',
-  Rnnoise = 'rnnoise'
-}
-export interface JsNoiseSuppressionConfig {
-  provider?: JsNoiseSuppressionProvider
 }
 export interface JsVoiceAgentConfig {
   vad?: JsVadConfig

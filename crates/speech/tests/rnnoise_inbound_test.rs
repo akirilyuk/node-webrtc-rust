@@ -85,16 +85,8 @@ async fn start_agent(config: VoiceAgentConfig) -> Arc<VoiceAgent> {
 #[tokio::test]
 async fn rnnoise_white_noise_does_not_lock_vad_like_dc() {
     let agent_none = start_agent(vad_rnnoise_config(NoiseSuppressionProvider::None)).await;
-    let agent_rn = start_agent(vad_rnnoise_config(NoiseSuppressionProvider::Rnnoise)).await;
+    let mut events_none = agent_none.subscribe_events();
 
-    let noise = white_noise_stereo_frame(42);
-
-    for _ in 0..3 {
-        agent_none
-            .process_inbound_pcm(Bytes::from(noise.clone()), 20)
-            .await
-            .unwrap();
-    }
     for _ in 0..8 {
         agent_none
             .process_inbound_pcm(Bytes::from(loud_dc_stereo_frame()), 20)
@@ -102,7 +94,22 @@ async fn rnnoise_white_noise_does_not_lock_vad_like_dc() {
             .unwrap();
     }
 
-    for i in 0..8 {
+    let mut saw_vad_none = false;
+    while let Ok(event) = events_none.try_recv() {
+        if event.kind == SpeechEventKind::VadTriggered {
+            saw_vad_none = true;
+        }
+    }
+    assert!(
+        saw_vad_none,
+        "control: provider none + loud DC must emit VadTriggered (event bus works)"
+    );
+
+    let agent_rn = start_agent(vad_rnnoise_config(NoiseSuppressionProvider::Rnnoise)).await;
+    let mut events_rn = agent_rn.subscribe_events();
+
+    let noise = white_noise_stereo_frame(42);
+    for i in 0..10 {
         let mut frame = noise.clone();
         frame[0] ^= (i as u8).wrapping_mul(7);
         agent_rn
@@ -110,16 +117,25 @@ async fn rnnoise_white_noise_does_not_lock_vad_like_dc() {
             .await
             .unwrap();
     }
+    while events_rn.try_recv().is_ok() {}
 
-    let mut saw_speech_start = false;
-    let mut events = agent_rn.subscribe_events();
-    while let Ok(event) = events.try_recv() {
+    for i in 0..8 {
+        let mut frame = noise.clone();
+        frame[2] ^= (i as u8).wrapping_mul(11);
+        agent_rn
+            .process_inbound_pcm(Bytes::from(frame), 20)
+            .await
+            .unwrap();
+    }
+
+    let mut saw_vad_rn = false;
+    while let Ok(event) = events_rn.try_recv() {
         if event.kind == SpeechEventKind::VadTriggered {
-            saw_speech_start = true;
+            saw_vad_rn = true;
         }
     }
     assert!(
-        !saw_speech_start,
+        !saw_vad_rn,
         "RNNoise + white noise should not trigger VAD after warmup"
     );
 

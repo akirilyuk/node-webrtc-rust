@@ -82,15 +82,15 @@ function createMockGraph(): ClientMixGraph & {
 
 function createFakeSidecar(): {
   setWriteSampleTee: ReturnType<typeof vi.fn>
-  tee?: (data: Buffer, durationMs: number) => void
+  tee?: (...args: unknown[]) => void
 } {
-  let tee: ((data: Buffer, durationMs: number) => void) | undefined
+  let tee: ((...args: unknown[]) => void) | undefined
   return {
-    setWriteSampleTee: vi.fn((cb: ((data: Buffer, durationMs: number) => void) | null) => {
+    setWriteSampleTee: vi.fn((cb: ((...args: unknown[]) => void) | null) => {
       tee = cb ?? undefined
     }),
-    tee(data: Buffer, durationMs: number) {
-      tee?.(data, durationMs)
+    tee(...args: unknown[]) {
+      tee?.(...args)
     },
   }
 }
@@ -148,10 +148,7 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.renderOutput).toEqual(['bob'])
     expect(graph.calls.panTtsFrame).toEqual([PCM_FULL_FRAME_BYTES])
     expect(pcTrack.writeSample).toHaveBeenCalledTimes(1)
-    expect(pcTrack.writeSample).toHaveBeenCalledWith(
-      expect.any(Buffer),
-      PCM_FRAME_DURATION_MS,
-    )
+    expect(pcTrack.writeSample).toHaveBeenCalledWith(expect.any(Buffer), PCM_FRAME_DURATION_MS)
   })
 
   it('sidecar tee TTS is passed to panTtsFrame and summed on the pump tick', async () => {
@@ -173,6 +170,34 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.panTtsFrame).toEqual([PCM_FULL_FRAME_BYTES])
     expect(graph.calls.renderOutput).toEqual(['carol'])
     expect(pcTrack.writeSample).toHaveBeenCalledTimes(1)
+  })
+
+  it('consumes TTS once per tee — next pump tick uses silence', async () => {
+    const panInputs: Buffer[] = []
+    const graph = createMockGraph()
+    graph.panTtsFrame = (pcm) => {
+      panInputs.push(Buffer.from(pcm))
+      return Buffer.from(pcm)
+    }
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('eve')
+
+    const sidecar = createFakeSidecar()
+    mixer.wireTtsSidecar('eve', sidecar)
+
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('eve', pcTrack)
+
+    const tts = Buffer.alloc(PCM_FULL_FRAME_BYTES, 9)
+    sidecar.tee!(tts, PCM_FRAME_DURATION_MS)
+
+    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+    expect(panInputs).toHaveLength(1)
+    expect(panInputs[0]!.equals(tts)).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+    expect(panInputs).toHaveLength(2)
+    expect(panInputs[1]!.every((byte) => byte === 0)).toBe(true)
   })
 
   it('unregisterPeer stops the mix pump', async () => {

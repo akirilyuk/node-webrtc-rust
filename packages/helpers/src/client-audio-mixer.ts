@@ -11,12 +11,13 @@ import { AudioMixGraph, type ClientPose, type MixPlacement } from '@node-webrtc-
 import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 
 import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from './pcm.js'
+import { pcmFromWriteSampleTeeArgs } from './session-recorder.js'
 
 const WRAPPED_IN = Symbol('clientAudioMixerInbound')
 
 /** Sidecar track VoiceAgent drains; must support {@link LocalAudioTrack.setWriteSampleTee}. */
 export type TtsSidecarTrack = {
-  setWriteSampleTee(callback: ((data: Buffer, durationMs: number) => void) | null): void
+  setWriteSampleTee(callback: ((...args: unknown[]) => void) | null): void
 }
 
 /** PC outbound track the mix pump writes to. */
@@ -46,7 +47,8 @@ export type ClientAudioMixerOptions = {
 }
 
 type PeerMixState = {
-  latestTts: Buffer
+  /** Latest full TTS frame from tee; consumed once per pump tick (null → silence). */
+  pendingTts: Buffer | null
   pumpInterval?: ReturnType<typeof setInterval>
   sidecar?: TtsSidecarTrack
   pcOutbound?: MixPumpOutboundTrack
@@ -94,7 +96,7 @@ export class ClientAudioMixer {
     if (this.registered.has(peerId)) return
     this.graph.addInput(peerId)
     this.registered.add(peerId)
-    this.peers.set(peerId, { latestTts: Buffer.alloc(PCM_FULL_FRAME_BYTES) })
+    this.peers.set(peerId, { pendingTts: null })
   }
 
   unregisterPeer(peerId: string): void {
@@ -160,9 +162,10 @@ export class ClientAudioMixer {
   wireTtsSidecar(peerId: string, sidecar: TtsSidecarTrack): TtsSidecarTrack {
     const state = this.peerState(peerId)
     state.sidecar = sidecar
-    sidecar.setWriteSampleTee((data: Buffer, _durationMs: number) => {
-      if (data.length === PCM_FULL_FRAME_BYTES) {
-        state.latestTts = Buffer.from(data)
+    sidecar.setWriteSampleTee((...args: unknown[]) => {
+      const pcm = pcmFromWriteSampleTeeArgs(args)
+      if (pcm != null && pcm.length === PCM_FULL_FRAME_BYTES) {
+        state.pendingTts = Buffer.from(pcm)
       }
     })
     return sidecar
@@ -211,8 +214,8 @@ export class ClientAudioMixer {
     if (!out) return
 
     const mixed = this.graph.renderOutput(peerId)
-    const tts =
-      state.latestTts.length === PCM_FULL_FRAME_BYTES ? state.latestTts : this.silenceFrame
+    const tts = state.pendingTts ?? this.silenceFrame
+    state.pendingTts = null
     const panned = this.graph.panTtsFrame(tts)
     const frame = sumStereoPcm(panned, mixed)
     await out.writeSample(frame, PCM_FRAME_DURATION_MS)

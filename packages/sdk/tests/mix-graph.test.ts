@@ -65,4 +65,14 @@ describe('AudioMixGraph', () => {
     expect(params.maxDistance).toBeCloseTo(40)
     expect(params.rolloff).toBeCloseTo(0.8)
   })
+
+  test('pushFrame renderOutput and panTtsFrame on empty graph', () => {
+    const graph = new AudioMixGraph()
+    const silence = Buffer.alloc(3840)
+    graph.pushFrame('alice', silence)
+    const mixed = graph.renderOutput('bob')
+    expect(mixed).toHaveLength(3840)
+    const panned = graph.panTtsFrame(silence)
+    expect(panned).toHaveLength(3840)
+  })
 })

@@ -397,6 +397,12 @@ export declare class JsMixGraph {
   setGroupMembers(groupId: string, members: Array<string>): void
   moveToGroup(participantId: string, groupId: string): void
   removeFromGroup(participantId: string): void
+  /** Stores the latest 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz). */
+  pushFrame(participantId: string, pcm: Buffer): void
+  /** Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off). */
+  renderOutput(listenerId: string): Buffer
+  /** Pans a TTS frame using the graph's [`MixGraph::tts_mix_placement`]. */
+  panTtsFrame(pcm: Buffer): Buffer
 }
 /** WebRTC peer connection exposed to JavaScript. */
 export declare class JsPeerConnection {

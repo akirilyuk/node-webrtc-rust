@@ -44,7 +44,16 @@ export interface MultiClientVoiceServerOptions {
    */
   sessionBudget?: VoiceSessionBudget
   /** Passed through to {@link VoiceAgentSessionHost}. */
-  hostOptions?: Pick<VoiceAgentSessionHostOptions, 'clientPeerIdPrefix' | 'log' | 'voiceHandler'>
+  hostOptions?: Pick<
+    VoiceAgentSessionHostOptions,
+    | 'clientPeerIdPrefix'
+    | 'log'
+    | 'voiceHandler'
+    | 'sessionMode'
+    | 'syncChannel'
+    | 'wrapAudioTracks'
+    | 'clientMixGraph'
+  >
   /**
    * Shorthand for `hostOptions.voiceHandler` — your STT/TTS app logic.
    * See `examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`.
@@ -61,6 +70,8 @@ export interface MultiClientVoiceServerHandle {
   signalingUrl: string
   httpUrl: string
   budget: VoiceSessionBudgetSnapshot
+  /** Underlying session host (mix APIs, disconnectPeer, …). */
+  host: VoiceAgentSessionHost
   /** Play TTS on every connected browser client in this room. */
   broadcastSpeak: (text: string) => Promise<string[]>
   close: () => Promise<void>
@@ -111,6 +122,7 @@ export async function startMultiClientVoiceServer(
     signalingPath,
     signalingUrl: `ws://127.0.0.1:${port}${signalingPath}`,
     httpUrl: `http://127.0.0.1:${port}`,
+    host,
     get budget() {
       return sessionBudget.snapshot()
     },

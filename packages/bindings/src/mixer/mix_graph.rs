@@ -1,10 +1,11 @@
-//! MixGraph NAPI bindings (control plane — no PCM push/render from Node).
+//! MixGraph NAPI bindings (control plane + PCM push/render for helpers mixer).
 
 use std::sync::Mutex;
 
+use bytes::Bytes;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use node_webrtc_rust_mixer::{MixGraph, Quat, Vec3};
+use node_webrtc_rust_mixer::{Frame, MixGraph, Quat, Vec3, FRAME_BYTES};
 
 use crate::mixer::types::{
     JsClientPose, JsDistanceParams, JsMixPlacement, JsQuat, JsVec3,
@@ -254,6 +255,52 @@ impl JsMixGraph {
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
             .remove_from_group(&participant_id);
         Ok(())
+    }
+
+    /// Stores the latest 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz).
+    #[napi]
+    pub fn push_frame(&self, participant_id: String, pcm: Buffer) -> Result<()> {
+        if pcm.len() != FRAME_BYTES {
+            return Err(Error::from_reason(format!(
+                "mix pushFrame expects {FRAME_BYTES} bytes (48 kHz stereo 20 ms), got {}",
+                pcm.len()
+            )));
+        }
+        let frame = Frame::new(Bytes::copy_from_slice(pcm.as_ref()), None);
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .push_frame(participant_id, frame);
+        Ok(())
+    }
+
+    /// Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off).
+    #[napi]
+    pub fn render_output(&self, listener_id: String) -> Result<Buffer> {
+        let frame = self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .render_output(&listener_id);
+        Ok(Buffer::from(frame.pcm.as_ref()))
+    }
+
+    /// Pans a TTS frame using the graph's [`MixGraph::tts_mix_placement`].
+    #[napi]
+    pub fn pan_tts_frame(&self, pcm: Buffer) -> Result<Buffer> {
+        if pcm.len() != FRAME_BYTES {
+            return Err(Error::from_reason(format!(
+                "mix panTtsFrame expects {FRAME_BYTES} bytes (48 kHz stereo 20 ms), got {}",
+                pcm.len()
+            )));
+        }
+        let frame = Frame::new(Bytes::copy_from_slice(pcm.as_ref()), None);
+        let out = self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .pan_tts_frame(&frame);
+        Ok(Buffer::from(out.pcm.as_ref()))
     }
 }
 

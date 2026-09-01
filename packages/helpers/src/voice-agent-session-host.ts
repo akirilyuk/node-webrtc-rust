@@ -37,6 +37,8 @@ import type { SignalingClient } from '@node-webrtc-rust/signaling'
 import { createOfferGatherWithIceCredentials } from './offer-ice-gather.js'
 import { resolveIceTransportPolicy, type IceTransportPolicy } from './ice-transport-policy.js'
 import { createKickFrame, PCM_KICK_DURATION_MS } from './pcm.js'
+import { ClientAudioMixer, type ClientMixGraph } from './client-audio-mixer.js'
+import type { ClientPose, MixPlacement } from '@node-webrtc-rust/sdk/mix'
 import {
   getProcessVoiceSessionBudget,
   type VoiceSessionBudget,
@@ -198,6 +200,19 @@ function componentOk(status: TeardownComponentStatus): boolean {
   return status === 'ok' || status === 'absent'
 }
 
+export const MIX_REQUIRES_VOICE_PLUS_DATA =
+  "Mix APIs require sessionMode 'voice+data' (voice tracks and a sync data channel)"
+
+export interface CreateMixGroupOptions {
+  id: string
+  clientIds: string[]
+}
+
+export interface SetSttEnabledOptions {
+  enabled: boolean
+  clientId?: string
+}
+
 export const VOICE_AGENT_SERVER_PEER_ID = 'voice-agent-server'
 
 /** @deprecated Use {@link VOICE_AGENT_SERVER_PEER_ID}. */
@@ -242,7 +257,7 @@ interface ClientSession {
 export interface VoiceAgentSessionHostOptions {
   voiceConfig: VoiceAgentConfig
   /** `data-only` skips audio tracks and VoiceAgent (DataChannels only). */
-  sessionMode?: 'voice' | 'data-only'
+  sessionMode?: 'voice' | 'voice+data' | 'data-only'
   /** Peer id prefix for clients that receive an agent (default `client-`). */
   clientPeerIdPrefix?: string
   /** Log connection lifecycle when provided. */
@@ -254,7 +269,8 @@ export interface VoiceAgentSessionHostOptions {
   voiceHandler?: VoiceSessionHandler
   /**
    * Optional second outbound data channel for high-frequency binary sync.
-   * Defaults to disabled; label {@link VOICE_SYNC_CHANNEL_LABEL} when enabled.
+   * Defaults to disabled for `voice` / `data-only`; auto-enabled for `voice+data`.
+   * Label {@link VOICE_SYNC_CHANNEL_LABEL} when enabled.
    */
   syncChannel?: {
     enabled?: boolean
@@ -291,6 +307,11 @@ export interface VoiceAgentSessionHostOptions {
     sessionId: string
     peerId: string
   }) => VoiceAgentStartContext | undefined
+  /**
+   * Inject a mock mix graph in unit tests (Voice+Data only).
+   * @internal
+   */
+  clientMixGraph?: ClientMixGraph
 }
 
 /**
@@ -301,7 +322,8 @@ export class VoiceAgentSessionHost {
   private readonly clientPeerIdPrefix: string
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
-  private readonly sessionMode: 'voice' | 'data-only'
+  private readonly sessionMode: 'voice' | 'voice+data' | 'data-only'
+  private readonly clientMixer: ClientAudioMixer | undefined
   /** Per-peer WebRTC reconnect attempts after `connectionState=failed`. */
   private readonly reconnectAttempts = new Map<string, number>()
   /** In-flight peer teardowns (counted for host close / idle teardown). */
@@ -341,6 +363,10 @@ export class VoiceAgentSessionHost {
     this.log = options.log ?? ((message) => console.log(message))
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
     this.sessionMode = options.sessionMode ?? 'voice'
+    this.clientMixer =
+      this.sessionMode === 'voice+data'
+        ? new ClientAudioMixer({ graph: options.clientMixGraph })
+        : undefined
 
     this.signaling.on('peer-joined', (peerId) => {
       if (peerId === VOICE_AGENT_SERVER_PEER_ID) return
@@ -640,7 +666,8 @@ export class VoiceAgentSessionHost {
     const dataOnly = this.sessionMode === 'data-only'
 
     const controlChannel = pc.createDataChannel(VOICE_CONTROL_CHANNEL_LABEL, { ordered: true })
-    const syncEnabled = this.options.syncChannel?.enabled ?? false
+    const syncEnabled =
+      this.sessionMode === 'voice+data' || (this.options.syncChannel?.enabled ?? false)
     const syncChannel = syncEnabled
       ? pc.createDataChannel(this.options.syncChannel?.label ?? VOICE_SYNC_CHANNEL_LABEL, {
           ordered: this.options.syncChannel?.ordered ?? false,
@@ -931,18 +958,34 @@ export class VoiceAgentSessionHost {
 
       let inboundTrack = session.inboundTrack
       let outboundTrack = session.agentOut
-      if (this.options.wrapAudioTracks) {
-        const wrapped = await this.options.wrapAudioTracks({
-          sessionId: this.signaling.room,
-          peerId,
-          inbound: inboundTrack,
-          outbound: outboundTrack,
-        })
-        if (wrapped.inbound !== undefined) {
-          inboundTrack = wrapped.inbound
+      const userWrap = this.options.wrapAudioTracks
+      if (userWrap || this.clientMixer) {
+        let inbound = inboundTrack
+        let outbound = outboundTrack
+        if (userWrap) {
+          const wrapped = await userWrap({
+            sessionId: this.signaling.room,
+            peerId,
+            inbound,
+            outbound,
+          })
+          if (wrapped.inbound !== undefined) {
+            inbound = wrapped.inbound
+          }
+          outbound = wrapped.outbound
+        }
+        if (this.clientMixer) {
+          this.clientMixer.registerPeer(peerId)
+          if (inbound) {
+            inbound = this.clientMixer.wrapInboundTrack(peerId, inbound)
+          }
+          outbound = this.clientMixer.wrapOutboundTrack(peerId, outbound)
+        }
+        if (inbound !== undefined) {
+          inboundTrack = inbound
           session.inboundTrack = inboundTrack
         }
-        outboundTrack = wrapped.outbound
+        outboundTrack = outbound
         session.agentOut = outboundTrack
       }
 
@@ -1431,6 +1474,10 @@ export class VoiceAgentSessionHost {
       console.error(`[session ${peerId}] unwireSpeechForward failed:`, error)
     }
 
+    if (this.clientMixer) {
+      this.clientMixer.unregisterPeer(peerId)
+    }
+
     const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
     const agent = session.agent
     session.agent = undefined
@@ -1455,5 +1502,70 @@ export class VoiceAgentSessionHost {
       tag,
       session.peerTransportReadyNotified,
     )
+  }
+
+  private assertMixCapable(): void {
+    if (this.sessionMode !== 'voice+data' || !this.clientMixer) {
+      throw new Error(MIX_REQUIRES_VOICE_PLUS_DATA)
+    }
+  }
+
+  /** Creates a mix group with exclusive listener routes (Voice+Data only). */
+  createMixGroup(options: CreateMixGroupOptions): void {
+    this.assertMixCapable()
+    this.clientMixer!.setGroupMembers(options.id, options.clientIds)
+  }
+
+  /** Moves a client into a mix group (exclusive; next 20 ms tick). */
+  addClientToMix(groupId: string, clientId: string): void {
+    this.assertMixCapable()
+    this.clientMixer!.moveToGroup(clientId, groupId)
+  }
+
+  /** Removes a client from their mix group (ungrouped — hears nobody). */
+  removeClientFromMix(_groupId: string, clientId: string): void {
+    this.assertMixCapable()
+    this.clientMixer!.removeFromGroup(clientId)
+  }
+
+  setClientPose(clientId: string, pose: ClientPose): void {
+    this.assertMixCapable()
+    this.clientMixer!.setClientPose(clientId, pose)
+  }
+
+  setPositionalMixing(enabled: boolean): void {
+    this.assertMixCapable()
+    this.clientMixer!.setPositionalEnabled(enabled)
+  }
+
+  setDefaultMixPlacement(placement: MixPlacement): void {
+    this.assertMixCapable()
+    this.clientMixer!.setDefaultMixPlacement(placement)
+  }
+
+  setTtsMixPlacement(placement: MixPlacement): void {
+    this.assertMixCapable()
+    this.clientMixer!.setTtsMixPlacement(placement)
+  }
+
+  /**
+   * Toggle STT for one connected client or all voice peers when `clientId` is omitted.
+   */
+  async setSttEnabled(options: SetSttEnabledOptions): Promise<void> {
+    const { enabled, clientId } = options
+    const targets: Array<{ peerId: string; agent: VoiceAgent }> = []
+    if (clientId != null) {
+      const session = this.sessions.get(clientId)
+      if (!session?.agent || !session.agentStarted) {
+        throw new Error(`No active voice session for client ${clientId}`)
+      }
+      targets.push({ peerId: clientId, agent: session.agent })
+    } else {
+      for (const [peerId, session] of this.sessions) {
+        if (this.sessionMode === 'data-only' || !session.agentStarted || !session.agent) continue
+        targets.push({ peerId, agent: session.agent })
+      }
+    }
+    await Promise.all(targets.map(({ agent }) => agent.setSttEnabled(enabled)))
   }
 }

@@ -156,6 +156,21 @@ export class AudioMixGraph {
   removeFromGroup(participantId: string): void {
     this.native.removeFromGroup(participantId)
   }
+
+  /** Stores the latest 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz). */
+  pushFrame(participantId: string, pcm: Buffer): void {
+    this.native.pushFrame(participantId, pcm)
+  }
+
+  /** Renders mixed stereo PCM for `listenerId` (3840 bytes). */
+  renderOutput(listenerId: string): Buffer {
+    return this.native.renderOutput(listenerId)
+  }
+
+  /** Pans a TTS frame using the graph's TTS placement. */
+  panTtsFrame(pcm: Buffer): Buffer {
+    return this.native.panTtsFrame(pcm)
+  }
 }
 
 /** Origin position for pose setup. */

@@ -24,10 +24,20 @@ export {
   VOICE_AGENT_SERVER_PEER_ID,
   SERVER_PEER_ID,
   VoiceAgentSessionHost,
+  MIX_REQUIRES_VOICE_PLUS_DATA,
   type VoiceAgentSessionHostOptions,
   type PeerCloseOutcome,
   type TeardownComponentStatus,
+  type CreateMixGroupOptions,
+  type SetSttEnabledOptions,
 } from './voice-agent-session-host.js'
+
+export {
+  ClientAudioMixer,
+  sumStereoPcm,
+  type ClientAudioMixerOptions,
+  type ClientMixGraph,
+} from './client-audio-mixer.js'
 
 export {
   type VoiceSessionContext,

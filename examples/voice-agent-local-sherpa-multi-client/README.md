@@ -36,7 +36,14 @@ npm run start:cap-2 --workspace=@node-webrtc-rust/example-voice-agent-local-sher
 
 # Verbose voice / WebRTC logs
 npm run start:debug --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
+
+# Voice+Data positional mix groups (A,B,C vs D,F pattern)
+npm run start:mix-groups --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
 ```
+
+## Mix groups (`start:mix-groups`)
+
+Uses `sessionMode: 'voice+data'` (voice tracks + sync data channel) and `VoiceAgentSessionHost` mix APIs: `createMixGroup`, `addClientToMix`, `setClientPose`, `setPositionalMixing`, `setTtsMixPlacement`. See `src/mix-groups.ts`.
 
 ## npm scripts
 
@@ -46,6 +53,7 @@ npm run start:debug --workspace=@node-webrtc-rust/example-voice-agent-local-sher
 | `start`         | Export Sherpa model paths → `tsx src/index.ts` |
 | `start:cap-2`   | Same with `VOICE_MAX_CONCURRENT_SESSIONS=2` |
 | `start:debug`   | Same with `VOICE_DEBUG=1` and `WEBRTC_DEBUG=1` |
+| `start:mix-groups` | Voice+Data mix groups demo (`sessionMode: 'voice+data'`) — [mix APIs](../../packages/helpers/src/voice-agent-session-host.ts) |
 | `test`          | Vitest (session budget; no models) |
 | `typecheck`     | `tsc --noEmit` |
 

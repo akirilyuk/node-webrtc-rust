@@ -228,6 +228,8 @@ interface ClientSession {
   syncChannel?: RTCDataChannel
   agent?: VoiceAgent
   agentOut?: LocalAudioTrack
+  /** Voice+Data: TTS sidecar — not on PC; VoiceAgent attaches here. */
+  agentTtsOut?: LocalAudioTrack
   inboundTrack?: RemoteAudioTrack
   /** Opaque budget lease for this session (not peerId-keyed). */
   budgetLease: VoiceSessionLease
@@ -957,41 +959,42 @@ export class VoiceAgentSessionHost {
       if (!live || live !== session || !session.agent || !session.agentOut) return
 
       let inboundTrack = session.inboundTrack
-      let outboundTrack = session.agentOut
-      const userWrap = this.options.wrapAudioTracks
-      if (userWrap || this.clientMixer) {
-        let inbound = inboundTrack
-        let outbound = outboundTrack
-        if (userWrap) {
-          const wrapped = await userWrap({
-            sessionId: this.signaling.room,
-            peerId,
-            inbound,
-            outbound,
-          })
-          if (wrapped.inbound !== undefined) {
-            inbound = wrapped.inbound
-          }
-          outbound = wrapped.outbound
-        }
-        if (this.clientMixer) {
-          this.clientMixer.registerPeer(peerId)
-          if (inbound) {
-            inbound = this.clientMixer.wrapInboundTrack(peerId, inbound)
-          }
-          outbound = this.clientMixer.wrapOutboundTrack(peerId, outbound)
-        }
-        if (inbound !== undefined) {
-          inboundTrack = inbound
+      let pcOutbound = session.agentOut
+      let agentOutbound = session.agentOut
+
+      if (this.clientMixer) {
+        this.clientMixer.registerPeer(peerId)
+        if (inboundTrack) {
+          inboundTrack = this.clientMixer.wrapInboundTrack(peerId, inboundTrack)
           session.inboundTrack = inboundTrack
         }
-        outboundTrack = outbound
-        session.agentOut = outboundTrack
+      }
+
+      if (this.options.wrapAudioTracks && pcOutbound) {
+        const wrapped = await this.options.wrapAudioTracks({
+          sessionId: this.signaling.room,
+          peerId,
+          inbound: inboundTrack,
+          outbound: pcOutbound,
+        })
+        if (wrapped.inbound !== undefined) {
+          inboundTrack = wrapped.inbound
+          session.inboundTrack = inboundTrack
+        }
+        pcOutbound = wrapped.outbound
+        session.agentOut = pcOutbound
+        agentOutbound = pcOutbound
+      }
+
+      if (this.clientMixer && pcOutbound) {
+        session.agentTtsOut = this.clientMixer.createTtsSidecar(peerId)
+        agentOutbound = session.agentTtsOut
+        this.clientMixer.startMixPump(peerId, pcOutbound)
       }
 
       await session.agent.attach({
         inboundTrack,
-        outboundTrack,
+        outboundTrack: agentOutbound!,
       })
 
       const startCtx = this.options.resolveVoiceAgentSessionContext?.({

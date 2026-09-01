@@ -37,6 +37,8 @@ export {
   sumStereoPcm,
   type ClientAudioMixerOptions,
   type ClientMixGraph,
+  type MixPumpOutboundTrack,
+  type TtsSidecarTrack,
 } from './client-audio-mixer.js'
 
 export {

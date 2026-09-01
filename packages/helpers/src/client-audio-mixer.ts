@@ -1,17 +1,28 @@
 /**
  * Voice+Data client PCM mixer — tees inbound mic into {@link AudioMixGraph},
- * pans TTS, and sums group mix on each outbound 20 ms frame.
+ * captures TTS on a sidecar track, and pumps mixed+TTS audio to the PC outbound track.
  *
- * Spatial pan math lives in native `MixGraph`; helpers only push/render PCM.
+ * VoiceAgent natively drains TTS to its attach outbound (sidecar) via `setWriteSampleTee`.
+ * The peer-connection `LocalAudioTrack` is written only by the 20 ms mix pump.
  */
 
+import { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import { AudioMixGraph, type ClientPose, type MixPlacement } from '@node-webrtc-rust/sdk/mix'
-import type { LocalAudioTrack, RemoteAudioTrack } from '@node-webrtc-rust/sdk'
+import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 
-import { PCM_FULL_FRAME_BYTES } from './pcm.js'
+import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from './pcm.js'
 
-const WRAPPED_OUT = Symbol('clientAudioMixerOutbound')
 const WRAPPED_IN = Symbol('clientAudioMixerInbound')
+
+/** Sidecar track VoiceAgent drains; must support {@link LocalAudioTrack.setWriteSampleTee}. */
+export type TtsSidecarTrack = {
+  setWriteSampleTee(callback: ((data: Buffer, durationMs: number) => void) | null): void
+}
+
+/** PC outbound track the mix pump writes to. */
+export type MixPumpOutboundTrack = {
+  writeSample(data: Uint8Array | Buffer, durationMs?: number): Promise<void>
+}
 
 /** PCM port used by {@link ClientAudioMixer} (native graph or test mock). */
 export interface ClientMixGraph {
@@ -34,6 +45,13 @@ export type ClientAudioMixerOptions = {
   graph?: ClientMixGraph
 }
 
+type PeerMixState = {
+  latestTts: Buffer
+  pumpInterval?: ReturnType<typeof setInterval>
+  sidecar?: TtsSidecarTrack
+  pcOutbound?: MixPumpOutboundTrack
+}
+
 /** Saturating sum of two equal-length stereo PCM buffers (20 ms frames). */
 export function sumStereoPcm(a: Buffer, b: Buffer): Buffer {
   const len = Math.min(a.length, b.length)
@@ -52,6 +70,8 @@ export function sumStereoPcm(a: Buffer, b: Buffer): Buffer {
 export class ClientAudioMixer {
   private readonly graph: ClientMixGraph
   private readonly registered = new Set<string>()
+  private readonly peers = new Map<string, PeerMixState>()
+  private readonly silenceFrame = Buffer.alloc(PCM_FULL_FRAME_BYTES)
 
   constructor(options?: ClientAudioMixerOptions) {
     this.graph = options?.graph ?? new AudioMixGraph()
@@ -62,17 +82,28 @@ export class ClientAudioMixer {
     return this.graph
   }
 
+  private peerState(peerId: string): PeerMixState {
+    const state = this.peers.get(peerId)
+    if (!state) {
+      throw new Error(`ClientAudioMixer: peer ${peerId} is not registered`)
+    }
+    return state
+  }
+
   registerPeer(peerId: string): void {
     if (this.registered.has(peerId)) return
     this.graph.addInput(peerId)
     this.registered.add(peerId)
+    this.peers.set(peerId, { latestTts: Buffer.alloc(PCM_FULL_FRAME_BYTES) })
   }
 
   unregisterPeer(peerId: string): void {
     if (!this.registered.has(peerId)) return
+    this.stopMixPump(peerId)
     this.graph.removeInput(peerId)
     this.graph.removeFromGroup(peerId)
     this.registered.delete(peerId)
+    this.peers.delete(peerId)
   }
 
   setGroupMembers(groupId: string, clientIds: string[]): void {
@@ -123,25 +154,67 @@ export class ClientAudioMixer {
   }
 
   /**
-   * On each full TTS frame: pan TTS, render group mix for this listener, sum, then send.
-   * Kick/prime frames (non-3840 B) pass through unchanged.
+   * Wires TTS capture on a sidecar track (not on the peer connection).
+   * VoiceAgent.attach uses this track; native drain invokes the tee callback.
    */
-  wrapOutboundTrack(peerId: string, track: LocalAudioTrack): LocalAudioTrack {
-    const flagged = track as LocalAudioTrack & { [WRAPPED_OUT]?: boolean }
-    if (flagged[WRAPPED_OUT]) return track
-
-    const orig = track.writeSample.bind(track)
-    track.writeSample = async (data: Uint8Array | Buffer, durationMs = 20) => {
-      const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
-      if (buffer.length !== PCM_FULL_FRAME_BYTES) {
-        return orig(buffer, durationMs)
+  wireTtsSidecar(peerId: string, sidecar: TtsSidecarTrack): TtsSidecarTrack {
+    const state = this.peerState(peerId)
+    state.sidecar = sidecar
+    sidecar.setWriteSampleTee((data: Buffer, _durationMs: number) => {
+      if (data.length === PCM_FULL_FRAME_BYTES) {
+        state.latestTts = Buffer.from(data)
       }
-      const pannedTts = this.graph.panTtsFrame(buffer)
-      const mixedClients = this.graph.renderOutput(peerId)
-      const outbound = sumStereoPcm(pannedTts, mixedClients)
-      return orig(outbound, durationMs)
+    })
+    return sidecar
+  }
+
+  /**
+   * Creates a native sidecar {@link LocalAudioTrack} for VoiceAgent TTS drain.
+   * Not added to the peer connection.
+   */
+  createTtsSidecar(peerId: string): LocalAudioTrack {
+    const state = this.peers.get(peerId)
+    if (state?.sidecar && state.sidecar instanceof LocalAudioTrack) {
+      return state.sidecar
     }
-    flagged[WRAPPED_OUT] = true
-    return track
+    const sidecar = new LocalAudioTrack(`agent-tts-${peerId}`, 'voice-agent')
+    return this.wireTtsSidecar(peerId, sidecar) as LocalAudioTrack
+  }
+
+  /**
+   * Starts a 20 ms pump that is the sole writer to the PC outbound track:
+   * `sum(panTtsFrame(ttsOrSilence), renderOutput(listener))`.
+   */
+  startMixPump(peerId: string, pcOutbound: MixPumpOutboundTrack): void {
+    const state = this.peerState(peerId)
+    if (state.pumpInterval) return
+
+    state.pcOutbound = pcOutbound
+    state.pumpInterval = setInterval(() => {
+      void this.pumpMixFrame(peerId, pcOutbound).catch(() => undefined)
+    }, PCM_FRAME_DURATION_MS)
+  }
+
+  stopMixPump(peerId: string): void {
+    const state = this.peers.get(peerId)
+    if (!state?.pumpInterval) return
+    clearInterval(state.pumpInterval)
+    state.pumpInterval = undefined
+    state.pcOutbound = undefined
+  }
+
+  /** @internal One mix tick — exposed for unit tests with fake timers. */
+  async pumpMixFrame(peerId: string, pcOutbound?: MixPumpOutboundTrack): Promise<void> {
+    const state = this.peers.get(peerId)
+    if (!state) return
+    const out = pcOutbound ?? state.pcOutbound
+    if (!out) return
+
+    const mixed = this.graph.renderOutput(peerId)
+    const tts =
+      state.latestTts.length === PCM_FULL_FRAME_BYTES ? state.latestTts : this.silenceFrame
+    const panned = this.graph.panTtsFrame(tts)
+    const frame = sumStereoPcm(panned, mixed)
+    await out.writeSample(frame, PCM_FRAME_DURATION_MS)
   }
 }

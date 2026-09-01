@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ClientAudioMixer, sumStereoPcm, type ClientMixGraph } from '../src/client-audio-mixer.js'
-import { PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
+import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 
 function createMockGraph(): ClientMixGraph & {
   calls: {
@@ -80,6 +80,21 @@ function createMockGraph(): ClientMixGraph & {
   return Object.assign(graph, { calls })
 }
 
+function createFakeSidecar(): {
+  setWriteSampleTee: ReturnType<typeof vi.fn>
+  tee?: (data: Buffer, durationMs: number) => void
+} {
+  let tee: ((data: Buffer, durationMs: number) => void) | undefined
+  return {
+    setWriteSampleTee: vi.fn((cb: ((data: Buffer, durationMs: number) => void) | null) => {
+      tee = cb ?? undefined
+    }),
+    tee(data: Buffer, durationMs: number) {
+      tee?.(data, durationMs)
+    },
+  }
+}
+
 describe('sumStereoPcm', () => {
   it('adds int16 samples with saturation', () => {
     const a = Buffer.alloc(4)
@@ -95,6 +110,14 @@ describe('sumStereoPcm', () => {
 })
 
 describe('ClientAudioMixer', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('registers peers and tees inbound PCM into the graph', async () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })
@@ -112,36 +135,63 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.pushFrame).toEqual([{ peer: 'alice', len: PCM_FULL_FRAME_BYTES }])
   })
 
-  it('pans TTS, renders mix, and sums on outbound writeSample', async () => {
+  it('mix pump calls renderOutput and writes PC track without TTS', async () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })
     mixer.registerPeer('bob')
 
-    const tts = Buffer.alloc(PCM_FULL_FRAME_BYTES, 2)
-    const written: Array<{ len: number; durationMs: number }> = []
-    const track = {
-      writeSample: vi.fn(async (data: Buffer, durationMs: number) => {
-        written.push({ len: data.length, durationMs })
-      }),
-    }
-    mixer.wrapOutboundTrack('bob', track as never)
-    await track.writeSample(tts, 20)
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('bob', pcTrack)
 
-    expect(graph.calls.panTtsFrame).toEqual([PCM_FULL_FRAME_BYTES])
+    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+
     expect(graph.calls.renderOutput).toEqual(['bob'])
-    expect(written).toEqual([{ len: PCM_FULL_FRAME_BYTES, durationMs: 20 }])
+    expect(graph.calls.panTtsFrame).toEqual([PCM_FULL_FRAME_BYTES])
+    expect(pcTrack.writeSample).toHaveBeenCalledTimes(1)
+    expect(pcTrack.writeSample).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      PCM_FRAME_DURATION_MS,
+    )
   })
 
-  it('passes through non-20ms kick frames on outbound', async () => {
+  it('sidecar tee TTS is passed to panTtsFrame and summed on the pump tick', async () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })
-    const kick = Buffer.alloc(960)
-    const track = {
-      writeSample: vi.fn(async () => undefined),
-    }
-    mixer.wrapOutboundTrack('c', track as never)
-    await track.writeSample(kick, 5)
-    expect(graph.calls.panTtsFrame).toHaveLength(0)
+    mixer.registerPeer('carol')
+
+    const sidecar = createFakeSidecar()
+    mixer.wireTtsSidecar('carol', sidecar)
+
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('carol', pcTrack)
+
+    const tts = Buffer.alloc(PCM_FULL_FRAME_BYTES, 7)
+    sidecar.tee!(tts, PCM_FRAME_DURATION_MS)
+
+    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+
+    expect(graph.calls.panTtsFrame).toEqual([PCM_FULL_FRAME_BYTES])
+    expect(graph.calls.renderOutput).toEqual(['carol'])
+    expect(pcTrack.writeSample).toHaveBeenCalledTimes(1)
+  })
+
+  it('unregisterPeer stops the mix pump', async () => {
+    const graph = createMockGraph()
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('dana')
+
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('dana', pcTrack)
+
+    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+    expect(pcTrack.writeSample).toHaveBeenCalledTimes(1)
+
+    mixer.unregisterPeer('dana')
+    graph.calls.renderOutput.length = 0
+    pcTrack.writeSample.mockClear()
+
+    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS * 3)
+    expect(pcTrack.writeSample).not.toHaveBeenCalled()
     expect(graph.calls.renderOutput).toHaveLength(0)
   })
 
@@ -152,5 +202,24 @@ describe('ClientAudioMixer', () => {
     mixer.unregisterPeer('x')
     expect(graph.calls.removeInput).toEqual(['x'])
     expect(graph.calls.removeFromGroup).toEqual(['x'])
+  })
+
+  it('forwards group and placement controls', () => {
+    const graph = createMockGraph()
+    const mixer = new ClientAudioMixer({ graph })
+
+    mixer.setGroupMembers('g1', ['a', 'b'])
+    mixer.moveToGroup('c', 'g1')
+    mixer.removeFromGroup('c')
+    mixer.setPositionalEnabled(false)
+    mixer.setDefaultMixPlacement('left')
+    mixer.setTtsMixPlacement('right')
+
+    expect(graph.calls.setGroupMembers).toEqual([{ groupId: 'g1', members: ['a', 'b'] }])
+    expect(graph.calls.moveToGroup).toEqual([{ peer: 'c', groupId: 'g1' }])
+    expect(graph.calls.removeFromGroup).toEqual(['c'])
+    expect(graph.calls.setPositionalEnabled).toEqual([false])
+    expect(graph.calls.setDefaultMixPlacement).toEqual(['left'])
+    expect(graph.calls.setTtsMixPlacement).toEqual(['right'])
   })
 })

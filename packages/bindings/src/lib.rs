@@ -5,6 +5,7 @@ mod config;
 mod data_channel;
 mod events;
 mod media;
+mod mixer;
 mod peer_connection;
 mod rtp_receiver;
 mod rtp_sender;
@@ -25,6 +26,10 @@ pub use config::{
 };
 pub use data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
 pub use media::{JsLocalAudioTrack, JsMediaStream, JsMediaStreamTrack};
+pub use mixer::{
+    js_quat_identity, js_vec3_zero, JsClientPose, JsDistanceParams, JsMixGraph, JsMixPlacement,
+    JsQuat, JsVec3,
+};
 pub use peer_connection::JsPeerConnection;
 pub use rtp_receiver::JsRtpReceiver;
 pub use rtp_sender::JsRtpSender;

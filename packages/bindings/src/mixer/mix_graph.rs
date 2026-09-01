@@ -1,0 +1,270 @@
+//! MixGraph NAPI bindings (control plane — no PCM push/render from Node).
+
+use std::sync::Mutex;
+
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
+use node_webrtc_rust_mixer::{MixGraph, Quat, Vec3};
+
+use crate::mixer::types::{
+    JsClientPose, JsDistanceParams, JsMixPlacement, JsQuat, JsVec3,
+};
+
+/// Conference mix graph control handle (poses, groups, mutes, placements).
+#[napi]
+pub struct JsMixGraph {
+    inner: Mutex<MixGraph>,
+}
+
+#[napi]
+impl JsMixGraph {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(MixGraph::new()),
+        }
+    }
+
+    #[napi]
+    pub fn add_input(&self, participant_id: String) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .add_input(participant_id);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn remove_input(&self, participant_id: String) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .remove_input(&participant_id);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_mixing_enabled(&self, enabled: bool) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_mixing_enabled(enabled);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn mixing_enabled(&self) -> Result<bool> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .mixing_enabled())
+    }
+
+    #[napi]
+    pub fn set_global_mute(&self, target: String, muted: bool) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_global_mute(target, muted);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn is_globally_muted(&self, target: String) -> Result<bool> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .is_globally_muted(&target))
+    }
+
+    #[napi]
+    pub fn set_listener_mute(&self, listener: String, target: String, muted: bool) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_listener_mute(listener, target, muted);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn is_listener_muted(&self, listener: String, target: String) -> Result<bool> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .is_listener_muted(&listener, &target))
+    }
+
+    #[napi]
+    pub fn set_listener_sources(&self, listener: String, sources: Vec<String>) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_listener_sources(listener, &sources);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn listener_sources(&self, listener: String) -> Result<Option<Vec<String>>> {
+        let graph = self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?;
+        Ok(graph
+            .listener_sources(&listener)
+            .map(|set| set.iter().cloned().collect()))
+    }
+
+    #[napi]
+    pub fn clear_listener_routes(&self, listener: String) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .clear_listener_routes(&listener);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_pose(&self, participant_id: String, pose: JsClientPose) -> Result<()> {
+        let pose = pose.try_into()?;
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_pose(participant_id, pose);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn clear_pose(&self, participant_id: String) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .clear_pose(&participant_id);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn pose(&self, participant_id: String) -> Result<Option<JsClientPose>> {
+        let graph = self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?;
+        Ok(graph.pose(&participant_id).map(Into::into))
+    }
+
+    #[napi]
+    pub fn set_positional_enabled(&self, enabled: bool) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_positional_enabled(enabled);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn positional_enabled(&self) -> Result<bool> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .positional_enabled())
+    }
+
+    #[napi]
+    pub fn set_default_mix_placement(&self, placement: JsMixPlacement) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_default_mix_placement(placement.into());
+        Ok(())
+    }
+
+    #[napi]
+    pub fn default_mix_placement(&self) -> Result<JsMixPlacement> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .default_mix_placement()
+            .into())
+    }
+
+    #[napi]
+    pub fn set_tts_mix_placement(&self, placement: JsMixPlacement) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_tts_mix_placement(placement.into());
+        Ok(())
+    }
+
+    #[napi]
+    pub fn tts_mix_placement(&self) -> Result<JsMixPlacement> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .tts_mix_placement()
+            .into())
+    }
+
+    #[napi]
+    pub fn set_distance_params(&self, params: JsDistanceParams) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_distance_params(params.into());
+        Ok(())
+    }
+
+    #[napi]
+    pub fn distance_params(&self) -> Result<JsDistanceParams> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .distance_params()
+            .into())
+    }
+
+    #[napi]
+    pub fn set_group_members(&self, group_id: String, members: Vec<String>) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_group_members(group_id, &members);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn move_to_group(&self, participant_id: String, group_id: String) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .move_to_group(participant_id, group_id);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn remove_from_group(&self, participant_id: String) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .remove_from_group(&participant_id);
+        Ok(())
+    }
+}
+
+/// Identity quaternion helper for pose setup from TypeScript.
+#[napi]
+pub fn js_quat_identity() -> JsQuat {
+    Quat::IDENTITY.into()
+}
+
+/// Origin position helper for pose setup from TypeScript.
+#[napi]
+pub fn js_vec3_zero() -> JsVec3 {
+    Vec3::ZERO.into()
+}

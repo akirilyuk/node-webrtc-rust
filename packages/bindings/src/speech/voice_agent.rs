@@ -160,4 +160,16 @@ impl JsVoiceAgent {
             .await
             .map_err(speech_err)
     }
+
+    /// When `false`, inbound PCM still runs VAD but skips STT and user speech events.
+    #[napi]
+    pub async fn set_stt_enabled(&self, enabled: bool) -> Result<()> {
+        self.inner.set_stt_enabled(enabled).await;
+        Ok(())
+    }
+
+    #[napi]
+    pub async fn stt_enabled(&self) -> Result<bool> {
+        Ok(self.inner.stt_enabled().await)
+    }
 }

@@ -315,6 +315,20 @@ export class VoiceAgent {
     await this.native.waitTtsPlaybackIdle()
   }
 
+  /**
+   * When `false`, inbound PCM still runs VAD but skips STT and user speech events.
+   * TTS playback is unchanged.
+   */
+  async setSttEnabled(enabled: boolean): Promise<void> {
+    debugFn(MODULE, 'setSttEnabled', String(enabled))
+    await this.native.setSttEnabled(enabled)
+  }
+
+  /** Returns whether STT is enabled for inbound PCM. */
+  async sttEnabled(): Promise<boolean> {
+    return this.native.sttEnabled()
+  }
+
   /** Subscribe to `event` or `'speech'` for all event types. */
   on(event: SpeechEventName, listener: SpeechEventListener): this {
     if (!this.listeners.has(event)) {

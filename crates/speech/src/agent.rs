@@ -137,6 +137,8 @@ struct AgentInner {
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
     denoise: Option<Stereo48kRnnoise>,
+    /// When false, inbound PCM still runs VAD but skips STT push/poll and speech/STT events.
+    stt_enabled: bool,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -270,6 +272,7 @@ impl VoiceAgent {
                 pcm_writer: None,
                 pcm_reader: None,
                 denoise,
+                stt_enabled: true,
             })),
             stt: Mutex::new(stt),
             tts: Arc::new(Mutex::new(tts)),
@@ -305,6 +308,43 @@ impl VoiceAgent {
     /// True when stop could not join a TTS worker within the bound (recycle signal).
     pub fn is_tts_shutdown_unhealthy(&self) -> bool {
         self.tts_shutdown_unhealthy.load(Ordering::SeqCst)
+    }
+
+    /// When `false`, [`Self::process_inbound_pcm`] still runs VAD but skips STT and user speech events.
+    pub async fn stt_enabled(&self) -> bool {
+        self.inner.lock().await.stt_enabled
+    }
+
+    /// Enables or disables STT for inbound PCM. TTS is unchanged.
+    pub async fn set_stt_enabled(&self, enabled: bool) {
+        let mut inner = self.inner.lock().await;
+        inner.stt_enabled = enabled;
+        if !enabled {
+            Self::reset_stt_pipeline_state(&mut inner);
+        }
+    }
+
+    fn stt_pipeline_active(inner: &AgentInner) -> bool {
+        inner.stt_enabled && inner.config.stt.is_some()
+    }
+
+    fn reset_stt_pipeline_state(inner: &mut AgentInner) {
+        inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+        inner.stt_gate_hold_ms = 0;
+        inner.stt_finalize_pending = false;
+        inner.stt_endpoint_closing_started = false;
+        inner.stt_final_emitted_this_utterance = false;
+        inner.stt_speaking_end_emitted_this_utterance = false;
+        inner.stt_speaking_start_emitted_this_utterance = false;
+        inner.stt_stream_open = false;
+        inner.user_stt_session_open = false;
+        inner.vad_triggered_this_utterance = false;
+        inner.stt_listen_deadline_ms = 0;
+        Self::clear_utterance_finalize_timer(inner);
+        inner.last_partial_text = None;
+        inner.partials_emitted_this_utterance = false;
+        inner.barge_awaiting_stt_partial = false;
+        inner.defer_utterance_finalize_until_hold = false;
     }
 
     fn clear_utterance_finalize_timer(inner: &mut AgentInner) {
@@ -1315,7 +1355,7 @@ impl VoiceAgent {
                 inner.config.vad.barge_in.clone(),
                 Self::agent_playback_guard_active(&inner),
                 inner.agent_speaking,
-                inner.config.stt.is_some(),
+                Self::stt_pipeline_active(&inner),
                 inner.config.vad.enabled,
             )
         };
@@ -1558,6 +1598,9 @@ impl VoiceAgent {
     async fn emit_user_speaking_start_if_needed(&self) {
         let emit = {
             let mut inner = self.inner.lock().await;
+            if !inner.stt_enabled {
+                return;
+            }
             if inner.stt_speaking_start_emitted_this_utterance {
                 false
             } else {
@@ -1637,7 +1680,7 @@ impl VoiceAgent {
                 .unwrap_or(false);
             let vad_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
 
-            if gate_stt {
+            if gate_stt && Self::stt_pipeline_active(&inner) {
                 let barge_listen = inner.agent_speaking && !inner.stt_stream_open;
                 if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                     // During agent TTS the STT gate is closed until VAD SpeechStart. User speech
@@ -1656,7 +1699,7 @@ impl VoiceAgent {
             let mut complete_previous_utterance = false;
 
             if transitions.contains(&VadTransition::SpeechEnd) {
-                if gate_stt {
+                if gate_stt && Self::stt_pipeline_active(&inner) {
                     inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
                     let hold_ms = inner.config.vad.stt_gate_hold_ms;
                     inner.stt_gate_hold_ms = hold_ms;
@@ -1747,7 +1790,7 @@ impl VoiceAgent {
         // C1 / C2 timeout ticks (only when VAD enabled and STT stream lifecycle active).
         let (c1_expired, c2_expired) = {
             let mut inner = self.inner.lock().await;
-            if !inner.config.vad.enabled || inner.config.stt.is_none() {
+            if !inner.config.vad.enabled || !Self::stt_pipeline_active(&inner) {
                 (false, false)
             } else {
                 let mut c1 = false;
@@ -1793,11 +1836,22 @@ impl VoiceAgent {
         }
 
         if complete_previous_utterance {
-            self.complete_pending_utterance_if_any().await?;
+            let stt_active = {
+                let inner = self.inner.lock().await;
+                Self::stt_pipeline_active(&inner)
+            };
+            if stt_active {
+                self.complete_pending_utterance_if_any().await?;
+            }
         }
 
+        let stt_active = {
+            let inner = self.inner.lock().await;
+            Self::stt_pipeline_active(&inner)
+        };
+
         let mut pre_roll_flushed_this_frame = false;
-        if speech_start {
+        if speech_start && stt_active {
             let long_pause_new_phrase = {
                 let inner = self.inner.lock().await;
                 if !inner.config.vad.gate_stt {
@@ -1859,14 +1913,19 @@ impl VoiceAgent {
             match transition {
                 VadTransition::SpeechStart => {
                     self.on_vad_speech_start().await?;
-                    self.emit_user_speaking_start_if_needed().await;
+                    if stt_active {
+                        self.emit_user_speaking_start_if_needed().await;
+                    }
                 }
                 VadTransition::SpeechEnd => {
                     speech_end_transition = true;
+                    if !stt_active {
+                        voice_debug("user_speaking_end suppressed (STT disabled)");
+                    } else {
                     let (has_stt, defer_speaking_end, agent_speaking) = {
                         let inner = self.inner.lock().await;
                         (
-                            inner.config.stt.is_some(),
+                            Self::stt_pipeline_active(&inner),
                             inner.config.vad.gate_stt && !inner.agent_speaking,
                             inner.agent_speaking,
                         )
@@ -1886,8 +1945,13 @@ impl VoiceAgent {
                     } else {
                         self.emit(SpeechEvent::user_speaking_end());
                     }
+                    }
                 }
             }
+        }
+
+        if !stt_active {
+            return Ok(());
         }
 
         // After VAD transitions (SpeechStart opens STT stream via `on_vad_speech_start`).
@@ -2051,6 +2115,9 @@ impl VoiceAgent {
     }
 
     async fn push_stt_audio_bytes(&self, mono_bytes: Bytes) -> SpeechResult<()> {
+        if !self.inner.lock().await.stt_enabled {
+            return Ok(());
+        }
         let mut stt = self.stt.lock().await;
         if let Some(stt) = stt.as_mut() {
             stt.push_audio(mono_bytes).await?;
@@ -2113,6 +2180,9 @@ impl VoiceAgent {
     }
 
     async fn poll_stt_transcripts(&self) -> SpeechResult<()> {
+        if !self.inner.lock().await.stt_enabled {
+            return Ok(());
+        }
         loop {
             let transcript = {
                 let mut stt = self.stt.lock().await;

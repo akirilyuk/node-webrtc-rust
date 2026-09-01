@@ -1551,6 +1551,16 @@ export class VoiceAgentSessionHost {
     this.clientMixer!.setTtsMixPlacement(placement)
   }
 
+  setTtsPose(pose: ClientPose): void {
+    this.assertMixCapable()
+    this.clientMixer!.setTtsPose(pose)
+  }
+
+  clearTtsPose(): void {
+    this.assertMixCapable()
+    this.clientMixer!.clearTtsPose()
+  }
+
   /**
    * Toggle STT for one connected client or all voice peers when `clientId` is omitted.
    */

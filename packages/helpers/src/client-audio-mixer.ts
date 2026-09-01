@@ -31,11 +31,13 @@ export interface ClientMixGraph {
   removeInput(participantId: string): void
   pushFrame(participantId: string, pcm: Buffer): void
   renderOutput(listenerId: string): Buffer
-  panTtsFrame(pcm: Buffer): Buffer
+  panTtsFrame(pcm: Buffer, listenerId: string): Buffer
   setPose(participantId: string, pose: ClientPose): void
   setPositionalEnabled(enabled: boolean): void
   setDefaultMixPlacement(placement: MixPlacement): void
   setTtsMixPlacement(placement: MixPlacement): void
+  setTtsPose(pose: ClientPose): void
+  clearTtsPose(): void
   setGroupMembers(groupId: string, members: string[]): void
   moveToGroup(participantId: string, groupId: string): void
   removeFromGroup(participantId: string): void
@@ -136,6 +138,14 @@ export class ClientAudioMixer {
     this.graph.setTtsMixPlacement(placement)
   }
 
+  setTtsPose(pose: ClientPose): void {
+    this.graph.setTtsPose(pose)
+  }
+
+  clearTtsPose(): void {
+    this.graph.clearTtsPose()
+  }
+
   /**
    * Tee inbound mic PCM into the graph; VoiceAgent still receives the original samples.
    */
@@ -216,7 +226,7 @@ export class ClientAudioMixer {
     const mixed = this.graph.renderOutput(peerId)
     const tts = state.pendingTts ?? this.silenceFrame
     state.pendingTts = null
-    const panned = this.graph.panTtsFrame(tts)
+    const panned = this.graph.panTtsFrame(tts, peerId)
     const frame = sumStereoPcm(panned, mixed)
     await out.writeSample(frame, PCM_FRAME_DURATION_MS)
   }

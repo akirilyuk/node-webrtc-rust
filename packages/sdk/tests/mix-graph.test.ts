@@ -72,7 +72,31 @@ describe('AudioMixGraph', () => {
     graph.pushFrame('alice', silence)
     const mixed = graph.renderOutput('bob')
     expect(mixed).toHaveLength(3840)
-    const panned = graph.panTtsFrame(silence)
+    const panned = graph.panTtsFrame(silence, 'bob')
     expect(panned).toHaveLength(3840)
+  })
+
+  test('setTtsPose pans TTS right vs center when positional on', () => {
+    const graph = new AudioMixGraph()
+    graph.setPositionalEnabled(true)
+    graph.setTtsPose({
+      position: { ...vec3Zero(), x: 3 },
+      orientation: quatIdentity(),
+    })
+    const mono = Buffer.alloc(3840)
+    for (let i = 0; i < 3840; i += 4) {
+      mono.writeInt16LE(10_000, i)
+      mono.writeInt16LE(10_000, i + 2)
+    }
+    const center = graph.panTtsFrame(mono, 'listener')
+    const lCenter = center.readInt16LE(0)
+    const rCenter = center.readInt16LE(2)
+    expect(rCenter).toBeGreaterThan(lCenter)
+    graph.clearTtsPose()
+    graph.setTtsMixPlacement(MIX_PLACEMENT.Center)
+    const named = graph.panTtsFrame(mono, 'listener')
+    const lNamed = named.readInt16LE(0)
+    const rNamed = named.readInt16LE(2)
+    expect(Math.abs(lNamed - rNamed)).toBeLessThan(500)
   })
 })

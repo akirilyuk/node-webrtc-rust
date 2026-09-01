@@ -392,6 +392,9 @@ export declare class JsMixGraph {
   defaultMixPlacement(): JsMixPlacement
   setTtsMixPlacement(placement: JsMixPlacement): void
   ttsMixPlacement(): JsMixPlacement
+  setTtsPose(pose: JsClientPose): void
+  clearTtsPose(): void
+  ttsPose(): JsClientPose | null
   setDistanceParams(params: JsDistanceParams): void
   distanceParams(): JsDistanceParams
   setGroupMembers(groupId: string, members: Array<string>): void
@@ -401,8 +404,8 @@ export declare class JsMixGraph {
   pushFrame(participantId: string, pcm: Buffer): void
   /** Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off). */
   renderOutput(listenerId: string): Buffer
-  /** Pans a TTS frame using the graph's [`MixGraph::tts_mix_placement`]. */
-  panTtsFrame(pcm: Buffer): Buffer
+  /** Pans a TTS frame for `listener_id` using the graph's TTS pose or placement. */
+  panTtsFrame(pcm: Buffer, listenerId: string): Buffer
 }
 /** WebRTC peer connection exposed to JavaScript. */
 export declare class JsPeerConnection {

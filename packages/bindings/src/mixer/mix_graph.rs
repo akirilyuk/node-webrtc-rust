@@ -212,6 +212,34 @@ impl JsMixGraph {
     }
 
     #[napi]
+    pub fn set_tts_pose(&self, pose: JsClientPose) -> Result<()> {
+        let pose = pose.try_into()?;
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .set_tts_pose(pose);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn clear_tts_pose(&self) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .clear_tts_pose();
+        Ok(())
+    }
+
+    #[napi]
+    pub fn tts_pose(&self) -> Result<Option<JsClientPose>> {
+        let graph = self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?;
+        Ok(graph.tts_pose().map(Into::into))
+    }
+
+    #[napi]
     pub fn set_distance_params(&self, params: JsDistanceParams) -> Result<()> {
         self.inner
             .lock()
@@ -285,9 +313,9 @@ impl JsMixGraph {
         Ok(Buffer::from(frame.pcm.as_ref()))
     }
 
-    /// Pans a TTS frame using the graph's [`MixGraph::tts_mix_placement`].
+    /// Pans a TTS frame for `listener_id` using the graph's TTS pose or placement.
     #[napi]
-    pub fn pan_tts_frame(&self, pcm: Buffer) -> Result<Buffer> {
+    pub fn pan_tts_frame(&self, pcm: Buffer, listener_id: String) -> Result<Buffer> {
         if pcm.len() != FRAME_BYTES {
             return Err(Error::from_reason(format!(
                 "mix panTtsFrame expects {FRAME_BYTES} bytes (48 kHz stereo 20 ms), got {}",
@@ -299,7 +327,7 @@ impl JsMixGraph {
             .inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
-            .pan_tts_frame(&frame);
+            .pan_tts_frame(&frame, &listener_id);
         Ok(Buffer::from(out.pcm.as_ref()))
     }
 }

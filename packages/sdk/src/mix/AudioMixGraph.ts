@@ -137,6 +137,19 @@ export class AudioMixGraph {
     return fromJsPlacement(this.native.ttsMixPlacement())
   }
 
+  setTtsPose(pose: ClientPose): void {
+    this.native.setTtsPose(toJsPose(pose))
+  }
+
+  clearTtsPose(): void {
+    this.native.clearTtsPose()
+  }
+
+  ttsPose(): ClientPose | undefined {
+    const pose = this.native.ttsPose()
+    return pose ? fromJsPose(pose) : undefined
+  }
+
   setDistanceParams(params: DistanceParams): void {
     this.native.setDistanceParams(toJsDistanceParams(params))
   }
@@ -167,9 +180,9 @@ export class AudioMixGraph {
     return this.native.renderOutput(listenerId)
   }
 
-  /** Pans a TTS frame using the graph's TTS placement. */
-  panTtsFrame(pcm: Buffer): Buffer {
-    return this.native.panTtsFrame(pcm)
+  /** Pans a TTS frame for `listenerId` using the graph's TTS pose or placement. */
+  panTtsFrame(pcm: Buffer, listenerId: string): Buffer {
+    return this.native.panTtsFrame(pcm, listenerId)
   }
 }
 

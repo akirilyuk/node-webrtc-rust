@@ -8,6 +8,7 @@ function createMockGraph(): ClientMixGraph & {
     pushFrame: Array<{ peer: string; len: number }>
     renderOutput: string[]
     panTtsFrame: number[]
+    panTtsListenerIds: string[]
     setGroupMembers: Array<{ groupId: string; members: string[] }>
     moveToGroup: Array<{ peer: string; groupId: string }>
     removeFromGroup: string[]
@@ -15,6 +16,8 @@ function createMockGraph(): ClientMixGraph & {
     setPositionalEnabled: boolean[]
     setDefaultMixPlacement: string[]
     setTtsMixPlacement: string[]
+    setTtsPose: unknown[]
+    clearTtsPose: number[]
     addInput: string[]
     removeInput: string[]
   }
@@ -23,6 +26,7 @@ function createMockGraph(): ClientMixGraph & {
     pushFrame: [] as Array<{ peer: string; len: number }>,
     renderOutput: [] as string[],
     panTtsFrame: [] as number[],
+    panTtsListenerIds: [] as string[],
     setGroupMembers: [] as Array<{ groupId: string; members: string[] }>,
     moveToGroup: [] as Array<{ peer: string; groupId: string }>,
     removeFromGroup: [] as string[],
@@ -30,6 +34,8 @@ function createMockGraph(): ClientMixGraph & {
     setPositionalEnabled: [] as boolean[],
     setDefaultMixPlacement: [] as string[],
     setTtsMixPlacement: [] as string[],
+    setTtsPose: [] as unknown[],
+    clearTtsPose: [] as number[],
     addInput: [] as string[],
     removeInput: [] as string[],
   }
@@ -50,8 +56,9 @@ function createMockGraph(): ClientMixGraph & {
       calls.renderOutput.push(listenerId)
       return Buffer.from(silence)
     },
-    panTtsFrame: (pcm) => {
+    panTtsFrame: (pcm, listenerId) => {
       calls.panTtsFrame.push(pcm.length)
+      calls.panTtsListenerIds.push(listenerId)
       return Buffer.from(pcm)
     },
     setPose: (peer, pose) => {
@@ -65,6 +72,12 @@ function createMockGraph(): ClientMixGraph & {
     },
     setTtsMixPlacement: (placement) => {
       calls.setTtsMixPlacement.push(placement)
+    },
+    setTtsPose: (pose) => {
+      calls.setTtsPose.push(pose)
+    },
+    clearTtsPose: () => {
+      calls.clearTtsPose.push(1)
     },
     setGroupMembers: (groupId, members) => {
       calls.setGroupMembers.push({ groupId, members })
@@ -147,6 +160,7 @@ describe('ClientAudioMixer', () => {
 
     expect(graph.calls.renderOutput).toEqual(['bob'])
     expect(graph.calls.panTtsFrame).toEqual([PCM_FULL_FRAME_BYTES])
+    expect(graph.calls.panTtsListenerIds).toEqual(['bob'])
     expect(pcTrack.writeSample).toHaveBeenCalledTimes(1)
     expect(pcTrack.writeSample).toHaveBeenCalledWith(expect.any(Buffer), PCM_FRAME_DURATION_MS)
   })
@@ -175,8 +189,9 @@ describe('ClientAudioMixer', () => {
   it('consumes TTS once per tee — next pump tick uses silence', async () => {
     const panInputs: Buffer[] = []
     const graph = createMockGraph()
-    graph.panTtsFrame = (pcm) => {
+    graph.panTtsFrame = (pcm, listenerId) => {
       panInputs.push(Buffer.from(pcm))
+      calls.panTtsListenerIds.push(listenerId)
       return Buffer.from(pcm)
     }
     const mixer = new ClientAudioMixer({ graph })
@@ -239,6 +254,12 @@ describe('ClientAudioMixer', () => {
     mixer.setPositionalEnabled(false)
     mixer.setDefaultMixPlacement('left')
     mixer.setTtsMixPlacement('right')
+    const pose = {
+      position: { x: 1, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    mixer.setTtsPose(pose)
+    mixer.clearTtsPose()
 
     expect(graph.calls.setGroupMembers).toEqual([{ groupId: 'g1', members: ['a', 'b'] }])
     expect(graph.calls.moveToGroup).toEqual([{ peer: 'c', groupId: 'g1' }])
@@ -246,5 +267,7 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.setPositionalEnabled).toEqual([false])
     expect(graph.calls.setDefaultMixPlacement).toEqual(['left'])
     expect(graph.calls.setTtsMixPlacement).toEqual(['right'])
+    expect(graph.calls.setTtsPose).toEqual([pose])
+    expect(graph.calls.clearTtsPose).toEqual([1])
   })
 })

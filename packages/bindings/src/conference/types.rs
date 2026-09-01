@@ -37,6 +37,17 @@ impl From<JsIceServer> for IceServer {
 pub struct JsRoomOptions {
     pub max_participants: Option<u32>,
     pub ice_servers: Option<Vec<JsIceServer>>,
+    pub noise_suppression: Option<JsRoomNoiseSuppression>,
+}
+
+/// Per-participant inbound RNNoise toggle for conference mixing.
+#[napi(string_enum)]
+#[derive(Debug)]
+pub enum JsRoomNoiseSuppression {
+    #[napi(value = "none")]
+    None,
+    #[napi(value = "rnnoise")]
+    Rnnoise,
 }
 
 impl From<JsRoomOptions> for RoomConfig {
@@ -49,7 +60,42 @@ impl From<JsRoomOptions> for RoomConfig {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            noise_suppression: match value.noise_suppression {
+                None | Some(JsRoomNoiseSuppression::Rnnoise) => true,
+                Some(JsRoomNoiseSuppression::None) => false,
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod room_options_from_tests {
+    use super::*;
+
+    #[test]
+    fn omitted_noise_suppression_defaults_to_on() {
+        let cfg: RoomConfig = JsRoomOptions::default().into();
+        assert!(cfg.noise_suppression);
+    }
+
+    #[test]
+    fn rnnoise_maps_to_on() {
+        let cfg: RoomConfig = JsRoomOptions {
+            noise_suppression: Some(JsRoomNoiseSuppression::Rnnoise),
+            ..Default::default()
+        }
+        .into();
+        assert!(cfg.noise_suppression);
+    }
+
+    #[test]
+    fn none_maps_to_off() {
+        let cfg: RoomConfig = JsRoomOptions {
+            noise_suppression: Some(JsRoomNoiseSuppression::None),
+            ..Default::default()
+        }
+        .into();
+        assert!(!cfg.noise_suppression);
     }
 }
 

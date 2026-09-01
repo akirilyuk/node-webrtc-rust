@@ -52,6 +52,29 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 
 ---
 
+## Inbound noise suppression (RNNoise)
+
+Optional RNNoise runs on **stereo 48 kHz** inbound PCM **before** downsample and VAD. It reduces stationary background noise for STT; it is **not** caller isolation or echo cancellation.
+
+| Surface | Config | Default |
+| ------- | ------ | ------- |
+| `VoiceAgent` | `noiseSuppression: { provider: 'rnnoise' }` | Off (`provider` omitted or `'none'`) |
+| Conference `RoomOptions` | `noiseSuppression: 'rnnoise' \| 'none'` | On when omitted (`'rnnoise'`) |
+
+```typescript
+const agent = new VoiceAgent({
+  noiseSuppression: { provider: 'rnnoise' },
+  vad: VOICE_AGENT_VAD_PRESET,
+  stt: { provider: 'deepgram' /* … */ },
+})
+
+await conference.createRoom('demo', { noiseSuppression: 'none' }) // disable mix denoise
+```
+
+RNNoise adds roughly **10 ms** algorithmic delay on the inbound path. Tune VAD/barge-in separately — denoise does not replace semantic barge-in.
+
+---
+
 ## STT utterance lifecycle (VAD + STT events)
 
 When `vad.enabled` is **true** and STT is configured, each VAD `SpeechStart` opens a **recognition session** — STT is **not** fed continuously during agent TTS until VAD fires. Use the lifecycle events for logging, tests, and UI that need “listening for words” vs “user is talking.”

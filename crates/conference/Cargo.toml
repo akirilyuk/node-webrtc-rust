@@ -8,6 +8,7 @@ description = "Conference room lifecycle, mixing, and signaling for node-webrtc-
 
 [dependencies]
 node-webrtc-rust-core = { path = "../core" }
+node-webrtc-rust-denoise = { path = "../denoise" }
 node-webrtc-rust-mixer = { path = "../mixer" }
 tokio = { workspace = true }
 bytes = { workspace = true }

@@ -48,7 +48,7 @@ rm -f "$TMP/npx.out" "$TMP/npm.out"
 run_recipe \
   --target x86_64-unknown-linux-musl \
   --profile release
-rg -q '^napi build --target x86_64-unknown-linux-musl --release --features otel --platform$' "$TMP/npx.out"
+rg -q '^napi build --target x86_64-unknown-linux-musl --release --features otel,rnnoise --platform$' "$TMP/npx.out"
 rg -q '^SHERPA=/opt/sherpa-musl/lib$' "$TMP/npx.out"
 test ! -e "$TMP/npm.out"
 echo "ok: Linux release args + Sherpa environment"
@@ -58,7 +58,7 @@ rm -f "$TMP/npx.out" "$TMP/npm.out"
 run_recipe \
   --target x86_64-apple-darwin \
   --profile release
-rg -q '^napi build --target x86_64-apple-darwin --release --features otel --platform$' "$TMP/npx.out"
+rg -q '^napi build --target x86_64-apple-darwin --release --features otel,rnnoise --platform$' "$TMP/npx.out"
 test ! -e "$TMP/npm.out"
 echo "ok: host args preserve matrix build arguments"
 

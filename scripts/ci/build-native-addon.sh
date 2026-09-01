@@ -4,6 +4,9 @@
 # This file is part of the native input fingerprint. Keep cache, manifest,
 # artifact, and workflow orchestration outside this script so those changes can
 # reuse already-compiled Rust binaries.
+#
+# Debug `napi build` (no --features) still links RNNoise via default crate deps
+# and bindings `default = ["rnnoise"]`; release CI passes otel,rnnoise explicitly.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -54,7 +57,7 @@ rm -f ./*.node
 
 args=(build --target "$target")
 if [[ "$profile" == "release" ]]; then
-  args+=(--release --features otel)
+  args+=(--release --features otel,rnnoise)
   args+=(--platform)
 fi
 

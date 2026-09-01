@@ -13,8 +13,8 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::config::{
-    resolved_post_utterance_silence_ms, EventDeliveryMode, SendTextToTtsOptions, VadConfig,
-    VoiceAgentConfig, VoiceSessionContext,
+    resolved_post_utterance_silence_ms, EventDeliveryMode, NoiseSuppressionProvider,
+    SendTextToTtsOptions, VadConfig, VoiceAgentConfig, VoiceSessionContext,
 };
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
@@ -27,6 +27,7 @@ use crate::registry::VendorRegistry;
 use crate::stt_pre_roll::SttPreRollBuffer;
 use crate::tts_buffer::TtsBuffer;
 use crate::vad::{handle_barge_in, VadEngine, VadTransition};
+use node_webrtc_rust_denoise::Stereo48kRnnoise;
 
 /// Callback invoked when PCM should be written to the outbound track.
 pub type PcmWriter = Arc<dyn Fn(Bytes, u32) -> SpeechResult<()> + Send + Sync>;
@@ -135,6 +136,7 @@ struct AgentInner {
     tts_playback_last_error: Option<String>,
     pcm_writer: Option<PcmWriter>,
     pcm_reader: Option<PcmReader>,
+    denoise: Option<Stereo48kRnnoise>,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -227,6 +229,11 @@ impl VoiceAgent {
             None
         };
 
+        let denoise = match config.noise_suppression.provider {
+            NoiseSuppressionProvider::Rnnoise => Some(Stereo48kRnnoise::new()),
+            NoiseSuppressionProvider::None => None,
+        };
+
         Ok(Arc::new_cyclic(|weak| Self {
             event_bus: SpeechEventBus::new(),
             tts_buffer: TtsBuffer::new(),
@@ -262,6 +269,7 @@ impl VoiceAgent {
                 tts_playback_last_error: None,
                 pcm_writer: None,
                 pcm_reader: None,
+                denoise,
             })),
             stt: Mutex::new(stt),
             tts: Arc::new(Mutex::new(tts)),
@@ -1001,13 +1009,8 @@ impl VoiceAgent {
                 {
                     return Ok(());
                 }
-                Self::wait_job_playback_idle(
-                    tts_buffer,
-                    inner,
-                    event_bus,
-                    failure_gen_at_start,
-                )
-                .await
+                Self::wait_job_playback_idle(tts_buffer, inner, event_bus, failure_gen_at_start)
+                    .await
             }
             Err(error) => {
                 tts_buffer.set_producing(false).await;
@@ -1596,6 +1599,15 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             inner.last_inbound_pcm_at = Some(Instant::now());
         }
+
+        let pcm = {
+            let mut inner = self.inner.lock().await;
+            if let Some(denoiser) = inner.denoise.as_mut() {
+                Bytes::from(denoiser.process_s16le_stereo(pcm.as_ref()))
+            } else {
+                pcm
+            }
+        };
 
         let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
         let mono_bytes = i16_samples_to_bytes(&mono);
@@ -2520,7 +2532,10 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].0.len(), STEREO_FRAME_20MS_BYTES);
         // Remainder kept for the next progressive chunk (no silence pad).
-        assert_eq!(carry.len(), 1000 + STEREO_FRAME_20MS_BYTES - STEREO_FRAME_20MS_BYTES);
+        assert_eq!(
+            carry.len(),
+            1000 + STEREO_FRAME_20MS_BYTES - STEREO_FRAME_20MS_BYTES
+        );
         // 1000 bytes from the first partial remain after taking one full frame from the join.
         // carry was 1000+3840; drained 3840 → 1000 left.
         assert_eq!(carry.len(), 1000);

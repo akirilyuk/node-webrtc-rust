@@ -1,5 +1,6 @@
 import {
   JsEventDeliveryMode,
+  JsNoiseSuppressionProvider,
   JsSpeechEventType,
   JsSttVendor,
   JsTtsVendor,
@@ -157,6 +158,16 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
     stt: config.stt ? toJsSttConfig(config.stt) : undefined,
     tts: config.tts ? toJsTtsConfig(config.tts) : undefined,
     postUtteranceSilenceMs,
+    noiseSuppression: config.noiseSuppression
+      ? {
+          provider:
+            config.noiseSuppression.provider === 'rnnoise'
+              ? JsNoiseSuppressionProvider.Rnnoise
+              : config.noiseSuppression.provider === 'none'
+                ? JsNoiseSuppressionProvider.None
+                : undefined,
+        }
+      : undefined,
   }
 }
 

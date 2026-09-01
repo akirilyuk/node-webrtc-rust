@@ -14,6 +14,12 @@ export interface JsIceServer {
 export interface JsRoomOptions {
   maxParticipants?: number
   iceServers?: Array<JsIceServer>
+  noiseSuppression?: JsRoomNoiseSuppression
+}
+/** Per-participant inbound RNNoise toggle for conference mixing. */
+export const enum JsRoomNoiseSuppression {
+  None = 'none',
+  Rnnoise = 'rnnoise'
 }
 /** Participant summary exposed to JavaScript. */
 export interface JsParticipantInfo {
@@ -189,6 +195,13 @@ export interface JsTtsConfig {
   apiKey?: string
   postUtteranceSilenceMs?: number
 }
+export const enum JsNoiseSuppressionProvider {
+  None = 'none',
+  Rnnoise = 'rnnoise'
+}
+export interface JsNoiseSuppressionConfig {
+  provider?: JsNoiseSuppressionProvider
+}
 export interface JsVoiceSessionContext {
   sessionId?: string
   traceId?: string
@@ -203,6 +216,7 @@ export interface JsVoiceAgentConfig {
   stt?: JsSttConfig
   tts?: JsTtsConfig
   postUtteranceSilenceMs?: number
+  noiseSuppression?: JsNoiseSuppressionConfig
 }
 export const enum JsSpeechEventType {
   UserSpeakingStart = 'user_speaking_start',

@@ -7,7 +7,9 @@ repository.workspace = true
 description = "NAPI-RS bindings exposing WebRTC and mixing APIs to Node.js"
 
 [features]
-default = []
+default = ["rnnoise"]
+# RNNoise inbound denoise (speech crate; denoise is always linked — feature documents the path).
+rnnoise = ["node-webrtc-rust-speech/rnnoise"]
 # Opt-in Silero VAD via ort load-dynamic — operators must install libonnxruntime locally (see VOICE-VAD-AND-BARGE-IN.md).
 silero-vad = ["node-webrtc-rust-speech/silero-vad"]
 # OpenTelemetry voice pipeline spans + metrics (see README observability section).

@@ -159,6 +159,36 @@ fn default_true() -> bool {
     true
 }
 
+/// Inbound noise suppression backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoiseSuppressionProvider {
+    None,
+    Rnnoise,
+}
+
+impl Default for NoiseSuppressionProvider {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// Inbound PCM noise suppression (before VAD / downsample).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoiseSuppressionConfig {
+    #[serde(default)]
+    pub provider: NoiseSuppressionProvider,
+}
+
+impl Default for NoiseSuppressionConfig {
+    fn default() -> Self {
+        Self {
+            provider: NoiseSuppressionProvider::None,
+        }
+    }
+}
+
 /// Supported VAD sample rates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -386,6 +416,8 @@ pub struct VoiceAgentConfig {
     #[serde(default)]
     pub vad: VadConfig,
     #[serde(default)]
+    pub noise_suppression: NoiseSuppressionConfig,
+    #[serde(default)]
     pub events: EventsConfig,
     pub stt: Option<SttConfig>,
     pub tts: Option<TtsConfig>,
@@ -432,6 +464,7 @@ impl Default for VoiceAgentConfig {
     fn default() -> Self {
         Self {
             vad: VadConfig::default(),
+            noise_suppression: NoiseSuppressionConfig::default(),
             events: EventsConfig::default(),
             stt: Some(SttConfig {
                 provider: SttVendor::Mock,

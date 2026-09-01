@@ -1,5 +1,6 @@
 import {
   JsMuteScope,
+  JsRoomNoiseSuppression,
   type JsConferenceRoom,
   type JsIceServer,
   type JsMuteOptions,
@@ -35,10 +36,17 @@ function toJsRoomOptions(options?: RoomOptions): JsRoomOptions | undefined {
     return undefined
   }
 
-  return {
+  const js: JsRoomOptions = {
     maxParticipants: options.maxParticipants,
     iceServers: options.iceServers?.map(toJsIceServer),
   }
+  if (options.noiseSuppression !== undefined) {
+    js.noiseSuppression =
+      options.noiseSuppression === 'rnnoise'
+        ? JsRoomNoiseSuppression.Rnnoise
+        : JsRoomNoiseSuppression.None
+  }
+  return js
 }
 
 function toJsIceServer(server: RTCIceServer): JsIceServer {

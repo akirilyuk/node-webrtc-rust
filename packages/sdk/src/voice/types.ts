@@ -138,6 +138,13 @@ export interface VoiceAgentConfig {
   tts?: TtsConfig
   /** Trailing outbound silence after TTS (ms). Deploy JSON may set `tts.postUtteranceSilenceMs`. */
   postUtteranceSilenceMs?: number
+  /**
+   * Inbound RNNoise before VAD/downsample. Default off (`provider` omitted or `'none'`).
+   * Operates on stereo 48 kHz PCM; adds ~10 ms algorithmic delay. Not caller isolation.
+   */
+  noiseSuppression?: {
+    provider?: 'none' | 'rnnoise'
+  }
 }
 
 /**

@@ -115,6 +115,18 @@ function createHost(
   return host as unknown as HostTestAccess
 }
 
+describe('VoiceAgentSessionHost construction', () => {
+  it('does not construct native MixGraph when clientMixGraph is omitted', () => {
+    expect(
+      () =>
+        new VoiceAgentSessionHost(createStubSignaling() as never, [], {
+          voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
+          sessionMode: 'voice',
+        }),
+    ).not.toThrow()
+  })
+})
+
 function createFakeSession(overrides: Partial<FakeSession> = {}): FakeSession {
   return {
     pc: { connectionState: 'connected', close: vi.fn() },

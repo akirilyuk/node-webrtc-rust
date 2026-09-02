@@ -23,6 +23,7 @@ Positional MixGraph mixing, compile-by-default inbound RNNoise, and a runtime ST
 ### Fixed
 
 - **Speech** — VAD `user_speaking_start` / `user_speaking_end` still emit when no STT vendor is configured (`stt: None`). `setSttEnabled(false)` remains the suppress path. (#184)
+- **helpers** — `VoiceAgentSessionHost` does not construct native `JsMixGraph` at construct time. Quality / no-native unit tests no longer throw `JsMixGraph is not a constructor`. The graph is created on first voice session or mix API when bindings are loaded.
 
 **Compare:** [`release/0.7.4…release/0.8.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.7.4...release/0.8.0)
 

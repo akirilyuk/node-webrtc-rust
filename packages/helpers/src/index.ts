@@ -25,6 +25,7 @@ export {
   SERVER_PEER_ID,
   VoiceAgentSessionHost,
   MIX_REQUIRES_VOICE_PLUS_DATA,
+  TTS_POSE_REQUIRES_VOICE,
   type VoiceAgentSessionHostOptions,
   type PeerCloseOutcome,
   type TeardownComponentStatus,

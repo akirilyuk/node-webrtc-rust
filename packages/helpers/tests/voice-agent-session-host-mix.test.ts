@@ -4,6 +4,7 @@ import type { ClientMixGraph } from '../src/client-audio-mixer.js'
 import { PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 import {
   MIX_REQUIRES_VOICE_PLUS_DATA,
+  TTS_POSE_REQUIRES_VOICE,
   VoiceAgentSessionHost,
 } from '../src/voice-agent-session-host.js'
 
@@ -83,16 +84,44 @@ function fakeAgent(): FakeAgent {
 }
 
 describe('VoiceAgentSessionHost mix APIs', () => {
-  it('throws on voice-only session mode', () => {
-    const host = createHost('voice')
+  it('throws mix groups on voice-only session mode', () => {
+    const host = createHost('voice', createMockMixGraph())
     expect(() => host.createMixGroup({ id: 'g1', clientIds: ['a'] })).toThrow(
       MIX_REQUIRES_VOICE_PLUS_DATA,
     )
   })
 
-  it('throws on data-only session mode', () => {
+  it('forwards TTS pose controls on voice-only when clientMixGraph is injected', () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice', graph)
+    const pose = {
+      position: { x: 1, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+
+    host.setClientPose('A', pose)
+    host.setPositionalMixing(true)
+    host.setTtsMixPlacement('right')
+    host.setTtsPose('A', pose)
+    host.clearTtsPose('A')
+
+    expect(graph.setPose).toHaveBeenCalledWith('A', pose)
+    expect(graph.setPositionalEnabled).toHaveBeenCalledWith(true)
+    expect(graph.setTtsMixPlacement).toHaveBeenCalledWith('right')
+    expect(graph.setTtsPose).toHaveBeenCalledWith('A', pose)
+    expect(graph.clearTtsPose).toHaveBeenCalledWith('A')
+  })
+
+  it('throws on data-only session mode for mix groups', () => {
     const host = createHost('data-only')
-    expect(() => host.setPositionalMixing(true)).toThrow(MIX_REQUIRES_VOICE_PLUS_DATA)
+    expect(() => host.createMixGroup({ id: 'g1', clientIds: ['a'] })).toThrow(
+      MIX_REQUIRES_VOICE_PLUS_DATA,
+    )
+  })
+
+  it('throws on data-only session mode for TTS pose', () => {
+    const host = createHost('data-only')
+    expect(() => host.setPositionalMixing(true)).toThrow(TTS_POSE_REQUIRES_VOICE)
   })
 
   it('creates isolated groups and supports mid-call exclusive move', () => {

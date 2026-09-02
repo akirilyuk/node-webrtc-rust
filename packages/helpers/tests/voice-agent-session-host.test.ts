@@ -1,10 +1,32 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import type { ClientMixGraph } from '../src/client-audio-mixer.js'
+import { PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 import {
   VoiceAgentSessionHost,
   type VoiceAgentSessionHostOptions,
 } from '../src/voice-agent-session-host.js'
 import type { VoiceSessionContext, VoiceSessionHandler } from '../src/voice-session-handler.js'
+
+function createMockMixGraph(): ClientMixGraph {
+  const silence = Buffer.alloc(PCM_FULL_FRAME_BYTES)
+  return {
+    addInput: vi.fn(),
+    removeInput: vi.fn(),
+    pushFrame: vi.fn(),
+    renderOutput: vi.fn(() => Buffer.from(silence)),
+    panTtsFrame: vi.fn((pcm: Buffer, _listenerId: string) => Buffer.from(pcm)),
+    setPose: vi.fn(),
+    setPositionalEnabled: vi.fn(),
+    setDefaultMixPlacement: vi.fn(),
+    setTtsMixPlacement: vi.fn(),
+    setTtsPose: vi.fn(),
+    clearTtsPose: vi.fn(),
+    setGroupMembers: vi.fn(),
+    moveToGroup: vi.fn(),
+    removeFromGroup: vi.fn(),
+  }
+}
 
 /** True when SDP negotiates an audio m-line (used by data-only mode tests). */
 export function sdpHasAudioMedia(sdp: string): boolean {
@@ -82,6 +104,7 @@ function createHost(
     voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
     voiceHandler,
     sessionMode,
+    ...(sessionMode !== 'data-only' ? { clientMixGraph: createMockMixGraph() } : {}),
     sessionBudget: {
       tryAcquire: () => 'lease-test',
       release: () => undefined,
@@ -377,9 +400,17 @@ describe('VoiceAgentSessionHost peer lifecycle', () => {
 describe('VoiceAgentSessionHost session hooks', () => {
   it('calls wrapAudioTracks before attach and attach sees wrapped tracks', async () => {
     const inbound = { kind: 'audio', id: 'inbound-raw' }
-    const outbound = { kind: 'audio', id: 'outbound-raw', writeSample: vi.fn(async () => undefined) }
+    const outbound = {
+      kind: 'audio',
+      id: 'outbound-raw',
+      writeSample: vi.fn(async () => undefined),
+    }
     const wrappedInbound = { kind: 'audio', id: 'inbound-wrapped' }
-    const wrappedOutbound = { kind: 'audio', id: 'outbound-wrapped', writeSample: vi.fn(async () => undefined) }
+    const wrappedOutbound = {
+      kind: 'audio',
+      id: 'outbound-wrapped',
+      writeSample: vi.fn(async () => undefined),
+    }
     const wrapAudioTracks = vi.fn(({ inbound: _inTrack, outbound: _outTrack }) => ({
       inbound: wrappedInbound,
       outbound: wrappedOutbound,
@@ -400,8 +431,9 @@ describe('VoiceAgentSessionHost session hooks', () => {
     })
     expect(session.agent?.attach).toHaveBeenCalledWith({
       inboundTrack: wrappedInbound,
-      outboundTrack: wrappedOutbound,
+      outboundTrack: expect.objectContaining({ kind: 'audio' }),
     })
+    expect(session.agentTtsOut).toBeDefined()
     expect(session.inboundTrack).toBe(wrappedInbound)
     expect(session.agentOut).toBe(wrappedOutbound)
   })

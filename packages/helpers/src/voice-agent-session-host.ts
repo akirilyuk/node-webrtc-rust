@@ -203,6 +203,8 @@ function componentOk(status: TeardownComponentStatus): boolean {
 export const MIX_REQUIRES_VOICE_PLUS_DATA =
   "Mix APIs require sessionMode 'voice+data' (voice tracks and a sync data channel)"
 
+export const TTS_POSE_REQUIRES_VOICE = 'TTS pose APIs require voice or voice+data (not data-only)'
+
 export interface CreateMixGroupOptions {
   id: string
   clientIds: string[]
@@ -366,9 +368,9 @@ export class VoiceAgentSessionHost {
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
     this.sessionMode = options.sessionMode ?? 'voice'
     this.clientMixer =
-      this.sessionMode === 'voice+data'
-        ? new ClientAudioMixer({ graph: options.clientMixGraph })
-        : undefined
+      this.sessionMode === 'data-only'
+        ? undefined
+        : new ClientAudioMixer({ graph: options.clientMixGraph })
 
     this.signaling.on('peer-joined', (peerId) => {
       if (peerId === VOICE_AGENT_SERVER_PEER_ID) return
@@ -964,8 +966,14 @@ export class VoiceAgentSessionHost {
 
       if (this.clientMixer) {
         this.clientMixer.registerPeer(peerId)
-        if (inboundTrack) {
-          inboundTrack = this.clientMixer.wrapInboundTrack(peerId, inboundTrack)
+        if (
+          inboundTrack &&
+          typeof (inboundTrack as { readSample?: unknown }).readSample === 'function'
+        ) {
+          inboundTrack = this.clientMixer.wrapInboundTrack(
+            peerId,
+            inboundTrack as Parameters<ClientAudioMixer['wrapInboundTrack']>[1],
+          )
           session.inboundTrack = inboundTrack
         }
       }
@@ -1513,6 +1521,12 @@ export class VoiceAgentSessionHost {
     }
   }
 
+  private assertTtsPoseCapable(): void {
+    if (!this.clientMixer) {
+      throw new Error(TTS_POSE_REQUIRES_VOICE)
+    }
+  }
+
   /** Creates a mix group with exclusive listener routes (Voice+Data only). */
   createMixGroup(options: CreateMixGroupOptions): void {
     this.assertMixCapable()
@@ -1532,12 +1546,12 @@ export class VoiceAgentSessionHost {
   }
 
   setClientPose(clientId: string, pose: ClientPose): void {
-    this.assertMixCapable()
+    this.assertTtsPoseCapable()
     this.clientMixer!.setClientPose(clientId, pose)
   }
 
   setPositionalMixing(enabled: boolean): void {
-    this.assertMixCapable()
+    this.assertTtsPoseCapable()
     this.clientMixer!.setPositionalEnabled(enabled)
   }
 
@@ -1547,17 +1561,17 @@ export class VoiceAgentSessionHost {
   }
 
   setTtsMixPlacement(placement: MixPlacement): void {
-    this.assertMixCapable()
+    this.assertTtsPoseCapable()
     this.clientMixer!.setTtsMixPlacement(placement)
   }
 
   setTtsPose(clientId: string, pose: ClientPose): void {
-    this.assertMixCapable()
+    this.assertTtsPoseCapable()
     this.clientMixer!.setTtsPose(clientId, pose)
   }
 
   clearTtsPose(clientId: string): void {
-    this.assertMixCapable()
+    this.assertTtsPoseCapable()
     this.clientMixer!.clearTtsPose(clientId)
   }
 

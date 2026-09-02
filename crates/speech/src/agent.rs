@@ -1913,9 +1913,9 @@ impl VoiceAgent {
             match transition {
                 VadTransition::SpeechStart => {
                     self.on_vad_speech_start().await?;
-                    if stt_active {
-                        self.emit_user_speaking_start_if_needed().await;
-                    }
+                    // VAD speaking_start is independent of having an STT vendor (tests with
+                    // stt: None still expect it). setSttEnabled(false) is gated inside emit.
+                    self.emit_user_speaking_start_if_needed().await;
                 }
                 VadTransition::SpeechEnd => {
                     speech_end_transition = true;

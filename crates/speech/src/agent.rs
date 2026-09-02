@@ -1699,7 +1699,9 @@ impl VoiceAgent {
             let mut complete_previous_utterance = false;
 
             if transitions.contains(&VadTransition::SpeechEnd) {
-                if gate_stt && Self::stt_pipeline_active(&inner) {
+                // Gate hold (and deferred speaking_end) still runs for VAD-only agents
+                // (`stt: None`). Runtime `set_stt_enabled(false)` is the suppress path.
+                if gate_stt && inner.stt_enabled {
                     inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
                     let hold_ms = inner.config.vad.stt_gate_hold_ms;
                     inner.stt_gate_hold_ms = hold_ms;
@@ -1845,9 +1847,9 @@ impl VoiceAgent {
             }
         }
 
-        let stt_active = {
+        let (stt_active, stt_enabled) = {
             let inner = self.inner.lock().await;
-            Self::stt_pipeline_active(&inner)
+            (Self::stt_pipeline_active(&inner), inner.stt_enabled)
         };
 
         let mut pre_roll_flushed_this_frame = false;
@@ -1919,38 +1921,39 @@ impl VoiceAgent {
                 }
                 VadTransition::SpeechEnd => {
                     speech_end_transition = true;
-                    if !stt_active {
+                    // Runtime toggle only — VAD-only (`stt: None`) still emits speaking_end.
+                    if !stt_enabled {
                         voice_debug("user_speaking_end suppressed (STT disabled)");
                     } else {
-                    let (has_stt, defer_speaking_end, agent_speaking) = {
-                        let inner = self.inner.lock().await;
-                        (
-                            Self::stt_pipeline_active(&inner),
-                            inner.config.vad.gate_stt && !inner.agent_speaking,
-                            inner.agent_speaking,
-                        )
-                    };
-                    if agent_speaking {
-                        voice_debug(
-                            "user_speaking_end suppressed (VAD SpeechEnd during agent TTS)",
-                        );
-                    } else if has_stt {
-                        voice_debug(
+                        let (has_stt, defer_speaking_end, agent_speaking) = {
+                            let inner = self.inner.lock().await;
+                            (
+                                Self::stt_pipeline_active(&inner),
+                                inner.config.vad.gate_stt && !inner.agent_speaking,
+                                inner.agent_speaking,
+                            )
+                        };
+                        if agent_speaking {
+                            voice_debug(
+                                "user_speaking_end suppressed (VAD SpeechEnd during agent TTS)",
+                            );
+                        } else if has_stt {
+                            voice_debug(
                             "user_speaking_end deferred until user_speech_final (STT utterance close)",
                         );
-                    } else if defer_speaking_end {
-                        voice_debug(
+                        } else if defer_speaking_end {
+                            voice_debug(
                             "user_speaking_end deferred until STT gate hold expires (gate_stt, no STT)",
                         );
-                    } else {
-                        self.emit(SpeechEvent::user_speaking_end());
-                    }
+                        } else {
+                            self.emit(SpeechEvent::user_speaking_end());
+                        }
                     }
                 }
             }
         }
 
-        if !stt_active {
+        if !stt_enabled {
             return Ok(());
         }
 

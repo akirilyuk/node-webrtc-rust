@@ -3,7 +3,9 @@
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
-use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig};
+use node_webrtc_rust_speech::config::{
+    SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig,
+};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider, VendorFactory};
 use node_webrtc_rust_speech::{VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
@@ -249,10 +251,7 @@ async fn gate_stt_pre_roll_ignores_leading_silence() {
 
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     for _ in 0..10 {
@@ -316,10 +315,7 @@ async fn gate_stt_hold_passes_trailing_speech_after_speech_end() {
 
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -341,7 +337,10 @@ async fn gate_stt_hold_passes_trailing_speech_after_speech_end() {
             .unwrap();
     }
     let after_end = *bytes.lock().unwrap();
-    assert!(after_end > during_speech, "endpoint tail silence should reach STT");
+    assert!(
+        after_end > during_speech,
+        "endpoint tail silence should reach STT"
+    );
 
     agent
         .process_inbound_pcm(Bytes::from(loud.clone()), 20)
@@ -388,10 +387,7 @@ async fn gate_stt_pending_gate_disabled_waits_for_speech_start() {
 
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let frame = loud_stereo_frame();
@@ -514,10 +510,7 @@ async fn min_silence_default_300_requires_fifteen_silent_frames_to_end() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -546,7 +539,10 @@ async fn min_silence_default_300_requires_fifteen_silent_frames_to_end() {
             }
         }
     }
-    assert!(saw_end, "expected user_speaking_end after sustained silence");
+    assert!(
+        saw_end,
+        "expected user_speaking_end after sustained silence"
+    );
 }
 
 #[tokio::test]
@@ -573,10 +569,7 @@ async fn gate_stt_defers_user_speaking_end_until_hold_expires() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -607,6 +600,68 @@ async fn gate_stt_defers_user_speaking_end_until_hold_expires() {
         Some(3),
         "with gate_stt, user_speaking_end must not fire on first VAD SpeechEnd frame; \
          expect it when gate hold (60 ms) expires (~4 silent 20 ms frames)"
+    );
+}
+
+#[tokio::test]
+async fn set_stt_enabled_false_suppresses_speaking_events() {
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::new(MockFactory));
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = false;
+
+    let config = VoiceAgentConfig {
+        stt: None,
+        tts: None,
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut rx = agent.subscribe_events();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    agent.set_stt_enabled(false).await;
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    for _ in 0..3 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+    for _ in 0..8 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let mut saw_start = false;
+    let mut saw_end = false;
+    while let Ok(event) = rx.try_recv() {
+        match event.kind {
+            node_webrtc_rust_speech::events::SpeechEventKind::UserSpeakingStart => {
+                saw_start = true;
+            }
+            node_webrtc_rust_speech::events::SpeechEventKind::UserSpeakingEnd => {
+                saw_end = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        !saw_start && !saw_end,
+        "set_stt_enabled(false) must suppress user_speaking_start/end (VAD still runs)"
     );
 }
 
@@ -649,10 +704,7 @@ async fn gate_stt_hold_cancelled_when_voice_returns_before_expiry() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -736,10 +788,7 @@ async fn gate_stt_hold_expiry_finalizes_on_same_frame_without_new_speech() {
 
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -806,10 +855,7 @@ async fn gate_stt_hold_skips_finalize_when_poll_already_emitted_final() {
 
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -874,10 +920,7 @@ async fn speaking_end_pairs_with_delayed_stt_final() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -959,10 +1002,7 @@ async fn speech_start_completes_pending_utterance_before_new_speech() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -1009,7 +1049,10 @@ async fn speech_start_completes_pending_utterance_before_new_speech() {
             saw_final = true;
         }
     }
-    assert!(saw_final, "user_speech_final must be emitted for the first utterance");
+    assert!(
+        saw_final,
+        "user_speech_final must be emitted for the first utterance"
+    );
 }
 
 /// Long pause after a word gap must still finalize without waiting for a new SpeechStart.
@@ -1052,10 +1095,7 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -1088,7 +1128,10 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
             saw_speaking_end = true;
         }
     }
-    assert!(saw_speaking_end, "user_speaking_end must accompany finalize");
+    assert!(
+        saw_speaking_end,
+        "user_speaking_end must accompany finalize"
+    );
 
     // Resume counting (second word) — must not require another long pause to arm finalize again.
     for _ in 0..3 {
@@ -1156,10 +1199,7 @@ async fn gate_stt_agent_tts_pre_roll_includes_pre_vad_lead_in() {
 
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let long_text = "agent keeps talking ".repeat(6);

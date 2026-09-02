@@ -8,6 +8,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-02
+
+Positional MixGraph mixing, compile-by-default inbound RNNoise, and a runtime STT toggle.
+
+### Added
+
+- **Speech / RNNoise** — Always-compiled inbound RNNoise (`crates/denoise`). VoiceAgent `noiseSuppression: { provider: 'rnnoise' }` defaults **off** so barge-in / Sherpa roundtrips stay unchanged. Conference `RoomOptions.noiseSuppression` defaults **on** (set `'none'` to disable). Denoise is per stream before VAD/STT and MixGraph ingest. (#183)
+- **Mixer / MixGraph** — Live 6DOF poses (`position` + quaternion), named placements (`center|left|right|front|behind|below|above`), positional on/off, exclusive mid-call group move, and per-listener TTS pose. Spatial v1: equal-power stereo pan + inverse-square (Y-up, look −Z). No HRTF. (#184)
+- **SDK** — `AudioMixGraph` TypeScript wrapper; `VoiceAgent.setSttEnabled` pauses STT without stopping TTS (VAD still runs). (#184)
+- **helpers** — Voice+Data client mixer with sidecar TTS capture and a 20 ms mix pump as the sole writer to the PeerConnection outbound track. TTS / listener pose also works on voice-only sessions. (#184)
+- **Examples** — `start:mix-groups` on the multi-client Sherpa example. (#184)
+
+### Fixed
+
+- **Speech** — VAD `user_speaking_start` / `user_speaking_end` still emit when no STT vendor is configured (`stt: None`). `setSttEnabled(false)` remains the suppress path. (#184)
+
+**Compare:** [`release/0.7.4…release/0.8.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.7.4...release/0.8.0)
+
 ## [0.7.4] - 2026-08-27
 
 ### Added

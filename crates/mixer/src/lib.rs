@@ -12,14 +12,19 @@ mod bus;
 mod decode;
 mod frame;
 mod graph;
+mod spatial;
 
 pub use bus::MixBus;
 pub use decode::{DecodeError, OpusDecoder};
 pub use frame::{
-    silence_frame, Frame, FrameBuffer, CHANNELS, FRAME_BYTES, FRAME_MS, SAMPLE_RATE,
-    SAMPLES_PER_CHANNEL, SAMPLES_PER_FRAME,
+    silence_frame, Frame, FrameBuffer, CHANNELS, FRAME_BYTES, FRAME_MS, SAMPLES_PER_CHANNEL,
+    SAMPLES_PER_FRAME, SAMPLE_RATE,
 };
 pub use graph::{MixGraph, ParticipantId};
+pub use spatial::{
+    apply_pan_gains, pan_frame_with_placement, pan_gains_placement, pan_gains_positional,
+    ClientPose, DistanceParams, MixPlacement, PanGains, Quat, SpatialError, Vec3,
+};
 
 /// Crate version string (matches `CARGO_PKG_VERSION`).
 pub fn version() -> &'static str {

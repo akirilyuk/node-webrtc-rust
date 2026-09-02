@@ -43,4 +43,15 @@ describe('VoiceAgent', () => {
     await agent.stop()
     await cleanup()
   })
+
+  test('setSttEnabled toggles native STT flag', async () => {
+    const agent = new VoiceAgent(mockVoiceConfig)
+    expect(await agent.sttEnabled()).toBe(true)
+
+    await agent.setSttEnabled(false)
+    expect(await agent.sttEnabled()).toBe(false)
+
+    await agent.setSttEnabled(true)
+    expect(await agent.sttEnabled()).toBe(true)
+  })
 })

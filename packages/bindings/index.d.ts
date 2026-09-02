@@ -109,6 +109,44 @@ export interface JsRtcDataChannelInit {
   protocol?: string
   negotiated?: number
 }
+/** Identity quaternion helper for pose setup from TypeScript. */
+export declare function jsQuatIdentity(): JsQuat
+/** Origin position helper for pose setup from TypeScript. */
+export declare function jsVec3Zero(): JsVec3
+/** Named listener-relative placement when positional mixing is off. */
+export const enum JsMixPlacement {
+  Center = 'center',
+  Left = 'left',
+  Right = 'right',
+  Front = 'front',
+  Behind = 'behind',
+  Below = 'below',
+  Above = 'above'
+}
+/** 3D vector for positional mixing. */
+export interface JsVec3 {
+  x: number
+  y: number
+  z: number
+}
+/** Unit quaternion for positional mixing. */
+export interface JsQuat {
+  x: number
+  y: number
+  z: number
+  w: number
+}
+/** World-space pose for a mix participant. */
+export interface JsClientPose {
+  position: JsVec3
+  orientation: JsQuat
+}
+/** Distance attenuation parameters for positional panning. */
+export interface JsDistanceParams {
+  referenceDistance: number
+  maxDistance: number
+  rolloff: number
+}
 /** Init options for {@link RTCPeerConnection.addTransceiver}. */
 export interface JsRtcRtpTransceiverInit {
   direction?: string
@@ -331,6 +369,44 @@ export declare class JsLocalAudioTrack {
   /** Writes interleaved stereo PCM; encoded to the negotiated RTP codec before send. */
   writeSample(data: Buffer, durationMs: number): Promise<void>
 }
+/** Conference mix graph control handle (poses, groups, mutes, placements). */
+export declare class JsMixGraph {
+  constructor()
+  addInput(participantId: string): void
+  removeInput(participantId: string): void
+  setMixingEnabled(enabled: boolean): void
+  mixingEnabled(): boolean
+  setGlobalMute(target: string, muted: boolean): void
+  isGloballyMuted(target: string): boolean
+  setListenerMute(listener: string, target: string, muted: boolean): void
+  isListenerMuted(listener: string, target: string): boolean
+  setListenerSources(listener: string, sources: Array<string>): void
+  listenerSources(listener: string): Array<string> | null
+  clearListenerRoutes(listener: string): void
+  setPose(participantId: string, pose: JsClientPose): void
+  clearPose(participantId: string): void
+  pose(participantId: string): JsClientPose | null
+  setPositionalEnabled(enabled: boolean): void
+  positionalEnabled(): boolean
+  setDefaultMixPlacement(placement: JsMixPlacement): void
+  defaultMixPlacement(): JsMixPlacement
+  setTtsMixPlacement(placement: JsMixPlacement): void
+  ttsMixPlacement(): JsMixPlacement
+  setTtsPose(participantId: string, pose: JsClientPose): void
+  clearTtsPose(participantId: string): void
+  ttsPose(participantId: string): JsClientPose | null
+  setDistanceParams(params: JsDistanceParams): void
+  distanceParams(): JsDistanceParams
+  setGroupMembers(groupId: string, members: Array<string>): void
+  moveToGroup(participantId: string, groupId: string): void
+  removeFromGroup(participantId: string): void
+  /** Stores the latest 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz). */
+  pushFrame(participantId: string, pcm: Buffer): void
+  /** Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off). */
+  renderOutput(listenerId: string): Buffer
+  /** Pans a TTS frame for `listener_id` using the graph's TTS pose or placement. */
+  panTtsFrame(pcm: Buffer, listenerId: string): Buffer
+}
 /** WebRTC peer connection exposed to JavaScript. */
 export declare class JsPeerConnection {
   constructor(config?: JsRtcConfiguration | undefined | null)
@@ -420,4 +496,7 @@ export declare class JsVoiceAgent {
   setOnSpeechEvent(callback: (...args: any[]) => any): void
   /** Processes one inbound PCM frame (48 kHz stereo) through VAD/STT. */
   processInboundPcm(data: Buffer, durationMs: number): Promise<void>
+  /** When `false`, inbound PCM still runs VAD but skips STT and user speech events. */
+  setSttEnabled(enabled: boolean): Promise<void>
+  sttEnabled(): Promise<boolean>
 }

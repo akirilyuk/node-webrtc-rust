@@ -52,6 +52,11 @@
       "types": "./dist/cjs/voice/index.d.ts",
       "import": "./dist/esm/voice/index.js",
       "require": "./dist/cjs/voice/index.js"
+    },
+    "./mix": {
+      "types": "./dist/cjs/mix/index.d.ts",
+      "import": "./dist/esm/mix/index.js",
+      "require": "./dist/cjs/mix/index.js"
     }
   },
   "files": [

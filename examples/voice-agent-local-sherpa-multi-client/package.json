@@ -11,6 +11,8 @@
     "start:cap-2": "WEBRTC_NAT_1TO1_IPS=127.0.0.1 VOICE_MAX_CONCURRENT_SESSIONS=2 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/index.ts",
     "prestart:debug": "PORT=${PORT:-3004} bash ../../scripts/free-port.sh voice-agent-local-sherpa-multi-client",
     "start:debug": "WEBRTC_NAT_1TO1_IPS=127.0.0.1 VOICE_DEBUG=1 WEBRTC_DEBUG=1 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/index.ts",
+    "prestart:mix-groups": "PORT=${PORT:-3004} bash ../../scripts/free-port.sh voice-agent-local-sherpa-multi-client",
+    "start:mix-groups": "WEBRTC_NAT_1TO1_IPS=127.0.0.1 bash ../../scripts/export-sherpa-local-models.sh -- tsx src/mix-groups.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

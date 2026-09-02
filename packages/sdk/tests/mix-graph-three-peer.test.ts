@@ -13,9 +13,9 @@ import {
   SAMPLES_PER_CHANNEL,
 } from './mix-test-helpers'
 
-if (!process.env.WEBRTC_NAT_1TO1_IPS?.trim()) {
-  process.env.WEBRTC_NAT_1TO1_IPS = '127.0.0.1'
-}
+// Same-process loopback: do not set WEBRTC_NAT_1TO1_IPS. That rewrite is for
+// browser ↔ Node on a public NIC; in CI it left ICE in `connecting` until timeout.
+// Match packages/sdk/tests/e2e.test.ts (defaultIceConfig + autoNegotiate).
 
 interface PeerPairHandles {
   hostPc: RTCPeerConnection
@@ -38,6 +38,25 @@ async function connectPeerPair(
 }> {
   const hostPc = new RTCPeerConnection(defaultIceConfig)
   const clientPc = new RTCPeerConnection(defaultIceConfig)
+
+  let hostOutbound: LocalAudioTrack | undefined
+  let clientOutbound: LocalAudioTrack | undefined
+  let hostInbound: RemoteAudioTrack | undefined
+  let clientInbound: RemoteAudioTrack | undefined
+
+  const senderPc = role === 'client-sends' ? clientPc : hostPc
+  const receiverPc = role === 'client-sends' ? hostPc : clientPc
+  const outbound = new LocalAudioTrack(
+    role === 'client-sends' ? `${clientId}-out` : `${clientId}-host-out`,
+    `stream-${clientId}`,
+  )
+  await senderPc.addTrack(outbound)
+  if (role === 'client-sends') {
+    clientOutbound = outbound
+  } else {
+    hostOutbound = outbound
+  }
+
   const hostSig = new SignalingClient({
     url: wsUrl,
     room,
@@ -49,53 +68,30 @@ async function connectPeerPair(
     peerId: clientId,
   })
 
-  let hostOutbound: LocalAudioTrack | undefined
-  let clientOutbound: LocalAudioTrack | undefined
-  let hostInbound: RemoteAudioTrack | undefined
-  let clientInbound: RemoteAudioTrack | undefined
+  const senderSig = role === 'client-sends' ? clientSig : hostSig
+  const receiverSig = role === 'client-sends' ? hostSig : clientSig
+  autoNegotiate({ pc: senderPc, signaling: senderSig, polite: false })
+  autoNegotiate({ pc: receiverPc, signaling: receiverSig, polite: true })
 
+  const remoteTrackPromise = new Promise<RemoteAudioTrack>((resolve) => {
+    receiverPc.ontrack = (event) => {
+      if (event.track instanceof RemoteAudioTrack) {
+        resolve(event.track)
+      }
+    }
+  })
+
+  await senderSig.connect()
+  await receiverSig.connect()
+  await waitForConnection(senderPc)
+  await waitForConnection(receiverPc)
+
+  await outbound.writeSample(Buffer.alloc(960), 5)
+  const inbound = await remoteTrackPromise
   if (role === 'client-sends') {
-    clientOutbound = new LocalAudioTrack(`${clientId}-out`, `stream-${clientId}`)
-    await clientPc.addTrack(clientOutbound)
-    autoNegotiate({ pc: clientPc, signaling: clientSig, polite: false })
-    autoNegotiate({ pc: hostPc, signaling: hostSig, polite: true })
-
-    const remoteTrackPromise = new Promise<RemoteAudioTrack>((resolve) => {
-      hostPc.ontrack = (event) => {
-        if (event.track instanceof RemoteAudioTrack) {
-          resolve(event.track)
-        }
-      }
-    })
-
-    await clientSig.connect()
-    await hostSig.connect()
-    await waitForConnection(clientPc)
-    await waitForConnection(hostPc)
-
-    await clientOutbound.writeSample(Buffer.alloc(960), 5)
-    hostInbound = await remoteTrackPromise
+    hostInbound = inbound
   } else {
-    hostOutbound = new LocalAudioTrack(`${clientId}-host-out`, `stream-${clientId}`)
-    await hostPc.addTrack(hostOutbound)
-    autoNegotiate({ pc: hostPc, signaling: hostSig, polite: false })
-    autoNegotiate({ pc: clientPc, signaling: clientSig, polite: true })
-
-    const remoteTrackPromise = new Promise<RemoteAudioTrack>((resolve) => {
-      clientPc.ontrack = (event) => {
-        if (event.track instanceof RemoteAudioTrack) {
-          resolve(event.track)
-        }
-      }
-    })
-
-    await hostSig.connect()
-    await clientSig.connect()
-    await waitForConnection(hostPc)
-    await waitForConnection(clientPc)
-
-    await hostOutbound.writeSample(Buffer.alloc(960), 5)
-    clientInbound = await remoteTrackPromise
+    clientInbound = inbound
   }
 
   return {

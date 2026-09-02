@@ -79,7 +79,7 @@ describe('AudioMixGraph', () => {
   test('setTtsPose pans TTS right vs center when positional on', () => {
     const graph = new AudioMixGraph()
     graph.setPositionalEnabled(true)
-    graph.setTtsPose({
+    graph.setTtsPose('listener', {
       position: { ...vec3Zero(), x: 3 },
       orientation: quatIdentity(),
     })
@@ -92,7 +92,7 @@ describe('AudioMixGraph', () => {
     const lCenter = center.readInt16LE(0)
     const rCenter = center.readInt16LE(2)
     expect(rCenter).toBeGreaterThan(lCenter)
-    graph.clearTtsPose()
+    graph.clearTtsPose('listener')
     graph.setTtsMixPlacement(MIX_PLACEMENT.Center)
     const named = graph.panTtsFrame(mono, 'listener')
     const lNamed = named.readInt16LE(0)

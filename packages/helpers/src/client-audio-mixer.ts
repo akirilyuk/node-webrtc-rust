@@ -36,8 +36,8 @@ export interface ClientMixGraph {
   setPositionalEnabled(enabled: boolean): void
   setDefaultMixPlacement(placement: MixPlacement): void
   setTtsMixPlacement(placement: MixPlacement): void
-  setTtsPose(pose: ClientPose): void
-  clearTtsPose(): void
+  setTtsPose(participantId: string, pose: ClientPose): void
+  clearTtsPose(participantId: string): void
   setGroupMembers(groupId: string, members: string[]): void
   moveToGroup(participantId: string, groupId: string): void
   removeFromGroup(participantId: string): void
@@ -138,12 +138,12 @@ export class ClientAudioMixer {
     this.graph.setTtsMixPlacement(placement)
   }
 
-  setTtsPose(pose: ClientPose): void {
-    this.graph.setTtsPose(pose)
+  setTtsPose(clientId: string, pose: ClientPose): void {
+    this.graph.setTtsPose(clientId, pose)
   }
 
-  clearTtsPose(): void {
-    this.graph.clearTtsPose()
+  clearTtsPose(clientId: string): void {
+    this.graph.clearTtsPose(clientId)
   }
 
   /**

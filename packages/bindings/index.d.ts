@@ -392,9 +392,9 @@ export declare class JsMixGraph {
   defaultMixPlacement(): JsMixPlacement
   setTtsMixPlacement(placement: JsMixPlacement): void
   ttsMixPlacement(): JsMixPlacement
-  setTtsPose(pose: JsClientPose): void
-  clearTtsPose(): void
-  ttsPose(): JsClientPose | null
+  setTtsPose(participantId: string, pose: JsClientPose): void
+  clearTtsPose(participantId: string): void
+  ttsPose(participantId: string): JsClientPose | null
   setDistanceParams(params: JsDistanceParams): void
   distanceParams(): JsDistanceParams
   setGroupMembers(groupId: string, members: Array<string>): void

@@ -1551,14 +1551,14 @@ export class VoiceAgentSessionHost {
     this.clientMixer!.setTtsMixPlacement(placement)
   }
 
-  setTtsPose(pose: ClientPose): void {
+  setTtsPose(clientId: string, pose: ClientPose): void {
     this.assertMixCapable()
-    this.clientMixer!.setTtsPose(pose)
+    this.clientMixer!.setTtsPose(clientId, pose)
   }
 
-  clearTtsPose(): void {
+  clearTtsPose(clientId: string): void {
     this.assertMixCapable()
-    this.clientMixer!.clearTtsPose()
+    this.clientMixer!.clearTtsPose(clientId)
   }
 
   /**

@@ -16,8 +16,8 @@ function createMockGraph(): ClientMixGraph & {
     setPositionalEnabled: boolean[]
     setDefaultMixPlacement: string[]
     setTtsMixPlacement: string[]
-    setTtsPose: unknown[]
-    clearTtsPose: number[]
+    setTtsPose: Array<{ peer: string; pose: unknown }>
+    clearTtsPose: string[]
     addInput: string[]
     removeInput: string[]
   }
@@ -34,8 +34,8 @@ function createMockGraph(): ClientMixGraph & {
     setPositionalEnabled: [] as boolean[],
     setDefaultMixPlacement: [] as string[],
     setTtsMixPlacement: [] as string[],
-    setTtsPose: [] as unknown[],
-    clearTtsPose: [] as number[],
+    setTtsPose: [] as Array<{ peer: string; pose: unknown }>,
+    clearTtsPose: [] as string[],
     addInput: [] as string[],
     removeInput: [] as string[],
   }
@@ -73,11 +73,11 @@ function createMockGraph(): ClientMixGraph & {
     setTtsMixPlacement: (placement) => {
       calls.setTtsMixPlacement.push(placement)
     },
-    setTtsPose: (pose) => {
-      calls.setTtsPose.push(pose)
+    setTtsPose: (peer, pose) => {
+      calls.setTtsPose.push({ peer, pose })
     },
-    clearTtsPose: () => {
-      calls.clearTtsPose.push(1)
+    clearTtsPose: (peer) => {
+      calls.clearTtsPose.push(peer)
     },
     setGroupMembers: (groupId, members) => {
       calls.setGroupMembers.push({ groupId, members })
@@ -258,8 +258,8 @@ describe('ClientAudioMixer', () => {
       position: { x: 1, y: 0, z: 0 },
       orientation: { x: 0, y: 0, z: 0, w: 1 },
     }
-    mixer.setTtsPose(pose)
-    mixer.clearTtsPose()
+    mixer.setTtsPose('peer-1', pose)
+    mixer.clearTtsPose('peer-1')
 
     expect(graph.calls.setGroupMembers).toEqual([{ groupId: 'g1', members: ['a', 'b'] }])
     expect(graph.calls.moveToGroup).toEqual([{ peer: 'c', groupId: 'g1' }])
@@ -267,7 +267,7 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.setPositionalEnabled).toEqual([false])
     expect(graph.calls.setDefaultMixPlacement).toEqual(['left'])
     expect(graph.calls.setTtsMixPlacement).toEqual(['right'])
-    expect(graph.calls.setTtsPose).toEqual([pose])
-    expect(graph.calls.clearTtsPose).toEqual([1])
+    expect(graph.calls.setTtsPose).toEqual([{ peer: 'peer-1', pose }])
+    expect(graph.calls.clearTtsPose).toEqual(['peer-1'])
   })
 })

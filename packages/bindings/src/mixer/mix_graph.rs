@@ -212,31 +212,31 @@ impl JsMixGraph {
     }
 
     #[napi]
-    pub fn set_tts_pose(&self, pose: JsClientPose) -> Result<()> {
+    pub fn set_tts_pose(&self, participant_id: String, pose: JsClientPose) -> Result<()> {
         let pose = pose.try_into()?;
         self.inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
-            .set_tts_pose(pose);
+            .set_tts_pose(participant_id, pose);
         Ok(())
     }
 
     #[napi]
-    pub fn clear_tts_pose(&self) -> Result<()> {
+    pub fn clear_tts_pose(&self, participant_id: String) -> Result<()> {
         self.inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
-            .clear_tts_pose();
+            .clear_tts_pose(&participant_id);
         Ok(())
     }
 
     #[napi]
-    pub fn tts_pose(&self) -> Result<Option<JsClientPose>> {
+    pub fn tts_pose(&self, participant_id: String) -> Result<Option<JsClientPose>> {
         let graph = self
             .inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?;
-        Ok(graph.tts_pose().map(Into::into))
+        Ok(graph.tts_pose(&participant_id).map(Into::into))
     }
 
     #[napi]

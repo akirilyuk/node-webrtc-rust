@@ -26,7 +26,7 @@ pub struct MixGraph {
     positional_enabled: bool,
     default_mix_placement: MixPlacement,
     tts_mix_placement: MixPlacement,
-    tts_pose: Option<ClientPose>,
+    tts_poses: HashMap<ParticipantId, ClientPose>,
     distance_params: DistanceParams,
     /// group_id → members
     groups: HashMap<String, HashSet<ParticipantId>>,
@@ -46,7 +46,7 @@ impl Default for MixGraph {
             positional_enabled: false,
             default_mix_placement: MixPlacement::Center,
             tts_mix_placement: MixPlacement::Center,
-            tts_pose: None,
+            tts_poses: HashMap::new(),
             distance_params: DistanceParams::default(),
             groups: HashMap::new(),
             member_group: HashMap::new(),
@@ -71,6 +71,7 @@ impl MixGraph {
         self.inputs.remove(participant_id);
         self.global_mute.remove(participant_id);
         self.poses.remove(participant_id);
+        self.tts_poses.remove(participant_id);
         self.listener_mute
             .retain(|(listener, target), _| listener != participant_id && target != participant_id);
         self.listener_routes.retain(|listener, sources| {
@@ -211,19 +212,19 @@ impl MixGraph {
         self.tts_mix_placement
     }
 
-    /// Sets a world-space pose for the TTS speaker (used when positional mixing is on).
-    pub fn set_tts_pose(&mut self, pose: ClientPose) {
-        self.tts_pose = Some(pose);
+    /// Sets a world-space TTS speaker pose for `participant_id` (used when positional mixing is on).
+    pub fn set_tts_pose(&mut self, participant_id: impl Into<ParticipantId>, pose: ClientPose) {
+        self.tts_poses.insert(participant_id.into(), pose);
     }
 
-    /// Clears the live TTS pose; named [`Self::tts_mix_placement`] applies again.
-    pub fn clear_tts_pose(&mut self) {
-        self.tts_pose = None;
+    /// Clears the live TTS pose for `participant_id`; named [`Self::tts_mix_placement`] applies again.
+    pub fn clear_tts_pose(&mut self, participant_id: &str) {
+        self.tts_poses.remove(participant_id);
     }
 
-    /// Returns the current TTS speaker pose, if any.
-    pub fn tts_pose(&self) -> Option<ClientPose> {
-        self.tts_pose
+    /// Returns the current TTS speaker pose for `participant_id`, if any.
+    pub fn tts_pose(&self, participant_id: &str) -> Option<ClientPose> {
+        self.tts_poses.get(participant_id).copied()
     }
 
     /// Sets distance attenuation parameters for positional panning.
@@ -334,11 +335,11 @@ impl MixGraph {
 
     /// Pans a TTS frame for `listener_id`.
     ///
-    /// When positional mixing is on and a TTS pose is set, pans against that listener's
-    /// pose; otherwise uses [`Self::tts_mix_placement`].
+    /// When positional mixing is on and a TTS pose is set for `listener_id`, pans against
+    /// that listener's pose; otherwise uses [`Self::tts_mix_placement`].
     pub fn pan_tts_frame(&self, frame: &Frame, listener_id: &str) -> Frame {
         if self.positional_enabled {
-            if let Some(tts_pose) = self.tts_pose {
+            if let Some(tts_pose) = self.tts_poses.get(listener_id).copied() {
                 let listener_pose = self
                     .poses
                     .get(listener_id)
@@ -688,10 +689,13 @@ mod tests {
     fn tts_pose_right_pans_frame_when_positional_on() {
         let mut graph = MixGraph::new();
         graph.set_positional_enabled(true);
-        graph.set_tts_pose(ClientPose {
-            position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
-            orientation: Quat::IDENTITY,
-        });
+        graph.set_tts_pose(
+            "listener",
+            ClientPose {
+                position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
         let frame = mono_stereo(10_000);
         let panned = graph.pan_tts_frame(&frame, "listener");
         let (l, r) = first_lr(&panned);
@@ -701,10 +705,13 @@ mod tests {
     #[test]
     fn tts_pose_ignored_when_positional_off() {
         let mut graph = MixGraph::new();
-        graph.set_tts_pose(ClientPose {
-            position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
-            orientation: Quat::IDENTITY,
-        });
+        graph.set_tts_pose(
+            "listener",
+            ClientPose {
+                position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
         graph.set_tts_mix_placement(MixPlacement::Center);
         let frame = mono_stereo(10_000);
         let panned = graph.pan_tts_frame(&frame, "listener");
@@ -716,15 +723,43 @@ mod tests {
     fn tts_pose_clear_falls_back_to_named_placement() {
         let mut graph = MixGraph::new();
         graph.set_positional_enabled(true);
-        graph.set_tts_pose(ClientPose {
-            position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
-            orientation: Quat::IDENTITY,
-        });
+        graph.set_tts_pose(
+            "listener",
+            ClientPose {
+                position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
         graph.set_tts_mix_placement(MixPlacement::Right);
-        graph.clear_tts_pose();
+        graph.clear_tts_pose("listener");
         let frame = mono_stereo(10_000);
         let panned = graph.pan_tts_frame(&frame, "listener");
         let (l, r) = first_lr(&panned);
         assert!(r > l);
+    }
+
+    #[test]
+    fn tts_pose_per_listener_independent() {
+        let mut graph = MixGraph::new();
+        graph.set_positional_enabled(true);
+        graph.set_tts_pose(
+            "a",
+            ClientPose {
+                position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
+        graph.set_tts_pose(
+            "b",
+            ClientPose {
+                position: Vec3::try_new(-3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
+        let frame = mono_stereo(10_000);
+        let (a_l, a_r) = first_lr(&graph.pan_tts_frame(&frame, "a"));
+        let (b_l, b_r) = first_lr(&graph.pan_tts_frame(&frame, "b"));
+        assert!(a_r > a_l);
+        assert!(b_l > b_r);
     }
 }

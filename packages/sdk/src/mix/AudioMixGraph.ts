@@ -137,16 +137,16 @@ export class AudioMixGraph {
     return fromJsPlacement(this.native.ttsMixPlacement())
   }
 
-  setTtsPose(pose: ClientPose): void {
-    this.native.setTtsPose(toJsPose(pose))
+  setTtsPose(participantId: string, pose: ClientPose): void {
+    this.native.setTtsPose(participantId, toJsPose(pose))
   }
 
-  clearTtsPose(): void {
-    this.native.clearTtsPose()
+  clearTtsPose(participantId: string): void {
+    this.native.clearTtsPose(participantId)
   }
 
-  ttsPose(): ClientPose | undefined {
-    const pose = this.native.ttsPose()
+  ttsPose(participantId: string): ClientPose | undefined {
+    const pose = this.native.ttsPose(participantId)
     return pose ? fromJsPose(pose) : undefined
   }
 

@@ -762,4 +762,155 @@ mod tests {
         assert!(a_r > a_l);
         assert!(b_l > b_r);
     }
+
+    fn sine_stereo_frame(freq_hz: f32, amplitude: i16, phase: &mut f64) -> Frame {
+        let sample_rate = f64::from(frame::SAMPLE_RATE);
+        let mut pcm = vec![0u8; frame::FRAME_BYTES];
+        for i in 0..frame::SAMPLES_PER_CHANNEL {
+            let t = *phase / sample_rate;
+            let sample = (f64::from(amplitude)
+                * (2.0 * std::f64::consts::PI * f64::from(freq_hz) * t).sin())
+                as i16;
+            *phase += 1.0;
+            let base = i * 4;
+            pcm[base..base + 2].copy_from_slice(&sample.to_le_bytes());
+            pcm[base + 2..base + 4].copy_from_slice(&sample.to_le_bytes());
+        }
+        Frame::new(Bytes::from(pcm), None)
+    }
+
+    fn extract_channel_i16(pcm: &[u8], channel: usize) -> Vec<i16> {
+        let mut out = Vec::with_capacity(frame::SAMPLES_PER_CHANNEL);
+        let mut i = channel * 2;
+        while i + 1 < pcm.len() {
+            out.push(i16::from_le_bytes([pcm[i], pcm[i + 1]]));
+            i += 4;
+        }
+        out
+    }
+
+    fn goertzel_power(samples: &[i16], sample_rate: u32, target_freq: f32) -> f64 {
+        let n = samples.len();
+        if n == 0 {
+            return 0.0;
+        }
+        let k = (0.5 + (n as f64) * f64::from(target_freq) / f64::from(sample_rate)).floor() as usize;
+        let omega = (2.0 * std::f64::consts::PI * k as f64) / n as f64;
+        let coeff = 2.0 * omega.cos();
+        let mut s0 = 0.0f64;
+        let mut s1 = 0.0f64;
+        let mut s2 = 0.0f64;
+        for &sample in samples {
+            let x = f64::from(sample);
+            s0 = x + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        s1 * s1 + s2 * s2 - coeff * s1 * s2
+    }
+
+    fn setup_three_client_positional_graph(c1_x: f32, c3_x: f32) -> MixGraph {
+        let mut graph = MixGraph::new();
+        for id in ["c1", "c2", "c3"] {
+            graph.add_input(id);
+        }
+        graph.set_positional_enabled(true);
+        graph.set_pose(
+            "c2",
+            ClientPose {
+                position: Vec3::ZERO,
+                orientation: Quat::IDENTITY,
+            },
+        );
+        graph.set_pose(
+            "c1",
+            ClientPose {
+                position: Vec3::try_new(c1_x, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
+        graph.set_pose(
+            "c3",
+            ClientPose {
+                position: Vec3::try_new(c3_x, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
+        graph.set_listener_sources("c2", &["c1".to_string(), "c3".to_string()]);
+        graph
+    }
+
+    fn render_listener_accumulated(
+        graph: &mut MixGraph,
+        frame_count: usize,
+    ) -> (Vec<i16>, Vec<i16>) {
+        let mut phase_c1 = 0.0;
+        let mut phase_c3 = 0.0;
+        let mut left = Vec::with_capacity(frame_count * frame::SAMPLES_PER_CHANNEL);
+        let mut right = Vec::with_capacity(frame_count * frame::SAMPLES_PER_CHANNEL);
+        for _ in 0..frame_count {
+            graph.push_frame("c1", sine_stereo_frame(440.0, 10_000, &mut phase_c1));
+            graph.push_frame("c3", sine_stereo_frame(880.0, 10_000, &mut phase_c3));
+            let out = graph.render_output("c2");
+            left.extend(extract_channel_i16(&out.pcm, 0));
+            right.extend(extract_channel_i16(&out.pcm, 1));
+        }
+        (left, right)
+    }
+
+    fn assert_two_sine_pan_sides(left: &[i16], right: &[i16], expect_440_on_right: bool) {
+        let sample_rate = frame::SAMPLE_RATE;
+        let p440_l = goertzel_power(left, sample_rate, 440.0);
+        let p440_r = goertzel_power(right, sample_rate, 440.0);
+        let p880_l = goertzel_power(left, sample_rate, 880.0);
+        let p880_r = goertzel_power(right, sample_rate, 880.0);
+
+        let min_ratio = 2.0;
+        if expect_440_on_right {
+            assert!(
+                p440_r >= min_ratio * p440_l,
+                "440 Hz should dominate right (L={p440_l}, R={p440_r})"
+            );
+            assert!(
+                p440_r >= min_ratio * p880_r,
+                "440 Hz on right should beat 880 Hz on right (440R={p440_r}, 880R={p880_r})"
+            );
+            assert!(
+                p880_l >= min_ratio * p880_r,
+                "880 Hz should dominate left (L={p880_l}, R={p880_r})"
+            );
+            assert!(
+                p880_l >= min_ratio * p440_l,
+                "880 Hz on left should beat 440 Hz on left (880L={p880_l}, 440L={p440_l})"
+            );
+        } else {
+            assert!(
+                p440_l >= min_ratio * p440_r,
+                "440 Hz should dominate left after pose swap (L={p440_l}, R={p440_r})"
+            );
+            assert!(
+                p440_l >= min_ratio * p880_l,
+                "440 Hz on left should beat 880 Hz on left (440L={p440_l}, 880L={p880_l})"
+            );
+            assert!(
+                p880_r >= min_ratio * p880_l,
+                "880 Hz should dominate right after pose swap (L={p880_l}, R={p880_r})"
+            );
+            assert!(
+                p880_r >= min_ratio * p440_r,
+                "880 Hz on right should beat 440 Hz on right (880R={p880_r}, 440R={p440_r})"
+            );
+        }
+    }
+
+    #[test]
+    fn positional_two_sine_sources_pan_to_correct_stereo_sides() {
+        let mut graph = setup_three_client_positional_graph(3.0, -3.0);
+        let (left, right) = render_listener_accumulated(&mut graph, 15);
+        assert_two_sine_pan_sides(&left, &right, true);
+
+        let mut swapped = setup_three_client_positional_graph(-3.0, 3.0);
+        let (left_swapped, right_swapped) = render_listener_accumulated(&mut swapped, 15);
+        assert_two_sine_pan_sides(&left_swapped, &right_swapped, false);
+    }
 }

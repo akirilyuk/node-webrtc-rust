@@ -327,7 +327,7 @@ export class VoiceAgentSessionHost {
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
   private readonly sessionMode: 'voice' | 'voice+data' | 'data-only'
-  private readonly clientMixer: ClientAudioMixer | undefined
+  private clientMixer: ClientAudioMixer | undefined
   /** Per-peer WebRTC reconnect attempts after `connectionState=failed`. */
   private readonly reconnectAttempts = new Map<string, number>()
   /** In-flight peer teardowns (counted for host close / idle teardown). */
@@ -370,7 +370,9 @@ export class VoiceAgentSessionHost {
     this.clientMixer =
       this.sessionMode === 'data-only'
         ? undefined
-        : new ClientAudioMixer({ graph: options.clientMixGraph })
+        : options.clientMixGraph
+          ? new ClientAudioMixer({ graph: options.clientMixGraph })
+          : undefined
 
     this.signaling.on('peer-joined', (peerId) => {
       if (peerId === VOICE_AGENT_SERVER_PEER_ID) return
@@ -964,13 +966,14 @@ export class VoiceAgentSessionHost {
       let pcOutbound = session.agentOut
       let agentOutbound = session.agentOut
 
-      if (this.clientMixer) {
-        this.clientMixer.registerPeer(peerId)
+      const mixer = this.ensureClientMixer()
+      if (mixer) {
+        mixer.registerPeer(peerId)
         if (
           inboundTrack &&
           typeof (inboundTrack as { readSample?: unknown }).readSample === 'function'
         ) {
-          inboundTrack = this.clientMixer.wrapInboundTrack(
+          inboundTrack = mixer.wrapInboundTrack(
             peerId,
             inboundTrack as Parameters<ClientAudioMixer['wrapInboundTrack']>[1],
           )
@@ -994,10 +997,10 @@ export class VoiceAgentSessionHost {
         agentOutbound = pcOutbound
       }
 
-      if (this.clientMixer && pcOutbound) {
-        session.agentTtsOut = this.clientMixer.createTtsSidecar(peerId)
+      if (mixer && pcOutbound) {
+        session.agentTtsOut = mixer.createTtsSidecar(peerId)
         agentOutbound = session.agentTtsOut
-        this.clientMixer.startMixPump(peerId, pcOutbound)
+        mixer.startMixPump(peerId, pcOutbound)
       }
 
       await session.agent.attach({
@@ -1515,14 +1518,35 @@ export class VoiceAgentSessionHost {
     )
   }
 
+  /**
+   * Native MixGraph is created on first voice session or mix API call.
+   * Helpers unit tests (no `.node`) must not construct `JsMixGraph`.
+   */
+  private ensureClientMixer(): ClientAudioMixer | undefined {
+    if (this.sessionMode === 'data-only') return undefined
+    if (this.clientMixer) return this.clientMixer
+    try {
+      this.clientMixer = new ClientAudioMixer()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (/not a constructor|JsMixGraph/i.test(message)) {
+        return undefined
+      }
+      throw error
+    }
+    return this.clientMixer
+  }
+
   private assertMixCapable(): void {
+    this.ensureClientMixer()
     if (this.sessionMode !== 'voice+data' || !this.clientMixer) {
       throw new Error(MIX_REQUIRES_VOICE_PLUS_DATA)
     }
   }
 
   private assertTtsPoseCapable(): void {
-    if (!this.clientMixer) {
+    this.ensureClientMixer()
+    if (this.sessionMode === 'data-only' || !this.clientMixer) {
       throw new Error(TTS_POSE_REQUIRES_VOICE)
     }
   }

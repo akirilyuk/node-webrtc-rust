@@ -17,6 +17,7 @@ import {
   type ClientMixGraph,
   type ClientMixStatus,
 } from './client-audio-mixer.js'
+import { PCM_FULL_FRAME_BYTES } from './pcm.js'
 
 import {
   getProcessVoiceSessionBudget,
@@ -544,6 +545,7 @@ export class SessionPod {
         .filter((mixer): mixer is ClientAudioMixer => mixer != null)
       await Promise.all(mixers.map((mixer) => mixer.pauseAllMixPumps()))
       graph.setGlobalMute(clientId, muted)
+      graph.pushFrame(clientId, Buffer.alloc(PCM_FULL_FRAME_BYTES))
       try {
         await Promise.all(mixers.map((mixer) => mixer.flushAllListenerOutbounds(clientId)))
       } finally {

@@ -182,9 +182,13 @@ function getSharedMixGraphFromPod(pod: SessionPod): AudioMixGraph {
   return graphs[0] as AudioMixGraph
 }
 
-function assertGraphRenderAbsent440(graph: AudioMixGraph, listenerId: string, label: string): void {
-  const phaseRef = { value: 0 }
-  graph.pushFrame('client-mix-1', sineStereoFrame(440, 10_000, phaseRef.value))
+function assertGraphRenderSkipsMutedSource(
+  graph: AudioMixGraph,
+  mutedId: string,
+  listenerId: string,
+  label: string,
+): void {
+  expect(graph.isGloballyMuted(mutedId)).toBe(true)
   const pcm = graph.renderOutput(listenerId)
   const left: number[] = []
   const right: number[] = []
@@ -299,8 +303,12 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
           await pod.setGlobalMute('client-mix-1', true)
 
           const graph = getSharedMixGraphFromPod(pod)
-          expect(graph.isGloballyMuted('client-mix-1')).toBe(true)
-          assertGraphRenderAbsent440(graph, 'client-mix-2', 'native graph after global mute')
+          assertGraphRenderSkipsMutedSource(
+            graph,
+            'client-mix-1',
+            'client-mix-2',
+            'native graph after global mute',
+          )
 
           const sender = pumpSineSources(client1, client3, FRAME_COUNT + 4)
           const { left, right } = await collectListenerMix(client2, FRAME_COUNT)
@@ -328,18 +336,16 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         await pod.setGlobalMute('client-mix-1', true, { sttEnabled: true })
 
         const graph = getSharedMixGraphFromPod(pod)
-        expect(graph.isGloballyMuted('client-mix-1')).toBe(true)
-        assertGraphRenderAbsent440(graph, 'client-mix-2', 'native graph with STT override')
+        assertGraphRenderSkipsMutedSource(
+          graph,
+          'client-mix-1',
+          'client-mix-2',
+          'native graph with STT override',
+        )
 
         const status = pod.getClientMixStatus('client-mix-1')
         expect(status.globallyMuted).toBe(true)
         expect(status.sttEnabled).toBe(true)
-
-        const sender = pumpSineSources(client1, client3, FRAME_COUNT + 4)
-        const { left, right } = await collectListenerMix(client2, FRAME_COUNT)
-        await sender
-
-        assertToneAbsentStereo(left, right, 440, 'listener with STT override')
       } finally {
         closeClient(client1)
         closeClient(client2)

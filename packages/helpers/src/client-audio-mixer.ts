@@ -248,6 +248,9 @@ export class ClientAudioMixer {
     }
     await this.pauseAllMixPumps()
     this.graph.setGlobalMute(targetId, muted)
+    if (muted) {
+      this.graph.pushFrame(targetId, Buffer.alloc(PCM_FULL_FRAME_BYTES))
+    }
     try {
       if (muted) {
         await this.flushAllListenerOutbounds(targetId)

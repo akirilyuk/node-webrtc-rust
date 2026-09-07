@@ -22,6 +22,8 @@ on:
 
 permissions:
   contents: read
+  # Required to docker-pull ghcr.io/<repo>/ci-build (same-repo package).
+  packages: read
 
 concurrency:
   group: publish-npm-if-needed-${{ inputs.package }}-${{ inputs.version }}

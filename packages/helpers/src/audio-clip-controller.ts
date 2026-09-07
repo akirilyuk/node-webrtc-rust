@@ -103,27 +103,13 @@ export class AudioClipController {
     const routeSnapshots: RouteSnapshot[] = []
     if (usesMixGraph && graph) {
       graph.addInput(mixInputId)
-      const registered = deps.listRegisteredPeers()
-      for (const listenerId of registered) {
-        const current = graph.listenerSources?.(listenerId) ?? null
-        const baseSources =
-          current != null ? [...current] : registered.filter((peerId) => peerId !== listenerId)
-        const isTarget = targetPeerIds.includes(listenerId)
-        const nextSources = isTarget
-          ? baseSources.includes(mixInputId)
-            ? baseSources
-            : [...baseSources, mixInputId]
-          : baseSources.filter((sourceId) => sourceId !== mixInputId)
-
-        if (isTarget || current == null) {
-          routeSnapshots.push({
-            listenerId,
-            hadExplicit: current != null,
-            previousSources: current != null ? [...current] : null,
-          })
-          graph.setListenerSources?.(listenerId, nextSources)
-        }
-      }
+      this.applyTargetPlayRoutes(
+        routeSnapshots,
+        graph,
+        deps.listRegisteredPeers(),
+        mixInputId,
+        targetPeerIds,
+      )
     }
 
     for (const peerId of targetPeerIds) {
@@ -278,25 +264,39 @@ export class AudioClipController {
   ): void {
     if (!graph?.setListenerSources) return
     this.restoreRoutes(play, graph)
-    play.routeSnapshots.length = 0
+    this.applyTargetPlayRoutes(play.routeSnapshots, graph, registered, play.mixInputId, [
+      ...play.targetPeerIds,
+    ])
+  }
+
+  /**
+   * Append `mixInputId` only to targeted listeners. Non-targets keep implicit/group routes
+   * untouched — they do not hear the clip because it is not a mix-group member.
+   */
+  private applyTargetPlayRoutes(
+    routeSnapshots: RouteSnapshot[],
+    graph: ClientMixGraph,
+    registered: string[],
+    mixInputId: string,
+    targetPeerIds: string[],
+  ): void {
+    const targets = new Set(targetPeerIds)
     for (const listenerId of registered) {
+      if (!targets.has(listenerId)) continue
+
       const current = graph.listenerSources?.(listenerId) ?? null
       const baseSources =
         current != null ? [...current] : registered.filter((peerId) => peerId !== listenerId)
-      const isTarget = play.targetPeerIds.has(listenerId)
-      const nextSources = isTarget
-        ? baseSources.includes(play.mixInputId)
-          ? baseSources
-          : [...baseSources, play.mixInputId]
-        : baseSources.filter((sourceId) => sourceId !== play.mixInputId)
-      if (isTarget || current == null) {
-        play.routeSnapshots.push({
-          listenerId,
-          hadExplicit: current != null,
-          previousSources: current != null ? [...current] : null,
-        })
-        graph.setListenerSources(listenerId, nextSources)
-      }
+      const nextSources = baseSources.includes(mixInputId)
+        ? baseSources
+        : [...baseSources, mixInputId]
+
+      routeSnapshots.push({
+        listenerId,
+        hadExplicit: current != null,
+        previousSources: current != null ? [...current] : null,
+      })
+      graph.setListenerSources?.(listenerId, nextSources)
     }
   }
 

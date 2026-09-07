@@ -199,11 +199,39 @@ describe('VoiceAgentSessionHost playAudio', () => {
     })
     expect(playId).toBe('play-bytes')
     expect(graph.addInput).toHaveBeenCalledWith('play:play-bytes')
-    expect(graph.setListenerSources).toHaveBeenCalled()
+    expect(graph.setListenerSources).toHaveBeenCalledTimes(1)
+    expect(graph.setListenerSources).toHaveBeenCalledWith(
+      'client-a',
+      expect.arrayContaining(['client-b', 'play:play-bytes']),
+    )
     const routesA = graph.listenerRoutes.get('client-a') ?? []
     expect(routesA).toContain('play:play-bytes')
-    const routesB = graph.listenerRoutes.get('client-b') ?? []
-    expect(routesB).not.toContain('play:play-bytes')
+    expect(graph.listenerRoutes.has('client-b')).toBe(false)
+  })
+
+  it('does not call setListenerSources for non-target peers with implicit routes', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    host.sessions.set('client-b', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    host.getClientMixer()?.registerPeer('client-a')
+    host.getClientMixer()?.registerPeer('client-b')
+
+    await host.playAudio({
+      source: { bytes: Buffer.from('wav') },
+      peerIds: ['client-a'],
+    })
+
+    expect(graph.setListenerSources).toHaveBeenCalledTimes(1)
+    expect(graph.setListenerSources).not.toHaveBeenCalledWith('client-b', expect.anything())
+    expect(graph.listenerRoutes.get('client-a')).toContain('play:play-bytes')
+    expect(graph.listenerRoutes.has('client-b')).toBe(false)
   })
 
   it('plays to all active voice clients when peerIds omitted', async () => {

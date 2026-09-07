@@ -66,6 +66,8 @@ export interface ClientMixGraph {
   pose?(participantId: string): ClientPose | null | undefined
   ttsPose?(participantId: string): ClientPose | null | undefined
   listenerSources?(listener: string): string[] | null
+  setListenerSources?(listener: string, sources: string[]): void
+  clearListenerRoutes?(listener: string): void
 }
 
 type GraphGroupState = {
@@ -198,6 +200,11 @@ export class ClientAudioMixer {
   /** @internal Test access to the underlying graph. */
   getMixGraph(): ClientMixGraph {
     return this.graph
+  }
+
+  /** Registered peer ids (mix inputs). */
+  listRegisteredPeers(): string[] {
+    return [...this.registered]
   }
 
   private peerState(peerId: string): PeerMixState {

@@ -41,7 +41,11 @@ import {
   ClientAudioMixer,
   type ClientMixGraph,
   type ClientMixStatus,
+  type MixPumpOutboundTrack,
 } from './client-audio-mixer.js'
+import { AudioClipController, type PlayAudioRequest } from './audio-clip-controller.js'
+import type { ClipPlayerStatus } from '@node-webrtc-rust/sdk/player'
+import type { AudioPlaySource } from './clip-playback.js'
 import type { ClientPose, MixPlacement } from '@node-webrtc-rust/sdk/mix'
 import {
   getProcessVoiceSessionBudget,
@@ -209,6 +213,12 @@ export const MIX_REQUIRES_VOICE_PLUS_DATA =
 
 export const TTS_POSE_REQUIRES_VOICE = 'TTS pose APIs require voice or voice+data (not data-only)'
 
+export const AUDIO_PLAY_REQUIRES_VOICE = 'playAudio requires voice or voice+data (not data-only)'
+
+export type { AudioPlaySource } from './clip-playback.js'
+export type { PlayAudioRequest } from './audio-clip-controller.js'
+export type { ClipPlayerStatus } from '@node-webrtc-rust/sdk/player'
+
 export type { ClientMixStatus } from './client-audio-mixer.js'
 
 export interface CreateMixGroupOptions {
@@ -344,6 +354,7 @@ export class VoiceAgentSessionHost {
   private readonly closingPeers = new Map<string, Promise<PeerCloseOutcome>>()
   /** In-flight connects (counted for host close / idle teardown). */
   private readonly connectingPeers = new Map<string, Promise<void>>()
+  private readonly audioClips = new AudioClipController()
   /**
    * Per-peer FIFO queue of connect/close work. Public signaling events enqueue;
    * queued ops call private `*Inner` methods directly (no nested enqueue / depth bypass).
@@ -383,6 +394,7 @@ export class VoiceAgentSessionHost {
         : options.clientMixGraph
           ? new ClientAudioMixer({ graph: options.clientMixGraph })
           : undefined
+    this.audioClips.bindMixer(() => this.clientMixer)
 
     this.signaling.on('peer-joined', (peerId) => {
       if (peerId === VOICE_AGENT_SERVER_PEER_ID) return
@@ -541,6 +553,7 @@ export class VoiceAgentSessionHost {
     if (stillClosing.length > 0) {
       await Promise.allSettled(stillClosing)
     }
+    this.audioClips.close()
   }
 
   /**
@@ -1011,6 +1024,9 @@ export class VoiceAgentSessionHost {
         session.agentTtsOut = mixer.createTtsSidecar(peerId)
         agentOutbound = session.agentTtsOut
         mixer.startMixPump(peerId, pcOutbound)
+      } else if (pcOutbound) {
+        this.audioClips.registerDirectOutbound(peerId, pcOutbound)
+        this.audioClips.wireDirectOutboundTee(peerId, pcOutbound)
       }
 
       await session.agent.attach({
@@ -1500,6 +1516,9 @@ export class VoiceAgentSessionHost {
     if (this.clientMixer) {
       this.clientMixer.unregisterPeer(peerId)
     }
+    this.audioClips.onPeerDisconnected(peerId, {
+      listRegisteredPeers: () => this.listMixRegisteredPeers(),
+    })
 
     const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
     const agent = session.agent
@@ -1566,6 +1585,78 @@ export class VoiceAgentSessionHost {
   isVoiceClientActive(clientId: string): boolean {
     const session = this.sessions.get(clientId)
     return !!(session?.agent && session.agentStarted)
+  }
+
+  /**
+   * Play an encoded clip (URL, path, or bytes) to selected voice clients.
+   * Clips mix with TTS and other clients; they do not emit `agent_speaking` events.
+   */
+  async playAudio(request: PlayAudioRequest): Promise<{ playId: string }> {
+    this.assertAudioPlayCapable()
+    this.validateAudioPlayPeerIds(request.peerIds)
+    return this.audioClips.play(request, this.createClipPlayDeps())
+  }
+
+  /** Query native clip player status for a {@link playAudio} session. */
+  getAudioPlay(playId: string): ClipPlayerStatus | undefined {
+    this.assertAudioPlayCapable()
+    return this.audioClips.getPlay(playId)
+  }
+
+  /** Stop a clip started via {@link playAudio}. */
+  stopAudioPlay(playId: string): boolean {
+    this.assertAudioPlayCapable()
+    return this.audioClips.stop(playId)
+  }
+
+  private assertAudioPlayCapable(): void {
+    if (this.sessionMode === 'data-only') {
+      throw new Error(AUDIO_PLAY_REQUIRES_VOICE)
+    }
+  }
+
+  private validateAudioPlayPeerIds(peerIds?: string[]): void {
+    if (peerIds == null || peerIds.length === 0) return
+    for (const peerId of peerIds) {
+      if (!this.isVoiceClientActive(peerId)) {
+        throw new Error(`No active voice session for client ${peerId}`)
+      }
+    }
+  }
+
+  private listActiveVoicePeerIds(): string[] {
+    return [...this.sessions.keys()].filter((peerId) => this.isVoiceClientActive(peerId))
+  }
+
+  private listMixRegisteredPeers(): string[] {
+    return this.clientMixer?.listRegisteredPeers() ?? this.listActiveVoicePeerIds()
+  }
+
+  private createClipPlayDeps() {
+    return {
+      resolveTargetPeerIds: (peerIds?: string[]) => {
+        if (peerIds == null || peerIds.length === 0) {
+          const active = this.listActiveVoicePeerIds()
+          if (active.length === 0) {
+            throw new Error('playAudio requires at least one active voice client')
+          }
+          return active
+        }
+        return peerIds
+      },
+      getMixer: () => this.ensureClientMixer(),
+      listRegisteredPeers: () => this.listMixRegisteredPeers(),
+      getDirectOutbound: (peerId: string): MixPumpOutboundTrack | undefined => {
+        const session = this.sessions.get(peerId)
+        return session?.agentOut as MixPumpOutboundTrack | undefined
+      },
+      usesMixPump: (peerId: string) => {
+        if (!this.clientMixer) return false
+        if (this.clientMixer.listRegisteredPeers().includes(peerId)) return true
+        const session = this.sessions.get(peerId)
+        return !!session?.agentTtsOut
+      },
+    }
   }
 
   /** Creates a mix group with exclusive listener routes (Voice+Data only). */

@@ -26,12 +26,25 @@ export {
   VoiceAgentSessionHost,
   MIX_REQUIRES_VOICE_PLUS_DATA,
   TTS_POSE_REQUIRES_VOICE,
+  AUDIO_PLAY_REQUIRES_VOICE,
   type VoiceAgentSessionHostOptions,
   type PeerCloseOutcome,
   type TeardownComponentStatus,
   type CreateMixGroupOptions,
   type SetSttEnabledOptions,
+  type AudioPlaySource,
+  type PlayAudioRequest,
+  type ClipPlayerStatus,
 } from './voice-agent-session-host.js'
+
+export {
+  clipPlayInputId,
+  scaleStereoPcmVolume,
+  UrlClipDiskCache,
+  startClipPlayback,
+  DEFAULT_CLIP_CACHE_MAX_BYTES,
+  type ClipFetchFn,
+} from './clip-playback.js'
 
 export {
   ClientAudioMixer,

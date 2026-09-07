@@ -5,7 +5,7 @@ import { AudioMixGraph, quatIdentity, vec3Zero } from '@node-webrtc-rust/sdk/mix
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
 import { SessionPod } from '../src/session-pod.js'
-import { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
+import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
 import { VoiceSessionBudget, resetProcessVoiceSessionBudget } from '../src/voice-session-budget.js'
 import {
   appendStereoChannels,

@@ -6,9 +6,9 @@ import type { ClientMixGraph } from '../src/client-audio-mixer.js'
 import { PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 import { SessionPod } from '../src/session-pod.js'
 import * as hostModule from '../src/voice-agent-session-host.js'
-import {
+import type {
   VoiceAgentSessionHost,
-  type VoiceAgentSessionHostOptions,
+  VoiceAgentSessionHostOptions,
 } from '../src/voice-agent-session-host.js'
 
 function createMockMixGraph(): ClientMixGraph {

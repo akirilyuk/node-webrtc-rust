@@ -257,6 +257,21 @@ if [[ "$DRY_RUN" == true ]]; then
   echo "  [DRY RUN MODE]"
 fi
 
+publish_one() {
+  local dir="$1"
+  local pkg="$2"
+  shift 2
+  if [[ "$DRY_RUN" == true ]]; then
+    publish_pkg_with_extra "$dir" "$pkg" "$@"
+    return 0
+  fi
+  local extra=("$@")
+  if [[ -n "${NPM_OTP:-}" ]]; then
+    extra+=(--otp="$NPM_OTP")
+  fi
+  bash "$ROOT/scripts/ci/publish-npm-if-needed.sh" "$dir" "$pkg" "$VERSION" "${extra[@]}"
+}
+
 # 1. Platform-specific binding packages (only the ones that have a .node file)
 for dir in "$BINDINGS"/npm/*/; do
   if [[ -f "${dir}package.json" ]]; then
@@ -264,27 +279,22 @@ for dir in "$BINDINGS"/npm/*/; do
     nodes=("${dir}"*.node)
     if [[ ${#nodes[@]} -gt 0 ]]; then
       pkg=$(node -e "console.log(require('${dir}package.json').name)")
-      publish_pkg "$dir" "$pkg"
-      verify_published "$pkg"
+      publish_one "$dir" "$pkg"
     fi
   fi
 done
 
 # 2. Main bindings package (--ignore-scripts: skip prepublishOnly which re-publishes platform pkgs)
-publish_pkg_with_extra "$BINDINGS" "@node-webrtc-rust/bindings" --ignore-scripts
-verify_published "@node-webrtc-rust/bindings"
+publish_one "$BINDINGS" "@node-webrtc-rust/bindings" --ignore-scripts
 
 # 3. Signaling (before sdk — sdk depends on it)
-publish_pkg_with_extra "$ROOT/packages/signaling" "@node-webrtc-rust/signaling" --ignore-scripts
-verify_published "@node-webrtc-rust/signaling"
+publish_one "$ROOT/packages/signaling" "@node-webrtc-rust/signaling" --ignore-scripts
 
 # 4. SDK (depends on bindings + signaling)
-publish_pkg_with_extra "$ROOT/packages/sdk" "@node-webrtc-rust/sdk" --ignore-scripts
-verify_published "@node-webrtc-rust/sdk"
+publish_one "$ROOT/packages/sdk" "@node-webrtc-rust/sdk" --ignore-scripts
 
 # 5. Helpers (depends on sdk + signaling)
-publish_pkg_with_extra "$ROOT/packages/helpers" "@node-webrtc-rust/helpers" --ignore-scripts
-verify_published "@node-webrtc-rust/helpers"
+publish_one "$ROOT/packages/helpers" "@node-webrtc-rust/helpers" --ignore-scripts
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"

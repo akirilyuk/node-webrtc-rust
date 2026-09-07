@@ -272,6 +272,10 @@ No path filtering — always validates release surface after merge, but skips co
 
 Prep PRs use branch `release-prep/x.y.z` → `main`. Publish is triggered by `git push origin refs/tags/release/x.y.z`. Full release + lockfile docs: [`scripts/RELEASE.md`](../RELEASE.md#package-lockjson-after-release).
 
+Publish is sequential (platform bindings → bindings → signaling → sdk → helpers). Each step uses [`publish-npm-if-needed.sh`](publish-npm-if-needed.sh) (skip if `pkg@version` is already on the registry) then [`wait-for-npm-package.sh`](wait-for-npm-package.sh). The wait uses **exponential backoff** (3s, 6s, 12s, … capped at 30s; 20 attempts, ~8 min). A slow `npm view` after `sdk` must not leave `helpers` unpublished on retry.
+
+Resume a mid-sequence publish without retagging: Actions → **Publish npm package if needed** (`publish-npm-if-needed.yml`) → `helpers` / `0.8.1` on `main`.
+
 ```mermaid
 flowchart TD
   lock[validate-package-lock always]

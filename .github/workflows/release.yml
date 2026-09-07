@@ -530,53 +530,31 @@ jobs:
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
           BINDINGS="packages/bindings"
-
-          publish_dir() {
-            local dir="$1"
-            local label="$2"
-            shift 2
-            local extra=("$@")
-            if [[ ! -f "${dir}package.json" ]]; then
-              return 0
-            fi
-            if [[ "$dir" == "${BINDINGS}/npm/"* ]]; then
-              shopt -s nullglob
-              local nodes=("$dir"*.node)
-              if [[ ${#nodes[@]} -eq 0 ]]; then
-                echo "Missing .node in $dir" >&2
-                exit 1
-              fi
-            fi
-            echo "  publishing $label@${VERSION}"
-            (cd "$dir" && npm publish --access public "${extra[@]}")
-          }
-
-          verify_published() {
-            bash scripts/ci/wait-for-npm-package.sh "$1" "$VERSION"
-          }
+          PUBLISH=(bash scripts/ci/publish-npm-if-needed.sh)
 
           echo "==> Platform binding packages"
           for dir in "${BINDINGS}"/npm/*/; do
             pkg="$(node -p "require('./${dir}package.json').name")"
-            publish_dir "$dir" "$pkg"
-            verify_published "$pkg"
+            shopt -s nullglob
+            nodes=("$dir"*.node)
+            if [[ ${#nodes[@]} -eq 0 ]]; then
+              echo "Missing .node in $dir" >&2
+              exit 1
+            fi
+            "${PUBLISH[@]}" "$dir" "$pkg" "$VERSION"
           done
 
           echo "==> @node-webrtc-rust/bindings"
-          publish_dir "$BINDINGS/" "@node-webrtc-rust/bindings" --ignore-scripts
-          verify_published "@node-webrtc-rust/bindings"
+          "${PUBLISH[@]}" "$BINDINGS/" "@node-webrtc-rust/bindings" "$VERSION" --ignore-scripts
 
           echo "==> @node-webrtc-rust/signaling"
-          publish_dir "packages/signaling/" "@node-webrtc-rust/signaling" --ignore-scripts --omit=dev
-          verify_published "@node-webrtc-rust/signaling"
+          "${PUBLISH[@]}" "packages/signaling/" "@node-webrtc-rust/signaling" "$VERSION" --ignore-scripts --omit=dev
 
           echo "==> @node-webrtc-rust/sdk"
-          publish_dir "packages/sdk/" "@node-webrtc-rust/sdk" --ignore-scripts
-          verify_published "@node-webrtc-rust/sdk"
+          "${PUBLISH[@]}" "packages/sdk/" "@node-webrtc-rust/sdk" "$VERSION" --ignore-scripts
 
           echo "==> @node-webrtc-rust/helpers"
-          publish_dir "packages/helpers/" "@node-webrtc-rust/helpers" --ignore-scripts
-          verify_published "@node-webrtc-rust/helpers"
+          "${PUBLISH[@]}" "packages/helpers/" "@node-webrtc-rust/helpers" "$VERSION" --ignore-scripts
 
           echo "==> Published @node-webrtc-rust/*@${VERSION} to npm"
         env:

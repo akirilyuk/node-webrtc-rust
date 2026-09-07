@@ -10,6 +10,8 @@ import {
 
 function createMockMixGraph(): ClientMixGraph {
   const silence = Buffer.alloc(PCM_FULL_FRAME_BYTES)
+  const globalMute = new Map<string, boolean>()
+  const listenerMute = new Map<string, boolean>()
   return {
     addInput: vi.fn(),
     removeInput: vi.fn(),
@@ -25,6 +27,18 @@ function createMockMixGraph(): ClientMixGraph {
     setGroupMembers: vi.fn(),
     moveToGroup: vi.fn(),
     removeFromGroup: vi.fn(),
+    setGlobalMute: vi.fn((target: string, muted: boolean) => {
+      globalMute.set(target, muted)
+    }),
+    isGloballyMuted: vi.fn((target: string) => globalMute.get(target) ?? false),
+    setListenerMute: vi.fn((listener: string, target: string, muted: boolean) => {
+      listenerMute.set(`${listener}:${target}`, muted)
+    }),
+    isListenerMuted: vi.fn(
+      (listener: string, target: string) => listenerMute.get(`${listener}:${target}`) ?? false,
+    ),
+    pose: vi.fn(() => null),
+    ttsPose: vi.fn(() => null),
   }
 }
 
@@ -178,5 +192,95 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     await host.setSttEnabled({ enabled: true })
     expect(agentA.setSttEnabled).toHaveBeenCalledWith(true)
     expect(agentB.setSttEnabled).toHaveBeenCalledWith(true)
+  })
+
+  it('global mute disables STT for the target client only', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    const agentA = fakeAgent()
+    const agentB = fakeAgent()
+    host.sessions.set('client-a', { agent: agentA, agentStarted: true })
+    host.sessions.set('client-b', { agent: agentB, agentStarted: true })
+
+    await host.setGlobalMute('client-a', true)
+    expect(graph.setGlobalMute).toHaveBeenCalledWith('client-a', true)
+    expect(agentA.setSttEnabled).toHaveBeenCalledWith(false)
+    expect(agentB.setSttEnabled).not.toHaveBeenCalled()
+  })
+
+  it('global mute with sttEnabled true keeps STT on', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    const agentA = fakeAgent()
+    host.sessions.set('client-a', { agent: agentA, agentStarted: true })
+
+    await host.setGlobalMute('client-a', true, { sttEnabled: true })
+    expect(agentA.setSttEnabled).toHaveBeenCalledWith(true)
+    expect(host.getClientMixStatus('client-a').sttEnabled).toBe(true)
+  })
+
+  it('setSttEnabled while globally muted records explicit override', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    const agentA = fakeAgent()
+    host.sessions.set('client-a', { agent: agentA, agentStarted: true })
+
+    await host.setGlobalMute('client-a', true)
+    agentA.setSttEnabled.mockClear()
+    await host.setSttEnabled({ enabled: true, clientId: 'client-a' })
+    expect(agentA.setSttEnabled).toHaveBeenCalledWith(true)
+    expect(host.getClientMixStatus('client-a')).toMatchObject({
+      globallyMuted: true,
+      sttEnabled: true,
+    })
+  })
+
+  it('listener mute does not call setSttEnabled', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    const agentA = fakeAgent()
+    const agentB = fakeAgent()
+    host.sessions.set('client-a', { agent: agentA, agentStarted: true })
+    host.sessions.set('client-b', { agent: agentB, agentStarted: true })
+    host.createMixGroup({ id: 'g1', clientIds: ['client-a', 'client-b'] })
+
+    await host.setListenerMute('client-b', 'client-a', true)
+    expect(graph.setListenerMute).toHaveBeenCalledWith('client-b', 'client-a', true)
+    expect(agentA.setSttEnabled).not.toHaveBeenCalled()
+    expect(agentB.setSttEnabled).not.toHaveBeenCalled()
+  })
+
+  it('listener mute throws when clients are not in the same group', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    host.createMixGroup({ id: 'g1', clientIds: ['client-a'] })
+    await expect(host.setListenerMute('client-b', 'client-a', true)).rejects.toThrow(
+      /same mix group/,
+    )
+  })
+
+  it('status reports pose, tts pose, and mutes', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    const pose = {
+      position: { x: 2, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    const ttsPose = {
+      position: { x: -2, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    graph.pose = vi.fn(() => pose)
+    graph.ttsPose = vi.fn(() => ttsPose)
+    host.createMixGroup({ id: 'g1', clientIds: ['client-a', 'client-b'] })
+    host.setClientPose('client-a', pose)
+    host.setTtsPose('client-a', ttsPose)
+    await host.setListenerMute('client-b', 'client-a', true)
+
+    const status = host.getClientMixStatus('client-a')
+    expect(status.pose).toEqual(pose)
+    expect(status.ttsPose).toEqual(ttsPose)
+    expect(status.mutedBy).toEqual(['client-b'])
+    expect(status.groupId).toBe('g1')
   })
 })

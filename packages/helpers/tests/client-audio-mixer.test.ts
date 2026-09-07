@@ -30,6 +30,8 @@ function createMockGraph(): ClientMixGraph & {
     setGroupMembers: [] as Array<{ groupId: string; members: string[] }>,
     moveToGroup: [] as Array<{ peer: string; groupId: string }>,
     removeFromGroup: [] as string[],
+    setGlobalMute: [] as Array<{ target: string; muted: boolean }>,
+    setListenerMute: [] as Array<{ listener: string; target: string; muted: boolean }>,
     setPose: [] as Array<{ peer: string; pose: unknown }>,
     setPositionalEnabled: [] as boolean[],
     setDefaultMixPlacement: [] as string[],
@@ -88,6 +90,20 @@ function createMockGraph(): ClientMixGraph & {
     removeFromGroup: (peer) => {
       calls.removeFromGroup.push(peer)
     },
+    setGlobalMute: (target, muted) => {
+      calls.setGlobalMute.push({ target, muted })
+    },
+    isGloballyMuted: (target) =>
+      calls.setGlobalMute.some((entry) => entry.target === target && entry.muted),
+    setListenerMute: (listener, target, muted) => {
+      calls.setListenerMute.push({ listener, target, muted })
+    },
+    isListenerMuted: (listener, target) =>
+      calls.setListenerMute.some(
+        (entry) => entry.listener === listener && entry.target === target && entry.muted,
+      ),
+    pose: () => null,
+    ttsPose: () => null,
   }
 
   return Object.assign(graph, { calls })
@@ -269,5 +285,68 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.setTtsMixPlacement).toEqual(['right'])
     expect(graph.calls.setTtsPose).toEqual([{ peer: 'peer-1', pose }])
     expect(graph.calls.clearTtsPose).toEqual(['peer-1'])
+  })
+
+  it('forwards global mute to the graph and flushes post-mute mix', async () => {
+    const graph = createMockGraph()
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('a')
+    mixer.registerPeer('b')
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('b', pcTrack)
+    await mixer.setGlobalMute('a', true)
+    expect(graph.calls.setGlobalMute).toEqual([{ target: 'a', muted: true }])
+    expect(graph.calls.renderOutput.length).toBeGreaterThan(0)
+    expect(pcTrack.writeSample).toHaveBeenCalled()
+  })
+
+  it('does not push inbound PCM while globally muted', async () => {
+    const graph = createMockGraph()
+    graph.isGloballyMuted = (target) => target === 'a'
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('a')
+
+    const pcm = Buffer.alloc(PCM_FULL_FRAME_BYTES, 1)
+    const track = { readSample: vi.fn(async () => pcm) }
+    mixer.wrapInboundTrack('a', track as never)
+    await track.readSample()
+
+    expect(graph.calls.pushFrame).toEqual([])
+  })
+
+  it('tracks mix groups and rejects listener mute across groups', async () => {
+    const graph = createMockGraph()
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('a')
+    mixer.registerPeer('b')
+    mixer.registerPeer('c')
+    mixer.setGroupMembers('g1', ['a', 'b'])
+
+    await mixer.setListenerMute('a', 'b', true)
+    expect(graph.calls.setListenerMute).toEqual([{ listener: 'a', target: 'b', muted: true }])
+
+    await expect(mixer.setListenerMute('a', 'c', true)).rejects.toThrow(/same mix group/)
+    await expect(mixer.setListenerMute('a', 'a', true)).rejects.toThrow(/self/)
+  })
+
+  it('reports mix snapshot with group and listener mutes', async () => {
+    const graph = createMockGraph()
+    const pose = {
+      position: { x: 1, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    graph.pose = (peer) => (peer === 'a' ? pose : null)
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('a')
+    mixer.registerPeer('b')
+    mixer.setGroupMembers('team', ['a', 'b'])
+    await mixer.setGlobalMute('a', true)
+    await mixer.setListenerMute('b', 'a', true)
+
+    const status = mixer.getMixSnapshot('a')
+    expect(status.globallyMuted).toBe(true)
+    expect(status.groupId).toBe('team')
+    expect(status.pose).toEqual(pose)
+    expect(status.mutedBy).toEqual(['b'])
   })
 })

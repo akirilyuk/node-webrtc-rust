@@ -37,7 +37,11 @@ import type { SignalingClient } from '@node-webrtc-rust/signaling'
 import { createOfferGatherWithIceCredentials } from './offer-ice-gather.js'
 import { resolveIceTransportPolicy, type IceTransportPolicy } from './ice-transport-policy.js'
 import { createKickFrame, PCM_KICK_DURATION_MS } from './pcm.js'
-import { ClientAudioMixer, type ClientMixGraph } from './client-audio-mixer.js'
+import {
+  ClientAudioMixer,
+  type ClientMixGraph,
+  type ClientMixStatus,
+} from './client-audio-mixer.js'
 import type { ClientPose, MixPlacement } from '@node-webrtc-rust/sdk/mix'
 import {
   getProcessVoiceSessionBudget,
@@ -205,6 +209,8 @@ export const MIX_REQUIRES_VOICE_PLUS_DATA =
 
 export const TTS_POSE_REQUIRES_VOICE = 'TTS pose APIs require voice or voice+data (not data-only)'
 
+export type { ClientMixStatus } from './client-audio-mixer.js'
+
 export interface CreateMixGroupOptions {
   id: string
   clientIds: string[]
@@ -328,6 +334,10 @@ export class VoiceAgentSessionHost {
   private readonly sessionBudget: VoiceSessionBudget
   private readonly sessionMode: 'voice' | 'voice+data' | 'data-only'
   private clientMixer: ClientAudioMixer | undefined
+  /** Last explicit {@link setSttEnabled} per client (default true when agent is started). */
+  private readonly explicitSttEnabled = new Map<string, boolean>()
+  /** Last applied STT state (includes global-mute side effects) for status APIs. */
+  private readonly appliedSttEnabled = new Map<string, boolean>()
   /** Per-peer WebRTC reconnect attempts after `connectionState=failed`. */
   private readonly reconnectAttempts = new Map<string, number>()
   /** In-flight peer teardowns (counted for host close / idle teardown). */
@@ -1029,6 +1039,7 @@ export class VoiceAgentSessionHost {
 
       await session.agentOut.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
       session.agentStarted = true
+      this.appliedSttEnabled.set(peerId, this.explicitSttEnabled.get(peerId) ?? true)
       this.log(`[voice ${peerId}] VoiceAgent started — mic → STT, TTS → browser`)
       this.maybeNotifyPeerLifecycle(peerId, session)
     } catch (error) {
@@ -1551,6 +1562,12 @@ export class VoiceAgentSessionHost {
     }
   }
 
+  /** Whether a client has a started voice agent on this host. */
+  isVoiceClientActive(clientId: string): boolean {
+    const session = this.sessions.get(clientId)
+    return !!(session?.agent && session.agentStarted)
+  }
+
   /** Creates a mix group with exclusive listener routes (Voice+Data only). */
   createMixGroup(options: CreateMixGroupOptions): void {
     this.assertMixCapable()
@@ -1600,12 +1617,97 @@ export class VoiceAgentSessionHost {
   }
 
   /**
+   * Globally mute a client in the shared mix graph. Other listeners stop hearing them;
+   * the client stays in their mix group. STT is disabled by default unless overridden.
+   */
+  async setGlobalMute(
+    clientId: string,
+    muted: boolean,
+    options?: { sttEnabled?: boolean },
+  ): Promise<void> {
+    this.assertMixCapable()
+    await this.clientMixer!.setGlobalMute(clientId, muted)
+    await this.applyGlobalMuteStt(clientId, muted, options)
+  }
+
+  /** @internal STT side effects for {@link setGlobalMute} (SessionPod may call alone). */
+  async applyGlobalMuteStt(
+    clientId: string,
+    muted: boolean,
+    options?: { sttEnabled?: boolean },
+  ): Promise<void> {
+    const session = this.sessions.get(clientId)
+    if (!session?.agent || !session.agentStarted) {
+      return
+    }
+
+    if (muted) {
+      if (options?.sttEnabled === true) {
+        this.explicitSttEnabled.set(clientId, true)
+        await session.agent.setSttEnabled(true)
+        this.appliedSttEnabled.set(clientId, true)
+      } else {
+        await session.agent.setSttEnabled(false)
+        this.appliedSttEnabled.set(clientId, false)
+      }
+      return
+    }
+
+    const restore = this.explicitSttEnabled.get(clientId) ?? true
+    await session.agent.setSttEnabled(restore)
+    this.appliedSttEnabled.set(clientId, restore)
+  }
+
+  /** @internal Test and SessionPod access to the per-host mixer (shared graph when injected). */
+  getClientMixer(): ClientAudioMixer | undefined {
+    return this.clientMixer
+  }
+
+  /** Per-listener mute: only `listenerId` stops hearing `targetId` (same mix group required). */
+  async setListenerMute(listenerId: string, targetId: string, muted: boolean): Promise<void> {
+    this.assertMixCapable()
+    if (muted) {
+      await this.clientMixer!.pauseMixPump(listenerId)
+    }
+    await this.clientMixer!.setListenerMute(listenerId, targetId, muted)
+    if (muted) {
+      try {
+        await this.clientMixer!.burstOutboundMix(listenerId)
+      } finally {
+        this.clientMixer!.resumeMixPump(listenerId)
+      }
+    }
+  }
+
+  getClientMixStatus(clientId: string): ClientMixStatus {
+    this.assertMixCapable()
+    const snapshot = this.clientMixer!.getMixSnapshot(clientId)
+    return {
+      ...snapshot,
+      sttEnabled: this.resolveSttEnabledForStatus(clientId),
+    }
+  }
+
+  listClientMixStatuses(): ClientMixStatus[] {
+    this.assertMixCapable()
+    return this.clientMixer!.listMixSnapshots().map((snapshot) => ({
+      ...snapshot,
+      sttEnabled: this.resolveSttEnabledForStatus(snapshot.clientId),
+    }))
+  }
+
+  private resolveSttEnabledForStatus(clientId: string): boolean {
+    return this.appliedSttEnabled.get(clientId) ?? this.explicitSttEnabled.get(clientId) ?? true
+  }
+
+  /**
    * Toggle STT for one connected client or all voice peers when `clientId` is omitted.
    */
   async setSttEnabled(options: SetSttEnabledOptions): Promise<void> {
     const { enabled, clientId } = options
     const targets: Array<{ peerId: string; agent: VoiceAgent }> = []
     if (clientId != null) {
+      this.explicitSttEnabled.set(clientId, enabled)
       const session = this.sessions.get(clientId)
       if (!session?.agent || !session.agentStarted) {
         throw new Error(`No active voice session for client ${clientId}`)
@@ -1614,9 +1716,15 @@ export class VoiceAgentSessionHost {
     } else {
       for (const [peerId, session] of this.sessions) {
         if (this.sessionMode === 'data-only' || !session.agentStarted || !session.agent) continue
+        this.explicitSttEnabled.set(peerId, enabled)
         targets.push({ peerId, agent: session.agent })
       }
     }
-    await Promise.all(targets.map(({ agent }) => agent.setSttEnabled(enabled)))
+    await Promise.all(
+      targets.map(async ({ peerId, agent }) => {
+        await agent.setSttEnabled(enabled)
+        this.appliedSttEnabled.set(peerId, enabled)
+      }),
+    )
   }
 }

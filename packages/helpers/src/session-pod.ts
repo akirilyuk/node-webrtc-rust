@@ -12,10 +12,10 @@ import { SignalingClient } from '@node-webrtc-rust/signaling'
 import { AudioMixGraph } from '@node-webrtc-rust/sdk/mix'
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
-import {
+import type {
   ClientAudioMixer,
-  type ClientMixGraph,
-  type ClientMixStatus,
+  ClientMixGraph,
+  ClientMixStatus,
 } from './client-audio-mixer.js'
 import { PCM_FULL_FRAME_BYTES } from './pcm.js'
 

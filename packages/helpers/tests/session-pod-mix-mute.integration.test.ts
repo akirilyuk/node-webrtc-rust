@@ -4,9 +4,9 @@ import { LocalAudioTrack, RemoteAudioTrack, RTCPeerConnection } from '@node-webr
 import { AudioMixGraph, quatIdentity, vec3Zero } from '@node-webrtc-rust/sdk/mix'
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
-import { ClientAudioMixer } from '../src/client-audio-mixer.js'
+import type { ClientAudioMixer } from '../src/client-audio-mixer.js'
 import { SessionPod } from '../src/session-pod.js'
-import { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
+import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
 import { VoiceSessionBudget, resetProcessVoiceSessionBudget } from '../src/voice-session-budget.js'
 import {
   appendStereoChannels,

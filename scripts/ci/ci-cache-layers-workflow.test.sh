@@ -275,6 +275,8 @@ grep -q 'publish-npm-if-needed.sh' "$release" \
   || fail "release publish must use publish-npm-if-needed.sh (skip already-published)"
 grep -q 'Publish npm package if needed' .github/workflows/publish-npm-if-needed.yml \
   || fail "missing publish-npm-if-needed workflow"
+grep -q 'packages: read' .github/workflows/publish-npm-if-needed.yml \
+  || fail "publish-npm-if-needed must have packages: read to pull ci-build from GHCR"
 echo "ok: release publish skips packages already on npm"
 
 # plan emits rebuilt_targets

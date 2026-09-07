@@ -287,15 +287,16 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.clearTtsPose).toEqual(['peer-1'])
   })
 
-  it('forwards global mute to the graph', () => {
+  it('forwards global mute to the graph and flushes post-mute mix', async () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })
     mixer.registerPeer('a')
     mixer.registerPeer('b')
     const pcTrack = { writeSample: vi.fn(async () => undefined) }
     mixer.startMixPump('b', pcTrack)
-    mixer.setGlobalMute('a', true)
+    await mixer.setGlobalMute('a', true)
     expect(graph.calls.setGlobalMute).toEqual([{ target: 'a', muted: true }])
+    expect(graph.calls.renderOutput.length).toBeGreaterThan(0)
     expect(pcTrack.writeSample).toHaveBeenCalled()
   })
 
@@ -313,7 +314,7 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.pushFrame).toEqual([])
   })
 
-  it('tracks mix groups and rejects listener mute across groups', () => {
+  it('tracks mix groups and rejects listener mute across groups', async () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })
     mixer.registerPeer('a')
@@ -321,14 +322,14 @@ describe('ClientAudioMixer', () => {
     mixer.registerPeer('c')
     mixer.setGroupMembers('g1', ['a', 'b'])
 
-    mixer.setListenerMute('a', 'b', true)
+    await mixer.setListenerMute('a', 'b', true)
     expect(graph.calls.setListenerMute).toEqual([{ listener: 'a', target: 'b', muted: true }])
 
-    expect(() => mixer.setListenerMute('a', 'c', true)).toThrow(/same mix group/)
-    expect(() => mixer.setListenerMute('a', 'a', true)).toThrow(/self/)
+    await expect(mixer.setListenerMute('a', 'c', true)).rejects.toThrow(/same mix group/)
+    await expect(mixer.setListenerMute('a', 'a', true)).rejects.toThrow(/self/)
   })
 
-  it('reports mix snapshot with group and listener mutes', () => {
+  it('reports mix snapshot with group and listener mutes', async () => {
     const graph = createMockGraph()
     const pose = {
       position: { x: 1, y: 0, z: 0 },
@@ -339,8 +340,8 @@ describe('ClientAudioMixer', () => {
     mixer.registerPeer('a')
     mixer.registerPeer('b')
     mixer.setGroupMembers('team', ['a', 'b'])
-    mixer.setGlobalMute('a', true)
-    mixer.setListenerMute('b', 'a', true)
+    await mixer.setGlobalMute('a', true)
+    await mixer.setListenerMute('b', 'a', true)
 
     const status = mixer.getMixSnapshot('a')
     expect(status.globallyMuted).toBe(true)

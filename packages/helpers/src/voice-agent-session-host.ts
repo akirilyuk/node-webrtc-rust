@@ -1626,7 +1626,7 @@ export class VoiceAgentSessionHost {
     options?: { sttEnabled?: boolean },
   ): Promise<void> {
     this.assertMixCapable()
-    this.clientMixer!.setGlobalMute(clientId, muted)
+    await this.clientMixer!.setGlobalMute(clientId, muted)
     await this.applyGlobalMuteStt(clientId, muted, options)
   }
 
@@ -1664,9 +1664,19 @@ export class VoiceAgentSessionHost {
   }
 
   /** Per-listener mute: only `listenerId` stops hearing `targetId` (same mix group required). */
-  setListenerMute(listenerId: string, targetId: string, muted: boolean): void {
+  async setListenerMute(listenerId: string, targetId: string, muted: boolean): Promise<void> {
     this.assertMixCapable()
-    this.clientMixer!.setListenerMute(listenerId, targetId, muted)
+    if (muted) {
+      await this.clientMixer!.pauseMixPump(listenerId)
+    }
+    await this.clientMixer!.setListenerMute(listenerId, targetId, muted)
+    if (muted) {
+      try {
+        await this.clientMixer!.burstOutboundMix(listenerId)
+      } finally {
+        this.clientMixer!.resumeMixPump(listenerId)
+      }
+    }
   }
 
   getClientMixStatus(clientId: string): ClientMixStatus {

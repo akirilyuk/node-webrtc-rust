@@ -15,6 +15,9 @@ import { pcmFromWriteSampleTeeArgs } from './session-recorder.js'
 
 const WRAPPED_IN = Symbol('clientAudioMixerInbound')
 
+/** Post-mute outbound bursts (~380ms) to replace pre-mute WebRTC playout buffer. */
+const MIX_MUTE_FLUSH_FRAMES = 19
+
 /** Sidecar track VoiceAgent drains; must support {@link LocalAudioTrack.setWriteSampleTee}. */
 export type TtsSidecarTrack = {
   setWriteSampleTee(callback: ((...args: unknown[]) => void) | null): void
@@ -185,6 +188,8 @@ export class ClientAudioMixer {
   private readonly registered = new Set<string>()
   private readonly peers = new Map<string, PeerMixState>()
   private readonly silenceFrame = Buffer.alloc(PCM_FULL_FRAME_BYTES)
+  /** Serializes mix pump writes per peer (interval + mute flush share one chain). */
+  private readonly pumpWrites = new Map<string, Promise<void>>()
 
   constructor(options?: ClientAudioMixerOptions) {
     this.graph = options?.graph ?? new AudioMixGraph()
@@ -237,37 +242,83 @@ export class ClientAudioMixer {
     this.graph.removeFromGroup(clientId)
   }
 
-  setGlobalMute(targetId: string, muted: boolean): void {
+  async setGlobalMute(targetId: string, muted: boolean): Promise<void> {
     if (!this.graph.setGlobalMute) {
       throw new Error('Mix graph does not support global mute')
     }
+    await this.pauseAllMixPumps()
     this.graph.setGlobalMute(targetId, muted)
-    if (muted) {
-      this.flushAllListenerOutbounds(targetId)
+    try {
+      if (muted) {
+        await this.flushAllListenerOutbounds(targetId)
+      }
+    } finally {
+      this.resumeAllMixPumps()
     }
   }
 
-  /** @internal Flush queued mix audio on listener PC tracks after mute (WebRTC buffer). */
-  flushAllListenerOutbounds(excludedSourceId: string, frames = 4): void {
+  /** @internal Burst post-mute mix on every registered listener except the muted source. */
+  async flushAllListenerOutbounds(
+    excludedSourceId: string,
+    frames = MIX_MUTE_FLUSH_FRAMES,
+  ): Promise<void> {
     for (const peerId of this.registered) {
       if (peerId === excludedSourceId) continue
-      this.flushOutboundSilence(peerId, frames)
+      await this.burstOutboundMix(peerId, frames)
     }
   }
 
-  /** @internal Flush one listener outbound with silence frames. */
-  flushOutboundSilence(peerId: string, frames = 4): void {
-    const state = this.peers.get(peerId)
-    const out = state?.pcOutbound
-    if (!out) return
-    void (async () => {
-      for (let i = 0; i < frames; i++) {
-        await out.writeSample(this.silenceFrame, PCM_FRAME_DURATION_MS)
-      }
-    })()
+  /** @internal Pause every mix pump and drain in-flight writes before graph mute. */
+  async pauseAllMixPumps(): Promise<void> {
+    await Promise.all([...this.registered].map((peerId) => this.pauseMixPump(peerId)))
   }
 
-  setListenerMute(listenerId: string, targetId: string, muted: boolean): void {
+  /** @internal Resume mix pumps paused by {@link pauseAllMixPumps}. */
+  resumeAllMixPumps(): void {
+    for (const peerId of this.registered) {
+      this.resumeMixPump(peerId)
+    }
+  }
+
+  /** @internal Post-mute mix burst via {@link pumpMixFrame} (pumps must already be paused). */
+  async burstOutboundMix(peerId: string, frames = MIX_MUTE_FLUSH_FRAMES): Promise<void> {
+    for (let i = 0; i < frames; i++) {
+      await this.enqueuePumpMixFrame(peerId)
+    }
+  }
+
+  /** Pause one listener pump, burst post-mute mix, then resume. */
+  async flushOutboundMix(peerId: string, frames = MIX_MUTE_FLUSH_FRAMES): Promise<void> {
+    await this.pauseMixPump(peerId)
+    try {
+      await this.burstOutboundMix(peerId, frames)
+    } finally {
+      this.resumeMixPump(peerId)
+    }
+  }
+
+  /** @internal Pause one listener mix pump and drain in-flight writes. */
+  async pauseMixPump(peerId: string): Promise<void> {
+    const state = this.peers.get(peerId)
+    if (!state) return
+    if (state.pumpInterval) {
+      clearInterval(state.pumpInterval)
+      state.pumpInterval = undefined
+    }
+    await (this.pumpWrites.get(peerId) ?? Promise.resolve())
+  }
+
+  /** @internal Resume one listener mix pump after {@link pauseMixPump}. */
+  resumeMixPump(peerId: string): void {
+    const state = this.peers.get(peerId)
+    if (!state?.pcOutbound || state.pumpInterval) return
+    const out = state.pcOutbound
+    state.pumpInterval = setInterval(() => {
+      void this.enqueuePumpMixFrame(peerId, out).catch(() => undefined)
+    }, PCM_FRAME_DURATION_MS)
+  }
+
+  async setListenerMute(listenerId: string, targetId: string, muted: boolean): Promise<void> {
     if (listenerId === targetId) {
       throw new Error(`Cannot listener-mute self (${listenerId})`)
     }
@@ -278,9 +329,6 @@ export class ClientAudioMixer {
       throw new Error('Mix graph does not support listener mute')
     }
     this.graph.setListenerMute(listenerId, targetId, muted)
-    if (muted) {
-      this.flushOutboundSilence(listenerId)
-    }
   }
 
   /** Mix snapshot without STT (host / SessionPod fills {@link ClientMixStatus.sttEnabled}). */
@@ -393,7 +441,7 @@ export class ClientAudioMixer {
 
     state.pcOutbound = pcOutbound
     state.pumpInterval = setInterval(() => {
-      void this.pumpMixFrame(peerId, pcOutbound).catch(() => undefined)
+      void this.enqueuePumpMixFrame(peerId, pcOutbound).catch(() => undefined)
     }, PCM_FRAME_DURATION_MS)
   }
 
@@ -403,6 +451,14 @@ export class ClientAudioMixer {
     clearInterval(state.pumpInterval)
     state.pumpInterval = undefined
     state.pcOutbound = undefined
+    this.pumpWrites.delete(peerId)
+  }
+
+  private enqueuePumpMixFrame(peerId: string, pcOutbound?: MixPumpOutboundTrack): Promise<void> {
+    const prev = this.pumpWrites.get(peerId) ?? Promise.resolve()
+    const next = prev.catch(() => undefined).then(() => this.pumpMixFrame(peerId, pcOutbound))
+    this.pumpWrites.set(peerId, next)
+    return next
   }
 
   /** @internal One mix tick — exposed for unit tests with fake timers. */

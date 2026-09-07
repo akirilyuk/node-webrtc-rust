@@ -244,20 +244,22 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     host.sessions.set('client-b', { agent: agentB, agentStarted: true })
     host.createMixGroup({ id: 'g1', clientIds: ['client-a', 'client-b'] })
 
-    host.setListenerMute('client-b', 'client-a', true)
+    await host.setListenerMute('client-b', 'client-a', true)
     expect(graph.setListenerMute).toHaveBeenCalledWith('client-b', 'client-a', true)
     expect(agentA.setSttEnabled).not.toHaveBeenCalled()
     expect(agentB.setSttEnabled).not.toHaveBeenCalled()
   })
 
-  it('listener mute throws when clients are not in the same group', () => {
+  it('listener mute throws when clients are not in the same group', async () => {
     const graph = createMockMixGraph()
     const host = createHost('voice+data', graph)
     host.createMixGroup({ id: 'g1', clientIds: ['client-a'] })
-    expect(() => host.setListenerMute('client-b', 'client-a', true)).toThrow(/same mix group/)
+    await expect(host.setListenerMute('client-b', 'client-a', true)).rejects.toThrow(
+      /same mix group/,
+    )
   })
 
-  it('status reports pose, tts pose, and mutes', () => {
+  it('status reports pose, tts pose, and mutes', async () => {
     const graph = createMockMixGraph()
     const host = createHost('voice+data', graph)
     const pose = {
@@ -273,7 +275,7 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     host.createMixGroup({ id: 'g1', clientIds: ['client-a', 'client-b'] })
     host.setClientPose('client-a', pose)
     host.setTtsPose('client-a', ttsPose)
-    host.setListenerMute('client-b', 'client-a', true)
+    await host.setListenerMute('client-b', 'client-a', true)
 
     const status = host.getClientMixStatus('client-a')
     expect(status.pose).toEqual(pose)

@@ -192,10 +192,6 @@ function assertGraphRenderAbsent440(graph: AudioMixGraph, listenerId: string, la
   assertToneAbsentStereo(Int16Array.from(left), Int16Array.from(right), 440, label)
 }
 
-async function waitForMixFlush(): Promise<void> {
-  await delay(100)
-}
-
 async function waitForVoiceClientActive(
   pod: SessionPod,
   clientId: string,
@@ -226,7 +222,7 @@ async function resetMixMuteState(pod: SessionPod): Promise<void> {
     for (const targetId of CLIENT_IDS) {
       if (listenerId === targetId) continue
       try {
-        pod.setListenerMute(listenerId, targetId, false)
+        await pod.setListenerMute(listenerId, targetId, false)
       } catch {
         /* clients may not share a group */
       }
@@ -301,7 +297,6 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
         try {
           await pod.setGlobalMute('client-mix-1', true)
-          await waitForMixFlush()
 
           const graph = getSharedMixGraphFromPod(pod)
           expect(graph.isGloballyMuted('client-mix-1')).toBe(true)
@@ -331,7 +326,6 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
       const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
       try {
         await pod.setGlobalMute('client-mix-1', true, { sttEnabled: true })
-        await waitForMixFlush()
 
         const graph = getSharedMixGraphFromPod(pod)
         expect(graph.isGloballyMuted('client-mix-1')).toBe(true)
@@ -357,8 +351,7 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
     it('listener mute silences one listener while others still hear the source', async () => {
       const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
       try {
-        pod.setListenerMute('client-mix-2', 'client-mix-1', true)
-        await waitForMixFlush()
+        await pod.setListenerMute('client-mix-2', 'client-mix-1', true)
 
         const sender = pumpSineSources(client1, client3, FRAME_COUNT + 4)
         const [c2Mix, c3Mix] = await Promise.all([
@@ -407,7 +400,7 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
       try {
         const host = getVoiceHostForSession(pod, 'session-c2')!
         host.removeClientFromMix('all', 'client-mix-3')
-        expect(() => pod.setListenerMute('client-mix-2', 'client-mix-3', true)).toThrow(
+        await expect(pod.setListenerMute('client-mix-2', 'client-mix-3', true)).rejects.toThrow(
           /same mix group/,
         )
       } finally {

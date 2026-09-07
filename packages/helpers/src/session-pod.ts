@@ -12,7 +12,11 @@ import { SignalingClient } from '@node-webrtc-rust/signaling'
 import { AudioMixGraph } from '@node-webrtc-rust/sdk/mix'
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
-import type { ClientMixGraph, ClientMixStatus } from './client-audio-mixer.js'
+import {
+  ClientAudioMixer,
+  type ClientMixGraph,
+  type ClientMixStatus,
+} from './client-audio-mixer.js'
 
 import {
   getProcessVoiceSessionBudget,
@@ -529,34 +533,48 @@ export class SessionPod {
     if (!graph?.setGlobalMute) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
-    graph.setGlobalMute(clientId, muted)
-
-    if (muted) {
-      for (const slot of this.slots.values()) {
-        slot.host.getClientMixer()?.flushAllListenerOutbounds(clientId)
-      }
-    }
-
     const owning = this.findOwningHostForClient(clientId) ?? this.findMixCapableHost()
     if (!owning) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
+
+    if (muted) {
+      const mixers = [...this.slots.values()]
+        .map((slot) => slot.host.getClientMixer())
+        .filter((mixer): mixer is ClientAudioMixer => mixer != null)
+      await Promise.all(mixers.map((mixer) => mixer.pauseAllMixPumps()))
+      graph.setGlobalMute(clientId, muted)
+      try {
+        await Promise.all(mixers.map((mixer) => mixer.flushAllListenerOutbounds(clientId)))
+      } finally {
+        for (const mixer of mixers) {
+          mixer.resumeAllMixPumps()
+        }
+      }
+    } else {
+      graph.setGlobalMute(clientId, muted)
+    }
+
     await owning.applyGlobalMuteStt(clientId, muted, options)
   }
 
   /** Per-listener mute via the shared pod mix graph. */
-  setListenerMute(listenerId: string, targetId: string, muted: boolean): void {
-    const graph = this.resolveClientMixGraph()
-    if (!graph?.setListenerMute) {
-      throw new Error('No voice+data session with mix graph is prepared')
-    }
+  async setListenerMute(listenerId: string, targetId: string, muted: boolean): Promise<void> {
     const mixHost = this.findMixCapableHost()
     if (!mixHost) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
-    mixHost.setListenerMute(listenerId, targetId, muted)
-    if (muted) {
-      this.findOwningHostForClient(listenerId)?.getClientMixer()?.flushOutboundSilence(listenerId)
+    const listenerMixer = this.findOwningHostForClient(listenerId)?.getClientMixer()
+    if (muted && listenerMixer) {
+      await listenerMixer.pauseMixPump(listenerId)
+    }
+    await mixHost.getClientMixer()!.setListenerMute(listenerId, targetId, muted)
+    if (muted && listenerMixer) {
+      try {
+        await listenerMixer.burstOutboundMix(listenerId)
+      } finally {
+        listenerMixer.resumeMixPump(listenerId)
+      }
     }
   }
 

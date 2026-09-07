@@ -73,20 +73,13 @@ fn wav_pcm_decodes_and_plays() {
         let wav = make_wav_pcm();
         let session =
             ClipSession::start_from_bytes("test-wav".into(), wav).expect("play wav");
-        let status = {
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            loop {
-                let status = session.status();
-                if status.status == ClipStatus::Playing {
-                    break status;
-                }
-                if std::time::Instant::now() >= deadline {
-                    panic!("timeout: {status:?}");
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-        };
-        assert!(status.buffered_ms >= 100);
+        wait_for_status(&session, ClipStatus::Playing, Duration::from_secs(2));
+        assert!(session.status().buffered_ms >= 100);
+
+        let frame = session
+            .take_frame()
+            .expect("take_frame while playing should return PCM");
+        assert_eq!(frame.pcm.len(), FRAME_BYTES);
     });
 }
 
@@ -158,6 +151,7 @@ fn stop_mid_play() {
         session.stop();
         thread::sleep(Duration::from_millis(50));
         assert_eq!(session.status().status, ClipStatus::Stopped);
+        assert!(session.take_frame().is_none());
     });
 }
 
@@ -167,13 +161,20 @@ fn position_monotonic_while_playing() {
         let path = fixtures_dir().join("tone.mp3");
         let session = ClipSession::start_from_path("test-pos".into(), &path).expect("play");
         wait_for_status(&session, ClipStatus::Playing, Duration::from_secs(3));
-        let mut last = 0;
+        let mut last = 0u64;
         for _ in 0..5 {
-            thread::sleep(Duration::from_millis(80));
+            let frame = session.take_frame();
+            if frame.is_none() {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            assert_eq!(frame.unwrap().pcm.len(), FRAME_BYTES);
             let status = session.status();
             assert!(status.position_ms >= last);
+            assert!(status.position_ms > last || last == 0);
             last = status.position_ms;
         }
+        assert!(last > 0, "position_ms should advance when frames are consumed");
     });
 }
 

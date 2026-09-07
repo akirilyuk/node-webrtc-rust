@@ -37,6 +37,11 @@ pub fn stop_clip(play_id: &str) -> bool {
     registry::stop(play_id)
 }
 
+/// Take one 20 ms stereo PCM frame from a play session (for MixGraph routing).
+pub fn take_clip_frame(play_id: &str) -> Option<node_webrtc_rust_mixer::Frame> {
+    registry::take_frame(play_id)
+}
+
 /// Crate version string (matches `CARGO_PKG_VERSION`).
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

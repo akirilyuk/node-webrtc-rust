@@ -105,3 +105,9 @@ pub fn get_clip_status(play_id: String) -> Result<Option<JsClipPlayerStatus>> {
 pub fn stop_clip(play_id: String) -> bool {
     node_webrtc_rust_player::stop_clip(&play_id)
 }
+
+#[napi]
+pub fn take_clip_frame(play_id: String) -> Option<Buffer> {
+    node_webrtc_rust_player::take_clip_frame(&play_id)
+        .map(|frame| Buffer::from(frame.pcm.as_ref()))
+}

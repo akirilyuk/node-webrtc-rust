@@ -4,13 +4,19 @@ import {
   playClipFromPath as nativePlayClipFromPath,
   playClipProgressive as nativePlayClipProgressive,
   stopClip as nativeStopClip,
+  takeClipFrame as nativeTakeClipFrame,
   type JsClipPlayerStatus,
   type JsClipStatus,
   type JsGrowingClipWriter,
 } from '@node-webrtc-rust/bindings'
 import { Buffer } from 'node:buffer'
 
-import type { ClipPlayerStatus, ClipStatus, ProgressiveClip, ProgressiveClipWriter } from './types.js'
+import type {
+  ClipPlayerStatus,
+  ClipStatus,
+  ProgressiveClip,
+  ProgressiveClipWriter,
+} from './types.js'
 
 function mapStatus(status: JsClipStatus): ClipStatus {
   switch (status) {
@@ -88,4 +94,15 @@ export function stopClip(playId: string): boolean {
   return nativeStopClip(playId)
 }
 
-export type { ClipPlayerStatus, ClipStatus, ProgressiveClip, ProgressiveClipWriter } from './types.js'
+/** Take one 20 ms stereo PCM frame (3840 bytes) for MixGraph routing. */
+export function takeClipFrame(playId: string): Buffer | null {
+  const frame = nativeTakeClipFrame(playId)
+  return frame ?? null
+}
+
+export type {
+  ClipPlayerStatus,
+  ClipStatus,
+  ProgressiveClip,
+  ProgressiveClipWriter,
+} from './types.js'

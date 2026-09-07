@@ -33,7 +33,7 @@ pub use mixer::{
 };
 pub use player::{
     get_clip_status, play_clip_from_bytes, play_clip_from_path, play_clip_progressive, stop_clip,
-    JsClipPlayerStatus, JsClipStatus, JsGrowingClipWriter,
+    take_clip_frame, JsClipPlayerStatus, JsClipStatus, JsGrowingClipWriter,
 };
 pub use peer_connection::JsPeerConnection;
 pub use rtp_receiver::JsRtpReceiver;

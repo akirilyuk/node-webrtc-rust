@@ -37,6 +37,11 @@ pub fn stop(play_id: &str) -> bool {
     }
 }
 
+pub fn take_frame(play_id: &str) -> Option<node_webrtc_rust_mixer::Frame> {
+    let mut guard = registry().lock().expect("player registry lock");
+    guard.get(play_id).and_then(|session| session.take_frame())
+}
+
 pub fn remove(play_id: &str) {
     let mut guard = registry().lock().expect("player registry lock");
     guard.remove(play_id);

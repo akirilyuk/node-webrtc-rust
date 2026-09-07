@@ -18,6 +18,7 @@ pub use error::PlayerError;
 pub use mp4_probe::{mp4_ready_for_decode, probe_mp4_layout, Mp4Layout};
 pub use player::{
     get_clip_status, play_clip_from_bytes, play_clip_from_path, play_clip_progressive, stop_clip,
+    take_clip_frame,
 };
 pub use session::{split_frames, ClipSession};
 pub use source::{GrowingByteSource, GrowingByteWriter, is_raw_pcm_s16le_48k_stereo};

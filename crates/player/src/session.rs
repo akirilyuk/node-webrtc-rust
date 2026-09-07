@@ -4,10 +4,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use node_webrtc_rust_mixer::{Frame, FRAME_BYTES};
+use node_webrtc_rust_mixer::{Frame, FRAME_BYTES, FRAME_MS};
 use symphonia::core::io::MediaSource;
 
 use crate::decoder::{hint_from_bytes, hint_from_path, DecoderSession};
@@ -28,7 +27,6 @@ pub struct ClipSession {
     play_id: String,
     state: Arc<SessionState>,
     decode_thread: Option<JoinHandle<()>>,
-    play_thread: Option<JoinHandle<()>>,
 }
 
 struct SessionState {
@@ -37,8 +35,6 @@ struct SessionState {
     stop_requested: AtomicBool,
     decode_done: AtomicBool,
     preroll_ms: u64,
-    playing_since: Mutex<Option<Instant>>,
-    playhead_base_ms: Mutex<u64>,
 }
 
 impl ClipSession {
@@ -86,8 +82,6 @@ impl ClipSession {
             stop_requested: AtomicBool::new(false),
             decode_done: AtomicBool::new(false),
             preroll_ms: PREROLL_TARGET_MS,
-            playing_since: Mutex::new(None),
-            playhead_base_ms: Mutex::new(0),
         });
 
         let decode_thread = {
@@ -96,16 +90,10 @@ impl ClipSession {
             thread::spawn(move || decode_loop(play_id, input, state))
         };
 
-        let play_thread = {
-            let state = Arc::clone(&state);
-            thread::spawn(move || play_loop(state))
-        };
-
         Self {
             play_id,
             state,
             decode_thread: Some(decode_thread),
-            play_thread: Some(play_thread),
         }
     }
 
@@ -114,17 +102,49 @@ impl ClipSession {
     }
 
     pub fn status(&self) -> ClipPlayerStatus {
-        let mut status = self.state.status.lock().expect("status lock");
-        update_position_locked(&self.state, &mut status);
-        status.clone()
+        self.state.status.lock().expect("status lock").clone()
     }
 
     pub fn stop(&self) {
         self.state.stop_requested.store(true, Ordering::SeqCst);
         let mut status = self.state.status.lock().expect("status lock");
         if status.status == ClipStatus::Playing || status.status == ClipStatus::Buffering {
-            update_position_locked(&self.state, &mut status);
             status.status = ClipStatus::Stopped;
+        }
+    }
+
+    /// Take one 20 ms stereo PCM frame for MixGraph / writeSample routing.
+    ///
+    /// Returns `None` when buffering, stopped, ended, errored, or on underrun while still playing.
+    pub fn take_frame(&self) -> Option<Frame> {
+        let mut status = self.state.status.lock().expect("status lock");
+        match status.status {
+            ClipStatus::Stopped | ClipStatus::Ended | ClipStatus::Error | ClipStatus::Buffering => {
+                return None;
+            }
+            ClipStatus::Playing => {}
+        }
+
+        let mut queue = self.state.pcm_queue.lock().expect("pcm queue lock");
+        match pop_frame_bytes(&mut queue) {
+            Some(pcm) => {
+                if status.buffered_ms >= FRAME_MS as u64 {
+                    status.buffered_ms -= FRAME_MS as u64;
+                } else {
+                    status.buffered_ms = 0;
+                }
+                status.position_ms += FRAME_MS as u64;
+                if let Some(dur) = status.duration_ms {
+                    status.position_ms = status.position_ms.min(dur);
+                }
+                Some(Frame::new(pcm, None))
+            }
+            None => {
+                if self.state.decode_done.load(Ordering::SeqCst) {
+                    status.status = ClipStatus::Ended;
+                }
+                None
+            }
         }
     }
 }
@@ -133,9 +153,6 @@ impl Drop for ClipSession {
     fn drop(&mut self) {
         self.state.stop_requested.store(true, Ordering::SeqCst);
         if let Some(handle) = self.decode_thread.take() {
-            let _ = handle.join();
-        }
-        if let Some(handle) = self.play_thread.take() {
             let _ = handle.join();
         }
     }
@@ -170,7 +187,7 @@ fn wait_until_decode_ready(source: &GrowingByteSource) {
     while !source.is_eof() {
         let snap = source.snapshot();
         if snap.is_empty() {
-            thread::sleep(Duration::from_millis(2));
+            thread::sleep(std::time::Duration::from_millis(2));
             continue;
         }
         let is_mp4 = probe_mp4_layout(&snap) != Mp4Layout::Unknown
@@ -182,7 +199,7 @@ fn wait_until_decode_ready(source: &GrowingByteSource) {
         } else if snap.len() >= 512 {
             return;
         }
-        thread::sleep(Duration::from_millis(2));
+        thread::sleep(std::time::Duration::from_millis(2));
     }
 }
 
@@ -217,7 +234,7 @@ fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> 
                         if source.is_eof() {
                             return Err(err);
                         }
-                        thread::sleep(Duration::from_millis(5));
+                        thread::sleep(std::time::Duration::from_millis(5));
                     }
                 }
             }
@@ -225,7 +242,7 @@ fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> 
                 if source.is_eof() {
                     return Err(err);
                 }
-                thread::sleep(Duration::from_millis(5));
+                thread::sleep(std::time::Duration::from_millis(5));
             }
         }
     }
@@ -282,68 +299,30 @@ fn try_transition_to_playing(state: &Arc<SessionState>) {
         || (done && status.buffered_ms > 0 && status.buffered_ms < PREROLL_MIN_MS);
     if ready {
         status.status = ClipStatus::Playing;
-        let mut playing_since = state.playing_since.lock().expect("playing_since lock");
-        *playing_since = Some(Instant::now());
     }
 }
 
-fn play_loop(state: Arc<SessionState>) {
-    while !state.stop_requested.load(Ordering::SeqCst) {
-        let mut status = state.status.lock().expect("status lock");
-        update_position_locked(&state, &mut status);
-
-        if status.status == ClipStatus::Playing {
-            let mut queue = state.pcm_queue.lock().expect("pcm queue lock");
-            if queue.is_empty() && state.decode_done.load(Ordering::SeqCst) {
-                status.status = ClipStatus::Ended;
-                break;
-            }
-            if !queue.is_empty() {
-                drain_frame(&mut queue);
-                if status.buffered_ms >= 20 {
-                    status.buffered_ms -= 20;
-                }
-            }
-        } else if status.status == ClipStatus::Ended
-            || status.status == ClipStatus::Stopped
-            || status.status == ClipStatus::Error
-        {
-            break;
-        }
-        drop(status);
-        thread::sleep(Duration::from_millis(20));
+fn pop_frame_bytes(queue: &mut Vec<Bytes>) -> Option<Bytes> {
+    let available = queue.iter().map(|chunk| chunk.len()).sum::<usize>();
+    if available < FRAME_BYTES {
+        return None;
     }
-}
 
-fn drain_frame(queue: &mut Vec<Bytes>) {
+    let mut frame = Vec::with_capacity(FRAME_BYTES);
     let mut need = FRAME_BYTES;
-    while need > 0 && !queue.is_empty() {
+    while need > 0 {
         let front = &mut queue[0];
         if front.len() <= need {
             need -= front.len();
+            frame.extend_from_slice(front);
             queue.remove(0);
         } else {
+            frame.extend_from_slice(&front[..need]);
             *front = front.slice(need..);
             need = 0;
         }
     }
-}
-
-fn update_position_locked(state: &Arc<SessionState>, status: &mut ClipPlayerStatus) {
-    if status.status != ClipStatus::Playing {
-        return;
-    }
-    let playing_since = state.playing_since.lock().expect("playing_since lock");
-    if let Some(started) = *playing_since {
-        let base = *state.playhead_base_ms.lock().expect("playhead_base lock");
-        let elapsed = started.elapsed().as_millis() as u64;
-        let pos = base + elapsed;
-        if let Some(dur) = status.duration_ms {
-            status.position_ms = pos.min(dur);
-        } else {
-            status.position_ms = pos;
-        }
-    }
+    Some(Bytes::from(frame))
 }
 
 fn set_error(state: &Arc<SessionState>, message: String) {
@@ -352,7 +331,7 @@ fn set_error(state: &Arc<SessionState>, message: String) {
     status.error = Some(message);
 }
 
-/// Split stereo PCM into 20 ms frames (utility for future mixer integration).
+/// Split stereo PCM into 20 ms frames (utility for tests and batch export).
 pub fn split_frames(pcm: &[u8]) -> Vec<Frame> {
     let mut frames = Vec::new();
     for chunk in pcm.chunks(FRAME_BYTES) {

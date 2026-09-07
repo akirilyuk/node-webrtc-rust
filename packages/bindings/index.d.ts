@@ -167,6 +167,7 @@ export declare function playClipFromBytes(data: Buffer): string
 export declare function playClipProgressive(): JsGrowingClipWriter
 export declare function getClipStatus(playId: string): JsClipPlayerStatus | null
 export declare function stopClip(playId: string): boolean
+export declare function takeClipFrame(playId: string): Buffer | null
 /** Init options for {@link RTCPeerConnection.addTransceiver}. */
 export interface JsRtcRtpTransceiverInit {
   direction?: string

@@ -237,14 +237,28 @@ Use this for **all six platform binaries** and a consistent CI run before publis
 
 ### 2. Tag and publish (after merge)
 
-Tag the **merge commit** on `main` (`package.json` versions must already be `X.Y.Z`; lockfile sync comes **after** publish):
+**Required:** pull **latest `origin/main`** in the primary checkout and run **full local CI** before creating the tag. A green `release-prep/X.Y.Z` PR is **not** enough — PR Build & Test can skip `run-pr-quality.sh` (`eslint .`) when detect-changes treats the diff as non-code. Release **always** runs that script.
 
 ```bash
+git fetch origin main
 git checkout main
-git pull
+git pull origin main
+# HEAD must be the intended merge; package.json versions already X.Y.Z
+
+bash scripts/ci/run-pr-quality.sh
+npm run build:native
+bash scripts/ci/run-pr-tests-full.sh
+npm run ci:verify:release-ts
+```
+
+All four must exit 0. Then tag the **merge commit** on `main` (lockfile sync comes **after** publish):
+
+```bash
 git tag release/0.5.2
 git push origin refs/tags/release/0.5.2
 ```
+
+Do not tag from a stale local `main`, a feature worktree, or the prep branch. Do not retag the same SHA after a Release quality failure — fix on `main` first.
 
 ### 3. Merge post-release package-lock PR
 
@@ -352,12 +366,15 @@ Windows is never cross-compiled locally — copy from a Windows CI artifact or b
 
 ## Pre-release checks
 
+**Mandatory before `git tag release/X.Y.Z`** — see [Tag and publish](#2-tag-and-publish-after-merge). Agent rule: [`.cursor/rules/release-tag-local-ci.mdc`](../.cursor/rules/release-tag-local-ci.mdc).
+
 Release NAPI builds (CI `release.yml`, `build-main.yml`, and [`release-publish.sh`](release-publish.sh)) always pass **`--features otel`** so published `@node-webrtc-rust/bindings` include OpenTelemetry. Local `npm run build:native` / PR debug builds do not unless you pass the feature explicitly.
 
-Mirror PR CI locally:
+Mirror PR / Release quality locally (same commands as the tag gate):
 
 ```bash
 npm run ci:validate:package-lock # fast lockfile check (no npm ci)
+bash scripts/ci/run-pr-quality.sh # Release Typecheck & lint (always; eslint .)
 npm run build:native             # host .node for npm test
 npm run ci:verify                # full PR check suite on host
 npm run ci:verify:release-ts     # release publish TS path
@@ -375,6 +392,7 @@ Dry-run publish packaging on a PR: the **Publish (dry-run)** job in [Build & Tes
 | `npm ci` / CI **`Invalid Version:`** | Stub optional bindings in `package-lock.json`. Run `npm run ci:validate:package-lock` to list stubs. After packages are on npm: `bash scripts/ci/refresh-package-lock-optional-bindings.sh` or merge the post-release PR. |
 | `main` red after release prep, before post-release PR | Expected until **`chore/post-release-package-lock-X.Y.Z`** merges. Do not “fix” by hand-editing stubs. |
 | `bump-workspace-versions.sh` fails on refresh | Use `SKIP_LOCK_REFRESH=1` before publish; run `post-release-sync-main-package-lock.sh` after publish. |
+| Release **Typecheck & lint** fails after a green prep PR | PR quality skipped `eslint .`. Run `bash scripts/ci/run-pr-quality.sh` on latest `main`; fix and merge **before** tagging. Do not retag the failed SHA. |
 | No post-release PR after tag | Check Release workflow job **Sync main package-lock**; verify `publish` succeeded and `pull-requests: write` permission. Re-run locally: `bash scripts/ci/post-release-sync-main-package-lock.sh X.Y.Z` on `main`. |
 | Post-release PR conflicts | Rebase branch on `main`, or close bot PR and run sync script locally. |
 | `shopt: not found` in CI | Linux container steps use `shell: bash` |

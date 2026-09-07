@@ -71,3 +71,5 @@ bash scripts/ci/install-pre-push-hook.sh
 `ci:pre-push` rebuilds the TS workspace when `packages/helpers|sdk|signaling/` changed — stale local `dist/` alone used to pass while CI failed.
 
 Re-run the **full** sequence (`run-pr-quality.sh`, `build:native`, `run-pr-tests-full.sh`) if the commit touched Rust, bindings, or you need integration parity.
+
+**Release tags** (`release/X.Y.Z`) are a separate gate: pull latest `main` and run the same sequence **before** tagging — [`release-tag-local-ci.mdc`](release-tag-local-ci.mdc). A green prep PR can skip `eslint .`.

@@ -104,16 +104,14 @@ jobs:
       - uses: actions/checkout@v4
 
       # Bundle resolution computes the current contract with `cargo metadata`
-      # before the fallback planner composite action runs.
-      - name: Install Rust metadata toolchain
-        uses: dtolnay/rust-toolchain@stable
-
+      # inside CI_IMAGE before the fallback planner composite action runs.
       - name: Resolve native-main-bundle from successful main
         id: resolve
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
           NATIVE_TOOL_MODE: declared
+          CARGO_VIA_CI_IMAGE: '1'
         run: bash scripts/ci/resolve-native-main-bundle.sh --profile release
 
       - name: Plan per-target cache rebuilds (fallback / accelerator)
@@ -226,10 +224,7 @@ jobs:
 
       - uses: ./.github/actions/ci-restore-workspace-ownership
 
-      # Validation recomputes the current six-target native contract.
-      - name: Install Rust metadata toolchain
-        uses: dtolnay/rust-toolchain@stable
-
+      # Validation recomputes the current six-target native contract via CI_IMAGE cargo.
       - name: Download native-main-bundle from producer run
         uses: actions/download-artifact@v4
         with:
@@ -242,6 +237,7 @@ jobs:
         shell: bash
         env:
           NATIVE_TOOL_MODE: declared
+          CARGO_VIA_CI_IMAGE: '1'
         run: |
           set -euo pipefail
           bash scripts/ci/native-artifact-bundle.sh validate \

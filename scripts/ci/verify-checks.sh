@@ -39,6 +39,7 @@ run "bash scripts/ci/native-binding-cache-key.test.sh"
 run "bash scripts/ci/ts-dist-cache-key.test.sh"
 run "bash scripts/ci/sherpa-models-cache.test.sh"
 run "bash scripts/ci/ci-cache-layers-workflow.test.sh"
+run "bash scripts/ci/cargo-via-ci-image.test.sh"
 run "bash scripts/ci/wait-for-npm-package.test.sh"
 run "bash scripts/ci/publish-npm-if-needed.test.sh"
 

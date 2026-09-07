@@ -59,10 +59,7 @@ runs:
   using: composite
   steps:
     # Fingerprinting walks the resolved local dependency graph with
-    # `cargo metadata`. Self-hosted plan runners do not provide Cargo.
-    - name: Install Rust metadata toolchain
-      uses: dtolnay/rust-toolchain@stable
-
+    # `cargo metadata` inside CI_IMAGE (docker on bare self-hosted runners).
     - name: Plan per-target native builds
       id: plan
       shell: bash
@@ -71,6 +68,7 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         NATIVE_TOOL_MODE: declared
         CI_IMAGE: ${{ env.CI_IMAGE }}
+        CARGO_VIA_CI_IMAGE: '1'
       run: bash scripts/ci/plan-native-builds.sh
 
     - name: Check main CI success

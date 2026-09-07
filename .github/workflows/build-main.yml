@@ -248,10 +248,7 @@ jobs:
 
       - uses: ./.github/actions/ci-restore-workspace-ownership
 
-      # Bundle assembly recomputes every target fingerprint with `cargo metadata`.
-      - name: Install Rust metadata toolchain
-        uses: dtolnay/rust-toolchain@stable
-
+      # Bundle assembly recomputes every target fingerprint with CI_IMAGE cargo metadata.
       - name: Download all binding artifacts
         uses: actions/download-artifact@v4
         with:
@@ -264,6 +261,7 @@ jobs:
         shell: bash
         env:
           NATIVE_TOOL_MODE: declared
+          CARGO_VIA_CI_IMAGE: '1'
           NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
           NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
           NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}

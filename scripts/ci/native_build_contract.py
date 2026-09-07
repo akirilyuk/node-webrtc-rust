@@ -397,7 +397,22 @@ def build_env_contract(target: str, profile: str, root: Path | None = None) -> d
     }
 
 
-def run_cargo_metadata(root: Path, target: str, features: list[str]) -> dict[str, Any]:
+def cargo_via_ci_image_enabled() -> bool:
+    value = os.environ.get("CARGO_VIA_CI_IMAGE", "").strip().lower()
+    return value in ("1", "true", "yes")
+
+
+def ci_image_ref() -> str:
+    for key in ("CI_IMAGE", "CI_IMAGE_LOCAL"):
+        ref = os.environ.get(key, "").strip()
+        if ref:
+            return ref
+    raise SystemExit(
+        "native_build_contract: CARGO_VIA_CI_IMAGE is set but CI_IMAGE (or CI_IMAGE_LOCAL) is missing"
+    )
+
+
+def build_cargo_metadata_argv(root: Path, target: str, features: list[str]) -> list[str]:
     cmd = [
         "cargo",
         "metadata",
@@ -409,10 +424,39 @@ def run_cargo_metadata(root: Path, target: str, features: list[str]) -> dict[str
     ]
     if features:
         cmd.extend(["--features", ",".join(features)])
+    return cmd
+
+
+def build_cargo_metadata_command(root: Path, target: str, features: list[str]) -> list[str]:
+    cargo_argv = build_cargo_metadata_argv(root, target, features)
+    if not cargo_via_ci_image_enabled():
+        return cargo_argv
+    image = ci_image_ref()
+    root_s = str(root)
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{root_s}:{root_s}",
+        "-w",
+        root_s,
+        "-e",
+        "CARGO_HOME=/usr/local/cargo",
+        "-e",
+        "RUSTUP_HOME=/usr/local/rustup",
+        image,
+        *cargo_argv,
+    ]
+
+
+def run_cargo_metadata(root: Path, target: str, features: list[str]) -> dict[str, Any]:
+    cmd = build_cargo_metadata_command(root, target, features)
     try:
         raw = subprocess.check_output(cmd, cwd=str(root), text=True)
     except FileNotFoundError as exc:
-        raise SystemExit("native_build_contract: cargo not found on PATH") from exc
+        missing = "docker" if cargo_via_ci_image_enabled() else "cargo"
+        raise SystemExit(f"native_build_contract: {missing} not found on PATH") from exc
     except subprocess.CalledProcessError as exc:
         raise SystemExit(
             f"native_build_contract: cargo metadata failed for target={target} "

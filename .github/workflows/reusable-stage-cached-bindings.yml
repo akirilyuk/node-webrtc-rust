@@ -43,9 +43,6 @@ jobs:
           target: ${{ matrix.target }}
           profile: ${{ inputs.profile }}
 
-      - name: Install Rust metadata toolchain
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Require cached native artifact + manifest
         shell: bash
         env:

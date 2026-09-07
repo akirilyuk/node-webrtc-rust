@@ -258,7 +258,7 @@ flowchart TD
 ```
 
 1. **quality** — [`run-pr-quality.sh`](run-pr-quality.sh)
-2. **plan** — [`plan-native-builds`](../../.github/actions/plan-native-builds) installs the Rust metadata toolchain on the bare self-hosted runner, then probes exact `native-v3-release-{target}-{digest}` keys (curl + equality); matrices only for misses
+2. **plan** — [`plan-native-builds`](../../.github/actions/plan-native-builds) runs `cargo metadata` inside `CI_IMAGE` on bare self-hosted runners (`CARGO_VIA_CI_IMAGE=1`; no host `rustup`), then probes exact `native-v3-release-{target}-{digest}` keys (curl + equality); matrices only for misses
 3. **build-linux / build-host** — compile misses; **always save** per-target `.node`+manifest after compile; upload `bindings-<triple>/`
 4. **stage-cached** — restore exact cache hits, refresh manifests, upload same artifact layout
 5. **test** — [`run-pr-integration.sh`](run-pr-integration.sh)
@@ -437,6 +437,8 @@ CI uses `NATIVE_TOOL_MODE=declared` so plan/build share per-target tool contract
 
 **Windows path stability:** contract relative paths always use forward slashes (`Path.as_posix()`), so Linux planners and Windows producers share one `native-v3-*` key.
 
+**Bare self-hosted plan/assemble (no job `container:`):** fingerprinting and bundle validate/assemble call `cargo metadata` via `docker run` against `CI_IMAGE` when `CARGO_VIA_CI_IMAGE=1` ([`native_build_contract.py`](native_build_contract.py)). Do **not** install `dtolnay/rust-toolchain` on the runner host — host `rustup` can race with other jobs (e.g. `bin/rust-gdb` conflicts). Jobs that already use `container: ci-build` keep host `cargo` on `PATH` and must **not** set `CARGO_VIA_CI_IMAGE` (docker-in-docker). Docker metadata may leave root-owned `target/`; the existing alpine `chown` prepare step on the next bare job resets workspace ownership.
+
 ### Per-target Actions cache (rebuild accelerator only)
 
 Key shape: `native-v3-{profile}-{target}-{input_digest}`.
@@ -502,6 +504,7 @@ bash scripts/ci/native-binding-cache-key.test.sh
 bash scripts/ci/ts-dist-cache-key.test.sh
 bash scripts/ci/sherpa-models-cache.test.sh
 bash scripts/ci/ci-cache-layers-workflow.test.sh
+bash scripts/ci/cargo-via-ci-image.test.sh
 ```
 
 Wired at the top of [`verify-checks.sh`](verify-checks.sh).

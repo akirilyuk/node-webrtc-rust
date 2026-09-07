@@ -21,17 +21,19 @@ surface_tool="scripts/ci/bindings-napi-surface.sh"
 manifest_write="scripts/ci/write-native-artifact-manifest.sh"
 summary=scripts/ci/write-native-ci-summary.sh
 
-# --- Plan runner: cargo metadata is required on bare self-hosted hosts ---
-grep -q 'dtolnay/rust-toolchain@stable' "$plan" || fail "plan action must install Cargo for metadata"
-toolchain_line="$(grep -n 'dtolnay/rust-toolchain@stable' "$plan" | cut -d: -f1)"
+# --- Plan runner: cargo metadata via CI_IMAGE on bare self-hosted hosts ---
+if grep -q 'dtolnay/rust-toolchain@stable' "$plan"; then
+  fail "plan action must not install host rust-toolchain (use CARGO_VIA_CI_IMAGE)"
+fi
+grep -q 'CARGO_VIA_CI_IMAGE' "$plan" || fail "plan action must set CARGO_VIA_CI_IMAGE on contract step"
 plan_line="$(grep -n 'name: Plan per-target native builds' "$plan" | cut -d: -f1)"
-[[ "$toolchain_line" -lt "$plan_line" ]] || fail "Rust toolchain must be installed before native planning"
-echo "ok: plan installs Cargo before fingerprint metadata"
+cargo_via_line="$(grep -n 'CARGO_VIA_CI_IMAGE' "$plan" | head -1 | cut -d: -f1)"
+[[ "$cargo_via_line" -gt "$plan_line" ]] || fail "CARGO_VIA_CI_IMAGE must be on the Plan step env block"
+echo "ok: plan uses CARGO_VIA_CI_IMAGE instead of host rust-toolchain"
 
 # Every bare self-hosted job that computes or validates the native contract must
-# install Cargo before its contract step. GitHub-hosted native build jobs already
-# provide/install their target toolchains.
-python3 - "$main" "$release" "$smoke" <<'PY' || fail "bare native-contract job missing Cargo setup"
+# set CARGO_VIA_CI_IMAGE on its contract step (not host rust-toolchain).
+python3 - "$main" "$release" "$smoke" <<'PY' || fail "bare native-contract job missing CARGO_VIA_CI_IMAGE"
 from pathlib import Path
 import re
 import sys
@@ -47,53 +49,74 @@ def job(text: str, name: str) -> str:
     return match.group(1)
 
 
-def require_toolchain_before(path: str, job_name: str, marker: str) -> None:
+def require_cargo_via_image(path: str, job_name: str, marker: str) -> None:
     block = job(Path(path).read_text(encoding="utf-8"), job_name)
-    toolchain = block.find("dtolnay/rust-toolchain@stable")
+    if "dtolnay/rust-toolchain@stable" in block:
+        raise SystemExit(f"{path}:{job_name}: must not install host rust-toolchain")
     contract = block.find(marker)
     if contract < 0:
         raise SystemExit(f"{path}:{job_name}: missing contract marker {marker!r}")
-    if toolchain < 0 or toolchain > contract:
+    cargo_via = block.find("CARGO_VIA_CI_IMAGE")
+    if cargo_via < 0 or cargo_via > contract:
         raise SystemExit(
-            f"{path}:{job_name}: Rust toolchain must precede {marker!r}"
+            f"{path}:{job_name}: CARGO_VIA_CI_IMAGE must precede {marker!r}"
         )
 
 
 main, release, smoke = sys.argv[1:]
-require_toolchain_before(main, "assemble-native-bundle", "native-artifact-bundle.sh assemble")
-require_toolchain_before(release, "plan", "resolve-native-main-bundle.sh")
-require_toolchain_before(release, "reuse-bundle", "native-artifact-bundle.sh validate")
-require_toolchain_before(smoke, "assemble-smoke-bundle", "native-artifact-bundle.sh assemble")
-require_toolchain_before(smoke, "resolve-release-style", "resolve-native-main-bundle.sh")
+require_cargo_via_image(main, "assemble-native-bundle", "native-artifact-bundle.sh assemble")
+require_cargo_via_image(release, "plan", "resolve-native-main-bundle.sh")
+require_cargo_via_image(release, "reuse-bundle", "native-artifact-bundle.sh validate")
+require_cargo_via_image(smoke, "assemble-smoke-bundle", "native-artifact-bundle.sh assemble")
+require_cargo_via_image(smoke, "resolve-release-style", "resolve-native-main-bundle.sh")
 PY
-echo "ok: all bare native-contract jobs install Cargo first"
+echo "ok: all bare native-contract jobs use CARGO_VIA_CI_IMAGE"
 
 grep -q 'allow-distribution-drift' .github/actions/native-binding-cache/action.yml \
   || fail "native-binding-cache must tolerate distribution drift on restore"
-grep -q 'dtolnay/rust-toolchain@stable' "$stage_cached" \
-  || fail "stage-cached workflow must install Cargo before manifest refresh"
-python3 - "$stage_cached" <<'PY' || fail "stage-cached must install Cargo before write-native-artifact-manifest"
+python3 - "$stage_cached" <<'PY' || fail "stage-cached manifest refresh contract wrong"
 from pathlib import Path
 import re
 import sys
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-for job in ("stage-linux-x64", "stage-linux-arm64", "stage-host"):
+
+
+def job_block(name: str) -> str:
     match = re.search(
-        rf"(?ms)^  {re.escape(job)}:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
+        rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
         text,
     )
     if not match:
-        raise SystemExit(f"missing job: {job}")
-    block = match.group(1)
+        raise SystemExit(f"missing job: {name}")
+    return match.group(1)
+
+
+def require_toolchain_before_manifest(job: str) -> None:
+    block = job_block(job)
     toolchain = block.find("dtolnay/rust-toolchain@stable")
     manifest = block.find("write-native-artifact-manifest.sh")
     if manifest < 0:
         raise SystemExit(f"{job}: missing manifest refresh")
     if toolchain < 0 or toolchain > manifest:
         raise SystemExit(f"{job}: Rust toolchain must precede manifest refresh")
+
+
+def require_no_host_toolchain_or_cargo_via(job: str) -> None:
+    block = job_block(job)
+    if "dtolnay/rust-toolchain@stable" in block:
+        raise SystemExit(f"{job}: must not install host rust-toolchain (container has cargo)")
+    if "CARGO_VIA_CI_IMAGE" in block:
+        raise SystemExit(f"{job}: must not set CARGO_VIA_CI_IMAGE (container has cargo)")
+    if block.find("write-native-artifact-manifest.sh") < 0:
+        raise SystemExit(f"{job}: missing manifest refresh")
+
+
+require_no_host_toolchain_or_cargo_via("stage-linux-x64")
+require_toolchain_before_manifest("stage-linux-arm64")
+require_toolchain_before_manifest("stage-host")
 PY
-echo "ok: stage-cached jobs install Cargo before manifest refresh"
+echo "ok: stage-cached jobs use container or host toolchain appropriately"
 
 grep -q 'Install Rust metadata toolchain' "$host" \
   || fail "host build must install Cargo metadata for manifest refresh"

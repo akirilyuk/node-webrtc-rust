@@ -60,9 +60,9 @@ bash scripts/ci/wait-for-npm-package.sh @node-webrtc-rust/sdk 0.8.1 >/dev/null
 got="$(tr '\n' ' ' <"$FAKE_SLEEP_LOG" | sed 's/[[:space:]]*$//')"
 [[ "$got" == "3 6 12" ]] || fail "expected exponential 3 6 12, got: $got"
 
-# Cap at MAX_SLEEP
+# Cap at MAX_SLEEP (5 misses → sleeps 3 6 12 24 30)
 export FAKE_NPM_STATE="$TMP/count-cap"
-export FAKE_NPM_MISSES=6
+export FAKE_NPM_MISSES=5
 : >"$FAKE_SLEEP_LOG"
 bash scripts/ci/wait-for-npm-package.sh @node-webrtc-rust/sdk 0.8.1 >/dev/null
 got="$(tr '\n' ' ' <"$FAKE_SLEEP_LOG" | sed 's/[[:space:]]*$//')"

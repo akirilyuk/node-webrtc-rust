@@ -9,7 +9,10 @@
 
 import type { SignalingServer } from '@node-webrtc-rust/signaling'
 import { SignalingClient } from '@node-webrtc-rust/signaling'
+import { AudioMixGraph } from '@node-webrtc-rust/sdk/mix'
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
+
+import type { ClientMixGraph } from './client-audio-mixer.js'
 
 import {
   getProcessVoiceSessionBudget,
@@ -65,7 +68,13 @@ export interface SessionPodOptions {
   /** Optional binary sync data channel per WebRTC connection. */
   syncChannel?: VoiceAgentSessionHostOptions['syncChannel']
   /** Passed to each room's {@link VoiceAgentSessionHost}. */
-  sessionMode?: 'voice' | 'data-only'
+  sessionMode?: 'voice' | 'data-only' | 'voice+data'
+  /**
+   * Shared {@link AudioMixGraph} for every session slot in this pod.
+   * When omitted and {@link sessionMode} is not `data-only`, the pod creates one graph
+   * and passes it to each {@link VoiceAgentSessionHost} so cross-session mix is coherent.
+   */
+  clientMixGraph?: ClientMixGraph
   /** Passed to each room's {@link VoiceAgentSessionHost} (or `WEBRTC_ICE_TRANSPORT_POLICY`). */
   iceTransportPolicy?: VoiceAgentSessionHostOptions['iceTransportPolicy']
   /** Passed to each room's {@link VoiceAgentSessionHost}. */
@@ -130,6 +139,8 @@ export class SessionPod {
   private readonly neverConnectedRejoinGraceMs: number
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
+  /** Lazily created when {@link SessionPodOptions.clientMixGraph} is omitted. */
+  private podClientMixGraph?: ClientMixGraph
 
   constructor(
     private readonly signalingServer: SignalingServer,
@@ -279,6 +290,15 @@ export class SessionPod {
     return this.slots.size + this.preparingSessions.size
   }
 
+  private resolveClientMixGraph(): ClientMixGraph | undefined {
+    if (this.options.sessionMode === 'data-only') return undefined
+    if (this.options.clientMixGraph) return this.options.clientMixGraph
+    if (!this.podClientMixGraph) {
+      this.podClientMixGraph = new AudioMixGraph()
+    }
+    return this.podClientMixGraph
+  }
+
   private async prepareSessionSlot(sessionId: string): Promise<void> {
     const serverPeerId = this.options.serverPeerId ?? VOICE_AGENT_SERVER_PEER_ID
     const signaling = new SignalingClient({
@@ -289,12 +309,14 @@ export class SessionPod {
     await signaling.connect()
 
     const voiceHandler = this.wrapVoiceHandler(sessionId, this.options.voiceHandler)
+    const clientMixGraph = this.resolveClientMixGraph()
     const host = new VoiceAgentSessionHost(signaling, this.options.iceServers, {
       voiceConfig: this.options.voiceConfig,
       sessionMode: this.options.sessionMode,
       sessionBudget: this.sessionBudget,
       voiceHandler,
       syncChannel: this.options.syncChannel,
+      clientMixGraph,
       iceTransportPolicy: this.options.iceTransportPolicy,
       wrapAudioTracks: this.options.wrapAudioTracks,
       resolveVoiceAgentSessionContext: this.options.resolveVoiceAgentSessionContext,

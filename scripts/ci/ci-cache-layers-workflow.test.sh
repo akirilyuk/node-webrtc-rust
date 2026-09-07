@@ -271,6 +271,12 @@ grep -q 'reuse-check' "$smoke" || fail "smoke missing reuse-check phase"
 grep -q 'all_cached' "$smoke" || fail "smoke missing all_cached assertion"
 echo "ok: smoke workflow dispatch-only + no publish"
 
+grep -q 'publish-npm-if-needed.sh' "$release" \
+  || fail "release publish must use publish-npm-if-needed.sh (skip already-published)"
+grep -q 'Publish npm package if needed' .github/workflows/publish-npm-if-needed.yml \
+  || fail "missing publish-npm-if-needed workflow"
+echo "ok: release publish skips packages already on npm"
+
 # plan emits rebuilt_targets
 grep -q 'rebuilt_targets' scripts/ci/plan-native-builds.sh || fail "plan missing rebuilt_targets"
 echo "ok: plan rebuilt_targets output"

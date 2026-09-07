@@ -1,0 +1,81 @@
+name: Publish npm package if needed
+
+# One-off / resume publish after a Release job dies mid-sequence.
+# Skips the package when pkg@version is already on the registry.
+# Does not move git tags and does not touch VoiceThere production.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Workspace package directory under packages/
+        type: choice
+        options:
+          - helpers
+          - sdk
+          - signaling
+        default: helpers
+      version:
+        description: Version that must match package.json (and npm)
+        type: string
+        default: '0.8.1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm-if-needed-${{ inputs.package }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish @node-webrtc-rust/${{ inputs.package }} if needed
+    runs-on: self-hosted
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Verify package.json version
+        shell: bash
+        run: |
+          set -euo pipefail
+          got="$(node -p "require('./packages/${{ inputs.package }}/package.json').version")"
+          want="${{ inputs.version }}"
+          if [[ "$got" != "$want" ]]; then
+            echo "packages/${{ inputs.package }}/package.json version is $got, expected $want" >&2
+            exit 1
+          fi
+
+      - name: Install workspace (ignore scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Build TypeScript packages
+        run: bash scripts/ci/build-ts-workspace.sh
+
+      - name: Configure npm registry auth
+        shell: bash
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish if not already on registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra=(--ignore-scripts)
+          if [[ "${{ inputs.package }}" == "signaling" ]]; then
+            extra+=(--omit=dev)
+          fi
+          bash scripts/ci/publish-npm-if-needed.sh \
+            "packages/${{ inputs.package }}/" \
+            "@node-webrtc-rust/${{ inputs.package }}" \
+            "${{ inputs.version }}" \
+            "${extra[@]}"

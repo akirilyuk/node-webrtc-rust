@@ -371,29 +371,39 @@ verify_on_registry() {
   bash "$ROOT/scripts/ci/wait-for-npm-package.sh" "$pkg" "$VERSION"
 }
 
+publish_one() {
+  local dir="$1"
+  local pkg="$2"
+  shift 2
+  if [[ "$DRY_RUN" == true ]]; then
+    publish_dir "$dir" "$pkg" "$@"
+    return 0
+  fi
+  local extra=("$@")
+  if [[ -n "${NPM_OTP:-}" ]]; then
+    extra+=(--otp="$NPM_OTP")
+  fi
+  bash "$ROOT/scripts/ci/publish-npm-if-needed.sh" "$dir" "$pkg" "$VERSION" "${extra[@]}"
+}
+
 echo "==> Publish platform binding packages (must go first)"
 for dir in "$BINDINGS"/npm/*/; do
   pkg=$(cd "$dir" && npm pkg get name | tr -d '"')
-  publish_dir "$dir" "$pkg"
-  verify_on_registry "$pkg"
+  publish_one "$dir" "$pkg"
 done
 
 echo "==> Publish @node-webrtc-rust/bindings"
 echo "    (--ignore-scripts: prepublish already ran; avoids npm fetching optionalDeps from registry)"
-publish_dir "$BINDINGS/" "@node-webrtc-rust/bindings" --ignore-scripts
-verify_on_registry "@node-webrtc-rust/bindings"
+publish_one "$BINDINGS/" "@node-webrtc-rust/bindings" --ignore-scripts
 
 echo "==> Publish @node-webrtc-rust/signaling (before sdk; no sdk in dependencies — peer only)"
-publish_dir "$ROOT/packages/signaling" "@node-webrtc-rust/signaling" --ignore-scripts --omit=dev
-verify_on_registry "@node-webrtc-rust/signaling"
+publish_one "$ROOT/packages/signaling" "@node-webrtc-rust/signaling" --ignore-scripts --omit=dev
 
 echo "==> Publish @node-webrtc-rust/sdk (requires bindings + signaling on npm)"
-publish_dir "$ROOT/packages/sdk" "@node-webrtc-rust/sdk" --ignore-scripts
-verify_on_registry "@node-webrtc-rust/sdk"
+publish_one "$ROOT/packages/sdk" "@node-webrtc-rust/sdk" --ignore-scripts
 
 echo "==> Publish @node-webrtc-rust/helpers (requires sdk + signaling on npm)"
-publish_dir "$ROOT/packages/helpers" "@node-webrtc-rust/helpers" --ignore-scripts
-verify_on_registry "@node-webrtc-rust/helpers"
+publish_one "$ROOT/packages/helpers" "@node-webrtc-rust/helpers" --ignore-scripts
 
 echo "==> Done: $VERSION"
 if [[ "$DRY_RUN" != true ]]; then

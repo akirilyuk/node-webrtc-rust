@@ -8,6 +8,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-07
+
+SessionPod shares one MixGraph for voice+data, plus global/listener mute and client mix status.
+
+### Added
+
+- **helpers** — `setGlobalMute` / `setListenerMute` / `getClientMixStatus` / `listClientMixStatuses` on `VoiceAgentSessionHost` and `SessionPod`. Global mute leaves the client in their mix group and disables STT unless `{ sttEnabled: true }`. Listener mute requires the same mix group and does not change STT. (#188)
+- **helpers** — After global mute, pause mix pumps and burst the current post-mute mix so listeners do not keep hearing pre-mute WebRTC frames. Muted sources skip `pushFrame`; a silence frame clears the last-frame hold. (#188)
+
+### Fixed
+
+- **helpers** — `voice+data` `SessionPod` creates one shared `AudioMixGraph` and injects it into every session host so cross-session positional mix and mute apply to the same graph. Auto-create is voice+data only. (#188)
+
+**Compare:** [`release/0.8.0…release/0.8.1`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.8.0...release/0.8.1)
+
 ## [0.8.0] - 2026-09-02
 
 Positional MixGraph mixing, compile-by-default inbound RNNoise, and a runtime STT toggle.

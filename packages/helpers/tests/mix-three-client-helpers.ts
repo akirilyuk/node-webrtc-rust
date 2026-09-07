@@ -5,6 +5,8 @@ export const SAMPLES_PER_CHANNEL = 960
 export const FRAME_BYTES = 3_840
 export const FRAME_COUNT = 15
 export const MIN_RATIO = 2
+/** Offset far from the target so a loud sine does not inflate the Goertzel noise floor. */
+const FLOOR_OFFSET_HZ = 2_003
 
 const STUN_SERVER = { urls: 'stun:stun.l.google.com:19302' }
 
@@ -69,11 +71,13 @@ export function assertTonePresentStereo(
 ): void {
   const powerL = goertzelPower(left, freqHz)
   const powerR = goertzelPower(right, freqHz)
-  const power = Math.max(powerL, powerR)
-  const noiseFloor = Math.max(goertzelPower(left, freqHz + 137), goertzelPower(right, freqHz + 137))
-  if (power < MIN_RATIO * Math.max(noiseFloor, 1)) {
+  const floorL = goertzelPower(left, freqHz + FLOOR_OFFSET_HZ)
+  const floorR = goertzelPower(right, freqHz + FLOOR_OFFSET_HZ)
+  const presentL = powerL > MIN_RATIO * Math.max(floorL, 1)
+  const presentR = powerR > MIN_RATIO * Math.max(floorR, 1)
+  if (!presentL && !presentR) {
     throw new Error(
-      `${label}: missing ${freqHz} Hz tone (L=${powerL}, R=${powerR}, floor=${noiseFloor})`,
+      `${label}: missing ${freqHz} Hz tone (L=${powerL}, R=${powerR}, floorL=${floorL}, floorR=${floorR})`,
     )
   }
 }

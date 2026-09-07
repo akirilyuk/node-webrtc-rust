@@ -29,11 +29,7 @@ impl ConferenceServer {
         room_id: &str,
         config: RoomConfig,
     ) -> Result<Arc<Mutex<Room>>, ConferenceError> {
-        debug_call!(
-            "conference::server",
-            "create_room",
-            "room_id={room_id}"
-        );
+        debug_call!("conference::server", "create_room", "room_id={room_id}");
 
         let mut rooms = self.rooms.lock().await;
         if rooms.contains_key(room_id) {
@@ -64,11 +60,7 @@ impl ConferenceServer {
 
     /// Destroys a room and tears down all participants.
     pub async fn destroy_room(&self, room_id: &str) -> Result<(), ConferenceError> {
-        debug_call!(
-            "conference::server",
-            "destroy_room",
-            "room_id={room_id}"
-        );
+        debug_call!("conference::server", "destroy_room", "room_id={room_id}");
 
         let room = {
             let mut rooms = self.rooms.lock().await;

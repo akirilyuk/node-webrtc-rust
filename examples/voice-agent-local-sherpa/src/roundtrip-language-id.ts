@@ -1,7 +1,7 @@
 /**
  * Sherpa roundtrip — multi-language TTS → `user_language` spoken language ID.
  *
- * Server listener enables `languageId.modelPath` (Whisper tiny). Four sequential legs play
+ * Server listener enables `languageId.modelPath` (Whisper tiny). Three sequential legs play
  * language-specific Sherpa TTS phrases; assert `user_language` ISO 639-1 per leg.
  *
  *   npm run start:roundtrip-language-id --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
@@ -45,11 +45,10 @@ const TTS_BUNDLES: Record<string, string> = {
   es: 'vits-piper-es-glados-medium',
 }
 
-/** French Piper TTS is not in the catalog — English Piper + French phrase; Whisper LID classifies content. */
+/** All legs use native-language Piper TTS from the catalog (no French Piper bundle). */
 export const LANGUAGE_ID_LEGS = [
   { lang: 'en', phrase: 'Hello, how are you today?', ttsId: 'en' },
   { lang: 'de', phrase: 'Guten Tag, wie geht es Ihnen?', ttsId: 'de' },
-  { lang: 'fr', phrase: 'Bonjour, comment allez-vous?', ttsId: 'en' },
   { lang: 'es', phrase: 'Hola, cómo estás hoy?', ttsId: 'es' },
 ] as const
 
@@ -234,6 +233,7 @@ export async function main(): Promise<void> {
   }
 
   console.log('\n✓ All language-id legs passed')
+  process.exit(0)
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

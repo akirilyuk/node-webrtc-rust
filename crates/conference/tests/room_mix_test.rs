@@ -124,9 +124,7 @@ async fn kick_removes_participant_from_mix() {
             .await
             .unwrap();
 
-        room.kick_participant("alice", Some("test"))
-            .await
-            .unwrap();
+        room.kick_participant("alice", Some("test")).await.unwrap();
 
         assert_eq!(room.list_participants().len(), 1);
         assert!(room.render_output("alice").await.is_err());
@@ -159,7 +157,10 @@ async fn join_signaling_creates_server_offer() {
 
     assert_eq!(responses.len(), 1);
     match &responses[0] {
-        SignalingResponse::Offer { participant_id, sdp } => {
+        SignalingResponse::Offer {
+            participant_id,
+            sdp,
+        } => {
             assert_eq!(participant_id, "alice");
             assert!(sdp.contains("v=0"));
         }

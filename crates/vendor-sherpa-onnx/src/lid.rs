@@ -41,12 +41,15 @@ impl SherpaLanguageId {
 
 #[async_trait]
 impl LanguageIdProvider for SherpaLanguageId {
-    async fn identify(&self, pcm: Bytes, sample_rate: u32) -> SpeechResult<Option<LanguageIdResult>> {
+    async fn identify(
+        &self,
+        pcm: Bytes,
+        sample_rate: u32,
+    ) -> SpeechResult<Option<LanguageIdResult>> {
         if sample_rate != SAMPLE_RATE as u32 {
             return Err(SpeechError::Config(format!(
                 "Sherpa LID expects {} Hz mono PCM, got {} Hz",
-                SAMPLE_RATE,
-                sample_rate
+                SAMPLE_RATE, sample_rate
             )));
         }
         let config = self.config.clone();
@@ -65,11 +68,9 @@ impl SharedLidRecognizer {
             .map_err(|_| SpeechError::Internal("sherpa LID lock poisoned".into()))?;
         let stream = guard.create_stream();
         stream.accept_waveform(SAMPLE_RATE, samples);
-        let result = guard.compute(&stream).ok_or_else(|| {
-            SpeechError::Vendor {
-                vendor: "local-sherpa".into(),
-                message: "SpokenLanguageIdentification::compute returned no result".into(),
-            }
+        let result = guard.compute(&stream).ok_or_else(|| SpeechError::Vendor {
+            vendor: "local-sherpa".into(),
+            message: "SpokenLanguageIdentification::compute returned no result".into(),
         })?;
         let lang = result.lang.trim().to_ascii_lowercase();
         if lang.is_empty() {

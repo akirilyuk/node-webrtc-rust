@@ -30,8 +30,7 @@ fn tts_config(model_path: String) -> TtsConfig {
 #[tokio::test]
 #[ignore = "requires SHERPA_STT_MODEL_PATH with valid Zipformer bundle"]
 async fn two_stt_sessions_share_one_recognizer() {
-    let model_path =
-        std::env::var("SHERPA_STT_MODEL_PATH").expect("set SHERPA_STT_MODEL_PATH");
+    let model_path = std::env::var("SHERPA_STT_MODEL_PATH").expect("set SHERPA_STT_MODEL_PATH");
 
     reset_create_counters();
     let pool = SherpaModelPool::global();
@@ -69,8 +68,7 @@ async fn two_stt_sessions_share_one_recognizer() {
 #[tokio::test]
 #[ignore = "requires SHERPA_STT_MODEL_PATH with valid Zipformer bundle"]
 async fn stt_stop_on_one_session_does_not_break_sibling() {
-    let model_path =
-        std::env::var("SHERPA_STT_MODEL_PATH").expect("set SHERPA_STT_MODEL_PATH");
+    let model_path = std::env::var("SHERPA_STT_MODEL_PATH").expect("set SHERPA_STT_MODEL_PATH");
 
     let factory = SherpaFactory;
     let config = stt_config(model_path);
@@ -94,8 +92,7 @@ async fn stt_stop_on_one_session_does_not_break_sibling() {
 #[tokio::test]
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn two_tts_providers_share_one_engine() {
-    let model_path =
-        std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
+    let model_path = std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
 
     reset_create_counters();
     let pool = SherpaModelPool::global();
@@ -127,8 +124,7 @@ async fn two_tts_providers_share_one_engine() {
 #[tokio::test]
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn tts_different_speakers_share_engine_same_model_dir() {
-    let model_path =
-        std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
+    let model_path = std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
 
     reset_create_counters();
 

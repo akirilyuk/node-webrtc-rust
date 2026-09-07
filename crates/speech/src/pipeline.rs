@@ -125,7 +125,11 @@ pub struct LanguageIdResult {
 #[async_trait]
 pub trait LanguageIdProvider: Send + Sync {
     /// Identify language from mono PCM at `sample_rate` Hz (typically 16_000).
-    async fn identify(&self, pcm: Bytes, sample_rate: u32) -> SpeechResult<Option<LanguageIdResult>>;
+    async fn identify(
+        &self,
+        pcm: Bytes,
+        sample_rate: u32,
+    ) -> SpeechResult<Option<LanguageIdResult>>;
 }
 
 /// Factory for constructing vendor providers from config.

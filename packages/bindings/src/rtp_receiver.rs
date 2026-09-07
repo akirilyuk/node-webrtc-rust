@@ -35,7 +35,12 @@ impl Clone for JsRtpReceiver {
 
 impl JsRtpReceiver {
     pub(crate) fn from_receiver(receiver: RtpReceiver) -> Self {
-        debug_call!("bindings::rtp_receiver", "from_receiver", "kind={}", Self::kind_string(&receiver));
+        debug_call!(
+            "bindings::rtp_receiver",
+            "from_receiver",
+            "kind={}",
+            Self::kind_string(&receiver)
+        );
         Self { inner: receiver }
     }
 

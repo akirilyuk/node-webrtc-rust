@@ -221,7 +221,10 @@ mod tests {
 
     #[test]
     fn path_basename_strips_dirs() {
-        assert_eq!(path_basename("/models/vits-piper-en_US-amy-medium"), "vits-piper-en_US-amy-medium");
+        assert_eq!(
+            path_basename("/models/vits-piper-en_US-amy-medium"),
+            "vits-piper-en_US-amy-medium"
+        );
         assert_eq!(path_basename("amy"), "amy");
     }
 

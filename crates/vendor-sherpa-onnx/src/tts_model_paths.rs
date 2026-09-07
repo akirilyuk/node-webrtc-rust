@@ -47,9 +47,7 @@ fn resolve_tts_model_dir(config: &TtsConfig) -> SpeechResult<PathBuf> {
 
     std::env::var("SHERPA_TTS_MODEL_PATH")
         .map(PathBuf::from)
-        .map_err(|_| {
-            SpeechError::Config("missing TTS model_path or SHERPA_TTS_MODEL_PATH".into())
-        })
+        .map_err(|_| SpeechError::Config("missing TTS model_path or SHERPA_TTS_MODEL_PATH".into()))
 }
 
 fn find_tokens(dir: &Path) -> SpeechResult<PathBuf> {
@@ -148,6 +146,9 @@ fn find_espeak_data_dir(model_dir: &Path) -> SpeechResult<PathBuf> {
 
 fn read_dir(dir: &Path) -> SpeechResult<fs::ReadDir> {
     fs::read_dir(dir).map_err(|err| {
-        SpeechError::Config(format!("failed to read model directory {}: {err}", dir.display()))
+        SpeechError::Config(format!(
+            "failed to read model directory {}: {err}",
+            dir.display()
+        ))
     })
 }

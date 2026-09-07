@@ -63,7 +63,10 @@ impl SherpaStt {
         }
     }
 
-    fn open_session(config: &SttConfig, pool: &crate::pool::SherpaModelPool) -> SpeechResult<SttSessionState> {
+    fn open_session(
+        config: &SttConfig,
+        pool: &crate::pool::SherpaModelPool,
+    ) -> SpeechResult<SttSessionState> {
         let shared = pool.get_or_create_stt(config)?;
         // Acquire before create_stream so a panic/error during stream init still decrements.
         let active = shared.track_session();

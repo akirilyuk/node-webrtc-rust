@@ -4,8 +4,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
-    NoiseSuppressionProvider, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig,
-    VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    NoiseSuppressionProvider, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
+    VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -320,10 +320,7 @@ mod noise_suppression_config_from_tests {
 
     #[test]
     fn omitted_provider_maps_to_none() {
-        let cfg: NoiseSuppressionConfig = JsNoiseSuppressionConfig {
-            provider: None,
-        }
-        .into();
+        let cfg: NoiseSuppressionConfig = JsNoiseSuppressionConfig { provider: None }.into();
         assert_eq!(cfg.provider, NoiseSuppressionProvider::None);
     }
 
@@ -339,7 +336,10 @@ mod noise_suppression_config_from_tests {
     #[test]
     fn voice_agent_omitted_noise_suppression_defaults_to_none() {
         let cfg: VoiceAgentConfig = JsVoiceAgentConfig::default().into();
-        assert_eq!(cfg.noise_suppression.provider, NoiseSuppressionProvider::None);
+        assert_eq!(
+            cfg.noise_suppression.provider,
+            NoiseSuppressionProvider::None
+        );
     }
 }
 
@@ -401,9 +401,12 @@ pub struct JsVoiceAgentConfig {
 
 impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
     fn from(value: JsVoiceAgentConfig) -> Self {
-        let post_utterance_silence_ms = value
-            .post_utterance_silence_ms
-            .or_else(|| value.tts.as_ref().and_then(|tts| tts.post_utterance_silence_ms));
+        let post_utterance_silence_ms = value.post_utterance_silence_ms.or_else(|| {
+            value
+                .tts
+                .as_ref()
+                .and_then(|tts| tts.post_utterance_silence_ms)
+        });
         Self {
             vad: value.vad.map(Into::into).unwrap_or_default(),
             events: value.events.map(Into::into).unwrap_or_default(),
@@ -411,10 +414,7 @@ impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
             tts: value.tts.map(Into::into),
             language_id: value.language_id.map(Into::into),
             post_utterance_silence_ms,
-            noise_suppression: value
-                .noise_suppression
-                .map(Into::into)
-                .unwrap_or_default(),
+            noise_suppression: value.noise_suppression.map(Into::into).unwrap_or_default(),
         }
     }
 }

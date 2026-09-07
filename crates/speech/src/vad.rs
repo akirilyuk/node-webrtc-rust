@@ -85,11 +85,8 @@ impl VoiceActivityDetector for SileroVad {
 
     fn process_mono_frame(&mut self, mono_i16: &[i16], sample_rate: u32) -> SpeechResult<bool> {
         const I16_SCALE: f32 = 1.0 / i16::MAX as f32;
-        self.pending.extend(
-            mono_i16
-                .iter()
-                .map(|&s| f32::from(s) * I16_SCALE),
-        );
+        self.pending
+            .extend(mono_i16.iter().map(|&s| f32::from(s) * I16_SCALE));
 
         let chunk = self.chunk_size();
         while self.pending.len() >= chunk {
@@ -184,9 +181,13 @@ impl VadEngine {
         }
 
         let active = match &mut self.backend {
-            VadBackend::Energy(v) => v.process_mono_frame(&mono, self.config.sample_rate.as_u32())?,
+            VadBackend::Energy(v) => {
+                v.process_mono_frame(&mono, self.config.sample_rate.as_u32())?
+            }
             #[cfg(feature = "silero-vad")]
-            VadBackend::Silero(v) => v.process_mono_frame(&mono, self.config.sample_rate.as_u32())?,
+            VadBackend::Silero(v) => {
+                v.process_mono_frame(&mono, self.config.sample_rate.as_u32())?
+            }
         };
 
         Ok((self.update_state(active), active))

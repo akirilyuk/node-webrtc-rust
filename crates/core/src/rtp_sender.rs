@@ -35,7 +35,12 @@ impl RtpSender {
         &self,
         track: Option<Arc<dyn TrackLocal + Send + Sync>>,
     ) -> Result<(), CoreError> {
-        debug_call!("core::rtp_sender", "replace_track", "has_track={}", track.is_some());
+        debug_call!(
+            "core::rtp_sender",
+            "replace_track",
+            "has_track={}",
+            track.is_some()
+        );
         self.inner
             .replace_track(track)
             .await

@@ -24,8 +24,7 @@ pub const FRAME_MS: u32 = 20;
 pub const FRAME_BYTES: usize = 3_840;
 
 /// Samples per channel in one frame.
-pub const SAMPLES_PER_CHANNEL: usize =
-    (SAMPLE_RATE as usize * FRAME_MS as usize) / 1000;
+pub const SAMPLES_PER_CHANNEL: usize = (SAMPLE_RATE as usize * FRAME_MS as usize) / 1000;
 
 /// Total interleaved i16 samples in one frame.
 pub const SAMPLES_PER_FRAME: usize = SAMPLES_PER_CHANNEL * CHANNELS as usize;

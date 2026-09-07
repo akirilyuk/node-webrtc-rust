@@ -118,5 +118,9 @@ async fn tts_synthesize_produces_stereo_pcm_with_model() {
     assert_eq!(chunk.pcm.len() % 4, 0, "stereo s16le byte length");
     assert!(chunk.duration_ms >= 100);
     // Opus requires 20 ms (3840 B) or 5 ms (960 B) aligned frames downstream.
-    assert_eq!(chunk.pcm.len() % 3840, 0, "PCM should align to 20 ms stereo frames");
+    assert_eq!(
+        chunk.pcm.len() % 3840,
+        0,
+        "PCM should align to 20 ms stereo frames"
+    );
 }

@@ -17,7 +17,9 @@ pub struct JsRTCRtpTransceiverInit {
     pub direction: Option<String>,
 }
 
-pub(crate) fn transceiver_init_from_js(value: Option<JsRTCRtpTransceiverInit>) -> RtpTransceiverInit {
+pub(crate) fn transceiver_init_from_js(
+    value: Option<JsRTCRtpTransceiverInit>,
+) -> RtpTransceiverInit {
     let value = value.unwrap_or_default();
     RtpTransceiverInit {
         direction: direction_from_js(value.direction),
@@ -92,7 +94,11 @@ impl JsRtpTransceiver {
 
     #[napi]
     pub async fn set_direction(&self, direction: String) -> Result<()> {
-        debug_call!("bindings::rtp_transceiver", "set_direction", "direction={direction}");
+        debug_call!(
+            "bindings::rtp_transceiver",
+            "set_direction",
+            "direction={direction}"
+        );
         self.inner
             .set_direction(direction_from_js(Some(direction)))
             .await;

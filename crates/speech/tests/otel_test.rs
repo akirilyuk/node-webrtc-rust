@@ -4,10 +4,8 @@
 use node_webrtc_rust_speech::config::{
     SttConfig, SttVendor, TtsConfig, TtsVendor, VoiceAgentConfig, VoiceSessionContext,
 };
+use node_webrtc_rust_speech::otel::{self, extract_trace_id, SherpaTtsMetricAttrs, SttMetricAttrs};
 use node_webrtc_rust_speech::vad::VadTransition;
-use node_webrtc_rust_speech::otel::{
-    self, extract_trace_id, SherpaTtsMetricAttrs, SttMetricAttrs,
-};
 use node_webrtc_rust_speech::{PcmWriter, VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
 

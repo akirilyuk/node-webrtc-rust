@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use napi::bindgen_prelude::*;
-use napi_derive::napi;
 use napi::JsFunction;
 use napi::JsUnknown;
-use node_webrtc_rust_core::{DataChannel, DataChannelMessage, DataChannelOptions, DataChannelState, debug_call};
+use napi_derive::napi;
+use node_webrtc_rust_core::{
+    debug_call, DataChannel, DataChannelMessage, DataChannelOptions, DataChannelState,
+};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::config::{core_err, to_js_unknown};
@@ -96,7 +98,12 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub async fn close(&self) -> Result<()> {
-        debug_call!("bindings::data_channel", "close", "label={}", self.inner.label());
+        debug_call!(
+            "bindings::data_channel",
+            "close",
+            "label={}",
+            self.inner.label()
+        );
         self.inner.close().await.map_err(core_err)
     }
 
@@ -141,7 +148,12 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub fn set_on_open(&self, env: Env, callback: JsFunction) -> Result<()> {
-        debug_call!("bindings::data_channel", "set_on_open", "label={}", self.inner.label());
+        debug_call!(
+            "bindings::data_channel",
+            "set_on_open",
+            "label={}",
+            self.inner.label()
+        );
         let mut wired = self.open_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -162,7 +174,12 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub fn set_on_message(&self, env: Env, callback: JsFunction) -> Result<()> {
-        debug_call!("bindings::data_channel", "set_on_message", "label={}", self.inner.label());
+        debug_call!(
+            "bindings::data_channel",
+            "set_on_message",
+            "label={}",
+            self.inner.label()
+        );
         let mut wired = self.message_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -176,8 +193,7 @@ impl JsRTCDataChannel {
                 let text = std::str::from_utf8(&message.data).map_err(|err| {
                     Error::from_reason(format!("invalid UTF-8 in data channel message: {err}"))
                 })?;
-                to_js_unknown(&ctx.env, ctx.env.create_string(text)?)
-                    .map(|value| vec![value])
+                to_js_unknown(&ctx.env, ctx.env.create_string(text)?).map(|value| vec![value])
             } else {
                 // Move webrtc-rs Bytes into a Node Buffer; use `.into()` to avoid napi `into_vec` name clash.
                 let vec: Vec<u8> = message.data.into();
@@ -197,7 +213,12 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub fn set_on_close(&self, env: Env, callback: JsFunction) -> Result<()> {
-        debug_call!("bindings::data_channel", "set_on_close", "label={}", self.inner.label());
+        debug_call!(
+            "bindings::data_channel",
+            "set_on_close",
+            "label={}",
+            self.inner.label()
+        );
         let mut wired = self.close_wired.blocking_lock();
         if *wired {
             return Ok(());
@@ -218,7 +239,12 @@ impl JsRTCDataChannel {
 
     #[napi]
     pub fn set_on_error(&self, env: Env, callback: JsFunction) -> Result<()> {
-        debug_call!("bindings::data_channel", "set_on_error", "label={}", self.inner.label());
+        debug_call!(
+            "bindings::data_channel",
+            "set_on_error",
+            "label={}",
+            self.inner.label()
+        );
         let mut wired = self.error_wired.blocking_lock();
         if *wired {
             return Ok(());

@@ -11,8 +11,10 @@ use node_webrtc_rust_speech::otel;
 use sherpa_onnx::{OfflineTts, OnlineRecognizer, SpokenLanguageIdentification};
 use tokio::sync::Semaphore;
 
-use crate::loader::{create_offline_tts, create_online_recognizer, create_spoken_language_identification};
 use crate::lid_model_paths::lid_pool_key;
+use crate::loader::{
+    create_offline_tts, create_online_recognizer, create_spoken_language_identification,
+};
 use crate::model_paths::resolve_stt_model_dir;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
 
@@ -104,7 +106,10 @@ impl TtsEnginePool {
         let mut engines = Vec::with_capacity(slots);
         for _ in 0..slots {
             let engine = create_offline_tts(config)?;
-            engines.push(Arc::new(SharedTtsEngine::new(engine, Arc::clone(&tts_semaphore))));
+            engines.push(Arc::new(SharedTtsEngine::new(
+                engine,
+                Arc::clone(&tts_semaphore),
+            )));
         }
         Ok(Self {
             engines,
@@ -162,9 +167,7 @@ impl SherpaModelPool {
 
     /// Returns the process-wide pool (lazy init).
     pub fn global() -> Arc<Self> {
-        GLOBAL_POOL
-            .get_or_init(|| Arc::new(Self::new()))
-            .clone()
+        GLOBAL_POOL.get_or_init(|| Arc::new(Self::new())).clone()
     }
 
     /// Acquire or create a shared STT recognizer for `config` (call from blocking context).
@@ -180,9 +183,11 @@ impl SherpaModelPool {
         let recognizer = create_online_recognizer(config)?;
         let shared = Arc::new(SharedSttRecognizer::new(recognizer));
         map.insert(key, Arc::clone(&shared));
-        otel::set_sherpa_pool_entries((
-            map.len() + self.tts.lock().expect("lock").len() + self.lid.lock().expect("lock").len()
-        ) as i64);
+        otel::set_sherpa_pool_entries(
+            (map.len()
+                + self.tts.lock().expect("lock").len()
+                + self.lid.lock().expect("lock").len()) as i64,
+        );
         Ok(shared)
     }
 
@@ -202,11 +207,11 @@ impl SherpaModelPool {
         let identifier = create_spoken_language_identification(config)?;
         let shared = Arc::new(SharedLidRecognizer::new(identifier));
         map.insert(key, Arc::clone(&shared));
-        otel::set_sherpa_pool_entries((
-            self.stt.lock().expect("lock").len()
+        otel::set_sherpa_pool_entries(
+            (self.stt.lock().expect("lock").len()
                 + self.tts.lock().expect("lock").len()
-                + map.len()
-        ) as i64);
+                + map.len()) as i64,
+        );
         Ok(shared)
     }
 
@@ -225,16 +230,13 @@ impl SherpaModelPool {
         if let Some(existing) = map.get(&key) {
             return Ok(Arc::clone(existing));
         }
-        let pool = Arc::new(TtsEnginePool::new(
-            config,
-            Arc::clone(&self.tts_semaphore),
-        )?);
+        let pool = Arc::new(TtsEnginePool::new(config, Arc::clone(&self.tts_semaphore))?);
         map.insert(key, Arc::clone(&pool));
-        otel::set_sherpa_pool_entries((
-            self.stt.lock().expect("lock").len()
+        otel::set_sherpa_pool_entries(
+            (self.stt.lock().expect("lock").len()
                 + map.len()
-                + self.lid.lock().expect("lock").len()
-        ) as i64);
+                + self.lid.lock().expect("lock").len()) as i64,
+        );
         Ok(pool)
     }
 
@@ -453,7 +455,10 @@ mod tests {
             language: Some("en".into()),
             api_key: None,
         };
-        assert_eq!(stt_pool_key(&config_a).unwrap(), stt_pool_key(&config_b).unwrap());
+        assert_eq!(
+            stt_pool_key(&config_a).unwrap(),
+            stt_pool_key(&config_b).unwrap()
+        );
     }
 
     #[test]
@@ -499,7 +504,10 @@ mod tests {
             voice: Some("1".into()),
             api_key: None,
         };
-        assert_eq!(tts_pool_key(&config_a).unwrap(), tts_pool_key(&config_b).unwrap());
+        assert_eq!(
+            tts_pool_key(&config_a).unwrap(),
+            tts_pool_key(&config_b).unwrap()
+        );
     }
 
     #[test]
@@ -628,5 +636,4 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
-
 }

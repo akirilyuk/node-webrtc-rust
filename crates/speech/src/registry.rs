@@ -47,14 +47,11 @@ impl VendorRegistry {
         &self,
         config: &LanguageIdConfig,
     ) -> SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
-        let factory = self
-            .stt
-            .get(&SttVendor::LocalSherpa)
-            .ok_or_else(|| {
-                SpeechError::Config(
-                    "spoken language ID requires local-sherpa vendor registration".into(),
-                )
-            })?;
+        let factory = self.stt.get(&SttVendor::LocalSherpa).ok_or_else(|| {
+            SpeechError::Config(
+                "spoken language ID requires local-sherpa vendor registration".into(),
+            )
+        })?;
         factory.create_language_id(config)
     }
 }

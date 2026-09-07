@@ -4,8 +4,8 @@ use napi::bindgen_prelude::{Env, FromNapiValue, Result, ToNapiValue};
 use napi::JsUnknown;
 use napi_derive::napi;
 use node_webrtc_rust_core::{
-    AnswerOptions, IceCandidate, IceServer, IceTransportPolicy, OfferOptions, PeerConnectionConfig,
-    SdpType, SessionDescription, set_debug_enabled,
+    set_debug_enabled, AnswerOptions, IceCandidate, IceServer, IceTransportPolicy, OfferOptions,
+    PeerConnectionConfig, SdpType, SessionDescription,
 };
 
 /// ICE server configuration exposed to JavaScript.
@@ -220,10 +220,5 @@ pub(crate) fn core_err(err: node_webrtc_rust_core::CoreError) -> napi::Error {
 }
 
 pub(crate) fn to_js_unknown<T: ToNapiValue>(env: &Env, value: T) -> Result<JsUnknown> {
-    unsafe {
-        JsUnknown::from_napi_value(
-            env.raw(),
-            T::to_napi_value(env.raw(), value)?,
-        )
-    }
+    unsafe { JsUnknown::from_napi_value(env.raw(), T::to_napi_value(env.raw(), value)?) }
 }

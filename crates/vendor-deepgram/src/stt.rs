@@ -36,10 +36,7 @@ impl DeepgramStt {
                 .api_key
                 .clone()
                 .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok()),
-            model: config
-                .model
-                .clone()
-                .unwrap_or_else(|| "nova-2".to_string()),
+            model: config.model.clone().unwrap_or_else(|| "nova-2".to_string()),
             language: config.language.clone(),
             state: Arc::new(Mutex::new(DeepgramSttInner {
                 running: false,
@@ -101,10 +98,12 @@ impl SttProvider for DeepgramStt {
                     })?,
             );
 
-            let (ws, _) = connect_async(request).await.map_err(|err| SpeechError::Vendor {
-                vendor: "deepgram".into(),
-                message: err.to_string(),
-            })?;
+            let (ws, _) = connect_async(request)
+                .await
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "deepgram".into(),
+                    message: err.to_string(),
+                })?;
             let (mut ws_tx, mut ws_rx) = ws.split();
 
             let reader_task = tokio::spawn(async move {
@@ -196,7 +195,10 @@ fn parse_deepgram_message(raw: &str) -> Option<SttTranscript> {
     if transcript.is_empty() {
         return None;
     }
-    let is_final = value.get("is_final").and_then(|v| v.as_bool()).unwrap_or(true);
+    let is_final = value
+        .get("is_final")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     if is_final {
         Some(SttTranscript::Final(transcript.to_string()))
     } else {

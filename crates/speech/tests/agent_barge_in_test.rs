@@ -3,7 +3,9 @@
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
-use node_webrtc_rust_speech::config::{SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig};
+use node_webrtc_rust_speech::config::{
+    SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig,
+};
 use node_webrtc_rust_speech::events::SpeechEventKind;
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, VendorFactory};
 use node_webrtc_rust_speech::{PcmWriter, VendorRegistry, VoiceAgent};
@@ -120,10 +122,7 @@ async fn barge_in_during_tts_drain_truncates_outbound_pcm() {
         tokio::task::block_in_place(|| std::thread::sleep(Duration::from_millis(4)));
         Ok(())
     });
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let long_text = "interrupt this mock playback please ".repeat(8);
@@ -212,10 +211,7 @@ async fn agent_playback_guard_suppresses_early_barge_in() {
         *written_clone.lock().unwrap() += ms;
         Ok(())
     });
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let long_text = "guard should protect this playback ".repeat(6);
@@ -225,9 +221,7 @@ async fn agent_playback_guard_suppresses_early_barge_in() {
     let agent_arc = Arc::new(agent);
     let agent_tts = Arc::clone(&agent_arc);
     let text = long_text.clone();
-    let tts_task = tokio::spawn(async move {
-        agent_tts.send_text_to_tts(&text).await
-    });
+    let tts_task = tokio::spawn(async move { agent_tts.send_text_to_tts(&text).await });
 
     sleep(Duration::from_millis(80)).await;
     for _ in 0..6 {
@@ -289,10 +283,7 @@ async fn use_vad_false_skips_auto_barge_on_speech_start() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut events = agent.subscribe_events();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -313,8 +304,14 @@ async fn use_vad_false_skips_auto_barge_on_speech_start() {
             saw_speech_start = true;
         }
     }
-    assert!(saw_speech_start, "VAD should still emit user_speaking_start");
-    assert!(!saw_barge_in, "use_vad=false must not auto barge-in on SpeechStart");
+    assert!(
+        saw_speech_start,
+        "VAD should still emit user_speaking_start"
+    );
+    assert!(
+        !saw_barge_in,
+        "use_vad=false must not auto barge-in on SpeechStart"
+    );
 }
 
 #[tokio::test]
@@ -360,10 +357,7 @@ async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() 
 
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let long_text = "agent still speaking on outbound ".repeat(6);
@@ -510,10 +504,7 @@ async fn stt_partial_gated_barge_flushes_agent_tts_after_partial() {
         std::thread::sleep(Duration::from_millis(4));
         Ok(())
     });
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let long_text = "wait for stt partial before barge ".repeat(6);
@@ -603,10 +594,7 @@ async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
         *written_clone.lock().unwrap() += ms;
         Ok(())
     });
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let long_text = "tone should not barge without stt partial ".repeat(6);
@@ -643,7 +631,10 @@ async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
             saw_barge_in = true;
         }
     }
-    assert!(!saw_barge_in, "tone without STT partial must not emit BargeIn");
+    assert!(
+        !saw_barge_in,
+        "tone without STT partial must not emit BargeIn"
+    );
 }
 
 #[tokio::test]
@@ -683,10 +674,7 @@ async fn c1_no_partial_emits_user_stt_not_found() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut events = agent.subscribe_events();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -717,8 +705,14 @@ async fn c1_no_partial_emits_user_stt_not_found() {
         }
     }
     assert!(saw_vad_triggered, "expected vad_triggered on SpeechStart");
-    assert!(saw_not_found, "C1: expected user_stt_not_found when no partial");
-    assert!(!saw_final, "C1: must not emit user_speech_final without partial");
+    assert!(
+        saw_not_found,
+        "C1: expected user_stt_not_found when no partial"
+    );
+    assert!(
+        !saw_final,
+        "C1: must not emit user_speech_final without partial"
+    );
 }
 
 struct PartialOnlyStt {
@@ -811,10 +805,7 @@ async fn c2_partial_stall_forces_user_speech_final() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut events = agent.subscribe_events();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -846,8 +837,14 @@ async fn c2_partial_stall_forces_user_speech_final() {
             _ => {}
         }
     }
-    assert!(saw_partial, "expected user_speech_partial before C2 forced final");
-    assert!(saw_final, "C2: expected forced user_speech_final after partial stall");
+    assert!(
+        saw_partial,
+        "expected user_speech_partial before C2 forced final"
+    );
+    assert!(
+        saw_final,
+        "C2: expected forced user_speech_final after partial stall"
+    );
     assert!(
         final_text.contains("hello"),
         "C2 final should fall back to last partial, got {final_text:?}"
@@ -886,10 +883,7 @@ async fn c2_partial_stall_no_pcm_forces_user_speech_final() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut events = agent.subscribe_events();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -923,7 +917,10 @@ async fn c2_partial_stall_no_pcm_forces_user_speech_final() {
             _ => {}
         }
     }
-    assert!(saw_partial, "expected user_speech_partial before wall-clock C2");
+    assert!(
+        saw_partial,
+        "expected user_speech_partial before wall-clock C2"
+    );
     assert!(
         saw_final,
         "C2 wall-clock: expected forced user_speech_final with zero PCM after partial"
@@ -969,10 +966,7 @@ async fn c2_does_not_force_during_active_vad_speech() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut events = agent.subscribe_events();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -1062,10 +1056,7 @@ async fn second_turn_stt_finalizes_after_prior_utterance_final() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut events = agent.subscribe_events();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
@@ -1134,10 +1125,7 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
     let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut events = agent.subscribe_events();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let long_text = "agent keeps talking ".repeat(6);
@@ -1159,7 +1147,10 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
     agent_arc.stop().await.unwrap();
 
     let stt_bytes = *bytes.lock().unwrap();
-    assert!(stt_bytes > 0, "STT should receive audio on vad_triggered during agent TTS");
+    assert!(
+        stt_bytes > 0,
+        "STT should receive audio on vad_triggered during agent TTS"
+    );
 
     let mut saw_barge = false;
     let mut saw_vad_triggered = false;
@@ -1174,7 +1165,10 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
     }
     assert!(saw_vad_triggered, "expected vad_triggered");
     assert!(saw_stt_start, "expected stt_stream_start");
-    assert!(!saw_barge, "bargeIn disabled must not emit barge_in during agent TTS");
+    assert!(
+        !saw_barge,
+        "bargeIn disabled must not emit barge_in during agent TTS"
+    );
 }
 
 struct SlowMockTts {

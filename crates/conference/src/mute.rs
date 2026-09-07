@@ -51,9 +51,7 @@ impl MuteMatrix {
             }
             MuteScope::Listener => {
                 let listener_id = listener.ok_or_else(|| {
-                    ConferenceError::invalid_mute_scope(
-                        "listener scope requires listenerId",
-                    )
+                    ConferenceError::invalid_mute_scope("listener scope requires listenerId")
                 })?;
                 let mut graph = self.mix_graph.lock().await;
                 graph.set_listener_mute(listener_id, target, true);
@@ -76,9 +74,7 @@ impl MuteMatrix {
             }
             MuteScope::Listener => {
                 let listener_id = listener.ok_or_else(|| {
-                    ConferenceError::invalid_mute_scope(
-                        "listener scope requires listenerId",
-                    )
+                    ConferenceError::invalid_mute_scope("listener scope requires listenerId")
                 })?;
                 let mut graph = self.mix_graph.lock().await;
                 graph.set_listener_mute(listener_id, target, false);
@@ -98,7 +94,8 @@ impl MuteMatrix {
             return false;
         }
 
-        !graph.is_globally_muted(target) && !graph.is_listener_muted(listener, target)
+        !graph.is_globally_muted(target)
+            && !graph.is_listener_muted(listener, target)
             && graph
                 .listener_sources(listener)
                 .is_none_or(|allowed| allowed.contains(target))
@@ -128,10 +125,7 @@ mod tests {
         assert!(!matrix.should_include("bob", "bob").await);
         assert!(matrix.should_include("bob", "alice").await);
 
-        matrix
-            .mute("alice", MuteScope::Global, None)
-            .await
-            .unwrap();
+        matrix.mute("alice", MuteScope::Global, None).await.unwrap();
         assert!(!matrix.should_include("bob", "alice").await);
         assert!(!matrix.should_include("carol", "alice").await);
 
@@ -181,17 +175,11 @@ mod tests {
         let graph = Arc::new(Mutex::new(MixGraph::new()));
         graph.lock().await.add_input("alice");
         graph.lock().await.add_input("bob");
-        graph
-            .lock()
-            .await
-            .push_frame("alice", tone_frame(1, 5_000));
+        graph.lock().await.push_frame("alice", tone_frame(1, 5_000));
         graph.lock().await.push_frame("bob", tone_frame(2, 5_000));
 
         let matrix = MuteMatrix::new(Arc::clone(&graph));
-        matrix
-            .mute("alice", MuteScope::Global, None)
-            .await
-            .unwrap();
+        matrix.mute("alice", MuteScope::Global, None).await.unwrap();
 
         let out = graph.lock().await.render_output("bob");
         let sample = i16::from_le_bytes([out.pcm[0], out.pcm[1]]);

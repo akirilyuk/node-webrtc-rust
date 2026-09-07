@@ -1646,8 +1646,10 @@ impl VoiceAgent {
             }
         };
         if let Some((min_ms, buffer_len)) = snapshot {
-            let duration_ms =
-                crate::pcm::duration_ms_from_mono_s16le(buffer_len, crate::pcm::STT_PCM_SAMPLE_RATE);
+            let duration_ms = crate::pcm::duration_ms_from_mono_s16le(
+                buffer_len,
+                crate::pcm::STT_PCM_SAMPLE_RATE,
+            );
             if duration_ms >= min_ms {
                 self.try_identify_language(false).await;
             }

@@ -95,7 +95,10 @@ pub struct RtpReceiver {
 
 impl RtpReceiver {
     pub(crate) fn from_webrtc(inner: Arc<RTCRtpReceiver>) -> Self {
-        let id = format!("receiver-{}", NEXT_RECEIVER_ID.fetch_add(1, Ordering::Relaxed));
+        let id = format!(
+            "receiver-{}",
+            NEXT_RECEIVER_ID.fetch_add(1, Ordering::Relaxed)
+        );
         Self { inner, id }
     }
 

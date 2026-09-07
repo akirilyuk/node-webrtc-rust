@@ -1,7 +1,7 @@
 //! Speech event NAPI wiring.
 
 use napi::bindgen_prelude::*;
-use napi::threadsafe_function::{ThreadsafeFunctionCallMode, ThreadSafeCallContext};
+use napi::threadsafe_function::{ThreadSafeCallContext, ThreadsafeFunctionCallMode};
 use napi::JsFunction;
 use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
 
@@ -67,9 +67,7 @@ pub fn wire_speech_callback(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    eprintln!(
-                        "[voice-debug] speech callback: lagged, skipped {skipped} events"
-                    );
+                    eprintln!("[voice-debug] speech callback: lagged, skipped {skipped} events");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }

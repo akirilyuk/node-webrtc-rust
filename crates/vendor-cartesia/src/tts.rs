@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE};
+use node_webrtc_rust_speech::pcm::{
+    duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
+};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProvider};
 
 use crate::client::CartesiaClient;
@@ -54,7 +56,10 @@ impl TtsProvider for CartesiaTts {
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         let voice = self.voice_id();
-        let mono = self.client.synthesize_text(text, &voice, &self.model).await?;
+        let mono = self
+            .client
+            .synthesize_text(text, &voice, &self.model)
+            .await?;
         let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
         let pcm = mono_s16le_to_stereo(&mono);
         Ok(vec![TtsAudioChunk { pcm, duration_ms }])

@@ -47,10 +47,12 @@ impl AssemblyAiClient {
     pub async fn connect(&self) -> SpeechResult<()> {
         let api_key = self.api_key()?;
         let url = "wss://api.assemblyai.com/v2/realtime/ws?sample_rate=16000";
-        let mut request = url.into_client_request().map_err(|err| SpeechError::Vendor {
-            vendor: "assemblyai".into(),
-            message: err.to_string(),
-        })?;
+        let mut request = url
+            .into_client_request()
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "assemblyai".into(),
+                message: err.to_string(),
+            })?;
         request.headers_mut().insert(
             "Authorization",
             api_key.parse().map_err(|err| SpeechError::Vendor {
@@ -59,10 +61,12 @@ impl AssemblyAiClient {
             })?,
         );
 
-        let (ws, _) = connect_async(request).await.map_err(|err| SpeechError::Vendor {
-            vendor: "assemblyai".into(),
-            message: err.to_string(),
-        })?;
+        let (ws, _) = connect_async(request)
+            .await
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "assemblyai".into(),
+                message: err.to_string(),
+            })?;
         let (mut ws_tx, mut ws_rx) = ws.split();
         let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Bytes>();
         let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttTranscript>();

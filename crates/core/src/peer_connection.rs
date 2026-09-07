@@ -7,17 +7,17 @@ use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::api::API;
-use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
-use webrtc::interceptor::registry::Registry;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState;
 use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
-use webrtc::peer_connection::signaling_state::RTCSignalingState;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::offer_answer_options::{RTCAnswerOptions, RTCOfferOptions};
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::signaling_state::RTCSignalingState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
@@ -27,14 +27,14 @@ use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::TrackLocal;
 
 use crate::config::PeerConnectionConfig;
-use crate::offer_answer::{AnswerOptions, OfferOptions};
 use crate::data_channel::{DataChannel, DataChannelOptions};
 use crate::debug_call;
-use crate::pcm_encoder::{enrich_opus_sdp_fmtp, opus_sdp_fmtp_line};
 use crate::debug_evt;
 use crate::error::{is_benign_teardown_error, CoreError};
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
 use crate::media::RemoteTrack;
+use crate::offer_answer::{AnswerOptions, OfferOptions};
+use crate::pcm_encoder::{enrich_opus_sdp_fmtp, opus_sdp_fmtp_line};
 use crate::rtp_sender::RtpSender;
 use crate::rtp_transceiver::{
     track_kind_to_rtp, RtpReceiver, RtpTransceiver, RtpTransceiverInit, TransceiverSource,
@@ -319,7 +319,12 @@ impl PeerConnection {
     /// Creates a new peer connection with the given configuration.
     pub async fn new(config: PeerConnectionConfig) -> Result<Self, CoreError> {
         config.apply_debug_override();
-        debug_call!("core::peer_connection", "new", "ice_servers={}", config.ice_servers.len());
+        debug_call!(
+            "core::peer_connection",
+            "new",
+            "ice_servers={}",
+            config.ice_servers.len()
+        );
         let api = shared_api()?;
         let rtc_config = config.into_rtc_configuration();
         let pc = Arc::new(api.new_peer_connection(rtc_config).await?);
@@ -382,10 +387,7 @@ impl PeerConnection {
     }
 
     /// Sets the local session description.
-    pub async fn set_local_description(
-        &self,
-        desc: SessionDescription,
-    ) -> Result<(), CoreError> {
+    pub async fn set_local_description(&self, desc: SessionDescription) -> Result<(), CoreError> {
         debug_call!(
             "core::peer_connection",
             "set_local_description",
@@ -436,7 +438,11 @@ impl PeerConnection {
         label: &str,
         options: Option<DataChannelOptions>,
     ) -> Result<DataChannel, CoreError> {
-        debug_call!("core::peer_connection", "create_data_channel", "label={label}");
+        debug_call!(
+            "core::peer_connection",
+            "create_data_channel",
+            "label={label}"
+        );
         let init = options.map(Into::into);
         let dc = self.inner.create_data_channel(label, init).await?;
         Ok(DataChannel::from_inner(dc))
@@ -454,7 +460,12 @@ impl PeerConnection {
 
     /// Stops sending on the given sender (detaches the track).
     pub async fn remove_track(&self, sender: &RtpSender) -> Result<(), CoreError> {
-        debug_call!("core::peer_connection", "remove_track", "sender_id={}", sender.id());
+        debug_call!(
+            "core::peer_connection",
+            "remove_track",
+            "sender_id={}",
+            sender.id()
+        );
         self.inner
             .remove_track(&sender.inner())
             .await
@@ -626,7 +637,11 @@ impl PeerConnection {
     ) {
         self.inner
             .on_peer_connection_state_change(Box::new(move |state| {
-                debug_evt!("core::peer_connection", "connectionstatechange", "{state:?}");
+                debug_evt!(
+                    "core::peer_connection",
+                    "connectionstatechange",
+                    "{state:?}"
+                );
                 handler(state.into());
                 Box::pin(async {})
             }));
@@ -723,7 +738,11 @@ impl PeerConnection {
         let conn_tx = senders.connection_state;
         self.inner
             .on_peer_connection_state_change(Box::new(move |state| {
-                debug_evt!("core::peer_connection", "connectionstatechange", "{state:?}");
+                debug_evt!(
+                    "core::peer_connection",
+                    "connectionstatechange",
+                    "{state:?}"
+                );
                 let _ = conn_tx.send(state.into());
                 Box::pin(async {})
             }));

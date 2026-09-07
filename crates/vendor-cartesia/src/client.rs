@@ -78,12 +78,14 @@ impl CartesiaClient {
                 });
             }
 
-            return response.bytes().await.map(|bytes| bytes.to_vec()).map_err(|err| {
-                SpeechError::Vendor {
+            return response
+                .bytes()
+                .await
+                .map(|bytes| bytes.to_vec())
+                .map_err(|err| SpeechError::Vendor {
                     vendor: "cartesia".into(),
                     message: err.to_string(),
-                }
-            });
+                });
         }
 
         #[cfg(not(feature = "live"))]

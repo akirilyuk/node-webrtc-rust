@@ -1,6 +1,8 @@
 use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::SpeechResult;
-use node_webrtc_rust_speech::pipeline::{LanguageIdProvider, SttProvider, TtsProvider, VendorFactory};
+use node_webrtc_rust_speech::pipeline::{
+    LanguageIdProvider, SttProvider, TtsProvider, VendorFactory,
+};
 
 use crate::lid::SherpaLanguageId;
 use crate::stt::SherpaStt;

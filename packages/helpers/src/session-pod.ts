@@ -291,8 +291,8 @@ export class SessionPod {
   }
 
   private resolveClientMixGraph(): ClientMixGraph | undefined {
-    if (this.options.sessionMode === 'data-only') return undefined
     if (this.options.clientMixGraph) return this.options.clientMixGraph
+    if (this.options.sessionMode !== 'voice+data') return undefined
     if (!this.podClientMixGraph) {
       this.podClientMixGraph = new AudioMixGraph()
     }

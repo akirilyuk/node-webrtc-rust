@@ -122,4 +122,19 @@ describe('SessionPod shared client mix graph', () => {
     await pod.close().catch(() => undefined)
     server = undefined
   })
+
+  it('does not auto-create a mix graph when sessionMode is omitted or voice', async () => {
+    const podOmitted = await createPod({})
+    await podOmitted.ensureSession('session-omitted')
+    expect(hostOptions.at(-1)?.clientMixGraph).toBeUndefined()
+    await podOmitted.close().catch(() => undefined)
+
+    hostOptions = []
+    const podVoice = await createPod({ sessionMode: 'voice' })
+    await podVoice.ensureSession('session-voice')
+    expect(hostOptions.at(-1)?.clientMixGraph).toBeUndefined()
+    await podVoice.close().catch(() => undefined)
+
+    server = undefined
+  })
 })

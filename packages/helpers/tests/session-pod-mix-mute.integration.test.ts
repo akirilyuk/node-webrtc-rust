@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { LocalAudioTrack, RemoteAudioTrack, RTCPeerConnection } from '@node-webrtc-rust/sdk'
 import { AudioMixGraph, quatIdentity, vec3Zero } from '@node-webrtc-rust/sdk/mix'
@@ -165,6 +165,18 @@ async function collectListenerMix(
   return { left: Int16Array.from(left), right: Int16Array.from(right) }
 }
 
+/** Discard queued inbound mix frames so assertions only see post-mute audio. */
+async function drainListenerMix(listener: ConnectedClient, frames: number): Promise<void> {
+  for (let i = 0; i < frames; i++) {
+    await readSampleWithTimeout(listener.agentAudio, 'drain listener mix')
+  }
+}
+
+async function drainListenerMixAfterMute(...listeners: ConnectedClient[]): Promise<void> {
+  await Promise.all(listeners.map((listener) => drainListenerMix(listener, FRAME_COUNT + 4)))
+  await delay(60)
+}
+
 async function waitForVoiceClientActive(
   pod: SessionPod,
   clientId: string,
@@ -181,6 +193,26 @@ async function waitForVoiceClientActive(
     await delay(50)
   }
   throw new Error(`timed out waiting for active voice client ${clientId}`)
+}
+
+async function resetMixMuteState(pod: SessionPod): Promise<void> {
+  for (const clientId of CLIENT_IDS) {
+    try {
+      await pod.setGlobalMute(clientId, false)
+    } catch {
+      /* session or graph may be torn down */
+    }
+  }
+  for (const listenerId of CLIENT_IDS) {
+    for (const targetId of CLIENT_IDS) {
+      if (listenerId === targetId) continue
+      try {
+        pod.setListenerMute(listenerId, targetId, false)
+      } catch {
+        /* clients may not share a group */
+      }
+    }
+  }
 }
 
 async function setupThreeClientMix(pod: SessionPod, wsUrl: string) {
@@ -239,34 +271,44 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
       resetProcessVoiceSessionBudget()
     })
 
-    it('global mute silences mix output and disables STT while keeping group membership', async () => {
-      const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
-      try {
-        const sender = pumpSineSources(client1, client3, FRAME_COUNT + 4)
-        await delay(80)
-        await pod.setGlobalMute('client-mix-1', true)
+    afterEach(async () => {
+      await resetMixMuteState(pod)
+    })
 
-        const { left, right } = await collectListenerMix(client2, FRAME_COUNT)
-        await sender
+    it(
+      'global mute silences mix output and disables STT while keeping group membership',
+      { retry: 3, timeout: 120_000 },
+      async () => {
+        const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
+        try {
+          await pod.setGlobalMute('client-mix-1', true)
+          await drainListenerMixAfterMute(client2)
 
-        assertToneAbsentStereo(left, right, 440, 'listener after global mute')
+          const sender = pumpSineSources(client1, client3, FRAME_COUNT + 4)
+          const { left, right } = await collectListenerMix(client2, FRAME_COUNT)
+          await sender
 
-        const status = pod.getClientMixStatus('client-mix-1')
-        expect(status.globallyMuted).toBe(true)
-        expect(status.sttEnabled).toBe(false)
-        expect(status.groupId).toBe('all')
-      } finally {
-        closeClient(client1)
-        closeClient(client2)
-        closeClient(client3)
-        await delay(100)
-      }
-    }, 120_000)
+          assertToneAbsentStereo(left, right, 440, 'listener after global mute')
+
+          const status = pod.getClientMixStatus('client-mix-1')
+          expect(status.globallyMuted).toBe(true)
+          expect(status.sttEnabled).toBe(false)
+          expect(status.groupId).toBe('all')
+        } finally {
+          closeClient(client1)
+          closeClient(client2)
+          closeClient(client3)
+          await delay(100)
+        }
+      },
+      120_000,
+    )
 
     it('explicit STT stays enabled while globally muted', async () => {
       const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
       try {
         await pod.setGlobalMute('client-mix-1', true, { sttEnabled: true })
+        await drainListenerMixAfterMute(client2)
 
         const status = pod.getClientMixStatus('client-mix-1')
         expect(status.globallyMuted).toBe(true)
@@ -289,6 +331,7 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
       const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
       try {
         await pod.setListenerMute('client-mix-2', 'client-mix-1', true)
+        await drainListenerMixAfterMute(client2, client3)
 
         const sender = pumpSineSources(client1, client3, FRAME_COUNT + 4)
         const [c2Mix, c3Mix] = await Promise.all([

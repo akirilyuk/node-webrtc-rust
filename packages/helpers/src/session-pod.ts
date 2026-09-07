@@ -71,7 +71,7 @@ export interface SessionPodOptions {
   sessionMode?: 'voice' | 'data-only' | 'voice+data'
   /**
    * Shared {@link AudioMixGraph} for every session slot in this pod.
-   * When omitted and {@link sessionMode} is not `data-only`, the pod creates one graph
+   * When omitted and {@link sessionMode} is `voice+data`, the pod creates one graph
    * and passes it to each {@link VoiceAgentSessionHost} so cross-session mix is coherent.
    */
   clientMixGraph?: ClientMixGraph

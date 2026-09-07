@@ -12,7 +12,7 @@ import { SignalingClient } from '@node-webrtc-rust/signaling'
 import { AudioMixGraph } from '@node-webrtc-rust/sdk/mix'
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
-import type { ClientMixGraph } from './client-audio-mixer.js'
+import type { ClientMixGraph, ClientMixStatus } from './client-audio-mixer.js'
 
 import {
   getProcessVoiceSessionBudget,
@@ -515,6 +515,91 @@ export class SessionPod {
     if (slot.host.activeClientCount === 0) {
       this.scheduleIdleTeardown(sessionId, endReason)
     }
+  }
+
+  /**
+   * Globally mute a client in the pod mix graph. STT is routed to the owning session host.
+   */
+  async setGlobalMute(
+    clientId: string,
+    muted: boolean,
+    options?: { sttEnabled?: boolean },
+  ): Promise<void> {
+    const mixHost = this.findMixCapableHost()
+    if (!mixHost) {
+      throw new Error('No voice+data session with mix graph is prepared')
+    }
+    const owning = this.findOwningHostForClient(clientId)
+
+    if (!owning || owning === mixHost) {
+      await mixHost.setGlobalMute(clientId, muted, options)
+      return
+    }
+
+    await mixHost.setGlobalMute(clientId, muted)
+    if (muted) {
+      if (options?.sttEnabled === true) {
+        await owning.setSttEnabled({ enabled: true, clientId })
+      } else {
+        await owning.applySttWithoutRecording(clientId, false)
+      }
+      return
+    }
+    await owning.restoreExplicitStt(clientId)
+  }
+
+  /** Per-listener mute via the shared pod mix graph. */
+  setListenerMute(listenerId: string, targetId: string, muted: boolean): void {
+    const mixHost = this.findMixCapableHost()
+    if (!mixHost) {
+      throw new Error('No voice+data session with mix graph is prepared')
+    }
+    mixHost.setListenerMute(listenerId, targetId, muted)
+  }
+
+  getClientMixStatus(clientId: string): ClientMixStatus {
+    const mixHost = this.findMixCapableHost()
+    if (!mixHost) {
+      throw new Error('No voice+data session with mix graph is prepared')
+    }
+    const snapshot = mixHost.getClientMixStatus(clientId)
+    const owning = this.findOwningHostForClient(clientId)
+    if (owning) {
+      return { ...snapshot, sttEnabled: owning.getClientMixStatus(clientId).sttEnabled }
+    }
+    return snapshot
+  }
+
+  listClientMixStatuses(): ClientMixStatus[] {
+    const mixHost = this.findMixCapableHost()
+    if (!mixHost) {
+      throw new Error('No voice+data session with mix graph is prepared')
+    }
+    return mixHost.listClientMixStatuses().map((status) => {
+      const owning = this.findOwningHostForClient(status.clientId)
+      if (owning) {
+        return { ...status, sttEnabled: owning.getClientMixStatus(status.clientId).sttEnabled }
+      }
+      return status
+    })
+  }
+
+  private findMixCapableHost(): VoiceAgentSessionHost | undefined {
+    for (const slot of this.slots.values()) {
+      if (this.options.sessionMode === 'voice+data') {
+        return slot.host
+      }
+    }
+    return undefined
+  }
+
+  private findOwningHostForClient(clientId: string): VoiceAgentSessionHost | undefined {
+    for (const slot of this.slots.values()) {
+      if (slot.host.isVoiceClientActive(clientId)) {
+        return slot.host
+      }
+    }
+    return undefined
   }
 
   async close(): Promise<SessionPodCloseOutcome> {

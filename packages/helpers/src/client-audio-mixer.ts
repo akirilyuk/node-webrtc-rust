@@ -25,6 +25,21 @@ export type MixPumpOutboundTrack = {
   writeSample(data: Uint8Array | Buffer, durationMs?: number): Promise<void>
 }
 
+/** Mix-only status snapshot (STT is filled by the owning {@link VoiceAgentSessionHost}). */
+export type ClientMixSnapshot = {
+  clientId: string
+  globallyMuted: boolean
+  pose: ClientPose | null
+  ttsPose: ClientPose | null
+  /** Listener client ids that have muted this target. */
+  mutedBy: string[]
+  groupId: string | null
+}
+
+export type ClientMixStatus = ClientMixSnapshot & {
+  sttEnabled: boolean
+}
+
 /** PCM port used by {@link ClientAudioMixer} (native graph or test mock). */
 export interface ClientMixGraph {
   addInput(participantId: string): void
@@ -41,6 +56,100 @@ export interface ClientMixGraph {
   setGroupMembers(groupId: string, members: string[]): void
   moveToGroup(participantId: string, groupId: string): void
   removeFromGroup(participantId: string): void
+  setGlobalMute?(target: string, muted: boolean): void
+  isGloballyMuted?(target: string): boolean
+  setListenerMute?(listener: string, target: string, muted: boolean): void
+  isListenerMuted?(listener: string, target: string): boolean
+  pose?(participantId: string): ClientPose | null | undefined
+  ttsPose?(participantId: string): ClientPose | null | undefined
+  listenerSources?(listener: string): string[] | null
+}
+
+type GraphGroupState = {
+  memberGroups: Map<string, string>
+  groups: Map<string, Set<string>>
+  knownClientIds: Set<string>
+}
+
+const graphGroupState = new WeakMap<ClientMixGraph, GraphGroupState>()
+
+function getGraphGroupState(graph: ClientMixGraph): GraphGroupState {
+  let state = graphGroupState.get(graph)
+  if (!state) {
+    state = {
+      memberGroups: new Map(),
+      groups: new Map(),
+      knownClientIds: new Set(),
+    }
+    graphGroupState.set(graph, state)
+  }
+  return state
+}
+
+/** @internal Shared group membership for hosts that inject the same graph. */
+export function getSharedMixGroupState(graph: ClientMixGraph): GraphGroupState {
+  return getGraphGroupState(graph)
+}
+
+function trackClientId(state: GraphGroupState, clientId: string): void {
+  state.knownClientIds.add(clientId)
+}
+
+function removeClientFromGroupTracking(state: GraphGroupState, clientId: string): void {
+  const groupId = state.memberGroups.get(clientId)
+  if (groupId) {
+    const members = state.groups.get(groupId)
+    members?.delete(clientId)
+    if (members && members.size === 0) {
+      state.groups.delete(groupId)
+    }
+    state.memberGroups.delete(clientId)
+  }
+}
+
+function assignClientToGroup(state: GraphGroupState, clientId: string, groupId: string): void {
+  removeClientFromGroupTracking(state, clientId)
+  trackClientId(state, clientId)
+  state.memberGroups.set(clientId, groupId)
+  let members = state.groups.get(groupId)
+  if (!members) {
+    members = new Set()
+    state.groups.set(groupId, members)
+  }
+  members.add(clientId)
+}
+
+function syncGroupMembers(state: GraphGroupState, groupId: string, members: string[]): void {
+  for (const clientId of members) {
+    removeClientFromGroupTracking(state, clientId)
+  }
+  const existing = state.groups.get(groupId)
+  if (existing) {
+    for (const clientId of existing) {
+      state.memberGroups.delete(clientId)
+    }
+    state.groups.delete(groupId)
+  }
+  const memberSet = new Set<string>()
+  for (const clientId of members) {
+    trackClientId(state, clientId)
+    state.memberGroups.set(clientId, groupId)
+    memberSet.add(clientId)
+  }
+  if (memberSet.size > 0) {
+    state.groups.set(groupId, memberSet)
+  }
+}
+
+export function clientsShareMixGroup(
+  graph: ClientMixGraph,
+  listenerId: string,
+  targetId: string,
+): boolean {
+  const state = getGraphGroupState(graph)
+  const listenerGroup = state.memberGroups.get(listenerId)
+  const targetGroup = state.memberGroups.get(targetId)
+  return listenerGroup != null && listenerGroup === targetGroup
 }
 
 export type ClientAudioMixerOptions = {
@@ -97,6 +206,7 @@ export class ClientAudioMixer {
   registerPeer(peerId: string): void {
     if (this.registered.has(peerId)) return
     this.graph.addInput(peerId)
+    trackClientId(getGraphGroupState(this.graph), peerId)
     this.registered.add(peerId)
     this.peers.set(peerId, { pendingTts: null })
   }
@@ -106,20 +216,73 @@ export class ClientAudioMixer {
     this.stopMixPump(peerId)
     this.graph.removeInput(peerId)
     this.graph.removeFromGroup(peerId)
+    removeClientFromGroupTracking(getGraphGroupState(this.graph), peerId)
+    getGraphGroupState(this.graph).knownClientIds.delete(peerId)
     this.registered.delete(peerId)
     this.peers.delete(peerId)
   }
 
   setGroupMembers(groupId: string, clientIds: string[]): void {
+    syncGroupMembers(getGraphGroupState(this.graph), groupId, clientIds)
     this.graph.setGroupMembers(groupId, clientIds)
   }
 
   moveToGroup(clientId: string, groupId: string): void {
+    assignClientToGroup(getGraphGroupState(this.graph), clientId, groupId)
     this.graph.moveToGroup(clientId, groupId)
   }
 
   removeFromGroup(clientId: string): void {
+    removeClientFromGroupTracking(getGraphGroupState(this.graph), clientId)
     this.graph.removeFromGroup(clientId)
+  }
+
+  setGlobalMute(targetId: string, muted: boolean): void {
+    if (!this.graph.setGlobalMute) {
+      throw new Error('Mix graph does not support global mute')
+    }
+    this.graph.setGlobalMute(targetId, muted)
+  }
+
+  setListenerMute(listenerId: string, targetId: string, muted: boolean): void {
+    if (listenerId === targetId) {
+      throw new Error(`Cannot listener-mute self (${listenerId})`)
+    }
+    if (!clientsShareMixGroup(this.graph, listenerId, targetId)) {
+      throw new Error(`Listener mute requires ${listenerId} and ${targetId} in the same mix group`)
+    }
+    if (!this.graph.setListenerMute) {
+      throw new Error('Mix graph does not support listener mute')
+    }
+    this.graph.setListenerMute(listenerId, targetId, muted)
+  }
+
+  /** Mix snapshot without STT (host / SessionPod fills {@link ClientMixStatus.sttEnabled}). */
+  getMixSnapshot(clientId: string): ClientMixSnapshot {
+    const state = getGraphGroupState(this.graph)
+    const mutedBy: string[] = []
+    for (const listenerId of state.knownClientIds) {
+      if (listenerId === clientId) continue
+      if (this.graph.isListenerMuted?.(listenerId, clientId)) {
+        mutedBy.push(listenerId)
+      }
+    }
+    mutedBy.sort()
+    const pose = this.graph.pose?.(clientId) ?? null
+    const ttsPose = this.graph.ttsPose?.(clientId) ?? null
+    return {
+      clientId,
+      globallyMuted: this.graph.isGloballyMuted?.(clientId) ?? false,
+      pose: pose ?? null,
+      ttsPose: ttsPose ?? null,
+      mutedBy,
+      groupId: state.memberGroups.get(clientId) ?? null,
+    }
+  }
+
+  listMixSnapshots(): ClientMixSnapshot[] {
+    const state = getGraphGroupState(this.graph)
+    return [...state.knownClientIds].sort().map((clientId) => this.getMixSnapshot(clientId))
   }
 
   setClientPose(clientId: string, pose: ClientPose): void {

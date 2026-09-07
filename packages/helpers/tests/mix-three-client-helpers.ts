@@ -53,6 +53,52 @@ export function goertzelPower(samples: Int16Array, targetFreq: number): number {
   return s1 * s1 + s2 * s2 - coeff * s1 * s2
 }
 
+export function assertToneAbsent(samples: Int16Array, freqHz: number, label: string): void {
+  const power = goertzelPower(samples, freqHz)
+  const noiseFloor = goertzelPower(samples, freqHz + 137)
+  if (power > MIN_RATIO * Math.max(noiseFloor, 1)) {
+    throw new Error(`${label}: unexpected ${freqHz} Hz tone (power=${power}, floor=${noiseFloor})`)
+  }
+}
+
+export function assertTonePresentStereo(
+  left: Int16Array,
+  right: Int16Array,
+  freqHz: number,
+  label: string,
+): void {
+  const powerL = goertzelPower(left, freqHz)
+  const powerR = goertzelPower(right, freqHz)
+  const power = Math.max(powerL, powerR)
+  const noiseFloor = Math.max(goertzelPower(left, freqHz + 137), goertzelPower(right, freqHz + 137))
+  if (power < MIN_RATIO * Math.max(noiseFloor, 1)) {
+    throw new Error(
+      `${label}: missing ${freqHz} Hz tone (L=${powerL}, R=${powerR}, floor=${noiseFloor})`,
+    )
+  }
+}
+
+export function assertToneAbsentStereo(
+  left: Int16Array,
+  right: Int16Array,
+  freqHz: number,
+  label: string,
+): void {
+  const power = Math.max(goertzelPower(left, freqHz), goertzelPower(right, freqHz))
+  const noiseFloor = Math.max(goertzelPower(left, freqHz + 137), goertzelPower(right, freqHz + 137))
+  if (power > MIN_RATIO * Math.max(noiseFloor, 1)) {
+    throw new Error(`${label}: unexpected ${freqHz} Hz tone (power=${power}, floor=${noiseFloor})`)
+  }
+}
+
+export function assertTonePresent(samples: Int16Array, freqHz: number, label: string): void {
+  const power = goertzelPower(samples, freqHz)
+  const noiseFloor = goertzelPower(samples, freqHz + 137)
+  if (power < MIN_RATIO * Math.max(noiseFloor, 1)) {
+    throw new Error(`${label}: missing ${freqHz} Hz tone (power=${power}, floor=${noiseFloor})`)
+  }
+}
+
 export function assertTwoSinePanSides(
   left: Int16Array,
   right: Int16Array,

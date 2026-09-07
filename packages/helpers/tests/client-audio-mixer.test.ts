@@ -291,8 +291,26 @@ describe('ClientAudioMixer', () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })
     mixer.registerPeer('a')
+    mixer.registerPeer('b')
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('b', pcTrack)
     mixer.setGlobalMute('a', true)
     expect(graph.calls.setGlobalMute).toEqual([{ target: 'a', muted: true }])
+    expect(pcTrack.writeSample).toHaveBeenCalled()
+  })
+
+  it('does not push inbound PCM while globally muted', async () => {
+    const graph = createMockGraph()
+    graph.isGloballyMuted = (target) => target === 'a'
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('a')
+
+    const pcm = Buffer.alloc(PCM_FULL_FRAME_BYTES, 1)
+    const track = { readSample: vi.fn(async () => pcm) }
+    mixer.wrapInboundTrack('a', track as never)
+    await track.readSample()
+
+    expect(graph.calls.pushFrame).toEqual([])
   })
 
   it('tracks mix groups and rejects listener mute across groups', () => {

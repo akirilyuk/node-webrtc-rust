@@ -4,6 +4,7 @@ import { LocalAudioTrack, RemoteAudioTrack, RTCPeerConnection } from '@node-webr
 import { AudioMixGraph, quatIdentity, vec3Zero } from '@node-webrtc-rust/sdk/mix'
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
+import { ClientAudioMixer } from '../src/client-audio-mixer.js'
 import { SessionPod } from '../src/session-pod.js'
 import { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
 import { VoiceSessionBudget, resetProcessVoiceSessionBudget } from '../src/voice-session-budget.js'
@@ -165,16 +166,34 @@ async function collectListenerMix(
   return { left: Int16Array.from(left), right: Int16Array.from(right) }
 }
 
-/** Discard queued inbound mix frames so assertions only see post-mute audio. */
-async function drainListenerMix(listener: ConnectedClient, frames: number): Promise<void> {
-  for (let i = 0; i < frames; i++) {
-    await readSampleWithTimeout(listener.agentAudio, 'drain listener mix')
-  }
+type VoiceHostTestAccess = VoiceAgentSessionHost & {
+  getClientMixer(): ClientAudioMixer | undefined
 }
 
-async function drainListenerMixAfterMute(...listeners: ConnectedClient[]): Promise<void> {
-  await Promise.all(listeners.map((listener) => drainListenerMix(listener, FRAME_COUNT + 4)))
-  await delay(60)
+function getSharedMixGraphFromPod(pod: SessionPod): AudioMixGraph {
+  const hosts = SESSION_IDS.map((sessionId) => getVoiceHostForSession(pod, sessionId)).filter(
+    (host): host is VoiceAgentSessionHost => host != null,
+  )
+  expect(hosts.length).toBe(3)
+  const graphs = hosts.map((host) => (host as VoiceHostTestAccess).getClientMixer()?.getMixGraph())
+  expect(graphs[0]).toBeDefined()
+  expect(graphs[1]).toBe(graphs[0])
+  expect(graphs[2]).toBe(graphs[0])
+  return graphs[0] as AudioMixGraph
+}
+
+function assertGraphRenderAbsent440(graph: AudioMixGraph, listenerId: string, label: string): void {
+  const phaseRef = { value: 0 }
+  graph.pushFrame('client-mix-1', sineStereoFrame(440, 10_000, phaseRef.value))
+  const pcm = graph.renderOutput(listenerId)
+  const left: number[] = []
+  const right: number[] = []
+  appendStereoChannels(left, right, pcm)
+  assertToneAbsentStereo(Int16Array.from(left), Int16Array.from(right), 440, label)
+}
+
+async function waitForMixFlush(): Promise<void> {
+  await delay(100)
 }
 
 async function waitForVoiceClientActive(
@@ -277,12 +296,16 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
 
     it(
       'global mute silences mix output and disables STT while keeping group membership',
-      { retry: 3, timeout: 120_000 },
+      { timeout: 120_000 },
       async () => {
         const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
         try {
           await pod.setGlobalMute('client-mix-1', true)
-          await drainListenerMixAfterMute(client2)
+          await waitForMixFlush()
+
+          const graph = getSharedMixGraphFromPod(pod)
+          expect(graph.isGloballyMuted('client-mix-1')).toBe(true)
+          assertGraphRenderAbsent440(graph, 'client-mix-2', 'native graph after global mute')
 
           const sender = pumpSineSources(client1, client3, FRAME_COUNT + 4)
           const { left, right } = await collectListenerMix(client2, FRAME_COUNT)
@@ -308,7 +331,11 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
       const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
       try {
         await pod.setGlobalMute('client-mix-1', true, { sttEnabled: true })
-        await drainListenerMixAfterMute(client2)
+        await waitForMixFlush()
+
+        const graph = getSharedMixGraphFromPod(pod)
+        expect(graph.isGloballyMuted('client-mix-1')).toBe(true)
+        assertGraphRenderAbsent440(graph, 'client-mix-2', 'native graph with STT override')
 
         const status = pod.getClientMixStatus('client-mix-1')
         expect(status.globallyMuted).toBe(true)
@@ -330,8 +357,8 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
     it('listener mute silences one listener while others still hear the source', async () => {
       const { client1, client2, client3 } = await setupThreeClientMix(pod, wsUrl)
       try {
-        await pod.setListenerMute('client-mix-2', 'client-mix-1', true)
-        await drainListenerMixAfterMute(client2, client3)
+        pod.setListenerMute('client-mix-2', 'client-mix-1', true)
+        await waitForMixFlush()
 
         const sender = pumpSineSources(client1, client3, FRAME_COUNT + 4)
         const [c2Mix, c3Mix] = await Promise.all([

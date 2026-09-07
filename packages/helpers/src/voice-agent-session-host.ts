@@ -1627,7 +1627,15 @@ export class VoiceAgentSessionHost {
   ): Promise<void> {
     this.assertMixCapable()
     this.clientMixer!.setGlobalMute(clientId, muted)
+    await this.applyGlobalMuteStt(clientId, muted, options)
+  }
 
+  /** @internal STT side effects for {@link setGlobalMute} (SessionPod may call alone). */
+  async applyGlobalMuteStt(
+    clientId: string,
+    muted: boolean,
+    options?: { sttEnabled?: boolean },
+  ): Promise<void> {
     const session = this.sessions.get(clientId)
     if (!session?.agent || !session.agentStarted) {
       return
@@ -1648,6 +1656,11 @@ export class VoiceAgentSessionHost {
     const restore = this.explicitSttEnabled.get(clientId) ?? true
     await session.agent.setSttEnabled(restore)
     this.appliedSttEnabled.set(clientId, restore)
+  }
+
+  /** @internal Test and SessionPod access to the per-host mixer (shared graph when injected). */
+  getClientMixer(): ClientAudioMixer | undefined {
+    return this.clientMixer
   }
 
   /** Per-listener mute: only `listenerId` stops hearing `targetId` (same mix group required). */
@@ -1675,22 +1688,6 @@ export class VoiceAgentSessionHost {
 
   private resolveSttEnabledForStatus(clientId: string): boolean {
     return this.appliedSttEnabled.get(clientId) ?? this.explicitSttEnabled.get(clientId) ?? true
-  }
-
-  /** @internal STT side effect without updating explicit {@link setSttEnabled} intent. */
-  async applySttWithoutRecording(clientId: string, enabled: boolean): Promise<void> {
-    const session = this.sessions.get(clientId)
-    if (!session?.agent || !session.agentStarted) {
-      return
-    }
-    await session.agent.setSttEnabled(enabled)
-    this.appliedSttEnabled.set(clientId, enabled)
-  }
-
-  /** @internal Restore last explicit STT after global unmute. */
-  async restoreExplicitStt(clientId: string): Promise<void> {
-    const restore = this.explicitSttEnabled.get(clientId) ?? true
-    await this.applySttWithoutRecording(clientId, restore)
   }
 
   /**

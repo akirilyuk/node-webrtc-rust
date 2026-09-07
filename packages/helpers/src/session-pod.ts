@@ -525,36 +525,39 @@ export class SessionPod {
     muted: boolean,
     options?: { sttEnabled?: boolean },
   ): Promise<void> {
-    const mixHost = this.findMixCapableHost()
-    if (!mixHost) {
+    const graph = this.resolveClientMixGraph()
+    if (!graph?.setGlobalMute) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
-    const owning = this.findOwningHostForClient(clientId)
+    graph.setGlobalMute(clientId, muted)
 
-    if (!owning || owning === mixHost) {
-      await mixHost.setGlobalMute(clientId, muted, options)
-      return
-    }
-
-    await mixHost.setGlobalMute(clientId, muted)
     if (muted) {
-      if (options?.sttEnabled === true) {
-        await owning.setSttEnabled({ enabled: true, clientId })
-      } else {
-        await owning.applySttWithoutRecording(clientId, false)
+      for (const slot of this.slots.values()) {
+        slot.host.getClientMixer()?.flushAllListenerOutbounds(clientId)
       }
-      return
     }
-    await owning.restoreExplicitStt(clientId)
+
+    const owning = this.findOwningHostForClient(clientId) ?? this.findMixCapableHost()
+    if (!owning) {
+      throw new Error('No voice+data session with mix graph is prepared')
+    }
+    await owning.applyGlobalMuteStt(clientId, muted, options)
   }
 
   /** Per-listener mute via the shared pod mix graph. */
   setListenerMute(listenerId: string, targetId: string, muted: boolean): void {
+    const graph = this.resolveClientMixGraph()
+    if (!graph?.setListenerMute) {
+      throw new Error('No voice+data session with mix graph is prepared')
+    }
     const mixHost = this.findMixCapableHost()
     if (!mixHost) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
     mixHost.setListenerMute(listenerId, targetId, muted)
+    if (muted) {
+      this.findOwningHostForClient(listenerId)?.getClientMixer()?.flushOutboundSilence(listenerId)
+    }
   }
 
   getClientMixStatus(clientId: string): ClientMixStatus {

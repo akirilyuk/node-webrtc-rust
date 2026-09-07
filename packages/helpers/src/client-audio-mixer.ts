@@ -242,6 +242,29 @@ export class ClientAudioMixer {
       throw new Error('Mix graph does not support global mute')
     }
     this.graph.setGlobalMute(targetId, muted)
+    if (muted) {
+      this.flushAllListenerOutbounds(targetId)
+    }
+  }
+
+  /** @internal Flush queued mix audio on listener PC tracks after mute (WebRTC buffer). */
+  flushAllListenerOutbounds(excludedSourceId: string, frames = 4): void {
+    for (const peerId of this.registered) {
+      if (peerId === excludedSourceId) continue
+      this.flushOutboundSilence(peerId, frames)
+    }
+  }
+
+  /** @internal Flush one listener outbound with silence frames. */
+  flushOutboundSilence(peerId: string, frames = 4): void {
+    const state = this.peers.get(peerId)
+    const out = state?.pcOutbound
+    if (!out) return
+    void (async () => {
+      for (let i = 0; i < frames; i++) {
+        await out.writeSample(this.silenceFrame, PCM_FRAME_DURATION_MS)
+      }
+    })()
   }
 
   setListenerMute(listenerId: string, targetId: string, muted: boolean): void {
@@ -255,6 +278,9 @@ export class ClientAudioMixer {
       throw new Error('Mix graph does not support listener mute')
     }
     this.graph.setListenerMute(listenerId, targetId, muted)
+    if (muted) {
+      this.flushOutboundSilence(listenerId)
+    }
   }
 
   /** Mix snapshot without STT (host / SessionPod fills {@link ClientMixStatus.sttEnabled}). */
@@ -319,7 +345,7 @@ export class ClientAudioMixer {
     const orig = track.readSample.bind(track)
     track.readSample = async () => {
       const pcm = await orig()
-      if (pcm.length === PCM_FULL_FRAME_BYTES) {
+      if (pcm.length === PCM_FULL_FRAME_BYTES && !this.graph.isGloballyMuted?.(peerId)) {
         this.graph.pushFrame(peerId, pcm)
       }
       return pcm

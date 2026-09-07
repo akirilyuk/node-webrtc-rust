@@ -20,6 +20,7 @@ Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate SFU
 - [Voice pipeline architecture](#voice-pipeline-architecture)
 - [STT/TTS vendors and config](#stttts-vendors-and-config)
 - [Speech events and barge-in](#speech-events-and-barge-in)
+- [Spoken language identification](#spoken-language-identification)
 - [Examples and manual vendor testing](#examples-and-manual-vendor-testing)
 - [WebRTC core and conference](#webrtc-core-and-conference)
 - [Packages](#packages)
@@ -215,6 +216,7 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 | `user_speaking_end`            | VAD + hold   | End-of-utterance hint (`gateStt`: after `sttGateHoldMs`, not first pause) |
 | `user_speech_partial`          | STT          | Live captions, early LLM prefetch                                         |
 | `user_speech_final`            | STT          | **Primary turn trigger** for LLM                                          |
+| `user_language`                | LID (Sherpa) | ISO 639-1 from first ~1s of user speech — route TTS/prompts               |
 | `agent_speaking_start` / `end` | TTS playback | UI/state machine                                                          |
 | `barge_in`                     | VAD + config | User interrupted agent — cancel LLM/TTS                                   |
 | `error`                        | Any          | Vendor or pipeline failure                                                |
@@ -228,6 +230,43 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 | `false`   | \*               | No barge-in event, no native flush                                   |
 
 **Delivery:** `events.mode` = `callback` | `stream` | `both` (handlers + `speechEvents()` async iterator).
+
+---
+
+## Spoken language identification
+
+On-device **spoken language ID** uses Sherpa-ONNX `SpokenLanguageIdentification` with the Whisper tiny multilingual bundle. After the user speaks for at least ~1 second, the pipeline emits `user_language` with an ISO 639-1 code in `language` and `text` (same value).
+
+**Enable** by setting `languageId.modelPath` to a directory with `tiny-encoder.int8.onnx` and `tiny-decoder.int8.onnx` (or non-int8 fallbacks). LID runs offline on a buffered PCM clip and does not block STT.
+
+```typescript
+import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
+
+const agent = new VoiceAgent({
+  stt: { provider: 'local-sherpa', modelPath: process.env.SHERPA_STT_MODEL_PATH, language: 'en' },
+  tts: { provider: 'local-sherpa', modelPath: process.env.SHERPA_TTS_MODEL_PATH },
+  languageId: {
+    modelPath: process.env.SHERPA_LID_MODEL_PATH,
+    allowlist: ['en', 'de', 'fr', 'es'], // optional
+    minSpeechMs: 1000,
+  },
+  vad: VOICE_AGENT_VAD_PRESET,
+})
+
+agent.on('user_language', (event) => {
+  const lang = event.language ?? event.text
+  // Switch TTS voice / system prompt per detected language
+})
+```
+
+**Download Whisper tiny for LID** (local Sherpa example):
+
+```bash
+npm run download-lid --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+export SHERPA_LID_MODEL_PATH=examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny
+```
+
+**Integration test:** `npm run start:roundtrip-language-id --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa` (en / de / fr / es TTS legs). See [`examples/voice-agent-local-sherpa/ROUNDTRIP.md`](examples/voice-agent-local-sherpa/ROUNDTRIP.md).
 
 ---
 
@@ -409,10 +448,10 @@ Use release builds (`cd packages/bindings && npm run build:local`) before releas
 
 ### Dev scripts (examples)
 
-| Script | Purpose |
-| ------ | ------- |
-| [`scripts/free-port.sh`](scripts/free-port.sh) | Kill listeners on a port before `npm run start` (multi-client uses npm `prestart`) |
-| [`scripts/export-sherpa-local-models.sh`](scripts/export-sherpa-local-models.sh) | Set `SHERPA_*` paths for local Sherpa examples |
+| Script                                                                           | Purpose                                                                            |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| [`scripts/free-port.sh`](scripts/free-port.sh)                                   | Kill listeners on a port before `npm run start` (multi-client uses npm `prestart`) |
+| [`scripts/export-sherpa-local-models.sh`](scripts/export-sherpa-local-models.sh) | Set `SHERPA_*` paths for local Sherpa examples                                     |
 
 Details: [`scripts/README.md`](scripts/README.md).
 
@@ -568,18 +607,18 @@ When enabled, `VoiceAgent::start` accepts optional session attributes (`session_
 
 **Environment (standard OpenTelemetry):**
 
-| Variable | Purpose |
-| -------- | ------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP endpoint (e.g. `http://localhost:4318`) |
-| `OTEL_SERVICE_NAME` | Resource service name (default `node-webrtc-rust-voice`) |
-| `OTEL_SDK_DISABLED` | Set `true` to disable export while keeping the feature compiled |
+| Variable                      | Purpose                                                         |
+| ----------------------------- | --------------------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP endpoint (e.g. `http://localhost:4318`)               |
+| `OTEL_SERVICE_NAME`           | Resource service name (default `node-webrtc-rust-voice`)        |
+| `OTEL_SDK_DISABLED`           | Set `true` to disable export while keeping the feature compiled |
 
 **Spans:** `voice.session`, `voice.vad`, `voice.stt`, `voice.tts`, `voice.gate_hold`, `voice.barge_in`
 
 **Span / metric attributes for vendor grouping:**
 
-| Attribute | Spans / metrics | Values |
-| --------- | --------------- | ------ |
+| Attribute    | Spans / metrics                                      | Values                                                               |
+| ------------ | ---------------------------------------------------- | -------------------------------------------------------------------- |
 | `stt.vendor` | `voice.session`, `voice.stt`, `voice_stt_latency_ms` | `openai`, `deepgram`, `google`, `assemblyai`, `local-sherpa`, `mock` |
 | `tts.vendor` | `voice.session`, `voice.tts`, `voice_tts_latency_ms` | `openai`, `elevenlabs`, `google`, `cartesia`, `local-sherpa`, `mock` |
 
@@ -593,12 +632,12 @@ Rust tests with OTel: `cargo test -p node-webrtc-rust-speech --features otel`
 
 Planned work (no version targets) lives in **[`ROADMAP.md`](ROADMAP.md)**. Summary:
 
-| Area | Direction |
-| ---- | --------- |
+| Area              | Direction                                                                                                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Observability** | OpenTelemetry metrics with Rust + Node configuration; separate OTel verbosity levels; scoped logs (WebRTC, voice, conference, …) instead of one global debug flag |
-| **WebRTC** | More [W3C WebRTC parity](docs/webrtc-api-parity.md) (video, simulcast, DTMF, remaining P2 gaps) |
-| **Conference** | Video mixing / MCU-style compositing alongside audio `MixGraph` |
-| **Integrations** | Discord voice channel connectivity |
+| **WebRTC**        | More [W3C WebRTC parity](docs/webrtc-api-parity.md) (video, simulcast, DTMF, remaining P2 gaps)                                                                   |
+| **Conference**    | Video mixing / MCU-style compositing alongside audio `MixGraph`                                                                                                   |
+| **Integrations**  | Discord voice channel connectivity                                                                                                                                |
 
 ---
 

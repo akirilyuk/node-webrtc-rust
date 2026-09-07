@@ -15,6 +15,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::UserSpeakingEnd => JsSpeechEventType::UserSpeakingEnd,
             SpeechEventKind::UserSpeechPartial => JsSpeechEventType::UserSpeechPartial,
             SpeechEventKind::UserSpeechFinal => JsSpeechEventType::UserSpeechFinal,
+            SpeechEventKind::UserLanguage => JsSpeechEventType::UserLanguage,
             SpeechEventKind::AgentSpeakingStart => JsSpeechEventType::AgentSpeakingStart,
             SpeechEventKind::AgentSpeakingEnd => JsSpeechEventType::AgentSpeakingEnd,
             SpeechEventKind::VadTriggered => JsSpeechEventType::VadTriggered,
@@ -27,7 +28,22 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::Error => JsSpeechEventType::Error,
         },
         text: event.text,
+        language: event.language,
         error: event.error,
+    }
+}
+
+#[cfg(test)]
+mod speech_event_to_js_tests {
+    use super::*;
+    use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
+
+    #[test]
+    fn user_language_maps_language_field() {
+        let js = speech_event_to_js(SpeechEvent::user_language("fr"));
+        assert_eq!(js.event_type, JsSpeechEventType::UserLanguage);
+        assert_eq!(js.language.as_deref(), Some("fr"));
+        assert_eq!(js.text.as_deref(), Some("fr"));
     }
 }
 

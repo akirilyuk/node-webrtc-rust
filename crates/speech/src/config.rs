@@ -407,6 +407,123 @@ pub fn resolved_post_utterance_silence_ms(config: &VoiceAgentConfig) -> u32 {
     }
 }
 
+/// Spoken language identification (offline clip, e.g. Sherpa Whisper tiny).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageIdConfig {
+    /// When unset, LID is on when `model_path` is non-empty. Set `false` to disable explicitly.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Directory with Whisper encoder/decoder ONNX for `SpokenLanguageIdentification`.
+    #[serde(default)]
+    pub model_path: Option<String>,
+    /// Optional ISO 639-1 allowlist; other detected codes are ignored.
+    #[serde(default)]
+    pub allowlist: Option<Vec<String>>,
+    /// Minimum buffered speech (ms) before the first identify attempt. Default 1000.
+    #[serde(default)]
+    pub min_speech_ms: Option<u32>,
+}
+
+fn default_language_id_min_speech_ms() -> u32 {
+    1000
+}
+
+/// True when `language_id` should run (non-empty `model_path` and not explicitly disabled).
+pub fn language_id_enabled(config: &Option<LanguageIdConfig>) -> bool {
+    match config {
+        None => false,
+        Some(cfg) => {
+            if cfg.enabled == Some(false) {
+                return false;
+            }
+            cfg.model_path
+                .as_ref()
+                .is_some_and(|path| !path.trim().is_empty())
+        }
+    }
+}
+
+pub fn resolved_language_id_min_speech_ms(config: &LanguageIdConfig) -> u32 {
+    config
+        .min_speech_ms
+        .unwrap_or_else(default_language_id_min_speech_ms)
+        .max(1)
+}
+
+/// Returns true when `language` passes the optional allowlist (case-insensitive ISO 639-1).
+pub fn language_id_allowlist_accepts(config: &LanguageIdConfig, language: &str) -> bool {
+    match &config.allowlist {
+        None => true,
+        Some(list) if list.is_empty() => true,
+        Some(list) => {
+            let normalized = language.trim().to_ascii_lowercase();
+            list.iter()
+                .any(|code| code.trim().eq_ignore_ascii_case(&normalized))
+        }
+    }
+}
+
+#[cfg(test)]
+mod language_id_config_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_without_model_path() {
+        assert!(!language_id_enabled(&None));
+        assert!(!language_id_enabled(&Some(LanguageIdConfig {
+            enabled: None,
+            model_path: None,
+            allowlist: None,
+            min_speech_ms: None,
+        })));
+    }
+
+    #[test]
+    fn enabled_with_model_path() {
+        assert!(language_id_enabled(&Some(LanguageIdConfig {
+            enabled: None,
+            model_path: Some("/models/whisper-tiny".into()),
+            allowlist: None,
+            min_speech_ms: None,
+        })));
+    }
+
+    #[test]
+    fn explicit_enabled_false_disables_even_with_path() {
+        assert!(!language_id_enabled(&Some(LanguageIdConfig {
+            enabled: Some(false),
+            model_path: Some("/models/whisper-tiny".into()),
+            allowlist: None,
+            min_speech_ms: None,
+        })));
+    }
+
+    #[test]
+    fn allowlist_filters_codes() {
+        let cfg = LanguageIdConfig {
+            enabled: None,
+            model_path: Some("/x".into()),
+            allowlist: Some(vec!["en".into(), "de".into()]),
+            min_speech_ms: None,
+        };
+        assert!(language_id_allowlist_accepts(&cfg, "en"));
+        assert!(language_id_allowlist_accepts(&cfg, "DE"));
+        assert!(!language_id_allowlist_accepts(&cfg, "fr"));
+    }
+
+    #[test]
+    fn min_speech_ms_defaults_to_1000() {
+        let cfg = LanguageIdConfig {
+            enabled: None,
+            model_path: None,
+            allowlist: None,
+            min_speech_ms: None,
+        };
+        assert_eq!(resolved_language_id_min_speech_ms(&cfg), 1000);
+    }
+}
+
 /// Full voice agent configuration (mirrored in TypeScript `VoiceAgentConfig`).
 ///
 /// Defaults include mock STT/TTS for unit tests; production apps set real vendors via NAPI/TS.
@@ -421,6 +538,8 @@ pub struct VoiceAgentConfig {
     pub events: EventsConfig,
     pub stt: Option<SttConfig>,
     pub tts: Option<TtsConfig>,
+    #[serde(default)]
+    pub language_id: Option<LanguageIdConfig>,
     /// Trailing outbound silence (ms) after TTS. Also accepted under `tts.postUtteranceSilenceMs` in deploy JSON.
     #[serde(default)]
     pub post_utterance_silence_ms: Option<u32>,
@@ -480,6 +599,7 @@ impl Default for VoiceAgentConfig {
                 voice: None,
                 api_key: None,
             }),
+            language_id: None,
             post_utterance_silence_ms: None,
         }
     }

@@ -369,11 +369,32 @@ impl From<JsVoiceSessionContext> for VoiceSessionContext {
 
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
+pub struct JsLanguageIdConfig {
+    pub enabled: Option<bool>,
+    pub model_path: Option<String>,
+    pub allowlist: Option<Vec<String>>,
+    pub min_speech_ms: Option<u32>,
+}
+
+impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdConfig {
+    fn from(value: JsLanguageIdConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            model_path: value.model_path,
+            allowlist: value.allowlist,
+            min_speech_ms: value.min_speech_ms,
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
 pub struct JsVoiceAgentConfig {
     pub vad: Option<JsVadConfig>,
     pub events: Option<JsEventsConfig>,
     pub stt: Option<JsSttConfig>,
     pub tts: Option<JsTtsConfig>,
+    pub language_id: Option<JsLanguageIdConfig>,
     pub post_utterance_silence_ms: Option<u32>,
     pub noise_suppression: Option<JsNoiseSuppressionConfig>,
 }
@@ -388,6 +409,7 @@ impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
             events: value.events.map(Into::into).unwrap_or_default(),
             stt: value.stt.map(Into::into),
             tts: value.tts.map(Into::into),
+            language_id: value.language_id.map(Into::into),
             post_utterance_silence_ms,
             noise_suppression: value
                 .noise_suppression
@@ -408,6 +430,8 @@ pub enum JsSpeechEventType {
     UserSpeechPartial,
     #[napi(value = "user_speech_final")]
     UserSpeechFinal,
+    #[napi(value = "user_language")]
+    UserLanguage,
     #[napi(value = "agent_speaking_start")]
     AgentSpeakingStart,
     #[napi(value = "agent_speaking_end")]
@@ -435,6 +459,7 @@ pub enum JsSpeechEventType {
 pub struct JsSpeechEvent {
     pub event_type: JsSpeechEventType,
     pub text: Option<String>,
+    pub language: Option<String>,
     pub error: Option<String>,
 }
 

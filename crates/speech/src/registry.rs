@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
+use crate::config::{LanguageIdConfig, SttConfig, SttVendor, TtsConfig, TtsVendor};
 use crate::error::{SpeechError, SpeechResult};
-use crate::pipeline::{SttProvider, TtsProvider, VendorFactory};
+use crate::pipeline::{LanguageIdProvider, SttProvider, TtsProvider, VendorFactory};
 
 /// Registry mapping vendor ids to factory implementations.
 pub struct VendorRegistry {
@@ -41,6 +41,21 @@ impl VendorRegistry {
             SpeechError::Config(format!("unsupported TTS vendor: {:?}", config.provider))
         })?;
         factory.create_tts(config)
+    }
+
+    pub fn create_language_id(
+        &self,
+        config: &LanguageIdConfig,
+    ) -> SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        let factory = self
+            .stt
+            .get(&SttVendor::LocalSherpa)
+            .ok_or_else(|| {
+                SpeechError::Config(
+                    "spoken language ID requires local-sherpa vendor registration".into(),
+                )
+            })?;
+        factory.create_language_id(config)
     }
 }
 

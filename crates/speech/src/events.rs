@@ -11,6 +11,7 @@
 //! | `UserSpeakingEnd` | With `gate_stt` + STT: paired with final; else after hold or VAD end |
 //! | `UserSpeechPartial` | STT streaming |
 //! | `UserSpeechFinal` | STT `finalize_utterance` — primary turn boundary for LLM |
+//! | `UserLanguage` | Offline spoken-language ID on buffered user PCM |
 //! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound |
 //! | `AgentSpeakingEnd` | TTS queue drained — **only on the agent that plays TTS** |
 //! | `VadTriggered` | VAD `SpeechStart` when `vad.enabled` — opens STT listen for this utterance |
@@ -29,6 +30,7 @@ pub enum SpeechEventKind {
     UserSpeakingEnd,
     UserSpeechPartial,
     UserSpeechFinal,
+    UserLanguage,
     AgentSpeakingStart,
     AgentSpeakingEnd,
     VadTriggered,
@@ -46,6 +48,8 @@ pub enum SpeechEventKind {
 pub struct SpeechEvent {
     pub kind: SpeechEventKind,
     pub text: Option<String>,
+    /// ISO 639-1 code on `user_language` events.
+    pub language: Option<String>,
     pub error: Option<String>,
 }
 
@@ -54,6 +58,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::UserSpeakingStart,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -62,6 +67,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::UserSpeakingEnd,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -70,6 +76,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::UserSpeechPartial,
             text: Some(text.into()),
+            language: None,
             error: None,
         }
     }
@@ -78,6 +85,17 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::UserSpeechFinal,
             text: Some(text.into()),
+            language: None,
+            error: None,
+        }
+    }
+
+    pub fn user_language(lang: impl Into<String>) -> Self {
+        let code = lang.into();
+        Self {
+            kind: SpeechEventKind::UserLanguage,
+            text: Some(code.clone()),
+            language: Some(code),
             error: None,
         }
     }
@@ -86,6 +104,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::AgentSpeakingStart,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -94,6 +113,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::AgentSpeakingEnd,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -102,6 +122,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::VadTriggered,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -110,6 +131,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::SttStreamStart,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -118,6 +140,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::SttStreamEnd,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -126,6 +149,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::UserSttStart,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -134,6 +158,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::UserSttEnd,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -142,6 +167,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::UserSttNotFound,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -150,6 +176,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::BargeIn,
             text: None,
+            language: None,
             error: None,
         }
     }
@@ -158,6 +185,7 @@ impl SpeechEvent {
         Self {
             kind: SpeechEventKind::Error,
             text: None,
+            language: None,
             error: Some(message.into()),
         }
     }
@@ -189,5 +217,18 @@ impl SpeechEventBus {
 impl Default for SpeechEventBus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod user_language_event_tests {
+    use super::*;
+
+    #[test]
+    fn user_language_sets_text_and_language() {
+        let event = SpeechEvent::user_language("de");
+        assert_eq!(event.kind, SpeechEventKind::UserLanguage);
+        assert_eq!(event.language.as_deref(), Some("de"));
+        assert_eq!(event.text.as_deref(), Some("de"));
     }
 }

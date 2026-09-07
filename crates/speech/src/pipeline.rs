@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::config::{SttConfig, TtsConfig, VoiceSessionContext};
+use crate::config::{LanguageIdConfig, SttConfig, TtsConfig, VoiceSessionContext};
 use crate::error::SpeechResult;
 
 /// Chunk of synthesized PCM ready for outbound injection.
@@ -115,8 +115,27 @@ pub trait TtsProvider: Send + Sync {
     }
 }
 
+/// Result from offline spoken-language identification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageIdResult {
+    pub language: String,
+}
+
+/// Offline spoken-language identification (e.g. Sherpa Whisper tiny).
+#[async_trait]
+pub trait LanguageIdProvider: Send + Sync {
+    /// Identify language from mono PCM at `sample_rate` Hz (typically 16_000).
+    async fn identify(&self, pcm: Bytes, sample_rate: u32) -> SpeechResult<Option<LanguageIdResult>>;
+}
+
 /// Factory for constructing vendor providers from config.
 pub trait VendorFactory: Send + Sync {
     fn create_stt(&self, config: &SttConfig) -> SpeechResult<Box<dyn SttProvider>>;
     fn create_tts(&self, config: &TtsConfig) -> SpeechResult<Box<dyn TtsProvider>>;
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(None)
+    }
 }

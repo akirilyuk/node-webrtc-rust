@@ -2,13 +2,15 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
+use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use sherpa_onnx::{
     OnlineRecognizer, OnlineRecognizerConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig,
-    OfflineTtsVitsModelConfig,
+    OfflineTtsVitsModelConfig, SpokenLanguageIdentification, SpokenLanguageIdentificationConfig,
+    SpokenLanguageIdentificationWhisperConfig,
 };
 
+use crate::lid_model_paths::{lid_paths_to_strings, resolve_lid_model_paths};
 use crate::model_paths::resolve_model_paths;
 use crate::tts_model_paths::resolve_tts_model_paths;
 
@@ -115,6 +117,33 @@ pub fn create_offline_tts(config: &TtsConfig) -> SpeechResult<OfflineTts> {
 
     TTS_ENGINE_CREATE_COUNT.fetch_add(1, Ordering::SeqCst);
     Ok(tts)
+}
+
+pub fn create_spoken_language_identification(
+    config: &LanguageIdConfig,
+) -> SpeechResult<SpokenLanguageIdentification> {
+    let paths = resolve_lid_model_paths(config)?;
+    let (encoder, decoder) = lid_paths_to_strings(&paths)?;
+
+    let whisper = SpokenLanguageIdentificationWhisperConfig {
+        encoder: Some(encoder),
+        decoder: Some(decoder),
+        tail_paddings: 0,
+    };
+    let lid_config = SpokenLanguageIdentificationConfig {
+        whisper,
+        num_threads: stt_num_threads().max(1),
+        debug: false,
+        provider: Some("cpu".to_string()),
+    };
+
+    SpokenLanguageIdentification::create(&lid_config).ok_or_else(|| {
+        SpeechError::Vendor {
+            vendor: "local-sherpa".into(),
+            message: "failed to create SpokenLanguageIdentification — check languageId.modelPath"
+                .into(),
+        }
+    })
 }
 
 pub fn path_to_string(path: &std::path::Path) -> SpeechResult<String> {

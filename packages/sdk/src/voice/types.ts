@@ -130,12 +130,25 @@ export interface TtsConfig {
   postUtteranceSilenceMs?: number
 }
 
+/** Offline spoken-language identification (e.g. Sherpa Whisper tiny). */
+export interface LanguageIdConfig {
+  /** Default true when `modelPath` is set. Set `false` to disable. */
+  enabled?: boolean
+  /** Directory with Whisper encoder/decoder ONNX for spoken language ID. */
+  modelPath?: string
+  /** Optional ISO 639-1 allowlist; other detected codes are ignored. */
+  allowlist?: string[]
+  /** Minimum buffered speech (ms) before the first identify attempt. Default 1000. */
+  minSpeechMs?: number
+}
+
 /** Full configuration for {@link VoiceAgent}. */
 export interface VoiceAgentConfig {
   vad?: VadConfig
   events?: EventsConfig
   stt?: SttConfig
   tts?: TtsConfig
+  languageId?: LanguageIdConfig
   /** Trailing outbound silence after TTS (ms). Deploy JSON may set `tts.postUtteranceSilenceMs`. */
   postUtteranceSilenceMs?: number
   /**
@@ -177,6 +190,7 @@ export type SpeechEventType =
   | 'user_speaking_end'
   | 'user_speech_partial'
   | 'user_speech_final'
+  | 'user_language'
   | 'agent_speaking_start'
   | 'agent_speaking_end'
   | 'vad_triggered'
@@ -197,6 +211,7 @@ export const SPEECH_EVENT_TYPE = {
   userSpeakingEnd: 'user_speaking_end',
   userSpeechPartial: 'user_speech_partial',
   userSpeechFinal: 'user_speech_final',
+  userLanguage: 'user_language',
   agentSpeakingStart: 'agent_speaking_start',
   agentSpeakingEnd: 'agent_speaking_end',
   vadTriggered: 'vad_triggered',
@@ -212,8 +227,10 @@ export const SPEECH_EVENT_TYPE = {
 /** Payload for callback and `speechEvents()` delivery. */
 export interface SpeechEvent {
   type: SpeechEventType
-  /** Present on `user_speech_*` and sometimes on errors. */
+  /** Present on `user_speech_*`, `user_language`, and sometimes on errors. */
   text?: string
+  /** ISO 639-1 code on `user_language`. */
+  language?: string
   /** Present on `error`. */
   error?: string
 }

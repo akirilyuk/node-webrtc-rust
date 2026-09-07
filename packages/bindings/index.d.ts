@@ -248,11 +248,18 @@ export interface JsVoiceSessionContext {
   buildId?: string
   traceparent?: string
 }
+export interface JsLanguageIdConfig {
+  enabled?: boolean
+  modelPath?: string
+  allowlist?: Array<string>
+  minSpeechMs?: number
+}
 export interface JsVoiceAgentConfig {
   vad?: JsVadConfig
   events?: JsEventsConfig
   stt?: JsSttConfig
   tts?: JsTtsConfig
+  languageId?: JsLanguageIdConfig
   postUtteranceSilenceMs?: number
   noiseSuppression?: JsNoiseSuppressionConfig
 }
@@ -261,6 +268,7 @@ export const enum JsSpeechEventType {
   UserSpeakingEnd = 'user_speaking_end',
   UserSpeechPartial = 'user_speech_partial',
   UserSpeechFinal = 'user_speech_final',
+  UserLanguage = 'user_language',
   AgentSpeakingStart = 'agent_speaking_start',
   AgentSpeakingEnd = 'agent_speaking_end',
   VadTriggered = 'vad_triggered',
@@ -275,6 +283,7 @@ export const enum JsSpeechEventType {
 export interface JsSpeechEvent {
   eventType: JsSpeechEventType
   text?: string
+  language?: string
   error?: string
 }
 export declare function version(): string

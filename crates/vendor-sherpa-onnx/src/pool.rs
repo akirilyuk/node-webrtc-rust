@@ -5,13 +5,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
+use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::otel;
-use sherpa_onnx::{OnlineRecognizer, OfflineTts};
+use sherpa_onnx::{OfflineTts, OnlineRecognizer, SpokenLanguageIdentification};
 use tokio::sync::Semaphore;
 
-use crate::loader::{create_offline_tts, create_online_recognizer};
+use crate::loader::{create_offline_tts, create_online_recognizer, create_spoken_language_identification};
+use crate::lid_model_paths::lid_pool_key;
 use crate::model_paths::resolve_stt_model_dir;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
 
@@ -121,10 +122,21 @@ impl TtsEnginePool {
     }
 }
 
+/// Pool key for shared LID weights (canonical model directory).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LidPoolKey(PathBuf);
+
+/// Shared spoken-language identifier (one per model directory).
+pub struct SharedLidRecognizer {
+    pub(crate) identifier: Mutex<SpokenLanguageIdentification>,
+    pub(crate) active_sessions: Arc<AtomicUsize>,
+}
+
 /// Process-wide Sherpa model pool.
 pub struct SherpaModelPool {
     stt: Mutex<HashMap<SttPoolKey, Arc<SharedSttRecognizer>>>,
     tts: Mutex<HashMap<TtsPoolKey, Arc<TtsEnginePool>>>,
+    lid: Mutex<HashMap<LidPoolKey, Arc<SharedLidRecognizer>>>,
     decode_semaphore: Arc<Semaphore>,
     tts_semaphore: Arc<Semaphore>,
 }
@@ -134,6 +146,7 @@ impl SherpaModelPool {
         Self {
             stt: Mutex::new(HashMap::new()),
             tts: Mutex::new(HashMap::new()),
+            lid: Mutex::new(HashMap::new()),
             decode_semaphore: Arc::new(Semaphore::new(max_concurrent_decode())),
             tts_semaphore: Arc::new(Semaphore::new(max_concurrent_tts())),
         }
@@ -167,8 +180,39 @@ impl SherpaModelPool {
         let recognizer = create_online_recognizer(config)?;
         let shared = Arc::new(SharedSttRecognizer::new(recognizer));
         map.insert(key, Arc::clone(&shared));
-        otel::set_sherpa_pool_entries((map.len() + self.tts.lock().expect("lock").len()) as i64);
+        otel::set_sherpa_pool_entries((
+            map.len() + self.tts.lock().expect("lock").len() + self.lid.lock().expect("lock").len()
+        ) as i64);
         Ok(shared)
+    }
+
+    /// Acquire or create a shared LID model for `config` (call from blocking context).
+    pub fn get_or_create_lid(
+        &self,
+        config: &LanguageIdConfig,
+    ) -> SpeechResult<Arc<SharedLidRecognizer>> {
+        let key = LidPoolKey(lid_pool_key(config)?);
+        let mut map = self
+            .lid
+            .lock()
+            .map_err(|_| SpeechError::Internal("sherpa LID pool lock poisoned".into()))?;
+        if let Some(existing) = map.get(&key) {
+            return Ok(Arc::clone(existing));
+        }
+        let identifier = create_spoken_language_identification(config)?;
+        let shared = Arc::new(SharedLidRecognizer::new(identifier));
+        map.insert(key, Arc::clone(&shared));
+        otel::set_sherpa_pool_entries((
+            self.stt.lock().expect("lock").len()
+                + self.tts.lock().expect("lock").len()
+                + map.len()
+        ) as i64);
+        Ok(shared)
+    }
+
+    /// Number of distinct LID model directories loaded in the pool.
+    pub fn lid_entry_count(&self) -> usize {
+        self.lid.lock().expect("lock").len()
     }
 
     /// Acquire or create a shared TTS engine pool for `config` (call from blocking context).
@@ -186,7 +230,11 @@ impl SherpaModelPool {
             Arc::clone(&self.tts_semaphore),
         )?);
         map.insert(key, Arc::clone(&pool));
-        otel::set_sherpa_pool_entries((self.stt.lock().expect("lock").len() + map.len()) as i64);
+        otel::set_sherpa_pool_entries((
+            self.stt.lock().expect("lock").len()
+                + map.len()
+                + self.lid.lock().expect("lock").len()
+        ) as i64);
         Ok(pool)
     }
 
@@ -218,8 +266,6 @@ impl SharedSttRecognizer {
             active_sessions: Arc::new(AtomicUsize::new(0)),
         }
     }
-
-    /// Increment active sessions; pair with drop of the returned guard (RAII).
     pub fn track_session(&self) -> ActiveSessionGuard {
         ActiveSessionGuard::acquire(&self.active_sessions)
     }
@@ -266,6 +312,19 @@ impl SharedSttRecognizer {
             .lock()
             .expect("sherpa recognizer lock poisoned");
         f(&guard)
+    }
+}
+
+impl SharedLidRecognizer {
+    fn new(identifier: SpokenLanguageIdentification) -> Self {
+        Self {
+            identifier: Mutex::new(identifier),
+            active_sessions: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn track_session(&self) -> ActiveSessionGuard {
+        ActiveSessionGuard::acquire(&self.active_sessions)
     }
 }
 

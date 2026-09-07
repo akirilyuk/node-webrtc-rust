@@ -13,6 +13,7 @@ import { SHERPA_MODEL_CATALOG } from './sherpa-model-catalog.mjs'
 import { SHERPA_TTS_MODEL_CATALOG } from './sherpa-tts-model-catalog.mjs'
 import { downloadSherpaSttModel } from './download-stt.mjs'
 import { downloadSherpaTtsModel } from './download-tts.mjs'
+import { downloadSherpaLidModel } from './download-lid.mjs'
 
 function parseArgs(argv) {
   let minimal = false
@@ -21,7 +22,7 @@ function parseArgs(argv) {
     if (arg === '--help' || arg === '-h') {
       console.log(`Usage: node scripts/download-all-sherpa.mjs [--minimal]
 
-  --minimal   English STT + English TTS only (same as CI default)
+  --minimal   English STT + English TTS + Whisper tiny LID
   default     All downloadable catalog models (dedupes shared STT bundles)
 `)
       process.exit(0)
@@ -44,12 +45,29 @@ function uniqueByBundle(catalog, kind, ids) {
   return out
 }
 
+function uniqueLidIds(catalog, ids) {
+  const want = ids ? new Set(ids) : null
+  const seen = new Set()
+  const out = []
+  for (const m of catalog) {
+    if (m.kind !== 'whisper-lid' || !m.bundle) continue
+    if (want && !want.has(m.id)) continue
+    if (seen.has(m.bundle)) continue
+    seen.add(m.bundle)
+    out.push(m.id)
+  }
+  return out
+}
+
 const { minimal } = parseArgs(process.argv.slice(2))
 
 const sttIds = minimal ? ['en'] : uniqueByBundle(SHERPA_MODEL_CATALOG, 'transducer')
 const ttsIds = minimal ? ['en'] : uniqueByBundle(SHERPA_TTS_MODEL_CATALOG, 'vits')
+const lidIds = minimal ? ['whisper-tiny-lid'] : uniqueLidIds(SHERPA_MODEL_CATALOG)
 
-console.log(`download-all-sherpa: ${sttIds.length} STT bundle(s), ${ttsIds.length} TTS bundle(s)\n`)
+console.log(
+  `download-all-sherpa: ${sttIds.length} STT bundle(s), ${ttsIds.length} TTS bundle(s), ${lidIds.length} LID bundle(s)\n`,
+)
 
 let failed = 0
 for (const id of sttIds) {
@@ -68,6 +86,15 @@ for (const id of ttsIds) {
   } catch (err) {
     failed += 1
     console.error(`TTS ${id} failed:`, err instanceof Error ? err.message : err)
+  }
+}
+for (const id of lidIds) {
+  try {
+    console.log(`\n=== LID ${id} ===`)
+    downloadSherpaLidModel(id)
+  } catch (err) {
+    failed += 1
+    console.error(`LID ${id} failed:`, err instanceof Error ? err.message : err)
   }
 }
 

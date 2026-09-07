@@ -1,0 +1,26 @@
+[package]
+name = "node-webrtc-rust-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Clip decoder and progressive playback for node-webrtc-rust"
+
+[dependencies]
+bytes = { workspace = true }
+node-webrtc-rust-mixer = { path = "../mixer" }
+symphonia = { version = "0.5", default-features = false, features = [
+    "mp3",
+    "aac",
+    "isomp4",
+    "flac",
+    "vorbis",
+    "pcm",
+    "ogg",
+    "wav",
+] }
+thiserror = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

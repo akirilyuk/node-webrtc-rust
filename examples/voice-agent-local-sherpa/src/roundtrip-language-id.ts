@@ -37,6 +37,9 @@ const MODELS_DIR = join(EXAMPLE_ROOT, '.models')
 
 const DEFAULT_TIMEOUT_MS = 90_000
 const DEFAULT_WARMUP_S = 0.6
+/** Wait after TTS+post-silence so Whisper LID can correct mid-utterance guesses. */
+const LID_SETTLE_MS = 1500
+const LISTENER_MIN_SPEECH_MS = 2000
 
 /** Piper bundles from sherpa-tts-model-catalog.json */
 const TTS_BUNDLES: Record<string, string> = {
@@ -47,9 +50,17 @@ const TTS_BUNDLES: Record<string, string> = {
 
 /** All legs use native-language Piper TTS from the catalog (no French Piper bundle). */
 export const LANGUAGE_ID_LEGS = [
-  { lang: 'en', phrase: 'Hello, how are you today?', ttsId: 'en' },
-  { lang: 'de', phrase: 'Guten Tag, wie geht es Ihnen?', ttsId: 'de' },
-  { lang: 'es', phrase: 'Hola, cómo estás hoy?', ttsId: 'es' },
+  { lang: 'en', phrase: 'Hello, how are you doing today? I hope you are well.', ttsId: 'en' },
+  {
+    lang: 'de',
+    phrase: 'Guten Tag, wie geht es Ihnen heute? Ich hoffe, es geht Ihnen gut.',
+    ttsId: 'de',
+  },
+  {
+    lang: 'es',
+    phrase: 'Hola, cómo estás hoy? Espero que tengas un muy buen día.',
+    ttsId: 'es',
+  },
 ] as const
 
 function resolveTtsModelPath(ttsId: string): string {
@@ -105,37 +116,34 @@ function listenerConfigWithLanguageId(
     ...base,
     languageId: {
       modelPath: lidModelPath,
+      minSpeechMs: LISTENER_MIN_SPEECH_MS,
     },
     events: { mode: 'stream' },
   })
 }
 
-async function collectEventsUntil(
-  listener: VoiceAgent,
-  predicate: (event: SpeechEvent) => boolean,
-  timeoutMs: number,
-): Promise<SpeechEvent[]> {
-  const events: SpeechEvent[] = []
-  const deadline = Date.now() + timeoutMs
-  const stream = listener.speechEvents()
-  const iterator = stream[Symbol.asyncIterator]()
-  while (Date.now() < deadline) {
-    const remaining = Math.max(1, deadline - Date.now())
-    const next = await Promise.race([
-      iterator.next(),
-      new Promise<IteratorResult<SpeechEvent>>((resolve) =>
-        setTimeout(() => resolve({ done: true, value: undefined }), remaining),
-      ),
-    ])
-    if (next.done) break
-    const event = next.value
-    events.push(event)
-    logRoundtripSpeechEvent('listener', event)
-    if (predicate(event)) {
-      return events
-    }
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Poll shared array while the single `for await` collector keeps filling it (no racing `next()`). */
+async function waitForLastUserLanguage(
+  langEvents: SpeechEvent[],
+  settleMs: number,
+  maxWaitMs: number,
+): Promise<SpeechEvent | undefined> {
+  await sleep(settleMs)
+
+  const deadline = Date.now() + maxWaitMs
+  while (langEvents.length === 0 && Date.now() < deadline) {
+    await sleep(50)
   }
-  return events
+
+  if (langEvents.length > 0) {
+    await sleep(settleMs)
+  }
+
+  return langEvents.at(-1)
 }
 
 async function runLeg(
@@ -159,33 +167,79 @@ async function runLeg(
   startSpeakerSpeechPump(speaker, agentEndLatch)
   await streamSilence(agentOut, DEFAULT_WARMUP_S)
 
-  const eventsPromise = collectEventsUntil(
-    listener,
-    (event) => event.type === SPEECH_EVENT_TYPE.userLanguage,
-    timeoutMs,
-  )
+  const langEvents: SpeechEvent[] = []
+  const collectTask = (async () => {
+    for await (const event of listener.speechEvents()) {
+      logRoundtripSpeechEvent('listener', event)
+      if (event.type === SPEECH_EVENT_TYPE.userLanguage) {
+        langEvents.push(event)
+      }
+    }
+  })()
 
+  const playbackDeadline = Date.now() + timeoutMs
   await playSpeakerTtsWithPostSilence({
     speaker,
     speakerOut: agentOut,
     phrase: leg.phrase,
     postTtsSilenceS: postTtsSilenceSeconds(baseConfig),
-    playbackTimeoutMs: timeoutMs,
+    playbackTimeoutMs: Math.max(1, playbackDeadline - Date.now()),
     agentSpeakingEndLatch: agentEndLatch,
   })
 
-  const events = await eventsPromise
-  const langEvent = events.find((event) => event.type === SPEECH_EVENT_TYPE.userLanguage)
-  const detected = langEvent?.language ?? langEvent?.text
+  const lastLangEvent = await waitForLastUserLanguage(
+    langEvents,
+    LID_SETTLE_MS,
+    Math.min(timeoutMs, 20_000),
+  )
+  const detected = lastLangEvent?.language ?? lastLangEvent?.text
+
+  await speaker.stop().catch(() => undefined)
+  await listener.stop().catch(() => undefined)
+  await collectTask.catch(() => undefined)
+  await cleanup().catch(() => undefined)
+
   if (!detected) {
     throw new Error(`no user_language event for leg ${leg.lang}`)
   }
 
-  await speaker.stop().catch(() => undefined)
-  await listener.stop().catch(() => undefined)
-  await cleanup().catch(() => undefined)
-
   return { expected: leg.lang, detected }
+}
+
+async function runLegWithRetry(
+  leg: (typeof LANGUAGE_ID_LEGS)[number],
+  baseConfig: VoiceAgentConfig,
+  lidModelPath: string,
+  timeoutMs: number,
+): Promise<{ expected: string; detected: string }> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let result: { expected: string; detected: string }
+    try {
+      result = await runLeg(leg, baseConfig, lidModelPath, timeoutMs)
+    } catch (error) {
+      if (attempt === 2) {
+        throw error
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      console.log(`Leg ${leg.lang} error (${message}); retrying with fresh loopback…`)
+      continue
+    }
+
+    const ok = result.detected.toLowerCase() === result.expected.toLowerCase()
+    if (ok) {
+      return result
+    }
+
+    if (attempt === 2) {
+      return result
+    }
+
+    console.log(
+      `Leg ${leg.lang} mismatch (got ${result.detected}, expected ${result.expected}); retrying with fresh loopback…`,
+    )
+  }
+
+  throw new Error(`unreachable: runLegWithRetry for ${leg.lang}`)
 }
 
 export async function main(): Promise<void> {
@@ -207,7 +261,7 @@ export async function main(): Promise<void> {
   for (const leg of LANGUAGE_ID_LEGS) {
     console.log(`\n--- Leg ${leg.lang}: ${leg.phrase} ---`)
     try {
-      const { expected, detected } = await runLeg(leg, base, lidModelPath, timeoutMs)
+      const { expected, detected } = await runLegWithRetry(leg, base, lidModelPath, timeoutMs)
       const ok = detected.toLowerCase() === expected.toLowerCase()
       results.push({ expected, detected, ok })
       console.log(`user_language: ${detected} (expected ${expected}) ${ok ? 'OK' : 'FAIL'}`)

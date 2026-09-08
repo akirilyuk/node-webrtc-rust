@@ -8,6 +8,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-08
+
+Native clip playback, on-device spoken language identification, and MixGraph inbound mix fixes.
+
+### Added
+
+- **Player** — Native `ClipPlayer` (Symphonia) decodes WAV / MP3 / OGG / FLAC / AAC-LC to 48 kHz stereo 20 ms frames. Play id, `buffering` | `playing` | `stopped` | `ended` | `error`, stop, and progressive byte sources (HTTP streams start before EOF). AAC ADTS and fast-start MP4/M4A preroll; `moov`-at-end stays `buffering` until the index exists. (#197)
+- **helpers** — `VoiceAgentSessionHost.playAudio` / `getAudioPlay` / `stopAudioPlay`. Clips mix into Voice+Data MixGraph inputs (`play:{playId}`) or a voice-only outbound overlay. Omit `peerIds` to target all active voice clients. Optional `position` is `AudioPosition`: named `MixPlacement` **or** world `ClientPose` (mutually exclusive). `setTtsPosition` applies the same placement/pose to TTS. (#197)
+- **SDK / mixer** — `AudioMixGraph.setSourceMixPlacement` / `clearSourceMixPlacement` so clip and TTS sources can pan independently of the talker. (#197)
+- **Speech** — On-device spoken language identification via sherpa-onnx Whisper tiny. After ~1s of voiced audio, the pipeline emits `user_language` (`text` and `language` = ISO 639-1). `LanguageIdConfig`: `enabled`, `modelPath`, `allowlist`, `minSpeechMs` (default 1000). Re-emits only when the ISO code changes. Example: `start:roundtrip-language-id`. (#189)
+
+### Fixed
+
+- **helpers** — `ClientAudioMixer.wrapInboundTrack` keeps a per-peer leftover buffer so partial PCM reads are assembled into full 20 ms frames instead of dropped. Lazy mixer creation reuses an injected `clientMixGraph` instead of always constructing a private native graph. (#198)
+
+**Compare:** [`release/0.8.1…release/0.9.0`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.8.1...release/0.9.0)
+
 ## [0.8.1] - 2026-09-07
 
 SessionPod shares one MixGraph for voice+data, plus global/listener mute and client mix status.

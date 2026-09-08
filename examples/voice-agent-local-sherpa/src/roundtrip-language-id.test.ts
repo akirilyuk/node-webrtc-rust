@@ -13,4 +13,11 @@ describe('roundtrip-language-id', () => {
       expect(leg.ttsId.length).toBeGreaterThan(0)
     }
   })
+
+  test('Spanish phrase is long enough for stable Whisper LID', () => {
+    const esLeg = LANGUAGE_ID_LEGS.find((leg) => leg.lang === 'es')
+    expect(esLeg).toBeDefined()
+    expect(esLeg!.phrase.length).toBeGreaterThan(40)
+    expect(esLeg!.ttsId).toBe('es')
+  })
 })

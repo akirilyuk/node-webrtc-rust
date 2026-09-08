@@ -76,6 +76,24 @@ describe('AudioMixGraph', () => {
     expect(panned).toHaveLength(3840)
   })
 
+  test('setSourceMixPlacement pans source left when positional off', () => {
+    const graph = new AudioMixGraph()
+    graph.addInput('listener')
+    graph.addInput('source')
+    graph.setSourceMixPlacement('source', MIX_PLACEMENT.Left)
+    const mono = Buffer.alloc(3840)
+    for (let i = 0; i < 3840; i += 4) {
+      mono.writeInt16LE(10_000, i)
+      mono.writeInt16LE(10_000, i + 2)
+    }
+    graph.pushFrame('source', mono)
+    graph.setListenerSources('listener', ['source'])
+    const out = graph.renderOutput('listener')
+    const l = out.readInt16LE(0)
+    const r = out.readInt16LE(2)
+    expect(l).toBeGreaterThan(r)
+  })
+
   test('setTtsPose pans TTS right vs center when positional on', () => {
     const graph = new AudioMixGraph()
     graph.setPositionalEnabled(true)

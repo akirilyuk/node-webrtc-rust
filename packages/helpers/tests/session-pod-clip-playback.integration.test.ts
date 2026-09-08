@@ -124,6 +124,31 @@ async function connectClientToSession(
   return { pc, signaling, mic, agentAudio, teardownNegotiate }
 }
 
+/** Agent `ontrack` can fire before `agentStarted`; playAudio requires an active voice client. */
+async function waitForVoiceClientActive(
+  host: VoiceAgentSessionHost,
+  peerId: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (host.isVoiceClientActive(peerId)) return
+    await delay(20)
+  }
+  throw new Error(`voice client ${peerId} not active within ${timeoutMs}ms`)
+}
+
+async function connectReadyVoiceClient(
+  host: VoiceAgentSessionHost,
+  wsUrl: string,
+  sessionId: string,
+  peerId: string,
+): Promise<ConnectedClient> {
+  const client = await connectClientToSession(wsUrl, sessionId, peerId)
+  await waitForVoiceClientActive(host, peerId)
+  return client
+}
+
 async function readSampleWithTimeout(
   track: RemoteAudioTrack,
   label: string,
@@ -233,7 +258,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         const host = getVoiceHostForSession(pod, sessionId)!
         host.createMixGroup({ id: `solo-${spec.ext}`, clientIds: [peerId] })
 
-        const client = await connectClientToSession(wsUrl, sessionId, peerId)
+        const client = await connectReadyVoiceClient(host, wsUrl, sessionId, peerId)
         try {
           const { playId } = await host.playAudio({ source: { path: fixture!.path } })
           await waitForClipPlaying(host, playId, 30_000)
@@ -258,7 +283,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.createMixGroup({ id: 'stream', clientIds: ['client-stream'] })
 
     const holdback = await startHoldbackWavServer(wavFixture!.path)
-    const client = await connectClientToSession(wsUrl, sessionId, 'client-stream')
+    const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-stream')
     try {
       const { playId } = await host.playAudio({ source: { url: holdback.url } })
 
@@ -322,8 +347,8 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       clientIds: ['client-a', 'client-b'],
     })
 
-    const clientA = await connectClientToSession(wsUrl, sessionId, 'client-a')
-    const clientB = await connectClientToSession(wsUrl, sessionId, 'client-b')
+    const clientA = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-a')
+    const clientB = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-b')
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
@@ -352,7 +377,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.createMixGroup({ id: 'placement-left', clientIds: ['client-pan-left'] })
     host.setClientPose('client-pan-left', centerPose)
 
-    const client = await connectClientToSession(wsUrl, sessionId, 'client-pan-left')
+    const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-pan-left')
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
@@ -378,7 +403,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.createMixGroup({ id: 'placement-right', clientIds: ['client-pan-right'] })
     host.setClientPose('client-pan-right', centerPose)
 
-    const client = await connectClientToSession(wsUrl, sessionId, 'client-pan-right')
+    const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-pan-right')
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
@@ -404,7 +429,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.createMixGroup({ id: 'pose-pos', clientIds: ['client-pose-pos'] })
     host.setClientPose('client-pose-pos', centerPose)
 
-    const client = await connectClientToSession(wsUrl, sessionId, 'client-pose-pos')
+    const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-pose-pos')
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
@@ -430,7 +455,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.createMixGroup({ id: 'pose-neg', clientIds: ['client-pose-neg'] })
     host.setClientPose('client-pose-neg', centerPose)
 
-    const client = await connectClientToSession(wsUrl, sessionId, 'client-pose-neg')
+    const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-pose-neg')
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
@@ -455,7 +480,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.setClientPose('client-tts', centerPose)
     host.setTtsPosition({ placement: 'right' })
 
-    const client = await connectClientToSession(wsUrl, sessionId, 'client-tts')
+    const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-tts')
     try {
       const agent = host.sessions.get('client-tts')?.agent
       expect(agent).toBeDefined()
@@ -478,7 +503,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.setClientPose('client-tts-pose', centerPose)
     host.setTtsPosition({ pose: poseAtX(3) }, { clientId: 'client-tts-pose' })
 
-    const client = await connectClientToSession(wsUrl, sessionId, 'client-tts-pose')
+    const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-tts-pose')
     try {
       const agent = host.sessions.get('client-tts-pose')?.agent
       expect(agent).toBeDefined()

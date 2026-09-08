@@ -12,8 +12,8 @@ import {
 
 import { assertAudioPositionExclusive, type AudioPosition } from './audio-position.js'
 import {
-  ClientAudioMixer,
   sumStereoPcm,
+  type ClientAudioMixer,
   type ClientMixGraph,
   type MixPumpOutboundTrack,
 } from './client-audio-mixer.js'

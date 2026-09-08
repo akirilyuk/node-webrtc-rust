@@ -1377,9 +1377,7 @@ export class VoiceAgentSessionHost {
     const wait = {
       peerId,
       pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
-        | 'ok'
-        | 'failed'
-        | 'pending',
+        'ok' | 'failed' | 'pending',
       agent: (agentStatus === 'timed_out'
         ? 'pending'
         : componentOk(agentStatus)
@@ -1537,7 +1535,9 @@ export class VoiceAgentSessionHost {
     if (this.sessionMode === 'data-only') return undefined
     if (this.clientMixer) return this.clientMixer
     try {
-      this.clientMixer = new ClientAudioMixer()
+      this.clientMixer = this.options.clientMixGraph
+        ? new ClientAudioMixer({ graph: this.options.clientMixGraph })
+        : new ClientAudioMixer()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (/not a constructor|JsMixGraph/i.test(message)) {

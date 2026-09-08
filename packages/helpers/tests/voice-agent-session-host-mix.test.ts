@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ClientMixGraph } from '../src/client-audio-mixer.js'
+import type { ClientAudioMixer, ClientMixGraph } from '../src/client-audio-mixer.js'
 import { PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 import {
   MIX_REQUIRES_VOICE_PLUS_DATA,
@@ -53,6 +53,7 @@ type FakeAgent = {
 }
 
 type HostTestAccess = VoiceAgentSessionHost & {
+  clientMixer?: ClientAudioMixer
   sessions: Map<
     string,
     {
@@ -102,6 +103,38 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     const host = createHost('voice', createMockMixGraph())
     expect(() => host.createMixGroup({ id: 'g1', clientIds: ['a'] })).toThrow(
       MIX_REQUIRES_VOICE_PLUS_DATA,
+    )
+  })
+
+  it('lazy ensureClientMixer reuses injected clientMixGraph', () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    host.clientMixer = undefined
+
+    host.createMixGroup({ id: 'g1', clientIds: ['a'] })
+
+    expect(graph.setGroupMembers).toHaveBeenCalledWith('g1', ['a'])
+    expect(host.getClientMixer()?.getMixGraph()).toBe(graph)
+  })
+
+  it('lazy ensureClientMixer wrapInboundTrack tees into injected graph', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    host.clientMixer = undefined
+    host.createMixGroup({ id: 'g1', clientIds: ['client-a'] })
+
+    const mixer = host.getClientMixer()
+    expect(mixer?.getMixGraph()).toBe(graph)
+
+    const pcm = Buffer.alloc(PCM_FULL_FRAME_BYTES, 1)
+    const track = { readSample: vi.fn(async () => pcm) }
+    mixer!.registerPeer('client-a')
+    mixer!.wrapInboundTrack('client-a', track as never)
+    await track.readSample()
+
+    expect(graph.pushFrame).toHaveBeenCalledWith(
+      'client-a',
+      expect.objectContaining({ length: PCM_FULL_FRAME_BYTES }),
     )
   })
 

@@ -393,12 +393,20 @@ export class ClientAudioMixer {
     const flagged = track as RemoteAudioTrack & { [WRAPPED_IN]?: boolean }
     if (flagged[WRAPPED_IN]) return track
 
+    let leftover = Buffer.alloc(0)
     const orig = track.readSample.bind(track)
     track.readSample = async () => {
       const pcm = await orig()
-      if (pcm.length === PCM_FULL_FRAME_BYTES && !this.graph.isGloballyMuted?.(peerId)) {
-        this.graph.pushFrame(peerId, pcm)
+      if (this.graph.isGloballyMuted?.(peerId)) {
+        return pcm
       }
+      const combined = leftover.length > 0 ? Buffer.concat([leftover, pcm]) : pcm
+      let offset = 0
+      while (offset + PCM_FULL_FRAME_BYTES <= combined.length) {
+        this.graph.pushFrame(peerId, combined.subarray(offset, offset + PCM_FULL_FRAME_BYTES))
+        offset += PCM_FULL_FRAME_BYTES
+      }
+      leftover = offset < combined.length ? Buffer.from(combined.subarray(offset)) : Buffer.alloc(0)
       return pcm
     }
     flagged[WRAPPED_IN] = true

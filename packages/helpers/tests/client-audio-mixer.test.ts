@@ -164,6 +164,41 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.pushFrame).toEqual([{ peer: 'alice', len: PCM_FULL_FRAME_BYTES }])
   })
 
+  it('buffers partial inbound reads until a full mix frame is available', async () => {
+    const graph = createMockGraph()
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('alice')
+
+    const halfFrameBytes = PCM_FULL_FRAME_BYTES / 2
+    const chunkA = Buffer.alloc(halfFrameBytes, 1)
+    const chunkB = Buffer.alloc(halfFrameBytes, 2)
+    let readCount = 0
+    const track = {
+      readSample: vi.fn(async () => {
+        readCount += 1
+        if (readCount === 1) return chunkA
+        if (readCount === 2) return chunkB
+        if (readCount === 3) return Buffer.alloc(100, 3)
+        return Buffer.alloc(PCM_FULL_FRAME_BYTES - 100, 4)
+      }),
+    }
+    mixer.wrapInboundTrack('alice', track as never)
+
+    await track.readSample()
+    expect(graph.calls.pushFrame).toEqual([])
+
+    await track.readSample()
+    expect(graph.calls.pushFrame).toEqual([{ peer: 'alice', len: PCM_FULL_FRAME_BYTES }])
+
+    graph.calls.pushFrame.length = 0
+
+    await track.readSample()
+    expect(graph.calls.pushFrame).toEqual([])
+
+    await track.readSample()
+    expect(graph.calls.pushFrame).toEqual([{ peer: 'alice', len: PCM_FULL_FRAME_BYTES }])
+  })
+
   it('mix pump calls renderOutput and writes PC track without TTS', async () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })

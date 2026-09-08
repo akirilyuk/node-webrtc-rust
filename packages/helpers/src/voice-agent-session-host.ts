@@ -45,7 +45,6 @@ import {
 } from './client-audio-mixer.js'
 import { AudioClipController, type PlayAudioRequest } from './audio-clip-controller.js'
 import type { ClipPlayerStatus } from '@node-webrtc-rust/sdk/player'
-import type { AudioPlaySource } from './clip-playback.js'
 import type { ClientPose, MixPlacement } from '@node-webrtc-rust/sdk/mix'
 import { assertAudioPositionExclusive, type AudioPosition } from './audio-position.js'
 import {
@@ -1395,7 +1394,9 @@ export class VoiceAgentSessionHost {
     const wait = {
       peerId,
       pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
-        'ok' | 'failed' | 'pending',
+        | 'ok'
+        | 'failed'
+        | 'pending',
       agent: (agentStatus === 'timed_out'
         ? 'pending'
         : componentOk(agentStatus)

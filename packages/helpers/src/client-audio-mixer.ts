@@ -53,6 +53,8 @@ export interface ClientMixGraph {
   setPose(participantId: string, pose: ClientPose): void
   setPositionalEnabled(enabled: boolean): void
   setDefaultMixPlacement(placement: MixPlacement): void
+  setSourceMixPlacement?(participantId: string, placement: MixPlacement): void
+  clearSourceMixPlacement?(participantId: string): void
   setTtsMixPlacement(placement: MixPlacement): void
   setTtsPose(participantId: string, pose: ClientPose): void
   clearTtsPose(participantId: string): void
@@ -379,6 +381,14 @@ export class ClientAudioMixer {
 
   setDefaultMixPlacement(placement: MixPlacement): void {
     this.graph.setDefaultMixPlacement(placement)
+  }
+
+  setSourceMixPlacement(participantId: string, placement: MixPlacement): void {
+    this.graph.setSourceMixPlacement?.(participantId, placement)
+  }
+
+  clearSourceMixPlacement(participantId: string): void {
+    this.graph.clearSourceMixPlacement?.(participantId)
   }
 
   setTtsMixPlacement(placement: MixPlacement): void {

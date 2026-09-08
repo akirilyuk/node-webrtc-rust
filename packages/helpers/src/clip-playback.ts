@@ -29,12 +29,19 @@ export type AudioPlaySource = { url: string } | { path: string } | { bytes: Buff
 
 export type ClipFetchFn = (url: string) => Promise<Uint8Array>
 
+export type ClipStreamFetchFn = (
+  url: string,
+  onChunk: (chunk: Uint8Array) => void,
+) => Promise<Uint8Array>
+
 export const DEFAULT_CLIP_CACHE_MAX_BYTES = 50 * 1024 * 1024
 
 export type UrlClipCacheOptions = {
   cacheDir?: string
   maxBytes?: number
   fetch?: ClipFetchFn
+  /** Progressive URL fetch — append chunks as they arrive. */
+  streamFetch?: ClipStreamFetchFn
 }
 
 export type ClipPlayerBindings = {
@@ -83,16 +90,51 @@ function defaultFetch(url: string): Promise<Uint8Array> {
   })
 }
 
+async function defaultStreamFetch(
+  url: string,
+  onChunk: (chunk: Uint8Array) => void,
+): Promise<Uint8Array> {
+  const res = await fetch(url)
+  if (!res.ok) {
+    throw new Error(`clip fetch failed (${res.status}): ${url}`)
+  }
+  if (!res.body) {
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    onChunk(bytes)
+    return bytes
+  }
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+    chunks.push(value)
+    total += value.byteLength
+    onChunk(value)
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
+}
+
 /** URL → on-disk encoded clip cache with a byte budget. */
 export class UrlClipDiskCache {
   private readonly cacheDir: string
   private readonly maxBytes: number
   private readonly fetchFn: ClipFetchFn
+  private readonly streamFetchFn: ClipStreamFetchFn
 
   constructor(options?: UrlClipCacheOptions) {
     this.cacheDir = options?.cacheDir ?? defaultCacheDir()
     this.maxBytes = options?.maxBytes ?? DEFAULT_CLIP_CACHE_MAX_BYTES
     this.fetchFn = options?.fetch ?? defaultFetch
+    this.streamFetchFn = options?.streamFetch ?? defaultStreamFetch
     if (!existsSync(this.cacheDir)) {
       mkdirSync(this.cacheDir, { recursive: true })
     }
@@ -190,14 +232,12 @@ export class UrlClipDiskCache {
     }
 
     const { playId, writer } = bindings.playClipProgressive()
-    const cacheDone = this.fetchFn(url)
+    const cacheDone = this.streamFetchFn(url, (chunk) => {
+      writer.append(chunk)
+    })
       .then((fetched) => {
-        const bytes = Buffer.from(fetched)
-        for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
-          writer.append(bytes.subarray(offset, offset + 64 * 1024))
-        }
         writer.markEof()
-        this.writeCached(url, bytes)
+        this.writeCached(url, fetched)
       })
       .catch((error: unknown) => {
         writer.markEof()

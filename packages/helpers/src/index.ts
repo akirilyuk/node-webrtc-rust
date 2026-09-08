@@ -37,6 +37,8 @@ export {
   type ClipPlayerStatus,
 } from './voice-agent-session-host.js'
 
+export { type AudioPosition } from './audio-position.js'
+
 export {
   clipPlayInputId,
   scaleStereoPcmVolume,

@@ -10,10 +10,12 @@ import {
   type ClipPlayerStatus,
 } from '@node-webrtc-rust/sdk/player'
 
-import type {
+import { assertAudioPositionExclusive, type AudioPosition } from './audio-position.js'
+import {
   ClientAudioMixer,
-  ClientMixGraph,
-  MixPumpOutboundTrack,
+  sumStereoPcm,
+  type ClientMixGraph,
+  type MixPumpOutboundTrack,
 } from './client-audio-mixer.js'
 import {
   clipPlayInputId,
@@ -22,7 +24,6 @@ import {
   type AudioPlaySource,
 } from './clip-playback.js'
 import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from './pcm.js'
-import { sumStereoPcm } from './client-audio-mixer.js'
 import { pcmFromWriteSampleTeeArgs } from './session-recorder.js'
 
 type RouteSnapshot = {
@@ -57,7 +58,10 @@ export type PlayAudioRequest = {
   source: AudioPlaySource
   peerIds?: string[]
   volume?: number
+  position?: AudioPosition
 }
+
+export type { AudioPosition } from './audio-position.js'
 
 export type AudioClipPlayDeps = {
   resolveTargetPeerIds: (peerIds?: string[]) => string[]
@@ -103,6 +107,7 @@ export class AudioClipController {
     const routeSnapshots: RouteSnapshot[] = []
     if (usesMixGraph && graph) {
       graph.addInput(mixInputId)
+      this.applyPlayPosition(graph, mixInputId, request.position)
       this.applyTargetPlayRoutes(
         routeSnapshots,
         graph,
@@ -243,6 +248,23 @@ export class AudioClipController {
     }
     this.plays.delete(play.playId)
     this.stopTickIfIdle()
+  }
+
+  private applyPlayPosition(
+    graph: ClientMixGraph,
+    mixInputId: string,
+    position?: AudioPosition,
+  ): void {
+    if (!position) return
+    assertAudioPositionExclusive(position)
+    if (position.placement != null) {
+      graph.setSourceMixPlacement?.(mixInputId, position.placement)
+      return
+    }
+    if (position.pose != null) {
+      graph.setPose(mixInputId, position.pose)
+      graph.setPositionalEnabled(true)
+    }
   }
 
   private restoreRoutes(play: ActivePlay, graph?: ClientMixGraph): void {

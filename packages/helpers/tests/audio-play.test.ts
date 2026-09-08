@@ -62,6 +62,8 @@ function createMockMixGraph(): ClientMixGraph & {
     setPose: vi.fn(),
     setPositionalEnabled: vi.fn(),
     setDefaultMixPlacement: vi.fn(),
+    setSourceMixPlacement: vi.fn(),
+    clearSourceMixPlacement: vi.fn(),
     setTtsMixPlacement: vi.fn(),
     setTtsPose: vi.fn(),
     clearTtsPose: vi.fn(),
@@ -143,6 +145,28 @@ describe('clip-playback', () => {
     expect(first.fromCache).toBe(false)
     expect(second.fromCache).toBe(true)
     expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('progressive URL streams chunks before fetch settles', async () => {
+    const appendOrder: string[] = []
+    const streamFetch = vi.fn(
+      async (_url: string, onChunk: (chunk: Uint8Array) => void): Promise<Uint8Array> => {
+        appendOrder.push('fetch-start')
+        onChunk(new Uint8Array([1, 2, 3]))
+        appendOrder.push('first-chunk')
+        await new Promise((r) => setTimeout(r, 5))
+        onChunk(new Uint8Array([4, 5]))
+        appendOrder.push('second-chunk')
+        return new Uint8Array([1, 2, 3, 4, 5])
+      },
+    )
+    const cache = new UrlClipDiskCache({ cacheDir, streamFetch })
+    const { playId, cacheDone } = await cache.startProgressiveUrl('https://example.com/stream.wav')
+    expect(playId).toBe('play-prog')
+    expect(playerMocks.progressiveWriter.append).toHaveBeenCalled()
+    expect(appendOrder).toContain('first-chunk')
+    await cacheDone
+    expect(playerMocks.progressiveWriter.markEof).toHaveBeenCalled()
   })
 
   it('progressive URL uses cached path when present', async () => {
@@ -244,6 +268,93 @@ describe('VoiceAgentSessionHost playAudio', () => {
     host.getClientMixer()?.registerPeer('client-a')
     await host.playAudio({ source: { path: '/tmp/demo.wav' } })
     expect(playerMocks.playClip).toHaveBeenCalledWith('/tmp/demo.wav')
+  })
+
+  it('applies clip placement via setSourceMixPlacement', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    host.getClientMixer()?.registerPeer('client-a')
+
+    await host.playAudio({
+      source: { bytes: Buffer.from('wav') },
+      peerIds: ['client-a'],
+      position: { placement: 'left' },
+    })
+    expect(graph.setSourceMixPlacement).toHaveBeenCalledWith('play:play-bytes', 'left')
+  })
+
+  it('applies clip pose via setPose and enables positional mixing', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    host.getClientMixer()?.registerPeer('client-a')
+    const pose = {
+      position: { x: 2, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+
+    await host.playAudio({
+      source: { bytes: Buffer.from('wav') },
+      peerIds: ['client-a'],
+      position: { pose },
+    })
+    expect(graph.setPose).toHaveBeenCalledWith('play:play-bytes', pose)
+    expect(graph.setPositionalEnabled).toHaveBeenCalledWith(true)
+  })
+
+  it('rejects playAudio with both placement and pose', async () => {
+    const host = createHost('voice+data', createMockMixGraph())
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    host.getClientMixer()?.registerPeer('client-a')
+    await expect(
+      host.playAudio({
+        source: { bytes: Buffer.from('wav') },
+        peerIds: ['client-a'],
+        position: {
+          placement: 'left',
+          pose: {
+            position: { x: 0, y: 0, z: 0 },
+            orientation: { x: 0, y: 0, z: 0, w: 1 },
+          },
+        },
+      }),
+    ).rejects.toThrow(/mutually exclusive/)
+  })
+
+  it('setTtsPosition routes to setTtsMixPlacement or setTtsPose', () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    host.setTtsPosition({ placement: 'right' })
+    expect(graph.setTtsMixPlacement).toHaveBeenCalledWith('right')
+
+    const pose = {
+      position: { x: 1, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    host.setTtsPosition({ pose }, { clientId: 'client-a' })
+    expect(graph.setTtsPose).toHaveBeenCalledWith('client-a', pose)
+  })
+
+  it('setTtsPosition with pose requires clientId', () => {
+    const host = createHost('voice+data', createMockMixGraph())
+    expect(() =>
+      host.setTtsPosition({
+        pose: {
+          position: { x: 0, y: 0, z: 0 },
+          orientation: { x: 0, y: 0, z: 0, w: 1 },
+        },
+      }),
+    ).toThrow(/clientId/)
   })
 
   it('stopAudioPlay stops native clip and removes mix input', async () => {

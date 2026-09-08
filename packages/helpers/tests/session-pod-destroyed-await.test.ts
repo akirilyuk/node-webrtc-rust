@@ -82,9 +82,7 @@ describe('SessionPod awaits destroyed onSessionChange', () => {
     })
 
     await pod.ensureSession('session-fail')
-    await expect(pod.teardownSession('session-fail')).rejects.toThrow(
-      /session_end failed/,
-    )
+    await expect(pod.teardownSession('session-fail')).rejects.toThrow(/session_end failed/)
     expect(pod.activeSessionCount).toBe(1)
 
     await pod.close().catch(() => undefined)
@@ -143,16 +141,13 @@ describe('SessionPod awaits destroyed onSessionChange', () => {
     const slot = pod.slots.get('session-q')
     expect(slot).toBeDefined()
     vi.spyOn(slot!.host as never, 'close').mockImplementation(async () => {
-      ;(slot!.host as unknown as { recycleRequired: boolean }).recycleRequired =
-        true
-      ;(
-        slot!.host as unknown as { quarantinedLeases: Set<string> }
-      ).quarantinedLeases = new Set(['zombie'])
+      ;(slot!.host as unknown as { recycleRequired: boolean }).recycleRequired = true
+      ;(slot!.host as unknown as { quarantinedLeases: Set<string> }).quarantinedLeases = new Set([
+        'zombie',
+      ])
     })
 
-    await expect(pod.teardownSession('session-q')).rejects.toThrow(
-      /session_end failed/,
-    )
+    await expect(pod.teardownSession('session-q')).rejects.toThrow(/session_end failed/)
     expect(pod.activeSessionCount).toBe(1)
     expect(pod.retiredHosts.has('session-q')).toBe(false)
     // Live slot only — not also in retiredHosts.

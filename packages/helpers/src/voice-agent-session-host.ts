@@ -47,6 +47,7 @@ import { AudioClipController, type PlayAudioRequest } from './audio-clip-control
 import type { ClipPlayerStatus } from '@node-webrtc-rust/sdk/player'
 import type { AudioPlaySource } from './clip-playback.js'
 import type { ClientPose, MixPlacement } from '@node-webrtc-rust/sdk/mix'
+import { assertAudioPositionExclusive, type AudioPosition } from './audio-position.js'
 import {
   getProcessVoiceSessionBudget,
   type VoiceSessionBudget,
@@ -217,6 +218,7 @@ export const AUDIO_PLAY_REQUIRES_VOICE = 'playAudio requires voice or voice+data
 
 export type { AudioPlaySource } from './clip-playback.js'
 export type { PlayAudioRequest } from './audio-clip-controller.js'
+export type { AudioPosition } from './audio-position.js'
 export type { ClipPlayerStatus } from '@node-webrtc-rust/sdk/player'
 
 export type { ClientMixStatus } from './client-audio-mixer.js'
@@ -1700,6 +1702,24 @@ export class VoiceAgentSessionHost {
   setTtsPose(clientId: string, pose: ClientPose): void {
     this.assertTtsPoseCapable()
     this.clientMixer!.setTtsPose(clientId, pose)
+  }
+
+  /**
+   * Unified TTS panning: named placement (listener-relative) or world pose per client.
+   * Placement and pose are mutually exclusive; pose requires `clientId`.
+   */
+  setTtsPosition(position: AudioPosition, options?: { clientId: string }): void {
+    this.assertTtsPoseCapable()
+    assertAudioPositionExclusive(position)
+    if (position.placement != null) {
+      this.setTtsMixPlacement(position.placement)
+      return
+    }
+    const clientId = options?.clientId
+    if (!clientId) {
+      throw new Error('setTtsPosition with pose requires clientId')
+    }
+    this.setTtsPose(clientId, position.pose)
   }
 
   clearTtsPose(clientId: string): void {

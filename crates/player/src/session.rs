@@ -295,9 +295,24 @@ fn decode_from_source<M: MediaSource + 'static>(
         let mut status = state.status.lock().expect("status lock");
         status.duration_ms = Some(dur);
     }
-    let out = session.decode_available()?;
-    if !out.pcm.is_empty() {
-        enqueue_pcm(state, out.pcm);
+    while !state.stop_requested.load(Ordering::SeqCst) {
+        match session.decode_available() {
+            Ok(out) => {
+                let had_pcm = !out.pcm.is_empty();
+                if had_pcm {
+                    enqueue_pcm(state, out.pcm);
+                }
+                let buffered_ms = state.status.lock().expect("status lock").buffered_ms;
+                if buffered_ms >= state.preroll_ms {
+                    return Ok(());
+                }
+                // Static sources: empty output means EOF with no further PCM.
+                if !had_pcm {
+                    return Ok(());
+                }
+            }
+            Err(err) => return Err(err),
+        }
     }
     Ok(())
 }

@@ -94,6 +94,20 @@ fn mp3_fixture_plays() {
 }
 
 #[test]
+fn flac_fixture_plays() {
+    with_serial(|| {
+        let path = fixtures_dir().join("tone.flac");
+        let session = ClipSession::start_from_path("test-flac".into(), &path).expect("play flac");
+        wait_for_status(&session, ClipStatus::Playing, Duration::from_secs(3));
+        assert!(session.status().buffered_ms > 0);
+        let frame = session
+            .take_frame()
+            .expect("take_frame while playing should return PCM");
+        assert_eq!(frame.pcm.len(), FRAME_BYTES);
+    });
+}
+
+#[test]
 fn wav_preroll_before_eof() {
     with_serial(|| {
         let wav = make_wav_pcm();

@@ -27,10 +27,9 @@ pub struct DecoderSession {
 
 impl DecoderSession {
     pub fn open<M: MediaSource + 'static>(
-        mut source: M,
+        source: M,
         hint: Option<Hint>,
     ) -> Result<Self, PlayerError> {
-        let _ = source.seek(SeekFrom::Start(0));
         let mss = MediaSourceStream::new(Box::new(source), Default::default());
         let hint = hint.unwrap_or_default();
         let probed: ProbeResult = symphonia::default::get_probe()
@@ -148,6 +147,32 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
             }
             return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
         }
+        AudioBufferRef::S32(b) => {
+            let spec = b.spec();
+            let channels = spec.channels.count();
+            let rate = spec.rate;
+            let frames = b.frames();
+            let mut interleaved = Vec::with_capacity(frames * channels);
+            for frame in 0..frames {
+                for ch in 0..channels {
+                    interleaved.push(b.chan(ch)[frame] as f32 / i32::MAX as f32);
+                }
+            }
+            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+        }
+        AudioBufferRef::S24(b) => {
+            let spec = b.spec();
+            let channels = spec.channels.count();
+            let rate = spec.rate;
+            let frames = b.frames();
+            let mut interleaved = Vec::with_capacity(frames * channels);
+            for frame in 0..frames {
+                for ch in 0..channels {
+                    interleaved.push(b.chan(ch)[frame].inner() as f32 / 8_388_608.0);
+                }
+            }
+            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+        }
         AudioBufferRef::S16(b) => {
             let spec = b.spec();
             let channels = spec.channels.count();
@@ -223,6 +248,17 @@ mod tests {
         let mut session =
             DecoderSession::open(Cursor::new(data), Some(hint)).expect("open");
         let out = session.decode_available().expect("decode");
+        assert!(!out.pcm.is_empty(), "pcm bytes {}", out.pcm.len());
+    }
+
+    #[test]
+    fn flac_decode_outputs_pcm() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.flac");
+        let data = std::fs::read(&path).expect("read flac");
+        let hint = hint_from_bytes(&data);
+        let mut session =
+            DecoderSession::open(Cursor::new(data), Some(hint)).expect("open flac");
+        let out = session.decode_available().expect("decode flac");
         assert!(!out.pcm.is_empty(), "pcm bytes {}", out.pcm.len());
     }
 

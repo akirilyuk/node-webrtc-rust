@@ -220,7 +220,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   })
 
   for (const spec of ENCODING_SPECS) {
-    it.skipIf(!canEncodeClip(spec.ext) || spec.ext === 'flac')(
+    it.skipIf(!canEncodeClip(spec.ext))(
       `plays ${spec.ext} via path and listener hears ${spec.freqHz} Hz`,
       async () => {
         const fixture = generateClipFixtures().find((f) => f.ext === spec.ext)
@@ -235,7 +235,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         const client = await connectClientToSession(wsUrl, sessionId, peerId)
         try {
           const { playId } = await host.playAudio({ source: { path: fixture!.path } })
-          await waitForClipPlaying(host, playId, spec.ext === 'flac' ? 60_000 : 30_000)
+          await waitForClipPlaying(host, playId, 30_000)
           const { left, right } = await collectAgentFrames(client.agentAudio, 'clip path', 20)
           assertTonePresentStereo(left, right, spec.freqHz, `${spec.ext} path`)
           host.stopAudioPlay(playId)

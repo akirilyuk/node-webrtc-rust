@@ -17,10 +17,13 @@ use crate::conference::types::{
 
 struct RoomEventState {
     subscribed: bool,
-    participant_joined: Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::ParticipantJoined>>,
+    participant_joined:
+        Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::ParticipantJoined>>,
     participant_left: Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::ParticipantLeft>>,
-    participant_kicked: Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::ParticipantKicked>>,
-    participant_muted: Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::ParticipantMuted>>,
+    participant_kicked:
+        Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::ParticipantKicked>>,
+    participant_muted:
+        Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::ParticipantMuted>>,
     mixing_enabled_changed:
         Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::MixingEnabledChanged>>,
     error: Option<mpsc::UnboundedReceiver<node_webrtc_rust_conference::RoomError>>,
@@ -88,11 +91,7 @@ impl JsConferenceRoom {
 
     /// Mutes a participant globally or for one listener.
     #[napi]
-    pub async fn mute_participant(
-        &self,
-        target_id: String,
-        options: JsMuteOptions,
-    ) -> Result<()> {
+    pub async fn mute_participant(&self, target_id: String, options: JsMuteOptions) -> Result<()> {
         self.inner
             .lock()
             .await
@@ -127,11 +126,7 @@ impl JsConferenceRoom {
     /// Enables or disables room-wide mixing.
     #[napi]
     pub async fn set_mixing_enabled(&self, enabled: bool) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .set_mixing_enabled(enabled)
-            .await;
+        self.inner.lock().await.set_mixing_enabled(enabled).await;
         Ok(())
     }
 

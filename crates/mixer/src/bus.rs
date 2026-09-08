@@ -60,8 +60,8 @@ mod tests {
         for i in 0..SAMPLES_PER_FRAME {
             let channel = i % 2;
             let t = (i / 2) as f64 / crate::frame::SAMPLES_PER_CHANNEL as f64;
-            let wave = (2.0 * std::f64::consts::PI * 440.0 * t + phase + channel as f64 * 0.1)
-                .sin();
+            let wave =
+                (2.0 * std::f64::consts::PI * 440.0 * t + phase + channel as f64 * 0.1).sin();
             let sample = (wave * f64::from(amplitude)) as i16;
             pcm[i * 2..i * 2 + 2].copy_from_slice(&sample.to_le_bytes());
         }

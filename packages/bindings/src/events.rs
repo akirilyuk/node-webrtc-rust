@@ -2,7 +2,7 @@
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{
-    ThreadsafeFunction, ThreadsafeFunctionCallMode, ThreadSafeCallContext,
+    ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
 };
 use napi::JsFunction;
 use napi::JsUnknown;
@@ -35,10 +35,7 @@ where
 }
 
 /// Creates a ThreadsafeFunction for callbacks with no arguments.
-pub fn create_void_callback(
-    env: &Env,
-    callback: JsFunction,
-) -> Result<ThreadsafeFunction<()>> {
+pub fn create_void_callback(env: &Env, callback: JsFunction) -> Result<ThreadsafeFunction<()>> {
     env.create_threadsafe_function(
         &callback,
         0,

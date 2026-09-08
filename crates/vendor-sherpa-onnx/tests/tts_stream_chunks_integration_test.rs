@@ -52,7 +52,10 @@ fn long_phrase() -> &'static str {
      the complete answer without needing to ask for clarification again."
 }
 
-async fn measure_progressive_first_chunk_ms(tts: &dyn TtsProvider, phrase: &str) -> (u128, u128, usize) {
+async fn measure_progressive_first_chunk_ms(
+    tts: &dyn TtsProvider,
+    phrase: &str,
+) -> (u128, u128, usize) {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let sink = TtsProgressiveSink {
@@ -202,7 +205,6 @@ async fn parallel_progressive_synth_completes_both_jobs() {
     );
 }
 
-
 #[tokio::test]
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn progressive_pcm_matches_final_oneshot() {
@@ -265,5 +267,8 @@ async fn progressive_pcm_matches_final_oneshot() {
         .filter(|(a, b)| a != b)
         .count();
     eprintln!("mismatched bytes in prefix {ncmp}: {mism}");
-    assert_eq!(mism, 0, "streamed progressive PCM must match oneshot convert");
+    assert_eq!(
+        mism, 0,
+        "streamed progressive PCM must match oneshot convert"
+    );
 }

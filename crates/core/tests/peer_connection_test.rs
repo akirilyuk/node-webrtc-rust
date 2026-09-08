@@ -7,7 +7,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use node_webrtc_rust_core::{
     ConnectionState, DataChannelState, IceServer, LocalAudioTrack, OfferOptions, PeerConnection,
-    PeerConnectionConfig, RtpTransceiverDirection, RtpTransceiverInit, TrackKind, TransceiverSource,
+    PeerConnectionConfig, RtpTransceiverDirection, RtpTransceiverInit, TrackKind,
+    TransceiverSource,
 };
 use tokio::time::{sleep, timeout};
 
@@ -104,9 +105,7 @@ async fn wait_for_connection(pc: &PeerConnection) {
     }
 }
 
-async fn wait_for_data_channel_open(
-    dc: &node_webrtc_rust_core::DataChannel,
-) {
+async fn wait_for_data_channel_open(dc: &node_webrtc_rust_core::DataChannel) {
     timeout(Duration::from_secs(10), async {
         loop {
             if dc.ready_state() == DataChannelState::Open {
@@ -164,9 +163,7 @@ async fn test_data_channel_round_trip() {
 
     wait_for_data_channel_open(&dc1).await;
 
-    dc1.send_text("hello")
-        .await
-        .expect("send text");
+    dc1.send_text("hello").await.expect("send text");
     dc1.send_binary_slice(&[1, 2, 3])
         .await
         .expect("send binary");
@@ -291,9 +288,7 @@ async fn test_ice_candidate_generation() {
         .expect("create dc");
 
     let offer = pc.create_offer(None).await.expect("create offer");
-    pc.set_local_description(offer)
-        .await
-        .expect("set local");
+    pc.set_local_description(offer).await.expect("set local");
 
     let mut saw_candidate = false;
     let gather_timeout = timeout(Duration::from_secs(10), async {
@@ -368,9 +363,7 @@ async fn test_replace_track_swaps_outbound_audio() {
 
 #[tokio::test]
 async fn test_offer_to_receive_audio_adds_audio_mline() {
-    let pc = PeerConnection::new(test_config())
-        .await
-        .expect("create pc");
+    let pc = PeerConnection::new(test_config()).await.expect("create pc");
     let desc = pc
         .create_offer(Some(OfferOptions {
             offer_to_receive_audio: true,
@@ -384,9 +377,7 @@ async fn test_offer_to_receive_audio_adds_audio_mline() {
 
 #[tokio::test]
 async fn test_offer_sdp_opus_fmtp_without_maxaveragebitrate_when_env_unset() {
-    let pc = PeerConnection::new(test_config())
-        .await
-        .expect("create pc");
+    let pc = PeerConnection::new(test_config()).await.expect("create pc");
     let track = LocalAudioTrack::new("audio-1", "stream-1");
     pc.add_track(track.as_track_local())
         .await
@@ -407,9 +398,7 @@ async fn test_offer_sdp_opus_fmtp_without_maxaveragebitrate_when_env_unset() {
 
 #[tokio::test]
 async fn test_offer_to_receive_video_returns_error() {
-    let pc = PeerConnection::new(test_config())
-        .await
-        .expect("create pc");
+    let pc = PeerConnection::new(test_config()).await.expect("create pc");
     let err = pc
         .create_offer(Some(OfferOptions {
             offer_to_receive_video: true,
@@ -445,9 +434,7 @@ async fn test_remove_track_detaches_sender() {
 
 #[tokio::test]
 async fn test_add_transceiver_recvonly_audio() {
-    let pc = PeerConnection::new(test_config())
-        .await
-        .expect("create pc");
+    let pc = PeerConnection::new(test_config()).await.expect("create pc");
     let transceiver = pc
         .add_transceiver(
             TransceiverSource::Kind(TrackKind::Audio),
@@ -475,15 +462,10 @@ async fn test_add_transceiver_recvonly_audio() {
 
 #[tokio::test]
 async fn test_add_transceiver_from_local_track() {
-    let pc = PeerConnection::new(test_config())
-        .await
-        .expect("create pc");
+    let pc = PeerConnection::new(test_config()).await.expect("create pc");
     let track = LocalAudioTrack::new("tx-a1", "stream-1");
     let transceiver = pc
-        .add_transceiver(
-            TransceiverSource::Track(track.as_track_local()),
-            None,
-        )
+        .add_transceiver(TransceiverSource::Track(track.as_track_local()), None)
         .await
         .expect("add transceiver from track");
 
@@ -495,9 +477,7 @@ async fn test_add_transceiver_from_local_track() {
 
 #[tokio::test]
 async fn test_transceiver_set_direction_and_stop() {
-    let pc = PeerConnection::new(test_config())
-        .await
-        .expect("create pc");
+    let pc = PeerConnection::new(test_config()).await.expect("create pc");
     let transceiver = pc
         .add_transceiver(
             TransceiverSource::Kind(TrackKind::Audio),

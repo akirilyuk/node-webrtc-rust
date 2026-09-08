@@ -97,9 +97,7 @@ impl LocalAudioTrack {
     /// Creates a new local audio track advertising Opus (WebRTC default).
     pub fn new(id: &str, stream_id: &str) -> Self {
         Self {
-            inner: Arc::new(
-                PcmAudioTrackLocal::new(id, stream_id).expect("PCM audio track init"),
-            ),
+            inner: Arc::new(PcmAudioTrackLocal::new(id, stream_id).expect("PCM audio track init")),
             enabled: AtomicBool::new(true),
             track_id: id.to_owned(),
             stream_id: stream_id.to_owned(),
@@ -112,8 +110,13 @@ impl LocalAudioTrack {
     }
 
     /// Writes a PCM slice, copying once into a shared buffer.
-    pub async fn write_sample_slice(&self, data: &[u8], duration: Duration) -> Result<(), CoreError> {
-        self.write_sample(Bytes::copy_from_slice(data), duration).await
+    pub async fn write_sample_slice(
+        &self,
+        data: &[u8],
+        duration: Duration,
+    ) -> Result<(), CoreError> {
+        self.write_sample(Bytes::copy_from_slice(data), duration)
+            .await
     }
 
     /// Negotiated audio format after the track is bound to a peer connection.
@@ -188,9 +191,7 @@ impl RemoteTrack {
             track_id: inner.id(),
             stream_id: inner.stream_id(),
             inner,
-            decoder: Arc::new(Mutex::new(
-                OpusDecoder::new().expect("Opus decoder init"),
-            )),
+            decoder: Arc::new(Mutex::new(OpusDecoder::new().expect("Opus decoder init"))),
         }
     }
 

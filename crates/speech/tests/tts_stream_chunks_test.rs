@@ -181,10 +181,7 @@ async fn measure_first_audio_ms(factory: Arc<ChunkedMockFactory>, text: &str) ->
         Ok(())
     });
 
-    agent
-        .attach(Arc::new(|| Ok(None)), writer)
-        .await
-        .unwrap();
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     *send_start.lock().unwrap() = Some(Instant::now());
@@ -276,10 +273,7 @@ async fn stream_chunks_env_and_latency_paths() {
             frames_w.fetch_add(1, Ordering::SeqCst);
             Ok(())
         });
-        agent
-            .attach(Arc::new(|| Ok(None)), writer)
-            .await
-            .unwrap();
+        agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
         agent.start(None).await.unwrap();
         agent.send_text_to_tts("full").await.unwrap();
         agent.wait_tts_playback_idle().await.unwrap();
@@ -302,10 +296,7 @@ async fn stream_chunks_env_and_latency_paths() {
             frames_w.fetch_add(1, Ordering::SeqCst);
             Ok(())
         });
-        agent
-            .attach(Arc::new(|| Ok(None)), writer)
-            .await
-            .unwrap();
+        agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
         agent.start(None).await.unwrap();
         agent.send_text_to_tts("full stream").await.unwrap();
         agent.wait_tts_playback_idle().await.unwrap();

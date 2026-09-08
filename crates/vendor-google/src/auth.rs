@@ -18,10 +18,11 @@ pub(crate) async fn google_access_token() -> SpeechResult<Option<String>> {
 
     let key_json = tokio::fs::read_to_string(&credentials_path)
         .await
-        .map_err(|err| SpeechError::Config(format!("read GOOGLE_APPLICATION_CREDENTIALS: {err}")))?;
-    let key: yup_oauth2::ServiceAccountKey = serde_json::from_str(&key_json).map_err(|err| {
-        SpeechError::Config(format!("parse service account JSON: {err}"))
-    })?;
+        .map_err(|err| {
+            SpeechError::Config(format!("read GOOGLE_APPLICATION_CREDENTIALS: {err}"))
+        })?;
+    let key: yup_oauth2::ServiceAccountKey = serde_json::from_str(&key_json)
+        .map_err(|err| SpeechError::Config(format!("parse service account JSON: {err}")))?;
     let auth = yup_oauth2::ServiceAccountAuthenticator::builder(key)
         .build()
         .await

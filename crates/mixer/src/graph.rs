@@ -794,7 +794,8 @@ mod tests {
         if n == 0 {
             return 0.0;
         }
-        let k = (0.5 + (n as f64) * f64::from(target_freq) / f64::from(sample_rate)).floor() as usize;
+        let k =
+            (0.5 + (n as f64) * f64::from(target_freq) / f64::from(sample_rate)).floor() as usize;
         let omega = (2.0 * std::f64::consts::PI * k as f64) / n as f64;
         let coeff = 2.0 * omega.cos();
         let mut s0 = 0.0f64;

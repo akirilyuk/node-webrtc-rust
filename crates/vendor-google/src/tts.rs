@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE};
+use node_webrtc_rust_speech::pcm::{
+    duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
+};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProvider};
 
 #[cfg(feature = "live")]
@@ -19,11 +21,7 @@ impl GoogleTts {
             .clone()
             .or_else(|| config.model.clone())
             .unwrap_or_else(|| "en-US-Neural2-A".to_string());
-        let language = voice
-            .split('-')
-            .take(2)
-            .collect::<Vec<_>>()
-            .join("-");
+        let language = voice.split('-').take(2).collect::<Vec<_>>().join("-");
         Ok(Self {
             voice,
             language: if language.is_empty() {
@@ -91,7 +89,8 @@ async fn synthesize_linear16(text: &str, voice: &str, language: &str) -> SpeechR
                 vendor: "google".into(),
                 message: "failed to obtain Google access token".into(),
             })?;
-        client.post("https://texttospeech.googleapis.com/v1/text:synthesize")
+        client
+            .post("https://texttospeech.googleapis.com/v1/text:synthesize")
             .bearer_auth(token)
     };
 
@@ -125,10 +124,12 @@ async fn synthesize_linear16(text: &str, voice: &str, language: &str) -> SpeechR
             message: "missing audioContent in TTS response".into(),
         })?;
 
-    STANDARD.decode(audio_b64).map_err(|err| SpeechError::Vendor {
-        vendor: "google".into(),
-        message: err.to_string(),
-    })
+    STANDARD
+        .decode(audio_b64)
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "google".into(),
+            message: err.to_string(),
+        })
 }
 
 #[cfg(test)]

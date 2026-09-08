@@ -105,6 +105,15 @@
       "label": "Italian",
       "kind": "unavailable",
       "note": "No dedicated Italian streaming Zipformer in asr-models. Italian is in sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01 (not supported here yet). Use cloud STT."
+    },
+    {
+      "id": "whisper-tiny-lid",
+      "label": "Spoken language ID (Whisper tiny)",
+      "bundle": "sherpa-onnx-whisper-tiny",
+      "language": "multi",
+      "kind": "whisper-lid",
+      "approxMb": "~100",
+      "note": "Whisper multilingual tiny for SpokenLanguageIdentification. Not an STT Zipformer."
     }
   ]
 }

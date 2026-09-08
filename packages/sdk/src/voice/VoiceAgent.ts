@@ -157,6 +157,14 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
     events: config.events?.mode ? { mode: eventModeToJs(config.events.mode) } : undefined,
     stt: config.stt ? toJsSttConfig(config.stt) : undefined,
     tts: config.tts ? toJsTtsConfig(config.tts) : undefined,
+    languageId: config.languageId
+      ? {
+          enabled: config.languageId.enabled,
+          modelPath: config.languageId.modelPath,
+          allowlist: config.languageId.allowlist,
+          minSpeechMs: config.languageId.minSpeechMs,
+        }
+      : undefined,
     postUtteranceSilenceMs,
     noiseSuppression: config.noiseSuppression
       ? {
@@ -188,6 +196,7 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
   return {
     type: jsEventTypeToString(rawType ?? JsSpeechEventType.Error),
     text: event.text ?? undefined,
+    language: event.language ?? undefined,
     error: event.error ?? undefined,
   }
 }
@@ -202,6 +211,8 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'user_speech_partial'
     case JsSpeechEventType.UserSpeechFinal:
       return 'user_speech_final'
+    case JsSpeechEventType.UserLanguage:
+      return 'user_language'
     case JsSpeechEventType.AgentSpeakingStart:
       return 'agent_speaking_start'
     case JsSpeechEventType.AgentSpeakingEnd:

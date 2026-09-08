@@ -46,7 +46,9 @@ impl JsConferenceServer {
     pub async fn get_room(&self, room_id: String) -> Result<Option<JsConferenceRoom>> {
         match self.inner.get_room(&room_id).await {
             Ok(room) => Ok(Some(JsConferenceRoom::new(room_id, room))),
-            Err(err) if err.code() == node_webrtc_rust_conference::ConferenceErrorCode::RoomNotFound => {
+            Err(err)
+                if err.code() == node_webrtc_rust_conference::ConferenceErrorCode::RoomNotFound =>
+            {
                 Ok(None)
             }
             Err(err) => Err(conference_err(err)),

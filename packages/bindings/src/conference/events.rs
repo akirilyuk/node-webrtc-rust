@@ -2,7 +2,7 @@
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{
-    ThreadsafeFunction, ThreadsafeFunctionCallMode, ThreadSafeCallContext,
+    ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
 };
 use napi::JsFunction;
 use tokio::sync::mpsc::UnboundedReceiver;

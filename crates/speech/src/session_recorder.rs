@@ -319,8 +319,7 @@ pub fn resolve_media_clock_offset_ms(params: ResolveMediaClockParams) -> Resolve
 
 /// True when every sample is below `peak_threshold` (mic-pump silence).
 pub fn is_nearly_silent_mono(mono: &[i16], peak_threshold: i16) -> bool {
-    mono.iter()
-        .all(|&sample| sample.abs() < peak_threshold)
+    mono.iter().all(|&sample| sample.abs() < peak_threshold)
 }
 
 /// Downmix interleaved stereo s16le → mono. Mono input passthrough.
@@ -465,7 +464,10 @@ pub fn serialize_speech_turns_by_wall_time(
             };
             let placed_end = placed
                 .offset_ms
-                .saturating_add(chunk_duration_ms_from_samples(placed.mono.len(), params.sample_rate));
+                .saturating_add(chunk_duration_ms_from_samples(
+                    placed.mono.len(),
+                    params.sample_rate,
+                ));
             run_end = run_end.max(placed_end);
             match run.channel {
                 SessionChannel::Outbound => outbound.push(placed),
@@ -515,9 +517,8 @@ pub fn mix_stereo_timeline(params: MixStereoTimelineParams) -> MixStereoTimeline
         );
     }
     let duration_ms = params.max_duration_ms.min(end_ms);
-    let total_frames = ((f64::from(duration_ms) / 1000.0 * f64::from(params.sample_rate)).ceil()
-        as usize)
-        .max(1);
+    let total_frames =
+        ((f64::from(duration_ms) / 1000.0 * f64::from(params.sample_rate)).ceil() as usize).max(1);
     let mut interleaved = vec![0_i16; total_frames * 2];
 
     let paint = |chunks: &[PcmChunk], channel: usize, buf: &mut [i16]| {
@@ -728,12 +729,16 @@ mod tests {
     fn recorder_with_walls(walls: Vec<u64>, max_duration_ms: u32) -> SessionRecorder {
         let idx = Arc::new(AtomicUsize::new(0));
         let walls = Arc::new(walls);
-        SessionRecorder::with_now(Some(max_duration_ms), Box::new(move || {
-            let i = idx.fetch_add(1, Ordering::SeqCst);
-            walls.get(i).copied().unwrap_or_else(|| {
-                *walls.last().expect("walls sequence must not be empty")
-            })
-        }))
+        SessionRecorder::with_now(
+            Some(max_duration_ms),
+            Box::new(move || {
+                let i = idx.fetch_add(1, Ordering::SeqCst);
+                walls
+                    .get(i)
+                    .copied()
+                    .unwrap_or_else(|| *walls.last().expect("walls sequence must not be empty"))
+            }),
+        )
     }
 
     fn wav_pcm(wav: &[u8]) -> &[u8] {
@@ -777,8 +782,12 @@ mod tests {
     #[test]
     fn lr_channel_layout_places_energy_on_expected_channels() {
         let mut recorder = recorder_with_walls(vec![100, 200], 10_000);
-        recorder.push_outbound(&stereo_tone_frame(5000, 480)).unwrap();
-        recorder.push_inbound(&stereo_tone_frame(9000, 480)).unwrap();
+        recorder
+            .push_outbound(&stereo_tone_frame(5000, 480))
+            .unwrap();
+        recorder
+            .push_inbound(&stereo_tone_frame(9000, 480))
+            .unwrap();
         let built = recorder.build().unwrap();
         let pcm = &built.pcm_interleaved;
         // Outbound (L) placed first at media 0; inbound (R) after wall gap.
@@ -899,8 +908,7 @@ mod tests {
     #[test]
     fn finalize_opus_produces_ogg_with_default_bitrate_constant() {
         assert_eq!(
-            SESSION_RECORDER_DEFAULT_OPUS_BITRATE_BPS,
-            256_000,
+            SESSION_RECORDER_DEFAULT_OPUS_BITRATE_BPS, 256_000,
             "default Opus bitrate must be 256000 bps"
         );
         let mut recorder = recorder_with_walls(vec![0], 5_000);
@@ -954,7 +962,10 @@ mod tests {
                 break;
             }
             let lacing = ogg[lacing_start..lacing_end].to_vec();
-            let body_size = lacing.iter().map(|segment| *segment as usize).sum::<usize>();
+            let body_size = lacing
+                .iter()
+                .map(|segment| *segment as usize)
+                .sum::<usize>();
             pages.push(OggPageHeader {
                 header_type,
                 granule_pos,
@@ -998,7 +1009,10 @@ mod tests {
 
         let preskip = opus_head_preskip(&ogg);
         assert!(preskip > 0, "OpusHead pre_skip must be encoder lookahead");
-        assert_eq!(preskip, expected_preskip, "OpusHead pre_skip must match lookahead");
+        assert_eq!(
+            preskip, expected_preskip,
+            "OpusHead pre_skip must match lookahead"
+        );
 
         let pages = parse_ogg_page_headers(&ogg);
         assert!(
@@ -1010,8 +1024,7 @@ mod tests {
         for page in &pages {
             if packet_continues_beyond_page(&page.lacing) {
                 assert_eq!(
-                    page.granule_pos,
-                    -1,
+                    page.granule_pos, -1,
                     "incomplete continuation page must use granulepos -1"
                 );
             }
@@ -1022,16 +1035,11 @@ mod tests {
             .filter(|page| page.header_type & 0x01 != 0)
             .count();
         assert_eq!(
-            continued_pages,
-            0,
+            continued_pages, 0,
             "EndPage-per-packet mux should not produce continuation pages"
         );
 
-        let last_granule = pages
-            .last()
-            .expect("last page")
-            .granule_pos
-            .max(0) as u64;
+        let last_granule = pages.last().expect("last page").granule_pos.max(0) as u64;
         let duration_sec =
             (last_granule - preskip as u64) as f64 / SESSION_AUDIO_SAMPLE_RATE as f64;
         assert!(

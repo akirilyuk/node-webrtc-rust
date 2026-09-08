@@ -68,7 +68,10 @@ fn find_tokens(dir: &Path) -> SpeechResult<PathBuf> {
     }
 
     let entries = fs::read_dir(dir).map_err(|err| {
-        SpeechError::Config(format!("failed to read model directory {}: {err}", dir.display()))
+        SpeechError::Config(format!(
+            "failed to read model directory {}: {err}",
+            dir.display()
+        ))
     })?;
 
     for entry in entries {
@@ -96,7 +99,10 @@ fn find_tokens(dir: &Path) -> SpeechResult<PathBuf> {
 
 fn find_onnx_with_keyword(dir: &Path, keyword: &str) -> SpeechResult<PathBuf> {
     let entries = fs::read_dir(dir).map_err(|err| {
-        SpeechError::Config(format!("failed to read model directory {}: {err}", dir.display()))
+        SpeechError::Config(format!(
+            "failed to read model directory {}: {err}",
+            dir.display()
+        ))
     })?;
 
     for entry in entries {

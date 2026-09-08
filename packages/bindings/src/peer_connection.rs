@@ -3,21 +3,23 @@
 use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
-use napi_derive::napi;
 use napi::JsFunction;
+use napi_derive::napi;
 use node_webrtc_rust_core::{
-    ConnectionState, IceConnectionState, IceCandidate, IceGatheringState, PeerConnection,
-    RemoteTrack, SessionDescription, SignalingState, TransceiverSource, debug_call,
-    rtp_kind_from_str,
+    debug_call, rtp_kind_from_str, ConnectionState, IceCandidate, IceConnectionState,
+    IceGatheringState, PeerConnection, RemoteTrack, SessionDescription, SignalingState,
+    TransceiverSource,
 };
 use tokio::sync::{mpsc, Mutex};
 
 use crate::config::{
     answer_options_from_js, core_err, offer_options_from_js, to_js_unknown, JsRTCAnswerOptions,
-    JsRTCIceCandidate, JsRTCConfiguration, JsRTCOfferOptions, JsRTCSessionDescription,
+    JsRTCConfiguration, JsRTCIceCandidate, JsRTCOfferOptions, JsRTCSessionDescription,
 };
 use crate::data_channel::{JsRTCDataChannel, JsRTCDataChannelInit};
-use crate::events::{create_event_callback, create_void_callback, wire_event_channel, wire_void_channel};
+use crate::events::{
+    create_event_callback, create_void_callback, wire_event_channel, wire_void_channel,
+};
 use crate::media::{JsLocalAudioTrack, JsMediaStreamTrack};
 use crate::rtp_receiver::JsRtpReceiver;
 use crate::rtp_sender::JsRtpSender;
@@ -133,7 +135,12 @@ impl JsPeerConnection {
 
     #[napi]
     pub async fn set_local_description(&self, desc: JsRTCSessionDescription) -> Result<()> {
-        debug_call!("bindings::peer_connection", "set_local_description", "type={}", desc.r#type);
+        debug_call!(
+            "bindings::peer_connection",
+            "set_local_description",
+            "type={}",
+            desc.r#type
+        );
         let desc = SessionDescription::try_from(desc)?;
         self.inner
             .set_local_description(desc)
@@ -143,7 +150,12 @@ impl JsPeerConnection {
 
     #[napi]
     pub async fn set_remote_description(&self, desc: JsRTCSessionDescription) -> Result<()> {
-        debug_call!("bindings::peer_connection", "set_remote_description", "type={}", desc.r#type);
+        debug_call!(
+            "bindings::peer_connection",
+            "set_remote_description",
+            "type={}",
+            desc.r#type
+        );
         let desc = SessionDescription::try_from(desc)?;
         self.inner
             .set_remote_description(desc)
@@ -180,7 +192,10 @@ impl JsPeerConnection {
     #[napi]
     pub async fn remove_track(&self, sender: &crate::rtp_sender::JsRtpSender) -> Result<()> {
         debug_call!("bindings::peer_connection", "remove_track");
-        self.inner.remove_track(sender.inner()).await.map_err(core_err)
+        self.inner
+            .remove_track(sender.inner())
+            .await
+            .map_err(core_err)
     }
 
     #[napi]
@@ -267,7 +282,11 @@ impl JsPeerConnection {
         label: String,
         options: Option<JsRTCDataChannelInit>,
     ) -> Result<JsRTCDataChannel> {
-        debug_call!("bindings::peer_connection", "create_data_channel", "label={label}");
+        debug_call!(
+            "bindings::peer_connection",
+            "create_data_channel",
+            "label={label}"
+        );
         let channel = self
             .inner
             .create_data_channel(&label, options.map(Into::into))
@@ -347,9 +366,8 @@ impl JsPeerConnection {
         let tsfn = create_event_callback(&env, callback, |ctx| -> Result<Vec<napi::JsUnknown>> {
             match ctx.value {
                 None => to_js_unknown(&ctx.env, ctx.env.get_null()?).map(|value| vec![value]),
-                Some(candidate) => {
-                    to_js_unknown(&ctx.env, JsRTCIceCandidate::from(candidate)).map(|value| vec![value])
-                }
+                Some(candidate) => to_js_unknown(&ctx.env, JsRTCIceCandidate::from(candidate))
+                    .map(|value| vec![value]),
             }
         })?;
         wire_event_channel(rx, tsfn);
@@ -362,9 +380,10 @@ impl JsPeerConnection {
         let mut events = self.events.blocking_lock();
         events.subscribe(&self.inner);
         let rx = events.tracks.take().expect("event receivers initialized");
-        let tsfn = create_event_callback(&env, callback, |ctx| -> Result<Vec<JsMediaStreamTrack>> {
-            Ok(vec![JsMediaStreamTrack::from_remote(ctx.value)])
-        })?;
+        let tsfn =
+            create_event_callback(&env, callback, |ctx| -> Result<Vec<JsMediaStreamTrack>> {
+                Ok(vec![JsMediaStreamTrack::from_remote(ctx.value)])
+            })?;
         wire_event_channel(rx, tsfn);
         Ok(())
     }
@@ -387,7 +406,10 @@ impl JsPeerConnection {
 
     #[napi]
     pub fn set_on_connection_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
-        debug_call!("bindings::peer_connection", "set_on_connection_state_change");
+        debug_call!(
+            "bindings::peer_connection",
+            "set_on_connection_state_change"
+        );
         let mut events = self.events.blocking_lock();
         events.subscribe(&self.inner);
         let rx = events
@@ -395,10 +417,9 @@ impl JsPeerConnection {
             .take()
             .expect("event receivers initialized");
         let tsfn = create_event_callback(&env, callback, |ctx| {
-            Ok(vec![
-                ctx.env
-                    .create_string(&connection_state_to_string(ctx.value))?,
-            ])
+            Ok(vec![ctx
+                .env
+                .create_string(&connection_state_to_string(ctx.value))?])
         })?;
         wire_event_channel(rx, tsfn);
         Ok(())
@@ -406,7 +427,10 @@ impl JsPeerConnection {
 
     #[napi]
     pub fn set_on_ice_connection_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
-        debug_call!("bindings::peer_connection", "set_on_ice_connection_state_change");
+        debug_call!(
+            "bindings::peer_connection",
+            "set_on_ice_connection_state_change"
+        );
         let mut events = self.events.blocking_lock();
         events.subscribe(&self.inner);
         let rx = events
@@ -414,10 +438,9 @@ impl JsPeerConnection {
             .take()
             .expect("event receivers initialized");
         let tsfn = create_event_callback(&env, callback, |ctx| {
-            Ok(vec![
-                ctx.env
-                    .create_string(&ice_connection_state_to_string(ctx.value))?,
-            ])
+            Ok(vec![ctx.env.create_string(
+                &ice_connection_state_to_string(ctx.value),
+            )?])
         })?;
         wire_event_channel(rx, tsfn);
         Ok(())
@@ -425,7 +448,10 @@ impl JsPeerConnection {
 
     #[napi]
     pub fn set_on_ice_gathering_state_change(&self, env: Env, callback: JsFunction) -> Result<()> {
-        debug_call!("bindings::peer_connection", "set_on_ice_gathering_state_change");
+        debug_call!(
+            "bindings::peer_connection",
+            "set_on_ice_gathering_state_change"
+        );
         let mut events = self.events.blocking_lock();
         events.subscribe(&self.inner);
         let rx = events
@@ -433,10 +459,9 @@ impl JsPeerConnection {
             .take()
             .expect("event receivers initialized");
         let tsfn = create_event_callback(&env, callback, |ctx| {
-            Ok(vec![
-                ctx.env
-                    .create_string(&ice_gathering_state_to_string(ctx.value))?,
-            ])
+            Ok(vec![ctx.env.create_string(
+                &ice_gathering_state_to_string(ctx.value),
+            )?])
         })?;
         wire_event_channel(rx, tsfn);
         Ok(())
@@ -452,10 +477,9 @@ impl JsPeerConnection {
             .take()
             .expect("event receivers initialized");
         let tsfn = create_event_callback(&env, callback, |ctx| {
-            Ok(vec![
-                ctx.env
-                    .create_string(&signaling_state_to_string(ctx.value))?,
-            ])
+            Ok(vec![ctx
+                .env
+                .create_string(&signaling_state_to_string(ctx.value))?])
         })?;
         wire_event_channel(rx, tsfn);
         Ok(())
@@ -512,7 +536,9 @@ fn signaling_state_to_string(state: node_webrtc_rust_core::SignalingState) -> St
         node_webrtc_rust_core::SignalingState::Stable => "stable".to_string(),
         node_webrtc_rust_core::SignalingState::HaveLocalOffer => "have-local-offer".to_string(),
         node_webrtc_rust_core::SignalingState::HaveRemoteOffer => "have-remote-offer".to_string(),
-        node_webrtc_rust_core::SignalingState::HaveLocalPranswer => "have-local-pranswer".to_string(),
+        node_webrtc_rust_core::SignalingState::HaveLocalPranswer => {
+            "have-local-pranswer".to_string()
+        }
         node_webrtc_rust_core::SignalingState::HaveRemotePranswer => {
             "have-remote-pranswer".to_string()
         }

@@ -8,7 +8,9 @@ pub struct ElevenLabsFactory;
 
 impl VendorFactory for ElevenLabsFactory {
     fn create_stt(&self, _config: &SttConfig) -> SpeechResult<Box<dyn SttProvider>> {
-        Err(SpeechError::Config("ElevenLabs does not provide STT".into()))
+        Err(SpeechError::Config(
+            "ElevenLabs does not provide STT".into(),
+        ))
     }
 
     fn create_tts(&self, config: &TtsConfig) -> SpeechResult<Box<dyn TtsProvider>> {

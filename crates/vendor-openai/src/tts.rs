@@ -1,10 +1,8 @@
-use async_trait::async_trait;
 #[cfg(feature = "live")]
-use async_openai::types::{
-    CreateSpeechRequestArgs, SpeechModel, SpeechResponseFormat, Voice,
-};
+use async_openai::types::{CreateSpeechRequestArgs, SpeechModel, SpeechResponseFormat, Voice};
 #[cfg(feature = "live")]
 use async_openai::Client;
+use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo};
@@ -24,15 +22,12 @@ pub struct OpenAiTts {
 impl OpenAiTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
         Ok(Self {
-            api_key: config.api_key.clone().or_else(|| std::env::var("OPENAI_API_KEY").ok()),
-            model: config
-                .model
+            api_key: config
+                .api_key
                 .clone()
-                .unwrap_or_else(|| "tts-1".to_string()),
-            voice: config
-                .voice
-                .clone()
-                .unwrap_or_else(|| "alloy".to_string()),
+                .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
+            model: config.model.clone().unwrap_or_else(|| "tts-1".to_string()),
+            voice: config.voice.clone().unwrap_or_else(|| "alloy".to_string()),
         })
     }
 }
@@ -58,14 +53,18 @@ impl TtsProvider for OpenAiTts {
                     message: err.to_string(),
                 })?;
 
-            let client =
-                Client::with_config(async_openai::config::OpenAIConfig::new().with_api_key(api_key));
-            let response = client.audio().speech(request).await.map_err(|err| {
-                SpeechError::Vendor {
-                    vendor: "openai".into(),
-                    message: err.to_string(),
-                }
-            })?;
+            let client = Client::with_config(
+                async_openai::config::OpenAIConfig::new().with_api_key(api_key),
+            );
+            let response =
+                client
+                    .audio()
+                    .speech(request)
+                    .await
+                    .map_err(|err| SpeechError::Vendor {
+                        vendor: "openai".into(),
+                        message: err.to_string(),
+                    })?;
 
             let mono_24k = response.bytes;
             let duration_ms =
@@ -135,7 +134,10 @@ mod tests {
     #[test]
     fn parse_voice_and_model() {
         assert!(matches!(parse_voice("alloy"), Voice::Alloy));
-        assert!(matches!(parse_speech_model("tts-1-hd"), SpeechModel::Tts1Hd));
+        assert!(matches!(
+            parse_speech_model("tts-1-hd"),
+            SpeechModel::Tts1Hd
+        ));
     }
 
     #[test]

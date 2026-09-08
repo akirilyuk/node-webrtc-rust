@@ -161,9 +161,13 @@ impl DataChannel {
                 "data channel '{}' is not open yet",
                 self.label()
             ))),
-            DataChannelState::Closing | DataChannelState::Closed => Err(CoreError::InvalidState(
-                format!("data channel '{}' is {}", self.label(), self.ready_state_name()),
-            )),
+            DataChannelState::Closing | DataChannelState::Closed => {
+                Err(CoreError::InvalidState(format!(
+                    "data channel '{}' is {}",
+                    self.label(),
+                    self.ready_state_name()
+                )))
+            }
         }
     }
 

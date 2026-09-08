@@ -8,8 +8,8 @@ use node_webrtc_rust_speech::config::{TtsConfig, VoiceSessionContext};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::otel::{self, SherpaTtsMetricAttrs};
 use node_webrtc_rust_speech::pcm::duration_ms_from_mono_s16le;
-use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 use node_webrtc_rust_speech::pcm::WEBRTC_PCM_SAMPLE_RATE;
+use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
@@ -177,8 +177,7 @@ impl SherpaTts {
                 let sink_cb = sink.clone();
                 let cancel = Arc::clone(&sink_cb.cancel);
                 // Rc so progress callback and post-generate flush share one resampler.
-                let resampler =
-                    Rc::new(RefCell::new(StreamingStereo48kResampler::new(src_rate)));
+                let resampler = Rc::new(RefCell::new(StreamingStereo48kResampler::new(src_rate)));
                 let resampler_cb = Rc::clone(&resampler);
                 let audio = tts
                     .generate_with_config(
@@ -199,11 +198,9 @@ impl SherpaTts {
                             if pcm.is_empty() {
                                 return true;
                             }
-                            let duration_ms = duration_ms_from_mono_s16le(
-                                pcm.len() / 2,
-                                WEBRTC_PCM_SAMPLE_RATE,
-                            )
-                            .max(1);
+                            let duration_ms =
+                                duration_ms_from_mono_s16le(pcm.len() / 2, WEBRTC_PCM_SAMPLE_RATE)
+                                    .max(1);
                             sink_cb.send(TtsAudioChunk { pcm, duration_ms })
                         }),
                     )

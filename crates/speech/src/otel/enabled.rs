@@ -218,7 +218,10 @@ fn voice_session_project_id(ctx: &VoiceSessionContext) -> [KeyValue; 1] {
     )]
 }
 
-fn voice_vad_transition_attrs(ctx: &VoiceSessionContext, transition: &'static str) -> [KeyValue; 2] {
+fn voice_vad_transition_attrs(
+    ctx: &VoiceSessionContext,
+    transition: &'static str,
+) -> [KeyValue; 2] {
     [
         KeyValue::new(
             "project_id",

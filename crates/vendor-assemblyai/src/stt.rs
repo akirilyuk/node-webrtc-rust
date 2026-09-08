@@ -28,7 +28,9 @@ impl AssemblyAiStt {
 pub fn unsupported_tts(
     _config: &TtsConfig,
 ) -> SpeechResult<Box<dyn node_webrtc_rust_speech::pipeline::TtsProvider>> {
-    Err(SpeechError::Config("AssemblyAI does not provide TTS".into()))
+    Err(SpeechError::Config(
+        "AssemblyAI does not provide TTS".into(),
+    ))
 }
 
 #[async_trait]

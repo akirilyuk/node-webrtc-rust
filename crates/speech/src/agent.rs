@@ -13,6 +13,7 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::config::{
+    language_id_allowlist_accepts, language_id_enabled, resolved_language_id_min_speech_ms,
     resolved_post_utterance_silence_ms, EventDeliveryMode, NoiseSuppressionProvider,
     SendTextToTtsOptions, VadConfig, VoiceAgentConfig, VoiceSessionContext,
 };
@@ -21,7 +22,8 @@ use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::otel;
 use crate::pcm::i16_samples_to_bytes;
 use crate::pipeline::{
-    tts_stream_chunks_enabled, SttProvider, SttTranscript, TtsProgressiveSink, TtsProvider,
+    tts_stream_chunks_enabled, LanguageIdProvider, SttProvider, SttTranscript, TtsProgressiveSink,
+    TtsProvider,
 };
 use crate::registry::VendorRegistry;
 use crate::stt_pre_roll::SttPreRollBuffer;
@@ -139,6 +141,14 @@ struct AgentInner {
     denoise: Option<Stereo48kRnnoise>,
     /// When false, inbound PCM still runs VAD but skips STT push/poll and speech/STT events.
     stt_enabled: bool,
+    /// PCM collected for offline spoken-language ID during the current user utterance.
+    lid_pcm_buffer: Vec<u8>,
+    /// True while buffering user PCM for LID after `user_speaking_start`.
+    lid_buffering: bool,
+    /// Last emitted ISO 639-1 code (`user_language`); re-emit only when it changes.
+    lid_last_emitted: Option<String>,
+    /// Avoid overlapping `spawn_blocking` LID jobs for the same utterance.
+    lid_identify_in_flight: bool,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -182,6 +192,7 @@ pub struct VoiceAgent {
     registry: Arc<VendorRegistry>,
     inner: Arc<Mutex<AgentInner>>,
     stt: Mutex<Option<Box<dyn SttProvider>>>,
+    language_id: Mutex<Option<Box<dyn LanguageIdProvider>>>,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -219,6 +230,11 @@ impl VoiceAgent {
         if let Some(tts_cfg) = &config.tts {
             tts = Some(registry.create_tts(tts_cfg)?);
         }
+        let language_id = if language_id_enabled(&config.language_id) {
+            registry.create_language_id(config.language_id.as_ref().expect("checked"))?
+        } else {
+            None
+        };
 
         let vad = if config.vad.enabled {
             Some(VadEngine::new(config.vad.clone())?)
@@ -273,8 +289,13 @@ impl VoiceAgent {
                 pcm_reader: None,
                 denoise,
                 stt_enabled: true,
+                lid_pcm_buffer: Vec::new(),
+                lid_buffering: false,
+                lid_last_emitted: None,
+                lid_identify_in_flight: false,
             })),
             stt: Mutex::new(stt),
+            language_id: Mutex::new(language_id),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
@@ -1448,7 +1469,7 @@ impl VoiceAgent {
                 }
             };
             if emit_end {
-                self.emit(SpeechEvent::user_speaking_end());
+                self.emit_user_speaking_end_with_lid().await;
             }
         }
         Ok(())
@@ -1513,7 +1534,7 @@ impl VoiceAgent {
             };
             if emit_speaking_end {
                 voice_debug("emit user_speaking_end (forced utterance close)");
-                self.emit(SpeechEvent::user_speaking_end());
+                self.emit_user_speaking_end_with_lid().await;
             }
             let final_text = last_partial.unwrap_or_default();
             {
@@ -1593,6 +1614,122 @@ impl VoiceAgent {
         Self::clear_utterance_finalize_timer(inner);
         inner.last_partial_text = None;
         inner.partials_emitted_this_utterance = false;
+        inner.lid_pcm_buffer.clear();
+        inner.lid_buffering = false;
+        inner.lid_identify_in_flight = false;
+    }
+
+    async fn start_lid_buffering(&self) {
+        let enabled = {
+            let inner = self.inner.lock().await;
+            language_id_enabled(&inner.config.language_id)
+        };
+        if !enabled {
+            return;
+        }
+        let mut inner = self.inner.lock().await;
+        inner.lid_pcm_buffer.clear();
+        inner.lid_buffering = true;
+    }
+
+    async fn append_lid_pcm_if_buffering(&self, mono_bytes: &Bytes) {
+        let snapshot = {
+            let mut inner = self.inner.lock().await;
+            if !inner.lid_buffering || !language_id_enabled(&inner.config.language_id) {
+                None
+            } else {
+                inner.lid_pcm_buffer.extend_from_slice(mono_bytes);
+                let min_ms = resolved_language_id_min_speech_ms(
+                    inner.config.language_id.as_ref().expect("enabled"),
+                );
+                Some((min_ms, inner.lid_pcm_buffer.len()))
+            }
+        };
+        if let Some((min_ms, buffer_len)) = snapshot {
+            let duration_ms = crate::pcm::duration_ms_from_mono_s16le(
+                buffer_len,
+                crate::pcm::STT_PCM_SAMPLE_RATE,
+            );
+            if duration_ms >= min_ms {
+                self.try_identify_language(false).await;
+            }
+        }
+    }
+
+    async fn emit_user_speaking_end_with_lid(&self) {
+        self.emit(SpeechEvent::user_speaking_end());
+        self.try_identify_language(true).await;
+    }
+
+    async fn try_identify_language(&self, force: bool) {
+        let provider = self.language_id.lock().await;
+        if provider.is_none() {
+            return;
+        }
+        drop(provider);
+
+        let job = {
+            let mut inner = self.inner.lock().await;
+            if !language_id_enabled(&inner.config.language_id) || inner.lid_identify_in_flight {
+                return;
+            }
+            let min_ms = resolved_language_id_min_speech_ms(
+                inner.config.language_id.as_ref().expect("enabled"),
+            );
+            let buffer_len = inner.lid_pcm_buffer.len();
+            let duration_ms = crate::pcm::duration_ms_from_mono_s16le(
+                buffer_len,
+                crate::pcm::STT_PCM_SAMPLE_RATE,
+            );
+            if buffer_len == 0 || (!force && duration_ms < min_ms) {
+                return;
+            }
+            inner.lid_identify_in_flight = true;
+            let pcm = Bytes::from(inner.lid_pcm_buffer.clone());
+            let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
+            let last_emitted = inner.lid_last_emitted.clone();
+            Some((pcm, allowlist_cfg, last_emitted))
+        };
+        if job.is_none() {
+            return;
+        }
+        let (pcm, allowlist_cfg, last_emitted) = job.expect("job");
+        let agent = self.weak_self.upgrade();
+        if agent.is_none() {
+            return;
+        }
+        let agent = agent.expect("upgrade");
+        let provider = agent.language_id.lock().await;
+        let provider = provider.as_ref().expect("provider");
+        let sample_rate = crate::pcm::STT_PCM_SAMPLE_RATE;
+        let result = provider.identify(pcm, sample_rate).await;
+        let mut inner = agent.inner.lock().await;
+        inner.lid_identify_in_flight = false;
+        if force {
+            inner.lid_buffering = false;
+        }
+        match result {
+            Ok(Some(lang_result)) => {
+                let code = lang_result.language.trim().to_ascii_lowercase();
+                if code.is_empty() {
+                    return;
+                }
+                if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
+                    voice_debug(format!("LID result {code} not in allowlist — ignored"));
+                    return;
+                }
+                if last_emitted.as_deref() == Some(code.as_str()) {
+                    return;
+                }
+                inner.lid_last_emitted = Some(code.clone());
+                voice_debug(format!("emit user_language: {code}"));
+                agent.emit(SpeechEvent::user_language(code));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                voice_debug(format!("LID identify failed: {err}"));
+            }
+        }
     }
 
     async fn emit_user_speaking_start_if_needed(&self) {
@@ -1611,6 +1748,7 @@ impl VoiceAgent {
         if emit {
             voice_debug("emit user_speaking_start (before STT transcript)");
             self.emit(SpeechEvent::user_speaking_start());
+            self.start_lid_buffering().await;
         }
     }
 
@@ -1654,6 +1792,7 @@ impl VoiceAgent {
 
         let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
         let mono_bytes = i16_samples_to_bytes(&mono);
+        self.append_lid_pcm_if_buffering(&mono_bytes).await;
 
         let (
             transitions,
@@ -1946,7 +2085,7 @@ impl VoiceAgent {
                             "user_speaking_end deferred until STT gate hold expires (gate_stt, no STT)",
                         );
                         } else {
-                            self.emit(SpeechEvent::user_speaking_end());
+                            self.emit_user_speaking_end_with_lid().await;
                         }
                     }
                 }
@@ -2085,7 +2224,7 @@ impl VoiceAgent {
                 };
                 if emit_speaking_end {
                     voice_debug("emit user_speaking_end (finalize without vendor final)");
-                    self.emit(SpeechEvent::user_speaking_end());
+                    self.emit_user_speaking_end_with_lid().await;
                 }
                 voice_debug(format!(
                     "emit user_speech_final (last partial fallback): {}",
@@ -2109,7 +2248,7 @@ impl VoiceAgent {
                     }
                 };
                 if emit_speaking_end_without_final {
-                    self.emit(SpeechEvent::user_speaking_end());
+                    self.emit_user_speaking_end_with_lid().await;
                 }
             }
         }
@@ -2243,7 +2382,7 @@ impl VoiceAgent {
                     }
                     if emit_speaking_end {
                         voice_debug("emit user_speaking_end (paired with STT final)");
-                        self.emit(SpeechEvent::user_speaking_end());
+                        self.emit_user_speaking_end_with_lid().await;
                     }
                     voice_debug(format!(
                         "emit user_speech_final: {}",

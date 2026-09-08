@@ -92,11 +92,17 @@ fn min_silence_duration_delays_speech_end() {
     assert!(vad.is_speaking());
 
     let (t, _) = vad.process_webrtc_pcm(&silence, 20).unwrap();
-    assert!(!t.contains(&VadTransition::SpeechEnd), "one silent frame is not enough");
+    assert!(
+        !t.contains(&VadTransition::SpeechEnd),
+        "one silent frame is not enough"
+    );
     assert!(vad.is_speaking());
 
     let (t, _) = vad.process_webrtc_pcm(&silence, 20).unwrap();
-    assert!(!t.contains(&VadTransition::SpeechEnd), "40 ms silence < 60 ms min");
+    assert!(
+        !t.contains(&VadTransition::SpeechEnd),
+        "40 ms silence < 60 ms min"
+    );
 
     let (t, _) = vad.process_webrtc_pcm(&silence, 20).unwrap();
     assert!(t.contains(&VadTransition::SpeechEnd));
@@ -122,7 +128,10 @@ fn short_intra_utterance_gap_does_not_end_speech() {
 
     for _ in 0..2 {
         let (t, _) = vad.process_webrtc_pcm(&silence, 20).unwrap();
-        assert!(!t.contains(&VadTransition::SpeechEnd), "TTS word-gap style pause");
+        assert!(
+            !t.contains(&VadTransition::SpeechEnd),
+            "TTS word-gap style pause"
+        );
     }
     assert!(vad.is_speaking());
 

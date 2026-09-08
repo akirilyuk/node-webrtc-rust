@@ -142,12 +142,7 @@ pub fn store(key: PhraseCacheKey, chunk: TtsAudioChunk, attrs: &SherpaTtsMetricA
     }
     let mut cache = global_cache().lock().expect("phrase cache lock poisoned");
     cache.insert(key.clone(), chunk);
-    let count = cache.count_for_attrs(
-        &key.project_id,
-        &key.model_dir,
-        &key.language,
-        &key.voice,
-    );
+    let count = cache.count_for_attrs(&key.project_id, &key.model_dir, &key.language, &key.voice);
     otel::set_sherpa_tts_phrase_cache_entries(count as i64, attrs);
 }
 
@@ -256,7 +251,8 @@ mod tests {
 
     #[test]
     fn build_metric_attrs_falls_back_to_dir_basename() {
-        let attrs = build_metric_attrs("proj-a", "", "/models/vits-piper-en_US-amy-medium", "", "0");
+        let attrs =
+            build_metric_attrs("proj-a", "", "/models/vits-piper-en_US-amy-medium", "", "0");
         assert_eq!(attrs.tts_model, "vits-piper-en_US-amy-medium");
         assert_eq!(attrs.tts_model_dir, "vits-piper-en_US-amy-medium");
     }

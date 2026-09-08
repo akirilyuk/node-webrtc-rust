@@ -62,11 +62,7 @@ impl PcmAudioTrackLocal {
     }
 
     /// Encodes PCM to the negotiated codec and writes one RTP sample.
-    pub async fn write_pcm_sample(
-        &self,
-        pcm: Bytes,
-        duration: Duration,
-    ) -> Result<(), CoreError> {
+    pub async fn write_pcm_sample(&self, pcm: Bytes, duration: Duration) -> Result<(), CoreError> {
         debug_call!(
             "core::pcm_audio_track",
             "write_pcm_sample",

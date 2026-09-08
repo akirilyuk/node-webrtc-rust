@@ -1,13 +1,15 @@
-use async_trait::async_trait;
 #[cfg(feature = "live")]
 use async_openai::types::{AudioInput, CreateTranscriptionRequestArgs, InputSource};
 #[cfg(feature = "live")]
 use async_openai::Client;
+use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::SttConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 #[cfg(feature = "live")]
-use node_webrtc_rust_speech::pcm::{mono16_le_to_wav, STT_MIN_BATCH_BYTES, STT_PREFERRED_BATCH_BYTES};
+use node_webrtc_rust_speech::pcm::{
+    mono16_le_to_wav, STT_MIN_BATCH_BYTES, STT_PREFERRED_BATCH_BYTES,
+};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 
 use crate::factory::{api_key_from, OpenAiSttState, SharedSttState};
@@ -21,7 +23,10 @@ pub struct OpenAiStt {
 
 impl OpenAiStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
-        let api_key = config.api_key.clone().or_else(|| std::env::var("OPENAI_API_KEY").ok());
+        let api_key = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok());
         Ok(Self {
             api_key,
             model: config
@@ -129,11 +134,16 @@ async fn live_transcribe(
             message: err.to_string(),
         })?;
 
-    let client = Client::with_config(async_openai::config::OpenAIConfig::new().with_api_key(api_key));
-    let response = client.audio().transcribe(request).await.map_err(|err| SpeechError::Vendor {
-        vendor: "openai".into(),
-        message: err.to_string(),
-    })?;
+    let client =
+        Client::with_config(async_openai::config::OpenAIConfig::new().with_api_key(api_key));
+    let response = client
+        .audio()
+        .transcribe(request)
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: err.to_string(),
+        })?;
 
     let text = response.text.trim();
     if text.is_empty() {

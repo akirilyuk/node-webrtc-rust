@@ -41,11 +41,9 @@ pub fn opus_target_bitrate_bps() -> i32 {
 }
 
 fn resolved_opus_application() -> Application {
-    *RESOLVED_OPUS_APPLICATION.get_or_init(|| {
-        match std::env::var("WEBRTC_OPUS_APPLICATION") {
-            Ok(raw) => parse_opus_application(Some(raw.as_str())),
-            Err(_) => Application::Audio,
-        }
+    *RESOLVED_OPUS_APPLICATION.get_or_init(|| match std::env::var("WEBRTC_OPUS_APPLICATION") {
+        Ok(raw) => parse_opus_application(Some(raw.as_str())),
+        Err(_) => Application::Audio,
     })
 }
 
@@ -176,9 +174,7 @@ impl NegotiatedAudioFormat {
     }
 
     fn is_opus(&self) -> bool {
-        self.mime_type
-            .to_ascii_lowercase()
-            .contains("opus")
+        self.mime_type.to_ascii_lowercase().contains("opus")
     }
 }
 
@@ -265,7 +261,9 @@ impl PcmEncoder {
         state.pcm_scratch.clear();
         state.pcm_scratch.reserve(pcm.len() / 2);
         for chunk in pcm.chunks_exact(2) {
-            state.pcm_scratch.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+            state
+                .pcm_scratch
+                .push(i16::from_le_bytes([chunk[0], chunk[1]]));
         }
 
         let pcm_samples = std::mem::take(&mut state.pcm_scratch);
@@ -278,19 +276,20 @@ impl PcmEncoder {
         state.opus_scratch = opus_buf;
 
         if len == 0 {
-            return Err(CoreError::Track("Opus encoder produced empty payload".into()));
+            return Err(CoreError::Track(
+                "Opus encoder produced empty payload".into(),
+            ));
         }
 
-        Ok((
-            Bytes::copy_from_slice(&state.opus_scratch[..len]),
-            duration,
-        ))
+        Ok((Bytes::copy_from_slice(&state.opus_scratch[..len]), duration))
     }
 }
 
-fn samples_per_channel_for_duration(duration: Duration, pcm_len: usize) -> Result<usize, CoreError> {
-    let from_duration =
-        ((duration.as_micros() as u64 * 48_000) / 1_000_000) as usize;
+fn samples_per_channel_for_duration(
+    duration: Duration,
+    pcm_len: usize,
+) -> Result<usize, CoreError> {
+    let from_duration = ((duration.as_micros() as u64 * 48_000) / 1_000_000) as usize;
     let from_buffer = pcm_len / (2 * 2);
 
     if from_duration == 0 && from_buffer > 0 {
@@ -333,10 +332,7 @@ a=fmtp:111 minptime=10;useinbandfec=1\r\n\
 a=rtpmap:9 G722/8000\r\n\
 ";
         let enriched = enrich_opus_sdp_fmtp(sdp);
-        assert!(enriched.contains(&format!(
-            "a=fmtp:111 {}",
-            opus_sdp_fmtp_line()
-        )));
+        assert!(enriched.contains(&format!("a=fmtp:111 {}", opus_sdp_fmtp_line())));
         assert!(!enriched.contains("maxaveragebitrate"));
         assert!(enriched.contains("stereo=1"));
         assert!(enriched.contains("a=rtpmap:9 G722/8000"));
@@ -346,7 +342,10 @@ a=rtpmap:9 G722/8000\r\n\
     fn parse_opus_bitrate_bps_from_env_unset_blank_clamps_and_rejects_invalid() {
         assert_eq!(parse_opus_bitrate_bps_from_env(None), None);
         assert_eq!(parse_opus_bitrate_bps_from_env(Some("")), None);
-        assert_eq!(parse_opus_bitrate_bps_from_env(Some(" 192000 ")), Some(192_000));
+        assert_eq!(
+            parse_opus_bitrate_bps_from_env(Some(" 192000 ")),
+            Some(192_000)
+        );
         assert_eq!(parse_opus_bitrate_bps_from_env(Some("64000")), Some(64_000));
         assert_eq!(
             parse_opus_bitrate_bps_from_env(Some("1000")),
@@ -366,8 +365,14 @@ a=rtpmap:9 G722/8000\r\n\
         assert_eq!(parse_opus_application(Some("audio")), Application::Audio);
         assert_eq!(parse_opus_application(Some("AUDIO")), Application::Audio);
         assert_eq!(parse_opus_application(Some("VoIP")), Application::Voip);
-        assert_eq!(parse_opus_application(Some("lowdelay")), Application::LowDelay);
-        assert_eq!(parse_opus_application(Some("LowDelay")), Application::LowDelay);
+        assert_eq!(
+            parse_opus_application(Some("lowdelay")),
+            Application::LowDelay
+        );
+        assert_eq!(
+            parse_opus_application(Some("LowDelay")),
+            Application::LowDelay
+        );
         assert_eq!(parse_opus_application(Some("music")), Application::Audio);
     }
 
@@ -535,8 +540,8 @@ a=rtpmap:9 G722/8000\r\n\
 
         let mut tone = vec![0u8; 3_840];
         for (idx, chunk) in tone.chunks_mut(2).enumerate() {
-            let sample = ((idx as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin()
-                * 10_000.0) as i16;
+            let sample =
+                ((idx as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 10_000.0) as i16;
             chunk.copy_from_slice(&sample.to_le_bytes());
         }
         let (tone_opus, _) = encoder

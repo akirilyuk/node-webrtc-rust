@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::BargeInConfig;
-use node_webrtc_rust_speech::events::{SpeechEventKind, SpeechEventBus};
+use node_webrtc_rust_speech::events::{SpeechEventBus, SpeechEventKind};
 use node_webrtc_rust_speech::pipeline::TtsAudioChunk;
 use node_webrtc_rust_speech::tts_buffer::TtsBuffer;
 use node_webrtc_rust_speech::vad::handle_barge_in;

@@ -76,9 +76,7 @@ impl JsSessionRecorder {
     /// Push client outbound PCM (mic / TTS). Accepts mono or stereo s16le @ 48 kHz.
     #[napi]
     pub fn push_outbound(&mut self, pcm: Buffer) -> Result<()> {
-        self.inner
-            .push_outbound(pcm.as_ref())
-            .map_err(recorder_err)
+        self.inner.push_outbound(pcm.as_ref()).map_err(recorder_err)
     }
 
     /// Push agent inbound PCM (ready TTS + echo). Accepts mono or stereo s16le @ 48 kHz.
@@ -100,7 +98,10 @@ impl JsSessionRecorder {
 
     /// Finalize capture. Default format is WAV; pass `Opus` for Ogg/Opus @ 256 kbps.
     #[napi]
-    pub fn finalize(&mut self, format: Option<JsSessionAudioFormat>) -> Result<JsSessionFinalizeResult> {
+    pub fn finalize(
+        &mut self,
+        format: Option<JsSessionAudioFormat>,
+    ) -> Result<JsSessionFinalizeResult> {
         let format = format.unwrap_or(JsSessionAudioFormat::Wav);
         self.inner
             .finalize(format.into())

@@ -6,7 +6,9 @@ use node_webrtc_rust_mixer::{ClientPose, DistanceParams, MixPlacement, Quat, Spa
 
 fn spatial_err(err: SpatialError) -> Error {
     match err {
-        SpatialError::Invalid => Error::from_reason("invalid spatial value (NaN or zero quaternion)"),
+        SpatialError::Invalid => {
+            Error::from_reason("invalid spatial value (NaN or zero quaternion)")
+        }
     }
 }
 

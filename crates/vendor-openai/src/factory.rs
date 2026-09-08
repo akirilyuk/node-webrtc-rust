@@ -25,9 +25,8 @@ pub(crate) fn api_key_from(config_key: &Option<String>, env: &str) -> SpeechResu
             return Ok(key.clone());
         }
     }
-    std::env::var(env).map_err(|_| {
-        SpeechError::Config(format!("missing API key: set config.apiKey or {env}"))
-    })
+    std::env::var(env)
+        .map_err(|_| SpeechError::Config(format!("missing API key: set config.apiKey or {env}")))
 }
 
 pub(crate) type SharedSttState = Arc<tokio::sync::Mutex<OpenAiSttState>>;

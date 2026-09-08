@@ -58,16 +58,14 @@ pub enum SignalingResponse {
 impl SignalingMessage {
     /// Parses a JSON signaling payload.
     pub fn from_json(json: &str) -> Result<Self, ConferenceError> {
-        serde_json::from_str(json)
-            .map_err(|err| ConferenceError::signaling_error(err.to_string()))
+        serde_json::from_str(json).map_err(|err| ConferenceError::signaling_error(err.to_string()))
     }
 }
 
 impl SignalingResponse {
     /// Serializes a response to JSON for the Node bridge.
     pub fn to_json(&self) -> Result<String, ConferenceError> {
-        serde_json::to_string(self)
-            .map_err(|err| ConferenceError::signaling_error(err.to_string()))
+        serde_json::to_string(self).map_err(|err| ConferenceError::signaling_error(err.to_string()))
     }
 }
 

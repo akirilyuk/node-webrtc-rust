@@ -45,10 +45,7 @@ fn downsample_by_3(input: &[i16]) -> Vec<i16> {
     let mut output = Vec::with_capacity(input.len() / 3 + 1);
     let mut i = 0;
     while i + 2 < input.len() {
-        let avg = (i32::from(input[i])
-            + i32::from(input[i + 1])
-            + i32::from(input[i + 2]))
-            / 3;
+        let avg = (i32::from(input[i]) + i32::from(input[i + 1]) + i32::from(input[i + 2])) / 3;
         output.push(avg as i16);
         i += 3;
     }

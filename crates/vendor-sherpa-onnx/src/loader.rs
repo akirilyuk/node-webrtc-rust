@@ -2,13 +2,15 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
+use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use sherpa_onnx::{
-    OnlineRecognizer, OnlineRecognizerConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig,
-    OfflineTtsVitsModelConfig,
+    OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig, OfflineTtsVitsModelConfig,
+    OnlineRecognizer, OnlineRecognizerConfig, SpokenLanguageIdentification,
+    SpokenLanguageIdentificationConfig, SpokenLanguageIdentificationWhisperConfig,
 };
 
+use crate::lid_model_paths::{lid_paths_to_strings, resolve_lid_model_paths};
 use crate::model_paths::resolve_model_paths;
 use crate::tts_model_paths::resolve_tts_model_paths;
 
@@ -36,7 +38,12 @@ fn parse_f32_env(name: &str) -> Option<f32> {
 }
 
 fn parse_bool_env(name: &str) -> Option<bool> {
-    match std::env::var(name).ok()?.trim().to_ascii_lowercase().as_str() {
+    match std::env::var(name)
+        .ok()?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
@@ -54,12 +61,9 @@ pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecogn
     if threads > 0 {
         recognizer_config.model_config.num_threads = threads;
     }
-    recognizer_config.model_config.transducer.encoder =
-        Some(path_to_string(&paths.encoder)?);
-    recognizer_config.model_config.transducer.decoder =
-        Some(path_to_string(&paths.decoder)?);
-    recognizer_config.model_config.transducer.joiner =
-        Some(path_to_string(&paths.joiner)?);
+    recognizer_config.model_config.transducer.encoder = Some(path_to_string(&paths.encoder)?);
+    recognizer_config.model_config.transducer.decoder = Some(path_to_string(&paths.decoder)?);
+    recognizer_config.model_config.transducer.joiner = Some(path_to_string(&paths.joiner)?);
     recognizer_config.model_config.tokens = Some(path_to_string(&paths.tokens)?);
     // VoiceAgent drives utterance boundaries via VAD + finalize_utterance(). Sherpa's
     // built-in endpoint during gate-hold silence caused duplicate finals and repeated
@@ -76,12 +80,11 @@ pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecogn
     }
     recognizer_config.decoding_method = Some("greedy_search".into());
 
-    let recognizer = OnlineRecognizer::create(&recognizer_config).ok_or_else(|| {
-        SpeechError::Vendor {
+    let recognizer =
+        OnlineRecognizer::create(&recognizer_config).ok_or_else(|| SpeechError::Vendor {
             vendor: "local-sherpa".into(),
             message: "failed to create OnlineRecognizer".into(),
-        }
-    })?;
+        })?;
 
     STT_RECOGNIZER_CREATE_COUNT.fetch_add(1, Ordering::SeqCst);
     Ok(recognizer)
@@ -117,15 +120,35 @@ pub fn create_offline_tts(config: &TtsConfig) -> SpeechResult<OfflineTts> {
     Ok(tts)
 }
 
+pub fn create_spoken_language_identification(
+    config: &LanguageIdConfig,
+) -> SpeechResult<SpokenLanguageIdentification> {
+    let paths = resolve_lid_model_paths(config)?;
+    let (encoder, decoder) = lid_paths_to_strings(&paths)?;
+
+    let whisper = SpokenLanguageIdentificationWhisperConfig {
+        encoder: Some(encoder),
+        decoder: Some(decoder),
+        tail_paddings: 0,
+    };
+    let lid_config = SpokenLanguageIdentificationConfig {
+        whisper,
+        num_threads: stt_num_threads().max(1),
+        debug: false,
+        provider: Some("cpu".to_string()),
+    };
+
+    SpokenLanguageIdentification::create(&lid_config).ok_or_else(|| SpeechError::Vendor {
+        vendor: "local-sherpa".into(),
+        message: "failed to create SpokenLanguageIdentification — check languageId.modelPath"
+            .into(),
+    })
+}
+
 pub fn path_to_string(path: &std::path::Path) -> SpeechResult<String> {
-    path.to_str()
-        .map(str::to_string)
-        .ok_or_else(|| {
-            SpeechError::Config(format!(
-                "model path is not valid UTF-8: {}",
-                path.display()
-            ))
-        })
+    path.to_str().map(str::to_string).ok_or_else(|| {
+        SpeechError::Config(format!("model path is not valid UTF-8: {}", path.display()))
+    })
 }
 
 pub fn stt_recognizer_create_count() -> usize {

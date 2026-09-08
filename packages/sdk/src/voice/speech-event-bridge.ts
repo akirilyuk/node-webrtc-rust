@@ -30,6 +30,7 @@ export interface VoiceControlSpeechEventMessage {
   /** ISO-8601 server time when the event was forwarded (multi-client event log). */
   ts?: string
   text?: string
+  language?: string
   error?: string
 }
 
@@ -68,6 +69,7 @@ export function speechEventToControlMessage(
     event: event.type,
     ts: options?.ts,
     text: event.text,
+    language: event.language,
     error: event.error,
   }
 }

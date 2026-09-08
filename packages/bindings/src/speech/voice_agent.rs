@@ -7,7 +7,9 @@ use bytes::Bytes;
 use napi::bindgen_prelude::*;
 use napi::JsFunction;
 use napi_derive::napi;
-use node_webrtc_rust_speech::{PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, VoiceAgent};
+use node_webrtc_rust_speech::{
+    PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, VoiceAgent,
+};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::media::JsLocalAudioTrack;
@@ -80,7 +82,10 @@ impl JsVoiceAgent {
             })
         };
         let pcm_reader: PcmReader = Arc::new(|| Ok(None));
-        self.inner.attach(pcm_reader, pcm_writer).await.map_err(speech_err)?;
+        self.inner
+            .attach(pcm_reader, pcm_writer)
+            .await
+            .map_err(speech_err)?;
         self.state.lock().await.outbound = Some(outbound);
         Ok(())
     }

@@ -7,9 +7,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_mixer::{Frame, MixGraph, Quat, Vec3, FRAME_BYTES};
 
-use crate::mixer::types::{
-    JsClientPose, JsDistanceParams, JsMixPlacement, JsQuat, JsVec3,
-};
+use crate::mixer::types::{JsClientPose, JsDistanceParams, JsMixPlacement, JsQuat, JsVec3};
 
 /// Conference mix graph control handle (poses, groups, mutes, placements).
 #[napi]

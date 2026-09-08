@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE};
+use node_webrtc_rust_speech::pcm::{
+    duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
+};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProvider};
 
 const DEFAULT_VOICE_ID: &str = "EXAVITQu4vr4xnSDxMaL";
@@ -91,8 +93,7 @@ impl TtsProvider for ElevenLabsTts {
                 vendor: "elevenlabs".into(),
                 message: err.to_string(),
             })?;
-            let duration_ms =
-                duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
+            let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
             let pcm = mono_s16le_to_stereo(mono.as_ref());
             return Ok(vec![TtsAudioChunk { pcm, duration_ms }]);
         }
@@ -102,7 +103,8 @@ impl TtsProvider for ElevenLabsTts {
             let _ = self.api_key()?;
             Err(SpeechError::Vendor {
                 vendor: "elevenlabs".into(),
-                message: "live ElevenLabs TTS requires `--features live` on vendor-elevenlabs".into(),
+                message: "live ElevenLabs TTS requires `--features live` on vendor-elevenlabs"
+                    .into(),
             })
         }
     }

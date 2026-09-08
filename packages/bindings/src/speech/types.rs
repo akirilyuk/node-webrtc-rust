@@ -4,8 +4,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
-    NoiseSuppressionProvider, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig,
-    VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    NoiseSuppressionProvider, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
+    VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -320,10 +320,7 @@ mod noise_suppression_config_from_tests {
 
     #[test]
     fn omitted_provider_maps_to_none() {
-        let cfg: NoiseSuppressionConfig = JsNoiseSuppressionConfig {
-            provider: None,
-        }
-        .into();
+        let cfg: NoiseSuppressionConfig = JsNoiseSuppressionConfig { provider: None }.into();
         assert_eq!(cfg.provider, NoiseSuppressionProvider::None);
     }
 
@@ -339,7 +336,10 @@ mod noise_suppression_config_from_tests {
     #[test]
     fn voice_agent_omitted_noise_suppression_defaults_to_none() {
         let cfg: VoiceAgentConfig = JsVoiceAgentConfig::default().into();
-        assert_eq!(cfg.noise_suppression.provider, NoiseSuppressionProvider::None);
+        assert_eq!(
+            cfg.noise_suppression.provider,
+            NoiseSuppressionProvider::None
+        );
     }
 }
 
@@ -369,30 +369,52 @@ impl From<JsVoiceSessionContext> for VoiceSessionContext {
 
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
+pub struct JsLanguageIdConfig {
+    pub enabled: Option<bool>,
+    pub model_path: Option<String>,
+    pub allowlist: Option<Vec<String>>,
+    pub min_speech_ms: Option<u32>,
+}
+
+impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdConfig {
+    fn from(value: JsLanguageIdConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            model_path: value.model_path,
+            allowlist: value.allowlist,
+            min_speech_ms: value.min_speech_ms,
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
 pub struct JsVoiceAgentConfig {
     pub vad: Option<JsVadConfig>,
     pub events: Option<JsEventsConfig>,
     pub stt: Option<JsSttConfig>,
     pub tts: Option<JsTtsConfig>,
+    pub language_id: Option<JsLanguageIdConfig>,
     pub post_utterance_silence_ms: Option<u32>,
     pub noise_suppression: Option<JsNoiseSuppressionConfig>,
 }
 
 impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
     fn from(value: JsVoiceAgentConfig) -> Self {
-        let post_utterance_silence_ms = value
-            .post_utterance_silence_ms
-            .or_else(|| value.tts.as_ref().and_then(|tts| tts.post_utterance_silence_ms));
+        let post_utterance_silence_ms = value.post_utterance_silence_ms.or_else(|| {
+            value
+                .tts
+                .as_ref()
+                .and_then(|tts| tts.post_utterance_silence_ms)
+        });
         Self {
             vad: value.vad.map(Into::into).unwrap_or_default(),
             events: value.events.map(Into::into).unwrap_or_default(),
             stt: value.stt.map(Into::into),
             tts: value.tts.map(Into::into),
+            language_id: value.language_id.map(Into::into),
             post_utterance_silence_ms,
-            noise_suppression: value
-                .noise_suppression
-                .map(Into::into)
-                .unwrap_or_default(),
+            noise_suppression: value.noise_suppression.map(Into::into).unwrap_or_default(),
         }
     }
 }
@@ -408,6 +430,8 @@ pub enum JsSpeechEventType {
     UserSpeechPartial,
     #[napi(value = "user_speech_final")]
     UserSpeechFinal,
+    #[napi(value = "user_language")]
+    UserLanguage,
     #[napi(value = "agent_speaking_start")]
     AgentSpeakingStart,
     #[napi(value = "agent_speaking_end")]
@@ -435,6 +459,7 @@ pub enum JsSpeechEventType {
 pub struct JsSpeechEvent {
     pub event_type: JsSpeechEventType,
     pub text: Option<String>,
+    pub language: Option<String>,
     pub error: Option<String>,
 }
 

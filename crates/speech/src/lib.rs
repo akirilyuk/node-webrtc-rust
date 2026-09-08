@@ -60,18 +60,19 @@ pub mod vad;
 
 pub use agent::{PcmReader, PcmWriter, VoiceAgent};
 pub use config::{
-    resolve_min_stt_partial_tokens, resolved_post_utterance_silence_ms, stt_partial_token_count,
-    BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
-    NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor,
-    VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    language_id_allowlist_accepts, language_id_enabled, resolve_min_stt_partial_tokens,
+    resolved_language_id_min_speech_ms, resolved_post_utterance_silence_ms,
+    stt_partial_token_count, BargeInConfig, EventDeliveryMode, EventsConfig, LanguageIdConfig,
+    NoiseSuppressionConfig, NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, SttVendor,
+    TtsConfig, TtsVendor, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 pub use error::{SpeechError, SpeechResult};
 pub use events::{SpeechEvent, SpeechEventBus, SpeechEventKind};
 pub use node_webrtc_rust_denoise::Stereo48kRnnoise;
 pub use pcm::{pcm_rms_i16, stereo_48k_to_mono_16k};
 pub use pipeline::{
-    tts_stream_chunks_enabled, SttProvider, SttTranscript, TtsAudioChunk, TtsProgressiveSink,
-    TtsProvider, VendorFactory,
+    tts_stream_chunks_enabled, LanguageIdProvider, LanguageIdResult, SttProvider, SttTranscript,
+    TtsAudioChunk, TtsProgressiveSink, TtsProvider, VendorFactory,
 };
 pub use registry::VendorRegistry;
 pub use session_recorder::{

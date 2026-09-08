@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
-use napi::threadsafe_function::{
-    ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode,
-};
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::JsFunction;
 use napi::JsUnknown;
 use napi_derive::napi;
-use node_webrtc_rust_core::{debug_call, LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind};
+use node_webrtc_rust_core::{
+    debug_call, LocalAudioTrack, MediaStreamTrack, RemoteTrack, TrackKind,
+};
 
 use crate::config::to_js_unknown;
 
@@ -78,7 +78,10 @@ impl JsMediaStreamTrack {
         if self.kind != "audio" {
             return Err(Error::from_reason("readSample supports audio tracks only"));
         }
-        let sample = remote.read_sample().await.map_err(|e| Error::from_reason(e.to_string()))?;
+        let sample = remote
+            .read_sample()
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(Buffer::from(sample.pcm.as_ref()))
     }
 }
@@ -120,7 +123,11 @@ pub struct JsLocalAudioTrack {
 impl JsLocalAudioTrack {
     #[napi(constructor)]
     pub fn new(id: String, stream_id: String) -> Self {
-        debug_call!("bindings::media", "LocalAudioTrack::new", "id={id}, stream_id={stream_id}");
+        debug_call!(
+            "bindings::media",
+            "LocalAudioTrack::new",
+            "id={id}, stream_id={stream_id}"
+        );
         Self {
             inner: Arc::new(LocalAudioTrack::new(&id, &stream_id)),
             write_tee: Arc::new(Mutex::new(None)),
@@ -137,17 +144,14 @@ impl JsLocalAudioTrack {
             .map_err(|e| Error::from_reason(format!("write_sample_tee lock: {e}")))?;
         *slot = match callback {
             Some(cb) => {
-                let tsfn: WriteSampleTee = cb.create_threadsafe_function(
-                    0,
-                    |ctx| -> Result<Vec<JsUnknown>> {
+                let tsfn: WriteSampleTee =
+                    cb.create_threadsafe_function(0, |ctx| -> Result<Vec<JsUnknown>> {
                         let (data, duration_ms) = ctx.value;
                         let buffer = Buffer::from(data);
                         let buf_js = to_js_unknown(&ctx.env, buffer)?;
-                        let dur_js =
-                            to_js_unknown(&ctx.env, ctx.env.create_uint32(duration_ms)?)?;
+                        let dur_js = to_js_unknown(&ctx.env, ctx.env.create_uint32(duration_ms)?)?;
                         Ok(vec![buf_js, dur_js])
-                    },
-                )?;
+                    })?;
                 Some(tsfn)
             }
             None => None,
@@ -177,7 +181,11 @@ impl JsLocalAudioTrack {
 
     #[napi(setter)]
     pub fn set_enabled(&mut self, enabled: bool) {
-        debug_call!("bindings::media", "LocalAudioTrack::set_enabled", "enabled={enabled}");
+        debug_call!(
+            "bindings::media",
+            "LocalAudioTrack::set_enabled",
+            "enabled={enabled}"
+        );
         MediaStreamTrack::set_enabled(self.inner.as_ref(), enabled);
     }
 

@@ -28,13 +28,15 @@ impl JsRtpSender {
     /// Replaces the outbound audio track without renegotiation.
     #[napi]
     pub async fn replace_track(&self, track: Option<&JsLocalAudioTrack>) -> Result<()> {
-        debug_call!("bindings::rtp_sender", "replace_track", "has_track={}", track.is_some());
+        debug_call!(
+            "bindings::rtp_sender",
+            "replace_track",
+            "has_track={}",
+            track.is_some()
+        );
         let local = track.map(|t| t.inner().as_track_local());
         *self.track.lock().expect("sender track lock") = track.map(|t| t.inner());
-        self.inner
-            .replace_track(local)
-            .await
-            .map_err(core_err)
+        self.inner.replace_track(local).await.map_err(core_err)
     }
 }
 

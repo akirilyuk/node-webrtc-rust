@@ -1,11 +1,7 @@
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-
-const SAMPLE_RATE = 48_000
-const FFMPEG = '/opt/homebrew/bin/ffmpeg'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export type ClipEncodingFixture = {
   label: string
@@ -14,109 +10,35 @@ export type ClipEncodingFixture = {
   path: string
 }
 
+export const CLIP_FIXTURE_SPECS: ReadonlyArray<{
+  file: string
+  ext: string
+  freqHz: number
+}> = [
+  { file: 'tone-wav.wav', ext: 'wav', freqHz: 440 },
+  { file: 'tone-mp3.mp3', ext: 'mp3', freqHz: 523 },
+  { file: 'tone-flac.flac', ext: 'flac', freqHz: 659 },
+  { file: 'tone-ogg.ogg', ext: 'ogg', freqHz: 784 },
+  { file: 'tone-aac.aac', ext: 'aac', freqHz: 880 },
+  { file: 'tone-m4a.m4a', ext: 'm4a', freqHz: 988 },
+  { file: 'tone-pcm.pcm', ext: 'pcm', freqHz: 1_100 },
+]
+
 export function clipFixtureDir(): string {
-  const dir = join(tmpdir(), 'nwr-clip-integration-fixtures')
-  mkdirSync(dir, { recursive: true })
-  return dir
+  return join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'clips')
 }
 
-function writeStereoWav(path: string, freqHz: number, durationSec: number, amplitude = 0.25): void {
-  const channels = 2
-  const numSamples = Math.floor(SAMPLE_RATE * durationSec)
-  const dataSize = numSamples * channels * 2
-  const header = Buffer.alloc(44)
-  header.write('RIFF', 0)
-  header.writeUInt32LE(36 + dataSize, 4)
-  header.write('WAVEfmt ', 8)
-  header.writeUInt32LE(16, 16)
-  header.writeUInt16LE(1, 20)
-  header.writeUInt16LE(channels, 22)
-  header.writeUInt32LE(SAMPLE_RATE, 24)
-  header.writeUInt32LE(SAMPLE_RATE * channels * 2, 28)
-  header.writeUInt16LE(channels * 2, 32)
-  header.writeUInt16LE(16, 34)
-  header.write('data', 36)
-  header.writeUInt32LE(dataSize, 40)
-
-  const pcm = Buffer.alloc(dataSize)
-  for (let i = 0; i < numSamples; i++) {
-    const t = i / SAMPLE_RATE
-    const sample = Math.round(amplitude * 32_767 * Math.sin(2 * Math.PI * freqHz * t))
-    const clamped = Math.max(-32_768, Math.min(32_767, sample))
-    pcm.writeInt16LE(clamped, i * 4)
-    pcm.writeInt16LE(clamped, i * 4 + 2)
-  }
-  writeFileSync(path, Buffer.concat([header, pcm]))
-}
-
-function ffmpegAvailable(): boolean {
-  return existsSync(FFMPEG)
-}
-
-export function canEncodeClip(ext: string): boolean {
-  if (ext === 'wav') return true
-  if (!ffmpegAvailable()) return false
-  try {
-    const dir = clipFixtureDir()
-    const src = join(dir, `_probe-${ext}.wav`)
-    const out = join(dir, `_probe-${ext}.${ext}`)
-    writeStereoWav(src, 440, 0.2)
-    const args = encodeArgs(ext, src, out)
-    execFileSync(FFMPEG, args, { stdio: 'pipe' })
-    return existsSync(out)
-  } catch {
-    return false
-  }
-}
-
-function encodeArgs(ext: string, src: string, out: string): string[] {
-  const base = ['-y', '-hide_banner', '-loglevel', 'error', '-i', src]
-  switch (ext) {
-    case 'mp3':
-      return [...base, '-codec:a', 'libmp3lame', '-q:a', '4', out]
-    case 'flac':
-      return [...base, '-codec:a', 'flac', out]
-    case 'ogg':
-      return [...base, '-codec:a', 'libvorbis', '-q:a', '4', out]
-    case 'aac':
-      return [...base, '-codec:a', 'aac', '-f', 'adts', out]
-    case 'm4a':
-      return [...base, '-codec:a', 'aac', '-movflags', '+faststart', out]
-    case 'pcm':
-      return [...base, '-f', 's16le', '-ac', '2', '-ar', '48000', out]
-    default:
-      throw new Error(`unsupported encode ext: ${ext}`)
-  }
-}
-
-export function generateClipFixtures(): ClipEncodingFixture[] {
+export function loadClipFixtures(): ClipEncodingFixture[] {
   const dir = clipFixtureDir()
-  const specs: Array<{ ext: string; freqHz: number }> = [
-    { ext: 'wav', freqHz: 440 },
-    { ext: 'mp3', freqHz: 523 },
-    { ext: 'flac', freqHz: 659 },
-    { ext: 'ogg', freqHz: 784 },
-    { ext: 'aac', freqHz: 880 },
-    { ext: 'm4a', freqHz: 988 },
-    { ext: 'pcm', freqHz: 1_100 },
-  ]
-
   const fixtures: ClipEncodingFixture[] = []
-  for (const spec of specs) {
-    if (!canEncodeClip(spec.ext)) continue
-    const wavSrc = join(dir, `tone-${spec.ext}.src.wav`)
-    const outPath = join(dir, `tone-${spec.ext}.${spec.ext === 'm4a' ? 'm4a' : spec.ext}`)
-    writeStereoWav(wavSrc, spec.freqHz, 1.75)
-    if (spec.ext === 'wav') {
-      writeFileSync(outPath, readFileSync(wavSrc))
-    } else {
-      execFileSync(FFMPEG, encodeArgs(spec.ext, wavSrc, outPath), { stdio: 'pipe' })
-    }
+  for (const spec of CLIP_FIXTURE_SPECS) {
+    const path = join(dir, spec.file)
+    if (!existsSync(path)) continue
     fixtures.push({
       label: spec.ext,
       ext: spec.ext,
       freqHz: spec.freqHz,
-      path: outPath,
+      path,
     })
   }
   return fixtures

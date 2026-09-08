@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { LocalAudioTrack, RemoteAudioTrack, RTCPeerConnection } from '@node-webrtc-rust/sdk'
@@ -18,20 +20,19 @@ import {
   waitForConnection,
 } from './mix-three-client-helpers.js'
 import {
-  canEncodeClip,
-  generateClipFixtures,
+  CLIP_FIXTURE_SPECS,
+  clipFixtureDir,
+  loadClipFixtures,
   startHoldbackWavServer,
+  type ClipEncodingFixture,
 } from './clip-fixture-helpers.js'
 
-const ENCODING_SPECS = [
-  { ext: 'wav', freqHz: 440 },
-  { ext: 'mp3', freqHz: 523 },
-  { ext: 'flac', freqHz: 659 },
-  { ext: 'ogg', freqHz: 784 },
-  { ext: 'aac', freqHz: 880 },
-  { ext: 'm4a', freqHz: 988 },
-  { ext: 'pcm', freqHz: 1_100 },
-]
+const clipFixtures = loadClipFixtures()
+const wavFixture = clipFixtures.find((f) => f.ext === 'wav')
+
+function getClipFixture(ext: string): ClipEncodingFixture | undefined {
+  return clipFixtures.find((f) => f.ext === ext)
+}
 
 type SessionPodSlot = {
   sessionId: string
@@ -198,7 +199,6 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
 
   beforeAll(async () => {
     resetProcessVoiceSessionBudget()
-    generateClipFixtures()
     server = new SignalingServer({ port: 0 })
     await server.listen(0)
     wsUrl = `ws://localhost:${server.port}`
@@ -219,11 +219,12 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     resetProcessVoiceSessionBudget()
   })
 
-  for (const spec of ENCODING_SPECS) {
-    it.skipIf(!canEncodeClip(spec.ext))(
+  for (const spec of CLIP_FIXTURE_SPECS) {
+    const fixturePath = join(clipFixtureDir(), spec.file)
+    it.skipIf(!existsSync(fixturePath))(
       `plays ${spec.ext} via path and listener hears ${spec.freqHz} Hz`,
       async () => {
-        const fixture = generateClipFixtures().find((f) => f.ext === spec.ext)
+        const fixture = getClipFixture(spec.ext)
         expect(fixture).toBeDefined()
 
         const sessionId = CLIP_SESSION_ID
@@ -249,7 +250,6 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   }
 
   it('streaming URL starts playing before server sends tail', async () => {
-    const wavFixture = generateClipFixtures().find((f) => f.ext === 'wav')
     expect(wavFixture).toBeDefined()
 
     const sessionId = CLIP_SESSION_ID
@@ -312,7 +312,6 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   }, 120_000)
 
   it('peerIds targets one client; other client does not hear clip', async () => {
-    const wavFixture = generateClipFixtures().find((f) => f.ext === 'wav')
     expect(wavFixture).toBeDefined()
 
     const sessionId = CLIP_SESSION_ID
@@ -344,7 +343,6 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   }, 120_000)
 
   it('clip MixPlacement left pans for listener at origin', async () => {
-    const wavFixture = generateClipFixtures().find((f) => f.ext === 'wav')
     expect(wavFixture).toBeDefined()
 
     const sessionId = CLIP_SESSION_ID
@@ -371,7 +369,6 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   }, 120_000)
 
   it('clip MixPlacement right pans for listener at origin', async () => {
-    const wavFixture = generateClipFixtures().find((f) => f.ext === 'wav')
     expect(wavFixture).toBeDefined()
 
     const sessionId = CLIP_SESSION_ID
@@ -398,7 +395,6 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   }, 120_000)
 
   it('clip world pose +x pans right with positional mixing on', async () => {
-    const wavFixture = generateClipFixtures().find((f) => f.ext === 'wav')
     expect(wavFixture).toBeDefined()
 
     const sessionId = CLIP_SESSION_ID
@@ -425,7 +421,6 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   }, 120_000)
 
   it('clip world pose -x pans left with positional mixing on', async () => {
-    const wavFixture = generateClipFixtures().find((f) => f.ext === 'wav')
     expect(wavFixture).toBeDefined()
 
     const sessionId = CLIP_SESSION_ID

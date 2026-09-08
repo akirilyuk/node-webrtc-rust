@@ -101,12 +101,9 @@ impl Read for GrowingByteSource {
             if self.inner.eof.load(Ordering::SeqCst) {
                 return Ok(0);
             }
-            guard = self
-                .inner
-                .cv
-                .wait(guard)
-                .expect("growing source cv wait");
-            pos = self.inner.read_pos.load(Ordering::SeqCst);
+            // Progressive streams: return 0 when caught up to buffered bytes so symphonia
+            // can decode partial input and retry after more `append` calls.
+            return Ok(0);
         }
 
         let available = guard.len() - pos;

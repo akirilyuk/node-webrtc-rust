@@ -94,6 +94,27 @@ fn mp3_fixture_plays() {
 }
 
 #[test]
+fn wav_preroll_before_eof() {
+    with_serial(|| {
+        let wav = make_wav_pcm();
+        let chunk = wav.len() / 2;
+        let (session, writer) = ClipSession::start_from_growing("test-wav-prog".into());
+        writer.append(&wav[..chunk]);
+        thread::sleep(Duration::from_millis(50));
+        let status = session.status();
+        assert!(
+            status.status == ClipStatus::Playing
+                || (status.status == ClipStatus::Buffering && status.buffered_ms > 0),
+            "expected preroll before eof, got {status:?}"
+        );
+        writer.append(&wav[chunk..]);
+        writer.mark_eof();
+        wait_for_status(&session, ClipStatus::Playing, Duration::from_secs(3));
+        assert!(session.status().buffered_ms > 0);
+    });
+}
+
+#[test]
 fn aac_adts_preroll_before_eof() {
     with_serial(|| {
         let data = std::fs::read(fixtures_dir().join("tone.aac")).expect("read aac");

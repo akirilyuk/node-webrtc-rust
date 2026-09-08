@@ -204,7 +204,11 @@ fn wait_until_decode_ready(source: &GrowingByteSource) {
 }
 
 fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> Result<(), PlayerError> {
-    while !state.stop_requested.load(Ordering::SeqCst) {
+    let mut session = None;
+    while session.is_none() {
+        if state.stop_requested.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         wait_until_decode_ready(&*source);
         if source.is_eof() && source.snapshot().is_empty() {
             return Err(PlayerError::DecodeFailed("empty stream".into()));
@@ -213,31 +217,8 @@ fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> 
         let snap = source.snapshot();
         let hint = hint_from_bytes(&snap);
         let media = GrowingByteSource::from_shared(&source);
-
         match DecoderSession::open(media, Some(hint)) {
-            Ok(mut session) => {
-                if let Some(dur) = session.duration_ms() {
-                    let mut status = state.status.lock().expect("status lock");
-                    status.duration_ms = Some(dur);
-                }
-                if state.stop_requested.load(Ordering::SeqCst) {
-                    return Ok(());
-                }
-                match session.decode_available() {
-                    Ok(out) => {
-                        if !out.pcm.is_empty() {
-                            enqueue_pcm(state, out.pcm);
-                        }
-                        return Ok(());
-                    }
-                    Err(err) => {
-                        if source.is_eof() {
-                            return Err(err);
-                        }
-                        thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                }
-            }
+            Ok(opened) => session = Some(opened),
             Err(err) => {
                 if source.is_eof() {
                     return Err(err);
@@ -246,7 +227,62 @@ fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> 
             }
         }
     }
+
+    let mut session = session.expect("decoder opened");
+    if let Some(dur) = session.duration_ms() {
+        let mut status = state.status.lock().expect("status lock");
+        status.duration_ms = Some(dur);
+    }
+
+    let mut prev_len = source.len();
+    while !state.stop_requested.load(Ordering::SeqCst) {
+        match session.decode_available() {
+            Ok(out) => {
+                let had_pcm = !out.pcm.is_empty();
+                if had_pcm {
+                    enqueue_pcm(state, out.pcm);
+                }
+                let buffered_ms = state.status.lock().expect("status lock").buffered_ms;
+                if buffered_ms >= state.preroll_ms {
+                    return Ok(());
+                }
+                if source.is_eof() && !had_pcm {
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                if source.is_eof() {
+                    return Err(err);
+                }
+            }
+        }
+
+        if state.stop_requested.load(Ordering::SeqCst) {
+            break;
+        }
+        if source.is_eof() {
+            break;
+        }
+        wait_for_growing_bytes(&source, prev_len, state);
+        if state.stop_requested.load(Ordering::SeqCst) {
+            break;
+        }
+        prev_len = source.len();
+    }
     Ok(())
+}
+
+fn wait_for_growing_bytes(
+    source: &GrowingByteSource,
+    prev_len: usize,
+    state: &Arc<SessionState>,
+) {
+    while source.len() == prev_len && !source.is_eof() {
+        if state.stop_requested.load(Ordering::SeqCst) {
+            return;
+        }
+        thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 fn decode_from_source<M: MediaSource + 'static>(

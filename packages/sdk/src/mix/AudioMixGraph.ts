@@ -133,6 +133,19 @@ export class AudioMixGraph {
     this.native.setTtsMixPlacement(toJsPlacement(placement))
   }
 
+  setSourceMixPlacement(participantId: string, placement: MixPlacement): void {
+    this.native.setSourceMixPlacement(participantId, toJsPlacement(placement))
+  }
+
+  clearSourceMixPlacement(participantId: string): void {
+    this.native.clearSourceMixPlacement(participantId)
+  }
+
+  sourceMixPlacement(participantId: string): MixPlacement | undefined {
+    const placement = this.native.sourceMixPlacement(participantId)
+    return placement != null ? fromJsPlacement(placement) : undefined
+  }
+
   ttsMixPlacement(): MixPlacement {
     return fromJsPlacement(this.native.ttsMixPlacement())
   }

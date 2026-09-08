@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/denoise",
     "crates/mixer",
+    "crates/player",
     "crates/conference",
     "crates/signaling",
     "crates/speech",

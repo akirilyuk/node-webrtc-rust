@@ -26,6 +26,8 @@ pub struct MixGraph {
     positional_enabled: bool,
     default_mix_placement: MixPlacement,
     tts_mix_placement: MixPlacement,
+    /// Per-source named placement (clip inputs, etc.) when no explicit world pose is set.
+    source_mix_placements: HashMap<ParticipantId, MixPlacement>,
     tts_poses: HashMap<ParticipantId, ClientPose>,
     distance_params: DistanceParams,
     /// group_id → members
@@ -46,6 +48,7 @@ impl Default for MixGraph {
             positional_enabled: false,
             default_mix_placement: MixPlacement::Center,
             tts_mix_placement: MixPlacement::Center,
+            source_mix_placements: HashMap::new(),
             tts_poses: HashMap::new(),
             distance_params: DistanceParams::default(),
             groups: HashMap::new(),
@@ -71,6 +74,7 @@ impl MixGraph {
         self.inputs.remove(participant_id);
         self.global_mute.remove(participant_id);
         self.poses.remove(participant_id);
+        self.source_mix_placements.remove(participant_id);
         self.tts_poses.remove(participant_id);
         self.listener_mute
             .retain(|(listener, target), _| listener != participant_id && target != participant_id);
@@ -210,6 +214,25 @@ impl MixGraph {
     /// Returns the TTS mix placement.
     pub fn tts_mix_placement(&self) -> MixPlacement {
         self.tts_mix_placement
+    }
+
+    /// Named placement for a specific source (e.g. clip `play:{id}`) when it has no world pose.
+    pub fn set_source_mix_placement(
+        &mut self,
+        participant_id: impl Into<ParticipantId>,
+        placement: MixPlacement,
+    ) {
+        self.source_mix_placements.insert(participant_id.into(), placement);
+    }
+
+    /// Clears per-source named placement; default / positional rules apply again.
+    pub fn clear_source_mix_placement(&mut self, participant_id: &str) {
+        self.source_mix_placements.remove(participant_id);
+    }
+
+    /// Returns explicit named placement for `participant_id`, if any.
+    pub fn source_mix_placement(&self, participant_id: &str) -> Option<MixPlacement> {
+        self.source_mix_placements.get(participant_id).copied()
     }
 
     /// Sets a world-space TTS speaker pose for `participant_id` (used when positional mixing is on).
@@ -353,18 +376,23 @@ impl MixGraph {
     }
 
     fn pan_source_for_listener(&self, listener_id: &str, source_id: &str, frame: &Frame) -> Frame {
-        let gains = if self.positional_enabled {
+        let gains = if self.positional_enabled && self.poses.contains_key(source_id) {
             let listener_pose = self
                 .poses
                 .get(listener_id)
                 .copied()
                 .unwrap_or_else(ClientPose::center);
-            let source_pose = self
+            let source_pose = self.poses.get(source_id).copied().unwrap_or_else(ClientPose::center);
+            pan_gains_positional(listener_pose, source_pose, self.distance_params)
+        } else if let Some(placement) = self.source_mix_placements.get(source_id) {
+            pan_gains_placement(*placement, self.distance_params)
+        } else if self.positional_enabled {
+            let listener_pose = self
                 .poses
-                .get(source_id)
+                .get(listener_id)
                 .copied()
                 .unwrap_or_else(ClientPose::center);
-            pan_gains_positional(listener_pose, source_pose, self.distance_params)
+            pan_gains_positional(listener_pose, ClientPose::center(), self.distance_params)
         } else {
             pan_gains_placement(self.default_mix_placement, self.distance_params)
         };
@@ -671,6 +699,19 @@ mod tests {
         let (l_again, r_again) = first_lr(&on_again);
         assert!(r_again > l_again);
         assert!((r_again - r_on).abs() < 500);
+    }
+
+    #[test]
+    fn source_mix_placement_left_pans_when_positional_off() {
+        let mut graph = MixGraph::new();
+        graph.add_input("listener");
+        graph.add_input("source");
+        graph.set_source_mix_placement("source", MixPlacement::Left);
+        graph.push_frame("source", mono_stereo(10_000));
+        graph.set_listener_sources("listener", &["source".to_string()]);
+        let out = graph.render_output("listener");
+        let (l, r) = first_lr(&out);
+        assert!(l > r);
     }
 
     #[test]

@@ -147,6 +147,27 @@ export interface JsDistanceParams {
   maxDistance: number
   rolloff: number
 }
+export const enum JsClipStatus {
+  Buffering = 'Buffering',
+  Playing = 'Playing',
+  Stopped = 'Stopped',
+  Ended = 'Ended',
+  Error = 'Error'
+}
+export interface JsClipPlayerStatus {
+  playId: string
+  status: JsClipStatus
+  positionMs: number
+  durationMs?: number
+  bufferedMs: number
+  error?: string
+}
+export declare function playClipFromPath(path: string): string
+export declare function playClipFromBytes(data: Buffer): string
+export declare function playClipProgressive(): JsGrowingClipWriter
+export declare function getClipStatus(playId: string): JsClipPlayerStatus | null
+export declare function stopClip(playId: string): boolean
+export declare function takeClipFrame(playId: string): Buffer | null
 /** Init options for {@link RTCPeerConnection.addTransceiver}. */
 export interface JsRtcRtpTransceiverInit {
   direction?: string
@@ -401,6 +422,9 @@ export declare class JsMixGraph {
   defaultMixPlacement(): JsMixPlacement
   setTtsMixPlacement(placement: JsMixPlacement): void
   ttsMixPlacement(): JsMixPlacement
+  setSourceMixPlacement(participantId: string, placement: JsMixPlacement): void
+  clearSourceMixPlacement(participantId: string): void
+  sourceMixPlacement(participantId: string): JsMixPlacement | null
   setTtsPose(participantId: string, pose: JsClientPose): void
   clearTtsPose(participantId: string): void
   ttsPose(participantId: string): JsClientPose | null
@@ -451,6 +475,12 @@ export declare class JsPeerConnection {
   setOnIceGatheringStateChange(callback: (...args: any[]) => any): void
   setOnSignalingStateChange(callback: (...args: any[]) => any): void
   setOnNegotiationNeeded(callback: (...args: any[]) => any): void
+}
+export declare class JsGrowingClipWriter {
+  get playId(): string
+  append(chunk: Buffer): void
+  markEof(): void
+  isEof(): boolean
 }
 /** RTP receiver leg of an {@link RTCRtpTransceiver}. */
 export declare class JsRtpReceiver {

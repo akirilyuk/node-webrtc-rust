@@ -17,6 +17,7 @@
  *   (prestart frees port 3004 via scripts/free-port.sh)
  *
  * Open **three browser tabs** to http://localhost:3004 — same room `sherpa-multi`.
+ * Each tab plays a short bundled WAV via {@link VoiceAgentSessionHost.playAudio} on connect.
  * Optional: `VOICE_MAX_CONCURRENT_SESSIONS=2 npm run start:cap-2 --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client`
  * then the third tab should fail to negotiate (check server log + GET /api/capacity).
  *
@@ -40,6 +41,9 @@ import { resolveVoiceConfig } from '../../voice-agent-local-sherpa/src/resolve-v
 import { isVoiceDebugEnabled } from '@node-webrtc-rust/sdk/voice'
 
 import { voiceHandler } from './voice-handler.js'
+import { demoWavPathFromImportMeta } from './demo-wav.js'
+import type { VoiceSessionHandler } from '@node-webrtc-rust/helpers'
+import type { VoiceAgentSessionHost } from '@node-webrtc-rust/helpers'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PUBLIC_DIR = join(__dirname, '../public')
@@ -127,6 +131,30 @@ async function serveStatic(
   }
 }
 
+const DEMO_WAV_PATH = demoWavPathFromImportMeta(import.meta.url)
+
+function createVoiceHandler(hostRef: {
+  current: VoiceAgentSessionHost | null
+}): VoiceSessionHandler {
+  return {
+    ...voiceHandler,
+    async onPeerConnected(ctx) {
+      await voiceHandler.onPeerConnected?.(ctx)
+      const host = hostRef.current
+      if (!host) return
+      try {
+        const { playId } = await host.playAudio({
+          source: { path: DEMO_WAV_PATH },
+          peerIds: [ctx.peerId],
+        })
+        console.log(`[${ctx.peerId}] playAudio demo clip started (${playId})`)
+      } catch (error: unknown) {
+        console.error(`[${ctx.peerId}] playAudio demo failed:`, error)
+      }
+    },
+  }
+}
+
 async function main(): Promise<void> {
   // Browser tabs use http://127.0.0.1 — Node must advertise 127.0.0.1 host ICE candidates (see core WEBRTC_NAT_1TO1_IPS).
   if (!process.env.WEBRTC_NAT_1TO1_IPS) {
@@ -137,14 +165,16 @@ async function main(): Promise<void> {
 
   const sessionBudget = getProcessVoiceSessionBudget()
 
+  const hostRef: { current: VoiceAgentSessionHost | null } = { current: null }
+
   const server = await startMultiClientVoiceServer({
     port: PORT,
     room: ROOM,
     voiceConfig,
     iceServers: ICE_SERVERS,
     sessionBudget,
-    voiceHandler,
-    serveHttp: (req, res) => serveStatic(req, res, server.broadcastSpeak),
+    voiceHandler: createVoiceHandler(hostRef),
+    serveHttp: (req, res) => serveStatic(req, res, server?.broadcastSpeak),
     hostOptions: {
       log: (message) => {
         const ts = new Date().toISOString().slice(11, 23)
@@ -152,6 +182,7 @@ async function main(): Promise<void> {
       },
     },
   })
+  hostRef.current = server.host
 
   console.log(`Local Sherpa multi-client demo at ${server.httpUrl}`)
   console.log(`Room: ${ROOM} (use the same room in every tab)`)
@@ -169,6 +200,7 @@ async function main(): Promise<void> {
     'Use Speak (per tab) or POST /api/broadcast-speak / page “Speak to all” for all tabs.',
   )
   console.log('Edit src/voice-handler.ts to customize onSpeechEvent / onSpeakRequest.')
+  console.log(`Each tab plays a short bundled WAV on connect (${DEMO_WAV_PATH}).`)
   console.log('Each tab = one client-* peer = one VoiceAgent; Sherpa models are shared in Rust.')
   if (sessionBudget.max > 0) {
     console.log(`Set VOICE_MAX_CONCURRENT_SESSIONS=${sessionBudget.max} — extra tabs are rejected.`)

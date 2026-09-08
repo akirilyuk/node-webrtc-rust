@@ -53,6 +53,8 @@ export interface ClientMixGraph {
   setPose(participantId: string, pose: ClientPose): void
   setPositionalEnabled(enabled: boolean): void
   setDefaultMixPlacement(placement: MixPlacement): void
+  setSourceMixPlacement?(participantId: string, placement: MixPlacement): void
+  clearSourceMixPlacement?(participantId: string): void
   setTtsMixPlacement(placement: MixPlacement): void
   setTtsPose(participantId: string, pose: ClientPose): void
   clearTtsPose(participantId: string): void
@@ -66,6 +68,8 @@ export interface ClientMixGraph {
   pose?(participantId: string): ClientPose | null | undefined
   ttsPose?(participantId: string): ClientPose | null | undefined
   listenerSources?(listener: string): string[] | null
+  setListenerSources?(listener: string, sources: string[]): void
+  clearListenerRoutes?(listener: string): void
 }
 
 type GraphGroupState = {
@@ -198,6 +202,11 @@ export class ClientAudioMixer {
   /** @internal Test access to the underlying graph. */
   getMixGraph(): ClientMixGraph {
     return this.graph
+  }
+
+  /** Registered peer ids (mix inputs). */
+  listRegisteredPeers(): string[] {
+    return [...this.registered]
   }
 
   private peerState(peerId: string): PeerMixState {
@@ -372,6 +381,14 @@ export class ClientAudioMixer {
 
   setDefaultMixPlacement(placement: MixPlacement): void {
     this.graph.setDefaultMixPlacement(placement)
+  }
+
+  setSourceMixPlacement(participantId: string, placement: MixPlacement): void {
+    this.graph.setSourceMixPlacement?.(participantId, placement)
+  }
+
+  clearSourceMixPlacement(participantId: string): void {
+    this.graph.clearSourceMixPlacement?.(participantId)
   }
 
   setTtsMixPlacement(placement: MixPlacement): void {

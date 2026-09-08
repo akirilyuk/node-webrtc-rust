@@ -57,6 +57,11 @@
       "types": "./dist/cjs/mix/index.d.ts",
       "import": "./dist/esm/mix/index.js",
       "require": "./dist/cjs/mix/index.js"
+    },
+    "./player": {
+      "types": "./dist/cjs/player/index.d.ts",
+      "import": "./dist/esm/player/index.js",
+      "require": "./dist/cjs/player/index.js"
     }
   },
   "files": [

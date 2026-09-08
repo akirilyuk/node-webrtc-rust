@@ -126,31 +126,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Collect every `user_language` until `stopCollecting` is set (polls stream with short timeouts). */
-async function collectUserLanguageEvents(
-  listener: VoiceAgent,
-  isCollecting: () => boolean,
-): Promise<SpeechEvent[]> {
-  const events: SpeechEvent[] = []
-  const stream = listener.speechEvents()
-  const iterator = stream[Symbol.asyncIterator]()
+/** Poll shared array while the single `for await` collector keeps filling it (no racing `next()`). */
+async function waitForLastUserLanguage(
+  langEvents: SpeechEvent[],
+  settleMs: number,
+  maxWaitMs: number,
+): Promise<SpeechEvent | undefined> {
+  await sleep(settleMs)
 
-  while (isCollecting()) {
-    const next = await Promise.race([
-      iterator.next(),
-      new Promise<IteratorResult<SpeechEvent>>((resolve) =>
-        setTimeout(() => resolve({ done: true, value: undefined }), 250),
-      ),
-    ])
-    if (next.done) continue
-    const event = next.value
-    logRoundtripSpeechEvent('listener', event)
-    if (event.type === SPEECH_EVENT_TYPE.userLanguage) {
-      events.push(event)
-    }
+  const deadline = Date.now() + maxWaitMs
+  while (langEvents.length === 0 && Date.now() < deadline) {
+    await sleep(50)
   }
 
-  return events
+  if (langEvents.length > 0) {
+    await sleep(settleMs)
+  }
+
+  return langEvents.at(-1)
 }
 
 async function runLeg(
@@ -174,8 +167,15 @@ async function runLeg(
   startSpeakerSpeechPump(speaker, agentEndLatch)
   await streamSilence(agentOut, DEFAULT_WARMUP_S)
 
-  let collecting = true
-  const collectPromise = collectUserLanguageEvents(listener, () => collecting)
+  const langEvents: SpeechEvent[] = []
+  const collectTask = (async () => {
+    for await (const event of listener.speechEvents()) {
+      logRoundtripSpeechEvent('listener', event)
+      if (event.type === SPEECH_EVENT_TYPE.userLanguage) {
+        langEvents.push(event)
+      }
+    }
+  })()
 
   const playbackDeadline = Date.now() + timeoutMs
   await playSpeakerTtsWithPostSilence({
@@ -187,19 +187,21 @@ async function runLeg(
     agentSpeakingEndLatch: agentEndLatch,
   })
 
-  await sleep(LID_SETTLE_MS)
-  collecting = false
-  const langEvents = await collectPromise
-
-  const lastLangEvent = langEvents.at(-1)
+  const lastLangEvent = await waitForLastUserLanguage(
+    langEvents,
+    LID_SETTLE_MS,
+    Math.min(timeoutMs, 20_000),
+  )
   const detected = lastLangEvent?.language ?? lastLangEvent?.text
-  if (!detected) {
-    throw new Error(`no user_language event for leg ${leg.lang}`)
-  }
 
   await speaker.stop().catch(() => undefined)
   await listener.stop().catch(() => undefined)
+  await collectTask.catch(() => undefined)
   await cleanup().catch(() => undefined)
+
+  if (!detected) {
+    throw new Error(`no user_language event for leg ${leg.lang}`)
+  }
 
   return { expected: leg.lang, detected }
 }

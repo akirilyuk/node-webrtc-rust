@@ -235,7 +235,35 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
 #[tokio::test]
 async fn user_speaking_end_not_delayed_by_slow_language_id() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
-    let agent = agent_with_slow_lid(Arc::clone(&stt_bytes));
+    let factory = Arc::new(LidTestFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        lid_sleep_ms: LID_SLEEP_MS,
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = false;
+
+    let config = VoiceAgentConfig {
+        stt: None,
+        tts: None,
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
 
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));

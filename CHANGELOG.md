@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-09
+
+Inbound STT/TTS no longer stall while on-device Whisper language identification runs.
+
+### Fixed
+
+- **speech** — Fire-and-forget language ID: inbound PCM processing no longer awaits Whisper inference. `user_speaking_end` and TTS playback stay responsive while LID runs in the background. (#205)
+- **vendor-sherpa-onnx** — Sherpa LID runs on a dedicated OS thread instead of tokio `spawn_blocking`, avoiding contention with Zipformer STT and Piper TTS on the shared blocking pool. (#205)
+
+**Compare:** [`release/0.9.1…release/0.9.2`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.1...release/0.9.2)
+
 ## [0.9.1] - 2026-09-09
 
 MixGraph leftover frames expire so positional TTS is not summed with stale mic.

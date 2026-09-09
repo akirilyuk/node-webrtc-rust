@@ -237,12 +237,42 @@ describe('ClientAudioMixer', () => {
     expect(pcTrack.writeSample).toHaveBeenCalledTimes(1)
   })
 
+  it('sidecar tee assembles two half frames into one pending TTS frame', async () => {
+    const panInputs: Buffer[] = []
+    const graph = createMockGraph()
+    graph.panTtsFrame = (pcm, listenerId) => {
+      panInputs.push(Buffer.from(pcm))
+      graph.calls.panTtsListenerIds.push(listenerId)
+      return Buffer.from(pcm)
+    }
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('frank')
+
+    const sidecar = createFakeSidecar()
+    mixer.wireTtsSidecar('frank', sidecar)
+
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('frank', pcTrack)
+
+    const half = PCM_FULL_FRAME_BYTES / 2
+    const chunkA = Buffer.alloc(half, 11)
+    const chunkB = Buffer.alloc(half, 22)
+    sidecar.tee!(chunkA, PCM_FRAME_DURATION_MS)
+    sidecar.tee!(chunkB, PCM_FRAME_DURATION_MS)
+
+    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+
+    expect(panInputs).toHaveLength(1)
+    expect(panInputs[0]!.subarray(0, half).equals(chunkA)).toBe(true)
+    expect(panInputs[0]!.subarray(half).equals(chunkB)).toBe(true)
+  })
+
   it('consumes TTS once per tee — next pump tick uses silence', async () => {
     const panInputs: Buffer[] = []
     const graph = createMockGraph()
     graph.panTtsFrame = (pcm, listenerId) => {
       panInputs.push(Buffer.from(pcm))
-      calls.panTtsListenerIds.push(listenerId)
+      graph.calls.panTtsListenerIds.push(listenerId)
       return Buffer.from(pcm)
     }
     const mixer = new ClientAudioMixer({ graph })

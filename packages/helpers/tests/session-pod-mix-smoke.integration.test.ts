@@ -1,6 +1,8 @@
 /**
  * SessionPod mix-smoke integration — mirrors staging e2e voice-data-mix-smoke
  * energy probes A–F (exclusive loud mic L/R pan, global/listener mute, TTS pan).
+ * Also covers leftover left-loud mic drain: after probe-B-style talker at −x stops,
+ * inbound must go quiet before TTS panned +x is right-loud on the summed mix pump.
  * Uses real RTCPeerConnections + native AudioMixGraph (not Goertzel simultaneous-sine).
  *
  * Verify:
@@ -332,6 +334,81 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         closeClient(client1)
         closeClient(client2)
         closeClient(client3)
+        await delay(100)
+      }
+    }, 180_000)
+
+    it('leftover left-loud mic drains quiet before TTS panned right on mix pump', async () => {
+      await pod.ensureSession('session-c1')
+      await pod.ensureSession('session-c2')
+
+      const [talker, listener] = await Promise.all([
+        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
+        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
+      ])
+
+      try {
+        const host = getVoiceHostForSession(pod, 'session-c2')
+        expect(host).toBeDefined()
+
+        host!.createMixGroup({
+          id: 'all',
+          clientIds: ['client-mix-1', 'client-mix-2'],
+        })
+        host!.setPositionalMixing(true)
+        host!.setClientPose('client-mix-2', centerPose)
+        host!.setClientPose('client-mix-1', poseAtX(-3))
+
+        await talker.mic.writeSample(Buffer.alloc(960), 5)
+        await listener.mic.writeSample(Buffer.alloc(960), 5)
+
+        await waitForVoiceClientActive(pod, 'client-mix-1')
+        await waitForVoiceClientActive(pod, 'client-mix-2')
+
+        const probeMicDurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
+        const probeMic = pumpLoudMicFrames(
+          (frame, duration) => talker.mic.writeSample(frame, duration),
+          probeMicDurationMs,
+        )
+        await waitForInboundStereoEnergy(listener.agentAudio, {
+          threshold: LOUD_MIC_ENERGY_THRESHOLD,
+          timeoutMs: LOUD_MIC_ENERGY_WAIT_MS,
+          label: 'left-loud talker mic',
+        })
+        const energyMic = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+        await probeMic
+        assertLeftLouder(energyMic.left, energyMic.right)
+
+        await waitForInboundStereoQuiet(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
+          quietWindowMs: TTS_QUIET_WINDOW_MS,
+          timeoutMs: TTS_QUIET_WAIT_MS,
+          label: 'left-loud mic drain after talker stop',
+        })
+
+        const listenerHost = host as VoiceHostTestAccess
+        const mixer = listenerHost.getClientMixer()
+        expect(mixer).toBeDefined()
+        mixer!.createTtsSidecar('client-mix-2')
+
+        listenerHost.setTtsPose('client-mix-2', poseAtX(3))
+        const probeTtsDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
+        const probeTts = pumpLoudTtsSidecarFrames(mixer!, 'client-mix-2', probeTtsDurationMs)
+        await waitForInboundStereoEnergy(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
+          timeoutMs: TTS_ENERGY_WAIT_MS,
+          label: 'TTS pan right after mic drain',
+        })
+        const energyTts = await accumulateDirectionalStereoRms(
+          listener.agentAudio,
+          ENERGY_PROBE_MS,
+          'right',
+        )
+        await probeTts
+        assertRightLouder(energyTts.left, energyTts.right)
+      } finally {
+        closeClient(talker)
+        closeClient(listener)
         await delay(100)
       }
     }, 180_000)

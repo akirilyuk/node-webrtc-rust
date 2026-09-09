@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    LanguageIdConfig, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig,
+    LanguageIdConfig, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor,
+    VadConfig, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::SpeechEventKind;
 use node_webrtc_rust_speech::pipeline::{
@@ -303,4 +304,98 @@ async fn user_speaking_end_not_delayed_by_slow_language_id() {
         end_start.elapsed() < Duration::from_millis(500),
         "user_speaking_end must not await slow LID (took {end_start:?})"
     );
+}
+
+/// Staging regression (`usage-credits-smoke`): echo TTS clip was delayed ~45s while Whisper LID
+/// ran on the blocking pool. Full stack STT+TTS+LID+VAD — first outbound PCM must not await
+/// slow `identify` while LID is in flight.
+#[tokio::test]
+async fn language_id_does_not_block_tts_playback() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let agent = agent_with_slow_lid(Arc::clone(&stt_bytes));
+    let mut rx = agent.subscribe_events();
+
+    let first_ms: Arc<Mutex<Option<u128>>> = Arc::new(Mutex::new(None));
+    let first_ms_w = Arc::clone(&first_ms);
+    let send_start: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let send_start_w = Arc::clone(&send_start);
+    let written_bytes: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+    let written_bytes_w = Arc::clone(&written_bytes);
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(move |pcm, _ms| {
+        *written_bytes_w.lock().unwrap() += pcm.len();
+        if let Some(t0) = *send_start_w.lock().unwrap() {
+            let mut slot = first_ms_w.lock().unwrap();
+            if slot.is_none() {
+                *slot = Some(t0.elapsed().as_millis());
+            }
+        }
+        Ok(())
+    });
+
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+
+    // VAD speech start + cross min_speech_ms=200 so slow LID (LID_SLEEP_MS) is in flight.
+    for _ in 0..12 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    *send_start.lock().unwrap() = Some(Instant::now());
+    agent
+        .send_text_to_tts_with_options(
+            "one two three",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    let poll_deadline = Instant::now() + Duration::from_millis(800);
+    while Instant::now() < poll_deadline {
+        if first_ms.lock().unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let ms = first_ms
+        .lock()
+        .unwrap()
+        .expect("expected first outbound PCM within 800ms");
+    assert!(
+        ms < 500,
+        "first TTS PCM must not await LID sleep ({LID_SLEEP_MS}ms); got {ms}ms"
+    );
+
+    let nbytes = *written_bytes.lock().unwrap();
+    assert!(nbytes > 0, "writer must receive non-empty PCM");
+
+    // LID still completes in background.
+    let lang_deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_user_language = false;
+    while Instant::now() < lang_deadline {
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == SpeechEventKind::UserLanguage {
+                assert_eq!(event.language.as_deref(), Some("en"));
+                saw_user_language = true;
+                break;
+            }
+        }
+        if saw_user_language {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        saw_user_language,
+        "expected user_language after background identify"
+    );
+
+    agent.wait_tts_playback_idle().await.unwrap();
+    agent.stop().await.unwrap();
 }

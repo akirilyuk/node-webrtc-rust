@@ -17,7 +17,7 @@ mod spatial;
 pub use bus::MixBus;
 pub use decode::{DecodeError, OpusDecoder};
 pub use frame::{
-    silence_frame, Frame, FrameBuffer, CHANNELS, FRAME_BYTES, FRAME_MS, SAMPLES_PER_CHANNEL,
+    silence_frame, Frame, FrameBuffer, CHANNELS, FRAME_BYTES, FRAME_HOLD_MS, FRAME_MS, SAMPLES_PER_CHANNEL,
     SAMPLES_PER_FRAME, SAMPLE_RATE,
 };
 pub use graph::{MixGraph, ParticipantId};

@@ -437,11 +437,17 @@ export class ClientAudioMixer {
   wireTtsSidecar(peerId: string, sidecar: TtsSidecarTrack): TtsSidecarTrack {
     const state = this.peerState(peerId)
     state.sidecar = sidecar
+    let leftover = Buffer.alloc(0)
     sidecar.setWriteSampleTee((...args: unknown[]) => {
       const pcm = pcmFromWriteSampleTeeArgs(args)
-      if (pcm != null && pcm.length === PCM_FULL_FRAME_BYTES) {
-        state.pendingTts = Buffer.from(pcm)
+      if (pcm == null) return
+      const combined = leftover.length > 0 ? Buffer.concat([leftover, pcm]) : pcm
+      let offset = 0
+      while (offset + PCM_FULL_FRAME_BYTES <= combined.length) {
+        state.pendingTts = Buffer.from(combined.subarray(offset, offset + PCM_FULL_FRAME_BYTES))
+        offset += PCM_FULL_FRAME_BYTES
       }
+      leftover = offset < combined.length ? Buffer.from(combined.subarray(offset)) : Buffer.alloc(0)
     })
     return sidecar
   }

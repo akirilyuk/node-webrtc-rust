@@ -780,6 +780,63 @@ mod tests {
     }
 
     #[test]
+    fn expired_leftover_mic_does_not_mask_tts_pan_right() {
+        use std::{thread::sleep, time::Duration};
+
+        let mut graph = MixGraph::new();
+        graph.add_input("listener");
+        graph.add_input("talker");
+        graph.set_positional_enabled(true);
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        graph.set_source_mix_placement("talker", MixPlacement::Left);
+        graph.push_frame("talker", mono_stereo(10_000));
+
+        let (l_now, r_now) = first_lr(&graph.render_output("listener"));
+        assert!(l_now > r_now);
+
+        sleep(Duration::from_millis(frame::FRAME_HOLD_MS as u64 + 5));
+
+        let (l_after, r_after) = first_lr(&graph.render_output("listener"));
+        assert_eq!(l_after, 0);
+        assert_eq!(r_after, 0);
+
+        graph.set_tts_pose(
+            "listener",
+            ClientPose {
+                position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
+        let panned = graph.pan_tts_frame(&mono_stereo(10_000), "listener");
+        let (tl, tr) = first_lr(&panned);
+        assert!(tr > tl * 3 / 2);
+    }
+
+    #[test]
+    fn frame_buffer_two_listeners_hear_same_frame_within_hold() {
+        use std::{thread::sleep, time::Duration};
+
+        let mut graph = MixGraph::new();
+        graph.add_input("listener_a");
+        graph.add_input("listener_b");
+        graph.add_input("talker");
+        graph.set_listener_sources("listener_a", &["talker".to_string()]);
+        graph.set_listener_sources("listener_b", &["talker".to_string()]);
+        graph.push_frame("talker", mono_stereo(8_000));
+
+        let a1 = graph.render_output("listener_a");
+        let b1 = graph.render_output("listener_b");
+        assert_eq!(a1, b1);
+
+        sleep(Duration::from_millis(frame::FRAME_HOLD_MS as u64 + 5));
+
+        let a2 = graph.render_output("listener_a");
+        let b2 = graph.render_output("listener_b");
+        assert_eq!(a2, frame::silence_frame());
+        assert_eq!(b2, frame::silence_frame());
+    }
+
+    #[test]
     fn tts_pose_per_listener_independent() {
         let mut graph = MixGraph::new();
         graph.set_positional_enabled(true);

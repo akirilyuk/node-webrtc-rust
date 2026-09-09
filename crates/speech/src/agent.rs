@@ -147,7 +147,7 @@ struct AgentInner {
     lid_buffering: bool,
     /// Last emitted ISO 639-1 code (`user_language`); re-emit only when it changes.
     lid_last_emitted: Option<String>,
-    /// Avoid overlapping `spawn_blocking` LID jobs for the same utterance.
+    /// Avoid overlapping background LID identify tasks for the same utterance.
     lid_identify_in_flight: bool,
 }
 
@@ -192,7 +192,7 @@ pub struct VoiceAgent {
     registry: Arc<VendorRegistry>,
     inner: Arc<Mutex<AgentInner>>,
     stt: Mutex<Option<Box<dyn SttProvider>>>,
-    language_id: Mutex<Option<Box<dyn LanguageIdProvider>>>,
+    language_id: Mutex<Option<Arc<dyn LanguageIdProvider>>>,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -231,7 +231,9 @@ impl VoiceAgent {
             tts = Some(registry.create_tts(tts_cfg)?);
         }
         let language_id = if language_id_enabled(&config.language_id) {
-            registry.create_language_id(config.language_id.as_ref().expect("checked"))?
+            registry
+                .create_language_id(config.language_id.as_ref().expect("checked"))?
+                .map(Arc::from)
         } else {
             None
         };
@@ -1651,22 +1653,27 @@ impl VoiceAgent {
                 crate::pcm::STT_PCM_SAMPLE_RATE,
             );
             if duration_ms >= min_ms {
-                self.try_identify_language(false).await;
+                self.spawn_identify_language(false).await;
             }
         }
     }
 
     async fn emit_user_speaking_end_with_lid(&self) {
         self.emit(SpeechEvent::user_speaking_end());
-        self.try_identify_language(true).await;
+        self.spawn_identify_language(true).await;
     }
 
-    async fn try_identify_language(&self, force: bool) {
-        let provider = self.language_id.lock().await;
+    /// Starts a background identify when buffered speech is long enough (or `force`).
+    /// Does not await inference — inbound PCM and STT/TTS must not block on LID.
+    async fn spawn_identify_language(&self, force: bool) {
+        let provider = {
+            let guard = self.language_id.lock().await;
+            guard.as_ref().map(Arc::clone)
+        };
         if provider.is_none() {
             return;
         }
-        drop(provider);
+        let provider = provider.expect("provider");
 
         let job = {
             let mut inner = self.inner.lock().await;
@@ -1696,40 +1703,47 @@ impl VoiceAgent {
         let (pcm, allowlist_cfg, last_emitted) = job.expect("job");
         let agent = self.weak_self.upgrade();
         if agent.is_none() {
+            let mut inner = self.inner.lock().await;
+            inner.lid_identify_in_flight = false;
             return;
         }
         let agent = agent.expect("upgrade");
-        let provider = agent.language_id.lock().await;
-        let provider = provider.as_ref().expect("provider");
         let sample_rate = crate::pcm::STT_PCM_SAMPLE_RATE;
-        let result = provider.identify(pcm, sample_rate).await;
-        let mut inner = agent.inner.lock().await;
-        inner.lid_identify_in_flight = false;
-        if force {
-            inner.lid_buffering = false;
-        }
-        match result {
-            Ok(Some(lang_result)) => {
-                let code = lang_result.language.trim().to_ascii_lowercase();
-                if code.is_empty() {
-                    return;
-                }
-                if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
-                    voice_debug(format!("LID result {code} not in allowlist — ignored"));
-                    return;
-                }
-                if last_emitted.as_deref() == Some(code.as_str()) {
-                    return;
-                }
-                inner.lid_last_emitted = Some(code.clone());
-                voice_debug(format!("emit user_language: {code}"));
-                agent.emit(SpeechEvent::user_language(code));
+        tokio::spawn(async move {
+            let result = provider.identify(pcm, sample_rate).await;
+            let upgraded = agent.weak_self.upgrade();
+            if upgraded.is_none() {
+                return;
             }
-            Ok(None) => {}
-            Err(err) => {
-                voice_debug(format!("LID identify failed: {err}"));
+            let agent = upgraded.expect("upgrade");
+            let mut inner = agent.inner.lock().await;
+            inner.lid_identify_in_flight = false;
+            if force {
+                inner.lid_buffering = false;
             }
-        }
+            match result {
+                Ok(Some(lang_result)) => {
+                    let code = lang_result.language.trim().to_ascii_lowercase();
+                    if code.is_empty() {
+                        return;
+                    }
+                    if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
+                        voice_debug(format!("LID result {code} not in allowlist — ignored"));
+                        return;
+                    }
+                    if last_emitted.as_deref() == Some(code.as_str()) {
+                        return;
+                    }
+                    inner.lid_last_emitted = Some(code.clone());
+                    voice_debug(format!("emit user_language: {code}"));
+                    agent.emit(SpeechEvent::user_language(code));
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    voice_debug(format!("LID identify failed: {err}"));
+                }
+            }
+        });
     }
 
     async fn emit_user_speaking_start_if_needed(&self) {

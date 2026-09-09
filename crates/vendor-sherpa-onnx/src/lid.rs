@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::thread;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -6,6 +7,7 @@ use node_webrtc_rust_speech::config::LanguageIdConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::mono_s16le_bytes_to_f32;
 use node_webrtc_rust_speech::pipeline::{LanguageIdProvider, LanguageIdResult};
+use tokio::sync::oneshot;
 
 use crate::pool::{SharedLidRecognizer, SherpaModelPool};
 
@@ -54,9 +56,17 @@ impl LanguageIdProvider for SherpaLanguageId {
         }
         let config = self.config.clone();
         let pool = Arc::clone(&self.pool);
-        tokio::task::spawn_blocking(move || Self::identify_blocking(&config, &pool, pcm))
-            .await
-            .map_err(|err| SpeechError::Internal(err.to_string()))?
+        // Dedicated OS thread — not tokio's blocking pool shared with Zipformer STT and Piper TTS.
+        let (tx, rx) = oneshot::channel();
+        thread::Builder::new()
+            .name("sherpa-lid".into())
+            .spawn(move || {
+                let result = Self::identify_blocking(&config, &pool, pcm);
+                let _ = tx.send(result);
+            })
+            .map_err(|err| SpeechError::Internal(err.to_string()))?;
+        rx.await
+            .map_err(|_| SpeechError::Internal("sherpa LID thread dropped".into()))?
     }
 }
 

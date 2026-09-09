@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-09
+
+MixGraph leftover frames expire so positional TTS is not summed with stale mic.
+
+### Fixed
+
+- **mixer** — `FrameBuffer::current()` holds the latest mic frame for 40 ms (`2 × 20 ms`) then returns silence. Infinite hold summed leftover left-loud talkers with right-panned TTS (Voice+Data mix-smoke probe E L≈R). Multi-listener safe (no consume-on-read). (#202)
+- **helpers** — TTS sidecar tee assembles leftover PCM into 20 ms frames, matching inbound `wrapInboundTrack`. SessionPod mix-smoke integration covers leftover drain then TTS pan. (#202)
+
+**Compare:** [`release/0.9.0…release/0.9.1`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.0...release/0.9.1)
+
 ## [0.9.0] - 2026-09-08
 
 Native clip playback, on-device spoken language identification, and MixGraph inbound mix fixes.

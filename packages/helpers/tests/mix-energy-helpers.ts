@@ -303,11 +303,19 @@ export async function pumpLoudTtsLeftOnlySidecarFrames(
   mixer: ClientAudioMixer,
   peerId: string,
   durationMs: number,
+  options?: { signal?: AbortSignal },
 ): Promise<void> {
   const frame = createLoudLeftOnlyFrame()
   const endAt = Date.now() + durationMs
+  const signal = options?.signal
   while (Date.now() < endAt) {
+    if (signal?.aborted) {
+      return
+    }
     injectTtsSidecarPendingFrame(mixer, peerId, frame)
     await delay(PCM_FRAME_DURATION_MS)
+    if (signal?.aborted) {
+      return
+    }
   }
 }

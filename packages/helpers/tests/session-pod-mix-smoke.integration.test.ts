@@ -340,9 +340,15 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
     }, 180_000)
 
     it('TTS left-only sidecar pans right after setTtsPose +x', async () => {
+      await pod.ensureSession('session-c1')
       await pod.ensureSession('session-c2')
 
-      const listener = await connectClientToSession(wsUrl, 'session-c2', 'client-mix-2')
+      const [talker, listener] = await Promise.all([
+        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
+        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
+      ])
+
+      const pumpAbort = new AbortController()
 
       try {
         const host = getVoiceHostForSession(pod, 'session-c2')
@@ -350,12 +356,16 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
 
         host!.createMixGroup({
           id: 'tts-left-only',
-          clientIds: ['client-mix-2'],
+          clientIds: ['client-mix-1', 'client-mix-2'],
         })
         host!.setPositionalMixing(true)
         host!.setClientPose('client-mix-2', centerPose)
+        host!.setClientPose('client-mix-1', centerPose)
 
+        await talker.mic.writeSample(Buffer.alloc(960), 5)
         await listener.mic.writeSample(Buffer.alloc(960), 5)
+
+        await waitForVoiceClientActive(pod, 'client-mix-1')
         await waitForVoiceClientActive(pod, 'client-mix-2')
 
         const listenerHost = host as VoiceHostTestAccess
@@ -365,7 +375,9 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
 
         listenerHost.setTtsPose('client-mix-2', poseAtX(3))
         const probeDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probe = pumpLoudTtsLeftOnlySidecarFrames(mixer!, 'client-mix-2', probeDurationMs)
+        const probe = pumpLoudTtsLeftOnlySidecarFrames(mixer!, 'client-mix-2', probeDurationMs, {
+          signal: pumpAbort.signal,
+        })
         await waitForInboundStereoEnergy(listener.agentAudio, {
           threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,
@@ -379,6 +391,8 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         await probe
         assertRightLouder(energy.left, energy.right)
       } finally {
+        pumpAbort.abort()
+        closeClient(talker)
         closeClient(listener)
         await delay(100)
       }

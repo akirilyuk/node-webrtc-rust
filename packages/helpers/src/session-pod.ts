@@ -545,6 +545,7 @@ export class SessionPod {
     if (!graph?.setGlobalMute) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
+    const participantId = this.resolveParticipantId(clientId)
     const owning = this.findOwningHostForClient(clientId) ?? this.findMixCapableHost()
     if (!owning) {
       throw new Error('No voice+data session with mix graph is prepared')
@@ -555,20 +556,20 @@ export class SessionPod {
         .map((slot) => slot.host.getClientMixer())
         .filter((mixer): mixer is ClientAudioMixer => mixer != null)
       await Promise.all(mixers.map((mixer) => mixer.pauseAllMixPumps()))
-      graph.setGlobalMute(clientId, muted)
-      graph.pushFrame(clientId, Buffer.alloc(PCM_FULL_FRAME_BYTES))
+      graph.setGlobalMute(participantId, muted)
+      graph.pushFrame(participantId, Buffer.alloc(PCM_FULL_FRAME_BYTES))
       try {
-        await Promise.all(mixers.map((mixer) => mixer.flushAllListenerOutbounds(clientId)))
+        await Promise.all(mixers.map((mixer) => mixer.flushAllListenerOutbounds(participantId)))
       } finally {
         for (const mixer of mixers) {
           mixer.resumeAllMixPumps()
         }
       }
     } else {
-      graph.setGlobalMute(clientId, muted)
+      graph.setGlobalMute(participantId, muted)
     }
 
-    await owning.applyGlobalMuteStt(clientId, muted, options)
+    await owning.applyGlobalMuteStt(participantId, muted, options)
   }
 
   /** Per-listener mute via the shared pod mix graph. */
@@ -577,16 +578,20 @@ export class SessionPod {
     if (!mixHost) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
+    const listenerParticipantId = this.resolveParticipantId(listenerId)
+    const targetParticipantId = this.resolveParticipantId(targetId)
     const listenerMixer = this.findOwningHostForClient(listenerId)?.getClientMixer()
     if (muted && listenerMixer) {
-      await listenerMixer.pauseMixPump(listenerId)
+      await listenerMixer.pauseMixPump(listenerParticipantId)
     }
-    await mixHost.getClientMixer()!.setListenerMute(listenerId, targetId, muted)
+    await mixHost
+      .getClientMixer()!
+      .setListenerMute(listenerParticipantId, targetParticipantId, muted)
     if (muted && listenerMixer) {
       try {
-        await listenerMixer.burstOutboundMix(listenerId)
+        await listenerMixer.burstOutboundMix(listenerParticipantId)
       } finally {
-        listenerMixer.resumeMixPump(listenerId)
+        listenerMixer.resumeMixPump(listenerParticipantId)
       }
     }
   }
@@ -628,8 +633,13 @@ export class SessionPod {
   }
 
   private findOwningHostForClient(clientId: string): VoiceAgentSessionHost | undefined {
+    const slotBySession = this.slots.get(clientId)
+    if (slotBySession) {
+      return slotBySession.host
+    }
+    const participantId = this.resolveParticipantId(clientId)
     for (const slot of this.slots.values()) {
-      if (slot.host.isVoiceClientActive(clientId)) {
+      if (slot.host.isVoiceClientActive(participantId)) {
         return slot.host
       }
     }

@@ -1399,7 +1399,9 @@ export class VoiceAgentSessionHost {
     const wait = {
       peerId,
       pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
-        'ok' | 'failed' | 'pending',
+        | 'ok'
+        | 'failed'
+        | 'pending',
       agent: (agentStatus === 'timed_out'
         ? 'pending'
         : componentOk(agentStatus)
@@ -1695,7 +1697,8 @@ export class VoiceAgentSessionHost {
   /** Creates a mix group with exclusive listener routes (Voice+Data only). */
   createMixGroup(options: CreateMixGroupOptions): void {
     this.assertMixCapable()
-    this.clientMixer!.setGroupMembers(options.id, options.clientIds)
+    const clientIds = options.clientIds.map((clientId) => this.resolveParticipantId(clientId))
+    this.clientMixer!.setGroupMembers(options.id, clientIds)
   }
 
   /** Moves a client into a mix group (exclusive; next 20 ms tick). */
@@ -1768,8 +1771,9 @@ export class VoiceAgentSessionHost {
     options?: { sttEnabled?: boolean },
   ): Promise<void> {
     this.assertMixCapable()
-    await this.clientMixer!.setGlobalMute(clientId, muted)
-    await this.applyGlobalMuteStt(clientId, muted, options)
+    const participantId = this.resolveParticipantId(clientId)
+    await this.clientMixer!.setGlobalMute(participantId, muted)
+    await this.applyGlobalMuteStt(participantId, muted, options)
   }
 
   /** @internal STT side effects for {@link setGlobalMute} (SessionPod may call alone). */
@@ -1808,25 +1812,29 @@ export class VoiceAgentSessionHost {
   /** Per-listener mute: only `listenerId` stops hearing `targetId` (same mix group required). */
   async setListenerMute(listenerId: string, targetId: string, muted: boolean): Promise<void> {
     this.assertMixCapable()
+    const listenerParticipantId = this.resolveParticipantId(listenerId)
+    const targetParticipantId = this.resolveParticipantId(targetId)
     if (muted) {
-      await this.clientMixer!.pauseMixPump(listenerId)
+      await this.clientMixer!.pauseMixPump(listenerParticipantId)
     }
-    await this.clientMixer!.setListenerMute(listenerId, targetId, muted)
+    await this.clientMixer!.setListenerMute(listenerParticipantId, targetParticipantId, muted)
     if (muted) {
       try {
-        await this.clientMixer!.burstOutboundMix(listenerId)
+        await this.clientMixer!.burstOutboundMix(listenerParticipantId)
       } finally {
-        this.clientMixer!.resumeMixPump(listenerId)
+        this.clientMixer!.resumeMixPump(listenerParticipantId)
       }
     }
   }
 
   getClientMixStatus(clientId: string): ClientMixStatus {
     this.assertMixCapable()
-    const snapshot = this.clientMixer!.getMixSnapshot(clientId)
+    const participantId = this.resolveParticipantId(clientId)
+    const snapshot = this.clientMixer!.getMixSnapshot(participantId)
     return {
       ...snapshot,
-      sttEnabled: this.resolveSttEnabledForStatus(clientId),
+      clientId: participantId,
+      sttEnabled: this.resolveSttEnabledForStatus(participantId),
     }
   }
 

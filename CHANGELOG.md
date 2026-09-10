@@ -11,6 +11,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **speech** — Defer language ID identify while TTS synthesis or playback is active; run deferred identify after `agent_speaking_end` so Whisper CPU does not stretch the gap before the first TTS sentence.
+- **speech** — Skip hang-up `user_speaking_end` language ID when inbound speech already started identify for the utterance; only short utterances below `min_speech_ms` still force identify at hang-up (may defer until TTS idle).
 
 ## [0.9.3] - 2026-09-10
 

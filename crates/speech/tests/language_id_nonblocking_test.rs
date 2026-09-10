@@ -50,6 +50,26 @@ impl LanguageIdProvider for SlowLanguageId {
     }
 }
 
+struct CountingLanguageId {
+    calls: Arc<AtomicUsize>,
+    sleep_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl LanguageIdProvider for CountingLanguageId {
+    async fn identify(
+        &self,
+        _pcm: Bytes,
+        _sample_rate: u32,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<LanguageIdResult>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
+        Ok(Some(LanguageIdResult {
+            language: "en".into(),
+        }))
+    }
+}
+
 struct CountingStt {
     bytes: Arc<Mutex<usize>>,
 }
@@ -644,6 +664,238 @@ async fn language_id_does_not_overlap_tts_synthesis() {
     assert!(
         saw_user_language,
         "expected user_language after deferred identify"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+struct CountingLidTestFactory {
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_calls: Arc<AtomicUsize>,
+    lid_sleep_ms: u64,
+}
+
+impl VendorFactory for CountingLidTestFactory {
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        if config.provider == SttVendor::Mock {
+            Ok(Box::new(CountingStt {
+                bytes: Arc::clone(&self.stt_bytes),
+            }))
+        } else {
+            MockFactory.create_stt(config)
+        }
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(Some(Box::new(CountingLanguageId {
+            calls: Arc::clone(&self.lid_calls),
+            sleep_ms: self.lid_sleep_ms,
+        })))
+    }
+}
+
+fn agent_with_counting_lid(
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_calls: Arc<AtomicUsize>,
+    gate_stt: bool,
+) -> Arc<VoiceAgent> {
+    let factory = Arc::new(CountingLidTestFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        lid_calls: Arc::clone(&lid_calls),
+        lid_sleep_ms: 50,
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = gate_stt;
+
+    let config = VoiceAgentConfig {
+        stt: if gate_stt {
+            Some(SttConfig {
+                provider: SttVendor::Mock,
+                model: None,
+                model_path: None,
+                language: Some("en".into()),
+                api_key: None,
+            })
+        } else {
+            None
+        },
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    VoiceAgent::new(config, Arc::new(registry)).unwrap()
+}
+
+#[tokio::test]
+async fn hangup_does_not_start_second_identify_after_inbound_lid() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = agent_with_counting_lid(Arc::clone(&stt_bytes), Arc::clone(&lid_calls), true);
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    // Cross min_speech_ms=200 so inbound spawns identify (not hang-up).
+    for _ in 0..12 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    // TTS starts immediately — hang-up must not queue a second Whisper job.
+    agent
+        .send_text_to_tts_with_options(
+            "one two three",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let lang_deadline = Instant::now() + Duration::from_secs(3);
+    let mut saw_user_language = false;
+    while Instant::now() < lang_deadline {
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == SpeechEventKind::UserLanguage {
+                assert_eq!(event.language.as_deref(), Some("en"));
+                saw_user_language = true;
+                break;
+            }
+        }
+        if saw_user_language {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saw_user_language,
+        "expected user_language from inbound identify pass"
+    );
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "user_speaking_end must not start a second identify when inbound already did"
+    );
+
+    agent.wait_tts_playback_idle().await.unwrap();
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "deferred hang-up identify must not run after inbound identify completed"
+    );
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn short_utterance_still_gets_user_language_after_tts_idle() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    // gate_stt off so VAD emits user_speaking_end without waiting for mock STT finals.
+    let agent = agent_with_counting_lid(Arc::clone(&stt_bytes), Arc::clone(&lid_calls), false);
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    // VAD speech start only — below min_speech_ms=200 for inbound LID.
+    for _ in 0..3 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    agent
+        .send_text_to_tts_with_options(
+            "one two three",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    let lang_deadline = Instant::now() + Duration::from_secs(3);
+    let mut saw_user_language = false;
+    while Instant::now() < lang_deadline {
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == SpeechEventKind::UserLanguage {
+                assert_eq!(event.language.as_deref(), Some("en"));
+                saw_user_language = true;
+                break;
+            }
+        }
+        if saw_user_language {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saw_user_language,
+        "short utterance should get user_language after deferred hang-up identify"
+    );
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "short utterance should run exactly one identify after TTS idle"
     );
 
     agent.stop().await.unwrap();

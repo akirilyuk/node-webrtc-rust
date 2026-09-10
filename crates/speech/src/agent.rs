@@ -151,6 +151,8 @@ struct AgentInner {
     lid_identify_in_flight: bool,
     /// LID identify was requested during TTS; run after outbound playback drains.
     lid_identify_deferred: bool,
+    /// True once inbound speech started or deferred LID for this utterance (skip hang-up force identify).
+    lid_identify_started_this_utterance: bool,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -298,6 +300,7 @@ impl VoiceAgent {
                 lid_last_emitted: None,
                 lid_identify_in_flight: false,
                 lid_identify_deferred: false,
+                lid_identify_started_this_utterance: false,
             })),
             stt: Mutex::new(stt),
             language_id: Mutex::new(language_id),
@@ -1666,6 +1669,7 @@ impl VoiceAgent {
         inner.lid_buffering = false;
         inner.lid_identify_in_flight = false;
         inner.lid_identify_deferred = false;
+        inner.lid_identify_started_this_utterance = false;
     }
 
     async fn start_lid_buffering(&self) {
@@ -1707,7 +1711,23 @@ impl VoiceAgent {
 
     async fn emit_user_speaking_end_with_lid(&self) {
         self.emit(SpeechEvent::user_speaking_end());
-        self.spawn_identify_language(true).await;
+        let should_force_identify = {
+            let mut inner = self.inner.lock().await;
+            inner.lid_buffering = false;
+            !inner.lid_identify_started_this_utterance && !inner.lid_identify_in_flight
+        };
+        if should_force_identify {
+            self.spawn_identify_language(true).await;
+        }
+        // Hang-up defer may land after TTS already drained (short utterance + fast mock TTS).
+        if !self.tts_active_for_lid_defer().await {
+            Self::maybe_spawn_deferred_lid_after_tts(
+                &self.weak_self,
+                &self.tts_synthesis_queue,
+                &self.inner,
+            )
+            .await;
+        }
     }
 
     async fn tts_active_for_lid_defer(&self) -> bool {
@@ -1736,6 +1756,7 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             if language_id_enabled(&inner.config.language_id) {
                 inner.lid_identify_deferred = true;
+                inner.lid_identify_started_this_utterance = true;
                 voice_debug("LID identify deferred (TTS active)");
             }
             return;
@@ -1743,7 +1764,11 @@ impl VoiceAgent {
 
         let job = {
             let mut inner = self.inner.lock().await;
-            if !language_id_enabled(&inner.config.language_id) || inner.lid_identify_in_flight {
+            if !language_id_enabled(&inner.config.language_id) {
+                return;
+            }
+            if inner.lid_identify_in_flight {
+                inner.lid_identify_started_this_utterance = true;
                 return;
             }
             let min_ms = resolved_language_id_min_speech_ms(
@@ -1759,7 +1784,9 @@ impl VoiceAgent {
             }
             inner.lid_identify_deferred = false;
             inner.lid_identify_in_flight = true;
+            inner.lid_identify_started_this_utterance = true;
             let pcm = Bytes::from(inner.lid_pcm_buffer.clone());
+            inner.lid_pcm_buffer.clear();
             let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
             let last_emitted = inner.lid_last_emitted.clone();
             Some((pcm, allowlist_cfg, last_emitted))
@@ -1785,6 +1812,7 @@ impl VoiceAgent {
             let agent = upgraded.expect("upgrade");
             let mut inner = agent.inner.lock().await;
             inner.lid_identify_in_flight = false;
+            inner.lid_identify_deferred = false;
             if force {
                 inner.lid_buffering = false;
             }
@@ -1820,11 +1848,7 @@ impl VoiceAgent {
     ) {
         let should_run = {
             let guard = inner.lock().await;
-            if !language_id_enabled(&guard.config.language_id) {
-                false
-            } else {
-                guard.lid_identify_deferred || !guard.lid_pcm_buffer.is_empty()
-            }
+            language_id_enabled(&guard.config.language_id) && guard.lid_identify_deferred
         };
         if !should_run {
             return;

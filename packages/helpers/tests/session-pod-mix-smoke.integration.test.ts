@@ -368,6 +368,26 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         await waitForVoiceClientActive(pod, 'client-mix-1')
         await waitForVoiceClientActive(pod, 'client-mix-2')
 
+        // Prime mix path after mega-test teardown (same sequence as leftover mic drain).
+        const probeMicDurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
+        const probeMic = pumpLoudMicFrames(
+          (frame, duration) => talker.mic.writeSample(frame, duration),
+          probeMicDurationMs,
+        )
+        await waitForInboundStereoEnergy(listener.agentAudio, {
+          threshold: LOUD_MIC_ENERGY_THRESHOLD,
+          timeoutMs: LOUD_MIC_ENERGY_WAIT_MS,
+          label: 'left-only prime talker mic',
+        })
+        await probeMic
+
+        await waitForInboundStereoQuiet(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
+          quietWindowMs: TTS_QUIET_WINDOW_MS,
+          timeoutMs: TTS_QUIET_WAIT_MS,
+          label: 'left-only prime mic drain',
+        })
+
         const listenerHost = host as VoiceHostTestAccess
         const mixer = listenerHost.getClientMixer()
         expect(mixer).toBeDefined()

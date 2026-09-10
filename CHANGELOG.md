@@ -8,14 +8,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-09-10
+
+Spoken language ID runs once per user utterance and no longer overlaps Piper TTS.
+
 ### Changed
 
-- **speech** — Spoken language ID defaults to **once per user utterance** (~`minSpeechMs` of inbound speech), then stops until the next `user_speaking_start`. Opt in to `languageId.continuous: true` (runner `SHERPA_LID_CONTINUOUS`) to re-check during long utterances; continuous mode uses extra CPU and **can starve Piper TTS**, stretching gaps between sentences.
+- **speech** — Spoken language ID defaults to **once per user utterance** (~`minSpeechMs` of inbound speech), then stops until the next `user_speaking_start`. Opt in to `languageId.continuous: true` (runner `SHERPA_LID_CONTINUOUS`) to re-check during long utterances; continuous mode uses extra CPU and **can starve Piper TTS**, stretching gaps between sentences. (#215)
 
 ### Fixed
 
-- **speech** — Defer language ID identify while TTS synthesis or playback is active; run deferred identify after `agent_speaking_end` so Whisper CPU does not stretch the gap before the first TTS sentence.
-- **speech** — Skip hang-up `user_speaking_end` language ID when inbound speech already started identify for the utterance; only short utterances below `min_speech_ms` still force identify at hang-up (may defer until TTS idle).
+- **speech** — Defer language ID identify while TTS synthesis or playback is active; run deferred identify after `agent_speaking_end` so Whisper CPU does not stretch the gap before the first TTS sentence. (#215)
+- **speech** — Skip hang-up `user_speaking_end` language ID when inbound speech already started identify for the utterance; only short utterances below `min_speech_ms` still force identify at hang-up (may defer until TTS idle). (#215)
+
+**Compare:** [`release/0.9.3…release/0.9.4`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.3...release/0.9.4)
 
 ## [0.9.3] - 2026-09-10
 

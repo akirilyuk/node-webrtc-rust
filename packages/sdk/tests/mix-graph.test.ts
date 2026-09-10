@@ -117,4 +117,23 @@ describe('AudioMixGraph', () => {
     const rNamed = named.readInt16LE(2)
     expect(Math.abs(lNamed - rNamed)).toBeLessThan(500)
   })
+
+  test('setTtsPose pans left-only TTS to the right channel', () => {
+    const graph = new AudioMixGraph()
+    graph.setPositionalEnabled(true)
+    graph.setTtsPose('listener', {
+      position: { ...vec3Zero(), x: 3 },
+      orientation: quatIdentity(),
+    })
+    const leftOnly = Buffer.alloc(3840)
+    for (let i = 0; i < 3840; i += 4) {
+      leftOnly.writeInt16LE(10_000, i)
+      leftOnly.writeInt16LE(0, i + 2)
+    }
+    const panned = graph.panTtsFrame(leftOnly, 'listener')
+    const l = panned.readInt16LE(0)
+    const r = panned.readInt16LE(2)
+    expect(r).toBeGreaterThan(l * 1.5)
+    expect(r).toBeGreaterThan(0)
+  })
 })

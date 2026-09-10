@@ -292,8 +292,9 @@ export class AudioClipController {
   }
 
   /**
-   * Append `mixInputId` only to targeted listeners. Non-targets keep implicit/group routes
-   * untouched — they do not hear the clip because it is not a mix-group member.
+   * When targeting a subset of mix peers, append `mixInputId` only to targeted listeners and
+   * pin non-targets to explicit routes that omit the clip input (implicit hear-all would
+   * still mix `addInput(clip)` into every listener).
    */
   private applyTargetPlayRoutes(
     routeSnapshots: RouteSnapshot[],
@@ -302,23 +303,31 @@ export class AudioClipController {
     mixInputId: string,
     targetPeerIds: string[],
   ): void {
-    const targets = new Set(targetPeerIds)
-    for (const listenerId of registered) {
-      if (!targets.has(listenerId)) continue
+    if (!graph.setListenerSources) return
 
+    const targets = new Set(targetPeerIds)
+    const subsetTargeting = targets.size > 0 && registered.some((peerId) => !targets.has(peerId))
+
+    for (const listenerId of registered) {
       const current = graph.listenerSources?.(listenerId) ?? null
-      const baseSources =
-        current != null ? [...current] : registered.filter((peerId) => peerId !== listenerId)
-      const nextSources = baseSources.includes(mixInputId)
-        ? baseSources
-        : [...baseSources, mixInputId]
+      const implicitBase = registered.filter((peerId) => peerId !== listenerId)
+      const baseSources = current != null ? [...current] : implicitBase
+
+      let nextSources: string[]
+      if (targets.has(listenerId)) {
+        nextSources = baseSources.includes(mixInputId) ? baseSources : [...baseSources, mixInputId]
+      } else if (subsetTargeting) {
+        nextSources = baseSources.filter((source) => source !== mixInputId)
+      } else {
+        continue
+      }
 
       routeSnapshots.push({
         listenerId,
         hadExplicit: current != null,
         previousSources: current != null ? [...current] : null,
       })
-      graph.setListenerSources?.(listenerId, nextSources)
+      graph.setListenerSources(listenerId, nextSources)
     }
   }
 

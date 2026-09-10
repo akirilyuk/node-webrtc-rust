@@ -743,6 +743,33 @@ mod tests {
         assert!(r > l);
     }
 
+    fn left_only_stereo(amplitude: i16) -> Frame {
+        let mut pcm = vec![0u8; frame::FRAME_BYTES];
+        for i in 0..frame::SAMPLES_PER_FRAME / 2 {
+            let base = i * 4;
+            pcm[base..base + 2].copy_from_slice(&amplitude.to_le_bytes());
+        }
+        Frame::new(Bytes::from(pcm), None)
+    }
+
+    #[test]
+    fn tts_pose_right_pans_left_only_frame() {
+        let mut graph = MixGraph::new();
+        graph.set_positional_enabled(true);
+        graph.set_tts_pose(
+            "listener",
+            ClientPose {
+                position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
+        let frame = left_only_stereo(10_000);
+        let panned = graph.pan_tts_frame(&frame, "listener");
+        let (l, r) = first_lr(&panned);
+        assert!(r > l * 3 / 2);
+        assert!(r > 0);
+    }
+
     #[test]
     fn tts_pose_ignored_when_positional_off() {
         let mut graph = MixGraph::new();

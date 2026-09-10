@@ -26,6 +26,7 @@ import {
   startHoldbackWavServer,
   type ClipEncodingFixture,
 } from './clip-fixture-helpers.js'
+import { assertMuchQuieter, stereoRmsFromSplitChannels } from './mix-energy-helpers.js'
 
 const clipFixtures = loadClipFixtures()
 const wavFixture = clipFixtures.find((f) => f.ext === 'wav')
@@ -336,6 +337,8 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     }
   }, 120_000)
 
+  // One session, two peers, shared MixGraph — same topology as staging clip-playback probe G.
+  // SessionPod 3-session pods use isolated mixers and would not reproduce the shared-graph leak.
   it('peerIds targets one client; other client does not hear clip', async () => {
     expect(wavFixture).toBeDefined()
 
@@ -359,6 +362,18 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       const heardB = await collectAgentFrames(clientB.agentAudio, 'client-b', 15)
       assertTonePresentStereo(heardA.left, heardA.right, wavFixture!.freqHz, 'target A')
       assertToneAbsentStereo(heardB.left, heardB.right, wavFixture!.freqHz, 'non-target B')
+
+      const targetEnergy = stereoRmsFromSplitChannels(heardA.left, heardA.right)
+      const excludedEnergy = stereoRmsFromSplitChannels(heardB.left, heardB.right)
+      try {
+        assertMuchQuieter(excludedEnergy, targetEnergy)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        throw new Error(
+          `non-target B must be much quieter than target A (shared MixGraph clip leak): ${msg}`,
+        )
+      }
+
       host.stopAudioPlay(playId)
     } finally {
       closeClient(clientA)

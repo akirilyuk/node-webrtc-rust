@@ -309,8 +309,10 @@ pub fn apply_pan_gains(frame: &Frame, gains: PanGains) -> Frame {
         let l = i16::from_le_bytes([pcm[base], pcm[base + 1]]);
         let r = i16::from_le_bytes([pcm[base + 2], pcm[base + 3]]);
 
-        let l_out = (f32::from(l) * gains.left).round() as i32;
-        let r_out = (f32::from(r) * gains.right).round() as i32;
+        // Downmix mono / left-only TTS (common from Piper/Sherpa) before equal-power pan.
+        let mid = (f32::from(l) + f32::from(r)) * 0.5;
+        let l_out = (mid * gains.left).round() as i32;
+        let r_out = (mid * gains.right).round() as i32;
 
         pcm[base..base + 2].copy_from_slice(&(l_out as i16).to_le_bytes());
         pcm[base + 2..base + 4].copy_from_slice(&(r_out as i16).to_le_bytes());
@@ -386,6 +388,25 @@ mod tests {
             pan_frame_with_placement(&frame, MixPlacement::Right, DistanceParams::default());
         let (l, r) = first_lr(&panned);
         assert!(r > l);
+        assert!(r > 0);
+    }
+
+    fn left_only_frame(amplitude: i16) -> Frame {
+        let mut pcm = vec![0u8; FRAME_BYTES];
+        for i in 0..SAMPLES_PER_FRAME / 2 {
+            let base = i * 4;
+            pcm[base..base + 2].copy_from_slice(&amplitude.to_le_bytes());
+        }
+        Frame::new(bytes::Bytes::from(pcm), None)
+    }
+
+    #[test]
+    fn left_only_frame_right_placement_pans_to_right_channel() {
+        let frame = left_only_frame(10_000);
+        let panned =
+            pan_frame_with_placement(&frame, MixPlacement::Right, DistanceParams::default());
+        let (l, r) = first_lr(&panned);
+        assert!(r > l * 3 / 2);
         assert!(r > 0);
     }
 

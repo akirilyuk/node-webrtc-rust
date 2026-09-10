@@ -26,6 +26,7 @@ import {
   assertMuchQuieter,
   assertRightLouder,
   pumpLoudMicFrames,
+  pumpLoudTtsLeftOnlySidecarFrames,
   pumpLoudTtsSidecarFrames,
   waitForInboundStereoEnergy,
   waitForInboundStereoQuiet,
@@ -334,6 +335,51 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         closeClient(client1)
         closeClient(client2)
         closeClient(client3)
+        await delay(100)
+      }
+    }, 180_000)
+
+    it('TTS left-only sidecar pans right after setTtsPose +x', async () => {
+      await pod.ensureSession('session-c2')
+
+      const listener = await connectClientToSession(wsUrl, 'session-c2', 'client-mix-2')
+
+      try {
+        const host = getVoiceHostForSession(pod, 'session-c2')
+        expect(host).toBeDefined()
+
+        host!.createMixGroup({
+          id: 'tts-left-only',
+          clientIds: ['client-mix-2'],
+        })
+        host!.setPositionalMixing(true)
+        host!.setClientPose('client-mix-2', centerPose)
+
+        await listener.mic.writeSample(Buffer.alloc(960), 5)
+        await waitForVoiceClientActive(pod, 'client-mix-2')
+
+        const listenerHost = host as VoiceHostTestAccess
+        const mixer = listenerHost.getClientMixer()
+        expect(mixer).toBeDefined()
+        mixer!.createTtsSidecar('client-mix-2')
+
+        listenerHost.setTtsPose('client-mix-2', poseAtX(3))
+        const probeDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
+        const probe = pumpLoudTtsLeftOnlySidecarFrames(mixer!, 'client-mix-2', probeDurationMs)
+        await waitForInboundStereoEnergy(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
+          timeoutMs: TTS_ENERGY_WAIT_MS,
+          label: 'left-only TTS pan +x',
+        })
+        const energy = await accumulateDirectionalStereoRms(
+          listener.agentAudio,
+          ENERGY_PROBE_MS,
+          'right',
+        )
+        await probe
+        assertRightLouder(energy.left, energy.right)
+      } finally {
+        closeClient(listener)
         await delay(100)
       }
     }, 180_000)

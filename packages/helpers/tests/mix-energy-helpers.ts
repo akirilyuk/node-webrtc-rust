@@ -1,12 +1,7 @@
 import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 
-import type { ClientAudioMixer } from '../src/client-audio-mixer.js'
 import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 import { delay } from './mix-three-client-helpers.js'
-
-type MixerTtsTestAccess = ClientAudioMixer & {
-  peers: Map<string, { pendingTts: Buffer | null }>
-}
 
 const DEFAULT_LOUDER_RATIO = 1.5
 /** Default peak-RMS ratio: muted mix must stay below baseline * this factor. */
@@ -20,17 +15,6 @@ export function createLoudStereoFrame(amplitude = LOUD_AMPLITUDE): Buffer {
   for (let i = 0; i < frames; i++) {
     out.writeInt16LE(amplitude, i * 4)
     out.writeInt16LE(amplitude, i * 4 + 2)
-  }
-  return out
-}
-
-/** Left-channel-only loud PCM (mirrors Piper/Sherpa mono TTS before downmix pan). */
-export function createLoudLeftOnlyFrame(amplitude = LOUD_AMPLITUDE): Buffer {
-  const frames = PCM_FULL_FRAME_BYTES / 4
-  const out = Buffer.alloc(PCM_FULL_FRAME_BYTES)
-  for (let i = 0; i < frames; i++) {
-    out.writeInt16LE(amplitude, i * 4)
-    out.writeInt16LE(0, i * 4 + 2)
   }
   return out
 }
@@ -228,31 +212,6 @@ export async function accumulateInboundStereoRms(
   return peak
 }
 
-/**
- * Peak L/R RMS using only frames where the expected channel already dominates.
- * Avoids max(L)/max(R) from different pose phases in one window (TTS pose flip).
- */
-export async function accumulateDirectionalStereoRms(
-  track: RemoteAudioTrack,
-  durationMs: number,
-  louderSide: 'left' | 'right',
-): Promise<{ left: number; right: number }> {
-  let peak = { left: 0, right: 0 }
-  const endAt = Date.now() + durationMs
-  while (Date.now() < endAt) {
-    const sample = await track.readSample()
-    if (sample && sample.byteLength >= 4) {
-      const frame = stereoRms(sample)
-      const matches = louderSide === 'left' ? frame.left > frame.right : frame.right > frame.left
-      if (matches) {
-        peak = mergeStereoRms(peak, frame)
-      }
-    }
-    await delay(5)
-  }
-  return peak
-}
-
 export async function pumpLoudMicFrames(
   writeSample: (data: Buffer, durationMs: number) => Promise<void>,
   durationMs: number,
@@ -262,60 +221,5 @@ export async function pumpLoudMicFrames(
   while (Date.now() < endAt) {
     await writeSample(frame, PCM_FRAME_DURATION_MS)
     await delay(PCM_FRAME_DURATION_MS)
-  }
-}
-
-/**
- * Simulates VoiceAgent native TTS drain into the mix pump. JS {@link LocalAudioTrack.writeSample}
- * does not invoke {@link LocalAudioTrack.setWriteSampleTee}; only native notify_write_tee does.
- */
-export function injectTtsSidecarPendingFrame(
-  mixer: ClientAudioMixer,
-  peerId: string,
-  pcm: Buffer,
-): void {
-  if (pcm.length !== PCM_FULL_FRAME_BYTES) {
-    throw new Error(`TTS sidecar frame must be ${PCM_FULL_FRAME_BYTES} bytes, got ${pcm.length}`)
-  }
-  const state = (mixer as MixerTtsTestAccess).peers.get(peerId)
-  if (!state) {
-    throw new Error(`ClientAudioMixer peer ${peerId} is not registered`)
-  }
-  state.pendingTts = Buffer.from(pcm)
-}
-
-/** Loud constant PCM into pendingTts each 20 ms tick (mirrors wired sidecar tee semantics). */
-export async function pumpLoudTtsSidecarFrames(
-  mixer: ClientAudioMixer,
-  peerId: string,
-  durationMs: number,
-): Promise<void> {
-  const frame = createLoudStereoFrame()
-  const endAt = Date.now() + durationMs
-  while (Date.now() < endAt) {
-    injectTtsSidecarPendingFrame(mixer, peerId, frame)
-    await delay(PCM_FRAME_DURATION_MS)
-  }
-}
-
-/** Left-only loud PCM into pendingTts each 20 ms tick (catches pre-downmix pan regressions). */
-export async function pumpLoudTtsLeftOnlySidecarFrames(
-  mixer: ClientAudioMixer,
-  peerId: string,
-  durationMs: number,
-  options?: { signal?: AbortSignal },
-): Promise<void> {
-  const frame = createLoudLeftOnlyFrame()
-  const endAt = Date.now() + durationMs
-  const signal = options?.signal
-  while (Date.now() < endAt) {
-    if (signal?.aborted) {
-      return
-    }
-    injectTtsSidecarPendingFrame(mixer, peerId, frame)
-    await delay(PCM_FRAME_DURATION_MS)
-    if (signal?.aborted) {
-      return
-    }
   }
 }

@@ -15,6 +15,7 @@ Targeted clip play no longer leaks to non-target MixGraph listeners; left-only T
 ### Fixed
 
 - **helpers** — Subset `playAudio` pins non-target mix peers to explicit listener sources **without** the clip input, so implicit MixGraph hear-all cannot leak targeted clips (staging clip-playback probe G). `resolveParticipantId` maps orchestrator session ids to mix peer ids on the host and SessionPod. (#209)
+- **helpers** — `listRegisteredPeers()` is graph-scoped across per-slot `ClientAudioMixer` wrappers that share one MixGraph (`shared_child_per_session`). Empty `peerIds` broadcasts to all mix-registered peers, not only the issuing host. SessionPod 3-session integration covers clip-playback-smoke probes G and H.
 - **mixer** — `apply_pan_gains` downmixes `(L+R)/2` before equal-power pan so left-only Piper/Sherpa TTS follows `set_tts_pose` / placement (staging voice-data-mix probe E). (#209)
 - **helpers** — SessionPod clip targeting asserts excluded inbound energy is much quieter than the target. Mix-smoke pumps left-only TTS sidecar and asserts right-loud after pose +x. (#209)
 

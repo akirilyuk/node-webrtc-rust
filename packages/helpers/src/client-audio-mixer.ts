@@ -204,8 +204,12 @@ export class ClientAudioMixer {
     return this.graph
   }
 
-  /** Registered peer ids (mix inputs). */
+  /** Registered peer ids on this host plus any peers registered on other mixers sharing this graph. */
   listRegisteredPeers(): string[] {
+    const state = getGraphGroupState(this.graph)
+    if (state.knownClientIds.size > 0) {
+      return [...state.knownClientIds].sort()
+    }
     return [...this.registered]
   }
 

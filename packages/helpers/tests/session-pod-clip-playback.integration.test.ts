@@ -26,7 +26,12 @@ import {
   startHoldbackWavServer,
   type ClipEncodingFixture,
 } from './clip-fixture-helpers.js'
-import { assertMuchQuieter, stereoRmsFromSplitChannels } from './mix-energy-helpers.js'
+import {
+  accumulateInboundStereoRms,
+  assertMuchQuieter,
+  stereoRmsFromSplitChannels,
+  waitForInboundStereoQuiet,
+} from './mix-energy-helpers.js'
 
 const clipFixtures = loadClipFixtures()
 const wavFixture = clipFixtures.find((f) => f.ext === 'wav')
@@ -70,6 +75,15 @@ function sessionPodClipNativeAvailable(): boolean {
     return false
   }
 }
+
+const CLIP_RMS_PROBE_MS = 1800
+const QUIET_BASELINE_PROBE_MS = 400
+const QUIET_WINDOW_MS = 400
+const QUIET_WAIT_MS = 20_000
+const STEREO_QUIET_THRESHOLD = 200
+
+const SESSION_IDS = ['session-c1', 'session-c2', 'session-c3'] as const
+const CLIENT_IDS = ['client-mix-1', 'client-mix-2', 'client-mix-3'] as const
 
 const centerPose = { position: vec3Zero(), orientation: quatIdentity() }
 
@@ -137,6 +151,22 @@ async function waitForVoiceClientActive(
     await delay(20)
   }
   throw new Error(`voice client ${peerId} not active within ${timeoutMs}ms`)
+}
+
+async function waitForVoiceClientActiveOnPod(
+  pod: SessionPod,
+  clientId: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    for (const sessionId of SESSION_IDS) {
+      const host = getVoiceHostForSession(pod, sessionId)
+      if (host?.isVoiceClientActive(clientId)) return
+    }
+    await delay(50)
+  }
+  throw new Error(`timed out waiting for active voice client ${clientId}`)
 }
 
 async function connectReadyVoiceClient(
@@ -508,6 +538,85 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       await delay(100)
     }
   }, 120_000)
+
+  it.skipIf(!wavFixture)(
+    'shared MixGraph 3-session probe G+H matches clip-playback-smoke energy checks',
+    async () => {
+      for (const sessionId of SESSION_IDS) {
+        await pod.ensureSession(sessionId)
+      }
+
+      const hostC1 = getVoiceHostForSession(pod, 'session-c1')!
+      hostC1.createMixGroup({ id: 'clip-shared', clientIds: [...CLIENT_IDS] })
+
+      const [client1, client2, client3] = await Promise.all([
+        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
+        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
+        connectClientToSession(wsUrl, 'session-c3', 'client-mix-3'),
+      ])
+
+      try {
+        await client1.mic.writeSample(Buffer.alloc(960), 5)
+        await client2.mic.writeSample(Buffer.alloc(960), 5)
+        await client3.mic.writeSample(Buffer.alloc(960), 5)
+
+        for (const clientId of CLIENT_IDS) {
+          await waitForVoiceClientActiveOnPod(pod, clientId)
+        }
+
+        const listener = client2
+        await waitForInboundStereoQuiet(listener.agentAudio, {
+          threshold: STEREO_QUIET_THRESHOLD,
+          quietWindowMs: QUIET_WINDOW_MS,
+          timeoutMs: QUIET_WAIT_MS,
+          label: 'quiet baseline before clip play',
+        })
+        const quietBaseline = await accumulateInboundStereoRms(
+          listener.agentAudio,
+          QUIET_BASELINE_PROBE_MS,
+        )
+
+        const rmsGListener = accumulateInboundStereoRms(listener.agentAudio, CLIP_RMS_PROBE_MS)
+        const rmsGExcluded = accumulateInboundStereoRms(client3.agentAudio, CLIP_RMS_PROBE_MS)
+        const { playId: playIdG } = await hostC1.playAudio({
+          source: { path: wavFixture!.path },
+          peerIds: ['session-c2'],
+        })
+        await waitForClipPlaying(hostC1, playIdG)
+        const [energyGListener, energyGExcluded] = await Promise.all([rmsGListener, rmsGExcluded])
+        assertMuchQuieter(quietBaseline, energyGListener)
+        assertMuchQuieter(energyGExcluded, energyGListener)
+        hostC1.stopAudioPlay(playIdG)
+
+        await waitForInboundStereoQuiet(listener.agentAudio, {
+          threshold: STEREO_QUIET_THRESHOLD,
+          quietWindowMs: QUIET_WINDOW_MS,
+          timeoutMs: QUIET_WAIT_MS,
+          label: 'clip drain after probe G',
+        })
+
+        const clients = [client1, client2, client3]
+        const rmsH = clients.map((client) =>
+          accumulateInboundStereoRms(client.agentAudio, CLIP_RMS_PROBE_MS),
+        )
+        const { playId: playIdH } = await hostC1.playAudio({
+          source: { path: wavFixture!.path },
+        })
+        await waitForClipPlaying(hostC1, playIdH)
+        const energiesH = await Promise.all(rmsH)
+        for (const energy of energiesH) {
+          assertMuchQuieter(quietBaseline, energy)
+        }
+        hostC1.stopAudioPlay(playIdH)
+      } finally {
+        closeClient(client1)
+        closeClient(client2)
+        closeClient(client3)
+        await delay(100)
+      }
+    },
+    180_000,
+  )
 
   it('setTtsPosition pose pans mock TTS when positional mixing on', async () => {
     const sessionId = CLIP_SESSION_ID

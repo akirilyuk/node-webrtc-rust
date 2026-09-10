@@ -24,7 +24,7 @@ npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json
 echo "==> lint"
 npm run lint
 
-echo "==> helpers unit tests (vitest, no native .node)"
+echo "==> helpers unit tests (vitest, no native .node; excludes *.integration.test.ts)"
 bash scripts/ci/run-helpers-unit-tests.sh
 
 echo "==> Sherpa example typecheck"

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Vitest for @node-webrtc-rust/helpers and its multi-client example (no native .node).
+# Vitest for @node-webrtc-rust/helpers unit tests (excludes *.integration.test.ts)
+# and its multi-client example. Quality job has no native .node; leftover bindings
+# on a self-hosted runner must not pull SessionPod mix-smoke into this script.
 # Called from run-pr-quality.sh (PR + main quality job) and via npm run test:helpers.
+# Native helpers integration: npm run test:integration --workspace=@node-webrtc-rust/helpers
+# (run-pr-integration.sh after npm test).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

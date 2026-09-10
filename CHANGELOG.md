@@ -20,6 +20,7 @@ Spoken language ID runs once per user utterance and no longer overlaps Piper TTS
 
 - **speech** — Defer language ID identify while TTS synthesis or playback is active; run deferred identify after `agent_speaking_end` so Whisper CPU does not stretch the gap before the first TTS sentence. (#215)
 - **speech** — Skip hang-up `user_speaking_end` language ID when inbound speech already started identify for the utterance; only short utterances below `min_speech_ms` still force identify at hang-up (may defer until TTS idle). (#215)
+- **ci** — Helpers default `npm test` excludes `*.integration.test.ts` so the quality job (no native `.node` required) cannot run SessionPod mix-smoke against leftover bindings. Integration job runs `npm run test:integration --workspace=@node-webrtc-rust/helpers`.
 
 **Compare:** [`release/0.9.3…release/0.9.4`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.3...release/0.9.4)
 

@@ -295,6 +295,71 @@ describe('VoiceAgentSessionHost playAudio', () => {
     expect(playerMocks.playClip).toHaveBeenCalledWith('/tmp/demo.wav')
   })
 
+  it('shared graph: orchestrator session id targets one peer; non-targets pinned without clip', async () => {
+    const graph = createMockMixGraph()
+    const host = new VoiceAgentSessionHost(createStubSignaling('session-c1') as never, [], {
+      voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
+      sessionMode: 'voice+data',
+      clientMixGraph: graph,
+      sessionBudget: {
+        tryAcquire: () => 'lease-test',
+        release: () => undefined,
+        snapshot: () => ({ active: 0, max: 0, available: 0, rejectedTotal: 0 }),
+      },
+      resolveParticipantId: (id) => (id === 'session-c2' ? 'client-b' : id),
+    }) as HostTestAccess
+
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    const mixer = host.getClientMixer()
+    mixer?.registerPeer('client-a')
+    mixer?.registerPeer('client-b')
+    mixer?.registerPeer('client-c')
+
+    await host.playAudio({
+      source: { bytes: Buffer.from('wav') },
+      peerIds: ['session-c2'],
+    })
+
+    expect(graph.setListenerSources).toHaveBeenCalled()
+    expect(graph.listenerRoutes.get('client-b')).toContain('play:play-bytes')
+    const routesC = graph.listenerRoutes.get('client-c') ?? []
+    expect(routesC).not.toContain('play:play-bytes')
+    expect(routesC).toEqual(['client-a', 'client-b'])
+  })
+
+  it('shared graph: omitted peerIds targets all mix-registered peers (broadcast)', async () => {
+    const graph = createMockMixGraph()
+    const host = new VoiceAgentSessionHost(createStubSignaling('session-c1') as never, [], {
+      voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
+      sessionMode: 'voice+data',
+      clientMixGraph: graph,
+      sessionBudget: {
+        tryAcquire: () => 'lease-test',
+        release: () => undefined,
+        snapshot: () => ({ active: 0, max: 0, available: 0, rejectedTotal: 0 }),
+      },
+    }) as HostTestAccess
+
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    const mixer = host.getClientMixer()
+    mixer?.registerPeer('client-a')
+    mixer?.registerPeer('client-b')
+    mixer?.registerPeer('client-c')
+
+    await host.playAudio({ source: { bytes: Buffer.from('wav') } })
+
+    expect(graph.addInput).toHaveBeenCalledWith('play:play-bytes')
+    for (const peerId of ['client-a', 'client-b', 'client-c']) {
+      expect(graph.listenerRoutes.get(peerId)).toContain('play:play-bytes')
+    }
+  })
+
   it('applies clip placement via setSourceMixPlacement', async () => {
     const graph = createMockMixGraph()
     const host = createHost('voice+data', graph)

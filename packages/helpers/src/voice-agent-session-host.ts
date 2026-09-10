@@ -1623,11 +1623,12 @@ export class VoiceAgentSessionHost {
 
   private validateAudioPlayPeerIds(peerIds?: string[]): void {
     if (peerIds == null || peerIds.length === 0) return
+    const mixPeers = new Set(this.listMixRegisteredPeers())
     for (const peerId of peerIds) {
       const resolved = this.resolveParticipantId(peerId)
-      if (!this.isVoiceClientActive(resolved)) {
-        throw new Error(`No active voice session for client ${peerId}`)
-      }
+      if (this.isVoiceClientActive(resolved)) continue
+      if (mixPeers.has(resolved)) continue
+      throw new Error(`No active voice session for client ${peerId}`)
     }
   }
 
@@ -1668,6 +1669,10 @@ export class VoiceAgentSessionHost {
     return {
       resolveTargetPeerIds: (peerIds?: string[]) => {
         if (peerIds == null || peerIds.length === 0) {
+          const mixPeers = this.listMixRegisteredPeers()
+          if (mixPeers.length > 0) {
+            return mixPeers
+          }
           const active = this.listActiveVoicePeerIds()
           if (active.length === 0) {
             throw new Error('playAudio requires at least one active voice client')

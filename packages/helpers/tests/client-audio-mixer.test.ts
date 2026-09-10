@@ -394,6 +394,16 @@ describe('ClientAudioMixer', () => {
     await expect(mixer.setListenerMute('a', 'a', true)).rejects.toThrow(/self/)
   })
 
+  it('listRegisteredPeers is graph-scoped across mixer instances', () => {
+    const graph = createMockGraph()
+    const mixer1 = new ClientAudioMixer({ graph })
+    const mixer2 = new ClientAudioMixer({ graph })
+    mixer1.registerPeer('a')
+    mixer2.registerPeer('b')
+    expect(mixer1.listRegisteredPeers()).toEqual(['a', 'b'])
+    expect(mixer2.listRegisteredPeers()).toEqual(['a', 'b'])
+  })
+
   it('reports mix snapshot with group and listener mutes', async () => {
     const graph = createMockGraph()
     const pose = {

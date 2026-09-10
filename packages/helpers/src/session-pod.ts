@@ -300,6 +300,20 @@ export class SessionPod {
     return this.podClientMixGraph
   }
 
+  /** Map orchestrator session ids to WebRTC peer ids across all slots in this pod. */
+  resolveParticipantId(clientId: string): string {
+    if (clientId.startsWith('client-')) {
+      return clientId
+    }
+    for (const slot of this.slots.values()) {
+      if (slot.sessionId !== clientId) continue
+      for (const peerId of slot.host.listActiveVoicePeerIds()) {
+        return peerId
+      }
+    }
+    return clientId
+  }
+
   private async prepareSessionSlot(sessionId: string): Promise<void> {
     const serverPeerId = this.options.serverPeerId ?? VOICE_AGENT_SERVER_PEER_ID
     const signaling = new SignalingClient({
@@ -321,6 +335,7 @@ export class SessionPod {
       iceTransportPolicy: this.options.iceTransportPolicy,
       wrapAudioTracks: this.options.wrapAudioTracks,
       resolveVoiceAgentSessionContext: this.options.resolveVoiceAgentSessionContext,
+      resolveParticipantId: (clientId) => this.resolveParticipantId(clientId),
       log: this.options.log,
     })
 

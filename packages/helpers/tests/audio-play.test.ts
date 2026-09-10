@@ -87,8 +87,9 @@ type HostTestAccess = VoiceAgentSessionHost & {
 function createHost(
   sessionMode: 'voice' | 'voice+data' | 'data-only',
   clientMixGraph?: ClientMixGraph,
+  signalingRoom = 'test-room',
 ): HostTestAccess {
-  const host = new VoiceAgentSessionHost(createStubSignaling() as never, [], {
+  const host = new VoiceAgentSessionHost(createStubSignaling(signalingRoom) as never, [], {
     voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
     sessionMode,
     clientMixGraph,
@@ -101,8 +102,8 @@ function createHost(
   return host as unknown as HostTestAccess
 }
 
-function createStubSignaling() {
-  return { room: 'test-room', on: vi.fn() }
+function createStubSignaling(room = 'test-room') {
+  return { room, on: vi.fn() }
 }
 
 describe('clip-playback', () => {
@@ -223,17 +224,19 @@ describe('VoiceAgentSessionHost playAudio', () => {
     })
     expect(playId).toBe('play-bytes')
     expect(graph.addInput).toHaveBeenCalledWith('play:play-bytes')
-    expect(graph.setListenerSources).toHaveBeenCalledTimes(1)
+    expect(graph.setListenerSources).toHaveBeenCalledTimes(2)
     expect(graph.setListenerSources).toHaveBeenCalledWith(
       'client-a',
       expect.arrayContaining(['client-b', 'play:play-bytes']),
     )
     const routesA = graph.listenerRoutes.get('client-a') ?? []
     expect(routesA).toContain('play:play-bytes')
-    expect(graph.listenerRoutes.has('client-b')).toBe(false)
+    const routesB = graph.listenerRoutes.get('client-b') ?? []
+    expect(routesB).not.toContain('play:play-bytes')
+    expect(routesB).toEqual(['client-a'])
   })
 
-  it('does not call setListenerSources for non-target peers with implicit routes', async () => {
+  it('pins non-target peers to explicit routes without the clip input', async () => {
     const graph = createMockMixGraph()
     const host = createHost('voice+data', graph)
     host.sessions.set('client-a', {
@@ -252,10 +255,32 @@ describe('VoiceAgentSessionHost playAudio', () => {
       peerIds: ['client-a'],
     })
 
-    expect(graph.setListenerSources).toHaveBeenCalledTimes(1)
-    expect(graph.setListenerSources).not.toHaveBeenCalledWith('client-b', expect.anything())
+    expect(graph.setListenerSources).toHaveBeenCalledTimes(2)
     expect(graph.listenerRoutes.get('client-a')).toContain('play:play-bytes')
-    expect(graph.listenerRoutes.has('client-b')).toBe(false)
+    const routesB = graph.listenerRoutes.get('client-b') ?? []
+    expect(routesB).not.toContain('play:play-bytes')
+    expect(routesB).toEqual(['client-a'])
+  })
+
+  it('maps orchestrator session id to mix peer id for targeted play', async () => {
+    const graph = createMockMixGraph()
+    const orchestratorSessionId = 'orch-session-listener'
+    const host = createHost('voice+data', graph, orchestratorSessionId)
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    host.getClientMixer()?.registerPeer('client-a')
+
+    await host.playAudio({
+      source: { bytes: Buffer.from('wav') },
+      peerIds: [orchestratorSessionId],
+    })
+
+    expect(graph.setListenerSources).toHaveBeenCalledWith(
+      'client-a',
+      expect.arrayContaining(['play:play-bytes']),
+    )
   })
 
   it('plays to all active voice clients when peerIds omitted', async () => {
@@ -343,6 +368,16 @@ describe('VoiceAgentSessionHost playAudio', () => {
     }
     host.setTtsPosition({ pose }, { clientId: 'client-a' })
     expect(graph.setTtsPose).toHaveBeenCalledWith('client-a', pose)
+
+    const orchestratorSessionId = 'orch-session-tts'
+    const sessionHost = createHost('voice+data', graph, orchestratorSessionId)
+    sessionHost.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    sessionHost.getClientMixer()?.registerPeer('client-a')
+    sessionHost.setTtsPose(orchestratorSessionId, pose)
+    expect(graph.setTtsPose).toHaveBeenLastCalledWith('client-a', pose)
   })
 
   it('setTtsPosition with pose requires clientId', () => {

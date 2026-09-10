@@ -333,6 +333,11 @@ export interface VoiceAgentSessionHostOptions {
    * @internal
    */
   clientMixGraph?: ClientMixGraph
+  /**
+   * Map orchestrator session ids (or other client aliases) to WebRTC mix peer ids.
+   * {@link SessionPod} supplies cross-slot lookup; defaults to identity / `client-` passthrough.
+   */
+  resolveParticipantId?: (clientId: string) => string
 }
 
 /**
@@ -1394,9 +1399,7 @@ export class VoiceAgentSessionHost {
     const wait = {
       peerId,
       pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
-        | 'ok'
-        | 'failed'
-        | 'pending',
+        'ok' | 'failed' | 'pending',
       agent: (agentStatus === 'timed_out'
         ? 'pending'
         : componentOk(agentStatus)
@@ -1621,13 +1624,39 @@ export class VoiceAgentSessionHost {
   private validateAudioPlayPeerIds(peerIds?: string[]): void {
     if (peerIds == null || peerIds.length === 0) return
     for (const peerId of peerIds) {
-      if (!this.isVoiceClientActive(peerId)) {
+      const resolved = this.resolveParticipantId(peerId)
+      if (!this.isVoiceClientActive(resolved)) {
         throw new Error(`No active voice session for client ${peerId}`)
       }
     }
   }
 
-  private listActiveVoicePeerIds(): string[] {
+  /**
+   * Resolves mix participant ids: `client-*` peer ids pass through; orchestrator session
+   * ids map via pod callback or this host's sole active peer when `signaling.room` matches.
+   */
+  resolveParticipantId(clientId: string): string {
+    if (clientId.startsWith(this.clientPeerIdPrefix)) {
+      return clientId
+    }
+    if (this.sessions.has(clientId) && this.isVoiceClientActive(clientId)) {
+      return clientId
+    }
+    if (clientId === this.signaling.room) {
+      const peers = this.listActiveVoicePeerIds()
+      if (peers.length === 1) {
+        return peers[0]
+      }
+    }
+    const fromOption = this.options.resolveParticipantId?.(clientId)
+    if (fromOption) {
+      return fromOption
+    }
+    return clientId
+  }
+
+  /** Active voice client peer ids on this host (for pod-level participant resolution). */
+  listActiveVoicePeerIds(): string[] {
     return [...this.sessions.keys()].filter((peerId) => this.isVoiceClientActive(peerId))
   }
 
@@ -1645,7 +1674,8 @@ export class VoiceAgentSessionHost {
           }
           return active
         }
-        return peerIds
+        const resolved = peerIds.map((peerId) => this.resolveParticipantId(peerId))
+        return [...new Set(resolved)]
       },
       getMixer: () => this.ensureClientMixer(),
       listRegisteredPeers: () => this.listMixRegisteredPeers(),
@@ -1682,7 +1712,7 @@ export class VoiceAgentSessionHost {
 
   setClientPose(clientId: string, pose: ClientPose): void {
     this.assertTtsPoseCapable()
-    this.clientMixer!.setClientPose(clientId, pose)
+    this.clientMixer!.setClientPose(this.resolveParticipantId(clientId), pose)
   }
 
   setPositionalMixing(enabled: boolean): void {
@@ -1702,7 +1732,7 @@ export class VoiceAgentSessionHost {
 
   setTtsPose(clientId: string, pose: ClientPose): void {
     this.assertTtsPoseCapable()
-    this.clientMixer!.setTtsPose(clientId, pose)
+    this.clientMixer!.setTtsPose(this.resolveParticipantId(clientId), pose)
   }
 
   /**
@@ -1725,7 +1755,7 @@ export class VoiceAgentSessionHost {
 
   clearTtsPose(clientId: string): void {
     this.assertTtsPoseCapable()
-    this.clientMixer!.clearTtsPose(clientId)
+    this.clientMixer!.clearTtsPose(this.resolveParticipantId(clientId))
   }
 
   /**

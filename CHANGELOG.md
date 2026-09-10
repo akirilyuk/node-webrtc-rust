@@ -8,6 +8,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-09-10
+
+Targeted clip play no longer leaks to non-target MixGraph listeners; left-only TTS follows pose pan.
+
+### Fixed
+
+- **helpers** — Subset `playAudio` pins non-target mix peers to explicit listener sources **without** the clip input, so implicit MixGraph hear-all cannot leak targeted clips (staging clip-playback probe G). `resolveParticipantId` maps orchestrator session ids to mix peer ids on the host and SessionPod. (#209)
+- **mixer** — `apply_pan_gains` downmixes `(L+R)/2` before equal-power pan so left-only Piper/Sherpa TTS follows `set_tts_pose` / placement (staging voice-data-mix probe E). (#209)
+- **helpers** — SessionPod clip targeting asserts excluded inbound energy is much quieter than the target. Mix-smoke pumps left-only TTS sidecar and asserts right-loud after pose +x. (#209)
+
+**Compare:** [`release/0.9.2…release/0.9.3`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.2...release/0.9.3)
+
 ## [0.9.2] - 2026-09-09
 
 Inbound STT/TTS no longer stall while on-device Whisper language identification runs.

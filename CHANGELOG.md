@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **speech** — Spoken language ID defaults to **once per user utterance** (~`minSpeechMs` of inbound speech), then stops until the next `user_speaking_start`. Opt in to `languageId.continuous: true` (runner `SHERPA_LID_CONTINUOUS`) to re-check during long utterances; continuous mode uses extra CPU and **can starve Piper TTS**, stretching gaps between sentences.
+
 ### Fixed
 
 - **speech** — Defer language ID identify while TTS synthesis or playback is active; run deferred identify after `agent_speaking_end` so Whisper CPU does not stretch the gap before the first TTS sentence.

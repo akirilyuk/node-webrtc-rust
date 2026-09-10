@@ -423,6 +423,10 @@ pub struct LanguageIdConfig {
     /// Minimum buffered speech (ms) before the first identify attempt. Default 1000.
     #[serde(default)]
     pub min_speech_ms: Option<u32>,
+    /// When `Some(true)`, re-run identify during a long utterance after each pass completes.
+    /// Default (unset/false): once per utterance after ~`min_speech_ms` of speech.
+    #[serde(default)]
+    pub continuous: Option<bool>,
 }
 
 fn default_language_id_min_speech_ms() -> u32 {
@@ -451,6 +455,11 @@ pub fn resolved_language_id_min_speech_ms(config: &LanguageIdConfig) -> u32 {
         .max(1)
 }
 
+/// True only when `continuous` is explicitly `Some(true)`.
+pub fn language_id_continuous(config: &Option<LanguageIdConfig>) -> bool {
+    matches!(config.as_ref(), Some(cfg) if cfg.continuous == Some(true))
+}
+
 /// Returns true when `language` passes the optional allowlist (case-insensitive ISO 639-1).
 pub fn language_id_allowlist_accepts(config: &LanguageIdConfig, language: &str) -> bool {
     match &config.allowlist {
@@ -476,6 +485,7 @@ mod language_id_config_tests {
             model_path: None,
             allowlist: None,
             min_speech_ms: None,
+            continuous: None,
         })));
     }
 
@@ -486,6 +496,7 @@ mod language_id_config_tests {
             model_path: Some("/models/whisper-tiny".into()),
             allowlist: None,
             min_speech_ms: None,
+            continuous: None,
         })));
     }
 
@@ -496,6 +507,7 @@ mod language_id_config_tests {
             model_path: Some("/models/whisper-tiny".into()),
             allowlist: None,
             min_speech_ms: None,
+            continuous: None,
         })));
     }
 
@@ -506,6 +518,7 @@ mod language_id_config_tests {
             model_path: Some("/x".into()),
             allowlist: Some(vec!["en".into(), "de".into()]),
             min_speech_ms: None,
+            continuous: None,
         };
         assert!(language_id_allowlist_accepts(&cfg, "en"));
         assert!(language_id_allowlist_accepts(&cfg, "DE"));
@@ -519,8 +532,39 @@ mod language_id_config_tests {
             model_path: None,
             allowlist: None,
             min_speech_ms: None,
+            continuous: None,
         };
         assert_eq!(resolved_language_id_min_speech_ms(&cfg), 1000);
+    }
+
+    #[test]
+    fn continuous_defaults_to_false() {
+        assert!(!language_id_continuous(&None));
+        assert!(!language_id_continuous(&Some(LanguageIdConfig {
+            enabled: None,
+            model_path: Some("/x".into()),
+            allowlist: None,
+            min_speech_ms: None,
+            continuous: None,
+        })));
+        assert!(!language_id_continuous(&Some(LanguageIdConfig {
+            enabled: None,
+            model_path: Some("/x".into()),
+            allowlist: None,
+            min_speech_ms: None,
+            continuous: Some(false),
+        })));
+    }
+
+    #[test]
+    fn continuous_true_only_when_explicit() {
+        assert!(language_id_continuous(&Some(LanguageIdConfig {
+            enabled: None,
+            model_path: Some("/x".into()),
+            allowlist: None,
+            min_speech_ms: None,
+            continuous: Some(true),
+        })));
     }
 }
 

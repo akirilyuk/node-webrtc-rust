@@ -53,6 +53,7 @@ impl LanguageIdProvider for SlowLanguageId {
 struct CountingLanguageId {
     calls: Arc<AtomicUsize>,
     sleep_ms: u64,
+    languages: Vec<String>,
 }
 
 #[async_trait::async_trait]
@@ -62,11 +63,15 @@ impl LanguageIdProvider for CountingLanguageId {
         _pcm: Bytes,
         _sample_rate: u32,
     ) -> node_webrtc_rust_speech::SpeechResult<Option<LanguageIdResult>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        let index = self.calls.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
-        Ok(Some(LanguageIdResult {
-            language: "en".into(),
-        }))
+        let language = self
+            .languages
+            .get(index)
+            .or_else(|| self.languages.last())
+            .cloned()
+            .unwrap_or_else(|| "en".into());
+        Ok(Some(LanguageIdResult { language }))
     }
 }
 
@@ -173,6 +178,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             min_speech_ms: Some(200),
+            continuous: None,
         }),
         vad,
         ..Default::default()
@@ -281,6 +287,7 @@ async fn user_speaking_end_not_delayed_by_slow_language_id() {
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             min_speech_ms: Some(200),
+            continuous: None,
         }),
         vad,
         ..Default::default()
@@ -581,6 +588,7 @@ fn agent_with_overlap_tracking_lid(
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             min_speech_ms: Some(200),
+            continuous: None,
         }),
         vad,
         ..Default::default()
@@ -673,6 +681,7 @@ struct CountingLidTestFactory {
     stt_bytes: Arc<Mutex<usize>>,
     lid_calls: Arc<AtomicUsize>,
     lid_sleep_ms: u64,
+    lid_languages: Vec<String>,
 }
 
 impl VendorFactory for CountingLidTestFactory {
@@ -703,6 +712,7 @@ impl VendorFactory for CountingLidTestFactory {
         Ok(Some(Box::new(CountingLanguageId {
             calls: Arc::clone(&self.lid_calls),
             sleep_ms: self.lid_sleep_ms,
+            languages: self.lid_languages.clone(),
         })))
     }
 }
@@ -711,11 +721,15 @@ fn agent_with_counting_lid(
     stt_bytes: Arc<Mutex<usize>>,
     lid_calls: Arc<AtomicUsize>,
     gate_stt: bool,
+    continuous: Option<bool>,
+    include_stt: bool,
+    lid_languages: Vec<String>,
 ) -> Arc<VoiceAgent> {
     let factory = Arc::new(CountingLidTestFactory {
         stt_bytes: Arc::clone(&stt_bytes),
         lid_calls: Arc::clone(&lid_calls),
         lid_sleep_ms: 50,
+        lid_languages,
     });
     let mut registry = VendorRegistry::new();
     registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
@@ -730,7 +744,7 @@ fn agent_with_counting_lid(
     vad.gate_stt = gate_stt;
 
     let config = VoiceAgentConfig {
-        stt: if gate_stt {
+        stt: if include_stt {
             Some(SttConfig {
                 provider: SttVendor::Mock,
                 model: None,
@@ -753,6 +767,7 @@ fn agent_with_counting_lid(
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             min_speech_ms: Some(200),
+            continuous,
         }),
         vad,
         ..Default::default()
@@ -761,11 +776,169 @@ fn agent_with_counting_lid(
     VoiceAgent::new(config, Arc::new(registry)).unwrap()
 }
 
+async fn wait_for_event(
+    rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+    kind: SpeechEventKind,
+) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == kind {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    false
+}
+
+async fn wait_for_user_language(
+    rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+) -> bool {
+    wait_for_event(rx, SpeechEventKind::UserLanguage).await
+}
+
+async fn drive_loud_frames(agent: &VoiceAgent, loud: &[u8], count: usize) {
+    for _ in 0..count {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.to_vec()), 20)
+            .await
+            .unwrap();
+    }
+}
+
+async fn drive_silent_frames(agent: &VoiceAgent, silent: &[u8], count: usize) {
+    for _ in 0..count {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.to_vec()), 20)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn language_id_runs_once_per_utterance_by_default() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    // gate_stt off so VAD closes utterances without waiting for mock STT finals.
+    let agent = agent_with_counting_lid(
+        Arc::clone(&stt_bytes),
+        Arc::clone(&lid_calls),
+        false,
+        None,
+        true,
+        vec!["en".into(), "de".into()],
+    );
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    // Utterance A: cross min_speech_ms then keep speaking several more seconds.
+    drive_loud_frames(&agent, &loud, 12).await;
+    assert!(
+        wait_for_event(&mut rx, SpeechEventKind::UserSpeakingStart).await,
+        "expected user_speaking_start for utterance A"
+    );
+
+    assert!(
+        wait_for_user_language(&mut rx).await,
+        "expected user_language after first identify for utterance A"
+    );
+
+    // Extra loud speech that would have re-fired LID in continuous mode.
+    drive_loud_frames(&agent, &loud, 80).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "default mode must not re-identify during the same utterance"
+    );
+
+    // Silence long enough for VAD SpeechEnd before the next SpeechStart (new utterance).
+    drive_silent_frames(&agent, &silent, 12).await;
+
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "silence after inbound LID must not start a second identify"
+    );
+
+    // Utterance B: new turn.
+    drive_loud_frames(&agent, &loud, 12).await;
+    assert!(
+        wait_for_event(&mut rx, SpeechEventKind::UserSpeakingStart).await,
+        "expected user_speaking_start for utterance B"
+    );
+    assert!(
+        wait_for_user_language(&mut rx).await,
+        "expected user_language for utterance B"
+    );
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        2,
+        "new utterance should start a second identify"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn continuous_language_id_rechecks_during_long_utterance() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = agent_with_counting_lid(
+        Arc::clone(&stt_bytes),
+        Arc::clone(&lid_calls),
+        true,
+        Some(true),
+        true,
+        vec!["en".into()],
+    );
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+
+    drive_loud_frames(&agent, &loud, 12).await;
+    assert!(
+        wait_for_user_language(&mut rx).await,
+        "expected first user_language in continuous mode"
+    );
+
+    // Keep speaking through a second min_speech_ms window after first identify completes.
+    drive_loud_frames(&agent, &loud, 80).await;
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && lid_calls.load(Ordering::SeqCst) < 2 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        lid_calls.load(Ordering::SeqCst) > 1,
+        "continuous mode should identify more than once during one long utterance"
+    );
+
+    agent.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
     let lid_calls = Arc::new(AtomicUsize::new(0));
-    let agent = agent_with_counting_lid(Arc::clone(&stt_bytes), Arc::clone(&lid_calls), true);
+    let agent = agent_with_counting_lid(
+        Arc::clone(&stt_bytes),
+        Arc::clone(&lid_calls),
+        true,
+        None,
+        true,
+        vec!["en".into()],
+    );
     let mut rx = agent.subscribe_events();
 
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
@@ -838,7 +1011,14 @@ async fn short_utterance_still_gets_user_language_after_tts_idle() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
     let lid_calls = Arc::new(AtomicUsize::new(0));
     // gate_stt off so VAD emits user_speaking_end without waiting for mock STT finals.
-    let agent = agent_with_counting_lid(Arc::clone(&stt_bytes), Arc::clone(&lid_calls), false);
+    let agent = agent_with_counting_lid(
+        Arc::clone(&stt_bytes),
+        Arc::clone(&lid_calls),
+        false,
+        None,
+        false,
+        vec!["en".into()],
+    );
     let mut rx = agent.subscribe_events();
 
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));

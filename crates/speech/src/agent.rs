@@ -13,9 +13,10 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::config::{
-    language_id_allowlist_accepts, language_id_enabled, resolved_language_id_min_speech_ms,
-    resolved_post_utterance_silence_ms, EventDeliveryMode, NoiseSuppressionProvider,
-    SendTextToTtsOptions, VadConfig, VoiceAgentConfig, VoiceSessionContext,
+    language_id_allowlist_accepts, language_id_continuous, language_id_enabled,
+    resolved_language_id_min_speech_ms, resolved_post_utterance_silence_ms, EventDeliveryMode,
+    NoiseSuppressionProvider, SendTextToTtsOptions, VadConfig, VoiceAgentConfig,
+    VoiceSessionContext,
 };
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
@@ -1771,6 +1772,12 @@ impl VoiceAgent {
                 inner.lid_identify_started_this_utterance = true;
                 return;
             }
+            if inner.lid_identify_started_this_utterance
+                && !force
+                && !language_id_continuous(&inner.config.language_id)
+            {
+                return;
+            }
             let min_ms = resolved_language_id_min_speech_ms(
                 inner.config.language_id.as_ref().expect("enabled"),
             );
@@ -1785,6 +1792,9 @@ impl VoiceAgent {
             inner.lid_identify_deferred = false;
             inner.lid_identify_in_flight = true;
             inner.lid_identify_started_this_utterance = true;
+            if !language_id_continuous(&inner.config.language_id) {
+                inner.lid_buffering = false;
+            }
             let pcm = Bytes::from(inner.lid_pcm_buffer.clone());
             inner.lid_pcm_buffer.clear();
             let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
@@ -1813,9 +1823,6 @@ impl VoiceAgent {
             let mut inner = agent.inner.lock().await;
             inner.lid_identify_in_flight = false;
             inner.lid_identify_deferred = false;
-            if force {
-                inner.lid_buffering = false;
-            }
             match result {
                 Ok(Some(lang_result)) => {
                     let code = lang_result.language.trim().to_ascii_lowercase();

@@ -149,6 +149,8 @@ struct AgentInner {
     lid_last_emitted: Option<String>,
     /// Avoid overlapping background LID identify tasks for the same utterance.
     lid_identify_in_flight: bool,
+    /// LID identify was requested during TTS; run after outbound playback drains.
+    lid_identify_deferred: bool,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -295,6 +297,7 @@ impl VoiceAgent {
                 lid_buffering: false,
                 lid_last_emitted: None,
                 lid_identify_in_flight: false,
+                lid_identify_deferred: false,
             })),
             stt: Mutex::new(stt),
             language_id: Mutex::new(language_id),
@@ -573,6 +576,9 @@ impl VoiceAgent {
             &self.tts_workers_shutdown,
             &self.tts_workers_shutdown_wake,
             &self.tts_worker_tasks_alive,
+            &self.weak_self,
+            &self.tts_synthesis_busy,
+            &self.tts_synthesis_queue,
         )
         .await;
     }
@@ -765,6 +771,7 @@ impl VoiceAgent {
         let vendor_inflight = Arc::clone(&self.tts_vendor_calls_inflight);
         let drain_shutdown = Arc::clone(&self.tts_workers_shutdown);
         let drain_alive = Arc::clone(&self.tts_worker_tasks_alive);
+        let weak_self = self.weak_self.clone();
         *slot = Some(tokio::spawn(async move {
             let _alive_guard = TtsWorkerAliveGuard::enter(&alive);
             loop {
@@ -809,9 +816,13 @@ impl VoiceAgent {
                         &shutdown_wake,
                         &drain_alive,
                         &vendor_inflight,
+                        &weak_self,
+                        &synthesis_busy,
+                        &queue,
                     )
                     .await;
                     synthesis_busy.store(false, Ordering::SeqCst);
+                    Self::maybe_spawn_deferred_lid_after_tts(&weak_self, &queue, &inner).await;
 
                     if let Some(done) = job.done {
                         let _ = done.send(result);
@@ -847,6 +858,9 @@ impl VoiceAgent {
         tts_workers_shutdown_wake: &Arc<Notify>,
         tts_worker_tasks_alive: &Arc<AtomicUsize>,
         tts_vendor_calls_inflight: &Arc<AtomicUsize>,
+        weak_self: &Weak<VoiceAgent>,
+        tts_synthesis_busy: &Arc<AtomicBool>,
+        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
         if tts_stream_chunks_enabled() {
             Self::run_tts_synthesis_job_streaming(
@@ -863,6 +877,9 @@ impl VoiceAgent {
                 tts_workers_shutdown_wake,
                 tts_worker_tasks_alive,
                 tts_vendor_calls_inflight,
+                weak_self,
+                tts_synthesis_busy,
+                tts_synthesis_queue,
             )
             .await
         } else {
@@ -879,6 +896,9 @@ impl VoiceAgent {
                 tts_workers_shutdown_wake,
                 tts_worker_tasks_alive,
                 tts_vendor_calls_inflight,
+                weak_self,
+                tts_synthesis_busy,
+                tts_synthesis_queue,
             )
             .await
         }
@@ -899,6 +919,9 @@ impl VoiceAgent {
         tts_workers_shutdown_wake: &Arc<Notify>,
         tts_worker_tasks_alive: &Arc<AtomicUsize>,
         tts_vendor_calls_inflight: &Arc<AtomicUsize>,
+        weak_self: &Weak<VoiceAgent>,
+        tts_synthesis_busy: &Arc<AtomicBool>,
+        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
         let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let generation_at_start = tts_buffer.current_generation().await;
@@ -959,6 +982,9 @@ impl VoiceAgent {
             tts_workers_shutdown,
             tts_workers_shutdown_wake,
             tts_worker_tasks_alive,
+            weak_self,
+            tts_synthesis_busy,
+            tts_synthesis_queue,
         )
         .await;
         tts_drain_wake.notify_one();
@@ -981,6 +1007,9 @@ impl VoiceAgent {
         tts_workers_shutdown_wake: &Arc<Notify>,
         tts_worker_tasks_alive: &Arc<AtomicUsize>,
         tts_vendor_calls_inflight: &Arc<AtomicUsize>,
+        weak_self: &Weak<VoiceAgent>,
+        tts_synthesis_busy: &Arc<AtomicBool>,
+        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
         let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let generation_at_start = tts_buffer.current_generation().await;
@@ -1000,6 +1029,9 @@ impl VoiceAgent {
             tts_workers_shutdown,
             tts_workers_shutdown_wake,
             tts_worker_tasks_alive,
+            weak_self,
+            tts_synthesis_busy,
+            tts_synthesis_queue,
         )
         .await;
 
@@ -1111,6 +1143,9 @@ impl VoiceAgent {
         shutdown: &Arc<AtomicBool>,
         shutdown_wake: &Arc<Notify>,
         alive: &Arc<AtomicUsize>,
+        weak_self: &Weak<VoiceAgent>,
+        tts_synthesis_busy: &Arc<AtomicBool>,
+        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) {
         if shutdown.load(Ordering::SeqCst) {
             return;
@@ -1126,6 +1161,9 @@ impl VoiceAgent {
         let shutdown = Arc::clone(shutdown);
         let shutdown_wake = Arc::clone(shutdown_wake);
         let alive = Arc::clone(alive);
+        let weak_self = weak_self.clone();
+        let tts_synthesis_busy = Arc::clone(tts_synthesis_busy);
+        let tts_synthesis_queue = Arc::clone(tts_synthesis_queue);
         *guard = Some(tokio::spawn(async move {
             let _alive_guard = TtsWorkerAliveGuard::enter(&alive);
             loop {
@@ -1141,7 +1179,15 @@ impl VoiceAgent {
                 if shutdown.load(Ordering::SeqCst) {
                     break;
                 }
-                if let Err(error) = VoiceAgent::run_tts_drain(&tts_buffer, &inner, &event_bus).await
+                if let Err(error) = VoiceAgent::run_tts_drain(
+                    &tts_buffer,
+                    &inner,
+                    &event_bus,
+                    &weak_self,
+                    &tts_synthesis_busy,
+                    &tts_synthesis_queue,
+                )
+                .await
                 {
                     voice_debug(format!("TTS drain error: {error}"));
                     let message = playback_failure_message(&error);
@@ -1619,6 +1665,7 @@ impl VoiceAgent {
         inner.lid_pcm_buffer.clear();
         inner.lid_buffering = false;
         inner.lid_identify_in_flight = false;
+        inner.lid_identify_deferred = false;
     }
 
     async fn start_lid_buffering(&self) {
@@ -1663,6 +1710,16 @@ impl VoiceAgent {
         self.spawn_identify_language(true).await;
     }
 
+    async fn tts_active_for_lid_defer(&self) -> bool {
+        if self.tts_synthesis_busy.load(Ordering::SeqCst) {
+            return true;
+        }
+        if !self.tts_synthesis_queue.lock().await.is_empty() {
+            return true;
+        }
+        self.inner.lock().await.agent_speaking
+    }
+
     /// Starts a background identify when buffered speech is long enough (or `force`).
     /// Does not await inference — inbound PCM and STT/TTS must not block on LID.
     async fn spawn_identify_language(&self, force: bool) {
@@ -1674,6 +1731,15 @@ impl VoiceAgent {
             return;
         }
         let provider = provider.expect("provider");
+
+        if self.tts_active_for_lid_defer().await {
+            let mut inner = self.inner.lock().await;
+            if language_id_enabled(&inner.config.language_id) {
+                inner.lid_identify_deferred = true;
+                voice_debug("LID identify deferred (TTS active)");
+            }
+            return;
+        }
 
         let job = {
             let mut inner = self.inner.lock().await;
@@ -1691,6 +1757,7 @@ impl VoiceAgent {
             if buffer_len == 0 || (!force && duration_ms < min_ms) {
                 return;
             }
+            inner.lid_identify_deferred = false;
             inner.lid_identify_in_flight = true;
             let pcm = Bytes::from(inner.lid_pcm_buffer.clone());
             let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
@@ -1744,6 +1811,37 @@ impl VoiceAgent {
                 }
             }
         });
+    }
+
+    async fn maybe_spawn_deferred_lid_after_tts(
+        weak_self: &Weak<VoiceAgent>,
+        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
+        inner: &Arc<Mutex<AgentInner>>,
+    ) {
+        let should_run = {
+            let guard = inner.lock().await;
+            if !language_id_enabled(&guard.config.language_id) {
+                false
+            } else {
+                guard.lid_identify_deferred || !guard.lid_pcm_buffer.is_empty()
+            }
+        };
+        if !should_run {
+            return;
+        }
+        // After drain, `synthesis_busy` may still be true while the worker waits in
+        // `wait_job_playback_idle` — use playback/queue state only, not synthesis_busy.
+        let tts_still_active = inner.lock().await.agent_speaking
+            || !tts_synthesis_queue.lock().await.is_empty();
+        if tts_still_active {
+            let mut guard = inner.lock().await;
+            guard.lid_identify_deferred = true;
+            return;
+        }
+        if let Some(agent) = weak_self.upgrade() {
+            voice_debug("LID identify running after TTS drain");
+            agent.spawn_identify_language(true).await;
+        }
     }
 
     async fn emit_user_speaking_start_if_needed(&self) {
@@ -2427,6 +2525,9 @@ impl VoiceAgent {
         tts_buffer: &TtsBuffer,
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
+        weak_self: &Weak<VoiceAgent>,
+        tts_synthesis_busy: &Arc<AtomicBool>,
+        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
         let writer = {
             let guard = inner.lock().await;
@@ -2510,6 +2611,7 @@ impl VoiceAgent {
             Self::end_agent_speaking_inner(inner, true).await;
             voice_debug("agent_speaking=false (TTS drained)");
             event_bus.emit(SpeechEvent::agent_speaking_end());
+            Self::maybe_spawn_deferred_lid_after_tts(weak_self, tts_synthesis_queue, inner).await;
 
             let silence_ms = {
                 let guard = inner.lock().await;

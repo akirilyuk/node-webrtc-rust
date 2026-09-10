@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — Defer language ID identify while TTS synthesis or playback is active; run deferred identify after `agent_speaking_end` so Whisper CPU does not stretch the gap before the first TTS sentence.
+
 ## [0.9.3] - 2026-09-10
 
 Targeted clip play no longer leaks to non-target MixGraph listeners; left-only TTS follows pose pan.

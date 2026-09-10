@@ -1,5 +1,6 @@
 //! Language ID must not block inbound PCM, STT, or TTS.
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,8 @@ use node_webrtc_rust_speech::config::{
 };
 use node_webrtc_rust_speech::events::SpeechEventKind;
 use node_webrtc_rust_speech::pipeline::{
-    LanguageIdProvider, LanguageIdResult, SttProvider, SttTranscript, TtsProvider, VendorFactory,
+    LanguageIdProvider, LanguageIdResult, SttProvider, SttTranscript, TtsAudioChunk, TtsProvider,
+    VendorFactory,
 };
 use node_webrtc_rust_speech::{VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
@@ -397,5 +399,252 @@ async fn language_id_does_not_block_tts_playback() {
     );
 
     agent.wait_tts_playback_idle().await.unwrap();
+    agent.stop().await.unwrap();
+}
+
+struct OverlapGuard {
+    lid_in_flight: AtomicUsize,
+    tts_in_flight: AtomicUsize,
+    violated: AtomicBool,
+}
+
+impl OverlapGuard {
+    fn enter_lid(&self) {
+        self.lid_in_flight.fetch_add(1, Ordering::SeqCst);
+        if self.tts_in_flight.load(Ordering::SeqCst) > 0 {
+            self.violated.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn leave_lid(&self) {
+        self.lid_in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn enter_tts(&self) {
+        self.tts_in_flight.fetch_add(1, Ordering::SeqCst);
+        if self.lid_in_flight.load(Ordering::SeqCst) > 0 {
+            self.violated.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn leave_tts(&self) {
+        self.tts_in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct OverlapTrackingLanguageId {
+    guard: Arc<OverlapGuard>,
+    sleep_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl LanguageIdProvider for OverlapTrackingLanguageId {
+    async fn identify(
+        &self,
+        _pcm: Bytes,
+        _sample_rate: u32,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<LanguageIdResult>> {
+        self.guard.enter_lid();
+        tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
+        self.guard.leave_lid();
+        Ok(Some(LanguageIdResult {
+            language: "en".into(),
+        }))
+    }
+}
+
+struct OverlapTrackingTts {
+    guard: Arc<OverlapGuard>,
+}
+
+#[async_trait::async_trait]
+impl TtsProvider for OverlapTrackingTts {
+    fn vendor_name(&self) -> &'static str {
+        "overlap-mock"
+    }
+
+    async fn synthesize(&self, text: &str) -> node_webrtc_rust_speech::SpeechResult<Vec<TtsAudioChunk>> {
+        self.guard.enter_tts();
+        let duration_ms = (text.len() as u32 * 50).clamp(100, 5000);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let samples = 48_000 * duration_ms / 1000;
+        let pcm = Bytes::from(vec![0_u8; samples as usize * 4]);
+        self.guard.leave_tts();
+        Ok(vec![TtsAudioChunk {
+            pcm,
+            duration_ms,
+        }])
+    }
+}
+
+struct OverlapLidTestFactory {
+    stt_bytes: Arc<Mutex<usize>>,
+    guard: Arc<OverlapGuard>,
+    lid_sleep_ms: u64,
+}
+
+impl VendorFactory for OverlapLidTestFactory {
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        if config.provider == SttVendor::Mock {
+            Ok(Box::new(CountingStt {
+                bytes: Arc::clone(&self.stt_bytes),
+            }))
+        } else {
+            MockFactory.create_stt(config)
+        }
+    }
+
+    fn create_tts(
+        &self,
+        _config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        Ok(Box::new(OverlapTrackingTts {
+            guard: Arc::clone(&self.guard),
+        }))
+    }
+
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(Some(Box::new(OverlapTrackingLanguageId {
+            guard: Arc::clone(&self.guard),
+            sleep_ms: self.lid_sleep_ms,
+        })))
+    }
+}
+
+fn agent_with_overlap_tracking_lid(
+    stt_bytes: Arc<Mutex<usize>>,
+    guard: Arc<OverlapGuard>,
+) -> Arc<VoiceAgent> {
+    let factory = Arc::new(OverlapLidTestFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        guard,
+        lid_sleep_ms: LID_SLEEP_MS,
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::LocalSherpa,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
+    registry.register_tts(TtsVendor::Mock, factory as Arc<dyn VendorFactory>);
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    VoiceAgent::new(config, Arc::new(registry)).unwrap()
+}
+
+#[tokio::test]
+async fn language_id_does_not_overlap_tts_synthesis() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let guard = Arc::new(OverlapGuard {
+        lid_in_flight: AtomicUsize::new(0),
+        tts_in_flight: AtomicUsize::new(0),
+        violated: AtomicBool::new(false),
+    });
+    let agent = agent_with_overlap_tracking_lid(Arc::clone(&stt_bytes), Arc::clone(&guard));
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    // VAD speech start (min_speech_duration_ms=40 → 3 frames) without crossing LID threshold.
+    for _ in 0..3 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    agent
+        .send_text_to_tts_with_options(
+            "one two three",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    // Cross min_speech_ms while TTS synthesis/playback is active — LID must defer.
+    for _ in 0..10 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    // user_speaking_end + force LID while TTS may still be active — must defer, not overlap.
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    assert!(
+        !guard.violated.load(Ordering::SeqCst),
+        "LID identify must not overlap TTS synthesize"
+    );
+
+    let lang_deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_user_language = false;
+    while Instant::now() < lang_deadline {
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == SpeechEventKind::UserLanguage {
+                assert_eq!(event.language.as_deref(), Some("en"));
+                saw_user_language = true;
+                break;
+            }
+        }
+        if saw_user_language {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        saw_user_language,
+        "expected user_language after deferred identify"
+    );
+
     agent.stop().await.unwrap();
 }

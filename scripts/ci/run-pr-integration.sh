@@ -59,6 +59,11 @@ bash "$ROOT/scripts/ci/ensure-ts-dist.sh"
 echo "==> npm test"
 bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "npm test" -- npm test
 
+# Helpers default `npm test` excludes *.integration.test.ts (quality job / leftover .node).
+echo "==> helpers native integration tests"
+bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "helpers integration" -- \
+  npm run test:integration --workspace=@node-webrtc-rust/helpers
+
 echo "==> Sherpa roundtrip E2E (all start:roundtrip-*)"
 bash scripts/ci/run-sherpa-example-ci.sh e2e
 

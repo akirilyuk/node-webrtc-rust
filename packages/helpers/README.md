@@ -15,7 +15,7 @@ From the **repo root** (not inside `packages/helpers/`):
 npm run test:helpers
 ````
 
-CI runs the same via [`scripts/ci/run-helpers-unit-tests.sh`](../../scripts/ci/run-helpers-unit-tests.sh) in the **Typecheck & lint** job (`build.yml` on PRs, `build-main.yml` on push to `main`). Before push (lint + helpers vitest when those paths changed):
+CI runs the same via [`scripts/ci/run-helpers-unit-tests.sh`](../../scripts/ci/run-helpers-unit-tests.sh) in the **Typecheck & lint** job (`build.yml` on PRs, `build-main.yml` on push to `main`). That script is **unit only** (`*.integration.test.ts` excluded — those need a native `.node` and run in the Test job via `npm run test:integration --workspace=@node-webrtc-rust/helpers`). Before push (lint + helpers vitest when those paths changed):
 
 ```bash
 npm run ci:pre-push

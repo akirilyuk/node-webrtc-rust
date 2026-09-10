@@ -24,6 +24,39 @@ export function createLoudStereoFrame(amplitude = LOUD_AMPLITUDE): Buffer {
   return out
 }
 
+/** Left-channel-only loud PCM (mirrors Piper/Sherpa mono TTS before downmix pan). */
+export function createLoudLeftOnlyFrame(amplitude = LOUD_AMPLITUDE): Buffer {
+  const frames = PCM_FULL_FRAME_BYTES / 4
+  const out = Buffer.alloc(PCM_FULL_FRAME_BYTES)
+  for (let i = 0; i < frames; i++) {
+    out.writeInt16LE(amplitude, i * 4)
+    out.writeInt16LE(0, i * 4 + 2)
+  }
+  return out
+}
+
+export function stereoRmsFromSplitChannels(
+  left: Int16Array,
+  right: Int16Array,
+): { left: number; right: number } {
+  const pairs = Math.min(left.length, right.length)
+  if (pairs === 0) {
+    return { left: 0, right: 0 }
+  }
+
+  let sumL = 0
+  let sumR = 0
+  for (let i = 0; i < pairs; i++) {
+    sumL += left[i] * left[i]
+    sumR += right[i] * right[i]
+  }
+
+  return {
+    left: Math.sqrt(sumL / pairs),
+    right: Math.sqrt(sumR / pairs),
+  }
+}
+
 export function stereoRms(pcm: Uint8Array | Buffer): { left: number; right: number } {
   const bytes = Buffer.isBuffer(pcm) ? pcm : Buffer.from(pcm)
   const pairs = Math.floor(bytes.byteLength / 4)
@@ -258,6 +291,20 @@ export async function pumpLoudTtsSidecarFrames(
   durationMs: number,
 ): Promise<void> {
   const frame = createLoudStereoFrame()
+  const endAt = Date.now() + durationMs
+  while (Date.now() < endAt) {
+    injectTtsSidecarPendingFrame(mixer, peerId, frame)
+    await delay(PCM_FRAME_DURATION_MS)
+  }
+}
+
+/** Left-only loud PCM into pendingTts each 20 ms tick (catches pre-downmix pan regressions). */
+export async function pumpLoudTtsLeftOnlySidecarFrames(
+  mixer: ClientAudioMixer,
+  peerId: string,
+  durationMs: number,
+): Promise<void> {
+  const frame = createLoudLeftOnlyFrame()
   const endAt = Date.now() + durationMs
   while (Date.now() < endAt) {
     injectTtsSidecarPendingFrame(mixer, peerId, frame)

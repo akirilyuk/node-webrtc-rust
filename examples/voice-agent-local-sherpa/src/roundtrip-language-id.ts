@@ -37,9 +37,10 @@ const MODELS_DIR = join(EXAMPLE_ROOT, '.models')
 
 const DEFAULT_TIMEOUT_MS = 90_000
 const DEFAULT_WARMUP_S = 0.6
-/** Wait after TTS+post-silence so Whisper LID can correct mid-utterance guesses. */
+/** Wait after TTS+post-silence so the single once-per-utterance LID identify can finish. */
 const LID_SETTLE_MS = 1500
-const LISTENER_MIN_SPEECH_MS = 2000
+/** First identify window (default LID is once per utterance). Long enough for es-glados Piper — Whisper tiny confuses es→ja in the first ~2 s. */
+export const LISTENER_MIN_SPEECH_MS = 4800
 
 /** Piper bundles from sherpa-tts-model-catalog.json */
 const TTS_BUNDLES: Record<string, string> = {
@@ -58,7 +59,7 @@ export const LANGUAGE_ID_LEGS = [
   },
   {
     lang: 'es',
-    phrase: 'Hola, cómo estás hoy? Espero que tengas un muy buen día.',
+    phrase: 'Buenos días, este mensaje está en español. Espero que tengas un muy buen día.',
     ttsId: 'es',
   },
 ] as const

@@ -374,6 +374,7 @@ pub struct JsLanguageIdConfig {
     pub model_path: Option<String>,
     pub allowlist: Option<Vec<String>>,
     pub min_speech_ms: Option<u32>,
+    pub continuous: Option<bool>,
 }
 
 impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdConfig {
@@ -383,6 +384,7 @@ impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdCon
             model_path: value.model_path,
             allowlist: value.allowlist,
             min_speech_ms: value.min_speech_ms,
+            continuous: value.continuous,
         }
     }
 }

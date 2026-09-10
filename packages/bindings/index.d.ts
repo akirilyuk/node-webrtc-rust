@@ -274,6 +274,7 @@ export interface JsLanguageIdConfig {
   modelPath?: string
   allowlist?: Array<string>
   minSpeechMs?: number
+  continuous?: boolean
 }
 export interface JsVoiceAgentConfig {
   vad?: JsVadConfig

@@ -163,6 +163,7 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
           modelPath: config.languageId.modelPath,
           allowlist: config.languageId.allowlist,
           minSpeechMs: config.languageId.minSpeechMs,
+          continuous: config.languageId.continuous,
         }
       : undefined,
     postUtteranceSilenceMs,

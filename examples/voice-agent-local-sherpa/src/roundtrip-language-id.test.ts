@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { LANGUAGE_ID_LEGS } from './roundtrip-language-id.js'
+import { LANGUAGE_ID_LEGS, LISTENER_MIN_SPEECH_MS } from './roundtrip-language-id.js'
 
 describe('roundtrip-language-id', () => {
   test('defines three ISO legs with distinct phrases', () => {
@@ -14,10 +14,14 @@ describe('roundtrip-language-id', () => {
     }
   })
 
-  test('Spanish phrase is long enough for stable Whisper LID', () => {
+  test('once-per-utterance LID window captures enough inbound PCM before first identify', () => {
+    expect(LISTENER_MIN_SPEECH_MS).toBeGreaterThanOrEqual(4500)
+  })
+
+  test('Spanish leg uses es-glados Piper with a distinctive Spanish opener', () => {
     const esLeg = LANGUAGE_ID_LEGS.find((leg) => leg.lang === 'es')
     expect(esLeg).toBeDefined()
-    expect(esLeg!.phrase.length).toBeGreaterThan(40)
     expect(esLeg!.ttsId).toBe('es')
+    expect(esLeg!.phrase).toMatch(/español/i)
   })
 })

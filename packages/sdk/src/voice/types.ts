@@ -140,6 +140,12 @@ export interface LanguageIdConfig {
   allowlist?: string[]
   /** Minimum buffered speech (ms) before the first identify attempt. Default 1000. */
   minSpeechMs?: number
+  /**
+   * When `true`, re-run identify during a long utterance after each pass completes.
+   * Default (unset/false): once per utterance. Uses extra CPU and can starve Piper TTS,
+   * stretching gaps between sentences so short first TTS bursts may be missed.
+   */
+  continuous?: boolean
 }
 
 /** Full configuration for {@link VoiceAgent}. */

@@ -60,21 +60,21 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 
 ## Run modes
 
-| Mode                  | Command                                                                                                                              |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| **Batch (default)**   | `npm run start:roundtrip` — 5 built-in sentences + similarity table                                                                  |
-| **Counting 1–20**     | `npm run start:roundtrip-counting` — one long utterance, single final (see below)                                                    |
-| **Counting echo**     | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                                               |
-| **Barge recovery**    | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)                               |
-| **Concurrent 3-leg**  | `npm run start:roundtrip-concurrent-multi-client` — 3 speakers enqueue TTS with `nonBlocking: true`, STT finals overlap (see below)  |
-| **Language ID**       | `npm run start:roundtrip-language-id` — en/de/es TTS legs → `user_language` ISO codes (needs `download-lid` + per-lang TTS)       |
-| **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths       |
-| **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                     |
-| **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                       |
-| **Session record**    | `NWR_RECORD_FORMAT=wav npm run start:record` — short counting roundtrip + stereo WAV for listen-back (see below)                     |
-| **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                        |
-| **Single via env**    | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`                                                                      |
-| **Semantic barge-in** | `npm run start:roundtrip-barge-in` — tone must not barge; spoken phrase must (see [§ Semantic barge-in E2E](#semantic-barge-in-e2e)) |
+| Mode                  | Command                                                                                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Batch (default)**   | `npm run start:roundtrip` — 5 built-in sentences + similarity table                                                                                                                                           |
+| **Counting 1–20**     | `npm run start:roundtrip-counting` — one long utterance, single final (see below)                                                                                                                             |
+| **Counting echo**     | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                                                                                                                        |
+| **Barge recovery**    | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)                                                                                                        |
+| **Concurrent 3-leg**  | `npm run start:roundtrip-concurrent-multi-client` — 3 speakers enqueue TTS with `nonBlocking: true`, STT finals overlap (see below)                                                                           |
+| **Language ID**       | `npm run start:roundtrip-language-id` — en/de/es TTS legs → `user_language` ISO codes (needs `download-lid` + per-lang TTS; see [§ Language ID roundtrip](#language-id-roundtrip-startroundtrip-language-id)) |
+| **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths                                                                                |
+| **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                                                                                              |
+| **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                                                                                                |
+| **Session record**    | `NWR_RECORD_FORMAT=wav npm run start:record` — short counting roundtrip + stereo WAV for listen-back (see below)                                                                                              |
+| **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                                                                                                 |
+| **Single via env**    | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`                                                                                                                                               |
+| **Semantic barge-in** | `npm run start:roundtrip-barge-in` — tone must not barge; spoken phrase must (see [§ Semantic barge-in E2E](#semantic-barge-in-e2e))                                                                          |
 
 All modes above are exercised in CI — see [§ CI (GitHub Actions)](#ci-github-actions).
 
@@ -213,6 +213,10 @@ SHERPA_POOL_MAX_CONCURRENT_TTS=3 npm run start:roundtrip-concurrent-multi-client
 ```
 
 Vitest (no models): `roundtrip-concurrent-multi-client.test.ts` in `npm run test:roundtrip-counting`.
+
+## Language ID roundtrip (`start:roundtrip-language-id`)
+
+Default LID is **once per utterance** at `minSpeechMs` of inbound PCM (not continuous). The example sets `LISTENER_MIN_SPEECH_MS` ≥ 4800 ms so the first identify scores enough Spanish before Whisper runs — GLaDOS `es` Piper can confuse `es`→`ja` in the first ~2 s. `LID_SETTLE_MS` waits for that single identify to finish, not a second mid-utterance correction pass.
 
 ## Two-phrase roundtrip (multi-client turn-taking)
 

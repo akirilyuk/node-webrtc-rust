@@ -864,7 +864,33 @@ mod tests {
     }
 
     #[test]
-    fn tts_pose_per_listener_independent() {
+    fn tts_pose_flip_repans_dual_mono_left_after_right() {
+        let mut graph = MixGraph::new();
+        graph.set_positional_enabled(true);
+        let frame = mono_stereo(12_000);
+        graph.set_tts_pose(
+            "listener",
+            ClientPose {
+                position: Vec3::try_new(3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
+        let (l_right, r_right) = first_lr(&graph.pan_tts_frame(&frame, "listener"));
+        assert!(r_right > l_right * 3 / 2);
+
+        graph.set_tts_pose(
+            "listener",
+            ClientPose {
+                position: Vec3::try_new(-3.0, 0.0, 0.0).unwrap(),
+                orientation: Quat::IDENTITY,
+            },
+        );
+        let (l_left, r_left) = first_lr(&graph.pan_tts_frame(&frame, "listener"));
+        assert!(l_left > r_left * 3 / 2);
+    }
+
+  #[test]
+  fn tts_pose_per_listener_independent() {
         let mut graph = MixGraph::new();
         graph.set_positional_enabled(true);
         graph.set_tts_pose(

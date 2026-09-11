@@ -15,8 +15,14 @@ import { pcmFromWriteSampleTeeArgs } from './session-recorder.js'
 
 const WRAPPED_IN = Symbol('clientAudioMixerInbound')
 
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 /** Post-mute outbound bursts (~380ms) to replace pre-mute WebRTC playout buffer. */
 const MIX_MUTE_FLUSH_FRAMES = 19
+/** Post-pose flush (~500ms) — must cover staging ENERGY_PROBE_MS / quiet window after TTS pan flip. */
+const MIX_POSE_FLUSH_FRAMES = 25
 
 /** Sidecar track VoiceAgent drains; must support {@link LocalAudioTrack.setWriteSampleTee}. */
 export type TtsSidecarTrack = {
@@ -167,6 +173,8 @@ export type ClientAudioMixerOptions = {
 type PeerMixState = {
   /** Latest full TTS frame from tee; consumed once per pump tick (null → silence). */
   pendingTts: Buffer | null
+  /** Partial sidecar tee bytes not yet framed to {@link PCM_FULL_FRAME_BYTES}. */
+  sidecarLeftover: Buffer
   pumpInterval?: ReturnType<typeof setInterval>
   sidecar?: TtsSidecarTrack
   pcOutbound?: MixPumpOutboundTrack
@@ -226,7 +234,7 @@ export class ClientAudioMixer {
     this.graph.addInput(peerId)
     trackClientId(getGraphGroupState(this.graph), peerId)
     this.registered.add(peerId)
-    this.peers.set(peerId, { pendingTts: null })
+    this.peers.set(peerId, { pendingTts: null, sidecarLeftover: Buffer.alloc(0) })
   }
 
   unregisterPeer(peerId: string): void {
@@ -300,6 +308,19 @@ export class ClientAudioMixer {
   async burstOutboundMix(peerId: string, frames = MIX_MUTE_FLUSH_FRAMES): Promise<void> {
     for (let i = 0; i < frames; i++) {
       await this.enqueuePumpMixFrame(peerId)
+    }
+  }
+
+  /**
+   * Real-time paced post-pose burst so WebRTC playout drains pre-flip pan before new TTS.
+   * Fast back-to-back writes queue silence in the sender but do not advance listener playout.
+   */
+  private async pacedBurstOutboundMix(peerId: string, frames: number): Promise<void> {
+    for (let i = 0; i < frames; i++) {
+      await this.enqueuePumpMixFrame(peerId)
+      if (i + 1 < frames) {
+        await delayMs(PCM_FRAME_DURATION_MS)
+      }
     }
   }
 
@@ -399,12 +420,39 @@ export class ClientAudioMixer {
     this.graph.setTtsMixPlacement(placement)
   }
 
-  setTtsPose(clientId: string, pose: ClientPose): void {
-    this.graph.setTtsPose(clientId, pose)
+  /**
+   * Pause pump, drain in-flight writes, apply graph pose, then burst post-pose mix so
+   * WebRTC playout cannot deliver pre-flip pan into the next utterance RMS window.
+   */
+  private async drainMixAfterTtsPoseChange(
+    clientId: string,
+    applyPose: () => void,
+    frames = MIX_POSE_FLUSH_FRAMES,
+  ): Promise<void> {
+    const state = this.peers.get(clientId)
+    if (!state) {
+      applyPose()
+      return
+    }
+    await this.pauseMixPump(clientId)
+    state.pendingTts = null
+    state.sidecarLeftover = Buffer.alloc(0)
+    applyPose()
+    try {
+      await this.pacedBurstOutboundMix(clientId, frames)
+      await (this.pumpWrites.get(clientId) ?? Promise.resolve())
+    } finally {
+      this.resumeMixPump(clientId)
+    }
   }
 
-  clearTtsPose(clientId: string): void {
-    this.graph.clearTtsPose(clientId)
+  /** Clears pending TTS and flushes post-pose silence on the listener outbound (WebRTC playout drain). */
+  async setTtsPose(clientId: string, pose: ClientPose): Promise<void> {
+    await this.drainMixAfterTtsPoseChange(clientId, () => this.graph.setTtsPose(clientId, pose))
+  }
+
+  async clearTtsPose(clientId: string): Promise<void> {
+    await this.drainMixAfterTtsPoseChange(clientId, () => this.graph.clearTtsPose(clientId))
   }
 
   /**
@@ -441,17 +489,19 @@ export class ClientAudioMixer {
   wireTtsSidecar(peerId: string, sidecar: TtsSidecarTrack): TtsSidecarTrack {
     const state = this.peerState(peerId)
     state.sidecar = sidecar
-    let leftover = Buffer.alloc(0)
     sidecar.setWriteSampleTee((...args: unknown[]) => {
       const pcm = pcmFromWriteSampleTeeArgs(args)
       if (pcm == null) return
-      const combined = leftover.length > 0 ? Buffer.concat([leftover, pcm]) : pcm
+      const combined =
+        state.sidecarLeftover.length > 0 ? Buffer.concat([state.sidecarLeftover, pcm]) : pcm
       let offset = 0
       while (offset + PCM_FULL_FRAME_BYTES <= combined.length) {
         state.pendingTts = Buffer.from(combined.subarray(offset, offset + PCM_FULL_FRAME_BYTES))
         offset += PCM_FULL_FRAME_BYTES
+        this.kickMixPump(peerId)
       }
-      leftover = offset < combined.length ? Buffer.from(combined.subarray(offset)) : Buffer.alloc(0)
+      state.sidecarLeftover =
+        offset < combined.length ? Buffer.from(combined.subarray(offset)) : Buffer.alloc(0)
     })
     return sidecar
   }
@@ -473,6 +523,11 @@ export class ClientAudioMixer {
    * Starts a 20 ms pump that is the sole writer to the PC outbound track:
    * `sum(panTtsFrame(ttsOrSilence), renderOutput(listener))`.
    */
+  /** Schedule one immediate mix tick when sidecar TTS pending is set (do not wait for interval). */
+  kickMixPump(peerId: string): void {
+    void this.enqueuePumpMixFrame(peerId).catch(() => undefined)
+  }
+
   startMixPump(peerId: string, pcOutbound: MixPumpOutboundTrack): void {
     const state = this.peerState(peerId)
     if (state.pumpInterval) return

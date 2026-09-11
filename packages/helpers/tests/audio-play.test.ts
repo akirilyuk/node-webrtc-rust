@@ -65,8 +65,8 @@ function createMockMixGraph(): ClientMixGraph & {
     setSourceMixPlacement: vi.fn(),
     clearSourceMixPlacement: vi.fn(),
     setTtsMixPlacement: vi.fn(),
-    setTtsPose: vi.fn(),
-    clearTtsPose: vi.fn(),
+    setTtsPose: vi.fn(async () => undefined),
+    clearTtsPose: vi.fn(async () => undefined),
     setGroupMembers: vi.fn(),
     moveToGroup: vi.fn(),
     removeFromGroup: vi.fn(),
@@ -421,17 +421,17 @@ describe('VoiceAgentSessionHost playAudio', () => {
     ).rejects.toThrow(/mutually exclusive/)
   })
 
-  it('setTtsPosition routes to setTtsMixPlacement or setTtsPose', () => {
+  it('setTtsPosition routes to setTtsMixPlacement or setTtsPose', async () => {
     const graph = createMockMixGraph()
     const host = createHost('voice+data', graph)
-    host.setTtsPosition({ placement: 'right' })
+    await host.setTtsPosition({ placement: 'right' })
     expect(graph.setTtsMixPlacement).toHaveBeenCalledWith('right')
 
     const pose = {
       position: { x: 1, y: 0, z: 0 },
       orientation: { x: 0, y: 0, z: 0, w: 1 },
     }
-    host.setTtsPosition({ pose }, { clientId: 'client-a' })
+    await host.setTtsPosition({ pose }, { clientId: 'client-a' })
     expect(graph.setTtsPose).toHaveBeenCalledWith('client-a', pose)
 
     const orchestratorSessionId = 'orch-session-tts'
@@ -441,20 +441,20 @@ describe('VoiceAgentSessionHost playAudio', () => {
       agentStarted: true,
     })
     sessionHost.getClientMixer()?.registerPeer('client-a')
-    sessionHost.setTtsPose(orchestratorSessionId, pose)
+    await sessionHost.setTtsPose(orchestratorSessionId, pose)
     expect(graph.setTtsPose).toHaveBeenLastCalledWith('client-a', pose)
   })
 
-  it('setTtsPosition with pose requires clientId', () => {
+  it('setTtsPosition with pose requires clientId', async () => {
     const host = createHost('voice+data', createMockMixGraph())
-    expect(() =>
+    await expect(
       host.setTtsPosition({
         pose: {
           position: { x: 0, y: 0, z: 0 },
           orientation: { x: 0, y: 0, z: 0, w: 1 },
         },
       }),
-    ).toThrow(/clientId/)
+    ).rejects.toThrow(/clientId/)
   })
 
   it('stopAudioPlay stops native clip and removes mix input', async () => {

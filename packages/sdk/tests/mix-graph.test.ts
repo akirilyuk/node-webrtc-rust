@@ -118,6 +118,33 @@ describe('AudioMixGraph', () => {
     expect(Math.abs(lNamed - rNamed)).toBeLessThan(500)
   })
 
+  test('setTtsPose flip from +x to -x repans dual-mono without stale right dominance', () => {
+    const graph = new AudioMixGraph()
+    graph.setPositionalEnabled(true)
+    const dualMono = Buffer.alloc(3840)
+    for (let i = 0; i < 3840; i += 4) {
+      dualMono.writeInt16LE(12_000, i)
+      dualMono.writeInt16LE(12_000, i + 2)
+    }
+    graph.setTtsPose('listener', {
+      position: { ...vec3Zero(), x: 3 },
+      orientation: quatIdentity(),
+    })
+    const rightPanned = graph.panTtsFrame(dualMono, 'listener')
+    const lRight = rightPanned.readInt16LE(0)
+    const rRight = rightPanned.readInt16LE(2)
+    expect(rRight).toBeGreaterThan(lRight * 1.5)
+
+    graph.setTtsPose('listener', {
+      position: { ...vec3Zero(), x: -3 },
+      orientation: quatIdentity(),
+    })
+    const leftPanned = graph.panTtsFrame(dualMono, 'listener')
+    const lLeft = leftPanned.readInt16LE(0)
+    const rLeft = leftPanned.readInt16LE(2)
+    expect(lLeft).toBeGreaterThan(rLeft * 1.5)
+  })
+
   test('setTtsPose pans left-only TTS to the right channel', () => {
     const graph = new AudioMixGraph()
     graph.setPositionalEnabled(true)

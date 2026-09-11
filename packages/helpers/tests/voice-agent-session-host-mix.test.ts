@@ -22,8 +22,8 @@ function createMockMixGraph(): ClientMixGraph {
     setPositionalEnabled: vi.fn(),
     setDefaultMixPlacement: vi.fn(),
     setTtsMixPlacement: vi.fn(),
-    setTtsPose: vi.fn(),
-    clearTtsPose: vi.fn(),
+    setTtsPose: vi.fn(async () => undefined),
+    clearTtsPose: vi.fn(async () => undefined),
     setGroupMembers: vi.fn(),
     moveToGroup: vi.fn(),
     removeFromGroup: vi.fn(),
@@ -138,7 +138,7 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     )
   })
 
-  it('forwards TTS pose controls on voice-only when clientMixGraph is injected', () => {
+  it('forwards TTS pose controls on voice-only when clientMixGraph is injected', async () => {
     const graph = createMockMixGraph()
     const host = createHost('voice', graph)
     const pose = {
@@ -149,8 +149,8 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     host.setClientPose('A', pose)
     host.setPositionalMixing(true)
     host.setTtsMixPlacement('right')
-    host.setTtsPose('A', pose)
-    host.clearTtsPose('A')
+    await host.setTtsPose('A', pose)
+    await host.clearTtsPose('A')
 
     expect(graph.setPose).toHaveBeenCalledWith('A', pose)
     expect(graph.setPositionalEnabled).toHaveBeenCalledWith(true)
@@ -332,7 +332,7 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     graph.ttsPose = vi.fn(() => ttsPose)
     host.createMixGroup({ id: 'g1', clientIds: ['client-a', 'client-b'] })
     host.setClientPose('client-a', pose)
-    host.setTtsPose('client-a', ttsPose)
+    await host.setTtsPose('client-a', ttsPose)
     await host.setListenerMute('client-b', 'client-a', true)
 
     const status = host.getClientMixStatus('client-a')

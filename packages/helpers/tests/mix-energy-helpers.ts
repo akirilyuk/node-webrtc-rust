@@ -160,11 +160,7 @@ export async function waitForInboundStereoEnergy(
   )
 }
 
-/**
- * Poll inbound stereo PCM until max(L,R) RMS stays below threshold for a
- * consecutive quiet window (drain leftover TTS before the next utterance).
- */
-/** Wait until inbound stereo is clearly left-dominant (probe F gate after +x TTS drain). */
+/** Wait until inbound stereo is clearly left-dominant (optional gate; not used by staging smokes). */
 export async function waitForInboundStereoLeftDominant(
   track: StereoEnergyReader,
   options: {
@@ -224,6 +220,10 @@ export async function waitForInboundStereoRightDominant(
   )
 }
 
+/**
+ * Poll inbound stereo PCM until max(L,R) RMS stays below threshold for a
+ * consecutive quiet window (drain leftover TTS before the next utterance).
+ */
 export async function waitForInboundStereoQuiet(
   track: StereoEnergyReader,
   options: {
@@ -342,6 +342,7 @@ export function injectTtsSidecarPendingFrame(
     throw new Error(`ClientAudioMixer peer ${peerId} is not registered`)
   }
   state.pendingTts = Buffer.from(pcm)
+  mixer.kickMixPump(peerId)
 }
 
 /** Loud constant PCM into pendingTts each 20 ms tick (mirrors wired sidecar tee semantics). */

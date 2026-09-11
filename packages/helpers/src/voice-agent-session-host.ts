@@ -1738,16 +1738,16 @@ export class VoiceAgentSessionHost {
     this.clientMixer!.setTtsMixPlacement(placement)
   }
 
-  setTtsPose(clientId: string, pose: ClientPose): void {
+  async setTtsPose(clientId: string, pose: ClientPose): Promise<void> {
     this.assertTtsPoseCapable()
-    this.clientMixer!.setTtsPose(this.resolveParticipantId(clientId), pose)
+    await this.clientMixer!.setTtsPose(this.resolveParticipantId(clientId), pose)
   }
 
   /**
    * Unified TTS panning: named placement (listener-relative) or world pose per client.
    * Placement and pose are mutually exclusive; pose requires `clientId`.
    */
-  setTtsPosition(position: AudioPosition, options?: { clientId: string }): void {
+  async setTtsPosition(position: AudioPosition, options?: { clientId: string }): Promise<void> {
     this.assertTtsPoseCapable()
     assertAudioPositionExclusive(position)
     if (position.placement != null) {
@@ -1758,12 +1758,12 @@ export class VoiceAgentSessionHost {
     if (!clientId) {
       throw new Error('setTtsPosition with pose requires clientId')
     }
-    this.setTtsPose(clientId, position.pose)
+    await this.setTtsPose(clientId, position.pose)
   }
 
-  clearTtsPose(clientId: string): void {
+  async clearTtsPose(clientId: string): Promise<void> {
     this.assertTtsPoseCapable()
-    this.clientMixer!.clearTtsPose(this.resolveParticipantId(clientId))
+    await this.clientMixer!.clearTtsPose(this.resolveParticipantId(clientId))
   }
 
   /**

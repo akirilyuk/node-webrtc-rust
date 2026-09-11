@@ -443,6 +443,7 @@ export class ClientAudioMixer {
       await (this.pumpWrites.get(clientId) ?? Promise.resolve())
     } finally {
       this.resumeMixPump(clientId)
+      this.kickMixPump(clientId)
     }
   }
 

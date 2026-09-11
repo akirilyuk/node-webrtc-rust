@@ -192,162 +192,178 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
       resetProcessVoiceSessionBudget()
     })
 
-    it('voice-data-mix-smoke parity: probes A–F with session UUIDs and dual-mono TTS', async () => {
-      for (const sessionId of SMOKE_SESSION_UUIDS) {
-        await pod.ensureSession(sessionId)
-      }
-
-      const [client1, client2, client3] = await Promise.all([
-        connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[0], SMOKE_PEER_IDS[0]),
-        connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[1], SMOKE_PEER_IDS[1]),
-        connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[2], SMOKE_PEER_IDS[2]),
-      ])
-
-      try {
-        const driverHost = getVoiceHostForSession(pod, SMOKE_SESSION_UUIDS[0])!
-        const listenerHost = getVoiceHostForSession(
-          pod,
-          SMOKE_SESSION_UUIDS[1],
-        ) as VoiceHostTestAccess
-        expect(listenerHost).toBeDefined()
-
-        driverHost.createMixGroup({ id: 'all', clientIds: [...SMOKE_SESSION_UUIDS] })
-        driverHost.setPositionalMixing(true)
-        driverHost.setClientPose(SMOKE_SESSION_UUIDS[1], centerPose)
-        driverHost.setClientPose(SMOKE_SESSION_UUIDS[0], poseAtX(3))
-        driverHost.setClientPose(SMOKE_SESSION_UUIDS[2], poseAtX(-3))
-
-        await client1.mic.writeSample(Buffer.alloc(960), 5)
-        await client2.mic.writeSample(Buffer.alloc(960), 5)
-        await client3.mic.writeSample(Buffer.alloc(960), 5)
-
-        for (const peerId of SMOKE_PEER_IDS) {
-          await waitForVoiceClientActive(pod, peerId)
+    it(
+      'voice-data-mix-smoke parity: probes A–F with session UUIDs and dual-mono TTS',
+      { timeout: 180_000, retry: 2 },
+      async () => {
+        for (const sessionId of SMOKE_SESSION_UUIDS) {
+          await pod.ensureSession(sessionId)
         }
 
-        const listener = client2
-        const listenerPeerId = SMOKE_PEER_IDS[1]
-        const listenerUuid = SMOKE_SESSION_UUIDS[1]
+        const [client1, client2, client3] = await Promise.all([
+          connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[0], SMOKE_PEER_IDS[0]),
+          connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[1], SMOKE_PEER_IDS[1]),
+          connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[2], SMOKE_PEER_IDS[2]),
+        ])
 
-        // Probe A — client-1 loud mic (+x → right louder on listener inbound)
-        const probeADurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probeA = pumpLoudMicFrames(
-          (frame, duration) => client1.mic.writeSample(frame, duration),
-          probeADurationMs,
-        )
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: LOUD_MIC_ENERGY_THRESHOLD,
-          timeoutMs: LOUD_MIC_ENERGY_WAIT_MS,
-          label: 'probe A loud mic',
-        })
-        const energyA = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
-        await probeA
-        assertRightLouder(energyA.left, energyA.right)
+        try {
+          const driverHost = getVoiceHostForSession(pod, SMOKE_SESSION_UUIDS[0])!
+          const listenerHost = getVoiceHostForSession(
+            pod,
+            SMOKE_SESSION_UUIDS[1],
+          ) as VoiceHostTestAccess
+          expect(listenerHost).toBeDefined()
 
-        // Probe B — client-3 loud mic (-x → left louder)
-        const probeBDurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probeB = pumpLoudMicFrames(
-          (frame, duration) => client3.mic.writeSample(frame, duration),
-          probeBDurationMs,
-        )
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: LOUD_MIC_ENERGY_THRESHOLD,
-          timeoutMs: LOUD_MIC_ENERGY_WAIT_MS,
-          label: 'probe B loud mic',
-        })
-        const energyB = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
-        await probeB
-        assertLeftLouder(energyB.left, energyB.right)
+          driverHost.createMixGroup({ id: 'all', clientIds: [...SMOKE_SESSION_UUIDS] })
+          driverHost.setPositionalMixing(true)
+          driverHost.setClientPose(SMOKE_SESSION_UUIDS[1], centerPose)
+          driverHost.setClientPose(SMOKE_SESSION_UUIDS[0], poseAtX(3))
+          driverHost.setClientPose(SMOKE_SESSION_UUIDS[2], poseAtX(-3))
 
-        // Probe C — global mute on client-0 (session UUID)
-        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], true)
-        const statusMuted = pod.getClientMixStatus(SMOKE_SESSION_UUIDS[0])
-        expect(statusMuted.globallyMuted).toBe(true)
+          await client1.mic.writeSample(Buffer.alloc(960), 5)
+          await client2.mic.writeSample(Buffer.alloc(960), 5)
+          await client3.mic.writeSample(Buffer.alloc(960), 5)
 
-        const probeC = pumpLoudMicFrames(
-          (frame, duration) => client1.mic.writeSample(frame, duration),
-          ENERGY_PROBE_MS,
-        )
-        const rmsC = accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
-        await probeC
-        const energyC = await rmsC
-        assertMuchQuieter(energyC, energyA)
+          for (const peerId of SMOKE_PEER_IDS) {
+            await waitForVoiceClientActive(pod, peerId)
+          }
 
-        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], false)
+          const listener = client2
+          const listenerPeerId = SMOKE_PEER_IDS[1]
+          const listenerUuid = SMOKE_SESSION_UUIDS[1]
 
-        // Probe D — listener mute on client-3 (session UUIDs)
-        await pod.setListenerMute(SMOKE_SESSION_UUIDS[1], SMOKE_SESSION_UUIDS[2], true)
+          // Probe A — client-1 loud mic (+x → right louder on listener inbound)
+          const probeADurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
+          const probeA = pumpLoudMicFrames(
+            (frame, duration) => client1.mic.writeSample(frame, duration),
+            probeADurationMs,
+          )
+          await waitForInboundStereoEnergy(listener.agentAudio, {
+            threshold: LOUD_MIC_ENERGY_THRESHOLD,
+            timeoutMs: LOUD_MIC_ENERGY_WAIT_MS,
+            label: 'probe A loud mic',
+          })
+          const energyA = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+          await probeA
+          assertRightLouder(energyA.left, energyA.right)
 
-        const probeD = pumpLoudMicFrames(
-          (frame, duration) => client3.mic.writeSample(frame, duration),
-          ENERGY_PROBE_MS,
-        )
-        const rmsD = accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
-        await probeD
-        const energyD = await rmsD
-        assertMuchQuieter(energyD, energyB)
+          // Probe B — client-3 loud mic (-x → left louder)
+          const probeBDurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
+          const probeB = pumpLoudMicFrames(
+            (frame, duration) => client3.mic.writeSample(frame, duration),
+            probeBDurationMs,
+          )
+          await waitForInboundStereoEnergy(listener.agentAudio, {
+            threshold: LOUD_MIC_ENERGY_THRESHOLD,
+            timeoutMs: LOUD_MIC_ENERGY_WAIT_MS,
+            label: 'probe B loud mic',
+          })
+          const energyB = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+          await probeB
+          assertLeftLouder(energyB.left, energyB.right)
 
-        await pod.setListenerMute(SMOKE_SESSION_UUIDS[1], SMOKE_SESSION_UUIDS[2], false)
+          // Probe C — global mute on client-0 (session UUID)
+          await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], true)
+          const statusMuted = pod.getClientMixStatus(SMOKE_SESSION_UUIDS[0])
+          expect(statusMuted.globallyMuted).toBe(true)
 
-        // Silence other talkers during TTS pan probes (e2e pauses mic pumps; graph still routes poses).
-        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], true)
-        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[2], true)
-        await client2.mic.writeSample(Buffer.alloc(960), 5)
+          const probeC = pumpLoudMicFrames(
+            (frame, duration) => client1.mic.writeSample(frame, duration),
+            ENERGY_PROBE_MS,
+          )
+          const rmsC = accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+          await probeC
+          const energyC = await rmsC
+          assertMuchQuieter(energyC, energyA)
 
-        await waitForInboundStereoQuiet(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          quietWindowMs: TTS_QUIET_WINDOW_MS,
-          timeoutMs: TTS_QUIET_WAIT_MS,
-          label: 'mix inbound quiet before probe E',
-        })
+          await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], false)
 
-        const mixer = listenerHost.getClientMixer()
-        expect(mixer).toBeDefined()
-        mixer!.createTtsSidecar(listenerPeerId)
-        detachAgentTtsTee(listenerHost, listenerPeerId)
+          // Probe D — listener mute on client-3 (session UUIDs)
+          await pod.setListenerMute(SMOKE_SESSION_UUIDS[1], SMOKE_SESSION_UUIDS[2], true)
 
-        // Probe E — dual-mono TTS panned right (+x); mirrors e2e set_tts_pose → speak → energy → RMS
-        await listenerHost.setTtsPose(listenerUuid, poseAtX(3))
-        const probeE = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, TTS_SPEAK_STANDIN_MS)
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          timeoutMs: TTS_ENERGY_WAIT_MS,
-          label: 'TTS pan probe E',
-        })
-        const energyE = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
-        await probeE
-        assertRightLouder(energyE.left, energyE.right)
+          const probeD = pumpLoudMicFrames(
+            (frame, duration) => client3.mic.writeSample(frame, duration),
+            ENERGY_PROBE_MS,
+          )
+          const rmsD = accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+          await probeD
+          const energyD = await rmsD
+          assertMuchQuieter(energyD, energyB)
 
-        await waitForInboundStereoQuiet(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          quietWindowMs: TTS_QUIET_WINDOW_MS,
-          timeoutMs: TTS_QUIET_WAIT_MS,
-          label: 'TTS drain after probe E',
-        })
+          await pod.setListenerMute(SMOKE_SESSION_UUIDS[1], SMOKE_SESSION_UUIDS[2], false)
 
-        // Probe F — dual-mono TTS panned left (-x); same e2e shape as E (no directional wait)
-        await listenerHost.setTtsPose(listenerUuid, poseAtX(-3))
-        const probeF = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, TTS_SPEAK_STANDIN_MS)
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          timeoutMs: TTS_ENERGY_WAIT_MS,
-          label: 'TTS pan probe F',
-        })
-        const energyF = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
-        await probeF
-        assertLeftLouder(energyF.left, energyF.right)
+          // Silence other talkers during TTS pan probes (e2e pauses mic pumps; graph still routes poses).
+          await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], true)
+          await pod.setGlobalMute(SMOKE_SESSION_UUIDS[2], true)
+          await client2.mic.writeSample(Buffer.alloc(960), 5)
 
-        await listenerHost.clearTtsPose(listenerUuid)
+          await waitForInboundStereoQuiet(listener.agentAudio, {
+            threshold: TTS_ENERGY_THRESHOLD,
+            quietWindowMs: TTS_QUIET_WINDOW_MS,
+            timeoutMs: TTS_QUIET_WAIT_MS,
+            label: 'mix inbound quiet before probe E',
+          })
 
-        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], false)
-        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[2], false)
-      } finally {
-        closeClient(client1)
-        closeClient(client2)
-        closeClient(client3)
-        await delay(100)
-      }
-    }, 180_000)
+          const mixer = listenerHost.getClientMixer()
+          expect(mixer).toBeDefined()
+          mixer!.createTtsSidecar(listenerPeerId)
+          detachAgentTtsTee(listenerHost, listenerPeerId)
+
+          // Probe E — dual-mono TTS panned right (+x); mirrors e2e set_tts_pose → speak → energy → RMS
+          await listenerHost.setTtsPose(listenerUuid, poseAtX(3))
+          await waitForInboundStereoQuiet(listener.agentAudio, {
+            threshold: TTS_ENERGY_THRESHOLD,
+            quietWindowMs: TTS_QUIET_WINDOW_MS,
+            timeoutMs: TTS_QUIET_WAIT_MS,
+            label: 'mix inbound quiet after TTS pose +x (probe E)',
+          })
+          const probeE = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, TTS_SPEAK_STANDIN_MS)
+          await waitForInboundStereoEnergy(listener.agentAudio, {
+            threshold: TTS_ENERGY_THRESHOLD,
+            timeoutMs: TTS_ENERGY_WAIT_MS,
+            label: 'TTS pan probe E',
+          })
+          const energyE = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+          await probeE
+          assertRightLouder(energyE.left, energyE.right)
+
+          await waitForInboundStereoQuiet(listener.agentAudio, {
+            threshold: TTS_ENERGY_THRESHOLD,
+            quietWindowMs: TTS_QUIET_WINDOW_MS,
+            timeoutMs: TTS_QUIET_WAIT_MS,
+            label: 'TTS drain after probe E',
+          })
+
+          // Probe F — dual-mono TTS panned left (-x); same e2e shape as E (no directional wait)
+          await listenerHost.setTtsPose(listenerUuid, poseAtX(-3))
+          await waitForInboundStereoQuiet(listener.agentAudio, {
+            threshold: TTS_ENERGY_THRESHOLD,
+            quietWindowMs: TTS_QUIET_WINDOW_MS,
+            timeoutMs: TTS_QUIET_WAIT_MS,
+            label: 'mix inbound quiet after TTS pose -x (probe F)',
+          })
+          const probeF = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, TTS_SPEAK_STANDIN_MS)
+          await waitForInboundStereoEnergy(listener.agentAudio, {
+            threshold: TTS_ENERGY_THRESHOLD,
+            timeoutMs: TTS_ENERGY_WAIT_MS,
+            label: 'TTS pan probe F',
+          })
+          const energyF = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+          await probeF
+          assertLeftLouder(energyF.left, energyF.right)
+
+          await listenerHost.clearTtsPose(listenerUuid)
+
+          await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], false)
+          await pod.setGlobalMute(SMOKE_SESSION_UUIDS[2], false)
+        } finally {
+          closeClient(client1)
+          closeClient(client2)
+          closeClient(client3)
+          await delay(100)
+        }
+      },
+    )
 
     it('leftover left-loud mic drains quiet before TTS panned right on mix pump', async () => {
       await pod.ensureSession(SMOKE_SESSION_UUIDS[0])

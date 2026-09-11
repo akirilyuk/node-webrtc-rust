@@ -31,6 +31,7 @@ import {
   accumulateInboundStereoRms,
   assertMuchQuieter,
   stereoRmsFromSplitChannels,
+  waitForInboundStereoEnergy,
   waitForInboundStereoQuiet,
 } from './mix-energy-helpers.js'
 import {
@@ -304,6 +305,13 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         try {
           const { playId } = await host.playAudio({ source: { path: fixture!.path } })
           await waitForClipPlaying(host, playId, 30_000)
+          // Controller "playing"/"buffering" can precede outbound PCM (MP3 decode +
+          // queued mix silence). Collecting a fixed 20 frames then saw L=0,R=0 in CI.
+          await waitForInboundStereoEnergy(client.agentAudio, {
+            threshold: STEREO_QUIET_THRESHOLD,
+            timeoutMs: 30_000,
+            label: `${spec.ext} path inbound`,
+          })
           const { left, right } = await collectAgentFrames(client.agentAudio, 'clip path', 20)
           assertTonePresentStereo(left, right, spec.freqHz, `${spec.ext} path`)
           host.stopAudioPlay(playId)

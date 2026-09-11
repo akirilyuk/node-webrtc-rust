@@ -225,6 +225,20 @@ async function collectAgentFrames(
   return { left: Int16Array.from(left), right: Int16Array.from(right) }
 }
 
+/** Controller "playing" can precede inbound PCM; wait before tone collect. */
+async function waitForInboundThenCollect(
+  track: RemoteAudioTrack,
+  label: string,
+  frameCount: number,
+): Promise<{ left: Int16Array; right: Int16Array }> {
+  await waitForInboundStereoEnergy(track, {
+    threshold: STEREO_QUIET_THRESHOLD,
+    timeoutMs: 30_000,
+    label: `${label} inbound`,
+  })
+  return collectAgentFrames(track, label, frameCount)
+}
+
 function assertSideDominates(
   left: Int16Array,
   right: Int16Array,
@@ -407,7 +421,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         peerIds: ['client-a'],
       })
       await waitForClipPlaying(host, playId)
-      const heardA = await collectAgentFrames(clientA.agentAudio, 'client-a', 15)
+      const heardA = await waitForInboundThenCollect(clientA.agentAudio, 'client-a', 15)
       const heardB = await collectAgentFrames(clientB.agentAudio, 'client-b', 15)
       assertTonePresentStereo(heardA.left, heardA.right, wavFixture!.freqHz, 'target A')
       assertToneAbsentStereo(heardB.left, heardB.right, wavFixture!.freqHz, 'non-target B')
@@ -448,7 +462,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         position: { placement: 'left' },
       })
       await waitForClipPlaying(host, playId)
-      const mix = await collectAgentFrames(client.agentAudio, 'placement left', 20)
+      const mix = await waitForInboundThenCollect(client.agentAudio, 'placement left', 20)
       assertSideDominates(mix.left, mix.right, wavFixture!.freqHz, 'left', 'clip left')
       host.stopAudioPlay(playId)
     } finally {
@@ -474,7 +488,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         position: { placement: 'right' },
       })
       await waitForClipPlaying(host, playId)
-      const mix = await collectAgentFrames(client.agentAudio, 'placement right', 20)
+      const mix = await waitForInboundThenCollect(client.agentAudio, 'placement right', 20)
       assertSideDominates(mix.left, mix.right, wavFixture!.freqHz, 'right', 'clip right')
       host.stopAudioPlay(playId)
     } finally {
@@ -500,7 +514,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         position: { pose: poseAtX(3) },
       })
       await waitForClipPlaying(host, playId)
-      const mix = await collectAgentFrames(client.agentAudio, 'pose +x', 20)
+      const mix = await waitForInboundThenCollect(client.agentAudio, 'pose +x', 20)
       assertSideDominates(mix.left, mix.right, wavFixture!.freqHz, 'right', 'pose +x')
       host.stopAudioPlay(playId)
     } finally {
@@ -526,7 +540,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         position: { pose: poseAtX(-3) },
       })
       await waitForClipPlaying(host, playId)
-      const mix = await collectAgentFrames(client.agentAudio, 'pose -x', 20)
+      const mix = await waitForInboundThenCollect(client.agentAudio, 'pose -x', 20)
       assertSideDominates(mix.left, mix.right, wavFixture!.freqHz, 'left', 'pose -x')
       host.stopAudioPlay(playId)
     } finally {

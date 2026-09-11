@@ -1,13 +1,14 @@
 /**
  * Shared helpers for clip-playback-smoke and voice-data-mix-smoke SessionPod parity tests.
- * Mirrors e2e probe timing (RMS before play, no waitForClipPlaying) and runner per-session playAudio.
+ * Clip probes: wait for inbound energy on tracks[0], then collect RMS (play/return can precede PCM).
+ * Runner per-session playAudio via runnerStylePlayAudio.
  */
 
 import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 
 import type { AudioPlaySource } from '../src/clip-playback.js'
 import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
-import { accumulateInboundStereoRms } from './mix-energy-helpers.js'
+import { accumulateInboundStereoRms, waitForInboundStereoEnergy } from './mix-energy-helpers.js'
 
 export const SMOKE_PEER_IDS = ['client-mix-1', 'client-mix-2', 'client-mix-3'] as const
 
@@ -17,6 +18,7 @@ export type SmokeSessionBinding = {
 }
 
 export const CLIP_RMS_PROBE_MS = 1800
+export const CLIP_INBOUND_ENERGY_THRESHOLD = 200
 
 /**
  * Runner `audio-play-control`: one `playAudio({ peerIds: [peerId] })` per targeted session host.
@@ -46,7 +48,7 @@ export async function runnerStylePlayAudio(
   return playIds
 }
 
-/** e2e `sendPlayAndProbeInboundEnergy`: start RMS on tracks, then fire play (overlap decode). */
+/** Fire play, wait for inbound energy on tracks[0], then collect stereo RMS on all tracks. */
 export async function probeClipPlayInboundEnergy(
   bindings: readonly SmokeSessionBinding[],
   playOptions: { peerIds?: readonly string[] },
@@ -54,7 +56,14 @@ export async function probeClipPlayInboundEnergy(
   source: AudioPlaySource,
   probeMs = CLIP_RMS_PROBE_MS,
 ): Promise<Array<{ left: number; right: number }>> {
-  const rmsFutures = tracks.map((track) => accumulateInboundStereoRms(track, probeMs))
+  if (tracks.length === 0) {
+    throw new Error('probeClipPlayInboundEnergy: tracks must not be empty')
+  }
   await runnerStylePlayAudio(bindings, playOptions, source)
-  return Promise.all(rmsFutures)
+  await waitForInboundStereoEnergy(tracks[0], {
+    threshold: CLIP_INBOUND_ENERGY_THRESHOLD,
+    timeoutMs: 30_000,
+    label: 'clip probe inbound',
+  })
+  return Promise.all(tracks.map((track) => accumulateInboundStereoRms(track, probeMs)))
 }

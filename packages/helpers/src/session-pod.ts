@@ -545,7 +545,8 @@ export class SessionPod {
     if (!graph?.setGlobalMute) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
-    const owning = this.findOwningHostForClient(clientId) ?? this.findMixCapableHost()
+    const peerId = this.resolveParticipantId(clientId)
+    const owning = this.findOwningHostForClient(peerId) ?? this.findMixCapableHost()
     if (!owning) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
@@ -555,20 +556,20 @@ export class SessionPod {
         .map((slot) => slot.host.getClientMixer())
         .filter((mixer): mixer is ClientAudioMixer => mixer != null)
       await Promise.all(mixers.map((mixer) => mixer.pauseAllMixPumps()))
-      graph.setGlobalMute(clientId, muted)
-      graph.pushFrame(clientId, Buffer.alloc(PCM_FULL_FRAME_BYTES))
+      graph.setGlobalMute(peerId, muted)
+      graph.pushFrame(peerId, Buffer.alloc(PCM_FULL_FRAME_BYTES))
       try {
-        await Promise.all(mixers.map((mixer) => mixer.flushAllListenerOutbounds(clientId)))
+        await Promise.all(mixers.map((mixer) => mixer.flushAllListenerOutbounds(peerId)))
       } finally {
         for (const mixer of mixers) {
           mixer.resumeAllMixPumps()
         }
       }
     } else {
-      graph.setGlobalMute(clientId, muted)
+      graph.setGlobalMute(peerId, muted)
     }
 
-    await owning.applyGlobalMuteStt(clientId, muted, options)
+    await owning.applyGlobalMuteStt(peerId, muted, options)
   }
 
   /** Per-listener mute via the shared pod mix graph. */
@@ -577,16 +578,18 @@ export class SessionPod {
     if (!mixHost) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
-    const listenerMixer = this.findOwningHostForClient(listenerId)?.getClientMixer()
+    const listenerPeer = this.resolveParticipantId(listenerId)
+    const targetPeer = this.resolveParticipantId(targetId)
+    const listenerMixer = this.findOwningHostForClient(listenerPeer)?.getClientMixer()
     if (muted && listenerMixer) {
-      await listenerMixer.pauseMixPump(listenerId)
+      await listenerMixer.pauseMixPump(listenerPeer)
     }
-    await mixHost.getClientMixer()!.setListenerMute(listenerId, targetId, muted)
+    await mixHost.getClientMixer()!.setListenerMute(listenerPeer, targetPeer, muted)
     if (muted && listenerMixer) {
       try {
-        await listenerMixer.burstOutboundMix(listenerId)
+        await listenerMixer.burstOutboundMix(listenerPeer)
       } finally {
-        listenerMixer.resumeMixPump(listenerId)
+        listenerMixer.resumeMixPump(listenerPeer)
       }
     }
   }
@@ -596,8 +599,9 @@ export class SessionPod {
     if (!mixHost) {
       throw new Error('No voice+data session with mix graph is prepared')
     }
-    const snapshot = mixHost.getClientMixStatus(clientId)
-    const owning = this.findOwningHostForClient(clientId)
+    const peerId = this.resolveParticipantId(clientId)
+    const snapshot = mixHost.getClientMixStatus(peerId)
+    const owning = this.findOwningHostForClient(peerId)
     if (owning) {
       return { ...snapshot, sttEnabled: owning.getClientMixStatus(clientId).sttEnabled }
     }
@@ -610,7 +614,7 @@ export class SessionPod {
       throw new Error('No voice+data session with mix graph is prepared')
     }
     return mixHost.listClientMixStatuses().map((status) => {
-      const owning = this.findOwningHostForClient(status.clientId)
+      const owning = this.findOwningHostForClient(this.resolveParticipantId(status.clientId))
       if (owning) {
         return { ...status, sttEnabled: owning.getClientMixStatus(status.clientId).sttEnabled }
       }

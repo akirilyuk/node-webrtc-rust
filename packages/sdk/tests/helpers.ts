@@ -71,6 +71,29 @@ export function waitForConnection(pc: RTCPeerConnection, timeoutMs = 20_000): Pr
   })
 }
 
+export function waitForClosed(pc: RTCPeerConnection, timeoutMs = 5_000): Promise<void> {
+  if (pc.connectionState === 'closed') {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      console.warn(`waitForClosed timed out after ${timeoutMs}ms (state=${pc.connectionState})`)
+      resolve()
+    }, timeoutMs)
+
+    const check = () => {
+      if (pc.connectionState === 'closed') {
+        clearTimeout(timer)
+        resolve()
+      }
+    }
+
+    pc.onconnectionstatechange = check
+    check()
+  })
+}
+
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }

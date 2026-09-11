@@ -245,20 +245,21 @@ git checkout main
 git pull origin main
 # HEAD must be the intended merge; package.json versions already X.Y.Z
 
-bash scripts/ci/run-pr-quality.sh
-npm run build:native
-bash scripts/ci/run-pr-tests-full.sh
-npm run ci:verify:release-ts
+bash scripts/ci/run-release-tag-local-ci.sh
 ```
 
-All four must exit 0. Then tag the **merge commit** on `main` (lockfile sync comes **after** publish):
+That wrapper runs `run-pr-quality.sh`, `build:native`, and `run-pr-tests-full.sh`, then writes `.test-logs/release-tag-gate/<sha>.json`. All three must exit 0. Cursor **denies** `git tag release/…` / tag push without that stamp.
+
+`npm run ci:verify:release-ts` may fail with **`ETARGET`** for `@node-webrtc-rust/bindings@X.Y.Z` **before the first npm publish**. That is expected. Do **not** skip the wrapper because of it (0.9.6: agent skipped local `eslint .` after ETARGET and tagged a broken main).
+
+Then tag the **merge commit** on `main` (lockfile sync comes **after** publish):
 
 ```bash
 git tag release/0.5.2
 git push origin refs/tags/release/0.5.2
 ```
 
-Do not tag from a stale local `main`, a feature worktree, or the prep branch. Do not retag the same SHA after a Release quality failure — fix on `main` first.
+Do not tag from a stale local `main`, a feature worktree, or the prep branch. Do **not** retag the **same** SHA after a Release quality failure — fix on `main` first, **delete** the broken tag, then tag the **new** SHA after a fresh `run-release-tag-local-ci.sh`.
 
 ### 3. Merge post-release package-lock PR
 

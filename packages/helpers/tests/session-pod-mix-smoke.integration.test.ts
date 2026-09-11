@@ -53,6 +53,7 @@ type SessionPodTestAccess = SessionPod & {
 
 type VoiceHostTestAccess = VoiceAgentSessionHost & {
   getClientMixer(): ClientAudioMixer | undefined
+  sessions: Map<string, { agent?: { sendTextToTTS: (text: string) => Promise<void> } }>
 }
 
 function getVoiceHostForSession(
@@ -414,6 +415,84 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         pumpAbort.abort()
         closeClient(talker)
         closeClient(listener)
+        await delay(100)
+      }
+    }, 180_000)
+
+    it('e2e parity: TTS probes E/F via session UUID setTtsPose and sendTextToTTS', async () => {
+      for (const sessionId of SESSION_IDS) {
+        await pod.ensureSession(sessionId)
+      }
+
+      const [client1, client2, client3] = await Promise.all([
+        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
+        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
+        connectClientToSession(wsUrl, 'session-c3', 'client-mix-3'),
+      ])
+
+      try {
+        const driverHost = getVoiceHostForSession(pod, 'session-c1')!
+        const listenerHost = getVoiceHostForSession(pod, 'session-c2') as VoiceHostTestAccess
+        expect(listenerHost).toBeDefined()
+        configurePositionalMix(listenerHost, 3, -3)
+
+        await client1.mic.writeSample(Buffer.alloc(960), 5)
+        await client2.mic.writeSample(Buffer.alloc(960), 5)
+        await client3.mic.writeSample(Buffer.alloc(960), 5)
+
+        for (const clientId of CLIENT_IDS) {
+          await waitForVoiceClientActive(pod, clientId)
+        }
+
+        const listener = client2
+
+        for (const client of [client1, client2, client3]) {
+          client.mic.writeSample(Buffer.alloc(960), 5).catch(() => undefined)
+        }
+
+        await waitForInboundStereoQuiet(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
+          quietWindowMs: TTS_QUIET_WINDOW_MS,
+          timeoutMs: TTS_QUIET_WAIT_MS,
+          label: 'mix inbound quiet before probe E',
+        })
+
+        driverHost.setTtsPose('session-c2', poseAtX(3))
+        const agent = listenerHost.sessions.get('client-mix-2')?.agent
+        expect(agent).toBeDefined()
+
+        const probeE = agent!.sendTextToTTS('one two three four five')
+        await waitForInboundStereoEnergy(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
+          timeoutMs: TTS_ENERGY_WAIT_MS,
+          label: 'TTS pan probe E (session UUID pose)',
+        })
+        const energyE = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+        await probeE
+        assertRightLouder(energyE.left, energyE.right)
+
+        await waitForInboundStereoQuiet(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
+          quietWindowMs: TTS_QUIET_WINDOW_MS,
+          timeoutMs: TTS_QUIET_WAIT_MS,
+          label: 'TTS drain after probe E',
+        })
+
+        driverHost.clearTtsPose('session-c2')
+        driverHost.setTtsPose('session-c2', poseAtX(-3))
+        const probeF = agent!.sendTextToTTS('one two three four five')
+        await waitForInboundStereoEnergy(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
+          timeoutMs: TTS_ENERGY_WAIT_MS,
+          label: 'TTS pan probe F (session UUID pose)',
+        })
+        const energyF = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+        await probeF
+        assertLeftLouder(energyF.left, energyF.right)
+      } finally {
+        closeClient(client1)
+        closeClient(client2)
+        closeClient(client3)
         await delay(100)
       }
     }, 180_000)

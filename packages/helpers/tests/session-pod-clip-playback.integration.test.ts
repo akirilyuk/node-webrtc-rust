@@ -540,6 +540,87 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   }, 120_000)
 
   it.skipIf(!wavFixture)(
+    'e2e parity: probe G then broadcast H without stopping G or draining inbound',
+    async () => {
+      for (const sessionId of SESSION_IDS) {
+        await pod.ensureSession(sessionId)
+      }
+
+      const hostC1 = getVoiceHostForSession(pod, 'session-c1')!
+      hostC1.createMixGroup({ id: 'clip-shared-e2e', clientIds: [...CLIENT_IDS] })
+
+      const [client1, client2, client3] = await Promise.all([
+        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
+        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
+        connectClientToSession(wsUrl, 'session-c3', 'client-mix-3'),
+      ])
+
+      try {
+        await client1.mic.writeSample(Buffer.alloc(960), 5)
+        await client2.mic.writeSample(Buffer.alloc(960), 5)
+        await client3.mic.writeSample(Buffer.alloc(960), 5)
+
+        for (const clientId of CLIENT_IDS) {
+          await waitForVoiceClientActiveOnPod(pod, clientId)
+        }
+
+        const listener = client2
+        await waitForInboundStereoQuiet(listener.agentAudio, {
+          threshold: STEREO_QUIET_THRESHOLD,
+          quietWindowMs: QUIET_WINDOW_MS,
+          timeoutMs: QUIET_WAIT_MS,
+          label: 'quiet baseline before clip play',
+        })
+        const quietBaseline = await accumulateInboundStereoRms(
+          listener.agentAudio,
+          QUIET_BASELINE_PROBE_MS,
+        )
+
+        const rmsGListener = accumulateInboundStereoRms(listener.agentAudio, CLIP_RMS_PROBE_MS)
+        const rmsGExcluded = accumulateInboundStereoRms(client3.agentAudio, CLIP_RMS_PROBE_MS)
+        const { playId: playIdG } = await hostC1.playAudio({
+          source: { path: wavFixture!.path },
+          peerIds: ['session-c2'],
+        })
+        await waitForClipPlaying(hostC1, playIdG)
+        const [energyGListener, energyGExcluded] = await Promise.all([rmsGListener, rmsGExcluded])
+        assertMuchQuieter(quietBaseline, energyGListener)
+        assertMuchQuieter(energyGExcluded, energyGListener)
+
+        const clients = [client1, client2, client3]
+        const rmsH = clients.map((client) =>
+          accumulateInboundStereoRms(client.agentAudio, CLIP_RMS_PROBE_MS),
+        )
+        const { playId: playIdH } = await hostC1.playAudio({
+          source: { path: wavFixture!.path },
+        })
+        await waitForClipPlaying(hostC1, playIdH)
+        const energiesH = await Promise.all(rmsH)
+        for (const [index, energy] of energiesH.entries()) {
+          try {
+            assertMuchQuieter(quietBaseline, energy)
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            throw new Error(
+              `client-mix-${index + 1} must hear broadcast H while G may still be playing: ${msg}`,
+            )
+          }
+        }
+        assertMuchQuieter(energyGExcluded, energyGListener)
+
+        hostC1.stopAudioPlay(playIdG)
+        hostC1.stopAudioPlay(playIdH)
+      } finally {
+        closeClient(client1)
+        closeClient(client2)
+        closeClient(client3)
+        await delay(100)
+      }
+    },
+    180_000,
+  )
+
+  it.skipIf(!wavFixture)(
     'shared MixGraph 3-session probe G+H matches clip-playback-smoke energy checks',
     async () => {
       for (const sessionId of SESSION_IDS) {

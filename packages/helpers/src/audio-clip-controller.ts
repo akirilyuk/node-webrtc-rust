@@ -175,15 +175,11 @@ export class AudioClipController {
     for (const peerId of [...this.directOverlays.keys()]) {
       this.stopDirectOverlay(peerId)
     }
-    const graph = this.getMixer()?.getMixGraph()
-    for (const play of [...this.plays.values()]) {
-      this.restoreRoutes(play, graph)
-      if (play.usesMixGraph && graph) {
-        graph.removeInput(play.mixInputId)
-      }
+    while (this.plays.size > 0) {
+      const play = this.plays.values().next().value!
+      this.teardownPlay(play)
       stopClip(play.playId)
     }
-    this.plays.clear()
   }
 
   private ensureTick(): void {
@@ -242,12 +238,41 @@ export class AudioClipController {
 
   private teardownPlay(play: ActivePlay): void {
     const graph = this.getMixer()?.getMixGraph()
-    if (play.usesMixGraph && graph) {
-      this.restoreRoutes(play, graph)
-      graph.removeInput(play.mixInputId)
-    }
     this.plays.delete(play.playId)
+
+    if (play.usesMixGraph && graph) {
+      // Do not restore pre-play route snapshots while other plays are active: each play
+      // captured routes before later plays appended their mixInputId (staging clip-playback
+      // probe H while G ends). Strip only this play's input, then re-apply remaining plays.
+      this.removePlayMixInputFromRoutes(play.mixInputId, graph)
+      play.routeSnapshots.length = 0
+      graph.removeInput(play.mixInputId)
+
+      const registered = this.listRegisteredPeers()
+      for (const remaining of this.plays.values()) {
+        if (remaining.usesMixGraph) {
+          this.reapplyPlayRoutes(remaining, graph, registered)
+        }
+      }
+    }
     this.stopTickIfIdle()
+  }
+
+  private listRegisteredPeers(): string[] {
+    return this.getMixer()?.listRegisteredPeers() ?? []
+  }
+
+  /** Drop one clip input from explicit listener routes (no-op when routes are implicit). */
+  private removePlayMixInputFromRoutes(mixInputId: string, graph: ClientMixGraph): void {
+    if (!graph.setListenerSources || !graph.listenerSources) return
+    for (const listenerId of this.listRegisteredPeers()) {
+      const current = graph.listenerSources(listenerId)
+      if (current == null || !current.includes(mixInputId)) continue
+      graph.setListenerSources(
+        listenerId,
+        current.filter((source) => source !== mixInputId),
+      )
+    }
   }
 
   private applyPlayPosition(
@@ -267,25 +292,18 @@ export class AudioClipController {
     }
   }
 
-  private restoreRoutes(play: ActivePlay, graph?: ClientMixGraph): void {
-    if (!graph?.setListenerSources) return
-    for (const snapshot of play.routeSnapshots) {
-      if (snapshot.previousSources == null) {
-        graph.clearListenerRoutes?.(snapshot.listenerId)
-      } else {
-        graph.setListenerSources(snapshot.listenerId, snapshot.previousSources)
-      }
-    }
-    play.routeSnapshots.length = 0
-  }
-
   private refreshPlayRoutes(
     play: ActivePlay,
     graph: ClientMixGraph | undefined,
     registered: string[],
   ): void {
     if (!graph?.setListenerSources) return
-    this.restoreRoutes(play, graph)
+    this.reapplyPlayRoutes(play, graph, registered)
+  }
+
+  /** Recompute this play's listener routes from current graph state (not stale snapshots). */
+  private reapplyPlayRoutes(play: ActivePlay, graph: ClientMixGraph, registered: string[]): void {
+    play.routeSnapshots.length = 0
     this.applyTargetPlayRoutes(play.routeSnapshots, graph, registered, play.mixInputId, [
       ...play.targetPeerIds,
     ])

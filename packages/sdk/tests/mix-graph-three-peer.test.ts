@@ -1,10 +1,10 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
 import { LocalAudioTrack, RemoteAudioTrack, RTCPeerConnection } from '../src'
 import { AudioMixGraph, quatIdentity, vec3Zero } from '../src/mix'
-import { defaultIceConfig, delay, waitForConnection } from './helpers'
+import { defaultIceConfig, delay, waitForClosed, waitForConnection } from './helpers'
 import {
   appendStereoChannels,
   assertTwoSinePanSides,
@@ -123,11 +123,16 @@ function setupMixGraph(c1X: number, c3X: number): AudioMixGraph {
 }
 
 async function closePeerPair(pair: PeerPairHandles): Promise<void> {
-  // Sync close() can return before native ICE UDP is released; the next test
-  // then sits in connectionState=connecting until waitForConnection times out.
   await Promise.all([pair.hostPc.closeAsync(), pair.clientPc.closeAsync()])
+  await Promise.all([waitForClosed(pair.hostPc), waitForClosed(pair.clientPc)])
   pair.hostSig.disconnect()
   pair.clientSig.disconnect()
+}
+
+function stopTracks(...tracks: Array<LocalAudioTrack | RemoteAudioTrack | undefined>): void {
+  for (const track of tracks) {
+    track?.stop()
+  }
 }
 
 async function readSampleWithTimeout(
@@ -144,12 +149,15 @@ async function readSampleWithTimeout(
 }
 
 async function runThreePeerPositionalMix(
-  wsUrl: string,
   runId: string,
   c1X: number,
   c3X: number,
   expect440OnRight: boolean,
 ): Promise<void> {
+  const server = new SignalingServer({ port: 0 })
+  await server.listen(0)
+  const wsUrl = `ws://localhost:${server.port}`
+
   const c1 = await connectPeerPair(wsUrl, `mix-three-${runId}-c1`, 'c1', 'client-sends')
   const c2 = await connectPeerPair(wsUrl, `mix-three-${runId}-c2`, 'c2', 'host-sends')
   const c3 = await connectPeerPair(wsUrl, `mix-three-${runId}-c3`, 'c3', 'client-sends')
@@ -205,32 +213,27 @@ async function runThreePeerPositionalMix(
 
     assertTwoSinePanSides(Int16Array.from(left), Int16Array.from(right), expect440OnRight)
   } finally {
+    stopTracks(
+      c1.clientOutbound,
+      c1.hostInbound,
+      c2.hostOutbound,
+      c2.clientInbound,
+      c3.clientOutbound,
+      c3.hostInbound,
+    )
     await closePeerPair(c1.pair)
     await closePeerPair(c2.pair)
     await closePeerPair(c3.pair)
-    await delay(100)
+    await server.close()
   }
 }
 
 describe('three-peer WebRTC positional mix', () => {
-  let server: SignalingServer
-  let wsUrl: string
-
-  beforeAll(async () => {
-    server = new SignalingServer({ port: 0 })
-    await server.listen(0)
-    wsUrl = `ws://localhost:${server.port}`
-  })
-
-  afterAll(async () => {
-    await server.close()
-  })
-
   test('host mixes c1+c3 over WebRTC and c2 hears 440 Hz right / 880 Hz left', async () => {
-    await runThreePeerPositionalMix(wsUrl, 'right', 3, -3, true)
+    await runThreePeerPositionalMix('right', 3, -3, true)
   }, 90_000)
 
   test('swapped source poses flip stereo sides over three-peer WebRTC path', async () => {
-    await runThreePeerPositionalMix(wsUrl, 'swap', -3, 3, false)
+    await runThreePeerPositionalMix('swap', -3, 3, false)
   }, 90_000)
 })

@@ -8,6 +8,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-09-11
+
+Mix/mute/TTS APIs resolve orchestrator session UUIDs; TTS pose changes drain leftover mix outbound before pan flip.
+
+### Fixed
+
+- **helpers** — Mix/mute/TTS APIs resolve orchestrator session UUIDs to mix peer ids (`createMixGroup`, mute, `setTtsPose`).
+- **helpers** — `setTtsPose` / `clearTtsPose` drain mix outbound (paced flush + `kickMixPump`) so dual-mono TTS pose flip is not peak-merged with leftover pan (voice-data-mix-smoke probes E/F).
+- **helpers** — SessionPod integration matches staging clip-playback-smoke G then overlapping H (runner per-session `playAudio`, RMS before play) including local HTTP `/e2e/clip-playback.wav`. Mix-smoke A–F uses session UUIDs and dual-mono TTS sidecar.
+
+**Compare:** [`release/0.9.5…release/0.9.6`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.5...release/0.9.6)
+
 ## [0.9.5] - 2026-09-11
 
 Overlapping clip plays no longer wipe remaining MixGraph routes when an earlier play ends.

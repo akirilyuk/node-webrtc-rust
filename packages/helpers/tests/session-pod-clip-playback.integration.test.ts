@@ -34,7 +34,6 @@ import {
   waitForInboundStereoQuiet,
 } from './mix-energy-helpers.js'
 import {
-  CLIP_RMS_PROBE_MS,
   probeClipPlayInboundEnergy,
   SMOKE_PEER_IDS,
   SMOKE_SESSION_UUIDS,

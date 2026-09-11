@@ -115,8 +115,10 @@ struct AgentInner {
     user_stt_session_open: bool,
     /// Set on each VAD `SpeechStart` when `vad.enabled` (barge prerequisite).
     vad_triggered_this_utterance: bool,
-    /// C1: ms remaining until `user_stt_not_found` when no partial after `vad_triggered`.
+    /// C1 armed when > 0 (wall-clock expiry uses `stt_listen_started_at`).
     stt_listen_deadline_ms: u32,
+    /// Wall-clock anchor for C1 from VAD `SpeechStart` (not PCM `duration_ms`).
+    stt_listen_started_at: Option<Instant>,
     /// C2: ms remaining until forced `user_speech_final` after last partial or `SpeechEnd`.
     utterance_finalize_deadline_ms: u32,
     /// Wall-clock anchor for C2 when inbound PCM stops (see `c2_wall_clock_ticker`).
@@ -282,6 +284,7 @@ impl VoiceAgent {
                 user_stt_session_open: false,
                 vad_triggered_this_utterance: false,
                 stt_listen_deadline_ms: 0,
+                stt_listen_started_at: None,
                 utterance_finalize_deadline_ms: 0,
                 utterance_finalize_armed_at: None,
                 last_inbound_pcm_at: None,
@@ -369,12 +372,28 @@ impl VoiceAgent {
         inner.stt_stream_open = false;
         inner.user_stt_session_open = false;
         inner.vad_triggered_this_utterance = false;
-        inner.stt_listen_deadline_ms = 0;
+        Self::clear_stt_listen_timer(inner);
         Self::clear_utterance_finalize_timer(inner);
         inner.last_partial_text = None;
         inner.partials_emitted_this_utterance = false;
         inner.barge_awaiting_stt_partial = false;
         inner.defer_utterance_finalize_until_hold = false;
+    }
+
+    fn clear_stt_listen_timer(inner: &mut AgentInner) {
+        inner.stt_listen_deadline_ms = 0;
+        inner.stt_listen_started_at = None;
+    }
+
+    fn c1_listen_expired(inner: &AgentInner) -> bool {
+        if inner.stt_listen_deadline_ms == 0 {
+            return false;
+        }
+        let Some(started_at) = inner.stt_listen_started_at else {
+            return false;
+        };
+        let timeout_ms = inner.config.vad.stt_listen_timeout_ms as u64;
+        started_at.elapsed() >= std::time::Duration::from_millis(timeout_ms)
     }
 
     fn clear_utterance_finalize_timer(inner: &mut AgentInner) {
@@ -458,6 +477,21 @@ impl VoiceAgent {
     }
 
     async fn c2_wall_clock_tick(&self) -> SpeechResult<()> {
+        let c1_expired = {
+            let inner = self.inner.lock().await;
+            if !inner.running || !inner.config.vad.enabled || !Self::stt_pipeline_active(&inner) {
+                false
+            } else {
+                inner.stt_stream_open
+                    && !inner.partials_emitted_this_utterance
+                    && Self::c1_listen_expired(&inner)
+            }
+        };
+        if c1_expired {
+            voice_debug("C1 wall-clock timeout (no STT partial)");
+            self.close_stt_stream_not_found().await?;
+        }
+
         let should_force = {
             let inner = self.inner.lock().await;
             if !inner.running || inner.utterance_finalize_deadline_ms == 0 {
@@ -826,7 +860,7 @@ impl VoiceAgent {
                     )
                     .await;
                     synthesis_busy.store(false, Ordering::SeqCst);
-                    Self::maybe_spawn_deferred_lid_after_tts(&weak_self, &queue, &inner).await;
+                    Self::maybe_spawn_deferred_lid(&weak_self, &queue, &inner).await;
 
                     if let Some(done) = job.done {
                         let _ = done.send(result);
@@ -1448,6 +1482,7 @@ impl VoiceAgent {
             inner.vad_triggered_this_utterance = true;
             if has_stt && !inner.partials_emitted_this_utterance {
                 inner.stt_listen_deadline_ms = inner.config.vad.stt_listen_timeout_ms;
+                inner.stt_listen_started_at = Some(Instant::now());
             }
             if !inner.partials_emitted_this_utterance {
                 Self::clear_utterance_finalize_timer(&mut inner);
@@ -1495,7 +1530,7 @@ impl VoiceAgent {
             let vad_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
             inner.stt_stream_open = false;
             inner.user_stt_session_open = false;
-            inner.stt_listen_deadline_ms = 0;
+            Self::clear_stt_listen_timer(&mut inner);
             Self::clear_utterance_finalize_timer(&mut inner);
             inner.vad_triggered_this_utterance = false;
             inner.barge_awaiting_stt_partial = false;
@@ -1523,6 +1558,8 @@ impl VoiceAgent {
             if emit_end {
                 self.emit_user_speaking_end_with_lid().await;
             }
+        } else {
+            self.maybe_flush_deferred_lid().await;
         }
         Ok(())
     }
@@ -1561,7 +1598,7 @@ impl VoiceAgent {
             if inner.user_stt_session_open {
                 inner.user_stt_session_open = false;
             }
-            inner.stt_listen_deadline_ms = 0;
+            Self::clear_stt_listen_timer(&mut inner);
             Self::clear_utterance_finalize_timer(&mut inner);
             inner.vad_triggered_this_utterance = false;
             inner.barge_awaiting_stt_partial = false;
@@ -1605,6 +1642,7 @@ impl VoiceAgent {
             ));
             self.emit(SpeechEvent::user_speech_final(final_text));
         }
+        self.maybe_flush_deferred_lid().await;
         Ok(())
     }
 
@@ -1662,7 +1700,7 @@ impl VoiceAgent {
         inner.stt_stream_open = false;
         inner.user_stt_session_open = false;
         inner.vad_triggered_this_utterance = false;
-        inner.stt_listen_deadline_ms = 0;
+        Self::clear_stt_listen_timer(inner);
         Self::clear_utterance_finalize_timer(inner);
         inner.last_partial_text = None;
         inner.partials_emitted_this_utterance = false;
@@ -1720,15 +1758,35 @@ impl VoiceAgent {
         if should_force_identify {
             self.spawn_identify_language(true).await;
         }
-        // Hang-up defer may land after TTS already drained (short utterance + fast mock TTS).
-        if !self.tts_active_for_lid_defer().await {
-            Self::maybe_spawn_deferred_lid_after_tts(
+        if !self.lid_defer_blocked().await {
+            Self::maybe_spawn_deferred_lid(
                 &self.weak_self,
                 &self.tts_synthesis_queue,
                 &self.inner,
             )
             .await;
         }
+    }
+
+    async fn stt_active_for_lid_defer(&self) -> bool {
+        let inner = self.inner.lock().await;
+        inner.stt_stream_open || inner.user_stt_session_open
+    }
+
+    async fn lid_defer_blocked(&self) -> bool {
+        self.tts_active_for_lid_defer().await || self.stt_active_for_lid_defer().await
+    }
+
+    async fn maybe_flush_deferred_lid(&self) {
+        if self.stt_active_for_lid_defer().await {
+            return;
+        }
+        Self::maybe_spawn_deferred_lid(
+            &self.weak_self,
+            &self.tts_synthesis_queue,
+            &self.inner,
+        )
+        .await;
     }
 
     async fn tts_active_for_lid_defer(&self) -> bool {
@@ -1753,12 +1811,17 @@ impl VoiceAgent {
         }
         let provider = provider.expect("provider");
 
-        if self.tts_active_for_lid_defer().await {
+        if self.lid_defer_blocked().await {
+            let stt_defer = self.stt_active_for_lid_defer().await;
             let mut inner = self.inner.lock().await;
             if language_id_enabled(&inner.config.language_id) {
                 inner.lid_identify_deferred = true;
                 inner.lid_identify_started_this_utterance = true;
-                voice_debug("LID identify deferred (TTS active)");
+                if stt_defer {
+                    voice_debug("LID identify deferred (STT listen open)");
+                } else {
+                    voice_debug("LID identify deferred (TTS active)");
+                }
             }
             return;
         }
@@ -1848,7 +1911,7 @@ impl VoiceAgent {
         });
     }
 
-    async fn maybe_spawn_deferred_lid_after_tts(
+    async fn maybe_spawn_deferred_lid(
         weak_self: &Weak<VoiceAgent>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
         inner: &Arc<Mutex<AgentInner>>,
@@ -1860,17 +1923,19 @@ impl VoiceAgent {
         if !should_run {
             return;
         }
-        // After drain, `synthesis_busy` may still be true while the worker waits in
-        // `wait_job_playback_idle` — use playback/queue state only, not synthesis_busy.
-        let tts_still_active = inner.lock().await.agent_speaking
-            || !tts_synthesis_queue.lock().await.is_empty();
-        if tts_still_active {
+        let (stt_still_active, tts_still_active) = {
+            let guard = inner.lock().await;
+            let stt = guard.stt_stream_open || guard.user_stt_session_open;
+            let tts = guard.agent_speaking || !tts_synthesis_queue.lock().await.is_empty();
+            (stt, tts)
+        };
+        if stt_still_active || tts_still_active {
             let mut guard = inner.lock().await;
             guard.lid_identify_deferred = true;
             return;
         }
         if let Some(agent) = weak_self.upgrade() {
-            voice_debug("LID identify running after TTS drain");
+            voice_debug("LID identify running after STT/TTS idle");
             agent.spawn_identify_language(true).await;
         }
     }
@@ -2081,13 +2146,10 @@ impl VoiceAgent {
                 let mut c2 = false;
                 if inner.stt_stream_open
                     && !inner.partials_emitted_this_utterance
-                    && inner.stt_listen_deadline_ms > 0
+                    && inner.stt_listen_started_at.is_some()
+                    && Self::c1_listen_expired(&inner)
                 {
-                    inner.stt_listen_deadline_ms =
-                        inner.stt_listen_deadline_ms.saturating_sub(duration_ms);
-                    if inner.stt_listen_deadline_ms == 0 {
-                        c1 = true;
-                    }
+                    c1 = true;
                 }
                 if inner.utterance_finalize_deadline_ms > 0
                     && !inner.defer_utterance_finalize_until_hold
@@ -2339,7 +2401,7 @@ impl VoiceAgent {
                 if inner.user_stt_session_open {
                     inner.user_stt_session_open = false;
                 }
-                inner.stt_listen_deadline_ms = 0;
+                Self::clear_stt_listen_timer(&mut inner);
                 Self::clear_utterance_finalize_timer(&mut inner);
                 inner.vad_triggered_this_utterance = false;
                 let need_forced = !inner.stt_final_emitted_this_utterance
@@ -2486,7 +2548,7 @@ impl VoiceAgent {
                         let mut inner = self.inner.lock().await;
                         inner.partials_emitted_this_utterance = true;
                         inner.last_partial_text = Some(text.clone());
-                        inner.stt_listen_deadline_ms = 0;
+                        Self::clear_stt_listen_timer(&mut inner);
                         Self::refresh_utterance_finalize_after_partial(&mut inner);
                     }
                     self.emit_user_speaking_start_if_needed().await;
@@ -2503,7 +2565,7 @@ impl VoiceAgent {
                         inner.stt_final_emitted_this_utterance = true;
                         inner.stt_finalize_pending = false;
                         inner.stt_endpoint_closing_started = false;
-                        inner.stt_listen_deadline_ms = 0;
+                        Self::clear_stt_listen_timer(&mut inner);
                         Self::clear_utterance_finalize_timer(&mut inner);
                         inner.vad_triggered_this_utterance = false;
                         let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
@@ -2526,6 +2588,8 @@ impl VoiceAgent {
                     if emit_speaking_end {
                         voice_debug("emit user_speaking_end (paired with STT final)");
                         self.emit_user_speaking_end_with_lid().await;
+                    } else {
+                        self.maybe_flush_deferred_lid().await;
                     }
                     voice_debug(format!(
                         "emit user_speech_final: {}",
@@ -2642,7 +2706,7 @@ impl VoiceAgent {
             Self::end_agent_speaking_inner(inner, true).await;
             voice_debug("agent_speaking=false (TTS drained)");
             event_bus.emit(SpeechEvent::agent_speaking_end());
-            Self::maybe_spawn_deferred_lid_after_tts(weak_self, tts_synthesis_queue, inner).await;
+            Self::maybe_spawn_deferred_lid(weak_self, tts_synthesis_queue, inner).await;
 
             let silence_ms = {
                 let guard = inner.lock().await;

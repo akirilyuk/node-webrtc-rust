@@ -8,6 +8,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — Defer Whisper language ID while the STT listen stream or user STT session is open; flush deferred identify after `user_stt_end` so Zipformer STT is not CPU-starved by overlapping LID (#215 follow-up).
+- **speech** — C1 `user_stt_not_found` uses a wall-clock window from VAD `SpeechStart` (`stt_listen_timeout_ms`), not summed inbound PCM `duration_ms`, so burst client TTS cannot expire the listen timeout early.
+
 ## [0.9.4] - 2026-09-10
 
 Spoken language ID runs once per user utterance and no longer overlaps Piper TTS.

@@ -639,6 +639,8 @@ async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
 
 #[tokio::test]
 async fn c1_no_partial_emits_user_stt_not_found() {
+    use std::time::Duration;
+
     let bytes = Arc::new(Mutex::new(0_usize));
     let mut registry = VendorRegistry::new();
     registry.register_stt(
@@ -679,23 +681,63 @@ async fn c1_no_partial_emits_user_stt_not_found() {
 
     let loud = loud_stereo_frame();
     let silent = vec![0_u8; 3840];
+    let mut saw_vad_triggered = false;
+    let mut saw_not_found_early = false;
+
     for _ in 0..4 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
             .await
             .unwrap();
+        while let Ok(event) = events.try_recv() {
+            match event.kind {
+                SpeechEventKind::VadTriggered => saw_vad_triggered = true,
+                SpeechEventKind::UserSttNotFound => saw_not_found_early = true,
+                _ => {}
+            }
+        }
     }
-    for _ in 0..20 {
-        agent
-            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
-            .await
-            .unwrap();
+
+    // Burst PCM duration must not expire C1 before wall timeout (regression: client TTS burst).
+    agent
+        .process_inbound_pcm(Bytes::from(silent.clone()), 5000)
+        .await
+        .unwrap();
+    while let Ok(event) = events.try_recv() {
+        match event.kind {
+            SpeechEventKind::VadTriggered => saw_vad_triggered = true,
+            SpeechEventKind::UserSttNotFound => saw_not_found_early = true,
+            _ => {}
+        }
+    }
+    assert!(
+        !saw_not_found_early,
+        "burst duration_ms must not trip C1 before wall timeout"
+    );
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    agent
+        .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+        .await
+        .unwrap();
+    while let Ok(event) = events.try_recv() {
+        match event.kind {
+            SpeechEventKind::VadTriggered => saw_vad_triggered = true,
+            SpeechEventKind::UserSttNotFound => saw_not_found_early = true,
+            _ => {}
+        }
     }
     agent.stop().await.unwrap();
+    while let Ok(event) = events.try_recv() {
+        match event.kind {
+            SpeechEventKind::VadTriggered => saw_vad_triggered = true,
+            SpeechEventKind::UserSttNotFound => saw_not_found_early = true,
+            _ => {}
+        }
+    }
 
-    let mut saw_not_found = false;
+    let mut saw_not_found = saw_not_found_early;
     let mut saw_final = false;
-    let mut saw_vad_triggered = false;
     while let Ok(event) = events.try_recv() {
         match event.kind {
             SpeechEventKind::UserSttNotFound => saw_not_found = true,
@@ -707,7 +749,7 @@ async fn c1_no_partial_emits_user_stt_not_found() {
     assert!(saw_vad_triggered, "expected vad_triggered on SpeechStart");
     assert!(
         saw_not_found,
-        "C1: expected user_stt_not_found when no partial"
+        "C1: expected user_stt_not_found when no partial after wall timeout"
     );
     assert!(
         !saw_final,

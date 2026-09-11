@@ -77,6 +77,7 @@ impl LanguageIdProvider for CountingLanguageId {
 
 struct CountingStt {
     bytes: Arc<Mutex<usize>>,
+    guard: Option<Arc<OverlapGuard>>,
 }
 
 #[async_trait::async_trait]
@@ -90,7 +91,13 @@ impl SttProvider for CountingStt {
     }
 
     async fn push_audio(&mut self, pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        if let Some(guard) = &self.guard {
+            guard.enter_stt();
+        }
         *self.bytes.lock().unwrap() += pcm.len();
+        if let Some(guard) = &self.guard {
+            guard.leave_stt();
+        }
         Ok(())
     }
 
@@ -118,6 +125,7 @@ impl VendorFactory for LidTestFactory {
         if config.provider == SttVendor::Mock {
             Ok(Box::new(CountingStt {
                 bytes: Arc::clone(&self.stt_bytes),
+                guard: None,
             }))
         } else {
             MockFactory.create_stt(config)
@@ -239,8 +247,17 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
         "STT push_audio must continue during LID sleep window"
     );
 
+    // End VAD speech so STT listen closes and deferred LID can run.
+    let silent = silent_stereo_frame();
+    for _ in 0..10 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
     // Eventually emit user_language when background identify completes.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_user_language = false;
     while Instant::now() < deadline {
         while let Ok(event) = rx.try_recv() {
@@ -375,6 +392,14 @@ async fn language_id_does_not_block_tts_playback() {
             .unwrap();
     }
 
+    let silent = silent_stereo_frame();
+    for _ in 0..8 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
     *send_start.lock().unwrap() = Some(Instant::now());
     agent
         .send_text_to_tts_with_options(
@@ -404,8 +429,8 @@ async fn language_id_does_not_block_tts_playback() {
     let nbytes = *written_bytes.lock().unwrap();
     assert!(nbytes > 0, "writer must receive non-empty PCM");
 
-    // LID still completes in background.
-    let lang_deadline = Instant::now() + Duration::from_secs(5);
+    // LID still completes in background after STT listen ends.
+    let lang_deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_user_language = false;
     while Instant::now() < lang_deadline {
         while let Ok(event) = rx.try_recv() {
@@ -431,6 +456,7 @@ async fn language_id_does_not_block_tts_playback() {
 
 struct OverlapGuard {
     lid_in_flight: AtomicUsize,
+    stt_in_flight: AtomicUsize,
     tts_in_flight: AtomicUsize,
     violated: AtomicBool,
 }
@@ -438,13 +464,26 @@ struct OverlapGuard {
 impl OverlapGuard {
     fn enter_lid(&self) {
         self.lid_in_flight.fetch_add(1, Ordering::SeqCst);
-        if self.tts_in_flight.load(Ordering::SeqCst) > 0 {
+        if self.stt_in_flight.load(Ordering::SeqCst) > 0
+            || self.tts_in_flight.load(Ordering::SeqCst) > 0
+        {
             self.violated.store(true, Ordering::SeqCst);
         }
     }
 
     fn leave_lid(&self) {
         self.lid_in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn enter_stt(&self) {
+        self.stt_in_flight.fetch_add(1, Ordering::SeqCst);
+        if self.lid_in_flight.load(Ordering::SeqCst) > 0 {
+            self.violated.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn leave_stt(&self) {
+        self.stt_in_flight.fetch_sub(1, Ordering::SeqCst);
     }
 
     fn enter_tts(&self) {
@@ -518,6 +557,7 @@ impl VendorFactory for OverlapLidTestFactory {
         if config.provider == SttVendor::Mock {
             Ok(Box::new(CountingStt {
                 bytes: Arc::clone(&self.stt_bytes),
+                guard: Some(Arc::clone(&self.guard)),
             }))
         } else {
             MockFactory.create_stt(config)
@@ -567,6 +607,7 @@ fn agent_with_overlap_tracking_lid(
     vad.min_silence_duration_ms = 20;
     vad.speech_pad_ms = 20;
     vad.gate_stt = true;
+    vad.stt_listen_timeout_ms = 200;
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -602,6 +643,7 @@ async fn language_id_does_not_overlap_tts_synthesis() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
     let guard = Arc::new(OverlapGuard {
         lid_in_flight: AtomicUsize::new(0),
+        stt_in_flight: AtomicUsize::new(0),
         tts_in_flight: AtomicUsize::new(0),
         violated: AtomicBool::new(false),
     });
@@ -692,6 +734,7 @@ impl VendorFactory for CountingLidTestFactory {
         if config.provider == SttVendor::Mock {
             Ok(Box::new(CountingStt {
                 bytes: Arc::clone(&self.stt_bytes),
+                guard: None,
             }))
         } else {
             MockFactory.create_stt(config)
@@ -780,7 +823,7 @@ async fn wait_for_event(
     rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
     kind: SpeechEventKind,
 ) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
         while let Ok(event) = rx.try_recv() {
             if event.kind == kind {
@@ -820,7 +863,7 @@ async fn drive_silent_frames(agent: &VoiceAgent, silent: &[u8], count: usize) {
 async fn language_id_runs_once_per_utterance_by_default() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
     let lid_calls = Arc::new(AtomicUsize::new(0));
-    // gate_stt off so VAD closes utterances without waiting for mock STT finals.
+    // gate_stt off so VAD closes utterances without mock STT finals; STT session still opens.
     let agent = agent_with_counting_lid(
         Arc::clone(&stt_bytes),
         Arc::clone(&lid_calls),
@@ -838,39 +881,48 @@ async fn language_id_runs_once_per_utterance_by_default() {
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
 
-    // Utterance A: cross min_speech_ms then keep speaking several more seconds.
-    drive_loud_frames(&agent, &loud, 12).await;
+    // Utterance A: cross min_speech_ms while STT is open (LID deferred), then keep speaking.
+    drive_loud_frames(&agent, &loud, 4).await;
     assert!(
         wait_for_event(&mut rx, SpeechEventKind::UserSpeakingStart).await,
         "expected user_speaking_start for utterance A"
     );
+    drive_loud_frames(&agent, &loud, 88).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        0,
+        "LID must stay deferred while STT listen is open during the same utterance"
+    );
 
+    drive_silent_frames(&agent, &silent, 15).await;
     assert!(
         wait_for_user_language(&mut rx).await,
-        "expected user_language after first identify for utterance A"
+        "expected user_language after STT listen ends for utterance A"
     );
-
-    // Extra loud speech that would have re-fired LID in continuous mode.
-    drive_loud_frames(&agent, &loud, 80).await;
     assert_eq!(
         lid_calls.load(Ordering::SeqCst),
         1,
-        "default mode must not re-identify during the same utterance"
+        "first identify runs once after STT closes"
     );
 
-    // Silence long enough for VAD SpeechEnd before the next SpeechStart (new utterance).
-    drive_silent_frames(&agent, &silent, 12).await;
-
-    assert_eq!(
-        lid_calls.load(Ordering::SeqCst),
-        1,
-        "silence after inbound LID must not start a second identify"
-    );
+    // Brief silence between utterances.
+    drive_silent_frames(&agent, &silent, 20).await;
 
     // Utterance B: new turn.
-    drive_loud_frames(&agent, &loud, 12).await;
+    let mut saw_b_speaking_start = false;
+    for _ in 0..12 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == SpeechEventKind::UserSpeakingStart {
+                saw_b_speaking_start = true;
+            }
+        }
+    }
     assert!(
-        wait_for_event(&mut rx, SpeechEventKind::UserSpeakingStart).await,
+        saw_b_speaking_start,
         "expected user_speaking_start for utterance B"
     );
     assert!(
@@ -890,12 +942,13 @@ async fn language_id_runs_once_per_utterance_by_default() {
 async fn continuous_language_id_rechecks_during_long_utterance() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
     let lid_calls = Arc::new(AtomicUsize::new(0));
+    // No STT session — continuous re-check during one long utterance still applies.
     let agent = agent_with_counting_lid(
         Arc::clone(&stt_bytes),
         Arc::clone(&lid_calls),
-        true,
+        false,
         Some(true),
-        true,
+        false,
         vec!["en".into()],
     );
     let mut rx = agent.subscribe_events();
@@ -948,7 +1001,7 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
 
-    // Cross min_speech_ms=200 so inbound spawns identify (not hang-up).
+    // Cross min_speech_ms=200 while STT listen is open — LID defers until STT closes.
     for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
@@ -965,14 +1018,14 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
         .await
         .unwrap();
 
-    for _ in 0..5 {
+    for _ in 0..8 {
         agent
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
             .unwrap();
     }
 
-    let lang_deadline = Instant::now() + Duration::from_secs(3);
+    let lang_deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_user_language = false;
     while Instant::now() < lang_deadline {
         while let Ok(event) = rx.try_recv() {
@@ -989,7 +1042,7 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     }
     assert!(
         saw_user_language,
-        "expected user_language from inbound identify pass"
+        "expected user_language after STT listen ends (deferred from inbound threshold)"
     );
     assert_eq!(
         lid_calls.load(Ordering::SeqCst),
@@ -1076,6 +1129,216 @@ async fn short_utterance_still_gets_user_language_after_tts_idle() {
         lid_calls.load(Ordering::SeqCst),
         1,
         "short utterance should run exactly one identify after TTS idle"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn language_id_does_not_overlap_stt_push_audio() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let guard = Arc::new(OverlapGuard {
+        lid_in_flight: AtomicUsize::new(0),
+        stt_in_flight: AtomicUsize::new(0),
+        tts_in_flight: AtomicUsize::new(0),
+        violated: AtomicBool::new(false),
+    });
+    let agent = agent_with_overlap_tracking_lid(Arc::clone(&stt_bytes), Arc::clone(&guard));
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+
+    // Cross min_speech_ms while STT listen is open — LID must defer, not overlap push_audio.
+    for _ in 0..12 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    assert!(
+        !guard.violated.load(Ordering::SeqCst),
+        "LID identify must not overlap STT push_audio"
+    );
+    assert!(
+        *stt_bytes.lock().unwrap() > 0,
+        "STT must receive audio while LID is deferred"
+    );
+
+    let silent = silent_stereo_frame();
+    for _ in 0..15 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let lang_deadline = Instant::now() + Duration::from_secs(10);
+    let mut saw_user_language = false;
+    while Instant::now() < lang_deadline {
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == SpeechEventKind::UserLanguage {
+                assert_eq!(event.language.as_deref(), Some("en"));
+                saw_user_language = true;
+                break;
+            }
+        }
+        if saw_user_language {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        saw_user_language,
+        "expected user_language after STT listen ends and deferred identify runs"
+    );
+    assert!(
+        !guard.violated.load(Ordering::SeqCst),
+        "deferred LID must still not overlap STT push_audio"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+struct FinalAfterPushStt {
+    pushes: AtomicUsize,
+    final_emitted: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for FinalAfterPushStt {
+    fn vendor_name(&self) -> &'static str {
+        "final-after-push"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, _pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        self.pushes.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        if self.pushes.load(Ordering::SeqCst) >= 5 && !self.final_emitted.load(Ordering::SeqCst) {
+            self.final_emitted.store(true, Ordering::SeqCst);
+            Ok(Some(SttTranscript::Final("hello".into())))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
+struct FinalSttLidFactory {
+    lid_calls: Arc<AtomicUsize>,
+    lid_sleep_ms: u64,
+}
+
+impl VendorFactory for FinalSttLidFactory {
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        if config.provider == SttVendor::Mock {
+            Ok(Box::new(FinalAfterPushStt {
+                pushes: AtomicUsize::new(0),
+                final_emitted: AtomicBool::new(false),
+            }))
+        } else {
+            MockFactory.create_stt(config)
+        }
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(Some(Box::new(CountingLanguageId {
+            calls: Arc::clone(&self.lid_calls),
+            sleep_ms: self.lid_sleep_ms,
+            languages: vec!["en".into()],
+        })))
+    }
+}
+
+#[tokio::test]
+async fn user_language_emits_after_stt_final() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let factory = Arc::new(FinalSttLidFactory {
+        lid_calls: Arc::clone(&lid_calls),
+        lid_sleep_ms: 50,
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: None,
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+            continuous: None,
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    drive_loud_frames(&agent, &loud, 12).await;
+
+    assert!(
+        wait_for_event(&mut rx, SpeechEventKind::UserSttEnd).await,
+        "expected user_stt_end after mock STT final"
+    );
+    assert!(
+        wait_for_user_language(&mut rx).await,
+        "expected user_language after STT listen ends"
+    );
+    assert!(
+        lid_calls.load(Ordering::SeqCst) >= 1,
+        "LID identify should run after STT session closes"
     );
 
     agent.stop().await.unwrap();

@@ -22,7 +22,6 @@ import {
   assertMuchQuieter,
   assertRightLouder,
   pumpLoudMicFrames,
-  pumpLoudTtsLeftOnlySidecarFrames,
   pumpLoudTtsSidecarFrames,
   waitForInboundStereoEnergy,
   waitForInboundStereoQuiet,
@@ -309,11 +308,7 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
 
         // Probe E — dual-mono TTS panned right (+x); mirrors e2e set_tts_pose → speak → energy → RMS
         await listenerHost.setTtsPose(listenerUuid, poseAtX(3))
-        const probeE = pumpLoudTtsLeftOnlySidecarFrames(
-          mixer!,
-          listenerPeerId,
-          TTS_SPEAK_STANDIN_MS,
-        )
+        const probeE = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, TTS_SPEAK_STANDIN_MS)
         await waitForInboundStereoEnergy(listener.agentAudio, {
           threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,
@@ -332,11 +327,7 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
 
         // Probe F — dual-mono TTS panned left (-x); same e2e shape as E (no directional wait)
         await listenerHost.setTtsPose(listenerUuid, poseAtX(-3))
-        const probeF = pumpLoudTtsLeftOnlySidecarFrames(
-          mixer!,
-          listenerPeerId,
-          TTS_SPEAK_STANDIN_MS,
-        )
+        const probeF = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, TTS_SPEAK_STANDIN_MS)
         await waitForInboundStereoEnergy(listener.agentAudio, {
           threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,

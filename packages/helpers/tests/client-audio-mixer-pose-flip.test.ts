@@ -6,7 +6,7 @@ import { ClientAudioMixer } from '../src/client-audio-mixer.js'
 import {
   assertLeftLouder,
   assertRightLouder,
-  createLoudLeftOnlyFrame,
+  createLoudStereoFrame,
   injectTtsSidecarPendingFrame,
   mergeStereoRms,
   stereoRms,
@@ -60,7 +60,7 @@ describe.skipIf(!mixGraphNativeAvailable())(
       await mixer.setTtsPose(peerId, poseAtX(3))
       const rightPhaseStart = captured.length
       for (let i = 0; i < 10; i++) {
-        injectTtsSidecarPendingFrame(mixer, peerId, createLoudLeftOnlyFrame())
+        injectTtsSidecarPendingFrame(mixer, peerId, createLoudStereoFrame())
         await mixer.pumpMixFrame(peerId, outbound)
       }
       const rightPeak = peakRmsFromFrames(captured.slice(rightPhaseStart))
@@ -69,7 +69,7 @@ describe.skipIf(!mixGraphNativeAvailable())(
       await mixer.setTtsPose(peerId, poseAtX(-3))
       const leftPhaseStart = captured.length
       for (let i = 0; i < 10; i++) {
-        injectTtsSidecarPendingFrame(mixer, peerId, createLoudLeftOnlyFrame())
+        injectTtsSidecarPendingFrame(mixer, peerId, createLoudStereoFrame())
         await mixer.pumpMixFrame(peerId, outbound)
       }
       const leftPeak = peakRmsFromFrames(captured.slice(leftPhaseStart))

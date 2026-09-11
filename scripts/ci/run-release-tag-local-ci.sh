@@ -13,6 +13,41 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+run_step() {
+  local label="$1"
+  local log="$2"
+  # Must drop both label and log. `shift` (1) leaves the log path as $1, so bash
+  # tries to execute the log file and fails with "Permission denied".
+  shift 2
+  echo "==> ${label} -> ${log}"
+  if "$@" >"$log" 2>&1; then
+    echo "exit=0" >>"$log"
+    return 0
+  else
+    local ec=$?
+    echo "exit=${ec}" >>"$log"
+    echo "FAIL ${label} (exit ${ec}); search ${log}" >&2
+    return "$ec"
+  fi
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  tmpd="$(mktemp -d)"
+  trap 'rm -rf "$tmpd"' EXIT
+  oklog="$tmpd/ok.log"
+  faillog="$tmpd/fail.log"
+  run_step "true" "$oklog" bash -c 'echo RAN'
+  grep -q RAN "$oklog"
+  grep -q 'exit=0' "$oklog"
+  if run_step "false" "$faillog" false; then
+    echo "run-release-tag-local-ci --self-test: expected false to fail" >&2
+    exit 1
+  fi
+  grep -q 'exit=1' "$faillog"
+  echo "OK: run-release-tag-local-ci run_step self-test"
+  exit 0
+fi
+
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$BRANCH" != "main" ]]; then
   echo "run-release-tag-local-ci: must be on main (got ${BRANCH})" >&2
@@ -32,22 +67,6 @@ fi
 
 mkdir -p .test-logs
 STAMP="$(date +%Y%m%d-%H%M%S)"
-
-run_step() {
-  local label="$1"
-  local log="$2"
-  shift
-  echo "==> ${label} -> ${log}"
-  if "$@" >"$log" 2>&1; then
-    echo "exit=0" >>"$log"
-    return 0
-  else
-    local ec=$?
-    echo "exit=${ec}" >>"$log"
-    echo "FAIL ${label} (exit ${ec}); search ${log}" >&2
-    return "$ec"
-  fi
-}
 
 QLOG=".test-logs/${STAMP}-pr-quality.log"
 NLOG=".test-logs/${STAMP}-build-native.log"

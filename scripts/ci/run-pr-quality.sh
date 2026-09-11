@@ -9,6 +9,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+echo "==> release-tag local CI run_step self-test"
+bash scripts/ci/run-release-tag-local-ci.sh --self-test
+
 echo "==> validate package-lock optional bindings"
 bash scripts/ci/validate-package-lock-optional-bindings.sh
 

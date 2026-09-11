@@ -122,9 +122,10 @@ function setupMixGraph(c1X: number, c3X: number): AudioMixGraph {
   return graph
 }
 
-function closePeerPair(pair: PeerPairHandles): void {
-  pair.hostPc.close()
-  pair.clientPc.close()
+async function closePeerPair(pair: PeerPairHandles): Promise<void> {
+  // Sync close() can return before native ICE UDP is released; the next test
+  // then sits in connectionState=connecting until waitForConnection times out.
+  await Promise.all([pair.hostPc.closeAsync(), pair.clientPc.closeAsync()])
   pair.hostSig.disconnect()
   pair.clientSig.disconnect()
 }
@@ -204,9 +205,9 @@ async function runThreePeerPositionalMix(
 
     assertTwoSinePanSides(Int16Array.from(left), Int16Array.from(right), expect440OnRight)
   } finally {
-    closePeerPair(c1.pair)
-    closePeerPair(c2.pair)
-    closePeerPair(c3.pair)
+    await closePeerPair(c1.pair)
+    await closePeerPair(c2.pair)
+    await closePeerPair(c3.pair)
     await delay(100)
   }
 }

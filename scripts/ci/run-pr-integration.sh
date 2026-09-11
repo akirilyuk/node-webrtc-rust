@@ -42,6 +42,12 @@ bash "$ROOT/scripts/ci/sync-workspace-bindings.sh"
 
 echo "==> cargo test (core, mixer, conference, speech)"
 echo "    (compiles Rust test deps on cold cache — separate from the .node binding above)"
+# opus_sdp_fmtp_omits_maxaveragebitrate_when_env_unset uses OnceLock. A developer
+# shell with WEBRTC_OPUS_BITRATE_BPS=192000 (common locally) fails those tests even
+# though GitHub CI is unset. Unset here so release-tag local CI is hermetic.
+# Lesson: development/node-webrtc-rust/features/2026-07-30-opus-sdp-omit-unset.md
+unset WEBRTC_OPUS_BITRATE_BPS
+unset WEBRTC_OPUS_APPLICATION
 # WebRTC peer integration tests flake when run in parallel (shared ICE/ports).
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo core --lib" -- \
   cargo test -p node-webrtc-rust-core --lib

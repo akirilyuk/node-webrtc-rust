@@ -314,6 +314,13 @@ mod tests {
 
     #[test]
     fn opus_sdp_fmtp_omits_maxaveragebitrate_when_env_unset() {
+        assert!(
+            std::env::var("WEBRTC_OPUS_BITRATE_BPS")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .is_none(),
+            "WEBRTC_OPUS_BITRATE_BPS is set; OnceLock captures it for the process. Unset it, or run via scripts/ci/run-pr-integration.sh."
+        );
         let line = opus_sdp_fmtp_line();
         assert_eq!(line, "minptime=10;useinbandfec=1;stereo=1");
         assert!(!line.contains("maxaveragebitrate"));

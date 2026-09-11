@@ -243,6 +243,13 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         await probeA
         assertRightLouder(energyA.left, energyA.right)
 
+        await waitForInboundStereoQuiet(listener.agentAudio, {
+          threshold: LOUD_MIC_ENERGY_THRESHOLD,
+          quietWindowMs: TTS_QUIET_WINDOW_MS,
+          timeoutMs: TTS_QUIET_WAIT_MS,
+          label: 'drain leftover probe A mic before probe B',
+        })
+
         // Probe B — client-3 loud mic (-x → left louder)
         const probeBDurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
         const probeB = pumpLoudMicFrames(

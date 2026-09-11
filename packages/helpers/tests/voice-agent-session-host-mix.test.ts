@@ -80,8 +80,8 @@ function createHost(
   return host as unknown as HostTestAccess
 }
 
-function createStubSignaling() {
-  return { room: 'test-room', on: vi.fn() }
+function createStubSignaling(room = 'test-room') {
+  return { room, on: vi.fn() }
 }
 
 function fakeAgent(): FakeAgent {
@@ -290,6 +290,31 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     await expect(host.setListenerMute('client-b', 'client-a', true)).rejects.toThrow(
       /same mix group/,
     )
+  })
+
+  it('createMixGroup resolves orchestrator session ids to peer ids', () => {
+    const graph = createMockMixGraph()
+    const orchestratorSessionId = 'orch-session-listener'
+    const host = new VoiceAgentSessionHost(
+      createStubSignaling(orchestratorSessionId) as never,
+      [],
+      {
+        voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
+        sessionMode: 'voice+data',
+        clientMixGraph: graph,
+        sessionBudget: {
+          tryAcquire: () => 'lease-test',
+          release: () => undefined,
+          snapshot: () => ({ active: 0, max: 0, available: 0, rejectedTotal: 0 }),
+        },
+        resolveParticipantId: (id) => (id === orchestratorSessionId ? 'client-b' : id),
+      },
+    )
+    host.createMixGroup({
+      id: 'all',
+      clientIds: ['client-a', orchestratorSessionId, 'client-c'],
+    })
+    expect(graph.setGroupMembers).toHaveBeenCalledWith('all', ['client-a', 'client-b', 'client-c'])
   })
 
   it('status reports pose, tts pose, and mutes', async () => {

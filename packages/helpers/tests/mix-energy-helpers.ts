@@ -164,6 +164,66 @@ export async function waitForInboundStereoEnergy(
  * Poll inbound stereo PCM until max(L,R) RMS stays below threshold for a
  * consecutive quiet window (drain leftover TTS before the next utterance).
  */
+/** Wait until inbound stereo is clearly left-dominant (probe F gate after +x TTS drain). */
+export async function waitForInboundStereoLeftDominant(
+  track: StereoEnergyReader,
+  options: {
+    ratio?: number
+    timeoutMs: number
+    label?: string
+  },
+): Promise<void> {
+  const {
+    ratio = DEFAULT_LOUDER_RATIO,
+    timeoutMs,
+    label = 'inbound left-dominant stereo',
+  } = options
+  const endAt = Date.now() + timeoutMs
+  while (Date.now() < endAt) {
+    const sample = await track.readSample()
+    if (sample && sample.byteLength >= 4) {
+      const frame = stereoRms(sample)
+      if (frame.left > frame.right * ratio) {
+        return
+      }
+    }
+    await delay(5)
+  }
+  throw new Error(
+    `timed out waiting for ${label}: left RMS did not exceed right * ${ratio} within ${timeoutMs}ms`,
+  )
+}
+
+/** Wait until inbound stereo is clearly right-dominant (optional probe E gate). */
+export async function waitForInboundStereoRightDominant(
+  track: StereoEnergyReader,
+  options: {
+    ratio?: number
+    timeoutMs: number
+    label?: string
+  },
+): Promise<void> {
+  const {
+    ratio = DEFAULT_LOUDER_RATIO,
+    timeoutMs,
+    label = 'inbound right-dominant stereo',
+  } = options
+  const endAt = Date.now() + timeoutMs
+  while (Date.now() < endAt) {
+    const sample = await track.readSample()
+    if (sample && sample.byteLength >= 4) {
+      const frame = stereoRms(sample)
+      if (frame.right > frame.left * ratio) {
+        return
+      }
+    }
+    await delay(5)
+  }
+  throw new Error(
+    `timed out waiting for ${label}: right RMS did not exceed left * ${ratio} within ${timeoutMs}ms`,
+  )
+}
+
 export async function waitForInboundStereoQuiet(
   track: StereoEnergyReader,
   options: {

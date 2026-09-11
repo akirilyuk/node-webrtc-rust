@@ -474,6 +474,49 @@ describe('VoiceAgentSessionHost playAudio', () => {
     expect(graph.removeInput).toHaveBeenCalledWith(`play:${playId}`)
   })
 
+  it('overlapping G then per-peer H plays route clip to every listener while G is active', async () => {
+    let playSeq = 0
+    playerMocks.playClipBytes.mockImplementation(() => `play-${++playSeq}`)
+    playerMocks.getClip.mockImplementation((playId: string) => ({
+      playId,
+      status: 'playing',
+      positionMs: 0,
+      bufferedMs: 100,
+    }))
+
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    for (const peerId of ['client-a', 'client-b', 'client-c']) {
+      host.sessions.set(peerId, {
+        agent: { stop: vi.fn(async () => undefined) },
+        agentStarted: true,
+      })
+      host.getClientMixer()?.registerPeer(peerId)
+    }
+
+    const { playId: playIdG } = await host.playAudio({
+      source: { bytes: Buffer.from('wav-g') },
+      peerIds: ['client-b'],
+    })
+    const mixInputG = clipPlayInputId(playIdG)
+
+    const mixInputsH: string[] = []
+    for (const peerId of ['client-a', 'client-b', 'client-c']) {
+      const { playId } = await host.playAudio({
+        source: { bytes: Buffer.from(`wav-h-${peerId}`) },
+        peerIds: [peerId],
+      })
+      mixInputsH.push(clipPlayInputId(playId))
+    }
+
+    for (const [index, peerId] of ['client-a', 'client-b', 'client-c'].entries()) {
+      const routes = graph.listenerRoutes.get(peerId) ?? []
+      expect(routes).toContain(mixInputsH[index])
+    }
+    expect(graph.listenerRoutes.get('client-b')).toContain(mixInputG)
+    expect(graph.listenerRoutes.get('client-a') ?? []).not.toContain(mixInputG)
+  })
+
   it('overlapping targeted G then broadcast H keeps H routes when G stops', async () => {
     let playSeq = 0
     playerMocks.playClipBytes.mockImplementation(() => `play-${++playSeq}`)

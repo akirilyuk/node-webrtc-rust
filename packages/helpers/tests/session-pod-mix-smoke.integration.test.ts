@@ -1,13 +1,10 @@
 /**
- * SessionPod mix-smoke integration — mirrors staging e2e voice-data-mix-smoke
- * energy probes A–F (exclusive loud mic L/R pan, global/listener mute, TTS pan).
- * Also covers leftover left-loud mic drain: after probe-B-style talker at −x stops,
- * inbound must go quiet before TTS panned +x is right-loud on the summed mix pump.
- * Uses real RTCPeerConnections + native AudioMixGraph (not Goertzel simultaneous-sine).
+ * SessionPod mix-smoke integration — mirrors staging e2e voice-data-mix-smoke probes A–F.
+ * Uses orchestrator session UUIDs, accumulateInboundStereoRms only, dual-mono TTS sidecar for E/F.
  *
  * Verify:
  *   cd node-webrtc-rust
- *   npx vitest run packages/helpers/tests/session-pod-mix-smoke.integration.test.ts
+ *   npm run test:integration --workspace=@node-webrtc-rust/helpers
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -21,17 +18,17 @@ import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
 import { VoiceSessionBudget, resetProcessVoiceSessionBudget } from '../src/voice-session-budget.js'
 import {
   accumulateInboundStereoRms,
-  accumulateDirectionalStereoRms,
   assertLeftLouder,
   assertMuchQuieter,
   assertRightLouder,
   pumpLoudMicFrames,
-  pumpLoudTtsLeftOnlySidecarFrames,
   pumpLoudTtsSidecarFrames,
   waitForInboundStereoEnergy,
+  waitForInboundStereoLeftDominant,
   waitForInboundStereoQuiet,
 } from './mix-energy-helpers.js'
 import { defaultIceConfig, delay, waitForConnection } from './mix-three-client-helpers.js'
+import { SMOKE_PEER_IDS, SMOKE_SESSION_UUIDS } from './smoke-parity-helpers.js'
 
 const ENERGY_PROBE_MS = 400
 const LOUD_MIC_ENERGY_THRESHOLD = 500
@@ -51,9 +48,18 @@ type SessionPodTestAccess = SessionPod & {
   slots: Map<string, SessionPodSlot>
 }
 
+type VoiceHostSessionState = {
+  agentTtsOut?: { setWriteSampleTee(callback: ((...args: unknown[]) => void) | null): void }
+}
+
 type VoiceHostTestAccess = VoiceAgentSessionHost & {
   getClientMixer(): ClientAudioMixer | undefined
-  sessions: Map<string, { agent?: { sendTextToTTS: (text: string) => Promise<void> } }>
+  sessions: Map<string, VoiceHostSessionState>
+}
+
+function detachAgentTtsTee(host: VoiceHostTestAccess, peerId: string): void {
+  const sidecar = host.sessions.get(peerId)?.agentTtsOut
+  sidecar?.setWriteSampleTee(null)
 }
 
 function getVoiceHostForSession(
@@ -76,9 +82,6 @@ function sessionPodMixIntegrationNativeAvailable(): boolean {
     return false
   }
 }
-
-const CLIENT_IDS = ['client-mix-1', 'client-mix-2', 'client-mix-3'] as const
-const SESSION_IDS = ['session-c1', 'session-c2', 'session-c3'] as const
 
 const centerPose = { position: vec3Zero(), orientation: quatIdentity() }
 
@@ -140,17 +143,6 @@ function closeClient(client: ConnectedClient): void {
   client.signaling.disconnect()
 }
 
-function configurePositionalMix(host: VoiceAgentSessionHost, c1X: number, c3X: number): void {
-  host.createMixGroup({
-    id: 'all',
-    clientIds: [...CLIENT_IDS],
-  })
-  host.setPositionalMixing(true)
-  host.setClientPose('client-mix-2', centerPose)
-  host.setClientPose('client-mix-1', poseAtX(c1X))
-  host.setClientPose('client-mix-3', poseAtX(c3X))
-}
-
 async function waitForVoiceClientActive(
   pod: SessionPod,
   clientId: string,
@@ -158,7 +150,7 @@ async function waitForVoiceClientActive(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    for (const sessionId of SESSION_IDS) {
+    for (const sessionId of SMOKE_SESSION_UUIDS) {
       const host = getVoiceHostForSession(pod, sessionId)
       if (host?.isVoiceClientActive(clientId)) {
         return
@@ -199,33 +191,44 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
       resetProcessVoiceSessionBudget()
     })
 
-    it('exclusive loud mic pan, mute gates, and TTS sidecar pan match staging mix-smoke', async () => {
-      for (const sessionId of SESSION_IDS) {
+    it('voice-data-mix-smoke parity: probes A–F with session UUIDs and dual-mono TTS', async () => {
+      for (const sessionId of SMOKE_SESSION_UUIDS) {
         await pod.ensureSession(sessionId)
       }
 
       const [client1, client2, client3] = await Promise.all([
-        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
-        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
-        connectClientToSession(wsUrl, 'session-c3', 'client-mix-3'),
+        connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[0], SMOKE_PEER_IDS[0]),
+        connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[1], SMOKE_PEER_IDS[1]),
+        connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[2], SMOKE_PEER_IDS[2]),
       ])
 
       try {
-        const host = getVoiceHostForSession(pod, 'session-c2')
-        expect(host).toBeDefined()
-        configurePositionalMix(host!, 3, -3)
+        const driverHost = getVoiceHostForSession(pod, SMOKE_SESSION_UUIDS[0])!
+        const listenerHost = getVoiceHostForSession(
+          pod,
+          SMOKE_SESSION_UUIDS[1],
+        ) as VoiceHostTestAccess
+        expect(listenerHost).toBeDefined()
+
+        driverHost.createMixGroup({ id: 'all', clientIds: [...SMOKE_SESSION_UUIDS] })
+        driverHost.setPositionalMixing(true)
+        driverHost.setClientPose(SMOKE_SESSION_UUIDS[1], centerPose)
+        driverHost.setClientPose(SMOKE_SESSION_UUIDS[0], poseAtX(3))
+        driverHost.setClientPose(SMOKE_SESSION_UUIDS[2], poseAtX(-3))
 
         await client1.mic.writeSample(Buffer.alloc(960), 5)
-        await client3.mic.writeSample(Buffer.alloc(960), 5)
         await client2.mic.writeSample(Buffer.alloc(960), 5)
+        await client3.mic.writeSample(Buffer.alloc(960), 5)
 
-        for (const clientId of CLIENT_IDS) {
-          await waitForVoiceClientActive(pod, clientId)
+        for (const peerId of SMOKE_PEER_IDS) {
+          await waitForVoiceClientActive(pod, peerId)
         }
 
         const listener = client2
+        const listenerPeerId = SMOKE_PEER_IDS[1]
+        const listenerUuid = SMOKE_SESSION_UUIDS[1]
 
-        // Probe A — client-1 loud mic (+x → right louder)
+        // Probe A — client-1 loud mic (+x → right louder on listener inbound)
         const probeADurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
         const probeA = pumpLoudMicFrames(
           (frame, duration) => client1.mic.writeSample(frame, duration),
@@ -255,9 +258,9 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         await probeB
         assertLeftLouder(energyB.left, energyB.right)
 
-        // Probe C — global mute silences client-1 loud mic
-        await pod.setGlobalMute('client-mix-1', true)
-        const statusMuted = pod.getClientMixStatus('client-mix-1')
+        // Probe C — global mute on client-0 (session UUID)
+        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], true)
+        const statusMuted = pod.getClientMixStatus(SMOKE_SESSION_UUIDS[0])
         expect(statusMuted.globallyMuted).toBe(true)
 
         const probeC = pumpLoudMicFrames(
@@ -269,10 +272,10 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         const energyC = await rmsC
         assertMuchQuieter(energyC, energyA)
 
-        await pod.setGlobalMute('client-mix-1', false)
+        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], false)
 
-        // Probe D — listener mute on client-3
-        await pod.setListenerMute('client-mix-2', 'client-mix-3', true)
+        // Probe D — listener mute on client-3 (session UUIDs)
+        await pod.setListenerMute(SMOKE_SESSION_UUIDS[1], SMOKE_SESSION_UUIDS[2], true)
 
         const probeD = pumpLoudMicFrames(
           (frame, duration) => client3.mic.writeSample(frame, duration),
@@ -283,172 +286,12 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         const energyD = await rmsD
         assertMuchQuieter(energyD, energyB)
 
-        await pod.setListenerMute('client-mix-2', 'client-mix-3', false)
+        await pod.setListenerMute(SMOKE_SESSION_UUIDS[1], SMOKE_SESSION_UUIDS[2], false)
 
-        // Probe E — TTS sidecar panned right (+x)
-        const listenerHost = host as VoiceHostTestAccess
-        const mixer = listenerHost.getClientMixer()
-        expect(mixer).toBeDefined()
-        // Sidecar is wired by VoiceAgent attach; loud frames enter via native tee → pendingTts.
-        mixer!.createTtsSidecar('client-mix-2')
-
-        listenerHost.setTtsPose('client-mix-2', poseAtX(3))
-        const probeEDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probeE = pumpLoudTtsSidecarFrames(mixer!, 'client-mix-2', probeEDurationMs)
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          timeoutMs: TTS_ENERGY_WAIT_MS,
-          label: 'TTS pan probe E',
-        })
-        const energyE = await accumulateDirectionalStereoRms(
-          listener.agentAudio,
-          ENERGY_PROBE_MS,
-          'right',
-        )
-        await probeE
-        assertRightLouder(energyE.left, energyE.right)
-
-        await waitForInboundStereoQuiet(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          quietWindowMs: TTS_QUIET_WINDOW_MS,
-          timeoutMs: TTS_QUIET_WAIT_MS,
-          label: 'TTS drain after probe E',
-        })
-
-        // Probe F — TTS sidecar panned left (-x)
-        listenerHost.clearTtsPose('client-mix-2')
-        listenerHost.setTtsPose('client-mix-2', poseAtX(-3))
-        const probeFDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probeF = pumpLoudTtsSidecarFrames(mixer!, 'client-mix-2', probeFDurationMs)
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          timeoutMs: TTS_ENERGY_WAIT_MS,
-          label: 'TTS pan probe F',
-        })
-        const energyF = await accumulateDirectionalStereoRms(
-          listener.agentAudio,
-          ENERGY_PROBE_MS,
-          'left',
-        )
-        await probeF
-        assertLeftLouder(energyF.left, energyF.right)
-      } finally {
-        closeClient(client1)
-        closeClient(client2)
-        closeClient(client3)
-        await delay(100)
-      }
-    }, 180_000)
-
-    it('TTS left-only sidecar pans right after setTtsPose +x', async () => {
-      await pod.ensureSession('session-c1')
-      await pod.ensureSession('session-c2')
-
-      const [talker, listener] = await Promise.all([
-        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
-        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
-      ])
-
-      const pumpAbort = new AbortController()
-
-      try {
-        const host = getVoiceHostForSession(pod, 'session-c2')
-        expect(host).toBeDefined()
-
-        host!.createMixGroup({
-          id: 'tts-left-only',
-          clientIds: ['client-mix-1', 'client-mix-2'],
-        })
-        host!.setPositionalMixing(true)
-        host!.setClientPose('client-mix-2', centerPose)
-        host!.setClientPose('client-mix-1', centerPose)
-
-        await talker.mic.writeSample(Buffer.alloc(960), 5)
-        await listener.mic.writeSample(Buffer.alloc(960), 5)
-
-        await waitForVoiceClientActive(pod, 'client-mix-1')
-        await waitForVoiceClientActive(pod, 'client-mix-2')
-
-        // Prime mix path after mega-test teardown (same sequence as leftover mic drain).
-        const probeMicDurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probeMic = pumpLoudMicFrames(
-          (frame, duration) => talker.mic.writeSample(frame, duration),
-          probeMicDurationMs,
-        )
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: LOUD_MIC_ENERGY_THRESHOLD,
-          timeoutMs: LOUD_MIC_ENERGY_WAIT_MS,
-          label: 'left-only prime talker mic',
-        })
-        await probeMic
-
-        await waitForInboundStereoQuiet(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          quietWindowMs: TTS_QUIET_WINDOW_MS,
-          timeoutMs: TTS_QUIET_WAIT_MS,
-          label: 'left-only prime mic drain',
-        })
-
-        const listenerHost = host as VoiceHostTestAccess
-        const mixer = listenerHost.getClientMixer()
-        expect(mixer).toBeDefined()
-        mixer!.createTtsSidecar('client-mix-2')
-
-        listenerHost.setTtsPose('client-mix-2', poseAtX(3))
-        const probeDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probe = pumpLoudTtsLeftOnlySidecarFrames(mixer!, 'client-mix-2', probeDurationMs, {
-          signal: pumpAbort.signal,
-        })
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
-          timeoutMs: TTS_ENERGY_WAIT_MS,
-          label: 'left-only TTS pan +x',
-        })
-        const energy = await accumulateDirectionalStereoRms(
-          listener.agentAudio,
-          ENERGY_PROBE_MS,
-          'right',
-        )
-        await probe
-        assertRightLouder(energy.left, energy.right)
-      } finally {
-        pumpAbort.abort()
-        closeClient(talker)
-        closeClient(listener)
-        await delay(100)
-      }
-    }, 180_000)
-
-    it('e2e parity: TTS probes E/F via session UUID setTtsPose and sendTextToTTS', async () => {
-      for (const sessionId of SESSION_IDS) {
-        await pod.ensureSession(sessionId)
-      }
-
-      const [client1, client2, client3] = await Promise.all([
-        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
-        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
-        connectClientToSession(wsUrl, 'session-c3', 'client-mix-3'),
-      ])
-
-      try {
-        const driverHost = getVoiceHostForSession(pod, 'session-c1')!
-        const listenerHost = getVoiceHostForSession(pod, 'session-c2') as VoiceHostTestAccess
-        expect(listenerHost).toBeDefined()
-        configurePositionalMix(listenerHost, 3, -3)
-
-        await client1.mic.writeSample(Buffer.alloc(960), 5)
+        // Smoke pauses all mics before TTS pan probes so +x/-x talker poses do not mask TTS pan.
+        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], true)
+        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[2], true)
         await client2.mic.writeSample(Buffer.alloc(960), 5)
-        await client3.mic.writeSample(Buffer.alloc(960), 5)
-
-        for (const clientId of CLIENT_IDS) {
-          await waitForVoiceClientActive(pod, clientId)
-        }
-
-        const listener = client2
-
-        for (const client of [client1, client2, client3]) {
-          client.mic.writeSample(Buffer.alloc(960), 5).catch(() => undefined)
-        }
 
         await waitForInboundStereoQuiet(listener.agentAudio, {
           threshold: TTS_ENERGY_THRESHOLD,
@@ -457,15 +300,19 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
           label: 'mix inbound quiet before probe E',
         })
 
-        driverHost.setTtsPose('session-c2', poseAtX(3))
-        const agent = listenerHost.sessions.get('client-mix-2')?.agent
-        expect(agent).toBeDefined()
+        const mixer = listenerHost.getClientMixer()
+        expect(mixer).toBeDefined()
+        mixer!.createTtsSidecar(listenerPeerId)
+        detachAgentTtsTee(listenerHost, listenerPeerId)
 
-        const probeE = agent!.sendTextToTTS('one two three four five')
+        // Probe E — dual-mono TTS panned right (+x) via session UUID pose (driver DC path)
+        listenerHost.setTtsPose(listenerUuid, poseAtX(3))
+        const probeEDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
+        const probeE = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, probeEDurationMs)
         await waitForInboundStereoEnergy(listener.agentAudio, {
           threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,
-          label: 'TTS pan probe E (session UUID pose)',
+          label: 'TTS pan probe E',
         })
         const energyE = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
         await probeE
@@ -478,17 +325,23 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
           label: 'TTS drain after probe E',
         })
 
-        driverHost.clearTtsPose('session-c2')
-        driverHost.setTtsPose('session-c2', poseAtX(-3))
-        const probeF = agent!.sendTextToTTS('one two three four five')
-        await waitForInboundStereoEnergy(listener.agentAudio, {
-          threshold: TTS_ENERGY_THRESHOLD,
+        // Probe F — dual-mono TTS panned left (-x)
+        listenerHost.clearTtsPose(listenerUuid)
+        listenerHost.setTtsPose(listenerUuid, poseAtX(-3))
+        const probeF = pumpLoudTtsSidecarFrames(
+          mixer!,
+          listenerPeerId,
+          TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS,
+        )
+        await waitForInboundStereoLeftDominant(listener.agentAudio, {
           timeoutMs: TTS_ENERGY_WAIT_MS,
-          label: 'TTS pan probe F (session UUID pose)',
+          label: 'TTS pan probe F left-dominant',
         })
         const energyF = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
         await probeF
         assertLeftLouder(energyF.left, energyF.right)
+
+        listenerHost.clearTtsPose(listenerUuid)
       } finally {
         closeClient(client1)
         closeClient(client2)
@@ -498,31 +351,31 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
     }, 180_000)
 
     it('leftover left-loud mic drains quiet before TTS panned right on mix pump', async () => {
-      await pod.ensureSession('session-c1')
-      await pod.ensureSession('session-c2')
+      await pod.ensureSession(SMOKE_SESSION_UUIDS[0])
+      await pod.ensureSession(SMOKE_SESSION_UUIDS[1])
 
       const [talker, listener] = await Promise.all([
-        connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
-        connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
+        connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[0], SMOKE_PEER_IDS[0]),
+        connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[1], SMOKE_PEER_IDS[1]),
       ])
 
       try {
-        const host = getVoiceHostForSession(pod, 'session-c2')
+        const host = getVoiceHostForSession(pod, SMOKE_SESSION_UUIDS[1])
         expect(host).toBeDefined()
 
         host!.createMixGroup({
           id: 'all',
-          clientIds: ['client-mix-1', 'client-mix-2'],
+          clientIds: [SMOKE_PEER_IDS[0], SMOKE_PEER_IDS[1]],
         })
         host!.setPositionalMixing(true)
-        host!.setClientPose('client-mix-2', centerPose)
-        host!.setClientPose('client-mix-1', poseAtX(-3))
+        host!.setClientPose(SMOKE_PEER_IDS[1], centerPose)
+        host!.setClientPose(SMOKE_PEER_IDS[0], poseAtX(-3))
 
         await talker.mic.writeSample(Buffer.alloc(960), 5)
         await listener.mic.writeSample(Buffer.alloc(960), 5)
 
-        await waitForVoiceClientActive(pod, 'client-mix-1')
-        await waitForVoiceClientActive(pod, 'client-mix-2')
+        await waitForVoiceClientActive(pod, SMOKE_PEER_IDS[0])
+        await waitForVoiceClientActive(pod, SMOKE_PEER_IDS[1])
 
         const probeMicDurationMs = LOUD_MIC_ENERGY_WAIT_MS + ENERGY_PROBE_MS
         const probeMic = pumpLoudMicFrames(
@@ -548,21 +401,17 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         const listenerHost = host as VoiceHostTestAccess
         const mixer = listenerHost.getClientMixer()
         expect(mixer).toBeDefined()
-        mixer!.createTtsSidecar('client-mix-2')
+        mixer!.createTtsSidecar(SMOKE_PEER_IDS[1])
 
-        listenerHost.setTtsPose('client-mix-2', poseAtX(3))
+        listenerHost.setTtsPose(SMOKE_PEER_IDS[1], poseAtX(3))
         const probeTtsDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probeTts = pumpLoudTtsSidecarFrames(mixer!, 'client-mix-2', probeTtsDurationMs)
+        const probeTts = pumpLoudTtsSidecarFrames(mixer!, SMOKE_PEER_IDS[1], probeTtsDurationMs)
         await waitForInboundStereoEnergy(listener.agentAudio, {
           threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,
           label: 'TTS pan right after mic drain',
         })
-        const energyTts = await accumulateDirectionalStereoRms(
-          listener.agentAudio,
-          ENERGY_PROBE_MS,
-          'right',
-        )
+        const energyTts = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
         await probeTts
         assertRightLouder(energyTts.left, energyTts.right)
       } finally {

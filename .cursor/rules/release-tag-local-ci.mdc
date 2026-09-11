@@ -1,20 +1,19 @@
 ---
-description: Pull latest main and run full local CI before creating a release/X.Y.Z tag
+description: Pull latest main and run run-release-tag-local-ci.sh before creating a release/X.Y.Z tag
 alwaysApply: true
 ---
 
 # Local CI before release tag
 
-**Never** create or push `release/X.Y.Z` until **latest `origin/main`** passed local quality + tests. A green `release-prep/X.Y.Z` PR is **not** a substitute — PR Typecheck & lint can skip `run-pr-quality.sh` (`eslint .`). Release **always** runs it.
+**Never** create or push `release/X.Y.Z` until latest `origin/main` passed `bash scripts/ci/run-release-tag-local-ci.sh`. A green prep PR is **not** a substitute — PR Typecheck can skip `eslint .`. Release **always** runs it.
 
 ```bash
 git fetch origin main && git checkout main && git pull origin main
-bash scripts/ci/run-pr-quality.sh
-npm run build:native
-bash scripts/ci/run-pr-tests-full.sh
-npm run ci:verify:release-ts
+bash scripts/ci/run-release-tag-local-ci.sh
+git tag release/X.Y.Z
+git push origin refs/tags/release/X.Y.Z
 ```
 
-All must exit 0, then `git tag release/X.Y.Z` and `git push origin refs/tags/release/X.Y.Z`.
+**Lessons:** 0.8.1 lint skip; **0.9.6** unused import after tagging from green Integration tests. `ci:verify:release-ts` ETARGET before npm is expected — do not skip the three required steps. Workspace hook denies tag/push without the stamp file.
 
-**Lesson (0.8.1):** first tag failed Release lint after a green prep PR. Fix on `main` before retagging. See [`scripts/RELEASE.md`](../../scripts/RELEASE.md).
+See [`scripts/RELEASE.md`](../../scripts/RELEASE.md).

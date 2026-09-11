@@ -36,6 +36,7 @@
     "ci:verify:pr-test:docker": "bash scripts/ci/run-pr-test-job-docker.sh",
     "ci:verify:pr-full:docker": "bash scripts/ci/run-pr-test-job-docker.sh --quality",
     "ci:verify:release-ts": "bash scripts/ci/verify-release-publish-ts.sh",
+    "release:tag-local-ci": "bash scripts/ci/run-release-tag-local-ci.sh",
     "ci:verify:release-ts:docker": "CI_VERIFY_RELEASE_TS_IN_DOCKER=1 bash scripts/ci/verify-release-publish-ts.sh",
     "ci:verify": "npm run ci:verify:checks",
     "release:local": "bash scripts/release-local.sh",

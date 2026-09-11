@@ -115,8 +115,10 @@ struct AgentInner {
     user_stt_session_open: bool,
     /// Set on each VAD `SpeechStart` when `vad.enabled` (barge prerequisite).
     vad_triggered_this_utterance: bool,
-    /// C1: ms remaining until `user_stt_not_found` when no partial after `vad_triggered`.
+    /// C1 armed when > 0 (wall-clock expiry uses `stt_listen_started_at`).
     stt_listen_deadline_ms: u32,
+    /// Wall-clock anchor for C1 from VAD `SpeechStart` (not PCM `duration_ms`).
+    stt_listen_started_at: Option<Instant>,
     /// C2: ms remaining until forced `user_speech_final` after last partial or `SpeechEnd`.
     utterance_finalize_deadline_ms: u32,
     /// Wall-clock anchor for C2 when inbound PCM stops (see `c2_wall_clock_ticker`).
@@ -282,6 +284,7 @@ impl VoiceAgent {
                 user_stt_session_open: false,
                 vad_triggered_this_utterance: false,
                 stt_listen_deadline_ms: 0,
+                stt_listen_started_at: None,
                 utterance_finalize_deadline_ms: 0,
                 utterance_finalize_armed_at: None,
                 last_inbound_pcm_at: None,
@@ -369,12 +372,28 @@ impl VoiceAgent {
         inner.stt_stream_open = false;
         inner.user_stt_session_open = false;
         inner.vad_triggered_this_utterance = false;
-        inner.stt_listen_deadline_ms = 0;
+        Self::clear_stt_listen_timer(inner);
         Self::clear_utterance_finalize_timer(inner);
         inner.last_partial_text = None;
         inner.partials_emitted_this_utterance = false;
         inner.barge_awaiting_stt_partial = false;
         inner.defer_utterance_finalize_until_hold = false;
+    }
+
+    fn clear_stt_listen_timer(inner: &mut AgentInner) {
+        inner.stt_listen_deadline_ms = 0;
+        inner.stt_listen_started_at = None;
+    }
+
+    fn c1_listen_expired(inner: &AgentInner) -> bool {
+        if inner.stt_listen_deadline_ms == 0 {
+            return false;
+        }
+        let Some(started_at) = inner.stt_listen_started_at else {
+            return false;
+        };
+        let timeout_ms = inner.config.vad.stt_listen_timeout_ms as u64;
+        started_at.elapsed() >= std::time::Duration::from_millis(timeout_ms)
     }
 
     fn clear_utterance_finalize_timer(inner: &mut AgentInner) {
@@ -458,6 +477,21 @@ impl VoiceAgent {
     }
 
     async fn c2_wall_clock_tick(&self) -> SpeechResult<()> {
+        let c1_expired = {
+            let inner = self.inner.lock().await;
+            if !inner.running || !inner.config.vad.enabled || !Self::stt_pipeline_active(&inner) {
+                false
+            } else {
+                inner.stt_stream_open
+                    && !inner.partials_emitted_this_utterance
+                    && Self::c1_listen_expired(&inner)
+            }
+        };
+        if c1_expired {
+            voice_debug("C1 wall-clock timeout (no STT partial)");
+            self.close_stt_stream_not_found().await?;
+        }
+
         let should_force = {
             let inner = self.inner.lock().await;
             if !inner.running || inner.utterance_finalize_deadline_ms == 0 {
@@ -1448,6 +1482,7 @@ impl VoiceAgent {
             inner.vad_triggered_this_utterance = true;
             if has_stt && !inner.partials_emitted_this_utterance {
                 inner.stt_listen_deadline_ms = inner.config.vad.stt_listen_timeout_ms;
+                inner.stt_listen_started_at = Some(Instant::now());
             }
             if !inner.partials_emitted_this_utterance {
                 Self::clear_utterance_finalize_timer(&mut inner);
@@ -1495,7 +1530,7 @@ impl VoiceAgent {
             let vad_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
             inner.stt_stream_open = false;
             inner.user_stt_session_open = false;
-            inner.stt_listen_deadline_ms = 0;
+            Self::clear_stt_listen_timer(&mut inner);
             Self::clear_utterance_finalize_timer(&mut inner);
             inner.vad_triggered_this_utterance = false;
             inner.barge_awaiting_stt_partial = false;
@@ -1561,7 +1596,7 @@ impl VoiceAgent {
             if inner.user_stt_session_open {
                 inner.user_stt_session_open = false;
             }
-            inner.stt_listen_deadline_ms = 0;
+            Self::clear_stt_listen_timer(&mut inner);
             Self::clear_utterance_finalize_timer(&mut inner);
             inner.vad_triggered_this_utterance = false;
             inner.barge_awaiting_stt_partial = false;
@@ -1662,7 +1697,7 @@ impl VoiceAgent {
         inner.stt_stream_open = false;
         inner.user_stt_session_open = false;
         inner.vad_triggered_this_utterance = false;
-        inner.stt_listen_deadline_ms = 0;
+        Self::clear_stt_listen_timer(inner);
         Self::clear_utterance_finalize_timer(inner);
         inner.last_partial_text = None;
         inner.partials_emitted_this_utterance = false;
@@ -1862,8 +1897,8 @@ impl VoiceAgent {
         }
         // After drain, `synthesis_busy` may still be true while the worker waits in
         // `wait_job_playback_idle` — use playback/queue state only, not synthesis_busy.
-        let tts_still_active = inner.lock().await.agent_speaking
-            || !tts_synthesis_queue.lock().await.is_empty();
+        let tts_still_active =
+            inner.lock().await.agent_speaking || !tts_synthesis_queue.lock().await.is_empty();
         if tts_still_active {
             let mut guard = inner.lock().await;
             guard.lid_identify_deferred = true;
@@ -2081,13 +2116,10 @@ impl VoiceAgent {
                 let mut c2 = false;
                 if inner.stt_stream_open
                     && !inner.partials_emitted_this_utterance
-                    && inner.stt_listen_deadline_ms > 0
+                    && inner.stt_listen_started_at.is_some()
+                    && Self::c1_listen_expired(&inner)
                 {
-                    inner.stt_listen_deadline_ms =
-                        inner.stt_listen_deadline_ms.saturating_sub(duration_ms);
-                    if inner.stt_listen_deadline_ms == 0 {
-                        c1 = true;
-                    }
+                    c1 = true;
                 }
                 if inner.utterance_finalize_deadline_ms > 0
                     && !inner.defer_utterance_finalize_until_hold
@@ -2339,7 +2371,7 @@ impl VoiceAgent {
                 if inner.user_stt_session_open {
                     inner.user_stt_session_open = false;
                 }
-                inner.stt_listen_deadline_ms = 0;
+                Self::clear_stt_listen_timer(&mut inner);
                 Self::clear_utterance_finalize_timer(&mut inner);
                 inner.vad_triggered_this_utterance = false;
                 let need_forced = !inner.stt_final_emitted_this_utterance
@@ -2486,7 +2518,7 @@ impl VoiceAgent {
                         let mut inner = self.inner.lock().await;
                         inner.partials_emitted_this_utterance = true;
                         inner.last_partial_text = Some(text.clone());
-                        inner.stt_listen_deadline_ms = 0;
+                        Self::clear_stt_listen_timer(&mut inner);
                         Self::refresh_utterance_finalize_after_partial(&mut inner);
                     }
                     self.emit_user_speaking_start_if_needed().await;
@@ -2503,7 +2535,7 @@ impl VoiceAgent {
                         inner.stt_final_emitted_this_utterance = true;
                         inner.stt_finalize_pending = false;
                         inner.stt_endpoint_closing_started = false;
-                        inner.stt_listen_deadline_ms = 0;
+                        Self::clear_stt_listen_timer(&mut inner);
                         Self::clear_utterance_finalize_timer(&mut inner);
                         inner.vad_triggered_this_utterance = false;
                         let emit_end = !inner.stt_speaking_end_emitted_this_utterance;

@@ -14,15 +14,19 @@ use crate::lid_model_paths::{lid_paths_to_strings, resolve_lid_model_paths};
 use crate::model_paths::resolve_model_paths;
 use crate::tts_model_paths::resolve_tts_model_paths;
 
-fn stt_num_threads() -> i32 {
-    parse_thread_env("SHERPA_STT_NUM_THREADS").unwrap_or(0)
+pub(crate) fn stt_num_threads() -> i32 {
+    parse_thread_env("SHERPA_STT_NUM_THREADS").unwrap_or(1)
+}
+
+pub(crate) fn lid_num_threads() -> i32 {
+    parse_thread_env("SHERPA_LID_NUM_THREADS").unwrap_or(1)
 }
 
 fn tts_num_threads() -> i32 {
     parse_thread_env("SHERPA_TTS_NUM_THREADS").unwrap_or(2)
 }
 
-fn parse_thread_env(name: &str) -> Option<i32> {
+pub(crate) fn parse_thread_env(name: &str) -> Option<i32> {
     std::env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
@@ -57,10 +61,7 @@ pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecogn
     let paths = resolve_model_paths(config)?;
 
     let mut recognizer_config = OnlineRecognizerConfig::default();
-    let threads = stt_num_threads();
-    if threads > 0 {
-        recognizer_config.model_config.num_threads = threads;
-    }
+    recognizer_config.model_config.num_threads = stt_num_threads();
     recognizer_config.model_config.transducer.encoder = Some(path_to_string(&paths.encoder)?);
     recognizer_config.model_config.transducer.decoder = Some(path_to_string(&paths.decoder)?);
     recognizer_config.model_config.transducer.joiner = Some(path_to_string(&paths.joiner)?);
@@ -133,7 +134,7 @@ pub fn create_spoken_language_identification(
     };
     let lid_config = SpokenLanguageIdentificationConfig {
         whisper,
-        num_threads: stt_num_threads().max(1),
+        num_threads: lid_num_threads(),
         debug: false,
         provider: Some("cpu".to_string()),
     };
@@ -162,4 +163,55 @@ pub fn tts_engine_create_count() -> usize {
 pub fn reset_create_counters() {
     STT_RECOGNIZER_CREATE_COUNT.store(0, Ordering::SeqCst);
     TTS_ENGINE_CREATE_COUNT.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+mod thread_env_tests {
+    use super::{lid_num_threads, parse_thread_env, stt_num_threads};
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    #[test]
+    fn lid_and_stt_thread_env_defaults_and_override_independently() {
+        {
+            let _lid = EnvGuard::unset("SHERPA_LID_NUM_THREADS");
+            let _stt = EnvGuard::unset("SHERPA_STT_NUM_THREADS");
+            assert_eq!(lid_num_threads(), 1);
+            assert_eq!(stt_num_threads(), 1);
+        }
+        {
+            let _lid = EnvGuard::set("SHERPA_LID_NUM_THREADS", "3");
+            let _stt = EnvGuard::set("SHERPA_STT_NUM_THREADS", "2");
+            assert_eq!(lid_num_threads(), 3);
+            assert_eq!(stt_num_threads(), 2);
+            assert_eq!(parse_thread_env("SHERPA_LID_NUM_THREADS"), Some(3));
+            assert_eq!(parse_thread_env("SHERPA_STT_NUM_THREADS"), Some(2));
+        }
+    }
 }

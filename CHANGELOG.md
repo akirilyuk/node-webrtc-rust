@@ -10,13 +10,22 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.9.6] - 2026-09-11
 
-Mix/mute/TTS APIs resolve orchestrator session UUIDs; TTS pose changes drain leftover mix outbound before pan flip.
+Mix/mute/TTS APIs resolve orchestrator session UUIDs; TTS pose changes drain leftover mix outbound before pan flip. Whisper LID and Zipformer STT use isolated ORT thread pools.
+
+### Changed
+
+- **vendor-sherpa-onnx** — Isolate Sherpa ORT `num_threads` for Whisper LID (`SHERPA_LID_NUM_THREADS`, default 1) and Zipformer STT (`SHERPA_STT_NUM_THREADS`, default 1) so both sessions can run in parallel without sharing an all-cores intra-op pool.
 
 ### Fixed
 
 - **helpers** — Mix/mute/TTS APIs resolve orchestrator session UUIDs to mix peer ids (`createMixGroup`, mute, `setTtsPose`).
 - **helpers** — `setTtsPose` / `clearTtsPose` drain mix outbound (paced flush + `kickMixPump`) so dual-mono TTS pose flip is not peak-merged with leftover pan (voice-data-mix-smoke probes E/F).
 - **helpers** — SessionPod integration matches staging clip-playback-smoke G then overlapping H (runner per-session `playAudio`, RMS before play) including local HTTP `/e2e/clip-playback.wav`. Mix-smoke A–F uses session UUIDs and dual-mono TTS sidecar.
+- **speech** — C1 `user_stt_not_found` uses wall-clock time from VAD `SpeechStart`, not summed inbound PCM `duration_ms` (large client bursts no longer expire C1 early).
+
+### Added
+
+- **vendor-sherpa-onnx** — Ignored integration test proves Zipformer emits a non-empty transcript while Whisper `identify` is still in flight (`lid_stt_parallel_test`).
 
 **Compare:** [`release/0.9.5…release/0.9.6`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.5...release/0.9.6)
 

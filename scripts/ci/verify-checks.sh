@@ -66,11 +66,13 @@ run "bash scripts/ci/npm-ci-workspace.sh"
 run "npm run build:native"
 
 echo "==> cargo test (core, mixer, conference, speech)"
-run "cargo test -p node-webrtc-rust-core --lib"
-run "cargo test -p node-webrtc-rust-core --test peer_connection_test -- --test-threads=1"
-run "cargo test -p node-webrtc-rust-mixer"
-run "cargo test -p node-webrtc-rust-conference"
-run "cargo test -p node-webrtc-rust-speech"
+# Same OnceLock trap as run-pr-integration.sh. bash -lc can re-import a login
+# profile, so force-unset on the cargo command line.
+run "env -u WEBRTC_OPUS_BITRATE_BPS -u WEBRTC_OPUS_APPLICATION cargo test -p node-webrtc-rust-core --lib"
+run "env -u WEBRTC_OPUS_BITRATE_BPS -u WEBRTC_OPUS_APPLICATION cargo test -p node-webrtc-rust-core --test peer_connection_test -- --test-threads=1"
+run "env -u WEBRTC_OPUS_BITRATE_BPS -u WEBRTC_OPUS_APPLICATION cargo test -p node-webrtc-rust-mixer"
+run "env -u WEBRTC_OPUS_BITRATE_BPS -u WEBRTC_OPUS_APPLICATION cargo test -p node-webrtc-rust-conference"
+run "env -u WEBRTC_OPUS_BITRATE_BPS -u WEBRTC_OPUS_APPLICATION cargo test -p node-webrtc-rust-speech"
 
 echo "==> npm test"
 run "npm test"

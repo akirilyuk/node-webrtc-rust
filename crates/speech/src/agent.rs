@@ -1923,12 +1923,15 @@ impl VoiceAgent {
         if !should_run {
             return;
         }
-        let (stt_still_active, tts_still_active) = {
+        let (stt_still_active, agent_speaking) = {
             let guard = inner.lock().await;
-            let stt = guard.stt_stream_open || guard.user_stt_session_open;
-            let tts = guard.agent_speaking || !tts_synthesis_queue.lock().await.is_empty();
-            (stt, tts)
+            (
+                guard.stt_stream_open || guard.user_stt_session_open,
+                guard.agent_speaking,
+            )
         };
+        let tts_still_active =
+            agent_speaking || !tts_synthesis_queue.lock().await.is_empty();
         if stt_still_active || tts_still_active {
             let mut guard = inner.lock().await;
             guard.lid_identify_deferred = true;

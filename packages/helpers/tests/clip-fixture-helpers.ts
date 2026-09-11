@@ -51,6 +51,85 @@ export type HoldbackClipServer = {
   close: () => Promise<void>
 }
 
+export type E2eClipPlaybackWavServer = {
+  url: string
+  close: () => Promise<void>
+}
+
+/** Build a 16 kHz mono s16le WAV (2 s default) for clip-playback-smoke URL parity. */
+export function buildE2eClipPlaybackWavBytes(options?: {
+  durationSec?: number
+  sampleRate?: number
+  amplitude?: number
+  freqHz?: number
+}): Buffer {
+  const durationSec = options?.durationSec ?? 2
+  const sampleRate = options?.sampleRate ?? 16_000
+  const amplitude = options?.amplitude ?? 14_000
+  const freqHz = options?.freqHz ?? 440
+  const sampleCount = Math.floor(durationSec * sampleRate)
+  const dataBytes = sampleCount * 2
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + dataBytes, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(sampleRate * 2, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(dataBytes, 40)
+
+  const pcm = Buffer.alloc(dataBytes)
+  for (let i = 0; i < sampleCount; i++) {
+    const sample =
+      freqHz > 0
+        ? Math.round(amplitude * Math.sin((2 * Math.PI * freqHz * i) / sampleRate))
+        : amplitude
+    pcm.writeInt16LE(Math.max(-32_768, Math.min(32_767, sample)), i * 2)
+  }
+  return Buffer.concat([header, pcm])
+}
+
+/** Local HTTP server mirroring staging `/e2e/clip-playback.wav` for helpers integration. */
+export function startE2eClipPlaybackWavServer(
+  wavBytes: Buffer = buildE2eClipPlaybackWavBytes(),
+): Promise<E2eClipPlaybackWavServer> {
+  return new Promise((resolve, reject) => {
+    const server: Server = createServer((req, res) => {
+      if (req.url !== '/e2e/clip-playback.wav') {
+        res.statusCode = 404
+        res.end()
+        return
+      }
+      res.writeHead(200, {
+        'Content-Type': 'audio/wav',
+        'Content-Length': wavBytes.length,
+      })
+      res.end(wavBytes)
+    })
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      if (!addr || typeof addr === 'string') {
+        reject(new Error('e2e clip playback server bind failed'))
+        return
+      }
+      resolve({
+        url: `http://127.0.0.1:${addr.port}/e2e/clip-playback.wav`,
+        close: () =>
+          new Promise<void>((done) => {
+            server.close(() => done())
+          }),
+      })
+    })
+    server.on('error', reject)
+  })
+}
+
 /** HTTP server that streams a WAV with a hold on the tail for progressive-start tests. */
 export function startHoldbackWavServer(wavPath: string): Promise<HoldbackClipServer> {
   const fileBytes: Buffer = readFileSync(wavPath)

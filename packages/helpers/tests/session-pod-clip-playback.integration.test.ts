@@ -24,6 +24,7 @@ import {
   clipFixtureDir,
   loadClipFixtures,
   startHoldbackWavServer,
+  startE2eClipPlaybackWavServer,
   type ClipEncodingFixture,
 } from './clip-fixture-helpers.js'
 import {
@@ -599,11 +600,11 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       assertMuchQuieter(quietBaseline, energyGListener)
       assertMuchQuieter(energyGExcluded, energyGListener)
 
-      const clients = [client1, client2, client3]
+      const hClients = [client1, client2, client3]
       const energiesH = await probeClipPlayInboundEnergy(
         bindings,
         {},
-        clients.map((client) => client.agentAudio),
+        hClients.map((client) => client.agentAudio),
         clipSource,
       )
       for (const [index, energy] of energiesH.entries()) {
@@ -615,8 +616,89 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
             `${SMOKE_PEER_IDS[index]} must hear probe H while G may still be playing: ${msg} (left=${energy.left.toFixed(1)} right=${energy.right.toFixed(1)})`,
           )
         }
+        if (index === 0) {
+          expect(Math.max(energy.left, energy.right)).toBeGreaterThan(STEREO_QUIET_THRESHOLD)
+        }
       }
     } finally {
+      closeClient(client1)
+      closeClient(client2)
+      closeClient(client3)
+      await delay(100)
+    }
+  }, 180_000)
+
+  it('clip-playback-smoke parity: probe G then overlapping H via local URL', async () => {
+    const clipServer = await startE2eClipPlaybackWavServer()
+
+    for (const sessionId of SMOKE_SESSION_UUIDS) {
+      await pod.ensureSession(sessionId)
+    }
+
+    const driverHost = getVoiceHostForSession(pod, SMOKE_SESSION_UUIDS[0])!
+    driverHost.createMixGroup({ id: 'clip-url-shared', clientIds: [...SMOKE_SESSION_UUIDS] })
+
+    const [client1, client2, client3] = await Promise.all([
+      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[0], SMOKE_PEER_IDS[0]),
+      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[1], SMOKE_PEER_IDS[1]),
+      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[2], SMOKE_PEER_IDS[2]),
+    ])
+
+    try {
+      await client1.mic.writeSample(Buffer.alloc(960), 5)
+      await client2.mic.writeSample(Buffer.alloc(960), 5)
+      await client3.mic.writeSample(Buffer.alloc(960), 5)
+
+      for (const peerId of SMOKE_PEER_IDS) {
+        await waitForVoiceClientActiveOnPod(pod, peerId)
+      }
+
+      const bindings = smokeSessionBindings(pod)
+      const listener = client2
+      const clipSource = { url: clipServer.url }
+
+      await waitForInboundStereoQuiet(listener.agentAudio, {
+        threshold: STEREO_QUIET_THRESHOLD,
+        quietWindowMs: QUIET_WINDOW_MS,
+        timeoutMs: QUIET_WAIT_MS,
+        label: 'quiet baseline before URL clip play',
+      })
+      const quietBaseline = await accumulateInboundStereoRms(
+        listener.agentAudio,
+        QUIET_BASELINE_PROBE_MS,
+      )
+
+      const [energyGListener, energyGExcluded] = await probeClipPlayInboundEnergy(
+        bindings,
+        { sessionUuids: [SMOKE_SESSION_UUIDS[1]] },
+        [listener.agentAudio, client3.agentAudio],
+        clipSource,
+      )
+      assertMuchQuieter(quietBaseline, energyGListener)
+      assertMuchQuieter(energyGExcluded, energyGListener)
+
+      const hClients = [client1, client2, client3]
+      const energiesH = await probeClipPlayInboundEnergy(
+        bindings,
+        {},
+        hClients.map((client) => client.agentAudio),
+        clipSource,
+      )
+      for (const [index, energy] of energiesH.entries()) {
+        try {
+          assertMuchQuieter(quietBaseline, energy)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          throw new Error(
+            `${SMOKE_PEER_IDS[index]} must hear URL probe H while G may still be playing: ${msg} (left=${energy.left.toFixed(1)} right=${energy.right.toFixed(1)})`,
+          )
+        }
+        if (index === 0) {
+          expect(Math.max(energy.left, energy.right)).toBeGreaterThan(STEREO_QUIET_THRESHOLD)
+        }
+      }
+    } finally {
+      await clipServer.close()
       closeClient(client1)
       closeClient(client2)
       closeClient(client3)
@@ -631,7 +713,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.setPositionalMixing(true)
     host.createMixGroup({ id: 'tts-pose', clientIds: ['client-tts-pose'] })
     host.setClientPose('client-tts-pose', centerPose)
-    host.setTtsPosition({ pose: poseAtX(3) }, { clientId: 'client-tts-pose' })
+    await host.setTtsPosition({ pose: poseAtX(3) }, { clientId: 'client-tts-pose' })
 
     const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-tts-pose')
     try {

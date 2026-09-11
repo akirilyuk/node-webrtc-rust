@@ -22,9 +22,9 @@ import {
   assertMuchQuieter,
   assertRightLouder,
   pumpLoudMicFrames,
+  pumpLoudTtsLeftOnlySidecarFrames,
   pumpLoudTtsSidecarFrames,
   waitForInboundStereoEnergy,
-  waitForInboundStereoLeftDominant,
   waitForInboundStereoQuiet,
 } from './mix-energy-helpers.js'
 import { defaultIceConfig, delay, waitForConnection } from './mix-three-client-helpers.js'
@@ -37,6 +37,8 @@ const TTS_ENERGY_THRESHOLD = 200
 const TTS_ENERGY_WAIT_MS = 18_000
 const TTS_QUIET_WINDOW_MS = 400
 const TTS_QUIET_WAIT_MS = 20_000
+/** Finite speak stand-in (staging Piper utterance) — not an 18s continuous pump. */
+const TTS_SPEAK_STANDIN_MS = 6_000
 
 type SessionPodSlot = {
   sessionId: string
@@ -288,7 +290,7 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
 
         await pod.setListenerMute(SMOKE_SESSION_UUIDS[1], SMOKE_SESSION_UUIDS[2], false)
 
-        // Smoke pauses all mics before TTS pan probes so +x/-x talker poses do not mask TTS pan.
+        // Silence other talkers during TTS pan probes (e2e pauses mic pumps; graph still routes poses).
         await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], true)
         await pod.setGlobalMute(SMOKE_SESSION_UUIDS[2], true)
         await client2.mic.writeSample(Buffer.alloc(960), 5)
@@ -305,10 +307,13 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         mixer!.createTtsSidecar(listenerPeerId)
         detachAgentTtsTee(listenerHost, listenerPeerId)
 
-        // Probe E — dual-mono TTS panned right (+x) via session UUID pose (driver DC path)
-        listenerHost.setTtsPose(listenerUuid, poseAtX(3))
-        const probeEDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
-        const probeE = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, probeEDurationMs)
+        // Probe E — dual-mono TTS panned right (+x); mirrors e2e set_tts_pose → speak → energy → RMS
+        await listenerHost.setTtsPose(listenerUuid, poseAtX(3))
+        const probeE = pumpLoudTtsLeftOnlySidecarFrames(
+          mixer!,
+          listenerPeerId,
+          TTS_SPEAK_STANDIN_MS,
+        )
         await waitForInboundStereoEnergy(listener.agentAudio, {
           threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,
@@ -325,23 +330,26 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
           label: 'TTS drain after probe E',
         })
 
-        // Probe F — dual-mono TTS panned left (-x)
-        listenerHost.clearTtsPose(listenerUuid)
-        listenerHost.setTtsPose(listenerUuid, poseAtX(-3))
-        const probeF = pumpLoudTtsSidecarFrames(
+        // Probe F — dual-mono TTS panned left (-x); same e2e shape as E (no directional wait)
+        await listenerHost.setTtsPose(listenerUuid, poseAtX(-3))
+        const probeF = pumpLoudTtsLeftOnlySidecarFrames(
           mixer!,
           listenerPeerId,
-          TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS,
+          TTS_SPEAK_STANDIN_MS,
         )
-        await waitForInboundStereoLeftDominant(listener.agentAudio, {
+        await waitForInboundStereoEnergy(listener.agentAudio, {
+          threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,
-          label: 'TTS pan probe F left-dominant',
+          label: 'TTS pan probe F',
         })
         const energyF = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
         await probeF
         assertLeftLouder(energyF.left, energyF.right)
 
-        listenerHost.clearTtsPose(listenerUuid)
+        await listenerHost.clearTtsPose(listenerUuid)
+
+        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[0], false)
+        await pod.setGlobalMute(SMOKE_SESSION_UUIDS[2], false)
       } finally {
         closeClient(client1)
         closeClient(client2)
@@ -403,7 +411,7 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         expect(mixer).toBeDefined()
         mixer!.createTtsSidecar(SMOKE_PEER_IDS[1])
 
-        listenerHost.setTtsPose(SMOKE_PEER_IDS[1], poseAtX(3))
+        await listenerHost.setTtsPose(SMOKE_PEER_IDS[1], poseAtX(3))
         const probeTtsDurationMs = TTS_ENERGY_WAIT_MS + ENERGY_PROBE_MS
         const probeTts = pumpLoudTtsSidecarFrames(mixer!, SMOKE_PEER_IDS[1], probeTtsDurationMs)
         await waitForInboundStereoEnergy(listener.agentAudio, {

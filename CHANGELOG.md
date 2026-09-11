@@ -8,6 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-09-11
+
+Overlapping clip plays no longer wipe remaining MixGraph routes when an earlier play ends.
+
+### Fixed
+
+- **helpers** — `AudioClipController.teardownPlay` removes only the ending play’s mix input and reapplies remaining play routes instead of restoring stale pre-play snapshots (staging clip-playback-smoke probe H). SessionPod integration covers G→H without stop/drain. Mix-smoke TTS E/F uses `setTtsPose` + `sendTextToTTS` with session ids. (#219)
+
+**Compare:** [`release/0.9.4…release/0.9.5`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.4...release/0.9.5)
+
 ## [0.9.4] - 2026-09-10
 
 Spoken language ID runs once per user utterance and no longer overlaps Piper TTS.

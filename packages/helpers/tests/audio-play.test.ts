@@ -473,4 +473,63 @@ describe('VoiceAgentSessionHost playAudio', () => {
     expect(playerMocks.stopClip).toHaveBeenCalledWith(playId)
     expect(graph.removeInput).toHaveBeenCalledWith(`play:${playId}`)
   })
+
+  it('overlapping targeted G then broadcast H keeps H routes when G stops', async () => {
+    let playSeq = 0
+    playerMocks.playClipBytes.mockImplementation(() => `play-${++playSeq}`)
+    playerMocks.getClip.mockImplementation((playId: string) => ({
+      playId,
+      status: 'playing',
+      positionMs: 0,
+      bufferedMs: 100,
+    }))
+
+    const graph = createMockMixGraph()
+    const host = new VoiceAgentSessionHost(createStubSignaling('session-c1') as never, [], {
+      voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
+      sessionMode: 'voice+data',
+      clientMixGraph: graph,
+      sessionBudget: {
+        tryAcquire: () => 'lease-test',
+        release: () => undefined,
+        snapshot: () => ({ active: 0, max: 0, available: 0, rejectedTotal: 0 }),
+      },
+      resolveParticipantId: (id) => (id === 'session-c2' ? 'client-b' : id),
+    }) as HostTestAccess
+
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    const mixer = host.getClientMixer()
+    mixer?.registerPeer('client-a')
+    mixer?.registerPeer('client-b')
+    mixer?.registerPeer('client-c')
+
+    const { playId: playIdG } = await host.playAudio({
+      source: { bytes: Buffer.from('wav-g') },
+      peerIds: ['session-c2'],
+    })
+    const mixInputG = clipPlayInputId(playIdG)
+
+    const { playId: playIdH } = await host.playAudio({
+      source: { bytes: Buffer.from('wav-h') },
+    })
+    const mixInputH = clipPlayInputId(playIdH)
+
+    for (const peerId of ['client-a', 'client-b', 'client-c']) {
+      const routes = graph.listenerRoutes.get(peerId) ?? []
+      expect(routes).toContain(mixInputH)
+    }
+    expect(graph.listenerRoutes.get('client-b')).toContain(mixInputG)
+    expect(graph.listenerRoutes.get('client-c') ?? []).not.toContain(mixInputG)
+
+    host.stopAudioPlay(playIdG)
+
+    for (const peerId of ['client-a', 'client-b', 'client-c']) {
+      const routes = graph.listenerRoutes.get(peerId) ?? []
+      expect(routes).toContain(mixInputH)
+      expect(routes).not.toContain(mixInputG)
+    }
+  })
 })

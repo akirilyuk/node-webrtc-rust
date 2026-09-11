@@ -34,12 +34,12 @@ import {
   waitForInboundStereoQuiet,
 } from './mix-energy-helpers.js'
 import {
-  CLIP_RMS_PROBE_MS,
   probeClipPlayInboundEnergy,
   SMOKE_PEER_IDS,
-  SMOKE_SESSION_UUIDS,
   type SmokeSessionBinding,
 } from './smoke-parity-helpers.js'
+
+const SMOKE_SESSION_IDS = ['session-c1', 'session-c2', 'session-c3'] as const
 
 const clipFixtures = loadClipFixtures()
 const wavFixture = clipFixtures.find((f) => f.ext === 'wav')
@@ -164,7 +164,7 @@ async function waitForVoiceClientActiveOnPod(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    for (const sessionId of SMOKE_SESSION_UUIDS) {
+    for (const sessionId of SMOKE_SESSION_IDS) {
       const host = getVoiceHostForSession(pod, sessionId)
       if (host?.isVoiceClientActive(clientId)) return
     }
@@ -174,10 +174,9 @@ async function waitForVoiceClientActiveOnPod(
 }
 
 function smokeSessionBindings(pod: SessionPod): SmokeSessionBinding[] {
-  return SMOKE_SESSION_UUIDS.map((sessionUuid, index) => ({
-    sessionUuid,
+  return SMOKE_SESSION_IDS.map((sessionId, index) => ({
     peerId: SMOKE_PEER_IDS[index],
-    host: getVoiceHostForSession(pod, sessionUuid)!,
+    host: getVoiceHostForSession(pod, sessionId)!,
   }))
 }
 
@@ -554,17 +553,14 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   it('clip-playback-smoke parity: probe G then overlapping H (runner per-session playAudio)', async () => {
     expect(wavFixture).toBeDefined()
 
-    for (const sessionId of SMOKE_SESSION_UUIDS) {
+    for (const sessionId of SMOKE_SESSION_IDS) {
       await pod.ensureSession(sessionId)
     }
 
-    const driverHost = getVoiceHostForSession(pod, SMOKE_SESSION_UUIDS[0])!
-    driverHost.createMixGroup({ id: 'clip-shared', clientIds: [...SMOKE_SESSION_UUIDS] })
-
     const [client1, client2, client3] = await Promise.all([
-      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[0], SMOKE_PEER_IDS[0]),
-      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[1], SMOKE_PEER_IDS[1]),
-      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[2], SMOKE_PEER_IDS[2]),
+      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[0], SMOKE_PEER_IDS[0]),
+      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[1], SMOKE_PEER_IDS[1]),
+      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[2], SMOKE_PEER_IDS[2]),
     ])
 
     try {
@@ -575,6 +571,9 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       for (const peerId of SMOKE_PEER_IDS) {
         await waitForVoiceClientActiveOnPod(pod, peerId)
       }
+
+      const driverHost = getVoiceHostForSession(pod, SMOKE_SESSION_IDS[0])!
+      driverHost.createMixGroup({ id: 'clip-shared', clientIds: [...SMOKE_PEER_IDS] })
 
       const bindings = smokeSessionBindings(pod)
       const listener = client2
@@ -593,7 +592,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
 
       const [energyGListener, energyGExcluded] = await probeClipPlayInboundEnergy(
         bindings,
-        { sessionUuids: [SMOKE_SESSION_UUIDS[1]] },
+        { peerIds: [SMOKE_PEER_IDS[1]] },
         [listener.agentAudio, client3.agentAudio],
         clipSource,
       )
@@ -631,17 +630,14 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   it('clip-playback-smoke parity: probe G then overlapping H via local URL', async () => {
     const clipServer = await startE2eClipPlaybackWavServer()
 
-    for (const sessionId of SMOKE_SESSION_UUIDS) {
+    for (const sessionId of SMOKE_SESSION_IDS) {
       await pod.ensureSession(sessionId)
     }
 
-    const driverHost = getVoiceHostForSession(pod, SMOKE_SESSION_UUIDS[0])!
-    driverHost.createMixGroup({ id: 'clip-url-shared', clientIds: [...SMOKE_SESSION_UUIDS] })
-
     const [client1, client2, client3] = await Promise.all([
-      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[0], SMOKE_PEER_IDS[0]),
-      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[1], SMOKE_PEER_IDS[1]),
-      connectClientToSession(wsUrl, SMOKE_SESSION_UUIDS[2], SMOKE_PEER_IDS[2]),
+      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[0], SMOKE_PEER_IDS[0]),
+      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[1], SMOKE_PEER_IDS[1]),
+      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[2], SMOKE_PEER_IDS[2]),
     ])
 
     try {
@@ -652,6 +648,9 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       for (const peerId of SMOKE_PEER_IDS) {
         await waitForVoiceClientActiveOnPod(pod, peerId)
       }
+
+      const driverHost = getVoiceHostForSession(pod, SMOKE_SESSION_IDS[0])!
+      driverHost.createMixGroup({ id: 'clip-url-shared', clientIds: [...SMOKE_PEER_IDS] })
 
       const bindings = smokeSessionBindings(pod)
       const listener = client2
@@ -670,7 +669,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
 
       const [energyGListener, energyGExcluded] = await probeClipPlayInboundEnergy(
         bindings,
-        { sessionUuids: [SMOKE_SESSION_UUIDS[1]] },
+        { peerIds: [SMOKE_PEER_IDS[1]] },
         [listener.agentAudio, client3.agentAudio],
         clipSource,
       )

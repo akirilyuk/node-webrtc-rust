@@ -388,7 +388,7 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         const clientPose = poseAtX(5)
         const ttsPose = poseAtX(-5)
         host.setClientPose('client-mix-1', clientPose)
-        host.setTtsPose('client-mix-1', ttsPose)
+        await host.setTtsPose('client-mix-1', ttsPose)
 
         const status = pod.getClientMixStatus('client-mix-1')
         expect(status.pose?.position.x).toBe(5)

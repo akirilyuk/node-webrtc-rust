@@ -225,12 +225,10 @@ describe('ClientAudioMixer', () => {
     mixer.wireTtsSidecar('carol', sidecar)
 
     const pcTrack = { writeSample: vi.fn(async () => undefined) }
-    mixer.startMixPump('carol', pcTrack)
 
     const tts = Buffer.alloc(PCM_FULL_FRAME_BYTES, 7)
     sidecar.tee!(tts, PCM_FRAME_DURATION_MS)
-
-    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+    await mixer.pumpMixFrame('carol', pcTrack)
 
     expect(graph.calls.panTtsFrame).toEqual([PCM_FULL_FRAME_BYTES])
     expect(graph.calls.renderOutput).toEqual(['carol'])
@@ -252,15 +250,13 @@ describe('ClientAudioMixer', () => {
     mixer.wireTtsSidecar('frank', sidecar)
 
     const pcTrack = { writeSample: vi.fn(async () => undefined) }
-    mixer.startMixPump('frank', pcTrack)
 
     const half = PCM_FULL_FRAME_BYTES / 2
     const chunkA = Buffer.alloc(half, 11)
     const chunkB = Buffer.alloc(half, 22)
     sidecar.tee!(chunkA, PCM_FRAME_DURATION_MS)
     sidecar.tee!(chunkB, PCM_FRAME_DURATION_MS)
-
-    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+    await mixer.pumpMixFrame('frank', pcTrack)
 
     expect(panInputs).toHaveLength(1)
     expect(panInputs[0]!.subarray(0, half).equals(chunkA)).toBe(true)
@@ -282,16 +278,15 @@ describe('ClientAudioMixer', () => {
     mixer.wireTtsSidecar('eve', sidecar)
 
     const pcTrack = { writeSample: vi.fn(async () => undefined) }
-    mixer.startMixPump('eve', pcTrack)
 
     const tts = Buffer.alloc(PCM_FULL_FRAME_BYTES, 9)
     sidecar.tee!(tts, PCM_FRAME_DURATION_MS)
+    await mixer.pumpMixFrame('eve', pcTrack)
 
-    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
     expect(panInputs).toHaveLength(1)
     expect(panInputs[0]!.equals(tts)).toBe(true)
 
-    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+    await mixer.pumpMixFrame('eve', pcTrack)
     expect(panInputs).toHaveLength(2)
     expect(panInputs[1]!.every((byte) => byte === 0)).toBe(true)
   })
@@ -325,7 +320,7 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.removeFromGroup).toEqual(['x'])
   })
 
-  it('forwards group and placement controls', () => {
+  it('forwards group and placement controls', async () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })
 
@@ -339,8 +334,8 @@ describe('ClientAudioMixer', () => {
       position: { x: 1, y: 0, z: 0 },
       orientation: { x: 0, y: 0, z: 0, w: 1 },
     }
-    mixer.setTtsPose('peer-1', pose)
-    mixer.clearTtsPose('peer-1')
+    await mixer.setTtsPose('peer-1', pose)
+    await mixer.clearTtsPose('peer-1')
 
     expect(graph.calls.setGroupMembers).toEqual([{ groupId: 'g1', members: ['a', 'b'] }])
     expect(graph.calls.moveToGroup).toEqual([{ peer: 'c', groupId: 'g1' }])
@@ -350,6 +345,25 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.setTtsMixPlacement).toEqual(['right'])
     expect(graph.calls.setTtsPose).toEqual([{ peer: 'peer-1', pose }])
     expect(graph.calls.clearTtsPose).toEqual(['peer-1'])
+  })
+
+  it('flushes outbound mix when TTS pose changes', async () => {
+    const graph = createMockGraph()
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('peer-1')
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('peer-1', pcTrack)
+    const pose = {
+      position: { x: 1, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    const renderBefore = graph.calls.renderOutput.length
+    const flushPromise = mixer.setTtsPose('peer-1', pose)
+    await vi.advanceTimersByTimeAsync(25 * PCM_FRAME_DURATION_MS)
+    await flushPromise
+    expect(graph.calls.setTtsPose).toEqual([{ peer: 'peer-1', pose }])
+    expect(graph.calls.renderOutput.length).toBeGreaterThan(renderBefore)
+    expect(pcTrack.writeSample).toHaveBeenCalled()
   })
 
   it('forwards global mute to the graph and flushes post-mute mix', async () => {

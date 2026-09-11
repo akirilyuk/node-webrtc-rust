@@ -1399,7 +1399,9 @@ export class VoiceAgentSessionHost {
     const wait = {
       peerId,
       pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
-        'ok' | 'failed' | 'pending',
+        | 'ok'
+        | 'failed'
+        | 'pending',
       agent: (agentStatus === 'timed_out'
         ? 'pending'
         : componentOk(agentStatus)
@@ -1700,19 +1702,20 @@ export class VoiceAgentSessionHost {
   /** Creates a mix group with exclusive listener routes (Voice+Data only). */
   createMixGroup(options: CreateMixGroupOptions): void {
     this.assertMixCapable()
-    this.clientMixer!.setGroupMembers(options.id, options.clientIds)
+    const clientIds = options.clientIds.map((clientId) => this.resolveParticipantId(clientId))
+    this.clientMixer!.setGroupMembers(options.id, clientIds)
   }
 
   /** Moves a client into a mix group (exclusive; next 20 ms tick). */
   addClientToMix(groupId: string, clientId: string): void {
     this.assertMixCapable()
-    this.clientMixer!.moveToGroup(clientId, groupId)
+    this.clientMixer!.moveToGroup(this.resolveParticipantId(clientId), groupId)
   }
 
   /** Removes a client from their mix group (ungrouped — hears nobody). */
   removeClientFromMix(_groupId: string, clientId: string): void {
     this.assertMixCapable()
-    this.clientMixer!.removeFromGroup(clientId)
+    this.clientMixer!.removeFromGroup(this.resolveParticipantId(clientId))
   }
 
   setClientPose(clientId: string, pose: ClientPose): void {
@@ -1735,16 +1738,16 @@ export class VoiceAgentSessionHost {
     this.clientMixer!.setTtsMixPlacement(placement)
   }
 
-  setTtsPose(clientId: string, pose: ClientPose): void {
+  async setTtsPose(clientId: string, pose: ClientPose): Promise<void> {
     this.assertTtsPoseCapable()
-    this.clientMixer!.setTtsPose(this.resolveParticipantId(clientId), pose)
+    await this.clientMixer!.setTtsPose(this.resolveParticipantId(clientId), pose)
   }
 
   /**
    * Unified TTS panning: named placement (listener-relative) or world pose per client.
    * Placement and pose are mutually exclusive; pose requires `clientId`.
    */
-  setTtsPosition(position: AudioPosition, options?: { clientId: string }): void {
+  async setTtsPosition(position: AudioPosition, options?: { clientId: string }): Promise<void> {
     this.assertTtsPoseCapable()
     assertAudioPositionExclusive(position)
     if (position.placement != null) {
@@ -1755,12 +1758,12 @@ export class VoiceAgentSessionHost {
     if (!clientId) {
       throw new Error('setTtsPosition with pose requires clientId')
     }
-    this.setTtsPose(clientId, position.pose)
+    await this.setTtsPose(clientId, position.pose)
   }
 
-  clearTtsPose(clientId: string): void {
+  async clearTtsPose(clientId: string): Promise<void> {
     this.assertTtsPoseCapable()
-    this.clientMixer!.clearTtsPose(this.resolveParticipantId(clientId))
+    await this.clientMixer!.clearTtsPose(this.resolveParticipantId(clientId))
   }
 
   /**
@@ -1773,8 +1776,9 @@ export class VoiceAgentSessionHost {
     options?: { sttEnabled?: boolean },
   ): Promise<void> {
     this.assertMixCapable()
-    await this.clientMixer!.setGlobalMute(clientId, muted)
-    await this.applyGlobalMuteStt(clientId, muted, options)
+    const peerId = this.resolveParticipantId(clientId)
+    await this.clientMixer!.setGlobalMute(peerId, muted)
+    await this.applyGlobalMuteStt(peerId, muted, options)
   }
 
   /** @internal STT side effects for {@link setGlobalMute} (SessionPod may call alone). */
@@ -1813,15 +1817,17 @@ export class VoiceAgentSessionHost {
   /** Per-listener mute: only `listenerId` stops hearing `targetId` (same mix group required). */
   async setListenerMute(listenerId: string, targetId: string, muted: boolean): Promise<void> {
     this.assertMixCapable()
+    const listenerPeer = this.resolveParticipantId(listenerId)
+    const targetPeer = this.resolveParticipantId(targetId)
     if (muted) {
-      await this.clientMixer!.pauseMixPump(listenerId)
+      await this.clientMixer!.pauseMixPump(listenerPeer)
     }
-    await this.clientMixer!.setListenerMute(listenerId, targetId, muted)
+    await this.clientMixer!.setListenerMute(listenerPeer, targetPeer, muted)
     if (muted) {
       try {
-        await this.clientMixer!.burstOutboundMix(listenerId)
+        await this.clientMixer!.burstOutboundMix(listenerPeer)
       } finally {
-        this.clientMixer!.resumeMixPump(listenerId)
+        this.clientMixer!.resumeMixPump(listenerPeer)
       }
     }
   }

@@ -65,8 +65,8 @@ function createMockMixGraph(): ClientMixGraph & {
     setSourceMixPlacement: vi.fn(),
     clearSourceMixPlacement: vi.fn(),
     setTtsMixPlacement: vi.fn(),
-    setTtsPose: vi.fn(),
-    clearTtsPose: vi.fn(),
+    setTtsPose: vi.fn(async () => undefined),
+    clearTtsPose: vi.fn(async () => undefined),
     setGroupMembers: vi.fn(),
     moveToGroup: vi.fn(),
     removeFromGroup: vi.fn(),
@@ -421,17 +421,17 @@ describe('VoiceAgentSessionHost playAudio', () => {
     ).rejects.toThrow(/mutually exclusive/)
   })
 
-  it('setTtsPosition routes to setTtsMixPlacement or setTtsPose', () => {
+  it('setTtsPosition routes to setTtsMixPlacement or setTtsPose', async () => {
     const graph = createMockMixGraph()
     const host = createHost('voice+data', graph)
-    host.setTtsPosition({ placement: 'right' })
+    await host.setTtsPosition({ placement: 'right' })
     expect(graph.setTtsMixPlacement).toHaveBeenCalledWith('right')
 
     const pose = {
       position: { x: 1, y: 0, z: 0 },
       orientation: { x: 0, y: 0, z: 0, w: 1 },
     }
-    host.setTtsPosition({ pose }, { clientId: 'client-a' })
+    await host.setTtsPosition({ pose }, { clientId: 'client-a' })
     expect(graph.setTtsPose).toHaveBeenCalledWith('client-a', pose)
 
     const orchestratorSessionId = 'orch-session-tts'
@@ -441,20 +441,20 @@ describe('VoiceAgentSessionHost playAudio', () => {
       agentStarted: true,
     })
     sessionHost.getClientMixer()?.registerPeer('client-a')
-    sessionHost.setTtsPose(orchestratorSessionId, pose)
+    await sessionHost.setTtsPose(orchestratorSessionId, pose)
     expect(graph.setTtsPose).toHaveBeenLastCalledWith('client-a', pose)
   })
 
-  it('setTtsPosition with pose requires clientId', () => {
+  it('setTtsPosition with pose requires clientId', async () => {
     const host = createHost('voice+data', createMockMixGraph())
-    expect(() =>
+    await expect(
       host.setTtsPosition({
         pose: {
           position: { x: 0, y: 0, z: 0 },
           orientation: { x: 0, y: 0, z: 0, w: 1 },
         },
       }),
-    ).toThrow(/clientId/)
+    ).rejects.toThrow(/clientId/)
   })
 
   it('stopAudioPlay stops native clip and removes mix input', async () => {
@@ -472,6 +472,49 @@ describe('VoiceAgentSessionHost playAudio', () => {
     expect(host.stopAudioPlay(playId)).toBe(true)
     expect(playerMocks.stopClip).toHaveBeenCalledWith(playId)
     expect(graph.removeInput).toHaveBeenCalledWith(`play:${playId}`)
+  })
+
+  it('overlapping G then per-peer H plays route clip to every listener while G is active', async () => {
+    let playSeq = 0
+    playerMocks.playClipBytes.mockImplementation(() => `play-${++playSeq}`)
+    playerMocks.getClip.mockImplementation((playId: string) => ({
+      playId,
+      status: 'playing',
+      positionMs: 0,
+      bufferedMs: 100,
+    }))
+
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    for (const peerId of ['client-a', 'client-b', 'client-c']) {
+      host.sessions.set(peerId, {
+        agent: { stop: vi.fn(async () => undefined) },
+        agentStarted: true,
+      })
+      host.getClientMixer()?.registerPeer(peerId)
+    }
+
+    const { playId: playIdG } = await host.playAudio({
+      source: { bytes: Buffer.from('wav-g') },
+      peerIds: ['client-b'],
+    })
+    const mixInputG = clipPlayInputId(playIdG)
+
+    const mixInputsH: string[] = []
+    for (const peerId of ['client-a', 'client-b', 'client-c']) {
+      const { playId } = await host.playAudio({
+        source: { bytes: Buffer.from(`wav-h-${peerId}`) },
+        peerIds: [peerId],
+      })
+      mixInputsH.push(clipPlayInputId(playId))
+    }
+
+    for (const [index, peerId] of ['client-a', 'client-b', 'client-c'].entries()) {
+      const routes = graph.listenerRoutes.get(peerId) ?? []
+      expect(routes).toContain(mixInputsH[index])
+    }
+    expect(graph.listenerRoutes.get('client-b')).toContain(mixInputG)
+    expect(graph.listenerRoutes.get('client-a') ?? []).not.toContain(mixInputG)
   })
 
   it('overlapping targeted G then broadcast H keeps H routes when G stops', async () => {

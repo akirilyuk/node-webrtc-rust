@@ -167,7 +167,7 @@ mod tests {
         buf.store_frame_carry(vec![1, 2, 3]).await;
         assert_eq!(buf.take_frame_carry().await, vec![1, 2, 3]);
         buf.store_frame_carry(vec![9]).await;
-        let _ = buf.flush().await;
+        buf.flush().await;
         assert!(buf.take_frame_carry().await.is_empty());
     }
 }

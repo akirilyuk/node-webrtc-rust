@@ -228,11 +228,45 @@ impl RemoteTrack {
     /// Reads the next RTP packet, decodes Opus to PCM, and returns one sample buffer.
     pub async fn read_sample(&self) -> Result<PcmSample, CoreError> {
         let packet = self.read_rtp().await?;
-        let frame = self
+        let decoded = self
             .decoder
             .lock()
             .expect("remote track decoder lock")
-            .decode_payload(&packet.payload);
+            .try_decode_payload(&packet.payload);
+        let frame = match decoded {
+            Ok(frame) => {
+                if crate::debug::is_debug_enabled() {
+                    let peak = frame
+                        .pcm
+                        .chunks_exact(2)
+                        .map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs())
+                        .max()
+                        .unwrap_or(0);
+                    debug_call!(
+                        "core::media",
+                        "read_sample:decoded",
+                        "id={}, seq={}, payload_bytes={}, peak={}",
+                        self.track_id,
+                        packet.sequence_number,
+                        packet.payload.len(),
+                        peak
+                    );
+                }
+                frame
+            }
+            Err(reason) => {
+                debug_call!(
+                    "core::media",
+                    "read_sample:decode_failed",
+                    "id={}, seq={}, payload_bytes={}, reason={}",
+                    self.track_id,
+                    packet.sequence_number,
+                    packet.payload.len(),
+                    reason
+                );
+                node_webrtc_rust_mixer::silence_frame()
+            }
+        };
         Ok(PcmSample {
             pcm: frame.pcm,
             duration: Duration::from_millis(node_webrtc_rust_mixer::FRAME_MS as u64),
@@ -247,6 +281,18 @@ impl RemoteTrack {
             .read_rtp()
             .await
             .map_err(|e| CoreError::Track(e.to_string()))?;
+        debug_call!(
+            "core::media",
+            "read_rtp:packet",
+            "id={}, ssrc={}, seq={}, ts={}, pt={}, marker={}, payload_bytes={}",
+            self.track_id,
+            packet.header.ssrc,
+            packet.header.sequence_number,
+            packet.header.timestamp,
+            packet.header.payload_type,
+            packet.header.marker,
+            packet.payload.len()
+        );
 
         Ok(RtpPacket {
             payload: packet.payload,

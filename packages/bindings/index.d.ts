@@ -275,6 +275,9 @@ export interface JsLanguageIdConfig {
   allowlist?: Array<string>
   minSpeechMs?: number
   continuous?: boolean
+  lidMaxClipMs?: number
+  lidGateMaxWaitMs?: number
+  ttsExclusion?: boolean
 }
 export interface JsVoiceAgentConfig {
   vad?: JsVadConfig

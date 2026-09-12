@@ -31,7 +31,7 @@ sherpa_roundtrip_timeout_sec() {
       # 120s in-process wall + long TTS; allow one VOICE_DEBUG re-run.
       echo "${CI_SHERPA_COUNTING_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
-    start:roundtrip-counting-echo | start:roundtrip)
+    start:roundtrip-counting-echo | start:roundtrip-counting-echo-lid | start:roundtrip)
       echo "${CI_SHERPA_LONG_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
     *)
@@ -51,6 +51,8 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-barge-in
   start:roundtrip-barge-in-buffered
   start:roundtrip-counting-echo
+  start:roundtrip-counting-echo-lid
+  start:roundtrip-counting-echo-lid-multi
   start:roundtrip-counting-barge-recovery
   start:roundtrip-concurrent-multi-client
   start:roundtrip-language-id
@@ -129,6 +131,10 @@ run_rust_ignored() {
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust lid_stt_parallel_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_stt_parallel_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust stt_pre_roll_onset_replay_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stt_pre_roll_onset_replay_test -- \
       --ignored --nocapture --test-threads=1
 }
 

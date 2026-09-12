@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio::sync::Notify;
+
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
     LanguageIdConfig, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor,
@@ -54,6 +56,46 @@ struct CountingLanguageId {
     calls: Arc<AtomicUsize>,
     sleep_ms: u64,
     languages: Vec<String>,
+}
+
+struct FailingLanguageId;
+
+#[async_trait::async_trait]
+impl LanguageIdProvider for FailingLanguageId {
+    async fn identify(
+        &self,
+        _pcm: Bytes,
+        _sample_rate: u32,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<LanguageIdResult>> {
+        Err(node_webrtc_rust_speech::SpeechError::Internal(
+            "mock LID failure".into(),
+        ))
+    }
+}
+
+struct TimedOverlapLanguageId {
+    guard: Arc<OverlapGuard>,
+    sleep_ms: u64,
+    started_at: Arc<Mutex<Option<Instant>>>,
+    ended_at: Arc<Mutex<Option<Instant>>>,
+}
+
+#[async_trait::async_trait]
+impl LanguageIdProvider for TimedOverlapLanguageId {
+    async fn identify(
+        &self,
+        _pcm: Bytes,
+        _sample_rate: u32,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<LanguageIdResult>> {
+        *self.started_at.lock().unwrap() = Some(Instant::now());
+        self.guard.enter_lid();
+        tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
+        self.guard.leave_lid();
+        *self.ended_at.lock().unwrap() = Some(Instant::now());
+        Ok(Some(LanguageIdResult {
+            language: "en".into(),
+        }))
+    }
 }
 
 #[async_trait::async_trait]
@@ -157,6 +199,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
     vad.min_silence_duration_ms = 20;
     vad.speech_pad_ms = 20;
     vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -179,6 +222,9 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             allowlist: None,
             min_speech_ms: Some(200),
             continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: Some(true),
         }),
         vad,
         ..Default::default()
@@ -190,7 +236,55 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
 #[tokio::test]
 async fn language_id_does_not_block_inbound_pcm_or_stt() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
-    let agent = agent_with_slow_lid(Arc::clone(&stt_bytes));
+    let factory = Arc::new(LidTestFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        lid_sleep_ms: LID_SLEEP_MS,
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    // gate_stt off: mock STT never emits finals; gate-hold finalize would skip speaking_end.
+    // C1 (`stt_listen_timeout_ms`) closes the stream and pairs user_speaking_end with LID.
+    vad.gate_stt = false;
+    vad.stt_listen_timeout_ms = 400;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+            continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: Some(true),
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
 
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
@@ -210,7 +304,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     let bytes_before_lid = *stt_bytes.lock().unwrap();
     assert!(bytes_before_lid > 0, "STT should receive speech before LID threshold");
 
-    // Frames 4–13: frame ~10 crosses min_speech_ms=200 and spawns slow LID.
+    // Frames 4–13: default mode buffers only (no mid-utterance identify).
     let batch_start = Instant::now();
     let mut per_frame_max_ms = 0_u128;
     for _ in 0..10 {
@@ -229,31 +323,35 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     );
     assert!(
         batch_elapsed < Duration::from_millis(400),
-        "10 frames after LID threshold must not await identify (batch {batch_elapsed:?})"
+        "10 frames after min_speech_ms buffer must not await identify (batch {batch_elapsed:?})"
     );
 
-    // STT must keep receiving audio while LID sleeps in the background.
-    let bytes_mid_lid = *stt_bytes.lock().unwrap();
+    // STT must keep receiving audio; identify waits for user_speaking_end.
+    let bytes_mid = *stt_bytes.lock().unwrap();
     assert!(
-        bytes_mid_lid > bytes_before_lid,
-        "STT push_audio must continue during LID sleep window"
+        bytes_mid > bytes_before_lid,
+        "STT push_audio must continue while LID is only buffered"
     );
 
-    // Eventually emit user_language when background identify completes.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let silent = silent_stereo_frame();
+    for _ in 0..20 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(4);
     let mut saw_user_language = false;
     while Instant::now() < deadline {
-        while let Ok(event) = rx.try_recv() {
-            if event.kind == SpeechEventKind::UserLanguage {
-                assert_eq!(event.language.as_deref(), Some("en"));
-                saw_user_language = true;
-                break;
-            }
-        }
-        if saw_user_language {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+        if wait_for_user_language(&agent, &mut rx).await {
+            saw_user_language = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
         saw_user_language,
@@ -261,79 +359,6 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     );
 }
 
-#[tokio::test]
-async fn user_speaking_end_not_delayed_by_slow_language_id() {
-    let stt_bytes = Arc::new(Mutex::new(0_usize));
-    let factory = Arc::new(LidTestFactory {
-        stt_bytes: Arc::clone(&stt_bytes),
-        lid_sleep_ms: LID_SLEEP_MS,
-    });
-    let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::LocalSherpa, factory);
-    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
-
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = false;
-
-    let config = VoiceAgentConfig {
-        stt: None,
-        tts: None,
-        language_id: Some(LanguageIdConfig {
-            enabled: Some(true),
-            model_path: Some("/fake/lid-model".into()),
-            allowlist: None,
-            min_speech_ms: Some(200),
-            continuous: None,
-        }),
-        vad,
-        ..Default::default()
-    };
-
-    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
-    let mut rx = agent.subscribe_events();
-
-    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
-    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
-    agent.start(None).await.unwrap();
-
-    let loud = loud_stereo_frame();
-    let silent = silent_stereo_frame();
-
-    for _ in 0..12 {
-        agent
-            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
-            .await
-            .unwrap();
-    }
-
-    let end_start = Instant::now();
-    let mut saw_speaking_end = false;
-    for _ in 0..5 {
-        agent
-            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
-            .await
-            .unwrap();
-        while let Ok(event) = rx.try_recv() {
-            if event.kind == SpeechEventKind::UserSpeakingEnd {
-                saw_speaking_end = true;
-                break;
-            }
-        }
-        if saw_speaking_end {
-            break;
-        }
-    }
-
-    assert!(saw_speaking_end, "expected user_speaking_end after silence");
-    assert!(
-        end_start.elapsed() < Duration::from_millis(500),
-        "user_speaking_end must not await slow LID (took {end_start:?})"
-    );
-}
 
 /// Staging regression (`usage-credits-smoke`): echo TTS clip was delayed ~45s while Whisper LID
 /// ran on the blocking pool. Full stack STT+TTS+LID+VAD — first outbound PCM must not await
@@ -366,8 +391,9 @@ async fn language_id_does_not_block_tts_playback() {
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
 
-    // VAD speech start + cross min_speech_ms=200 so slow LID (LID_SLEEP_MS) is in flight.
+    // VAD speech start + buffer past min_speech_ms (default mode does not identify yet).
     for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
@@ -404,28 +430,20 @@ async fn language_id_does_not_block_tts_playback() {
     let nbytes = *written_bytes.lock().unwrap();
     assert!(nbytes > 0, "writer must receive non-empty PCM");
 
-    // LID still completes in background.
-    let lang_deadline = Instant::now() + Duration::from_secs(5);
-    let mut saw_user_language = false;
-    while Instant::now() < lang_deadline {
-        while let Ok(event) = rx.try_recv() {
-            if event.kind == SpeechEventKind::UserLanguage {
-                assert_eq!(event.language.as_deref(), Some("en"));
-                saw_user_language = true;
-                break;
-            }
-        }
-        if saw_user_language {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
     }
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
     assert!(
-        saw_user_language,
+        wait_for_user_language_with_pcm(&agent, &mut rx, &silent).await,
         "expected user_language after background identify"
     );
 
-    agent.wait_tts_playback_idle().await.unwrap();
     agent.stop().await.unwrap();
 }
 
@@ -516,8 +534,10 @@ impl VendorFactory for OverlapLidTestFactory {
         config: &SttConfig,
     ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
         if config.provider == SttVendor::Mock {
-            Ok(Box::new(CountingStt {
+            Ok(Box::new(FinalOnceStt {
                 bytes: Arc::clone(&self.stt_bytes),
+                finalized: Arc::new(Mutex::new(false)),
+                emitted: AtomicBool::new(false),
             }))
         } else {
             MockFactory.create_stt(config)
@@ -567,6 +587,8 @@ fn agent_with_overlap_tracking_lid(
     vad.min_silence_duration_ms = 20;
     vad.speech_pad_ms = 20;
     vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
+    vad.stt_listen_timeout_ms = 60_000;
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -589,6 +611,9 @@ fn agent_with_overlap_tracking_lid(
             allowlist: None,
             min_speech_ms: Some(200),
             continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: Some(true),
         }),
         vad,
         ..Default::default()
@@ -631,7 +656,7 @@ async fn language_id_does_not_overlap_tts_synthesis() {
         .await
         .unwrap();
 
-    // Cross min_speech_ms while TTS synthesis/playback is active — LID must defer.
+    // Cross min_speech_ms while TTS is active — default mode buffers only; identify at hang-up.
     for _ in 0..10 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
@@ -639,8 +664,8 @@ async fn language_id_does_not_overlap_tts_synthesis() {
             .unwrap();
     }
 
-    // user_speaking_end + force LID while TTS may still be active — must defer, not overlap.
-    for _ in 0..5 {
+    // user_speaking_end + hang-up defer while TTS may still be active — must defer, not overlap.
+    for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
@@ -654,27 +679,335 @@ async fn language_id_does_not_overlap_tts_synthesis() {
         "LID identify must not overlap TTS synthesize"
     );
 
-    let lang_deadline = Instant::now() + Duration::from_secs(5);
-    let mut saw_user_language = false;
-    while Instant::now() < lang_deadline {
-        while let Ok(event) = rx.try_recv() {
-            if event.kind == SpeechEventKind::UserLanguage {
-                assert_eq!(event.language.as_deref(), Some("en"));
-                saw_user_language = true;
-                break;
-            }
-        }
-        if saw_user_language {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
     assert!(
-        saw_user_language,
+        wait_for_user_language_with_pcm(&agent, &mut rx, &silent).await,
         "expected user_language after deferred identify"
     );
 
     agent.stop().await.unwrap();
+}
+
+/// Staging echo-smoke order: speech crosses minSpeechMs, speaking_end, then immediate `speak("echo. …")`.
+/// LID starts at speech end; with exclusion on, deferred identify must not overlap Piper synthesis.
+#[tokio::test]
+async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let guard = Arc::new(OverlapGuard {
+        lid_in_flight: AtomicUsize::new(0),
+        tts_in_flight: AtomicUsize::new(0),
+        violated: AtomicBool::new(false),
+    });
+    let agent = agent_with_overlap_tracking_lid(Arc::clone(&stt_bytes), Arc::clone(&guard));
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    // Buffer past min_speech_ms=200 without mid-utterance identify.
+    for _ in 0..12 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    // Silence → speaking_end + hang-up defer (staging: final handler then immediate speak).
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    agent
+        .send_text_to_tts_with_options(
+            "echo. One, two, three, four, five, six, seven, eight, nine, ten",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    assert!(
+        !guard.violated.load(Ordering::SeqCst),
+        "LID at speech end with exclusion on must not overlap TTS when speak() follows user_speech_final"
+    );
+
+    assert!(
+        wait_for_user_language_with_pcm(&agent, &mut rx, &silent).await,
+        "expected user_language after deferred identify when TTS was active at SpeechEnd"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+/// Emits `Final` on each `poll_transcript` after `finalize_utterance` (repeatable per utterance).
+struct RepeatFinalStt {
+    bytes: Arc<Mutex<usize>>,
+    finalized: Arc<Mutex<bool>>,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for RepeatFinalStt {
+    fn vendor_name(&self) -> &'static str {
+        "repeat-final"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.bytes.lock().unwrap() += pcm.len();
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        if !*self.finalized.lock().unwrap() {
+            return Ok(None);
+        }
+        *self.finalized.lock().unwrap() = false;
+        Ok(Some(SttTranscript::Final("hello".into())))
+    }
+
+    async fn finalize_utterance(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.finalized.lock().unwrap() = true;
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
+/// Emits `Final` only on the first `poll_transcript` after `finalize_utterance` (Sherpa-like).
+struct FinalOnceStt {
+    bytes: Arc<Mutex<usize>>,
+    finalized: Arc<Mutex<bool>>,
+    emitted: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for FinalOnceStt {
+    fn vendor_name(&self) -> &'static str {
+        "final-once"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.bytes.lock().unwrap() += pcm.len();
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        if self.emitted.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        if !*self.finalized.lock().unwrap() {
+            return Ok(None);
+        }
+        *self.finalized.lock().unwrap() = false;
+        self.emitted.store(true, Ordering::SeqCst);
+        Ok(Some(SttTranscript::Final("hello".into())))
+    }
+
+    async fn finalize_utterance(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.finalized.lock().unwrap() = true;
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
+struct FinalOnceLidFactory {
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_sleep_ms: u64,
+}
+
+impl VendorFactory for FinalOnceLidFactory {
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        if config.provider == SttVendor::Mock {
+            Ok(Box::new(FinalOnceStt {
+                bytes: Arc::clone(&self.stt_bytes),
+                finalized: Arc::new(Mutex::new(false)),
+                emitted: AtomicBool::new(false),
+            }))
+        } else {
+            MockFactory.create_stt(config)
+        }
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(Some(Box::new(SlowLanguageId {
+            sleep_ms: self.lid_sleep_ms,
+        })))
+    }
+}
+
+fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let factory = Arc::new(FinalOnceLidFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        lid_sleep_ms,
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
+    vad.stt_listen_timeout_ms = 60_000;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+            continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: Some(true),
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    VoiceAgent::new(config, Arc::new(registry)).unwrap()
+}
+
+struct LidGateWakeupFactory {
+    stt_bytes: Arc<Mutex<usize>>,
+}
+
+impl VendorFactory for LidGateWakeupFactory {
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        if config.provider == SttVendor::Mock {
+            Ok(Box::new(RepeatFinalStt {
+                bytes: Arc::clone(&self.stt_bytes),
+                finalized: Arc::new(Mutex::new(false)),
+            }))
+        } else {
+            MockFactory.create_stt(config)
+        }
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(Some(Box::new(SlowLanguageId { sleep_ms: 1 })))
+    }
+}
+
+fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let factory = Arc::new(LidGateWakeupFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 0;
+    vad.stt_listen_timeout_ms = 60_000;
+
+    VoiceAgent::new(
+        VoiceAgentConfig {
+            stt: Some(SttConfig {
+                provider: SttVendor::Mock,
+                model: None,
+                model_path: None,
+                language: Some("en".into()),
+                api_key: None,
+            }),
+            tts: Some(TtsConfig {
+                provider: TtsVendor::Mock,
+                model: None,
+                model_path: None,
+                voice: None,
+                api_key: None,
+            }),
+            language_id: Some(LanguageIdConfig {
+                enabled: Some(true),
+                model_path: Some("/fake/lid-model".into()),
+                allowlist: None,
+                min_speech_ms: Some(200),
+                continuous: None,
+                lid_max_clip_ms: None,
+                lid_gate_max_wait_ms: Some(300),
+                tts_exclusion: Some(true),
+            }),
+            vad,
+            ..Default::default()
+        },
+        Arc::new(registry),
+    )
+    .unwrap()
 }
 
 struct CountingLidTestFactory {
@@ -742,6 +1075,9 @@ fn agent_with_counting_lid(
     vad.min_silence_duration_ms = 20;
     vad.speech_pad_ms = 20;
     vad.gate_stt = gate_stt;
+    if gate_stt {
+        vad.stt_gate_hold_ms = 80;
+    }
 
     let config = VoiceAgentConfig {
         stt: if include_stt {
@@ -768,6 +1104,9 @@ fn agent_with_counting_lid(
             allowlist: None,
             min_speech_ms: Some(200),
             continuous,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: Some(true),
         }),
         vad,
         ..Default::default()
@@ -793,9 +1132,165 @@ async fn wait_for_event(
 }
 
 async fn wait_for_user_language(
+    _agent: &VoiceAgent,
     rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
 ) -> bool {
     wait_for_event(rx, SpeechEventKind::UserLanguage).await
+}
+
+async fn collect_events_until_final(
+    rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+    agent: &VoiceAgent,
+    silent: &[u8],
+) -> Vec<node_webrtc_rust_speech::events::SpeechEvent> {
+    let mut events = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+            if events.last().map(|e| e.kind) == Some(SpeechEventKind::UserSpeechFinal) {
+                return events;
+            }
+        }
+        agent
+            .process_inbound_pcm(Bytes::from(silent.to_vec()), 20)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    events
+}
+
+fn agent_with_timed_overlap_lid(
+    stt_bytes: Arc<Mutex<usize>>,
+    guard: Arc<OverlapGuard>,
+    lid_sleep_ms: u64,
+) -> (Arc<VoiceAgent>, Arc<Mutex<Option<Instant>>>, Arc<Mutex<Option<Instant>>>) {
+    let started_at = Arc::new(Mutex::new(None));
+    let ended_at = Arc::new(Mutex::new(None));
+    let lid_started = Arc::clone(&started_at);
+    let lid_ended = Arc::clone(&ended_at);
+    let guard_c = Arc::clone(&guard);
+
+    struct TimedOverlapLidFactory {
+        stt_bytes: Arc<Mutex<usize>>,
+        guard: Arc<OverlapGuard>,
+        lid_sleep_ms: u64,
+        started_at: Arc<Mutex<Option<Instant>>>,
+        ended_at: Arc<Mutex<Option<Instant>>>,
+    }
+
+    impl VendorFactory for TimedOverlapLidFactory {
+        fn create_stt(
+            &self,
+            config: &SttConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+            if config.provider == SttVendor::Mock {
+                Ok(Box::new(FinalOnceStt {
+                    bytes: Arc::clone(&self.stt_bytes),
+                    finalized: Arc::new(Mutex::new(false)),
+                    emitted: AtomicBool::new(false),
+                }))
+            } else {
+                MockFactory.create_stt(config)
+            }
+        }
+
+        fn create_tts(
+            &self,
+            _config: &TtsConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+            Ok(Box::new(OverlapTrackingTts {
+                guard: Arc::clone(&self.guard),
+            }))
+        }
+
+        fn create_language_id(
+            &self,
+            _config: &LanguageIdConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+            Ok(Some(Box::new(TimedOverlapLanguageId {
+                guard: Arc::clone(&self.guard),
+                sleep_ms: self.lid_sleep_ms,
+                started_at: Arc::clone(&self.started_at),
+                ended_at: Arc::clone(&self.ended_at),
+            })))
+        }
+    }
+
+    let factory = Arc::new(TimedOverlapLidFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        guard: guard_c,
+        lid_sleep_ms,
+        started_at: lid_started,
+        ended_at: lid_ended,
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::LocalSherpa,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
+    registry.register_tts(TtsVendor::Mock, factory as Arc<dyn VendorFactory>);
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
+    vad.stt_listen_timeout_ms = 60_000;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+            continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: Some(true),
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    (
+        VoiceAgent::new(config, Arc::new(registry)).unwrap(),
+        started_at,
+        ended_at,
+    )
+}
+
+async fn wait_for_user_language_with_pcm(
+    agent: &VoiceAgent,
+    rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+    silent: &[u8],
+) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        drive_silent_frames(agent, silent, 5).await;
+        if wait_for_user_language(agent, rx).await {
+            return true;
+        }
+    }
+    false
 }
 
 async fn drive_loud_frames(agent: &VoiceAgent, loud: &[u8], count: usize) {
@@ -826,7 +1321,7 @@ async fn language_id_runs_once_per_utterance_by_default() {
         Arc::clone(&lid_calls),
         false,
         None,
-        true,
+        false,
         vec!["en".into(), "de".into()],
     );
     let mut rx = agent.subscribe_events();
@@ -838,24 +1333,29 @@ async fn language_id_runs_once_per_utterance_by_default() {
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
 
-    // Utterance A: cross min_speech_ms then keep speaking several more seconds.
+    // Utterance A: buffer past min_speech_ms, then keep speaking — no mid-utterance identify.
     drive_loud_frames(&agent, &loud, 12).await;
     assert!(
         wait_for_event(&mut rx, SpeechEventKind::UserSpeakingStart).await,
         "expected user_speaking_start for utterance A"
     );
 
-    assert!(
-        wait_for_user_language(&mut rx).await,
-        "expected user_language after first identify for utterance A"
-    );
-
-    // Extra loud speech that would have re-fired LID in continuous mode.
     drive_loud_frames(&agent, &loud, 80).await;
     assert_eq!(
         lid_calls.load(Ordering::SeqCst),
+        0,
+        "default mode must not identify during speech before speaking_end"
+    );
+
+    drive_silent_frames(&agent, &silent, 12).await;
+    assert!(
+        wait_for_user_language(&agent, &mut rx).await,
+        "expected user_language after speaking_end for utterance A"
+    );
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
         1,
-        "default mode must not re-identify during the same utterance"
+        "default mode must identify exactly once per utterance at hang-up"
     );
 
     // Silence long enough for VAD SpeechEnd before the next SpeechStart (new utterance).
@@ -864,7 +1364,7 @@ async fn language_id_runs_once_per_utterance_by_default() {
     assert_eq!(
         lid_calls.load(Ordering::SeqCst),
         1,
-        "silence after inbound LID must not start a second identify"
+        "silence between utterances must not start a second identify"
     );
 
     // Utterance B: new turn.
@@ -873,8 +1373,9 @@ async fn language_id_runs_once_per_utterance_by_default() {
         wait_for_event(&mut rx, SpeechEventKind::UserSpeakingStart).await,
         "expected user_speaking_start for utterance B"
     );
+    drive_silent_frames(&agent, &silent, 12).await;
     assert!(
-        wait_for_user_language(&mut rx).await,
+        wait_for_user_language(&agent, &mut rx).await,
         "expected user_language for utterance B"
     );
     assert_eq!(
@@ -908,7 +1409,7 @@ async fn continuous_language_id_rechecks_during_long_utterance() {
 
     drive_loud_frames(&agent, &loud, 12).await;
     assert!(
-        wait_for_user_language(&mut rx).await,
+        wait_for_user_language(&agent, &mut rx).await,
         "expected first user_language in continuous mode"
     );
 
@@ -934,9 +1435,9 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     let agent = agent_with_counting_lid(
         Arc::clone(&stt_bytes),
         Arc::clone(&lid_calls),
-        true,
+        false,
         None,
-        true,
+        false,
         vec!["en".into()],
     );
     let mut rx = agent.subscribe_events();
@@ -948,15 +1449,20 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
 
-    // Cross min_speech_ms=200 so inbound spawns identify (not hang-up).
+    // Buffer past min_speech_ms=200 — default mode does not spawn identify mid-utterance.
     for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
             .await
             .unwrap();
     }
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        0,
+        "default mode must not identify at minSpeechMs while user is still speaking"
+    );
 
-    // TTS starts immediately — hang-up must not queue a second Whisper job.
+    // TTS starts — speaking_end identify must defer, not overlap or double-spawn.
     agent
         .send_text_to_tts_with_options(
             "one two three",
@@ -971,6 +1477,14 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
             .await
             .unwrap();
     }
+
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        0,
+        "hang-up identify must defer while TTS is active"
+    );
+
+    agent.wait_tts_playback_idle().await.unwrap();
 
     let lang_deadline = Instant::now() + Duration::from_secs(3);
     let mut saw_user_language = false;
@@ -989,20 +1503,14 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     }
     assert!(
         saw_user_language,
-        "expected user_language from inbound identify pass"
+        "expected user_language from deferred speaking_end identify"
     );
     assert_eq!(
         lid_calls.load(Ordering::SeqCst),
         1,
-        "user_speaking_end must not start a second identify when inbound already did"
+        "speaking_end must yield exactly one identify after TTS idle"
     );
 
-    agent.wait_tts_playback_idle().await.unwrap();
-    assert_eq!(
-        lid_calls.load(Ordering::SeqCst),
-        1,
-        "deferred hang-up identify must not run after inbound identify completed"
-    );
     agent.stop().await.unwrap();
 }
 
@@ -1076,6 +1584,700 @@ async fn short_utterance_still_gets_user_language_after_tts_idle() {
         lid_calls.load(Ordering::SeqCst),
         1,
         "short utterance should run exactly one identify after TTS idle"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn default_lid_completes_before_user_speech_final() {
+    let agent = agent_with_final_once_stt(250);
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    drive_loud_frames(&agent, &loud, 12).await;
+    let events = collect_events_until_final(&mut rx, &agent, &silent).await;
+
+    let lang_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserLanguage);
+    let end_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeakingEnd);
+    let final_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeechFinal);
+
+    assert!(lang_idx.is_some(), "expected user_language");
+    assert!(end_idx.is_some(), "expected user_speaking_end");
+    assert!(final_idx.is_some(), "expected user_speech_final");
+    assert!(
+        lang_idx.unwrap() < end_idx.unwrap(),
+        "user_language must precede user_speaking_end"
+    );
+    assert!(
+        end_idx.unwrap() + 1 == final_idx.unwrap(),
+        "user_speaking_end must immediately precede user_speech_final"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn detached_speak_after_final_never_overlaps_lid() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let guard = Arc::new(OverlapGuard {
+        lid_in_flight: AtomicUsize::new(0),
+        tts_in_flight: AtomicUsize::new(0),
+        violated: AtomicBool::new(false),
+    });
+    let (agent, _lid_start, lid_end) =
+        agent_with_timed_overlap_lid(Arc::clone(&stt_bytes), Arc::clone(&guard), 300);
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    drive_loud_frames(&agent, &loud, 12).await;
+    drive_silent_frames(&agent, &silent, 40).await;
+    assert!(
+        wait_for_event(&mut rx, SpeechEventKind::UserSpeechFinal).await,
+        "expected user_speech_final before detached speak"
+    );
+
+    let agent_spawn = Arc::clone(&agent);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        agent_spawn
+            .send_text_to_tts_with_options(
+                "echo. one two three",
+                SendTextToTtsOptions { non_blocking: true },
+            )
+            .await
+            .unwrap();
+    });
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    assert!(
+        !guard.violated.load(Ordering::SeqCst),
+        "detached speak after final must not overlap LID"
+    );
+    assert!(
+        lid_end.lock().unwrap().is_some(),
+        "LID should have completed"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn tts_active_at_speech_end_defers_lid_to_drain() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let guard = Arc::new(OverlapGuard {
+        lid_in_flight: AtomicUsize::new(0),
+        tts_in_flight: AtomicUsize::new(0),
+        violated: AtomicBool::new(false),
+    });
+    let agent = agent_with_overlap_tracking_lid(Arc::clone(&stt_bytes), Arc::clone(&guard));
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    agent
+        .send_text_to_tts_with_options(
+            "this is a longer agent preface to keep playback active across user speech end",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    drive_loud_frames(&agent, &loud, 8).await;
+    drive_silent_frames(&agent, &silent, 40).await;
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    assert!(
+        !guard.violated.load(Ordering::SeqCst),
+        "deferred LID after TTS drain must not overlap synthesis"
+    );
+    assert!(
+        wait_for_user_language_with_pcm(&agent, &mut rx, &silent).await,
+        "expected user_language after deferred identify when TTS was active at SpeechEnd"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+struct FailingLidFactory {
+    stt_bytes: Arc<Mutex<usize>>,
+}
+
+impl VendorFactory for FailingLidFactory {
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        if config.provider == SttVendor::Mock {
+            Ok(Box::new(FinalOnceStt {
+                bytes: Arc::clone(&self.stt_bytes),
+                finalized: Arc::new(Mutex::new(false)),
+                emitted: AtomicBool::new(false),
+            }))
+        } else {
+            MockFactory.create_stt(config)
+        }
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(Some(Box::new(FailingLanguageId)))
+    }
+}
+
+#[tokio::test]
+async fn lid_error_does_not_block_final() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let factory = Arc::new(FailingLidFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+            continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: Some(true),
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    drive_loud_frames(&agent, &loud, 12).await;
+    let events = collect_events_until_final(&mut rx, &agent, &silent).await;
+
+    assert!(
+        events.iter().any(|e| e.kind == SpeechEventKind::UserSpeechFinal),
+        "expected user_speech_final despite LID error"
+    );
+    assert!(
+        !events.iter().any(|e| e.kind == SpeechEventKind::UserLanguage),
+        "LID error must not emit user_language"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn tts_synthesis_waits_for_in_flight_lid() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let guard = Arc::new(OverlapGuard {
+        lid_in_flight: AtomicUsize::new(0),
+        tts_in_flight: AtomicUsize::new(0),
+        violated: AtomicBool::new(false),
+    });
+    let started_at = Arc::new(Mutex::new(None));
+    let ended_at = Arc::new(Mutex::new(None));
+
+    struct TimedOverlapLidFactory {
+        stt_bytes: Arc<Mutex<usize>>,
+        guard: Arc<OverlapGuard>,
+        lid_sleep_ms: u64,
+        started_at: Arc<Mutex<Option<Instant>>>,
+        ended_at: Arc<Mutex<Option<Instant>>>,
+    }
+
+    impl VendorFactory for TimedOverlapLidFactory {
+        fn create_stt(
+            &self,
+            config: &SttConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+            if config.provider == SttVendor::Mock {
+                Ok(Box::new(FinalOnceStt {
+                    bytes: Arc::clone(&self.stt_bytes),
+                    finalized: Arc::new(Mutex::new(false)),
+                    emitted: AtomicBool::new(false),
+                }))
+            } else {
+                MockFactory.create_stt(config)
+            }
+        }
+
+        fn create_tts(
+            &self,
+            _config: &TtsConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+            Ok(Box::new(OverlapTrackingTts {
+                guard: Arc::clone(&self.guard),
+            }))
+        }
+
+        fn create_language_id(
+            &self,
+            _config: &LanguageIdConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+            Ok(Some(Box::new(TimedOverlapLanguageId {
+                guard: Arc::clone(&self.guard),
+                sleep_ms: self.lid_sleep_ms,
+                started_at: Arc::clone(&self.started_at),
+                ended_at: Arc::clone(&self.ended_at),
+            })))
+        }
+    }
+
+    let factory = Arc::new(TimedOverlapLidFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        guard: Arc::clone(&guard),
+        lid_sleep_ms: 300,
+        started_at: Arc::clone(&started_at),
+        ended_at: Arc::clone(&ended_at),
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::LocalSherpa,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
+    registry.register_tts(TtsVendor::Mock, factory as Arc<dyn VendorFactory>);
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
+    vad.stt_listen_timeout_ms = 60_000;
+
+    let agent = VoiceAgent::new(
+        VoiceAgentConfig {
+            stt: Some(SttConfig {
+                provider: SttVendor::Mock,
+                model: None,
+                model_path: None,
+                language: Some("en".into()),
+                api_key: None,
+            }),
+            tts: Some(TtsConfig {
+                provider: TtsVendor::Mock,
+                model: None,
+                model_path: None,
+                voice: None,
+                api_key: None,
+            }),
+            language_id: Some(LanguageIdConfig {
+                enabled: Some(true),
+                model_path: Some("/fake/lid-model".into()),
+                allowlist: None,
+                min_speech_ms: Some(200),
+                continuous: Some(true),
+                lid_max_clip_ms: None,
+                lid_gate_max_wait_ms: None,
+            tts_exclusion: Some(true),
+            }),
+            vad,
+            ..Default::default()
+        },
+        Arc::new(registry),
+    )
+    .unwrap();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    drive_loud_frames(&agent, &loud, 15).await;
+
+    let lid_started_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < lid_started_deadline && started_at.lock().unwrap().is_none() {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        started_at.lock().unwrap().is_some(),
+        "continuous LID should start mid-utterance"
+    );
+
+    agent
+        .send_text_to_tts_with_options(
+            "during lid",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    assert!(
+        !guard.violated.load(Ordering::SeqCst),
+        "TTS synthesis must wait for in-flight continuous LID"
+    );
+    let lid_done_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < lid_done_deadline && ended_at.lock().unwrap().is_none() {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        ended_at.lock().unwrap().is_some(),
+        "continuous LID identify should complete"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn lid_gate_bound_never_fires_with_mock() {
+    let agent = agent_with_final_once_stt(200);
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    drive_loud_frames(&agent, &loud, 12).await;
+    drive_silent_frames(&agent, &silent, 40).await;
+    assert!(
+        wait_for_event(&mut rx, SpeechEventKind::UserSpeechFinal).await,
+        "expected user_speech_final after mock LID"
+    );
+
+    assert_eq!(
+        agent.lid_gate_bound_hits(),
+        0,
+        "lid_gate_max_wait_ms bound must not fire with 200ms mock LID"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lid_gate_wakeup_is_never_lost() {
+    let agent = agent_for_lid_gate_wakeup_test();
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    for iteration in 0..100 {
+        drive_loud_frames(&agent, &loud, 12).await;
+        let close_trigger = Instant::now();
+        let final_deadline = close_trigger + Duration::from_millis(150);
+        let mut saw_final = false;
+
+        while Instant::now() < final_deadline {
+            drive_silent_frames(&agent, &silent, 1).await;
+            while let Ok(event) = rx.try_recv() {
+                if event.kind == SpeechEventKind::UserSpeechFinal {
+                    saw_final = true;
+                    break;
+                }
+            }
+            if saw_final {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        assert!(
+            saw_final,
+            "iteration {iteration}: user_speech_final must arrive within 150ms of close (gate bound={})",
+            agent.lid_gate_bound_hits()
+        );
+    }
+
+    assert_eq!(
+        agent.lid_gate_bound_hits(),
+        0,
+        "lid_gate_max_wait_ms fault bound must never fire when LID completes promptly (hits={})",
+        agent.lid_gate_bound_hits()
+    );
+
+    agent.stop().await.unwrap();
+}
+
+/// Tokio `Notify` regression mirrored by `wait_lid_identify_complete`: `enable()` before
+/// `notify_waiters()` receives the completion; the agent's old check-then-`notified().await`
+/// loop lost wakeups under the same ordering (see `lid_gate_wakeup_is_never_lost`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lid_gate_enable_before_notify_receives_wakeup() {
+    for _ in 0..100 {
+        let notify = Arc::new(Notify::new());
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        notify.notify_waiters();
+        tokio::time::timeout(Duration::from_millis(50), notified.as_mut())
+            .await
+            .expect("enable before notify must receive the wakeup");
+    }
+}
+
+struct RecordingTts {
+    synthesis_started: Arc<Mutex<Option<Instant>>>,
+}
+
+#[async_trait::async_trait]
+impl TtsProvider for RecordingTts {
+    fn vendor_name(&self) -> &'static str {
+        "recording-mock"
+    }
+
+    async fn synthesize(
+        &self,
+        _text: &str,
+    ) -> node_webrtc_rust_speech::SpeechResult<Vec<TtsAudioChunk>> {
+        *self.synthesis_started.lock().unwrap() = Some(Instant::now());
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        Ok(vec![TtsAudioChunk {
+            pcm: Bytes::from(vec![0_u8; 4800 * 4]),
+            duration_ms: 100,
+        }])
+    }
+}
+
+#[tokio::test]
+async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let lid_started = Arc::new(Mutex::new(None));
+    let lid_ended = Arc::new(Mutex::new(None));
+    let tts_started = Arc::new(Mutex::new(None));
+
+    struct RemoteLidFactory {
+        stt_bytes: Arc<Mutex<usize>>,
+        lid_started: Arc<Mutex<Option<Instant>>>,
+        lid_ended: Arc<Mutex<Option<Instant>>>,
+        tts_started: Arc<Mutex<Option<Instant>>>,
+    }
+
+    impl VendorFactory for RemoteLidFactory {
+        fn create_stt(
+            &self,
+            config: &SttConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+            if config.provider == SttVendor::Mock {
+                Ok(Box::new(FinalOnceStt {
+                    bytes: Arc::clone(&self.stt_bytes),
+                    finalized: Arc::new(Mutex::new(false)),
+                    emitted: AtomicBool::new(false),
+                }))
+            } else {
+                MockFactory.create_stt(config)
+            }
+        }
+
+        fn create_tts(
+            &self,
+            _config: &TtsConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+            Ok(Box::new(RecordingTts {
+                synthesis_started: Arc::clone(&self.tts_started),
+            }))
+        }
+
+        fn create_language_id(
+            &self,
+            _config: &LanguageIdConfig,
+        ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+            Ok(Some(Box::new(TimedOverlapLanguageId {
+                guard: Arc::new(OverlapGuard {
+                    lid_in_flight: AtomicUsize::new(0),
+                    tts_in_flight: AtomicUsize::new(0),
+                    violated: AtomicBool::new(false),
+                }),
+                sleep_ms: 300,
+                started_at: Arc::clone(&self.lid_started),
+                ended_at: Arc::clone(&self.lid_ended),
+            })))
+        }
+    }
+
+    let factory = Arc::new(RemoteLidFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        lid_started: Arc::clone(&lid_started),
+        lid_ended: Arc::clone(&lid_ended),
+        tts_started: Arc::clone(&tts_started),
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_tts(TtsVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
+    vad.stt_listen_timeout_ms = 60_000;
+
+    let agent = VoiceAgent::new(
+        VoiceAgentConfig {
+            stt: Some(SttConfig {
+                provider: SttVendor::Mock,
+                model: None,
+                model_path: None,
+                language: Some("en".into()),
+                api_key: None,
+            }),
+            tts: Some(TtsConfig {
+                provider: TtsVendor::Mock,
+                model: None,
+                model_path: None,
+                voice: None,
+                api_key: None,
+            }),
+            language_id: Some(LanguageIdConfig {
+                enabled: Some(true),
+                model_path: Some("/fake/lid-model".into()),
+                allowlist: None,
+                min_speech_ms: Some(200),
+                continuous: None,
+                lid_max_clip_ms: None,
+                lid_gate_max_wait_ms: None,
+                tts_exclusion: Some(false),
+            }),
+            vad,
+            ..Default::default()
+        },
+        Arc::new(registry),
+    )
+    .unwrap();
+
+    let mut rx = agent.subscribe_events();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    let utterance_start = Instant::now();
+
+    drive_loud_frames(&agent, &loud, 12).await;
+    drive_silent_frames(&agent, &silent, 40).await;
+
+    assert!(
+        wait_for_event(&mut rx, SpeechEventKind::UserSpeechFinal).await,
+        "expected user_speech_final without waiting for slow LID"
+    );
+    let final_at = Instant::now();
+    assert!(
+        final_at.duration_since(utterance_start) < Duration::from_millis(400),
+        "final must not await 300ms mock LID when ttsExclusion is off"
+    );
+
+    agent
+        .send_text_to_tts_with_options(
+            "remote echo",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    let tts_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < tts_deadline && tts_started.lock().unwrap().is_none() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        tts_started.lock().unwrap().is_some(),
+        "TTS synthesis should start while LID may still be in flight"
+    );
+
+    let lid_done_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < lid_done_deadline && lid_ended.lock().unwrap().is_none() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        lid_ended.lock().unwrap().is_some(),
+        "LID should complete in background"
+    );
+    assert!(
+        tts_started.lock().unwrap().unwrap() < lid_ended.lock().unwrap().unwrap(),
+        "TTS synthesis must start before LID completes when exclusion is off"
+    );
+    assert!(
+        lid_started.lock().unwrap().is_some(),
+        "LID should have started at speech end"
+    );
+
+    assert!(
+        wait_for_user_language_with_pcm(&agent, &mut rx, &silent).await,
+        "user_language should still arrive after background identify"
+    );
+    assert_eq!(
+        agent.lid_gate_bound_hits(),
+        0,
+        "gate bound must not fire when final is not gated"
     );
 
     agent.stop().await.unwrap();

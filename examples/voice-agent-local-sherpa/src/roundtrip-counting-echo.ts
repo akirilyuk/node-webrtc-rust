@@ -48,7 +48,7 @@ import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 export const ECHO_REPLY_PREFIX = 'You said: '
 
 /** Peer TTS on the loopback is not agent playback — disable barge so STT can finalize. */
-function echoVadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
+export function echoVadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
   return {
     ...VOICE_AGENT_VAD_PRESET,
     ...base.vad,

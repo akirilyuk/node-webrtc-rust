@@ -380,7 +380,8 @@ export class VoiceAgent {
     while (this.running) {
       const event = await this.native.pullSpeechEvent()
       if (event) {
-        yield fromJsSpeechEvent(event)
+        const speechEvent = fromJsSpeechEvent(event)
+        yield speechEvent
       } else {
         await new Promise((resolve) => setTimeout(resolve, 10))
       }

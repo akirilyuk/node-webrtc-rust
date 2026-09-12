@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AudioMixGraph, quatIdentity, vec3Zero } from '@node-webrtc-rust/sdk/mix'
 
@@ -41,6 +41,14 @@ function peakRmsFromFrames(frames: Buffer[]): { left: number; right: number } {
 describe.skipIf(!mixGraphNativeAvailable())(
   'ClientAudioMixer TTS pose flip (native graph, no WebRTC)',
   () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'Date', 'performance'] })
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
     it('repans dual-mono sidecar after +x then -x setTtsPose on pumped PCM', async () => {
       const graph = new AudioMixGraph()
       graph.setPositionalEnabled(true)
@@ -57,20 +65,24 @@ describe.skipIf(!mixGraphNativeAvailable())(
       }
       mixer.startMixPump(peerId, outbound)
 
-      await mixer.setTtsPose(peerId, poseAtX(3))
+      const poseRight = mixer.setTtsPose(peerId, poseAtX(3))
+      await vi.advanceTimersByTimeAsync(25 * 20)
+      await poseRight
       const rightPhaseStart = captured.length
       for (let i = 0; i < 10; i++) {
         injectTtsSidecarPendingFrame(mixer, peerId, createLoudStereoFrame())
-        await mixer.pumpMixFrame(peerId, outbound)
+        await vi.advanceTimersByTimeAsync(20)
       }
       const rightPeak = peakRmsFromFrames(captured.slice(rightPhaseStart))
       assertRightLouder(rightPeak.left, rightPeak.right)
 
-      await mixer.setTtsPose(peerId, poseAtX(-3))
+      const poseLeft = mixer.setTtsPose(peerId, poseAtX(-3))
+      await vi.advanceTimersByTimeAsync(25 * 20)
+      await poseLeft
       const leftPhaseStart = captured.length
       for (let i = 0; i < 10; i++) {
         injectTtsSidecarPendingFrame(mixer, peerId, createLoudStereoFrame())
-        await mixer.pumpMixFrame(peerId, outbound)
+        await vi.advanceTimersByTimeAsync(20)
       }
       const leftPeak = peakRmsFromFrames(captured.slice(leftPhaseStart))
       assertLeftLouder(leftPeak.left, leftPeak.right)

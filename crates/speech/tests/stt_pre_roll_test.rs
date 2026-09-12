@@ -6,15 +6,21 @@ use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
     SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig,
 };
+use node_webrtc_rust_speech::pcm::{i16_samples_to_bytes, pcm_rms_i16, stereo_48k_to_mono_16k};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider, VendorFactory};
+use node_webrtc_rust_speech::stt_pre_roll::stt_pre_roll_capacity_ms;
 use node_webrtc_rust_speech::{VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
 
 fn loud_stereo_frame() -> Vec<u8> {
+    stereo_frame_with_sample(i16::MAX / 3)
+}
+
+fn stereo_frame_with_sample(sample: i16) -> Vec<u8> {
     let mut pcm = Vec::with_capacity(3840);
     for _ in 0..960 {
-        pcm.extend_from_slice(&(i16::MAX / 3).to_le_bytes());
-        pcm.extend_from_slice(&(i16::MAX / 3).to_le_bytes());
+        pcm.extend_from_slice(&sample.to_le_bytes());
+        pcm.extend_from_slice(&sample.to_le_bytes());
     }
     pcm
 }
@@ -191,6 +197,58 @@ impl SttProvider for CountingStt {
     }
 }
 
+struct RecordingStt {
+    chunks: Arc<Mutex<Vec<Bytes>>>,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for RecordingStt {
+    fn vendor_name(&self) -> &'static str {
+        "recording"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        self.chunks.lock().unwrap().push(pcm);
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        Ok(None)
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
+struct RecordingFactory {
+    chunks: Arc<Mutex<Vec<Bytes>>>,
+}
+
+impl VendorFactory for RecordingFactory {
+    fn create_stt(
+        &self,
+        _config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        Ok(Box::new(RecordingStt {
+            chunks: Arc::clone(&self.chunks),
+        }))
+    }
+
+    fn create_tts(
+        &self,
+        _config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(_config)
+    }
+}
+
 struct CountingFactory {
     bytes: Arc<Mutex<usize>>,
 }
@@ -215,6 +273,72 @@ impl VendorFactory for CountingFactory {
 
 fn silent_stereo_frame() -> Vec<u8> {
     vec![0_u8; 3840]
+}
+
+/// Stereo 48 kHz frame with mono RMS ≈ 0.02 (below default energy VAD threshold 0.05).
+fn soft_onset_stereo_frame() -> Vec<u8> {
+    let sample: i16 = 655;
+    let mut pcm = Vec::with_capacity(3840);
+    for _ in 0..960 {
+        pcm.extend_from_slice(&sample.to_le_bytes());
+        pcm.extend_from_slice(&sample.to_le_bytes());
+    }
+    let mono = stereo_48k_to_mono_16k(&pcm);
+    assert!(
+        pcm_rms_i16(&mono) < 0.05,
+        "soft onset frame must stay below VAD threshold"
+    );
+    pcm
+}
+
+fn concat_stt_chunks(chunks: &[Bytes]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for chunk in chunks {
+        out.extend_from_slice(chunk);
+    }
+    out
+}
+
+fn sherpa_like_vad_config() -> VadConfig {
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 200;
+    vad.speech_pad_ms = 500;
+    vad.min_silence_duration_ms = 20;
+    vad.gate_stt = true;
+    vad.gate_stt_open_on_pending = false;
+    vad
+}
+
+async fn agent_with_recording_stt(vad: VadConfig) -> (Arc<VoiceAgent>, Arc<Mutex<Vec<Bytes>>>) {
+    let chunks = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::new(RecordingFactory {
+            chunks: Arc::clone(&chunks),
+        }),
+    );
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: None,
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    (agent, chunks)
 }
 
 #[tokio::test]
@@ -263,7 +387,7 @@ async fn gate_stt_pre_roll_ignores_leading_silence() {
     assert_eq!(
         *bytes.lock().unwrap(),
         0,
-        "leading silence must not reach STT or fill pre-roll"
+        "leading silence must not reach STT (may buffer in pre-roll ring)"
     );
 
     let frame = loud_stereo_frame();
@@ -881,7 +1005,7 @@ async fn gate_stt_hold_skips_finalize_when_poll_already_emitted_final() {
     );
 }
 
-/// `user_speaking_end` must not precede `user_speech_final` by a separate utterance-close pass.
+/// `user_speaking_end` must immediately precede `user_speech_final` (public STT lifecycle contract).
 #[tokio::test]
 async fn speaking_end_pairs_with_delayed_stt_final() {
     let finalize_calls = Arc::new(Mutex::new(0_usize));
@@ -956,8 +1080,8 @@ async fn speaking_end_pairs_with_delayed_stt_final() {
     assert!(end_idx.is_some(), "expected user_speaking_end");
     assert!(final_idx.is_some(), "expected user_speech_final");
     assert_eq!(
-        end_idx,
-        final_idx.map(|i| i.saturating_sub(1)),
+        end_idx.map(|i| i + 1),
+        final_idx,
         "user_speaking_end must immediately precede user_speech_final, got order: {events:?}"
     );
 }
@@ -1151,6 +1275,147 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
         *finalize_calls.lock().unwrap(),
         2,
         "second pause in the same session must also finalize"
+    );
+}
+
+#[tokio::test]
+async fn gate_stt_pre_roll_flush_includes_soft_onset_before_vad_speech_start() {
+    let vad = sherpa_like_vad_config();
+    let capacity_bytes = (stt_pre_roll_capacity_ms(&vad) as usize * 16_000 / 1000) * 2;
+    let (agent, chunks) = agent_with_recording_stt(vad).await;
+
+    let silent = silent_stereo_frame();
+    let soft = soft_onset_stereo_frame();
+    let first_loud = stereo_frame_with_sample(5_000);
+    let loud = loud_stereo_frame();
+    let soft_mono = i16_samples_to_bytes(&stereo_48k_to_mono_16k(&soft));
+    let first_loud_mono = i16_samples_to_bytes(&stereo_48k_to_mono_16k(&first_loud));
+    let frame_bytes = 640usize;
+
+    for _ in 0..60 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+    for _ in 0..3 {
+        agent
+            .process_inbound_pcm(Bytes::from(soft.clone()), 20)
+            .await
+            .unwrap();
+    }
+    agent
+        .process_inbound_pcm(Bytes::from(first_loud.clone()), 20)
+        .await
+        .unwrap();
+    for _ in 0..9 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let all = concat_stt_chunks(&chunks.lock().unwrap().clone());
+    let soft_ref = soft_mono.as_ref();
+    assert!(
+        all.windows(soft_mono.len()).any(|w| w == soft_ref),
+        "STT must receive soft-onset mono bytes from pre-roll flush"
+    );
+
+    let soft_idx = all
+        .windows(soft_mono.len())
+        .position(|w| w == soft_ref)
+        .expect("soft onset present");
+    assert!(
+        soft_idx >= frame_bytes,
+        "soft onset must not be the first bytes in the flush"
+    );
+    let preceding = &all[soft_idx - frame_bytes..soft_idx];
+    assert!(
+        preceding.iter().all(|&b| b == 0),
+        "bytes immediately before soft onset must be leading silence (contiguous ring)"
+    );
+
+    assert!(
+        all.len() <= capacity_bytes + frame_bytes * 20,
+        "flushed pre-roll must respect ring capacity (plus post-start direct frames)"
+    );
+
+    let first_loud_ref = first_loud_mono.as_ref();
+    let first_loud_count = all
+        .windows(first_loud_mono.len())
+        .filter(|w| *w == first_loud_ref)
+        .count();
+    assert_eq!(
+        first_loud_count, 1,
+        "tagged first loud frame must appear exactly once (no ring+direct duplication)"
+    );
+}
+
+#[tokio::test]
+async fn gate_stt_pre_roll_drops_stale_burst_after_long_silence() {
+    let mut vad = sherpa_like_vad_config();
+    vad.stt_gate_hold_ms = 60;
+    vad.min_silence_duration_ms = 20;
+    let (agent, chunks) = agent_with_recording_stt(vad).await;
+
+    let silent = silent_stereo_frame();
+    let stale_burst = stereo_frame_with_sample(9_000);
+    let new_speech = loud_stereo_frame();
+    let stale_mono = i16_samples_to_bytes(&stereo_48k_to_mono_16k(&stale_burst));
+
+    // 700 ms loud burst (fills ring to capacity).
+    for _ in 0..35 {
+        agent
+            .process_inbound_pcm(Bytes::from(stale_burst.clone()), 20)
+            .await
+            .unwrap();
+    }
+    // SpeechEnd + gate-hold drain.
+    for _ in 0..4 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+    // 3 s silence — ring should contain only zeros.
+    for _ in 0..150 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let before_second = concat_stt_chunks(&chunks.lock().unwrap().clone());
+    let stale_ref = stale_mono.as_ref();
+    assert!(
+        before_second
+            .windows(stale_mono.len())
+            .any(|w| w == stale_ref),
+        "first burst should have reached STT directly"
+    );
+
+    for _ in 0..10 {
+        agent
+            .process_inbound_pcm(Bytes::from(new_speech.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let all = concat_stt_chunks(&chunks.lock().unwrap().clone());
+    let second_start = before_second.len();
+    let second_utterance = &all[second_start..];
+    assert!(
+        !second_utterance
+            .windows(stale_mono.len())
+            .any(|w| w == stale_ref),
+        "pre-roll flush for second utterance must not splice stale burst bytes"
     );
 }
 

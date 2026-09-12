@@ -207,6 +207,10 @@ pub struct VoiceAgent {
     tts_synthesis_wake: Arc<Notify>,
     tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_busy: Arc<AtomicBool>,
+    /// Woken when an in-flight LID identify task completes (STT close gate + TTS synthesis wait).
+    lid_completion_notify: Arc<Notify>,
+    /// Count of fault-path `lid_gate_max_wait_ms` expirations (tests only).
+    lid_gate_bound_hits: Arc<AtomicUsize>,
     /// Incremented on barge/flush/cancel so in-flight ONNX synthesis can drop late PCM.
     tts_synthesis_epoch: Arc<AtomicU64>,
     /// Set on barge/flush so progressive generators (Sherpa callback) can stop early.
@@ -315,6 +319,8 @@ impl VoiceAgent {
             tts_synthesis_wake: Arc::new(Notify::new()),
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
+            lid_completion_notify: Arc::new(Notify::new()),
+            lid_gate_bound_hits: Arc::new(AtomicUsize::new(0)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
             tts_generate_cancel: Arc::new(AtomicBool::new(false)),
             tts_workers_shutdown: Arc::new(AtomicBool::new(false)),
@@ -681,6 +687,13 @@ impl VoiceAgent {
         );
         let _ = (synth_join, drain_join);
 
+        {
+            let deferred = self.inner.lock().await.lid_identify_deferred;
+            if deferred {
+                self.spawn_identify_language(true).await;
+            }
+        }
+
         let stt_result = {
             let mut stt = self.stt.lock().await;
             if let Some(stt) = stt.as_mut() {
@@ -784,6 +797,12 @@ impl VoiceAgent {
         Ok(())
     }
 
+    /// Fault-path LID gate bound hit count (mock/tests).
+    #[doc(hidden)]
+    pub fn lid_gate_bound_hits(&self) -> usize {
+        self.lid_gate_bound_hits.load(Ordering::SeqCst)
+    }
+
     async fn ensure_tts_synthesis_worker(&self) {
         if self.tts_workers_shutdown.load(Ordering::SeqCst) {
             return;
@@ -810,6 +829,7 @@ impl VoiceAgent {
         let drain_shutdown = Arc::clone(&self.tts_workers_shutdown);
         let drain_alive = Arc::clone(&self.tts_worker_tasks_alive);
         let weak_self = self.weak_self.clone();
+        let lid_notify = Arc::clone(&self.lid_completion_notify);
         *slot = Some(tokio::spawn(async move {
             let _alive_guard = TtsWorkerAliveGuard::enter(&alive);
             loop {
@@ -838,6 +858,8 @@ impl VoiceAgent {
                     let Some(job) = job else {
                         break;
                     };
+
+                    Self::await_in_flight_lid_before_tts(&weak_self, &inner, &lid_notify).await;
 
                     synthesis_busy.store(true, Ordering::SeqCst);
                     let result = Self::run_tts_synthesis_job(
@@ -1556,7 +1578,7 @@ impl VoiceAgent {
                 }
             };
             if emit_end {
-                self.emit_user_speaking_end_with_lid().await;
+                self.emit_user_speaking_end_after_lid_gate().await;
             }
         }
         Ok(())
@@ -1611,24 +1633,20 @@ impl VoiceAgent {
         }
 
         if !already_final {
-            let emit_speaking_end = {
+            let (emit_speaking_end, final_text) = {
                 let mut inner = self.inner.lock().await;
                 let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
                 if emit_end {
                     inner.stt_speaking_end_emitted_this_utterance = true;
                 }
-                emit_end
-            };
-            if emit_speaking_end {
-                voice_debug("emit user_speaking_end (forced utterance close)");
-                self.emit_user_speaking_end_with_lid().await;
-            }
-            let final_text = last_partial.unwrap_or_default();
-            {
-                let mut inner = self.inner.lock().await;
                 inner.stt_final_emitted_this_utterance = true;
                 inner.stt_finalize_pending = false;
                 inner.stt_endpoint_closing_started = false;
+                (emit_end, last_partial.unwrap_or_default())
+            };
+            if emit_speaking_end {
+                voice_debug("emit user_speaking_end (forced utterance close)");
+                self.emit_user_speaking_end_after_lid_gate().await;
             }
             voice_debug(format!(
                 "emit user_speech_final (forced): {}",
@@ -1722,48 +1740,151 @@ impl VoiceAgent {
     }
 
     async fn append_lid_pcm_if_buffering(&self, mono_bytes: &Bytes) {
-        let snapshot = {
+        let cross_threshold = {
             let mut inner = self.inner.lock().await;
             if !inner.lid_buffering || !language_id_enabled(&inner.config.language_id) {
-                None
-            } else {
-                inner.lid_pcm_buffer.extend_from_slice(mono_bytes);
-                let min_ms = resolved_language_id_min_speech_ms(
-                    inner.config.language_id.as_ref().expect("enabled"),
-                );
-                Some((min_ms, inner.lid_pcm_buffer.len()))
+                return;
             }
-        };
-        if let Some((min_ms, buffer_len)) = snapshot {
+            inner.lid_pcm_buffer.extend_from_slice(mono_bytes);
+            // Default (once per utterance): buffer only until user_speaking_end.
+            if !language_id_continuous(&inner.config.language_id) {
+                return;
+            }
+            let min_ms = resolved_language_id_min_speech_ms(
+                inner.config.language_id.as_ref().expect("enabled"),
+            );
+            let buffer_len = inner.lid_pcm_buffer.len();
             let duration_ms = crate::pcm::duration_ms_from_mono_s16le(
                 buffer_len,
                 crate::pcm::STT_PCM_SAMPLE_RATE,
             );
-            if duration_ms >= min_ms {
-                self.spawn_identify_language(false).await;
-            }
+            duration_ms >= min_ms
+        };
+        if cross_threshold {
+            self.spawn_identify_language(false).await;
         }
     }
 
-    async fn emit_user_speaking_end_with_lid(&self) {
-        self.emit(SpeechEvent::user_speaking_end());
-        let should_force_identify = {
-            let mut inner = self.inner.lock().await;
-            inner.lid_buffering = false;
-            !inner.lid_identify_started_this_utterance && !inner.lid_identify_in_flight
-        };
-        if should_force_identify {
-            self.spawn_identify_language(true).await;
-        }
-        // Hang-up defer may land after TTS already drained (short utterance + fast mock TTS).
-        if !self.tts_active_for_lid_defer().await {
-            Self::maybe_spawn_deferred_lid_after_tts(
-                &self.weak_self,
-                &self.tts_synthesis_queue,
-                &self.inner,
-            )
+    /// Await in-flight LID (if any) then emit `user_speaking_end`. `user_language` is emitted by
+    /// the identify task before this when successful.
+    async fn emit_user_speaking_end_after_lid_gate(&self) {
+        // Buffer may still be growing during STT gate hold / endpoint tail after VAD SpeechEnd.
+        self.try_spawn_default_mode_lid(false, "utterance close")
             .await;
+        self.await_lid_gate_before_utterance_close().await;
+        self.emit(SpeechEvent::user_speaking_end());
+        let mut inner = self.inner.lock().await;
+        inner.lid_buffering = false;
+    }
+
+    /// Start default-mode LID when eligible. `context` is for debug only.
+    async fn try_spawn_default_mode_lid(&self, force: bool, context: &str) -> bool {
+        let eligible = {
+            let inner = self.inner.lock().await;
+            language_id_enabled(&inner.config.language_id)
+                && !language_id_continuous(&inner.config.language_id)
+                && !inner.lid_identify_in_flight
+                && (force || !inner.lid_identify_started_this_utterance)
+        };
+        if !eligible {
+            return false;
         }
+        if !force && self.tts_active_for_lid_defer().await {
+            let mut inner = self.inner.lock().await;
+            if crate::config::lid_tts_exclusion_enabled(
+                &inner.config.language_id,
+                &inner.config.tts,
+            ) && language_id_enabled(&inner.config.language_id)
+            {
+                inner.lid_identify_deferred = true;
+                inner.lid_identify_started_this_utterance = true;
+                voice_debug(format!("LID at {context} deferred (TTS active)"));
+                return false;
+            }
+        }
+        let started = self.spawn_identify_language(force).await;
+        if started {
+            voice_debug(format!(
+                "LID at {context} starting identify in STT close window"
+            ));
+        }
+        started
+    }
+
+    async fn wait_lid_identify_complete(inner: &Arc<Mutex<AgentInner>>, notify: &Arc<Notify>) {
+        loop {
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !inner.lock().await.lid_identify_in_flight {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    async fn await_lid_gate_before_utterance_close(&self) {
+        let gate_ms = {
+            let inner = self.inner.lock().await;
+            if !crate::config::lid_tts_exclusion_enabled(
+                &inner.config.language_id,
+                &inner.config.tts,
+            ) {
+                return;
+            }
+            if !inner.lid_identify_in_flight {
+                return;
+            }
+            inner
+                .config
+                .language_id
+                .as_ref()
+                .map(crate::config::resolved_lid_gate_max_wait_ms)
+                .unwrap_or(3000)
+        };
+        let notify = Arc::clone(&self.lid_completion_notify);
+        let inner = Arc::clone(&self.inner);
+        let bound_hits = Arc::clone(&self.lid_gate_bound_hits);
+        let wait = Self::wait_lid_identify_complete(&inner, &notify);
+        if tokio::time::timeout(std::time::Duration::from_millis(gate_ms as u64), wait)
+            .await
+            .is_err()
+        {
+            bound_hits.fetch_add(1, Ordering::SeqCst);
+            voice_debug(format!(
+                "LID gate bound hit after {} ms — emitting utterance close while identify continues",
+                gate_ms
+            ));
+        }
+    }
+
+    async fn await_in_flight_lid_before_tts(
+        weak_self: &Weak<VoiceAgent>,
+        inner: &Arc<Mutex<AgentInner>>,
+        notify: &Arc<Notify>,
+    ) {
+        let (in_flight, exclusion) = {
+            let guard = inner.lock().await;
+            (
+                guard.lid_identify_in_flight,
+                crate::config::lid_tts_exclusion_enabled(
+                    &guard.config.language_id,
+                    &guard.config.tts,
+                ),
+            )
+        };
+        if !in_flight || !exclusion {
+            return;
+        }
+        if let Some(agent) = weak_self.upgrade() {
+            agent.await_lid_gate_before_utterance_close().await;
+            return;
+        }
+        Self::wait_lid_identify_complete(inner, notify).await;
+    }
+
+    async fn maybe_start_lid_at_speech_end(&self) {
+        self.try_spawn_default_mode_lid(false, "SpeechEnd").await;
     }
 
     async fn tts_active_for_lid_defer(&self) -> bool {
@@ -1778,40 +1899,45 @@ impl VoiceAgent {
 
     /// Starts a background identify when buffered speech is long enough (or `force`).
     /// Does not await inference — inbound PCM and STT/TTS must not block on LID.
-    async fn spawn_identify_language(&self, force: bool) {
+    /// Returns `true` when a job was spawned.
+    async fn spawn_identify_language(&self, force: bool) -> bool {
         let provider = {
             let guard = self.language_id.lock().await;
             guard.as_ref().map(Arc::clone)
         };
         if provider.is_none() {
-            return;
+            return false;
         }
         let provider = provider.expect("provider");
 
         if self.tts_active_for_lid_defer().await {
             let mut inner = self.inner.lock().await;
-            if language_id_enabled(&inner.config.language_id) {
+            if crate::config::lid_tts_exclusion_enabled(
+                &inner.config.language_id,
+                &inner.config.tts,
+            ) && language_id_enabled(&inner.config.language_id)
+            {
                 inner.lid_identify_deferred = true;
                 inner.lid_identify_started_this_utterance = true;
                 voice_debug("LID identify deferred (TTS active)");
+                return false;
             }
-            return;
         }
 
         let job = {
             let mut inner = self.inner.lock().await;
             if !language_id_enabled(&inner.config.language_id) {
-                return;
+                return false;
             }
             if inner.lid_identify_in_flight {
                 inner.lid_identify_started_this_utterance = true;
-                return;
+                return false;
             }
             if inner.lid_identify_started_this_utterance
                 && !force
                 && !language_id_continuous(&inner.config.language_id)
             {
-                return;
+                return false;
             }
             let min_ms = resolved_language_id_min_speech_ms(
                 inner.config.language_id.as_ref().expect("enabled"),
@@ -1822,7 +1948,12 @@ impl VoiceAgent {
                 crate::pcm::STT_PCM_SAMPLE_RATE,
             );
             if buffer_len == 0 || (!force && duration_ms < min_ms) {
-                return;
+                if !force && buffer_len > 0 && duration_ms < min_ms {
+                    voice_debug(format!(
+                        "LID identify skipped: buffered {duration_ms} ms < min_speech_ms {min_ms}"
+                    ));
+                }
+                return false;
             }
             inner.lid_identify_deferred = false;
             inner.lid_identify_in_flight = true;
@@ -1830,24 +1961,38 @@ impl VoiceAgent {
             if !language_id_continuous(&inner.config.language_id) {
                 inner.lid_buffering = false;
             }
-            let pcm = Bytes::from(inner.lid_pcm_buffer.clone());
+            let sample_rate = crate::pcm::STT_PCM_SAMPLE_RATE;
+            let max_clip_ms = crate::config::resolved_lid_max_clip_ms(
+                inner.config.language_id.as_ref().expect("enabled"),
+            );
+            let max_bytes = (sample_rate as u64)
+                .saturating_mul(max_clip_ms as u64)
+                .saturating_mul(2)
+                / 1000;
+            let buffer = inner.lid_pcm_buffer.clone();
+            let pcm = if buffer.len() > max_bytes as usize {
+                Bytes::copy_from_slice(&buffer[..max_bytes as usize])
+            } else {
+                Bytes::from(buffer)
+            };
             inner.lid_pcm_buffer.clear();
             let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
             let last_emitted = inner.lid_last_emitted.clone();
             Some((pcm, allowlist_cfg, last_emitted))
         };
         if job.is_none() {
-            return;
+            return false;
         }
         let (pcm, allowlist_cfg, last_emitted) = job.expect("job");
         let agent = self.weak_self.upgrade();
         if agent.is_none() {
             let mut inner = self.inner.lock().await;
             inner.lid_identify_in_flight = false;
-            return;
+            return false;
         }
         let agent = agent.expect("upgrade");
         let sample_rate = crate::pcm::STT_PCM_SAMPLE_RATE;
+        let lid_notify = Arc::clone(&agent.lid_completion_notify);
         tokio::spawn(async move {
             let result = provider.identify(pcm, sample_rate).await;
             let upgraded = agent.weak_self.upgrade();
@@ -1856,31 +2001,31 @@ impl VoiceAgent {
             }
             let agent = upgraded.expect("upgrade");
             let mut inner = agent.inner.lock().await;
-            inner.lid_identify_in_flight = false;
-            inner.lid_identify_deferred = false;
             match result {
                 Ok(Some(lang_result)) => {
                     let code = lang_result.language.trim().to_ascii_lowercase();
                     if code.is_empty() {
-                        return;
-                    }
-                    if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
+                        voice_debug("LID identify returned empty language code");
+                    } else if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
                         voice_debug(format!("LID result {code} not in allowlist — ignored"));
-                        return;
+                    } else if last_emitted.as_deref() == Some(code.as_str()) {
+                        voice_debug(format!("LID result {code} unchanged — not re-emitted"));
+                    } else {
+                        inner.lid_last_emitted = Some(code.clone());
+                        voice_debug(format!("emit user_language: {code}"));
+                        agent.emit(SpeechEvent::user_language(code));
                     }
-                    if last_emitted.as_deref() == Some(code.as_str()) {
-                        return;
-                    }
-                    inner.lid_last_emitted = Some(code.clone());
-                    voice_debug(format!("emit user_language: {code}"));
-                    agent.emit(SpeechEvent::user_language(code));
                 }
                 Ok(None) => {}
                 Err(err) => {
                     voice_debug(format!("LID identify failed: {err}"));
                 }
             }
+            inner.lid_identify_in_flight = false;
+            inner.lid_identify_deferred = false;
+            lid_notify.notify_waiters();
         });
+        true
     }
 
     async fn maybe_spawn_deferred_lid_after_tts(
@@ -1897,14 +2042,12 @@ impl VoiceAgent {
         }
         // After drain, `synthesis_busy` may still be true while the worker waits in
         // `wait_job_playback_idle` — use playback/queue state only, not synthesis_busy.
-        let tts_still_active =
-            inner.lock().await.agent_speaking || !tts_synthesis_queue.lock().await.is_empty();
-        if tts_still_active {
-            let mut guard = inner.lock().await;
-            guard.lid_identify_deferred = true;
-            return;
-        }
         if let Some(agent) = weak_self.upgrade() {
+            if agent.tts_active_for_lid_defer().await {
+                let mut guard = inner.lock().await;
+                guard.lid_identify_deferred = true;
+                return;
+            }
             voice_debug("LID identify running after TTS drain");
             agent.spawn_identify_language(true).await;
         }
@@ -1982,7 +2125,6 @@ impl VoiceAgent {
             vad_speaking,
         ) = {
             let mut inner = self.inner.lock().await;
-            let was_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
             let gate_stt = inner.config.vad.gate_stt;
 
             let (transitions, frame_active) = match inner.vad.as_mut() {
@@ -1997,21 +2139,6 @@ impl VoiceAgent {
                 .unwrap_or(false);
             let vad_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
 
-            if gate_stt && Self::stt_pipeline_active(&inner) {
-                let barge_listen = inner.agent_speaking && !inner.stt_stream_open;
-                if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
-                    // During agent TTS the STT gate is closed until VAD SpeechStart. User speech
-                    // often begins before VAD confirms (agent bleed / echo). Keep a continuous
-                    // lookback ring so the flush at SpeechStart includes the first syllable.
-                    if barge_listen {
-                        pre_roll.push(&mono_bytes);
-                    } else if !was_speaking && (frame_active || vad_pending) {
-                        // Voice-only — silence must not fill the ring (see stt_pre_roll tests).
-                        pre_roll.push(&mono_bytes);
-                    }
-                }
-            }
-
             let speech_start = transitions.contains(&VadTransition::SpeechStart);
             let mut complete_previous_utterance = false;
 
@@ -2019,7 +2146,8 @@ impl VoiceAgent {
                 // Gate hold (and deferred speaking_end) still runs for VAD-only agents
                 // (`stt: None`). Runtime `set_stt_enabled(false)` is the suppress path.
                 if gate_stt && inner.stt_enabled {
-                    inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+                    // Pre-roll ring is not cleared here: it only holds frames not sent to STT;
+                    // capacity cap drops stale audio after SpeechEnd/hold without a separate clear.
                     let hold_ms = inner.config.vad.stt_gate_hold_ms;
                     inner.stt_gate_hold_ms = hold_ms;
                     let ctx = inner.otel.session_context.clone();
@@ -2166,7 +2294,6 @@ impl VoiceAgent {
             (Self::stt_pipeline_active(&inner), inner.stt_enabled)
         };
 
-        let mut pre_roll_flushed_this_frame = false;
         if speech_start && stt_active {
             let long_pause_new_phrase = {
                 let inner = self.inner.lock().await;
@@ -2218,7 +2345,6 @@ impl VoiceAgent {
             if let Some(buffered) = pre_roll_after_start {
                 if !buffered.is_empty() {
                     self.push_stt_audio_bytes(buffered).await?;
-                    pre_roll_flushed_this_frame = true;
                 }
             }
         }
@@ -2229,12 +2355,26 @@ impl VoiceAgent {
             match transition {
                 VadTransition::SpeechStart => {
                     self.on_vad_speech_start().await?;
+                    // VAD-only agents (`stt: None`) do not reset utterance state on SpeechStart
+                    // via the STT long-pause path — clear LID/speaking flags so each VAD turn can
+                    // buffer and identify at the next user_speaking_end.
+                    {
+                        let mut inner = self.inner.lock().await;
+                        if !Self::stt_pipeline_active(&inner) {
+                            inner.stt_speaking_start_emitted_this_utterance = false;
+                            inner.stt_speaking_end_emitted_this_utterance = false;
+                            inner.lid_identify_started_this_utterance = false;
+                            inner.lid_identify_in_flight = false;
+                            inner.lid_identify_deferred = false;
+                        }
+                    }
                     // VAD speaking_start is independent of having an STT vendor (tests with
                     // stt: None still expect it). setSttEnabled(false) is gated inside emit.
                     self.emit_user_speaking_start_if_needed().await;
                 }
                 VadTransition::SpeechEnd => {
                     speech_end_transition = true;
+                    self.maybe_start_lid_at_speech_end().await;
                     // Runtime toggle only — VAD-only (`stt: None`) still emits speaking_end.
                     if !stt_enabled {
                         voice_debug("user_speaking_end suppressed (STT disabled)");
@@ -2260,7 +2400,7 @@ impl VoiceAgent {
                             "user_speaking_end deferred until STT gate hold expires (gate_stt, no STT)",
                         );
                         } else {
-                            self.emit_user_speaking_end_with_lid().await;
+                            self.emit_user_speaking_end_after_lid_gate().await;
                         }
                     }
                 }
@@ -2305,23 +2445,10 @@ impl VoiceAgent {
             (stt_audio_open, stt_poll_open, should_finalize_utterance)
         };
 
-        // When gate is closed: skip STT push/poll. During agent TTS we still run VAD every frame
-        // (listening on the inbound track); only defer STT until VAD sees user voice.
+        // When gate is closed: skip STT poll. Continuous pre-roll still buffers every frame
+        // not pushed directly to STT (silence, soft onset, agent-TTS listen).
         let gate_closed_skip_stt = gate_stt && !stt_poll_open && !should_finalize_utterance;
-        if gate_closed_skip_stt {
-            if call == 1 || call % 50 == 0 {
-                let agent_speaking = self.inner.lock().await.agent_speaking;
-                if !agent_speaking {
-                    voice_debug(format!(
-                        "process_inbound_pcm call={call} skipped: gate_stt closed (not speaking, hold expired)"
-                    ));
-                }
-            }
-            let agent_speaking = self.inner.lock().await.agent_speaking;
-            if !agent_speaking {
-                return Ok(());
-            }
-        }
+        let push_to_stt_directly = !gate_stt || stt_audio_open;
 
         if call == 1 || call % 50 == 0 {
             voice_debug(format!(
@@ -2330,11 +2457,24 @@ impl VoiceAgent {
             ));
         }
 
-        if (!gate_stt || stt_audio_open) && !pre_roll_flushed_this_frame {
+        if push_to_stt_directly {
             self.push_stt_audio_bytes(mono_bytes).await?;
+        } else if gate_stt && stt_active {
+            let mut inner = self.inner.lock().await;
+            if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
+                pre_roll.push(&mono_bytes);
+            }
         }
+
         if !gate_stt || stt_poll_open {
             self.poll_stt_transcripts().await?;
+        } else if gate_closed_skip_stt {
+            if call == 1 || call % 50 == 0 {
+                voice_debug(format!(
+                    "process_inbound_pcm call={call} skipped: gate_stt closed (STT poll deferred; pre-roll buffered)"
+                ));
+            }
+            return Ok(());
         }
 
         if speech_end_transition {
@@ -2399,7 +2539,7 @@ impl VoiceAgent {
                 };
                 if emit_speaking_end {
                     voice_debug("emit user_speaking_end (finalize without vendor final)");
-                    self.emit_user_speaking_end_with_lid().await;
+                    self.emit_user_speaking_end_after_lid_gate().await;
                 }
                 voice_debug(format!(
                     "emit user_speech_final (last partial fallback): {}",
@@ -2411,9 +2551,9 @@ impl VoiceAgent {
                 ));
                 self.emit(SpeechEvent::user_speech_final(forced_text));
             } else {
-                let emit_speaking_end_without_final = {
+                let emit_speaking_end_at_finalize = {
                     let mut inner = self.inner.lock().await;
-                    if inner.stt_speaking_end_emitted_this_utterance || inner.config.stt.is_some() {
+                    if inner.stt_speaking_end_emitted_this_utterance {
                         false
                     } else {
                         inner.stt_speaking_end_emitted_this_utterance = true;
@@ -2422,8 +2562,9 @@ impl VoiceAgent {
                         true
                     }
                 };
-                if emit_speaking_end_without_final {
-                    self.emit_user_speaking_end_with_lid().await;
+                if emit_speaking_end_at_finalize {
+                    voice_debug("emit user_speaking_end (STT finalize without vendor final)");
+                    self.emit_user_speaking_end_after_lid_gate().await;
                 }
             }
         }
@@ -2557,7 +2698,7 @@ impl VoiceAgent {
                     }
                     if emit_speaking_end {
                         voice_debug("emit user_speaking_end (paired with STT final)");
-                        self.emit_user_speaking_end_with_lid().await;
+                        self.emit_user_speaking_end_after_lid_gate().await;
                     }
                     voice_debug(format!(
                         "emit user_speech_final: {}",
@@ -2598,6 +2739,7 @@ impl VoiceAgent {
         };
 
         let drain_generation = tts_buffer.current_generation().await;
+        let mut pace = TtsDrainPaceState::new();
         // Resume mid-utterance drain passes without re-emitting agent_speaking_start.
         let mut agent_start_emitted = {
             let guard = inner.lock().await;
@@ -2636,6 +2778,7 @@ impl VoiceAgent {
                 drain_generation,
                 &mut agent_start_emitted,
                 &mut played_any,
+                &mut pace,
                 frames,
             )
             .await?
@@ -2660,6 +2803,7 @@ impl VoiceAgent {
                 drain_generation,
                 &mut agent_start_emitted,
                 &mut played_any,
+                &mut pace,
                 vec![(frame, duration_ms)],
             )
             .await?
@@ -2690,6 +2834,7 @@ impl VoiceAgent {
                     inner,
                     drain_generation,
                     silence_ms,
+                    &mut pace,
                 )
                 .await?;
             }
@@ -2706,6 +2851,7 @@ impl VoiceAgent {
         drain_generation: u64,
         agent_start_emitted: &mut bool,
         played_any: &mut bool,
+        pace: &mut TtsDrainPaceState,
         frames: Vec<(Bytes, u32)>,
     ) -> SpeechResult<TtsDrainWrite> {
         for (frame, duration_ms) in frames {
@@ -2743,6 +2889,7 @@ impl VoiceAgent {
                 inner,
                 drain_generation,
                 duration_ms,
+                pace,
             )
             .await
             {
@@ -2767,6 +2914,7 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         drain_generation: u64,
         silence_ms: u32,
+        pace: &mut TtsDrainPaceState,
     ) -> SpeechResult<()> {
         let frame_count = silence_ms.div_ceil(20);
         let silent = Bytes::from(vec![0_u8; STEREO_FRAME_20MS_BYTES]);
@@ -2783,8 +2931,14 @@ impl VoiceAgent {
                 return Ok(());
             }
             writer(silent.clone(), 20)?;
-            if !Self::pace_tts_drain_frame_while_running(tts_buffer, inner, drain_generation, 20)
-                .await
+            if !Self::pace_tts_drain_frame_while_running(
+                tts_buffer,
+                inner,
+                drain_generation,
+                20,
+                pace,
+            )
+            .await
             {
                 voice_debug("post-TTS silence stopped during pacing (barge-in flush / stop)");
                 return Ok(());
@@ -2813,19 +2967,59 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         drain_generation: u64,
         duration_ms: u32,
+        pace: &mut TtsDrainPaceState,
     ) -> bool {
         let mut remaining = duration_ms;
         while remaining > 0 {
             if !inner.lock().await.running {
                 return false;
             }
-            let slice = remaining.min(20);
-            tokio::time::sleep(std::time::Duration::from_millis(slice as u64)).await;
             if tts_buffer.current_generation().await != drain_generation {
                 return false;
             }
-            remaining = remaining.saturating_sub(slice);
+            let slice_ms = remaining.min(20);
+            if !pace.sleep_until_next_slice(slice_ms).await {
+                return false;
+            }
+            if tts_buffer.current_generation().await != drain_generation {
+                return false;
+            }
+            remaining = remaining.saturating_sub(slice_ms);
         }
+        true
+    }
+}
+
+/// Drift-free TTS drain clock: `deadline = anchor + total_paced_ms` after each 20 ms slice.
+struct TtsDrainPaceState {
+    anchor: Option<tokio::time::Instant>,
+    total_paced_ms: u64,
+}
+
+impl TtsDrainPaceState {
+    fn new() -> Self {
+        Self {
+            anchor: None,
+            total_paced_ms: 0,
+        }
+    }
+
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.anchor
+            .map(|anchor| anchor + std::time::Duration::from_millis(self.total_paced_ms))
+    }
+
+    async fn sleep_until_next_slice(&mut self, slice_ms: u32) -> bool {
+        if self.anchor.is_none() {
+            let now = tokio::time::Instant::now();
+            self.anchor = Some(
+                now.checked_sub(std::time::Duration::from_millis(self.total_paced_ms))
+                    .unwrap_or(now),
+            );
+        }
+        self.total_paced_ms += u64::from(slice_ms);
+        let deadline = self.deadline().expect("anchor set");
+        tokio::time::sleep_until(deadline).await;
         true
     }
 }
@@ -2930,6 +3124,20 @@ mod tests {
         // 1000 bytes from the first partial remain after taking one full frame from the join.
         // carry was 1000+3840; drained 3840 → 1000 left.
         assert_eq!(carry.len(), 1000);
+    }
+
+    #[test]
+    fn tts_drain_pace_state_deadline_invariant_after_100_slices() {
+        let mut pace = TtsDrainPaceState::new();
+        pace.anchor = Some(tokio::time::Instant::now());
+        pace.total_paced_ms = 100 * 20;
+        let anchor = pace.anchor.expect("pace anchor");
+        let deadline = pace.deadline().expect("pace deadline");
+        assert_eq!(
+            deadline - anchor,
+            std::time::Duration::from_millis(2000),
+            "deadline invariant: anchor + n×20 ms per paced slice"
+        );
     }
 
     #[tokio::test]

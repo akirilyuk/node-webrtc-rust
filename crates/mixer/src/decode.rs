@@ -14,6 +14,12 @@ use crate::frame::{self, Frame, SAMPLES_PER_FRAME};
 pub enum DecodeError {
     #[error("Opus decoder error: {0}")]
     Opus(#[from] audiopus::Error),
+    #[error("empty RTP payload")]
+    EmptyPayload,
+    #[error("Opus packet parse error: {0}")]
+    Packet(String),
+    #[error("Opus output buffer error: {0}")]
+    Output(String),
 }
 
 /// Decodes RTP Opus payloads into fixed 20 ms stereo PCM frames.
@@ -35,24 +41,25 @@ impl OpusDecoder {
     ///
     /// Empty payloads and decode failures produce a silence frame (packet loss).
     pub fn decode_payload(&mut self, payload: &[u8]) -> Frame {
-        if payload.is_empty() {
-            return frame::silence_frame();
-        }
-
-        let packet = match Packet::try_from(payload) {
-            Ok(packet) => Some(packet),
-            Err(_) => return frame::silence_frame(),
-        };
-
-        let output = match MutSignals::try_from(&mut self.pcm_scratch[..]) {
-            Ok(output) => output,
-            Err(_) => return frame::silence_frame(),
-        };
-
-        match self.inner.decode(packet, output, false) {
-            Ok(_) => pcm_to_frame(&self.pcm_scratch),
+        match self.try_decode_payload(payload) {
+            Ok(frame) => frame,
             Err(_) => frame::silence_frame(),
         }
+    }
+
+    /// Like [`Self::decode_payload`] but surfaces why a payload was replaced by silence.
+    pub fn try_decode_payload(&mut self, payload: &[u8]) -> Result<Frame, DecodeError> {
+        if payload.is_empty() {
+            return Err(DecodeError::EmptyPayload);
+        }
+
+        let packet = Packet::try_from(payload).map_err(|e| DecodeError::Packet(e.to_string()))?;
+
+        let output = MutSignals::try_from(&mut self.pcm_scratch[..])
+            .map_err(|e| DecodeError::Output(e.to_string()))?;
+
+        self.inner.decode(Some(packet), output, false)?;
+        Ok(pcm_to_frame(&self.pcm_scratch))
     }
 }
 

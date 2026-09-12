@@ -7,17 +7,30 @@
  *   (c) speaker STT-fed — user_speaking_start / vad_triggered vs first non-silent RX
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import type { LocalAudioTrack, RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 import { pcmFromWriteSampleTeeArgs } from '@node-webrtc-rust/helpers'
 
 import { stereoPcmDurationMs } from './pcm-relay.js'
 
 export const DEFAULT_VAD_ENERGY_THRESHOLD = 0.15
+export const SILENCE_GAP_MS = 120
 
 export function isMultiPcmCaptureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env.SHERPA_MULTI_PCM_CAPTURE
   if (raw === undefined || raw === '') return true
   return raw !== '0' && raw.toLowerCase() !== 'false'
+}
+
+export function resolveMultiWavDir(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env.SHERPA_MULTI_WAV_DIR
+  if (raw === undefined || raw === '') {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    return join('.test-logs', 'multi-wav', stamp)
+  }
+  return raw
 }
 
 function stereoPeakRmsNormalized(pcm: Buffer): number {
@@ -37,6 +50,66 @@ function isVoicedPcm(pcm: Buffer, threshold: number): boolean {
   return stereoPeakRmsNormalized(pcm) >= threshold
 }
 
+export interface PcmBurstMetrics {
+  firstBurstMs: number
+  gapAfterFirstBurstMs: number
+  burstCount: number
+  totalVoicedMs: number
+}
+
+interface VoicedFrame {
+  durationMs: number
+  voiced: boolean
+}
+
+/** Silence between bursts counts only when ≥120 ms below threshold. */
+export function computeBurstMetrics(frames: VoicedFrame[]): PcmBurstMetrics {
+  if (frames.length === 0) {
+    return { firstBurstMs: 0, gapAfterFirstBurstMs: 0, burstCount: 0, totalVoicedMs: 0 }
+  }
+
+  const bursts: Array<{ voicedMs: number; gapAfterMs: number }> = []
+  let currentVoicedMs = 0
+  let silenceMs = 0
+  let inBurst = false
+
+  for (const frame of frames) {
+    if (frame.voiced) {
+      if (!inBurst) {
+        if (silenceMs >= SILENCE_GAP_MS || bursts.length === 0) {
+          inBurst = true
+          currentVoicedMs = 0
+        } else {
+          // short silence inside a burst — keep accumulating voiced
+          inBurst = true
+        }
+        silenceMs = 0
+      }
+      currentVoicedMs += frame.durationMs
+    } else {
+      silenceMs += frame.durationMs
+      if (inBurst && silenceMs >= SILENCE_GAP_MS) {
+        bursts.push({ voicedMs: currentVoicedMs, gapAfterMs: silenceMs })
+        inBurst = false
+        currentVoicedMs = 0
+      }
+    }
+  }
+
+  if (inBurst && currentVoicedMs > 0) {
+    bursts.push({ voicedMs: currentVoicedMs, gapAfterMs: 0 })
+  }
+
+  const totalVoicedMs = frames.filter((f) => f.voiced).reduce((sum, f) => sum + f.durationMs, 0)
+
+  return {
+    firstBurstMs: bursts[0]?.voicedMs ?? 0,
+    gapAfterFirstBurstMs: bursts[0]?.gapAfterMs ?? 0,
+    burstCount: bursts.length,
+    totalVoicedMs,
+  }
+}
+
 export interface PcmHopMetrics {
   outMs: number
   outVoicedMs: number
@@ -45,16 +118,19 @@ export interface PcmHopMetrics {
   rxReadCount: number
   maxRxGapMs: number
   firstRxNonSilentAt: number | null
+  agentSpeakingStartAt: number | null
   userSpeakingStartAt: number | null
   vadTriggeredAt: number | null
   firstPartialAt: number | null
   recognized: string
+  rxBurst: PcmBurstMetrics
+  outBurst: PcmBurstMetrics
 }
 
 export type PcmFailureVerdict =
-  | 'sender'
-  | 'transport/receive buffer'
-  | 'receiver-gating-or-decode'
+  | 'sender: stretched inter-sentence gap under TTS pool contention'
+  | 'transport/pacing'
+  | 'receiver STT gating/decode'
   | 'unknown'
 
 export class MultiSessionPcmCapture {
@@ -62,6 +138,11 @@ export class MultiSessionPcmCapture {
   private echoOutActive = false
   private rxActive = false
   private lastRxResolvedAt: number | null = null
+
+  private outFrames: VoicedFrame[] = []
+  private rxFrames: VoicedFrame[] = []
+  private outPcmChunks: Buffer[] = []
+  private rxPcmChunks: Buffer[] = []
 
   outMs = 0
   outVoicedMs = 0
@@ -73,6 +154,7 @@ export class MultiSessionPcmCapture {
   userSpeakingStartAt: number | null = null
   vadTriggeredAt: number | null = null
   firstPartialAt: number | null = null
+  agentSpeakingStartAt: number | null = null
 
   constructor(private readonly vadThreshold = DEFAULT_VAD_ENERGY_THRESHOLD) {}
 
@@ -81,6 +163,10 @@ export class MultiSessionPcmCapture {
     this.echoOutActive = false
     this.rxActive = false
     this.lastRxResolvedAt = null
+    this.outFrames = []
+    this.rxFrames = []
+    this.outPcmChunks = []
+    this.rxPcmChunks = []
     this.outMs = 0
     this.outVoicedMs = 0
     this.rxMs = 0
@@ -91,10 +177,7 @@ export class MultiSessionPcmCapture {
     this.userSpeakingStartAt = null
     this.vadTriggeredAt = null
     this.firstPartialAt = null
-  }
-
-  private relMs(): number {
-    return performance.now() - this.roundT0
+    this.agentSpeakingStartAt = null
   }
 
   startEchoOutboundCapture(): void {
@@ -114,11 +197,20 @@ export class MultiSessionPcmCapture {
     this.rxActive = false
   }
 
+  observeAgentSpeakingStart(atRoundMs: number): void {
+    if (this.agentSpeakingStartAt == null) {
+      this.agentSpeakingStartAt = atRoundMs
+    }
+  }
+
   recordOutboundPcm(pcm: Buffer): void {
     if (!this.echoOutActive || pcm.length === 0) return
     const durationMs = stereoPcmDurationMs(pcm.length)
+    const voiced = isVoicedPcm(pcm, this.vadThreshold)
+    this.outFrames.push({ durationMs, voiced })
+    this.outPcmChunks.push(Buffer.from(pcm))
     this.outMs += durationMs
-    if (isVoicedPcm(pcm, this.vadThreshold)) {
+    if (voiced) {
       this.outVoicedMs += durationMs
     }
   }
@@ -126,6 +218,9 @@ export class MultiSessionPcmCapture {
   recordInboundRead(pcm: Buffer, resolvedAtMs: number): void {
     if (!this.rxActive || pcm.length === 0) return
     const durationMs = stereoPcmDurationMs(pcm.length)
+    const voiced = isVoicedPcm(pcm, this.vadThreshold)
+    this.rxFrames.push({ durationMs, voiced })
+    this.rxPcmChunks.push(Buffer.from(pcm))
     this.rxMs += durationMs
     this.rxReadCount += 1
 
@@ -137,7 +232,7 @@ export class MultiSessionPcmCapture {
     }
     this.lastRxResolvedAt = resolvedAtMs
 
-    if (isVoicedPcm(pcm, this.vadThreshold)) {
+    if (voiced) {
       this.rxVoicedMs += durationMs
       if (this.firstRxNonSilentAt == null) {
         this.firstRxNonSilentAt = resolvedAtMs - this.roundT0
@@ -155,6 +250,17 @@ export class MultiSessionPcmCapture {
     if (type === 'user_speech_partial' && this.firstPartialAt == null) {
       this.firstPartialAt = atRoundMs
     }
+    if (type === 'agent_speaking_start') {
+      this.observeAgentSpeakingStart(atRoundMs)
+    }
+  }
+
+  outBurstMetrics(): PcmBurstMetrics {
+    return computeBurstMetrics(this.outFrames)
+  }
+
+  rxBurstMetrics(): PcmBurstMetrics {
+    return computeBurstMetrics(this.rxFrames)
   }
 
   metrics(recognized: string): PcmHopMetrics {
@@ -166,12 +272,72 @@ export class MultiSessionPcmCapture {
       rxReadCount: this.rxReadCount,
       maxRxGapMs: this.maxRxGapMs,
       firstRxNonSilentAt: this.firstRxNonSilentAt,
+      agentSpeakingStartAt: this.agentSpeakingStartAt,
       userSpeakingStartAt: this.userSpeakingStartAt,
       vadTriggeredAt: this.vadTriggeredAt,
       firstPartialAt: this.firstPartialAt,
       recognized,
+      outBurst: this.outBurstMetrics(),
+      rxBurst: this.rxBurstMetrics(),
     }
   }
+
+  writeOutboundWav(path: string): void {
+    writeMonoWav16k(path, stereo48kToMono16k(this.outPcmChunks))
+  }
+
+  writeInboundWav(path: string): void {
+    writeMonoWav16k(path, stereo48kToMono16k(this.rxPcmChunks))
+  }
+}
+
+/** Downsample interleaved stereo 48 kHz s16le → mono 16 kHz s16le. */
+export function stereo48kToMono16k(chunks: Buffer[]): Buffer {
+  const samples: number[] = []
+  let idx48k = 0
+  for (const chunk of chunks) {
+    const pairs = Math.floor(chunk.byteLength / 4)
+    for (let i = 0; i < pairs; i++) {
+      const l = chunk.readInt16LE(i * 4)
+      const r = chunk.readInt16LE(i * 4 + 2)
+      const mono = Math.round((l + r) / 2)
+      if (idx48k % 3 === 0) {
+        samples.push(mono)
+      }
+      idx48k += 1
+    }
+  }
+  const out = Buffer.alloc(samples.length * 2)
+  for (let i = 0; i < samples.length; i++) {
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, samples[i]!)), i * 2)
+  }
+  return out
+}
+
+export function writeMonoWav16k(path: string, pcm16k: Buffer): void {
+  mkdirSync(dirnameOf(path), { recursive: true })
+  const sampleRate = 16_000
+  const dataBytes = pcm16k.byteLength
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + dataBytes, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(sampleRate * 2, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(dataBytes, 40)
+  writeFileSync(path, Buffer.concat([header, pcm16k]))
+}
+
+function dirnameOf(filePath: string): string {
+  const idx = filePath.lastIndexOf('/')
+  return idx >= 0 ? filePath.slice(0, idx) : '.'
 }
 
 /** Tap echo agent TTS PCM (hop a) — mirrors SessionRecorder.wrapOutboundTrack. */
@@ -223,73 +389,140 @@ export function wrapInboundTrackForPcmCapture(
   return track
 }
 
-export function localizePcmFailure(metrics: PcmHopMetrics): PcmFailureVerdict {
-  const expectedReplyMs = 2500
-  if (metrics.outMs < expectedReplyMs * 0.5) {
-    return 'sender'
-  }
+export interface BurstHopVerdictInput {
+  out: PcmBurstMetrics
+  rx: PcmBurstMetrics
+  recognized: string
+  missingEchoPrefix: boolean
+}
 
-  if (metrics.outVoicedMs > 200 && metrics.rxVoicedMs < metrics.outVoicedMs * 0.7) {
-    return 'transport/receive buffer'
-  }
+const GAP_STRETCHED_MS = 700
+const GAP_HEALTHY_MAX_MS = 350
 
-  if (metrics.maxRxGapMs >= 300) {
-    return 'receiver-gating-or-decode'
-  }
+export function localizeBurstFailure(input: BurstHopVerdictInput): PcmFailureVerdict {
+  const { out, rx, missingEchoPrefix } = input
 
-  const firstSttFed = metrics.userSpeakingStartAt ?? metrics.vadTriggeredAt
-  if (
-    metrics.firstRxNonSilentAt != null &&
-    firstSttFed != null &&
-    firstSttFed - metrics.firstRxNonSilentAt > 200
-  ) {
-    return 'receiver-gating-or-decode'
+  if (out.gapAfterFirstBurstMs >= GAP_STRETCHED_MS) {
+    return 'sender: stretched inter-sentence gap under TTS pool contention'
   }
 
   if (
-    metrics.outVoicedMs > 200 &&
-    Math.abs(metrics.rxVoicedMs - metrics.outVoicedMs) <= metrics.outVoicedMs * 0.15 &&
-    metrics.firstRxNonSilentAt != null &&
-    metrics.firstPartialAt != null &&
-    metrics.firstPartialAt - metrics.firstRxNonSilentAt > 700
+    out.gapAfterFirstBurstMs <= GAP_HEALTHY_MAX_MS &&
+    (rx.gapAfterFirstBurstMs >= GAP_STRETCHED_MS ||
+      (out.firstBurstMs > 0 && rx.firstBurstMs < out.firstBurstMs * 0.7))
   ) {
-    return 'receiver-gating-or-decode'
+    return 'transport/pacing'
+  }
+
+  if (
+    missingEchoPrefix &&
+    out.gapAfterFirstBurstMs <= GAP_HEALTHY_MAX_MS &&
+    rx.gapAfterFirstBurstMs <= GAP_HEALTHY_MAX_MS &&
+    rx.firstBurstMs >= out.firstBurstMs * 0.7
+  ) {
+    return 'receiver STT gating/decode'
   }
 
   return 'unknown'
 }
 
-export function formatPcmHopTable(
-  rows: Array<{ sessionId: string; metrics: PcmHopMetrics }>,
+/** @deprecated use localizeBurstFailure */
+export function localizePcmFailure(metrics: PcmHopMetrics): PcmFailureVerdict {
+  return localizeBurstFailure({
+    out: metrics.outBurst,
+    rx: metrics.rxBurst,
+    recognized: metrics.recognized,
+    missingEchoPrefix: !metrics.recognized.toLowerCase().includes('echo'),
+  })
+}
+
+export function formatMergedHopTable(
+  rows: Array<{
+    sessionId: string
+    metrics: PcmHopMetrics & { agentSpeakingStartAt: number | null }
+  }>,
 ): string {
   const lines = [
     '=== Per-hop PCM (echo reply window) ===',
-    'session | outMs | rxMs | outVoicedMs | rxVoicedMs | firstRxNonSilentAt | userSpeakingStartAt | maxRxGapMs | firstPartialAt | recognized',
+    'session | outMs | rxMs | outVoicedMs | rxVoicedMs | agentSpeakingStartAt | firstRxNonSilentAt | userSpeakingStartAt | maxRxGapMs | firstPartialAt | recognized',
   ]
   for (const row of rows) {
     const m = row.metrics
-    const preview = m.recognized.length > 48 ? `${m.recognized.slice(0, 48)}…` : m.recognized
+    const preview = m.recognized.length > 40 ? `${m.recognized.slice(0, 40)}…` : m.recognized
     lines.push(
-      `${row.sessionId.padEnd(7)} | ${String(m.outMs).padStart(5)} | ${String(m.rxMs).padStart(4)} | ${String(m.outVoicedMs).padStart(11)} | ${String(m.rxVoicedMs).padStart(10)} | ${fmtAt(m.firstRxNonSilentAt)} | ${fmtAt(m.userSpeakingStartAt)} | ${String(m.maxRxGapMs).padStart(10)} | ${fmtAt(m.firstPartialAt)} | ${preview}`,
+      `${row.sessionId.padEnd(7)} | ${String(m.outMs).padStart(5)} | ${String(m.rxMs).padStart(4)} | ${String(m.outVoicedMs).padStart(11)} | ${String(m.rxVoicedMs).padStart(10)} | ${fmtAt(m.agentSpeakingStartAt)} | ${fmtAt(m.firstRxNonSilentAt)} | ${fmtAt(m.userSpeakingStartAt)} | ${String(m.maxRxGapMs).padStart(10)} | ${fmtAt(m.firstPartialAt)} | ${preview}`,
     )
   }
   return lines.join('\n')
+}
+
+export function formatBurstMetricTable(
+  rows: Array<{
+    sessionId: string
+    out: PcmBurstMetrics
+    rx: PcmBurstMetrics
+    partialMinusAgentStartMs: number | null
+    recognized: string
+  }>,
+): string {
+  const lines = [
+    '=== Per-hop PCM burst/gap (echo reply window) ===',
+    'session | out.firstBurstMs | out.gapAfterFirstBurstMs | rx.firstBurstMs | rx.gapAfterFirstBurstMs | partialAt-agentStart | recognized',
+  ]
+  for (const row of rows) {
+    const preview = row.recognized.length > 40 ? `${row.recognized.slice(0, 40)}…` : row.recognized
+    lines.push(
+      `${row.sessionId.padEnd(7)} | ${String(row.out.firstBurstMs).padStart(16)} | ${String(row.out.gapAfterFirstBurstMs).padStart(24)} | ${String(row.rx.firstBurstMs).padStart(15)} | ${String(row.rx.gapAfterFirstBurstMs).padStart(23)} | ${fmtAt(row.partialMinusAgentStartMs).padStart(20)} | ${preview}`,
+    )
+  }
+  return lines.join('\n')
+}
+
+export function formatPcmFailureVerdicts(
+  rows: Array<{
+    sessionId: string
+    verdict: PcmFailureVerdict
+    metrics: BurstHopVerdictInput & { partialMinusAgentStartMs: number | null }
+  }>,
+): string {
+  if (rows.length === 0) return ''
+  const lines = ['=== PCM localization (failing sessions) ===']
+  for (const row of rows) {
+    const { out, rx } = row.metrics
+    lines.push(
+      `${row.sessionId}: ${row.verdict} — out.gap=${out.gapAfterFirstBurstMs}ms out.firstBurst=${out.firstBurstMs}ms rx.gap=${rx.gapAfterFirstBurstMs}ms rx.firstBurst=${rx.firstBurstMs}ms partial-agentStart=${fmtAt(row.metrics.partialMinusAgentStartMs)}`,
+    )
+  }
+  return lines.join('\n')
+}
+
+/** @deprecated */
+export function formatPcmHopTable(
+  rows: Array<{ sessionId: string; metrics: PcmHopMetrics }>,
+): string {
+  return formatBurstMetricTable(
+    rows.map((row) => ({
+      sessionId: row.sessionId,
+      out: row.metrics.outBurst,
+      rx: row.metrics.rxBurst,
+      partialMinusAgentStartMs:
+        row.metrics.firstPartialAt != null && row.metrics.agentSpeakingStartAt != null
+          ? row.metrics.firstPartialAt - row.metrics.agentSpeakingStartAt
+          : null,
+      recognized: row.metrics.recognized,
+    })),
+  )
 }
 
 function fmtAt(value: number | null): string {
   return value == null ? '—' : value.toFixed(0)
 }
 
-export function formatPcmFailureVerdicts(
-  rows: Array<{ sessionId: string; metrics: PcmHopMetrics; verdict: PcmFailureVerdict }>,
-): string {
-  if (rows.length === 0) return ''
-  const lines = ['=== PCM localization (failing sessions) ===']
-  for (const row of rows) {
-    const m = row.metrics
-    lines.push(
-      `${row.sessionId}: ${row.verdict} — outMs=${m.outMs} outVoicedMs=${m.outVoicedMs} rxVoicedMs=${m.rxVoicedMs} maxRxGapMs=${m.maxRxGapMs} firstRxNonSilentAt=${fmtAt(m.firstRxNonSilentAt)} userSpeakingStartAt=${fmtAt(m.userSpeakingStartAt)} firstPartialAt=${fmtAt(m.firstPartialAt)}`,
-    )
-  }
-  return lines.join('\n')
+export function transcriptMissingEchoPrefix(recognized: string): boolean {
+  const norm = recognized
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return !norm.startsWith('echo')
 }

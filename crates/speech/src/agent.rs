@@ -1811,6 +1811,21 @@ impl VoiceAgent {
         started
     }
 
+    async fn wait_lid_identify_complete(
+        inner: &Arc<Mutex<AgentInner>>,
+        notify: &Arc<Notify>,
+    ) {
+        loop {
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !inner.lock().await.lid_identify_in_flight {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     async fn await_lid_gate_before_utterance_close(&self) {
         let gate_ms = {
             let inner = self.inner.lock().await;
@@ -1833,17 +1848,7 @@ impl VoiceAgent {
         let notify = Arc::clone(&self.lid_completion_notify);
         let inner = Arc::clone(&self.inner);
         let bound_hits = Arc::clone(&self.lid_gate_bound_hits);
-        let wait = async {
-            loop {
-                {
-                    let guard = inner.lock().await;
-                    if !guard.lid_identify_in_flight {
-                        return;
-                    }
-                }
-                notify.notified().await;
-            }
-        };
+        let wait = Self::wait_lid_identify_complete(&inner, &notify);
         if tokio::time::timeout(
             std::time::Duration::from_millis(gate_ms as u64),
             wait,
@@ -1881,15 +1886,7 @@ impl VoiceAgent {
             agent.await_lid_gate_before_utterance_close().await;
             return;
         }
-        loop {
-            {
-                let guard = inner.lock().await;
-                if !guard.lid_identify_in_flight {
-                    return;
-                }
-            }
-            notify.notified().await;
-        }
+        Self::wait_lid_identify_complete(inner, notify).await;
     }
 
     async fn maybe_start_lid_at_speech_end(&self) {

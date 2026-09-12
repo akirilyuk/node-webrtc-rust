@@ -40,7 +40,6 @@ import {
   ECHO_SMOKE_REPLY_PREFIX,
   evaluateEchoLidInboundTranscript,
   formatEchoSmokeReply,
-  transcriptHasPrefixBeforeCounting,
 } from './roundtrip-counting-echo-lid-prefix.js'
 
 const DEFAULT_TIMEOUT_MS = 90_000

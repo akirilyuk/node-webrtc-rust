@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio::sync::Notify;
+
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
     LanguageIdConfig, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor,
@@ -744,6 +746,47 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
     agent.stop().await.unwrap();
 }
 
+/// Emits `Final` on each `poll_transcript` after `finalize_utterance` (repeatable per utterance).
+struct RepeatFinalStt {
+    bytes: Arc<Mutex<usize>>,
+    finalized: Arc<Mutex<bool>>,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for RepeatFinalStt {
+    fn vendor_name(&self) -> &'static str {
+        "repeat-final"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.bytes.lock().unwrap() += pcm.len();
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        if !*self.finalized.lock().unwrap() {
+            return Ok(None);
+        }
+        *self.finalized.lock().unwrap() = false;
+        Ok(Some(SttTranscript::Final("hello".into())))
+    }
+
+    async fn finalize_utterance(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.finalized.lock().unwrap() = true;
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
 /// Emits `Final` only on the first `poll_transcript` after `finalize_utterance` (Sherpa-like).
 struct FinalOnceStt {
     bytes: Arc<Mutex<usize>>,
@@ -878,6 +921,93 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
     };
 
     VoiceAgent::new(config, Arc::new(registry)).unwrap()
+}
+
+struct LidGateWakeupFactory {
+    stt_bytes: Arc<Mutex<usize>>,
+}
+
+impl VendorFactory for LidGateWakeupFactory {
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        if config.provider == SttVendor::Mock {
+            Ok(Box::new(RepeatFinalStt {
+                bytes: Arc::clone(&self.stt_bytes),
+                finalized: Arc::new(Mutex::new(false)),
+            }))
+        } else {
+            MockFactory.create_stt(config)
+        }
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(Some(Box::new(SlowLanguageId { sleep_ms: 1 })))
+    }
+}
+
+fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let factory = Arc::new(LidGateWakeupFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 0;
+    vad.stt_listen_timeout_ms = 60_000;
+
+    VoiceAgent::new(
+        VoiceAgentConfig {
+            stt: Some(SttConfig {
+                provider: SttVendor::Mock,
+                model: None,
+                model_path: None,
+                language: Some("en".into()),
+                api_key: None,
+            }),
+            tts: Some(TtsConfig {
+                provider: TtsVendor::Mock,
+                model: None,
+                model_path: None,
+                voice: None,
+                api_key: None,
+            }),
+            language_id: Some(LanguageIdConfig {
+                enabled: Some(true),
+                model_path: Some("/fake/lid-model".into()),
+                allowlist: None,
+                min_speech_ms: Some(200),
+                continuous: None,
+                lid_max_clip_ms: None,
+                lid_gate_max_wait_ms: Some(300),
+                tts_exclusion: Some(true),
+            }),
+            vad,
+            ..Default::default()
+        },
+        Arc::new(registry),
+    )
+    .unwrap()
 }
 
 struct CountingLidTestFactory {
@@ -1884,6 +2014,72 @@ async fn lid_gate_bound_never_fires_with_mock() {
     );
 
     agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lid_gate_wakeup_is_never_lost() {
+    let agent = agent_for_lid_gate_wakeup_test();
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    for iteration in 0..100 {
+        drive_loud_frames(&agent, &loud, 12).await;
+        let close_trigger = Instant::now();
+        let final_deadline = close_trigger + Duration::from_millis(150);
+        let mut saw_final = false;
+
+        while Instant::now() < final_deadline {
+            drive_silent_frames(&agent, &silent, 1).await;
+            while let Ok(event) = rx.try_recv() {
+                if event.kind == SpeechEventKind::UserSpeechFinal {
+                    saw_final = true;
+                    break;
+                }
+            }
+            if saw_final {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        assert!(
+            saw_final,
+            "iteration {iteration}: user_speech_final must arrive within 150ms of close (gate bound={})",
+            agent.lid_gate_bound_hits()
+        );
+    }
+
+    assert_eq!(
+        agent.lid_gate_bound_hits(),
+        0,
+        "lid_gate_max_wait_ms fault bound must never fire when LID completes promptly (hits={})",
+        agent.lid_gate_bound_hits()
+    );
+
+    agent.stop().await.unwrap();
+}
+
+/// Tokio `Notify` regression mirrored by `wait_lid_identify_complete`: `enable()` before
+/// `notify_waiters()` receives the completion; the agent's old check-then-`notified().await`
+/// loop lost wakeups under the same ordering (see `lid_gate_wakeup_is_never_lost`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lid_gate_enable_before_notify_receives_wakeup() {
+    for _ in 0..100 {
+        let notify = Arc::new(Notify::new());
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        notify.notify_waiters();
+        tokio::time::timeout(Duration::from_millis(50), notified.as_mut())
+            .await
+            .expect("enable before notify must receive the wakeup");
+    }
 }
 
 struct RecordingTts {

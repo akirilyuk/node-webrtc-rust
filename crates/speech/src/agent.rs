@@ -82,11 +82,6 @@ fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
     vad.min_silence_duration_ms.max(400).min(600)
 }
 
-/// Poll window after hang-up defer: JS `sendTextToTTS` on `user_speech_final` is fire-and-forget
-/// (Sherpa echo-smoke often enqueues ~280ms after final; must not start Whisper before that).
-const LID_HANGUP_TTS_ENQUEUE_WINDOW_MS: u64 = 400;
-const LID_HANGUP_TTS_ENQUEUE_POLL_MS: u64 = 10;
-
 /// True when most of the post–speech-end gate hold has elapsed (90%), i.e. resume is a new phrase not a digit gap.
 fn gate_hold_long_pause_elapsed(hold_total: u32, hold_elapsed: u32) -> bool {
     hold_total > 0 && hold_elapsed.saturating_mul(10) > hold_total.saturating_mul(9)
@@ -212,6 +207,9 @@ pub struct VoiceAgent {
     tts_synthesis_wake: Arc<Notify>,
     tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_busy: Arc<AtomicBool>,
+    /// Set synchronously when TTS enqueue begins (before first await) so hang-up LID flush can
+    /// observe fire-and-forget `sendTextToTTS` before the native async future is polled.
+    tts_enqueue_intent: Arc<AtomicBool>,
     /// Incremented on barge/flush/cancel so in-flight ONNX synthesis can drop late PCM.
     tts_synthesis_epoch: Arc<AtomicU64>,
     /// Set on barge/flush so progressive generators (Sherpa callback) can stop early.
@@ -320,6 +318,7 @@ impl VoiceAgent {
             tts_synthesis_wake: Arc::new(Notify::new()),
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
+            tts_enqueue_intent: Arc::new(AtomicBool::new(false)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
             tts_generate_cancel: Arc::new(AtomicBool::new(false)),
             tts_workers_shutdown: Arc::new(AtomicBool::new(false)),
@@ -686,6 +685,8 @@ impl VoiceAgent {
         );
         let _ = (synth_join, drain_join);
 
+        self.flush_deferred_hangup_language_id().await;
+
         let stt_result = {
             let mut stt = self.stt.lock().await;
             if let Some(stt) = stt.as_mut() {
@@ -751,14 +752,18 @@ impl VoiceAgent {
         text: &str,
         options: SendTextToTtsOptions,
     ) -> SpeechResult<()> {
+        self.tts_enqueue_intent.store(true, Ordering::SeqCst);
+
         let trimmed = text.trim();
         if trimmed.is_empty() {
+            self.tts_enqueue_intent.store(false, Ordering::SeqCst);
             return Ok(());
         }
 
         {
             let tts = self.tts.lock().await;
             if tts.is_none() {
+                self.tts_enqueue_intent.store(false, Ordering::SeqCst);
                 return Err(SpeechError::Config("TTS not configured".into()));
             }
         }
@@ -777,6 +782,7 @@ impl VoiceAgent {
                 done: done_tx,
             });
         }
+        self.tts_enqueue_intent.store(false, Ordering::SeqCst);
 
         self.ensure_tts_synthesis_worker().await;
         self.tts_synthesis_wake.notify_one();
@@ -787,6 +793,26 @@ impl VoiceAgent {
         }
 
         Ok(())
+    }
+
+    /// Synchronous signal that TTS enqueue is intended (TS `sendTextToTTS` before native await).
+    pub fn note_tts_enqueue(&self) {
+        self.tts_enqueue_intent.store(true, Ordering::SeqCst);
+    }
+
+    /// Flush hang-up deferred LID after the `user_speech_final` handler returns (or on stop).
+    /// Does not await inference; keeps deferred when TTS is active so drain can identify.
+    pub async fn flush_deferred_hangup_language_id(&self) {
+        let deferred = self.inner.lock().await.lid_identify_deferred;
+        if !deferred {
+            return;
+        }
+        if self.tts_active_for_lid_defer().await {
+            voice_debug("LID hang-up identify still deferred (TTS active or enqueue intent)");
+            return;
+        }
+        voice_debug("LID hang-up identify flush after JS final handler");
+        self.spawn_identify_language(true).await;
     }
 
     async fn ensure_tts_synthesis_worker(&self) {
@@ -1643,9 +1669,6 @@ impl VoiceAgent {
                 }
             ));
             self.emit(SpeechEvent::user_speech_final(final_text));
-            if emit_speaking_end {
-                self.start_hangup_lid_enqueue_poll_if_deferred().await;
-            }
         }
         Ok(())
     }
@@ -1754,10 +1777,10 @@ impl VoiceAgent {
         }
     }
 
-    /// Emit `user_speaking_end` and prepare hang-up LID. When `start_enqueue_poll` is false
-    /// (STT final path), the caller must emit `user_speech_final` next, then call
-    /// `start_hangup_lid_enqueue_poll_if_deferred` so JS can enqueue TTS before the poll window.
-    async fn emit_user_speaking_end_with_lid(&self, start_enqueue_poll: bool) {
+    /// Emit `user_speaking_end` and defer hang-up LID until JS final handler flush or TTS drain.
+    /// When `auto_flush_when_idle` is true (no `user_speech_final` follows), flush immediately if
+    /// TTS is already idle — e.g. C1 `user_stt_not_found` or VAD-only hang-up.
+    async fn emit_user_speaking_end_with_lid(&self, auto_flush_when_idle: bool) {
         self.emit(SpeechEvent::user_speaking_end());
         let should_defer_hangup_lid = {
             let mut inner = self.inner.lock().await;
@@ -1779,65 +1802,18 @@ impl VoiceAgent {
             voice_debug("LID hang-up identify deferred (TTS active)");
             return;
         }
-        if start_enqueue_poll {
-            voice_debug("LID hang-up identify deferred (poll for TTS enqueue)");
-            self.schedule_hangup_lid_enqueue_poll();
+        if auto_flush_when_idle {
+            voice_debug("LID hang-up identify flush (no user_speech_final follows, TTS idle)");
+            self.flush_deferred_hangup_language_id().await;
+        } else {
+            voice_debug("LID hang-up identify deferred (await JS final handler or TTS drain)");
         }
-    }
-
-    async fn start_hangup_lid_enqueue_poll_if_deferred(&self) {
-        let deferred = self.inner.lock().await.lid_identify_deferred;
-        if !deferred {
-            return;
-        }
-        if self.tts_active_for_lid_defer().await {
-            voice_debug("LID hang-up identify deferred (TTS active)");
-            return;
-        }
-        voice_debug("LID hang-up identify deferred (poll for TTS enqueue)");
-        self.schedule_hangup_lid_enqueue_poll();
-    }
-
-    /// Poll until TTS is queued/active or the enqueue window elapses, then flush deferred hang-up LID.
-    fn schedule_hangup_lid_enqueue_poll(&self) {
-        let weak_self = self.weak_self.clone();
-        let queue = Arc::clone(&self.tts_synthesis_queue);
-        let inner = Arc::clone(&self.inner);
-        tokio::spawn(async move {
-            let deadline =
-                Instant::now() + std::time::Duration::from_millis(LID_HANGUP_TTS_ENQUEUE_WINDOW_MS);
-            while Instant::now() < deadline {
-                if !inner.lock().await.lid_identify_deferred {
-                    return;
-                }
-                let Some(agent) = weak_self.upgrade() else {
-                    return;
-                };
-                if agent.tts_active_for_lid_defer().await {
-                    voice_debug(
-                        "LID hang-up identify deferred (TTS enqueued during poll window)",
-                    );
-                    return;
-                }
-                tokio::time::sleep(
-                    std::time::Duration::from_millis(LID_HANGUP_TTS_ENQUEUE_POLL_MS),
-                )
-                .await;
-            }
-            if !inner.lock().await.lid_identify_deferred {
-                return;
-            }
-            if let Some(agent) = weak_self.upgrade() {
-                if agent.tts_active_for_lid_defer().await {
-                    voice_debug("LID hang-up identify deferred (TTS active after poll window)");
-                    return;
-                }
-            }
-            Self::maybe_spawn_deferred_lid_after_tts(&weak_self, &queue, &inner).await;
-        });
     }
 
     async fn tts_active_for_lid_defer(&self) -> bool {
+        if self.tts_enqueue_intent.load(Ordering::SeqCst) {
+            return true;
+        }
         if self.tts_synthesis_busy.load(Ordering::SeqCst) {
             return true;
         }
@@ -1968,14 +1944,12 @@ impl VoiceAgent {
         }
         // After drain, `synthesis_busy` may still be true while the worker waits in
         // `wait_job_playback_idle` — use playback/queue state only, not synthesis_busy.
-        let tts_still_active =
-            inner.lock().await.agent_speaking || !tts_synthesis_queue.lock().await.is_empty();
-        if tts_still_active {
-            let mut guard = inner.lock().await;
-            guard.lid_identify_deferred = true;
-            return;
-        }
         if let Some(agent) = weak_self.upgrade() {
+            if agent.tts_active_for_lid_defer().await {
+                let mut guard = inner.lock().await;
+                guard.lid_identify_deferred = true;
+                return;
+            }
             voice_debug("LID identify running after TTS drain");
             agent.spawn_identify_language(true).await;
         }
@@ -2494,13 +2468,10 @@ impl VoiceAgent {
                     }
                 ));
                 self.emit(SpeechEvent::user_speech_final(forced_text));
-                if emit_speaking_end {
-                    self.start_hangup_lid_enqueue_poll_if_deferred().await;
-                }
             } else {
-                let emit_speaking_end_without_final = {
+                let emit_speaking_end_at_finalize = {
                     let mut inner = self.inner.lock().await;
-                    if inner.stt_speaking_end_emitted_this_utterance || inner.config.stt.is_some() {
+                    if inner.stt_speaking_end_emitted_this_utterance {
                         false
                     } else {
                         inner.stt_speaking_end_emitted_this_utterance = true;
@@ -2509,7 +2480,8 @@ impl VoiceAgent {
                         true
                     }
                 };
-                if emit_speaking_end_without_final {
+                if emit_speaking_end_at_finalize {
+                    voice_debug("emit user_speaking_end (STT finalize without vendor final)");
                     self.emit_user_speaking_end_with_lid(true).await;
                 }
             }
@@ -2655,9 +2627,6 @@ impl VoiceAgent {
                         }
                     ));
                     self.emit(SpeechEvent::user_speech_final(text));
-                    if emit_speaking_end {
-                        self.start_hangup_lid_enqueue_poll_if_deferred().await;
-                    }
                 }
             }
         }

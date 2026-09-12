@@ -103,6 +103,12 @@ impl JsVoiceAgent {
         self.inner.stop().await.map_err(speech_err)
     }
 
+    /// Synchronous TTS enqueue intent (call before awaiting `send_text_to_tts`).
+    #[napi]
+    pub fn note_tts_enqueue(&self) {
+        self.inner.note_tts_enqueue();
+    }
+
     #[napi]
     pub async fn send_text_to_tts(&self, text: String, non_blocking: Option<bool>) -> Result<()> {
         let options = SendTextToTtsOptions {
@@ -112,6 +118,15 @@ impl JsVoiceAgent {
             .send_text_to_tts_with_options(&text, options)
             .await
             .map_err(speech_err)
+    }
+
+    /// Flush hang-up deferred LID after the `user_speech_final` handler returns.
+    #[napi]
+    pub async fn flush_deferred_hangup_language_id(&self) -> Result<()> {
+        self.inner
+            .flush_deferred_hangup_language_id()
+            .await;
+        Ok(())
     }
 
     #[napi]

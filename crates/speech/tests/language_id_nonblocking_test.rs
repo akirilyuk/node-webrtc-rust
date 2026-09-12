@@ -293,7 +293,6 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             .unwrap();
     }
 
-    // user_language after C1 closes the STT stream and speaking_end spawns background identify.
     let deadline = Instant::now() + Duration::from_secs(4);
     let mut saw_user_language = false;
     while Instant::now() < deadline {
@@ -301,17 +300,10 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
             .unwrap();
-        while let Ok(event) = rx.try_recv() {
-            if event.kind == SpeechEventKind::UserLanguage {
-                assert_eq!(event.language.as_deref(), Some("en"));
-                saw_user_language = true;
-                break;
-            }
-        }
-        if saw_user_language {
+        if wait_for_user_language(&agent, &mut rx).await {
+            saw_user_language = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
         saw_user_language,
@@ -472,24 +464,8 @@ async fn language_id_does_not_block_tts_playback() {
 
     agent.wait_tts_playback_idle().await.unwrap();
 
-    // LID runs at speaking_end (deferred until TTS idle) in the background.
-    let lang_deadline = Instant::now() + Duration::from_secs(6);
-    let mut saw_user_language = false;
-    while Instant::now() < lang_deadline {
-        while let Ok(event) = rx.try_recv() {
-            if event.kind == SpeechEventKind::UserLanguage {
-                assert_eq!(event.language.as_deref(), Some("en"));
-                saw_user_language = true;
-                break;
-            }
-        }
-        if saw_user_language {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
     assert!(
-        saw_user_language,
+        wait_for_user_language_with_pcm(&agent, &mut rx, &silent).await,
         "expected user_language after background identify"
     );
 
@@ -721,23 +697,8 @@ async fn language_id_does_not_overlap_tts_synthesis() {
         "LID identify must not overlap TTS synthesize"
     );
 
-    let lang_deadline = Instant::now() + Duration::from_secs(8);
-    let mut saw_user_language = false;
-    while Instant::now() < lang_deadline {
-        while let Ok(event) = rx.try_recv() {
-            if event.kind == SpeechEventKind::UserLanguage {
-                assert_eq!(event.language.as_deref(), Some("en"));
-                saw_user_language = true;
-                break;
-            }
-        }
-        if saw_user_language {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
     assert!(
-        saw_user_language,
+        wait_for_user_language_with_pcm(&agent, &mut rx, &silent).await,
         "expected user_language after deferred identify"
     );
 
@@ -772,16 +733,13 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
             .unwrap();
     }
 
-    // Silence → speaking_end + hang-up defer (staging: final handler then speak after event loop).
+    // Silence → speaking_end + hang-up defer (staging: final handler then immediate speak).
     for _ in 0..5 {
         agent
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
             .unwrap();
     }
-
-    // Fire-and-forget speak() often lands after 50ms; poll window must cover this gap.
-    tokio::time::sleep(Duration::from_millis(90)).await;
 
     agent
         .send_text_to_tts_with_options(
@@ -798,24 +756,175 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
         "hang-up LID must not overlap TTS synthesize when speak() follows speaking_end (staging echo prefix skip)"
     );
 
-    let lang_deadline = Instant::now() + Duration::from_secs(5);
-    let mut saw_user_language = false;
-    while Instant::now() < lang_deadline {
-        while let Ok(event) = rx.try_recv() {
-            if event.kind == SpeechEventKind::UserLanguage {
-                assert_eq!(event.language.as_deref(), Some("en"));
-                saw_user_language = true;
-                break;
-            }
-        }
-        if saw_user_language {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
     assert!(
-        saw_user_language,
+        wait_for_user_language_with_pcm(&agent, &mut rx, &silent).await,
         "expected user_language after deferred hang-up identify"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+struct FinalOnceStt {
+    bytes: Arc<Mutex<usize>>,
+    emitted: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for FinalOnceStt {
+    fn vendor_name(&self) -> &'static str {
+        "final-once"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        *self.bytes.lock().unwrap() += pcm.len();
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        if self.emitted.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        if *self.bytes.lock().unwrap() < 8_000 {
+            return Ok(None);
+        }
+        self.emitted.store(true, Ordering::SeqCst);
+        Ok(Some(SttTranscript::Final("hello".into())))
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
+struct HangupAntiTimerFactory {
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_calls: Arc<AtomicUsize>,
+}
+
+impl VendorFactory for HangupAntiTimerFactory {
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        if config.provider == SttVendor::Mock {
+            Ok(Box::new(FinalOnceStt {
+                bytes: Arc::clone(&self.stt_bytes),
+                emitted: AtomicBool::new(false),
+            }))
+        } else {
+            MockFactory.create_stt(config)
+        }
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+
+    fn create_language_id(
+        &self,
+        _config: &LanguageIdConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(Some(Box::new(CountingLanguageId {
+            calls: Arc::clone(&self.lid_calls),
+            sleep_ms: 50,
+            languages: vec!["en".into()],
+        })))
+    }
+}
+
+/// Hang-up LID must not start on a wall-clock timer; only flush or TTS drain may identify.
+#[tokio::test]
+async fn hangup_lid_does_not_start_without_flush_or_tts() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let factory = Arc::new(HangupAntiTimerFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        lid_calls: Arc::clone(&lid_calls),
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+            continuous: None,
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    drive_loud_frames(&agent, &loud, 12).await;
+    drive_silent_frames(&agent, &silent, 20).await;
+
+    assert!(
+        wait_for_event(&mut rx, SpeechEventKind::UserSpeechFinal).await,
+        "expected user_speech_final so hang-up defer is set without auto-flush"
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        0,
+        "hang-up LID must not identify without flush or TTS drain (no 400ms poll)"
+    );
+
+    agent.flush_deferred_hangup_language_id().await;
+
+    assert!(
+        wait_for_user_language(&agent, &mut rx).await,
+        "expected user_language after explicit flush"
+    );
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "flush must start exactly one hang-up identify"
     );
 
     agent.stop().await.unwrap();
@@ -940,9 +1049,26 @@ async fn wait_for_event(
 }
 
 async fn wait_for_user_language(
+    agent: &VoiceAgent,
     rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
 ) -> bool {
+    agent.flush_deferred_hangup_language_id().await;
     wait_for_event(rx, SpeechEventKind::UserLanguage).await
+}
+
+async fn wait_for_user_language_with_pcm(
+    agent: &VoiceAgent,
+    rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+    silent: &[u8],
+) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        drive_silent_frames(agent, silent, 5).await;
+        if wait_for_user_language(agent, rx).await {
+            return true;
+        }
+    }
+    false
 }
 
 async fn drive_loud_frames(agent: &VoiceAgent, loud: &[u8], count: usize) {
@@ -1001,7 +1127,7 @@ async fn language_id_runs_once_per_utterance_by_default() {
 
     drive_silent_frames(&agent, &silent, 12).await;
     assert!(
-        wait_for_user_language(&mut rx).await,
+        wait_for_user_language(&agent, &mut rx).await,
         "expected user_language after speaking_end for utterance A"
     );
     assert_eq!(
@@ -1027,7 +1153,7 @@ async fn language_id_runs_once_per_utterance_by_default() {
     );
     drive_silent_frames(&agent, &silent, 12).await;
     assert!(
-        wait_for_user_language(&mut rx).await,
+        wait_for_user_language(&agent, &mut rx).await,
         "expected user_language for utterance B"
     );
     assert_eq!(
@@ -1061,7 +1187,7 @@ async fn continuous_language_id_rechecks_during_long_utterance() {
 
     drive_loud_frames(&agent, &loud, 12).await;
     assert!(
-        wait_for_user_language(&mut rx).await,
+        wait_for_user_language(&agent, &mut rx).await,
         "expected first user_language in continuous mode"
     );
 

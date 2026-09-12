@@ -486,9 +486,7 @@ async function runSpeakerRound(params: {
   session.collector.startEventRecording()
 
   const echoEndBaseline =
-    params.echoWire != null
-      ? await requestEchoEndBaseline(params.echoWire, session.sessionId)
-      : 0
+    params.echoWire != null ? await requestEchoEndBaseline(params.echoWire, session.sessionId) : 0
 
   const playbackPromise = playSpeakerTtsWithPostSilence({
     speaker: session.speaker,
@@ -985,9 +983,10 @@ async function main(): Promise<void> {
   enableRoundtripSpeechEventLog()
   installRoundtripWallClockTimeout(Number(process.env.SHERPA_ROUNDTRIP_WALL_MS) || 240_000)
 
-  if (!process.env.WEBRTC_NAT_1TO1_IPS) {
-    process.env.WEBRTC_NAT_1TO1_IPS = '127.0.0.1'
-  }
+  // Same-host loopback (both processes share the network namespace): do not force
+  // WEBRTC_NAT_1TO1_IPS=127.0.0.1 — the host-candidate rewrite breaks ICE inside the CI
+  // container (see helpers session-pod-mix-three-client integration test). Browser tabs
+  // are not involved here; set the env explicitly if you need it.
 
   const results = isSingleProcessMode() ? await runSingleProcess() : await runSplitProcess()
 

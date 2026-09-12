@@ -1561,7 +1561,7 @@ impl VoiceAgent {
                 }
             };
             if emit_end {
-                self.emit_user_speaking_end_with_lid().await;
+                self.emit_user_speaking_end_with_lid(true).await;
             }
         }
         Ok(())
@@ -1630,6 +1630,10 @@ impl VoiceAgent {
                     last_partial.unwrap_or_default(),
                 )
             };
+            if emit_speaking_end {
+                voice_debug("emit user_speaking_end (forced utterance close)");
+                self.emit_user_speaking_end_with_lid(false).await;
+            }
             voice_debug(format!(
                 "emit user_speech_final (forced): {}",
                 if final_text.len() > 80 {
@@ -1640,8 +1644,7 @@ impl VoiceAgent {
             ));
             self.emit(SpeechEvent::user_speech_final(final_text));
             if emit_speaking_end {
-                voice_debug("emit user_speaking_end (forced utterance close)");
-                self.emit_user_speaking_end_with_lid().await;
+                self.start_hangup_lid_enqueue_poll_if_deferred().await;
             }
         }
         Ok(())
@@ -1751,7 +1754,10 @@ impl VoiceAgent {
         }
     }
 
-    async fn emit_user_speaking_end_with_lid(&self) {
+    /// Emit `user_speaking_end` and prepare hang-up LID. When `start_enqueue_poll` is false
+    /// (STT final path), the caller must emit `user_speech_final` next, then call
+    /// `start_hangup_lid_enqueue_poll_if_deferred` so JS can enqueue TTS before the poll window.
+    async fn emit_user_speaking_end_with_lid(&self, start_enqueue_poll: bool) {
         self.emit(SpeechEvent::user_speaking_end());
         let should_defer_hangup_lid = {
             let mut inner = self.inner.lock().await;
@@ -1767,6 +1773,21 @@ impl VoiceAgent {
             }
         };
         if !should_defer_hangup_lid {
+            return;
+        }
+        if self.tts_active_for_lid_defer().await {
+            voice_debug("LID hang-up identify deferred (TTS active)");
+            return;
+        }
+        if start_enqueue_poll {
+            voice_debug("LID hang-up identify deferred (poll for TTS enqueue)");
+            self.schedule_hangup_lid_enqueue_poll();
+        }
+    }
+
+    async fn start_hangup_lid_enqueue_poll_if_deferred(&self) {
+        let deferred = self.inner.lock().await.lid_identify_deferred;
+        if !deferred {
             return;
         }
         if self.tts_active_for_lid_defer().await {
@@ -2323,7 +2344,7 @@ impl VoiceAgent {
                             "user_speaking_end deferred until STT gate hold expires (gate_stt, no STT)",
                         );
                         } else {
-                            self.emit_user_speaking_end_with_lid().await;
+                            self.emit_user_speaking_end_with_lid(true).await;
                         }
                     }
                 }
@@ -2460,6 +2481,10 @@ impl VoiceAgent {
                     inner.stt_endpoint_closing_started = false;
                     emit_end
                 };
+                if emit_speaking_end {
+                    voice_debug("emit user_speaking_end (finalize without vendor final)");
+                    self.emit_user_speaking_end_with_lid(false).await;
+                }
                 voice_debug(format!(
                     "emit user_speech_final (last partial fallback): {}",
                     if forced_text.len() > 80 {
@@ -2470,8 +2495,7 @@ impl VoiceAgent {
                 ));
                 self.emit(SpeechEvent::user_speech_final(forced_text));
                 if emit_speaking_end {
-                    voice_debug("emit user_speaking_end (finalize without vendor final)");
-                    self.emit_user_speaking_end_with_lid().await;
+                    self.start_hangup_lid_enqueue_poll_if_deferred().await;
                 }
             } else {
                 let emit_speaking_end_without_final = {
@@ -2486,7 +2510,7 @@ impl VoiceAgent {
                     }
                 };
                 if emit_speaking_end_without_final {
-                    self.emit_user_speaking_end_with_lid().await;
+                    self.emit_user_speaking_end_with_lid(true).await;
                 }
             }
         }
@@ -2618,6 +2642,10 @@ impl VoiceAgent {
                         self.emit(SpeechEvent::stt_stream_end());
                         self.emit(SpeechEvent::user_stt_end());
                     }
+                    if emit_speaking_end {
+                        voice_debug("emit user_speaking_end (paired with STT final)");
+                        self.emit_user_speaking_end_with_lid(false).await;
+                    }
                     voice_debug(format!(
                         "emit user_speech_final: {}",
                         if text.len() > 80 {
@@ -2628,8 +2656,7 @@ impl VoiceAgent {
                     ));
                     self.emit(SpeechEvent::user_speech_final(text));
                     if emit_speaking_end {
-                        voice_debug("emit user_speaking_end (paired with STT final)");
-                        self.emit_user_speaking_end_with_lid().await;
+                        self.start_hangup_lid_enqueue_poll_if_deferred().await;
                     }
                 }
             }

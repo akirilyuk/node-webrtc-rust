@@ -881,7 +881,7 @@ async fn gate_stt_hold_skips_finalize_when_poll_already_emitted_final() {
     );
 }
 
-/// `user_speech_final` must immediately precede `user_speaking_end` so apps can enqueue TTS before hang-up LID.
+/// `user_speaking_end` must immediately precede `user_speech_final` (public STT lifecycle contract).
 #[tokio::test]
 async fn speaking_end_pairs_with_delayed_stt_final() {
     let finalize_calls = Arc::new(Mutex::new(0_usize));
@@ -956,9 +956,9 @@ async fn speaking_end_pairs_with_delayed_stt_final() {
     assert!(end_idx.is_some(), "expected user_speaking_end");
     assert!(final_idx.is_some(), "expected user_speech_final");
     assert_eq!(
+        end_idx.map(|i| i + 1),
         final_idx,
-        end_idx.map(|i| i.saturating_sub(1)),
-        "user_speech_final must immediately precede user_speaking_end, got order: {events:?}"
+        "user_speaking_end must immediately precede user_speech_final, got order: {events:?}"
     );
 }
 

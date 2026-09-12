@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **speech** — Default spoken language ID identifies at `user_speaking_end` when buffered speech reaches `minSpeechMs`, not mid-utterance at that threshold. Hang-up LID polls for TTS enqueue/active for 400ms after `user_speech_final` (10ms steps) before starting Whisper; defers until drain when echo `sendTextToTTS` queues. `user_speech_final` precedes `user_speaking_end` on the STT final path. Continuous mode (`languageId.continuous: true`) still identifies mid-utterance when TTS is idle.
+- **speech** — Default spoken language ID identifies at `user_speaking_end` when buffered speech reaches `minSpeechMs`, not mid-utterance at that threshold. Hang-up LID polls for TTS enqueue/active for 400ms after `user_speech_final` (10ms steps) before starting Whisper; defers until drain when echo `sendTextToTTS` queues. Continuous mode (`languageId.continuous: true`) still identifies mid-utterance when TTS is idle.
 
 ## [0.9.6] - 2026-09-11
 

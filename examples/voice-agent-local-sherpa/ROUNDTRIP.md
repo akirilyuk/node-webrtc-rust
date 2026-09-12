@@ -187,6 +187,7 @@ Unit tests (no models): `npx vitest run examples/voice-agent-local-sherpa/src/ro
 | Env | Default | Purpose |
 | --- | --- | --- |
 | `SESSIONS` | `5` | Concurrent speaker↔echo pairs (1–10) |
+| `SHERPA_MULTI_PCM_CAPTURE` | `1` (on) | Per-hop PCM table: echo outbound, speaker `readSample`, STT-fed timing (`0` to disable) |
 | `SHERPA_ROUNDTRIP_WALL_MS` | `180000` | Process wall clock (5 sessions @ 2-thread pools) |
 | `SHERPA_COUNTING_PHRASE` | one … ten | Speaker source phrase |
 | `SHERPA_COUNTING_TIMEOUT_MS` | `90000` | Per-session STT wait |

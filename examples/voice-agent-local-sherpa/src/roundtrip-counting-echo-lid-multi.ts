@@ -8,6 +8,7 @@
  *
  * Env:
  *   SESSIONS                         concurrent pairs (default 5)
+ *   SHERPA_MULTI_PCM_CAPTURE         per-hop PCM table (default on; set 0 to disable)
  *   SHERPA_ROUNDTRIP_WALL_MS         process wall clock (default 180000)
  *   SHERPA_COUNTING_*                same as counting echo LID sibling scripts
  */
@@ -52,6 +53,18 @@ import {
   assertFullCountingEcho,
   evaluateEchoLidEventOrdering,
 } from './roundtrip-counting-echo-lid-multi-assert.js'
+import {
+  DEFAULT_VAD_ENERGY_THRESHOLD,
+  MultiSessionPcmCapture,
+  formatPcmFailureVerdicts,
+  formatPcmHopTable,
+  isMultiPcmCaptureEnabled,
+  localizePcmFailure,
+  wrapInboundTrackForPcmCapture,
+  wrapOutboundTrackForPcmCapture,
+  type PcmFailureVerdict,
+  type PcmHopMetrics,
+} from './roundtrip-counting-echo-lid-multi-pcm-capture.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { resolveLidModelPath } from './roundtrip-language-id.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
@@ -91,7 +104,10 @@ class EchoSpeechEventRecorder {
   private t0 = Date.now()
   readonly endLatch = new AgentSpeakingEndLatch()
 
-  constructor(private readonly label: string) {}
+  constructor(
+    private readonly label: string,
+    private readonly onEvent?: (event: SpeechEvent) => void,
+  ) {}
 
   reset(): void {
     this.events = []
@@ -101,6 +117,7 @@ class EchoSpeechEventRecorder {
   observe(event: SpeechEvent): void {
     logRoundtripSpeechEvent(this.label, event)
     this.endLatch.observe(event)
+    this.onEvent?.(event)
     this.events.push({
       type: event.type,
       atMs: Date.now() - this.t0,
@@ -131,10 +148,8 @@ interface SessionRuntime {
   collector: ListenerUtteranceCollector
   speakerEndLatch: AgentSpeakingEndLatch
   echoRecorder: EchoSpeechEventRecorder
+  pcmCapture: MultiSessionPcmCapture | null
   host: VoiceAgentSessionHost
-  serverSignaling: SignalingClient
-  clientSignaling: SignalingClient
-  clientPc: RTCPeerConnection
   cleanup: () => Promise<void>
 }
 
@@ -161,15 +176,35 @@ async function setupSession(params: {
   sessionBudget: VoiceSessionBudget
   verbose: boolean
   connectTimeoutMs: number
+  pcmCaptureEnabled: boolean
+  vadThreshold: number
 }): Promise<SessionRuntime> {
   const sessionId = `s${params.sessionIndex + 1}`
   const peerId = `client-${sessionId}`
-  const echoRecorder = new EchoSpeechEventRecorder(`echo-${sessionId}`)
   const room = `lid-echo-multi-${sessionId}`
+  const pcmCapture = params.pcmCaptureEnabled
+    ? new MultiSessionPcmCapture(params.vadThreshold)
+    : null
+  let replyCapturePending = false
 
   let peerConnectedResolve!: () => void
   const peerConnected = new Promise<void>((resolve) => {
     peerConnectedResolve = resolve
+  })
+
+  const echoRecorder = new EchoSpeechEventRecorder(`echo-${sessionId}`, (event) => {
+    if (!pcmCapture) return
+    if (event.type === SPEECH_EVENT_TYPE.userSpeechFinal) {
+      replyCapturePending = true
+    }
+    if (replyCapturePending && event.type === SPEECH_EVENT_TYPE.agentSpeakingStart) {
+      replyCapturePending = false
+      pcmCapture.startEchoOutboundCapture()
+      pcmCapture.startRxCapture()
+    }
+    if (event.type === SPEECH_EVENT_TYPE.agentSpeakingEnd) {
+      pcmCapture.stopEchoOutboundCapture()
+    }
   })
 
   const voiceHandler: VoiceSessionHandler = {
@@ -201,6 +236,11 @@ async function setupSession(params: {
     voiceConfig: params.echoConfig,
     voiceHandler,
     sessionBudget: params.sessionBudget,
+    wrapAudioTracks: pcmCapture
+      ? ({ outbound }) => ({
+          outbound: wrapOutboundTrackForPcmCapture(outbound, pcmCapture),
+        })
+      : undefined,
   })
 
   const clientPc = new RTCPeerConnection({ iceServers: DEMO_ICE_SERVERS })
@@ -231,7 +271,11 @@ async function setupSession(params: {
   await waitForConnection(clientPc, params.connectTimeoutMs)
   await speakerMic.writeSample(createKickFrame(), PCM_KICK_DURATION_MS)
 
-  const agentAudio = await agentAudioPromise
+  let agentAudio = await agentAudioPromise
+  if (pcmCapture) {
+    agentAudio = wrapInboundTrackForPcmCapture(agentAudio, pcmCapture)
+  }
+
   await Promise.race([
     peerConnected,
     sleepMs(params.connectTimeoutMs).then(() => {
@@ -265,10 +309,8 @@ async function setupSession(params: {
     collector,
     speakerEndLatch,
     echoRecorder,
+    pcmCapture,
     host,
-    serverSignaling,
-    clientSignaling,
-    clientPc,
     cleanup: async () => {
       await speaker.stop().catch(() => undefined)
       await host.close().catch(() => undefined)
@@ -285,6 +327,8 @@ export interface SessionRoundResult {
   language: string | null
   orderingOk: boolean
   failures: string[]
+  pcmMetrics: PcmHopMetrics | null
+  pcmVerdict: PcmFailureVerdict | null
 }
 
 async function runSessionRound(params: {
@@ -298,6 +342,8 @@ async function runSessionRound(params: {
   const failures: string[] = []
 
   session.echoRecorder.reset()
+  session.pcmCapture?.resetRound()
+  session.collector.startEventRecording()
 
   const echoEndBaseline = session.echoRecorder.endLatch.endEventsSeen()
 
@@ -329,6 +375,14 @@ async function runSessionRound(params: {
   )
   await playbackAndEchoDone
 
+  session.pcmCapture?.stopRxCapture()
+  session.pcmCapture?.stopEchoOutboundCapture()
+
+  const speakerEvents = session.collector.stopEventRecording()
+  for (const event of speakerEvents) {
+    session.pcmCapture?.observeSpeakerSpeechEvent(event.type, event.atMs)
+  }
+
   const best = session.collector.stats.finals.reduce(
     (a, b) => (a.trim().length >= b.trim().length ? a : b),
     recognized,
@@ -346,12 +400,18 @@ async function runSessionRound(params: {
     failures.push(...ordering.failures)
   }
 
+  const pcmMetrics = session.pcmCapture?.metrics(inboundTranscript) ?? null
+  const pcmVerdict =
+    pcmMetrics != null && failures.length > 0 ? localizePcmFailure(pcmMetrics) : null
+
   return {
     sessionId: session.sessionId,
     recognized: inboundTranscript,
     language: session.echoRecorder.detectedLanguage(),
     orderingOk: ordering.passed,
     failures,
+    pcmMetrics,
+    pcmVerdict,
   }
 }
 
@@ -364,6 +424,27 @@ function printSummaryTable(results: SessionRoundResult[]): void {
     console.log(
       `${row.sessionId.padEnd(7)} | ${row.orderingOk ? 'OK' : 'FAIL'.padEnd(7)} | ${(row.language ?? '—').padEnd(8)} | ${preview}`,
     )
+  }
+}
+
+function printPcmTables(results: SessionRoundResult[]): void {
+  const pcmRows = results
+    .filter((row) => row.pcmMetrics != null)
+    .map((row) => ({ sessionId: row.sessionId, metrics: row.pcmMetrics! }))
+  if (pcmRows.length === 0) return
+  console.log('')
+  console.log(formatPcmHopTable(pcmRows))
+
+  const failingPcm = results
+    .filter((row) => row.failures.length > 0 && row.pcmMetrics != null && row.pcmVerdict != null)
+    .map((row) => ({
+      sessionId: row.sessionId,
+      metrics: row.pcmMetrics!,
+      verdict: row.pcmVerdict!,
+    }))
+  if (failingPcm.length > 0) {
+    console.log('')
+    console.log(formatPcmFailureVerdicts(failingPcm))
   }
 }
 
@@ -386,15 +467,18 @@ async function main(): Promise<void> {
   const connectTimeoutMs = Math.min(timeoutMs, 45_000)
   const echoConfig = echoHostConfig(base, lidModelPath)
   const sessionBudget = new VoiceSessionBudget(0)
+  const pcmCaptureEnabled = isMultiPcmCaptureEnabled()
+  const vadThreshold = base.vad?.threshold ?? DEFAULT_VAD_ENERGY_THRESHOLD
 
   console.log('=== Sherpa 5-session concurrent echo + LID (VoiceAgentSessionHost) ===')
   console.log(`Pipeline: ${label}`)
-  console.log(`Sessions: ${sessionCount} concurrent`)
+  console.log(`Sessions: ${sessionCount} concurrent (Promise.all connect + rounds)`)
+  console.log(`SHERPA_MULTI_PCM_CAPTURE=${pcmCaptureEnabled ? '1' : '0'}`)
   console.log(
     `Pool env: SHERPA_POOL_MAX_CONCURRENT_DECODE=${process.env.SHERPA_POOL_MAX_CONCURRENT_DECODE ?? '(default)'} SHERPA_STT_NUM_THREADS=${process.env.SHERPA_STT_NUM_THREADS ?? '(default)'} SHERPA_POOL_MAX_CONCURRENT_TTS=${process.env.SHERPA_POOL_MAX_CONCURRENT_TTS ?? '(default)'} SHERPA_TTS_NUM_THREADS=${process.env.SHERPA_TTS_NUM_THREADS ?? '(default)'}`,
   )
   console.log(
-    `VAD: gateStt=${base.vad?.gateStt !== false}  minSilence=${base.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs}ms`,
+    `VAD: gateStt=${base.vad?.gateStt !== false}  minSilence=${base.vad?.minSilenceDurationMs ?? VOICE_AGENT_VAD_PRESET.minSilenceDurationMs}ms  threshold=${vadThreshold}`,
   )
   console.log(`STT: ${sttModelPath}`)
   console.log(`TTS: ${ttsModelPath}`)
@@ -407,10 +491,9 @@ async function main(): Promise<void> {
   await signalingServer.listen(0)
   const wsUrl = `ws://127.0.0.1:${signalingServer.port}`
 
-  const sessions: SessionRuntime[] = []
-  for (let index = 0; index < sessionCount; index++) {
-    sessions.push(
-      await setupSession({
+  const sessions = await Promise.all(
+    Array.from({ length: sessionCount }, (_, index) =>
+      setupSession({
         sessionIndex: index,
         wsUrl,
         echoConfig,
@@ -418,9 +501,11 @@ async function main(): Promise<void> {
         sessionBudget,
         verbose,
         connectTimeoutMs,
+        pcmCaptureEnabled,
+        vadThreshold,
       }),
-    )
-  }
+    ),
+  )
 
   let results: SessionRoundResult[]
   try {
@@ -441,6 +526,7 @@ async function main(): Promise<void> {
   }
 
   printSummaryTable(results)
+  printPcmTables(results)
 
   const allFailures = results.flatMap((result) => result.failures)
   if (allFailures.length > 0) {

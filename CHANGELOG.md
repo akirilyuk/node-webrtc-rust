@@ -10,6 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **speech** — STT pre-roll uses continuous lookback while the gate is closed: sub-threshold speech onset and preceding silence are retained in the ring and flushed at VAD `SpeechStart`, so the first word is no longer clipped when onset is quieter than the VAD threshold.
 - **speech** — Default spoken language ID starts at VAD `SpeechEnd` in the STT close window (when TTS is idle and buffered speech reaches `minSpeechMs`). `user_language` precedes `user_speaking_end` and `user_speech_final` when `languageId.ttsExclusion` is enabled (default for `tts.provider: localSherpa`; remote/streaming TTS is never delayed). The final awaits in-flight LID only with exclusion on (fault-path `lidGateMaxWaitMs` only). TTS synthesis waits for any in-flight LID before starting a job when exclusion is on. When TTS is active at `SpeechEnd` with exclusion on, LID defers to playback drain. Clip fed to Whisper is capped at `lidMaxClipMs` (default 5000). Continuous mode (`languageId.continuous: true`) still identifies mid-utterance when TTS is idle.
 
 ## [0.9.6] - 2026-09-11

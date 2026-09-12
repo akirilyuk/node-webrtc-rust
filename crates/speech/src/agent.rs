@@ -1642,10 +1642,7 @@ impl VoiceAgent {
                 inner.stt_final_emitted_this_utterance = true;
                 inner.stt_finalize_pending = false;
                 inner.stt_endpoint_closing_started = false;
-                (
-                    emit_end,
-                    last_partial.unwrap_or_default(),
-                )
+                (emit_end, last_partial.unwrap_or_default())
             };
             if emit_speaking_end {
                 voice_debug("emit user_speaking_end (forced utterance close)");
@@ -1772,7 +1769,8 @@ impl VoiceAgent {
     /// the identify task before this when successful.
     async fn emit_user_speaking_end_after_lid_gate(&self) {
         // Buffer may still be growing during STT gate hold / endpoint tail after VAD SpeechEnd.
-        self.try_spawn_default_mode_lid(false, "utterance close").await;
+        self.try_spawn_default_mode_lid(false, "utterance close")
+            .await;
         self.await_lid_gate_before_utterance_close().await;
         self.emit(SpeechEvent::user_speaking_end());
         let mut inner = self.inner.lock().await;
@@ -1806,15 +1804,14 @@ impl VoiceAgent {
         }
         let started = self.spawn_identify_language(force).await;
         if started {
-            voice_debug(format!("LID at {context} starting identify in STT close window"));
+            voice_debug(format!(
+                "LID at {context} starting identify in STT close window"
+            ));
         }
         started
     }
 
-    async fn wait_lid_identify_complete(
-        inner: &Arc<Mutex<AgentInner>>,
-        notify: &Arc<Notify>,
-    ) {
+    async fn wait_lid_identify_complete(inner: &Arc<Mutex<AgentInner>>, notify: &Arc<Notify>) {
         loop {
             let notified = notify.notified();
             tokio::pin!(notified);
@@ -1849,12 +1846,9 @@ impl VoiceAgent {
         let inner = Arc::clone(&self.inner);
         let bound_hits = Arc::clone(&self.lid_gate_bound_hits);
         let wait = Self::wait_lid_identify_complete(&inner, &notify);
-        if tokio::time::timeout(
-            std::time::Duration::from_millis(gate_ms as u64),
-            wait,
-        )
-        .await
-        .is_err()
+        if tokio::time::timeout(std::time::Duration::from_millis(gate_ms as u64), wait)
+            .await
+            .is_err()
         {
             bound_hits.fetch_add(1, Ordering::SeqCst);
             voice_debug(format!(
@@ -1968,8 +1962,9 @@ impl VoiceAgent {
                 inner.lid_buffering = false;
             }
             let sample_rate = crate::pcm::STT_PCM_SAMPLE_RATE;
-            let max_clip_ms =
-                crate::config::resolved_lid_max_clip_ms(inner.config.language_id.as_ref().expect("enabled"));
+            let max_clip_ms = crate::config::resolved_lid_max_clip_ms(
+                inner.config.language_id.as_ref().expect("enabled"),
+            );
             let max_bytes = (sample_rate as u64)
                 .saturating_mul(max_clip_ms as u64)
                 .saturating_mul(2)
@@ -2130,7 +2125,6 @@ impl VoiceAgent {
             vad_speaking,
         ) = {
             let mut inner = self.inner.lock().await;
-            let was_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
             let gate_stt = inner.config.vad.gate_stt;
 
             let (transitions, frame_active) = match inner.vad.as_mut() {
@@ -2145,21 +2139,6 @@ impl VoiceAgent {
                 .unwrap_or(false);
             let vad_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
 
-            if gate_stt && Self::stt_pipeline_active(&inner) {
-                let barge_listen = inner.agent_speaking && !inner.stt_stream_open;
-                if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
-                    // During agent TTS the STT gate is closed until VAD SpeechStart. User speech
-                    // often begins before VAD confirms (agent bleed / echo). Keep a continuous
-                    // lookback ring so the flush at SpeechStart includes the first syllable.
-                    if barge_listen {
-                        pre_roll.push(&mono_bytes);
-                    } else if !was_speaking && (frame_active || vad_pending) {
-                        // Voice-only — silence must not fill the ring (see stt_pre_roll tests).
-                        pre_roll.push(&mono_bytes);
-                    }
-                }
-            }
-
             let speech_start = transitions.contains(&VadTransition::SpeechStart);
             let mut complete_previous_utterance = false;
 
@@ -2167,7 +2146,8 @@ impl VoiceAgent {
                 // Gate hold (and deferred speaking_end) still runs for VAD-only agents
                 // (`stt: None`). Runtime `set_stt_enabled(false)` is the suppress path.
                 if gate_stt && inner.stt_enabled {
-                    inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+                    // Pre-roll ring is not cleared here: it only holds frames not sent to STT;
+                    // capacity cap drops stale audio after SpeechEnd/hold without a separate clear.
                     let hold_ms = inner.config.vad.stt_gate_hold_ms;
                     inner.stt_gate_hold_ms = hold_ms;
                     let ctx = inner.otel.session_context.clone();
@@ -2314,7 +2294,6 @@ impl VoiceAgent {
             (Self::stt_pipeline_active(&inner), inner.stt_enabled)
         };
 
-        let mut pre_roll_flushed_this_frame = false;
         if speech_start && stt_active {
             let long_pause_new_phrase = {
                 let inner = self.inner.lock().await;
@@ -2366,7 +2345,6 @@ impl VoiceAgent {
             if let Some(buffered) = pre_roll_after_start {
                 if !buffered.is_empty() {
                     self.push_stt_audio_bytes(buffered).await?;
-                    pre_roll_flushed_this_frame = true;
                 }
             }
         }
@@ -2467,23 +2445,10 @@ impl VoiceAgent {
             (stt_audio_open, stt_poll_open, should_finalize_utterance)
         };
 
-        // When gate is closed: skip STT push/poll. During agent TTS we still run VAD every frame
-        // (listening on the inbound track); only defer STT until VAD sees user voice.
+        // When gate is closed: skip STT poll. Continuous pre-roll still buffers every frame
+        // not pushed directly to STT (silence, soft onset, agent-TTS listen).
         let gate_closed_skip_stt = gate_stt && !stt_poll_open && !should_finalize_utterance;
-        if gate_closed_skip_stt {
-            if call == 1 || call % 50 == 0 {
-                let agent_speaking = self.inner.lock().await.agent_speaking;
-                if !agent_speaking {
-                    voice_debug(format!(
-                        "process_inbound_pcm call={call} skipped: gate_stt closed (not speaking, hold expired)"
-                    ));
-                }
-            }
-            let agent_speaking = self.inner.lock().await.agent_speaking;
-            if !agent_speaking {
-                return Ok(());
-            }
-        }
+        let push_to_stt_directly = !gate_stt || stt_audio_open;
 
         if call == 1 || call % 50 == 0 {
             voice_debug(format!(
@@ -2492,11 +2457,24 @@ impl VoiceAgent {
             ));
         }
 
-        if (!gate_stt || stt_audio_open) && !pre_roll_flushed_this_frame {
+        if push_to_stt_directly {
             self.push_stt_audio_bytes(mono_bytes).await?;
+        } else if gate_stt && stt_active {
+            let mut inner = self.inner.lock().await;
+            if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
+                pre_roll.push(&mono_bytes);
+            }
         }
+
         if !gate_stt || stt_poll_open {
             self.poll_stt_transcripts().await?;
+        } else if gate_closed_skip_stt {
+            if call == 1 || call % 50 == 0 {
+                voice_debug(format!(
+                    "process_inbound_pcm call={call} skipped: gate_stt closed (STT poll deferred; pre-roll buffered)"
+                ));
+            }
+            return Ok(());
         }
 
         if speech_end_transition {

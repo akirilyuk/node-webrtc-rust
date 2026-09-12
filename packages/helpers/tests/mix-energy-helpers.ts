@@ -132,6 +132,95 @@ export type StereoEnergyReader = {
 }
 
 /**
+ * Run-length stereo frame classifier for pan-probe failure dumps: `q` quiet, `L` left-only,
+ * `R` right-only, `D` dual (both channels), `n` null/short sample. One lane per label
+ * (e.g. `tx` sender writes vs `rx` listener reads) so ordering across the WebRTC hop is visible.
+ */
+export class StereoTimeline {
+  private readonly startedAt = Date.now()
+  private readonly lanes = new Map<string, Array<{ cls: string; count: number; atMs: number }>>()
+
+  note(lane: string, sample: Uint8Array | null | undefined, quietThreshold = 200): void {
+    let cls = 'n'
+    if (sample && sample.byteLength >= 4) {
+      const { left, right } = stereoRms(sample)
+      const l = left > quietThreshold
+      const r = right > quietThreshold
+      cls = l && r ? 'D' : l ? 'L' : r ? 'R' : 'q'
+    }
+    const runs = this.lanes.get(lane) ?? []
+    const last = runs[runs.length - 1]
+    if (last && last.cls === cls) {
+      last.count += 1
+    } else {
+      runs.push({ cls, count: 1, atMs: Date.now() - this.startedAt })
+    }
+    this.lanes.set(lane, runs)
+  }
+
+  mark(lane: string, label: string): void {
+    const runs = this.lanes.get(lane) ?? []
+    runs.push({ cls: `|${label}|`, count: 1, atMs: Date.now() - this.startedAt })
+    this.lanes.set(lane, runs)
+  }
+
+  dump(): string {
+    const lines: string[] = []
+    for (const [lane, runs] of this.lanes) {
+      lines.push(
+        `${lane}: ${runs.map((r) => `${r.atMs}ms:${r.cls}${r.count > 1 ? `×${r.count}` : ''}`).join(' ')}`,
+      )
+    }
+    return lines.join('\n')
+  }
+}
+
+/** Wraps a reader so every read is classified into `timeline` lane `lane`. */
+export function traceStereoReads(
+  track: StereoEnergyReader,
+  timeline: StereoTimeline,
+  lane: string,
+): StereoEnergyReader {
+  return {
+    async readSample() {
+      const sample = await track.readSample()
+      timeline.note(lane, sample)
+      return sample
+    },
+  }
+}
+
+type MixerOutboundTestAccess = ClientAudioMixer & {
+  peers: Map<
+    string,
+    { pcOutbound?: { writeSample(pcm: Buffer, durationMs: number): Promise<void> } }
+  >
+}
+
+/**
+ * Wraps the mixer's PC outbound track for `peerId` so every pump/burst write is classified
+ * into `timeline` lane `lane`. Takes effect on the next pump resume (pose flip / mute flush).
+ */
+export function traceMixerOutboundWrites(
+  mixer: ClientAudioMixer,
+  peerId: string,
+  timeline: StereoTimeline,
+  lane: string,
+): void {
+  const state = (mixer as MixerOutboundTestAccess).peers.get(peerId)
+  const out = state?.pcOutbound
+  if (!state || !out) {
+    throw new Error(`ClientAudioMixer peer ${peerId} has no PC outbound to trace`)
+  }
+  state.pcOutbound = {
+    async writeSample(pcm: Buffer, durationMs: number) {
+      timeline.note(lane, pcm)
+      await out.writeSample(pcm, durationMs)
+    },
+  }
+}
+
+/**
  * Poll inbound stereo PCM until max(L,R) RMS exceeds threshold (TTS/STT lag safe).
  */
 export async function waitForInboundStereoEnergy(

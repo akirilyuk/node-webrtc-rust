@@ -25,6 +25,9 @@ import {
   assertRightLouder,
   pumpLoudMicFrames,
   pumpLoudTtsSidecarFrames,
+  StereoTimeline,
+  traceMixerOutboundWrites,
+  traceStereoReads,
   waitForInboundStereoEnergy,
   waitForInboundStereoQuiet,
 } from './mix-energy-helpers.js'
@@ -312,19 +315,40 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         mixer!.createTtsSidecar(listenerPeerId)
         detachAgentTtsTee(listenerHost, listenerPeerId)
 
+        // Sender (tx) vs listener (rx) stereo timelines — dumped only when a pan probe fails.
+        const panTimeline = new StereoTimeline()
+        traceMixerOutboundWrites(mixer!, listenerPeerId, panTimeline, 'tx')
+        const tracedRx = traceStereoReads(
+          listener.agentAudio,
+          panTimeline,
+          'rx',
+        ) as unknown as RemoteAudioTrack
+        const assertPan = (check: () => void, label: string): void => {
+          try {
+            check()
+          } catch (error) {
+            console.error(`[mix-smoke] ${label} failed — stereo timeline:\n${panTimeline.dump()}`)
+            throw error
+          }
+        }
+
         // Probe E — dual-mono TTS panned right (+x); mirrors e2e set_tts_pose → speak → energy → RMS
+        panTimeline.mark('tx', 'poseE')
         await listenerHost.setTtsPose(listenerPeerId, poseAtX(3))
         const probeE = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, TTS_SPEAK_STANDIN_MS)
-        await waitForInboundStereoEnergy(listener.agentAudio, {
+        await waitForInboundStereoEnergy(tracedRx, {
           threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,
           label: 'TTS pan probe E',
         })
-        const energyE = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+        panTimeline.mark('rx', 'accumE')
+        const energyE = await accumulateInboundStereoRms(tracedRx, ENERGY_PROBE_MS)
         await probeE
-        assertRightLouder(energyE.left, energyE.right)
+        panTimeline.mark('tx', 'probeE-done')
+        assertPan(() => assertRightLouder(energyE.left, energyE.right), 'probe E right-louder')
 
-        await waitForInboundStereoQuiet(listener.agentAudio, {
+        panTimeline.mark('rx', 'quietE')
+        await waitForInboundStereoQuiet(tracedRx, {
           threshold: TTS_ENERGY_THRESHOLD,
           quietWindowMs: TTS_QUIET_WINDOW_MS,
           timeoutMs: TTS_QUIET_WAIT_MS,
@@ -332,16 +356,19 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         })
 
         // Probe F — dual-mono TTS panned left (-x); same e2e shape as E (no directional wait)
+        panTimeline.mark('tx', 'poseF')
         await listenerHost.setTtsPose(listenerPeerId, poseAtX(-3))
         const probeF = pumpLoudTtsSidecarFrames(mixer!, listenerPeerId, TTS_SPEAK_STANDIN_MS)
-        await waitForInboundStereoEnergy(listener.agentAudio, {
+        await waitForInboundStereoEnergy(tracedRx, {
           threshold: TTS_ENERGY_THRESHOLD,
           timeoutMs: TTS_ENERGY_WAIT_MS,
           label: 'TTS pan probe F',
         })
-        const energyF = await accumulateInboundStereoRms(listener.agentAudio, ENERGY_PROBE_MS)
+        panTimeline.mark('rx', 'accumF')
+        const energyF = await accumulateInboundStereoRms(tracedRx, ENERGY_PROBE_MS)
         await probeF
-        assertLeftLouder(energyF.left, energyF.right)
+        panTimeline.mark('tx', 'probeF-done')
+        assertPan(() => assertLeftLouder(energyF.left, energyF.right), 'probe F left-louder')
 
         await listenerHost.clearTtsPose(listenerPeerId)
 

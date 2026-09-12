@@ -2739,6 +2739,7 @@ impl VoiceAgent {
         };
 
         let drain_generation = tts_buffer.current_generation().await;
+        let mut pace = TtsDrainPaceState::new();
         // Resume mid-utterance drain passes without re-emitting agent_speaking_start.
         let mut agent_start_emitted = {
             let guard = inner.lock().await;
@@ -2777,6 +2778,7 @@ impl VoiceAgent {
                 drain_generation,
                 &mut agent_start_emitted,
                 &mut played_any,
+                &mut pace,
                 frames,
             )
             .await?
@@ -2801,6 +2803,7 @@ impl VoiceAgent {
                 drain_generation,
                 &mut agent_start_emitted,
                 &mut played_any,
+                &mut pace,
                 vec![(frame, duration_ms)],
             )
             .await?
@@ -2831,6 +2834,7 @@ impl VoiceAgent {
                     inner,
                     drain_generation,
                     silence_ms,
+                    &mut pace,
                 )
                 .await?;
             }
@@ -2847,6 +2851,7 @@ impl VoiceAgent {
         drain_generation: u64,
         agent_start_emitted: &mut bool,
         played_any: &mut bool,
+        pace: &mut TtsDrainPaceState,
         frames: Vec<(Bytes, u32)>,
     ) -> SpeechResult<TtsDrainWrite> {
         for (frame, duration_ms) in frames {
@@ -2884,6 +2889,7 @@ impl VoiceAgent {
                 inner,
                 drain_generation,
                 duration_ms,
+                pace,
             )
             .await
             {
@@ -2908,6 +2914,7 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         drain_generation: u64,
         silence_ms: u32,
+        pace: &mut TtsDrainPaceState,
     ) -> SpeechResult<()> {
         let frame_count = silence_ms.div_ceil(20);
         let silent = Bytes::from(vec![0_u8; STEREO_FRAME_20MS_BYTES]);
@@ -2924,8 +2931,14 @@ impl VoiceAgent {
                 return Ok(());
             }
             writer(silent.clone(), 20)?;
-            if !Self::pace_tts_drain_frame_while_running(tts_buffer, inner, drain_generation, 20)
-                .await
+            if !Self::pace_tts_drain_frame_while_running(
+                tts_buffer,
+                inner,
+                drain_generation,
+                20,
+                pace,
+            )
+            .await
             {
                 voice_debug("post-TTS silence stopped during pacing (barge-in flush / stop)");
                 return Ok(());
@@ -2954,19 +2967,59 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         drain_generation: u64,
         duration_ms: u32,
+        pace: &mut TtsDrainPaceState,
     ) -> bool {
         let mut remaining = duration_ms;
         while remaining > 0 {
             if !inner.lock().await.running {
                 return false;
             }
-            let slice = remaining.min(20);
-            tokio::time::sleep(std::time::Duration::from_millis(slice as u64)).await;
             if tts_buffer.current_generation().await != drain_generation {
                 return false;
             }
-            remaining = remaining.saturating_sub(slice);
+            let slice_ms = remaining.min(20);
+            if !pace.sleep_until_next_slice(slice_ms).await {
+                return false;
+            }
+            if tts_buffer.current_generation().await != drain_generation {
+                return false;
+            }
+            remaining = remaining.saturating_sub(slice_ms);
         }
+        true
+    }
+}
+
+/// Drift-free TTS drain clock: `deadline = anchor + total_paced_ms` after each 20 ms slice.
+struct TtsDrainPaceState {
+    anchor: Option<tokio::time::Instant>,
+    total_paced_ms: u64,
+}
+
+impl TtsDrainPaceState {
+    fn new() -> Self {
+        Self {
+            anchor: None,
+            total_paced_ms: 0,
+        }
+    }
+
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.anchor
+            .map(|anchor| anchor + std::time::Duration::from_millis(self.total_paced_ms))
+    }
+
+    async fn sleep_until_next_slice(&mut self, slice_ms: u32) -> bool {
+        if self.anchor.is_none() {
+            let now = tokio::time::Instant::now();
+            self.anchor = Some(
+                now.checked_sub(std::time::Duration::from_millis(self.total_paced_ms))
+                    .unwrap_or(now),
+            );
+        }
+        self.total_paced_ms += u64::from(slice_ms);
+        let deadline = self.deadline().expect("anchor set");
+        tokio::time::sleep_until(deadline).await;
         true
     }
 }
@@ -3071,6 +3124,20 @@ mod tests {
         // 1000 bytes from the first partial remain after taking one full frame from the join.
         // carry was 1000+3840; drained 3840 → 1000 left.
         assert_eq!(carry.len(), 1000);
+    }
+
+    #[test]
+    fn tts_drain_pace_state_deadline_invariant_after_100_slices() {
+        let mut pace = TtsDrainPaceState::new();
+        pace.anchor = Some(tokio::time::Instant::now());
+        pace.total_paced_ms = 100 * 20;
+        let anchor = pace.anchor.expect("pace anchor");
+        let deadline = pace.deadline().expect("pace deadline");
+        assert_eq!(
+            deadline - anchor,
+            std::time::Duration::from_millis(2000),
+            "deadline invariant: anchor + n×20 ms per paced slice"
+        );
     }
 
     #[tokio::test]

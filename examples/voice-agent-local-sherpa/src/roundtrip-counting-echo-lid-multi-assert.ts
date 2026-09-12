@@ -126,9 +126,8 @@ export function evaluateEchoLidEventOrdering(params: {
   return { passed: failures.length === 0, failures }
 }
 
-/** Under 10-session load, catch-up can reach ~1.3; pre-fix double-write regression is ~1.87–2.0. */
-const DEFAULT_ECHO_OUT_MS_MAX_RATIO = 1.2
-const ECHO_OUT_MS_MAX_RATIO_UNDER_LOAD = 1.4
+/** Pre-fix double-write regression is ~1.87–2.0; wall-clock pump must stay near 1.0. */
+const ECHO_OUT_MS_MAX_RATIO = 1.08
 
 /** Echo reply outbound PCM must not exceed agent speaking wall time (mix pump double-write guard). */
 export function computeEchoOutMsRatio(params: {
@@ -154,8 +153,7 @@ export function assertEchoOutboundPcmWithinSpeakingWindow(params: {
   maxRatio?: number
 }): { ok: boolean; outMsRatio: number | null; failures: string[] } {
   const prefix = params.sessionId ? `${params.sessionId} echo outbound: ` : ''
-  const maxRatio = params.maxRatio ?? ECHO_OUT_MS_MAX_RATIO_UNDER_LOAD
-  const displayMax = DEFAULT_ECHO_OUT_MS_MAX_RATIO
+  const maxRatio = params.maxRatio ?? ECHO_OUT_MS_MAX_RATIO
   const outMsRatio = computeEchoOutMsRatio(params)
   if (outMsRatio == null) {
     return { ok: true, outMsRatio: null, failures: [] }
@@ -168,7 +166,7 @@ export function assertEchoOutboundPcmWithinSpeakingWindow(params: {
       ok: false,
       outMsRatio,
       failures: [
-        `${prefix}mix pump wrote more PCM than real time — double write? outMs=${params.outMs} wallMs=${wallMs} ratio=${outMsRatio.toFixed(2)} (max ${displayMax})`,
+        `${prefix}mix pump wrote more PCM than real time — double write? outMs=${params.outMs} wallMs=${wallMs} ratio=${outMsRatio.toFixed(2)} (max ${maxRatio})`,
       ],
     }
   }

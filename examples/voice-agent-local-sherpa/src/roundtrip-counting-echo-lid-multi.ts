@@ -11,6 +11,7 @@
  *   SHERPA_MULTI_SINGLE_PROCESS=1    single-process comparison mode (shared pool)
  *   SHERPA_MULTI_PCM_CAPTURE         per-hop PCM table (default on; set 0 to disable)
  *   SHERPA_MULTI_WAV_DIR             WAV dumps on failure (default .test-logs/multi-wav/<stamp>/)
+ *   SHERPA_MULTI_WAV_ALL=1           also dump WAVs for passing sessions
  *   SHERPA_ROUNDTRIP_WALL_MS         process wall clock (default 240000)
  *   SHERPA_COUNTING_*                same as counting echo LID sibling scripts
  */
@@ -56,6 +57,7 @@ import {
   formatEchoSmokeReply,
 } from './roundtrip-counting-echo-lid-prefix.js'
 import {
+  assertEchoOutboundPcmWithinSpeakingWindow,
   assertFullCountingEcho,
   evaluateEchoLidEventOrdering,
 } from './roundtrip-counting-echo-lid-multi-assert.js'
@@ -225,6 +227,16 @@ class EchoSpeechEventRecorder {
       }
     }
     return null
+  }
+
+  agentSpeakingEndAt(): number | null {
+    let last: number | null = null
+    for (const event of this.events) {
+      if (event.type === SPEECH_EVENT_TYPE.agentSpeakingEnd) {
+        last = event.atMs
+      }
+    }
+    return last
   }
 }
 
@@ -609,6 +621,8 @@ async function runFullSessionRound(params: {
   }
 
   const speakerMetrics = session.pcmCapture?.metrics(inboundTranscript) ?? null
+  const agentSpeakingStartAt = session.echoRecorder.agentSpeakingStartAt()
+  const agentSpeakingEndAt = session.echoRecorder.agentSpeakingEndAt()
   const merged =
     speakerMetrics != null
       ? mergeEchoAndSpeakerMetrics({
@@ -617,7 +631,8 @@ async function runFullSessionRound(params: {
           speaker: speakerMetrics,
           echo: {
             sessionId: session.sessionId,
-            agentSpeakingStartAt: session.echoRecorder.agentSpeakingStartAt(),
+            agentSpeakingStartAt,
+            agentSpeakingEndAt,
             outMs: speakerMetrics.outMs,
             outVoicedMs: speakerMetrics.outVoicedMs,
             out: speakerMetrics.outBurst,
@@ -625,6 +640,16 @@ async function runFullSessionRound(params: {
           },
         })
       : null
+
+  const pcmRealtime = assertEchoOutboundPcmWithinSpeakingWindow({
+    sessionId: session.sessionId,
+    outMs: merged?.outMs ?? speakerMetrics?.outMs ?? 0,
+    agentSpeakingStartAt,
+    agentSpeakingEndAt,
+  })
+  if (!pcmRealtime.ok) {
+    failures.push(...pcmRealtime.failures)
+  }
 
   const pcmVerdict =
     merged != null && failures.length > 0
@@ -719,7 +744,8 @@ async function writeFailureWavs(params: {
   wavDir: string | null
 }): Promise<void> {
   if (!params.wavDir) return
-  const failing = params.results.filter((r) => r.failures.length > 0)
+  const writeAll = process.env.SHERPA_MULTI_WAV_ALL === '1'
+  const failing = params.results.filter((r) => writeAll || r.failures.length > 0)
   if (failing.length === 0) return
 
   mkdirSync(params.wavDir, { recursive: true })
@@ -856,6 +882,18 @@ async function runSplitProcess(): Promise<SessionRoundResult[]> {
               echo,
             })
           : null
+
+      if (merged != null) {
+        const pcmRealtime = assertEchoOutboundPcmWithinSpeakingWindow({
+          sessionId,
+          outMs: merged.outMs,
+          agentSpeakingStartAt: merged.agentSpeakingStartAt,
+          agentSpeakingEndAt: merged.agentSpeakingEndAt,
+        })
+        if (!pcmRealtime.ok) {
+          failures.push(...pcmRealtime.failures)
+        }
+      }
 
       const pcmVerdict =
         merged != null && failures.length > 0

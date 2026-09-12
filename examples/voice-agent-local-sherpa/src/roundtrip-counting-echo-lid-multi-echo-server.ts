@@ -114,6 +114,16 @@ class EchoSpeechEventRecorder {
     return null
   }
 
+  agentSpeakingEndAt(): number | null {
+    let last: number | null = null
+    for (const event of this.events) {
+      if (event.type === SPEECH_EVENT_TYPE.agentSpeakingEnd) {
+        last = event.atMs
+      }
+    }
+    return last
+  }
+
   snapshot(): LifecycleSpeechEvent[] {
     return [...this.events]
   }
@@ -302,10 +312,7 @@ async function handleCommand(line: string, sessions: EchoSessionRuntime[]): Prom
     if (!session) {
       throw new Error(`unknown echo session ${command.sessionId}`)
     }
-    await session.echoRecorder.waitAfterEndCount(
-      command.baseline,
-      command.timeoutMs ?? 90_000,
-    )
+    await session.echoRecorder.waitAfterEndCount(command.baseline, command.timeoutMs ?? 90_000)
     emitEchoIpcMessage({ type: 'agent-speaking-end-done', sessionId: command.sessionId })
     return
   }
@@ -316,6 +323,7 @@ async function handleCommand(line: string, sessions: EchoSessionRuntime[]): Prom
       sessions: sessions.map((session) => ({
         sessionId: session.sessionId,
         agentSpeakingStartAt: session.echoRecorder.agentSpeakingStartAt(),
+        agentSpeakingEndAt: session.echoRecorder.agentSpeakingEndAt(),
         outMs: session.pcmCapture.outMs,
         outVoicedMs: session.pcmCapture.outVoicedMs,
         out: session.pcmCapture.outBurstMetrics(),

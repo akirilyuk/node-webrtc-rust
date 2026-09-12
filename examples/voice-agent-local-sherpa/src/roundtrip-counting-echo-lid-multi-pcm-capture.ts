@@ -11,7 +11,6 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { LocalAudioTrack, RemoteAudioTrack } from '@node-webrtc-rust/sdk'
-import { pcmFromWriteSampleTeeArgs } from '@node-webrtc-rust/helpers'
 
 import { stereoPcmDurationMs } from './pcm-relay.js'
 
@@ -340,27 +339,13 @@ function dirnameOf(filePath: string): string {
   return idx >= 0 ? filePath.slice(0, idx) : '.'
 }
 
-/** Tap echo agent TTS PCM (hop a) — mirrors SessionRecorder.wrapOutboundTrack. */
+/** Tap echo agent mixed PCM on the PC outbound track (hop a) — mix pump is the sole writer. */
 export function wrapOutboundTrackForPcmCapture<T extends LocalAudioTrack>(
   track: T,
   capture: MultiSessionPcmCapture,
 ): T {
   const trackAny = track as T & { __pcmOutWrapped?: boolean }
   if (trackAny.__pcmOutWrapped) return track
-
-  const setTee =
-    typeof trackAny.setWriteSampleTee === 'function'
-      ? trackAny.setWriteSampleTee.bind(trackAny)
-      : typeof trackAny.native?.setWriteSampleTee === 'function'
-        ? trackAny.native.setWriteSampleTee.bind(trackAny.native)
-        : null
-
-  if (setTee) {
-    setTee((...args: unknown[]) => {
-      const pcm = pcmFromWriteSampleTeeArgs(args)
-      if (pcm) capture.recordOutboundPcm(pcm)
-    })
-  }
 
   const origWrite = trackAny.writeSample.bind(trackAny)
   trackAny.writeSample = async (data: Uint8Array, durationMs: number) => {
@@ -439,18 +424,22 @@ export function localizePcmFailure(metrics: PcmHopMetrics): PcmFailureVerdict {
 export function formatMergedHopTable(
   rows: Array<{
     sessionId: string
-    metrics: PcmHopMetrics & { agentSpeakingStartAt: number | null }
+    metrics: PcmHopMetrics & {
+      agentSpeakingStartAt: number | null
+      outMsRatio?: number | null
+    }
   }>,
 ): string {
   const lines = [
     '=== Per-hop PCM (echo reply window) ===',
-    'session | outMs | rxMs | outVoicedMs | rxVoicedMs | agentSpeakingStartAt | firstRxNonSilentAt | userSpeakingStartAt | maxRxGapMs | firstPartialAt | recognized',
+    'session | outMs | outMsRatio | rxMs | outVoicedMs | rxVoicedMs | agentSpeakingStartAt | firstRxNonSilentAt | userSpeakingStartAt | maxRxGapMs | firstPartialAt | recognized',
   ]
   for (const row of rows) {
     const m = row.metrics
+    const ratio = m.outMsRatio != null ? m.outMsRatio.toFixed(2) : '—'
     const preview = m.recognized.length > 40 ? `${m.recognized.slice(0, 40)}…` : m.recognized
     lines.push(
-      `${row.sessionId.padEnd(7)} | ${String(m.outMs).padStart(5)} | ${String(m.rxMs).padStart(4)} | ${String(m.outVoicedMs).padStart(11)} | ${String(m.rxVoicedMs).padStart(10)} | ${fmtAt(m.agentSpeakingStartAt)} | ${fmtAt(m.firstRxNonSilentAt)} | ${fmtAt(m.userSpeakingStartAt)} | ${String(m.maxRxGapMs).padStart(10)} | ${fmtAt(m.firstPartialAt)} | ${preview}`,
+      `${row.sessionId.padEnd(7)} | ${String(m.outMs).padStart(5)} | ${ratio.padStart(10)} | ${String(m.rxMs).padStart(4)} | ${String(m.outVoicedMs).padStart(11)} | ${String(m.rxVoicedMs).padStart(10)} | ${fmtAt(m.agentSpeakingStartAt)} | ${fmtAt(m.firstRxNonSilentAt)} | ${fmtAt(m.userSpeakingStartAt)} | ${String(m.maxRxGapMs).padStart(10)} | ${fmtAt(m.firstPartialAt)} | ${preview}`,
     )
   }
   return lines.join('\n')

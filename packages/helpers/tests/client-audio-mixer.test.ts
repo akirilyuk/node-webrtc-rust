@@ -263,6 +263,80 @@ describe('ClientAudioMixer', () => {
     expect(panInputs[0]!.subarray(half).equals(chunkB)).toBe(true)
   })
 
+  function createNonSilentFrame(fill = 7): Buffer {
+    return Buffer.alloc(PCM_FULL_FRAME_BYTES, fill)
+  }
+
+  function frameHasNonZeroSample(frame: Buffer): boolean {
+    for (let i = 0; i < frame.length; i += 2) {
+      if (frame.readInt16LE(i) !== 0) return true
+    }
+    return false
+  }
+
+  it('sidecar TTS at 20 ms cadence yields exactly one outbound frame per 20 ms with no interleaved silence', async () => {
+    const graph = createMockGraph()
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('hop')
+
+    const sidecar = createFakeSidecar()
+    mixer.wireTtsSidecar('hop', sidecar)
+
+    const written: Buffer[] = []
+    const pcTrack = {
+      writeSample: vi.fn(async (data: Buffer) => {
+        written.push(Buffer.from(data))
+      }),
+    }
+    mixer.startMixPump('hop', pcTrack)
+
+    const tts = createNonSilentFrame()
+    for (let i = 0; i < 10; i++) {
+      sidecar.tee!(tts, PCM_FRAME_DURATION_MS)
+      await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+    }
+
+    expect(pcTrack.writeSample).toHaveBeenCalledTimes(10)
+    expect(written).toHaveLength(10)
+    for (const frame of written) {
+      expect(frameHasNonZeroSample(frame)).toBe(true)
+    }
+  })
+
+  it('late pump tick does not drop queued TTS frames', async () => {
+    const panInputs: Buffer[] = []
+    const graph = createMockGraph()
+    graph.panTtsFrame = (pcm, listenerId) => {
+      panInputs.push(Buffer.from(pcm))
+      graph.calls.panTtsListenerIds.push(listenerId)
+      return Buffer.from(pcm)
+    }
+    const mixer = new ClientAudioMixer({ graph })
+    mixer.registerPeer('catchup')
+
+    const sidecar = createFakeSidecar()
+    mixer.wireTtsSidecar('catchup', sidecar)
+
+    const pcTrack = { writeSample: vi.fn(async () => undefined) }
+    mixer.startMixPump('catchup', pcTrack)
+
+    const frames = [createNonSilentFrame(11), createNonSilentFrame(22), createNonSilentFrame(33)]
+    for (const frame of frames) {
+      sidecar.tee!(frame, PCM_FRAME_DURATION_MS)
+    }
+
+    await vi.advanceTimersByTimeAsync(PCM_FRAME_DURATION_MS)
+
+    expect(pcTrack.writeSample).toHaveBeenCalledTimes(3)
+    expect(panInputs).toHaveLength(3)
+    expect(panInputs[0]!.equals(frames[0]!)).toBe(true)
+    expect(panInputs[1]!.equals(frames[1]!)).toBe(true)
+    expect(panInputs[2]!.equals(frames[2]!)).toBe(true)
+    for (const pcm of panInputs) {
+      expect(pcm.every((byte) => byte === 0)).toBe(false)
+    }
+  })
+
   it('consumes TTS once per tee — next pump tick uses silence', async () => {
     const panInputs: Buffer[] = []
     const graph = createMockGraph()

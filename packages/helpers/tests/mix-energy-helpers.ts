@@ -5,7 +5,7 @@ import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 import { delay } from './mix-three-client-helpers.js'
 
 type MixerTtsTestAccess = ClientAudioMixer & {
-  peers: Map<string, { pendingTts: Buffer | null }>
+  peers: Map<string, { ttsQueue: Buffer[] }>
 }
 
 const DEFAULT_LOUDER_RATIO = 1.5
@@ -341,11 +341,10 @@ export function injectTtsSidecarPendingFrame(
   if (!state) {
     throw new Error(`ClientAudioMixer peer ${peerId} is not registered`)
   }
-  state.pendingTts = Buffer.from(pcm)
-  mixer.kickMixPump(peerId)
+  state.ttsQueue.push(Buffer.from(pcm))
 }
 
-/** Loud constant PCM into pendingTts each 20 ms tick (mirrors wired sidecar tee semantics). */
+/** Loud constant PCM into sidecar queue each 20 ms tick (mirrors wired sidecar tee semantics). */
 export async function pumpLoudTtsSidecarFrames(
   mixer: ClientAudioMixer,
   peerId: string,
@@ -359,7 +358,7 @@ export async function pumpLoudTtsSidecarFrames(
   }
 }
 
-/** Left-only loud PCM into pendingTts each 20 ms tick (catches pre-downmix pan regressions). */
+/** Left-only loud PCM into sidecar queue each 20 ms tick (catches pre-downmix pan regressions). */
 export async function pumpLoudTtsLeftOnlySidecarFrames(
   mixer: ClientAudioMixer,
   peerId: string,

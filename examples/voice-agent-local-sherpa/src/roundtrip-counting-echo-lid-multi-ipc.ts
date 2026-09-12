@@ -18,6 +18,7 @@ export const SHERPA_MULTI_JSON_PREFIX = '__SHERPA_MULTI_JSON__'
 export interface EchoSessionMetricsPayload {
   sessionId: string
   agentSpeakingStartAt: number | null
+  agentSpeakingEndAt: number | null
   outMs: number
   outVoicedMs: number
   out: PcmBurstMetrics
@@ -190,7 +191,10 @@ export function wireEchoServerChild(params: {
   }
 }
 
-export async function waitForEchoHostsListening(wire: EchoChildWire, timeoutMs = 120_000): Promise<void> {
+export async function waitForEchoHostsListening(
+  wire: EchoChildWire,
+  timeoutMs = 120_000,
+): Promise<void> {
   const msg = await wire.waitForMessage((m) => m.type === 'ready' || m.type === 'error', timeoutMs)
   if (msg.type === 'error') {
     throw new Error(msg.message)
@@ -233,8 +237,7 @@ export async function requestEchoEndBaseline(
 ): Promise<number> {
   sendParentCommand(wire.child, { cmd: 'get-end-baseline', sessionId })
   const msg = await wire.waitForMessage(
-    (m) =>
-      (m.type === 'end-baseline' && m.sessionId === sessionId) || m.type === 'error',
+    (m) => (m.type === 'end-baseline' && m.sessionId === sessionId) || m.type === 'error',
     timeoutMs,
   )
   if (msg.type === 'error') {
@@ -316,6 +319,9 @@ export interface MergedHopMetrics extends PcmHopMetrics {
   out: PcmBurstMetrics
   rx: PcmBurstMetrics
   agentSpeakingStartAt: number | null
+  agentSpeakingEndAt: number | null
+  speakingWallMs: number | null
+  outMsRatio: number | null
   partialMinusAgentStartMs: number | null
 }
 
@@ -332,6 +338,13 @@ export function mergeEchoAndSpeakerMetrics(params: {
     totalVoicedMs: 0,
   }
   const agentSpeakingStartAt = params.echo?.agentSpeakingStartAt ?? null
+  const agentSpeakingEndAt = params.echo?.agentSpeakingEndAt ?? null
+  const outMs = params.echo?.outMs ?? params.speaker.outMs
+  const speakingWallMs =
+    agentSpeakingStartAt != null && agentSpeakingEndAt != null
+      ? agentSpeakingEndAt - agentSpeakingStartAt
+      : null
+  const outMsRatio = speakingWallMs != null && speakingWallMs > 0 ? outMs / speakingWallMs : null
   const firstPartialAt = params.speaker.firstPartialAt
   const partialMinusAgentStartMs =
     firstPartialAt != null && agentSpeakingStartAt != null
@@ -341,12 +354,15 @@ export function mergeEchoAndSpeakerMetrics(params: {
   return {
     ...params.speaker,
     recognized: params.recognized,
-    outMs: params.echo?.outMs ?? params.speaker.outMs,
+    outMs,
     outVoicedMs: params.echo?.outVoicedMs ?? params.speaker.outVoicedMs,
     outBurst: params.echo?.out ?? params.speaker.outBurst,
     out: params.echo?.out ?? emptyBurst,
     rx: params.speaker.rxBurst,
     agentSpeakingStartAt,
+    agentSpeakingEndAt,
+    speakingWallMs,
+    outMsRatio,
     partialMinusAgentStartMs,
   }
 }

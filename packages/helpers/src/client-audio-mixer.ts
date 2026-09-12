@@ -23,6 +23,10 @@ function delayMs(ms: number): Promise<void> {
 const MIX_MUTE_FLUSH_FRAMES = 19
 /** Post-pose flush (~500ms) — must cover staging ENERGY_PROBE_MS / quiet window after TTS pan flip. */
 const MIX_POSE_FLUSH_FRAMES = 25
+/** Sidecar TTS FIFO cap (~1 s at 20 ms/frame); oldest dropped on overflow. */
+const TTS_QUEUE_MAX_FRAMES = 50
+/** Max extra queued TTS frames written in one pump tick when interval ticks were skipped. */
+const TTS_CATCHUP_FRAMES_PER_TICK = 2
 
 /** Sidecar track VoiceAgent drains; must support {@link LocalAudioTrack.setWriteSampleTee}. */
 export type TtsSidecarTrack = {
@@ -171,8 +175,10 @@ export type ClientAudioMixerOptions = {
 }
 
 type PeerMixState = {
-  /** Latest full TTS frame from tee; consumed once per pump tick (null → silence). */
-  pendingTts: Buffer | null
+  /** Full sidecar TTS frames queued for the mix pump (silence when empty). */
+  ttsQueue: Buffer[]
+  /** Frames dropped when {@link TTS_QUEUE_MAX_FRAMES} overflowed (diagnostics). */
+  ttsQueueOverflowDrops: number
   /** Partial sidecar tee bytes not yet framed to {@link PCM_FULL_FRAME_BYTES}. */
   sidecarLeftover: Buffer
   pumpInterval?: ReturnType<typeof setInterval>
@@ -234,7 +240,11 @@ export class ClientAudioMixer {
     this.graph.addInput(peerId)
     trackClientId(getGraphGroupState(this.graph), peerId)
     this.registered.add(peerId)
-    this.peers.set(peerId, { pendingTts: null, sidecarLeftover: Buffer.alloc(0) })
+    this.peers.set(peerId, {
+      ttsQueue: [],
+      ttsQueueOverflowDrops: 0,
+      sidecarLeftover: Buffer.alloc(0),
+    })
   }
 
   unregisterPeer(peerId: string): void {
@@ -435,7 +445,7 @@ export class ClientAudioMixer {
       return
     }
     await this.pauseMixPump(clientId)
-    state.pendingTts = null
+    state.ttsQueue.length = 0
     state.sidecarLeftover = Buffer.alloc(0)
     applyPose()
     try {
@@ -443,7 +453,6 @@ export class ClientAudioMixer {
       await (this.pumpWrites.get(clientId) ?? Promise.resolve())
     } finally {
       this.resumeMixPump(clientId)
-      this.kickMixPump(clientId)
     }
   }
 
@@ -497,9 +506,11 @@ export class ClientAudioMixer {
         state.sidecarLeftover.length > 0 ? Buffer.concat([state.sidecarLeftover, pcm]) : pcm
       let offset = 0
       while (offset + PCM_FULL_FRAME_BYTES <= combined.length) {
-        state.pendingTts = Buffer.from(combined.subarray(offset, offset + PCM_FULL_FRAME_BYTES))
+        this.enqueueTtsFrame(
+          state,
+          Buffer.from(combined.subarray(offset, offset + PCM_FULL_FRAME_BYTES)),
+        )
         offset += PCM_FULL_FRAME_BYTES
-        this.kickMixPump(peerId)
       }
       state.sidecarLeftover =
         offset < combined.length ? Buffer.from(combined.subarray(offset)) : Buffer.alloc(0)
@@ -524,11 +535,6 @@ export class ClientAudioMixer {
    * Starts a 20 ms pump that is the sole writer to the PC outbound track:
    * `sum(panTtsFrame(ttsOrSilence), renderOutput(listener))`.
    */
-  /** Schedule one immediate mix tick when sidecar TTS pending is set (do not wait for interval). */
-  kickMixPump(peerId: string): void {
-    void this.enqueuePumpMixFrame(peerId).catch(() => undefined)
-  }
-
   startMixPump(peerId: string, pcOutbound: MixPumpOutboundTrack): void {
     const state = this.peerState(peerId)
     if (state.pumpInterval) return
@@ -555,6 +561,18 @@ export class ClientAudioMixer {
     return next
   }
 
+  private enqueueTtsFrame(state: PeerMixState, frame: Buffer): void {
+    if (state.ttsQueue.length >= TTS_QUEUE_MAX_FRAMES) {
+      state.ttsQueue.shift()
+      state.ttsQueueOverflowDrops += 1
+    }
+    state.ttsQueue.push(frame)
+  }
+
+  private dequeueTtsOrSilence(state: PeerMixState): Buffer {
+    return state.ttsQueue.shift() ?? this.silenceFrame
+  }
+
   /** @internal One mix tick — exposed for unit tests with fake timers. */
   async pumpMixFrame(peerId: string, pcOutbound?: MixPumpOutboundTrack): Promise<void> {
     const state = this.peers.get(peerId)
@@ -562,11 +580,19 @@ export class ClientAudioMixer {
     const out = pcOutbound ?? state.pcOutbound
     if (!out) return
 
-    const mixed = this.graph.renderOutput(peerId)
-    const tts = state.pendingTts ?? this.silenceFrame
-    state.pendingTts = null
-    const panned = this.graph.panTtsFrame(tts, peerId)
-    const frame = sumStereoPcm(panned, mixed)
-    await out.writeSample(frame, PCM_FRAME_DURATION_MS)
+    const writeMixedFrame = async (tts: Buffer): Promise<void> => {
+      const mixed = this.graph.renderOutput(peerId)
+      const panned = this.graph.panTtsFrame(tts, peerId)
+      const frame = sumStereoPcm(panned, mixed)
+      await out.writeSample(frame, PCM_FRAME_DURATION_MS)
+    }
+
+    await writeMixedFrame(this.dequeueTtsOrSilence(state))
+
+    let catchUp = 0
+    while (state.ttsQueue.length > 0 && catchUp < TTS_CATCHUP_FRAMES_PER_TICK) {
+      await writeMixedFrame(this.dequeueTtsOrSilence(state))
+      catchUp += 1
+    }
   }
 }

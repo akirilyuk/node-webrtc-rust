@@ -147,6 +147,9 @@ export class StereoTimeline {
       const l = left > quietThreshold
       const r = right > quietThreshold
       cls = l && r ? 'D' : l ? 'L' : r ? 'R' : 'q'
+      if (sample.byteLength !== PCM_FULL_FRAME_BYTES) {
+        cls = `${cls}[${sample.byteLength}B]`
+      }
     }
     const runs = this.lanes.get(lane) ?? []
     const last = runs[runs.length - 1]

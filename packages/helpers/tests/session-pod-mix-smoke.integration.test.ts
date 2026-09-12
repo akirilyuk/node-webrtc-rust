@@ -368,6 +368,9 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         const energyF = await accumulateInboundStereoRms(tracedRx, ENERGY_PROBE_MS)
         await probeF
         panTimeline.mark('tx', 'probeF-done')
+        if (process.env.MIX_SMOKE_DUMP_TIMELINE === '1') {
+          console.error(`[mix-smoke] stereo timeline (E/F):\n${panTimeline.dump()}`)
+        }
         assertPan(() => assertLeftLouder(energyF.left, energyF.right), 'probe F left-louder')
 
         await listenerHost.clearTtsPose(listenerPeerId)

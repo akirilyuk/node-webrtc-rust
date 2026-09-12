@@ -157,6 +157,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
     vad.min_silence_duration_ms = 20;
     vad.speech_pad_ms = 20;
     vad.gate_stt = true;
+    vad.stt_gate_hold_ms = 80;
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -190,7 +191,52 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
 #[tokio::test]
 async fn language_id_does_not_block_inbound_pcm_or_stt() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
-    let agent = agent_with_slow_lid(Arc::clone(&stt_bytes));
+    let factory = Arc::new(LidTestFactory {
+        stt_bytes: Arc::clone(&stt_bytes),
+        lid_sleep_ms: LID_SLEEP_MS,
+    });
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(SttVendor::LocalSherpa, factory);
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let mut vad = VadConfig::default();
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 20;
+    vad.speech_pad_ms = 20;
+    // gate_stt off: mock STT never emits finals; gate-hold finalize would skip speaking_end.
+    // C1 (`stt_listen_timeout_ms`) closes the stream and pairs user_speaking_end with LID.
+    vad.gate_stt = false;
+    vad.stt_listen_timeout_ms = 400;
+
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        }),
+        language_id: Some(LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            min_speech_ms: Some(200),
+            continuous: None,
+        }),
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
     let mut rx = agent.subscribe_events();
 
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
@@ -210,7 +256,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     let bytes_before_lid = *stt_bytes.lock().unwrap();
     assert!(bytes_before_lid > 0, "STT should receive speech before LID threshold");
 
-    // Frames 4–13: frame ~10 crosses min_speech_ms=200 and spawns slow LID.
+    // Frames 4–13: default mode buffers only (no mid-utterance identify).
     let batch_start = Instant::now();
     let mut per_frame_max_ms = 0_u128;
     for _ in 0..10 {
@@ -229,20 +275,32 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     );
     assert!(
         batch_elapsed < Duration::from_millis(400),
-        "10 frames after LID threshold must not await identify (batch {batch_elapsed:?})"
+        "10 frames after min_speech_ms buffer must not await identify (batch {batch_elapsed:?})"
     );
 
-    // STT must keep receiving audio while LID sleeps in the background.
-    let bytes_mid_lid = *stt_bytes.lock().unwrap();
+    // STT must keep receiving audio; identify waits for user_speaking_end.
+    let bytes_mid = *stt_bytes.lock().unwrap();
     assert!(
-        bytes_mid_lid > bytes_before_lid,
-        "STT push_audio must continue during LID sleep window"
+        bytes_mid > bytes_before_lid,
+        "STT push_audio must continue while LID is only buffered"
     );
 
-    // Eventually emit user_language when background identify completes.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let silent = silent_stereo_frame();
+    for _ in 0..20 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    // user_language after C1 closes the STT stream and speaking_end spawns background identify.
+    let deadline = Instant::now() + Duration::from_secs(2);
     let mut saw_user_language = false;
     while Instant::now() < deadline {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
         while let Ok(event) = rx.try_recv() {
             if event.kind == SpeechEventKind::UserLanguage {
                 assert_eq!(event.language.as_deref(), Some("en"));
@@ -253,7 +311,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
         if saw_user_language {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
         saw_user_language,
@@ -366,8 +424,9 @@ async fn language_id_does_not_block_tts_playback() {
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
 
-    // VAD speech start + cross min_speech_ms=200 so slow LID (LID_SLEEP_MS) is in flight.
+    // VAD speech start + buffer past min_speech_ms (default mode does not identify yet).
     for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
@@ -404,7 +463,16 @@ async fn language_id_does_not_block_tts_playback() {
     let nbytes = *written_bytes.lock().unwrap();
     assert!(nbytes > 0, "writer must receive non-empty PCM");
 
-    // LID still completes in background.
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    // LID runs at speaking_end (deferred until TTS idle) in the background.
     let lang_deadline = Instant::now() + Duration::from_secs(5);
     let mut saw_user_language = false;
     while Instant::now() < lang_deadline {
@@ -425,7 +493,6 @@ async fn language_id_does_not_block_tts_playback() {
         "expected user_language after background identify"
     );
 
-    agent.wait_tts_playback_idle().await.unwrap();
     agent.stop().await.unwrap();
 }
 
@@ -631,7 +698,7 @@ async fn language_id_does_not_overlap_tts_synthesis() {
         .await
         .unwrap();
 
-    // Cross min_speech_ms while TTS synthesis/playback is active — LID must defer.
+    // Cross min_speech_ms while TTS is active — default mode buffers only; identify at hang-up.
     for _ in 0..10 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
@@ -677,9 +744,8 @@ async fn language_id_does_not_overlap_tts_synthesis() {
     agent.stop().await.unwrap();
 }
 
-/// Staging echo-smoke order: minSpeechMs LID is already in flight when `speak("echo. …")` runs.
-/// Opposite of `language_id_does_not_overlap_tts_synthesis` (TTS first). Must fail until default
-/// LID defers identify to utterance end (#215 defer alone is not enough).
+/// Staging echo-smoke order: user speech crosses minSpeechMs, then `speak("echo. …")` runs.
+/// Default mode must not start Whisper mid-utterance; identify after speaking_end must not overlap Piper.
 #[tokio::test]
 async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
@@ -696,7 +762,7 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
 
     let loud = loud_stereo_frame();
 
-    // Same 12-frame pattern as `language_id_does_not_block_tts_playback` — slow LID in flight.
+    // Same 12-frame pattern as `language_id_does_not_block_tts_playback` — buffer only, no mid-utterance LID.
     for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
@@ -787,6 +853,9 @@ fn agent_with_counting_lid(
     vad.min_silence_duration_ms = 20;
     vad.speech_pad_ms = 20;
     vad.gate_stt = gate_stt;
+    if gate_stt {
+        vad.stt_gate_hold_ms = 80;
+    }
 
     let config = VoiceAgentConfig {
         stt: if include_stt {
@@ -871,7 +940,7 @@ async fn language_id_runs_once_per_utterance_by_default() {
         Arc::clone(&lid_calls),
         false,
         None,
-        true,
+        false,
         vec!["en".into(), "de".into()],
     );
     let mut rx = agent.subscribe_events();
@@ -883,24 +952,29 @@ async fn language_id_runs_once_per_utterance_by_default() {
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
 
-    // Utterance A: cross min_speech_ms then keep speaking several more seconds.
+    // Utterance A: buffer past min_speech_ms, then keep speaking — no mid-utterance identify.
     drive_loud_frames(&agent, &loud, 12).await;
     assert!(
         wait_for_event(&mut rx, SpeechEventKind::UserSpeakingStart).await,
         "expected user_speaking_start for utterance A"
     );
 
-    assert!(
-        wait_for_user_language(&mut rx).await,
-        "expected user_language after first identify for utterance A"
-    );
-
-    // Extra loud speech that would have re-fired LID in continuous mode.
     drive_loud_frames(&agent, &loud, 80).await;
     assert_eq!(
         lid_calls.load(Ordering::SeqCst),
+        0,
+        "default mode must not identify during speech before speaking_end"
+    );
+
+    drive_silent_frames(&agent, &silent, 12).await;
+    assert!(
+        wait_for_user_language(&mut rx).await,
+        "expected user_language after speaking_end for utterance A"
+    );
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
         1,
-        "default mode must not re-identify during the same utterance"
+        "default mode must identify exactly once per utterance at hang-up"
     );
 
     // Silence long enough for VAD SpeechEnd before the next SpeechStart (new utterance).
@@ -909,7 +983,7 @@ async fn language_id_runs_once_per_utterance_by_default() {
     assert_eq!(
         lid_calls.load(Ordering::SeqCst),
         1,
-        "silence after inbound LID must not start a second identify"
+        "silence between utterances must not start a second identify"
     );
 
     // Utterance B: new turn.
@@ -918,6 +992,7 @@ async fn language_id_runs_once_per_utterance_by_default() {
         wait_for_event(&mut rx, SpeechEventKind::UserSpeakingStart).await,
         "expected user_speaking_start for utterance B"
     );
+    drive_silent_frames(&agent, &silent, 12).await;
     assert!(
         wait_for_user_language(&mut rx).await,
         "expected user_language for utterance B"
@@ -979,9 +1054,9 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     let agent = agent_with_counting_lid(
         Arc::clone(&stt_bytes),
         Arc::clone(&lid_calls),
-        true,
+        false,
         None,
-        true,
+        false,
         vec!["en".into()],
     );
     let mut rx = agent.subscribe_events();
@@ -993,15 +1068,20 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
 
-    // Cross min_speech_ms=200 so inbound spawns identify (not hang-up).
+    // Buffer past min_speech_ms=200 — default mode does not spawn identify mid-utterance.
     for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
             .await
             .unwrap();
     }
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        0,
+        "default mode must not identify at minSpeechMs while user is still speaking"
+    );
 
-    // TTS starts immediately — hang-up must not queue a second Whisper job.
+    // TTS starts — speaking_end identify must defer, not overlap or double-spawn.
     agent
         .send_text_to_tts_with_options(
             "one two three",
@@ -1016,6 +1096,14 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
             .await
             .unwrap();
     }
+
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        0,
+        "hang-up identify must defer while TTS is active"
+    );
+
+    agent.wait_tts_playback_idle().await.unwrap();
 
     let lang_deadline = Instant::now() + Duration::from_secs(3);
     let mut saw_user_language = false;
@@ -1034,20 +1122,14 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     }
     assert!(
         saw_user_language,
-        "expected user_language from inbound identify pass"
+        "expected user_language from deferred speaking_end identify"
     );
     assert_eq!(
         lid_calls.load(Ordering::SeqCst),
         1,
-        "user_speaking_end must not start a second identify when inbound already did"
+        "speaking_end must yield exactly one identify after TTS idle"
     );
 
-    agent.wait_tts_playback_idle().await.unwrap();
-    assert_eq!(
-        lid_calls.load(Ordering::SeqCst),
-        1,
-        "deferred hang-up identify must not run after inbound identify completed"
-    );
     agent.stop().await.unwrap();
 }
 

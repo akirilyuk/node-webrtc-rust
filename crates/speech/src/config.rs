@@ -420,11 +420,14 @@ pub struct LanguageIdConfig {
     /// Optional ISO 639-1 allowlist; other detected codes are ignored.
     #[serde(default)]
     pub allowlist: Option<Vec<String>>,
-    /// Minimum buffered speech (ms) before the first identify attempt. Default 1000.
+    /// Minimum buffered speech (ms) before identify runs at `user_speaking_end` (default mode)
+    /// or before the first mid-utterance identify when `continuous` is true. Default 1000.
     #[serde(default)]
     pub min_speech_ms: Option<u32>,
-    /// When `Some(true)`, re-run identify during a long utterance after each pass completes.
-    /// Default (unset/false): once per utterance after ~`min_speech_ms` of speech.
+    /// When `Some(true)`, start identify after ~`min_speech_ms` of speech while the user is
+    /// still speaking (re-run after each pass completes during a long utterance).
+    /// Default (unset/false): buffer inbound PCM during the utterance; identify once at
+    /// `user_speaking_end` when buffered speech reaches `min_speech_ms` (or force at hang-up).
     #[serde(default)]
     pub continuous: Option<bool>,
 }

@@ -1722,26 +1722,28 @@ impl VoiceAgent {
     }
 
     async fn append_lid_pcm_if_buffering(&self, mono_bytes: &Bytes) {
-        let snapshot = {
+        let cross_threshold = {
             let mut inner = self.inner.lock().await;
             if !inner.lid_buffering || !language_id_enabled(&inner.config.language_id) {
-                None
-            } else {
-                inner.lid_pcm_buffer.extend_from_slice(mono_bytes);
-                let min_ms = resolved_language_id_min_speech_ms(
-                    inner.config.language_id.as_ref().expect("enabled"),
-                );
-                Some((min_ms, inner.lid_pcm_buffer.len()))
+                return;
             }
-        };
-        if let Some((min_ms, buffer_len)) = snapshot {
+            inner.lid_pcm_buffer.extend_from_slice(mono_bytes);
+            // Default (once per utterance): buffer only until user_speaking_end.
+            if !language_id_continuous(&inner.config.language_id) {
+                return;
+            }
+            let min_ms = resolved_language_id_min_speech_ms(
+                inner.config.language_id.as_ref().expect("enabled"),
+            );
+            let buffer_len = inner.lid_pcm_buffer.len();
             let duration_ms = crate::pcm::duration_ms_from_mono_s16le(
                 buffer_len,
                 crate::pcm::STT_PCM_SAMPLE_RATE,
             );
-            if duration_ms >= min_ms {
-                self.spawn_identify_language(false).await;
-            }
+            duration_ms >= min_ms
+        };
+        if cross_threshold {
+            self.spawn_identify_language(false).await;
         }
     }
 
@@ -2229,6 +2231,19 @@ impl VoiceAgent {
             match transition {
                 VadTransition::SpeechStart => {
                     self.on_vad_speech_start().await?;
+                    // VAD-only agents (`stt: None`) do not reset utterance state on SpeechStart
+                    // via the STT long-pause path — clear LID/speaking flags so each VAD turn can
+                    // buffer and identify at the next user_speaking_end.
+                    {
+                        let mut inner = self.inner.lock().await;
+                        if !Self::stt_pipeline_active(&inner) {
+                            inner.stt_speaking_start_emitted_this_utterance = false;
+                            inner.stt_speaking_end_emitted_this_utterance = false;
+                            inner.lid_identify_started_this_utterance = false;
+                            inner.lid_identify_in_flight = false;
+                            inner.lid_identify_deferred = false;
+                        }
+                    }
                     // VAD speaking_start is independent of having an STT vendor (tests with
                     // stt: None still expect it). setSttEnabled(false) is gated inside emit.
                     self.emit_user_speaking_start_if_needed().await;

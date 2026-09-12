@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — Default spoken language ID identifies at `user_speaking_end` when buffered speech reaches `minSpeechMs`, not mid-utterance at that threshold. Leftover Whisper at `minSpeechMs` no longer overlapped Piper on the first echo TTS sentence (staging 30m voice/billing prefix skip). Continuous mode (`languageId.continuous: true`) still identifies mid-utterance when TTS is idle.
+
 ## [0.9.6] - 2026-09-11
 
 Mix/mute/TTS APIs resolve orchestrator session UUIDs; TTS pose changes drain leftover mix outbound before pan flip. Whisper LID and Zipformer STT use isolated ORT thread pools.

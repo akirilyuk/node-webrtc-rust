@@ -161,6 +161,8 @@ async function main(): Promise<void> {
   collectorAgent1.startPump()
   const echoPumpTask = pumpImmediateEchoOnFinal(agent2, agent2EndLatch)
 
+  const echoEndBaseline = agent2EndLatch.endEventsSeen()
+
   console.log(`Agent1 TTS: "${countingPhrase}"`)
   const agent1PlaybackPromise = playSpeakerTtsWithPostSilence({
     speaker: agent1,
@@ -171,11 +173,13 @@ async function main(): Promise<void> {
     agentSpeakingEndLatch: agent1EndLatch,
   })
 
-  const agent2EchoPlaybackPromise = waitAgentPlaybackEndRace({
-    phrase: formatEchoSmokeReply(countingPhrase),
-    capMs: timeoutMs,
-    waitForAgentSpeakingEnd: () => agent2EndLatch.waitForNext(timeoutMs),
-  }).then(async () => {
+  const playbackAndEchoDone = agent1PlaybackPromise.then(async () => {
+    await waitAgentPlaybackEndRace({
+      phrase: formatEchoSmokeReply(countingPhrase),
+      capMs: timeoutMs,
+      waitForAgentSpeakingEnd: () =>
+        agent2EndLatch.waitAfterCount(echoEndBaseline, timeoutMs),
+    })
     if (postTtsSilenceS > 0) {
       console.log(
         `[agent2] post-TTS silence ${postTtsSilenceS.toFixed(1)}s on userOut (echo leg)`,
@@ -185,11 +189,11 @@ async function main(): Promise<void> {
   })
 
   const recognized = await collectorAgent1.waitForNextAfterPlayback(
-    Promise.all([agent1PlaybackPromise, agent2EchoPlaybackPromise]),
+    playbackAndEchoDone,
     timeoutMs,
     finalizeWaitMs,
   )
-  await Promise.all([agent1PlaybackPromise, agent2EchoPlaybackPromise])
+  await playbackAndEchoDone
 
   const best = collectorAgent1.stats.finals.reduce(
     (a, b) => (a.trim().length >= b.trim().length ? a : b),

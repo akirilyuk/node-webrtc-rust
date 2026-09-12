@@ -82,8 +82,10 @@ fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
     vad.min_silence_duration_ms.max(400).min(600)
 }
 
-/// After `user_speech_final`, allow the app event loop to enqueue TTS before hang-up Whisper.
-const LID_HANGUP_TTS_GRACE_MS: u64 = 50;
+/// Poll window after hang-up defer: JS `sendTextToTTS` on `user_speech_final` is fire-and-forget
+/// (Sherpa echo-smoke often enqueues ~280ms after final; must not start Whisper before that).
+const LID_HANGUP_TTS_ENQUEUE_WINDOW_MS: u64 = 400;
+const LID_HANGUP_TTS_ENQUEUE_POLL_MS: u64 = 10;
 
 /// True when most of the post–speech-end gate hold has elapsed (90%), i.e. resume is a new phrase not a digit gap.
 fn gate_hold_long_pause_elapsed(hold_total: u32, hold_elapsed: u32) -> bool {
@@ -1771,20 +1773,44 @@ impl VoiceAgent {
             voice_debug("LID hang-up identify deferred (TTS active)");
             return;
         }
-        voice_debug("LID hang-up identify deferred (TTS enqueue grace)");
-        self.schedule_hangup_lid_grace_flush();
+        voice_debug("LID hang-up identify deferred (poll for TTS enqueue)");
+        self.schedule_hangup_lid_enqueue_poll();
     }
 
-    /// Flush hang-up LID after a short grace so `sendTextToTTS` on `user_speech_final` can queue first.
-    fn schedule_hangup_lid_grace_flush(&self) {
+    /// Poll until TTS is queued/active or the enqueue window elapses, then flush deferred hang-up LID.
+    fn schedule_hangup_lid_enqueue_poll(&self) {
         let weak_self = self.weak_self.clone();
         let queue = Arc::clone(&self.tts_synthesis_queue);
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(LID_HANGUP_TTS_GRACE_MS)).await;
-            let still_deferred = inner.lock().await.lid_identify_deferred;
-            if !still_deferred {
+            let deadline =
+                Instant::now() + std::time::Duration::from_millis(LID_HANGUP_TTS_ENQUEUE_WINDOW_MS);
+            while Instant::now() < deadline {
+                if !inner.lock().await.lid_identify_deferred {
+                    return;
+                }
+                let Some(agent) = weak_self.upgrade() else {
+                    return;
+                };
+                if agent.tts_active_for_lid_defer().await {
+                    voice_debug(
+                        "LID hang-up identify deferred (TTS enqueued during poll window)",
+                    );
+                    return;
+                }
+                tokio::time::sleep(
+                    std::time::Duration::from_millis(LID_HANGUP_TTS_ENQUEUE_POLL_MS),
+                )
+                .await;
+            }
+            if !inner.lock().await.lid_identify_deferred {
                 return;
+            }
+            if let Some(agent) = weak_self.upgrade() {
+                if agent.tts_active_for_lid_defer().await {
+                    voice_debug("LID hang-up identify deferred (TTS active after poll window)");
+                    return;
+                }
             }
             Self::maybe_spawn_deferred_lid_after_tts(&weak_self, &queue, &inner).await;
         });

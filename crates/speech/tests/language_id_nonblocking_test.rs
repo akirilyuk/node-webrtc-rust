@@ -294,7 +294,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     }
 
     // user_language after C1 closes the STT stream and speaking_end spawns background identify.
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(4);
     let mut saw_user_language = false;
     while Instant::now() < deadline {
         agent
@@ -473,7 +473,7 @@ async fn language_id_does_not_block_tts_playback() {
     agent.wait_tts_playback_idle().await.unwrap();
 
     // LID runs at speaking_end (deferred until TTS idle) in the background.
-    let lang_deadline = Instant::now() + Duration::from_secs(5);
+    let lang_deadline = Instant::now() + Duration::from_secs(6);
     let mut saw_user_language = false;
     while Instant::now() < lang_deadline {
         while let Ok(event) = rx.try_recv() {
@@ -706,8 +706,8 @@ async fn language_id_does_not_overlap_tts_synthesis() {
             .unwrap();
     }
 
-    // user_speaking_end + force LID while TTS may still be active — must defer, not overlap.
-    for _ in 0..5 {
+    // user_speaking_end + hang-up defer while TTS may still be active — must defer, not overlap.
+    for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
@@ -721,7 +721,7 @@ async fn language_id_does_not_overlap_tts_synthesis() {
         "LID identify must not overlap TTS synthesize"
     );
 
-    let lang_deadline = Instant::now() + Duration::from_secs(5);
+    let lang_deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_user_language = false;
     while Instant::now() < lang_deadline {
         while let Ok(event) = rx.try_recv() {
@@ -772,13 +772,16 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
             .unwrap();
     }
 
-    // Silence → speaking_end + hang-up defer (staging: final handler then immediate speak).
+    // Silence → speaking_end + hang-up defer (staging: final handler then speak after event loop).
     for _ in 0..5 {
         agent
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
             .unwrap();
     }
+
+    // Fire-and-forget speak() often lands after 50ms; poll window must cover this gap.
+    tokio::time::sleep(Duration::from_millis(90)).await;
 
     agent
         .send_text_to_tts_with_options(

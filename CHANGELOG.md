@@ -15,6 +15,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **helpers** — `ClientAudioMixer` mix pump wrote a TTS frame _and_ a silence frame per 20 ms (per-frame `kickMixPump` added in 0.9.6 / #224), so agent speech reached clients chopped 20 ms on / 20 ms off and clients' STT lost the first word. The interval pump is again the sole writer, sidecar TTS is queued, due frames are accounted on a wall clock (late ticks catch up without dropping frames), and empty slots during an active TTS stream skip instead of inserting silence.
 - **speech** — TTS drain pacing uses drift-free absolute deadlines (`anchor + n × 20 ms`) instead of `sleep(20 ms)` after each write, so the native pacer no longer runs slower than the 50 Hz mix pump and periodically leaves an empty slot mid-utterance.
 
+### Added
+
+- **mixer / core** — `OpusDecoder::try_decode_payload` surfaces why a payload became silence (`DecodeError::{EmptyPayload, Packet, Output, Opus}`); `WEBRTC_DEBUG=1` now logs per-packet `read_rtp:packet` (ssrc/seq/ts/pt/marker/payload bytes) and `read_sample:decoded` (peak) / `read_sample:decode_failed` lines for remote audio tracks.
+
+### Tests
+
+- **helpers** — Mix/clip energy probes use a phase-continuous 500 Hz tone instead of a DC "loud" frame (Opus rejects DC, so the old stimulus decoded to silence ~200 ms after each step and only survived thanks to the fixed 0.9.6 double-write), and read remote tracks through a continuously draining `createLiveInboundReader` so windows measure live audio instead of stale receive backlog.
+
 ## [0.9.6] - 2026-09-11
 
 Mix/mute/TTS APIs resolve orchestrator session UUIDs; TTS pose changes drain leftover mix outbound before pan flip. Whisper LID and Zipformer STT use isolated ORT thread pools.

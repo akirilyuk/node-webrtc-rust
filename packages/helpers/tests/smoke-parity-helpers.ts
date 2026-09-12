@@ -4,11 +4,13 @@
  * Runner per-session playAudio via runnerStylePlayAudio.
  */
 
-import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
-
 import type { AudioPlaySource } from '../src/clip-playback.js'
 import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
-import { accumulateInboundStereoRms, waitForInboundStereoEnergy } from './mix-energy-helpers.js'
+import {
+  accumulateInboundStereoRms,
+  type StereoEnergyReader,
+  waitForInboundStereoEnergy,
+} from './mix-energy-helpers.js'
 
 export const SMOKE_PEER_IDS = ['client-mix-1', 'client-mix-2', 'client-mix-3'] as const
 
@@ -52,7 +54,7 @@ export async function runnerStylePlayAudio(
 export async function probeClipPlayInboundEnergy(
   bindings: readonly SmokeSessionBinding[],
   playOptions: { peerIds?: readonly string[] },
-  tracks: RemoteAudioTrack[],
+  tracks: StereoEnergyReader[],
   source: AudioPlaySource,
   probeMs = CLIP_RMS_PROBE_MS,
 ): Promise<Array<{ left: number; right: number }>> {

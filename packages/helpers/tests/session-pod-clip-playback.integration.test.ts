@@ -30,6 +30,9 @@ import {
 import {
   accumulateInboundStereoRms,
   assertMuchQuieter,
+  createLiveInboundReader,
+  type LiveInboundReader,
+  type StereoEnergyReader,
   stereoRmsFromSplitChannels,
   waitForInboundStereoEnergy,
   waitForInboundStereoQuiet,
@@ -193,7 +196,7 @@ async function connectReadyVoiceClient(
 }
 
 async function readSampleWithTimeout(
-  track: RemoteAudioTrack,
+  track: StereoEnergyReader,
   label: string,
   timeoutMs = 30_000,
 ): Promise<Buffer> {
@@ -205,6 +208,12 @@ async function readSampleWithTimeout(
   ])
 }
 
+function stopLiveReaders(readers: Iterable<LiveInboundReader>): void {
+  for (const reader of readers) {
+    reader.stop()
+  }
+}
+
 function closeClient(client: ConnectedClient): void {
   client.teardownNegotiate()
   client.pc.close()
@@ -212,7 +221,7 @@ function closeClient(client: ConnectedClient): void {
 }
 
 async function collectAgentFrames(
-  track: RemoteAudioTrack,
+  track: StereoEnergyReader,
   label: string,
   frameCount: number,
 ): Promise<{ left: Int16Array; right: Int16Array }> {
@@ -227,7 +236,7 @@ async function collectAgentFrames(
 
 /** Controller "playing" can precede inbound PCM; wait before tone collect. */
 async function waitForInboundThenCollect(
-  track: RemoteAudioTrack,
+  track: StereoEnergyReader,
   label: string,
   frameCount: number,
 ): Promise<{ left: Int16Array; right: Int16Array }> {
@@ -316,20 +325,22 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         host.createMixGroup({ id: `solo-${spec.ext}`, clientIds: [peerId] })
 
         const client = await connectReadyVoiceClient(host, wsUrl, sessionId, peerId)
+        const clientRx = createLiveInboundReader(client.agentAudio)
         try {
           const { playId } = await host.playAudio({ source: { path: fixture!.path } })
           await waitForClipPlaying(host, playId, 30_000)
           // Controller "playing"/"buffering" can precede outbound PCM (MP3 decode +
           // queued mix silence). Collecting a fixed 20 frames then saw L=0,R=0 in CI.
-          await waitForInboundStereoEnergy(client.agentAudio, {
+          await waitForInboundStereoEnergy(clientRx, {
             threshold: STEREO_QUIET_THRESHOLD,
             timeoutMs: 30_000,
             label: `${spec.ext} path inbound`,
           })
-          const { left, right } = await collectAgentFrames(client.agentAudio, 'clip path', 20)
+          const { left, right } = await collectAgentFrames(clientRx, 'clip path', 20)
           assertTonePresentStereo(left, right, spec.freqHz, `${spec.ext} path`)
           host.stopAudioPlay(playId)
         } finally {
+          clientRx.stop()
           closeClient(client)
           await delay(100)
         }
@@ -348,6 +359,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
 
     const holdback = await startHoldbackWavServer(wavFixture!.path)
     const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-stream')
+    const clientRx = createLiveInboundReader(client.agentAudio)
     try {
       const { playId } = await host.playAudio({ source: { url: holdback.url } })
 
@@ -364,10 +376,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
           break
         }
         try {
-          const pcm = await Promise.race([
-            client.agentAudio.readSample(),
-            delay(1_000).then(() => null),
-          ])
+          const pcm = await Promise.race([clientRx.readSample(), delay(1_000).then(() => null)])
           if (pcm && pcm.length >= 3840) {
             const left = extractChannel(pcm, 0)
             const right = extractChannel(pcm, 1)
@@ -393,6 +402,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       await delay(500)
       host.stopAudioPlay(playId)
     } finally {
+      clientRx.stop()
       holdback.releaseTail()
       await holdback.close()
       closeClient(client)
@@ -415,14 +425,16 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
 
     const clientA = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-a')
     const clientB = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-b')
+    const clientARx = createLiveInboundReader(clientA.agentAudio)
+    const clientBRx = createLiveInboundReader(clientB.agentAudio)
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
         peerIds: ['client-a'],
       })
       await waitForClipPlaying(host, playId)
-      const heardA = await waitForInboundThenCollect(clientA.agentAudio, 'client-a', 15)
-      const heardB = await collectAgentFrames(clientB.agentAudio, 'client-b', 15)
+      const heardA = await waitForInboundThenCollect(clientARx, 'client-a', 15)
+      const heardB = await collectAgentFrames(clientBRx, 'client-b', 15)
       assertTonePresentStereo(heardA.left, heardA.right, wavFixture!.freqHz, 'target A')
       assertToneAbsentStereo(heardB.left, heardB.right, wavFixture!.freqHz, 'non-target B')
 
@@ -439,6 +451,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
 
       host.stopAudioPlay(playId)
     } finally {
+      stopLiveReaders([clientARx, clientBRx])
       closeClient(clientA)
       closeClient(clientB)
       await delay(100)
@@ -456,16 +469,18 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.setClientPose('client-pan-left', centerPose)
 
     const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-pan-left')
+    const clientRx = createLiveInboundReader(client.agentAudio)
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
         position: { placement: 'left' },
       })
       await waitForClipPlaying(host, playId)
-      const mix = await waitForInboundThenCollect(client.agentAudio, 'placement left', 20)
+      const mix = await waitForInboundThenCollect(clientRx, 'placement left', 20)
       assertSideDominates(mix.left, mix.right, wavFixture!.freqHz, 'left', 'clip left')
       host.stopAudioPlay(playId)
     } finally {
+      clientRx.stop()
       closeClient(client)
       await delay(200)
     }
@@ -482,16 +497,18 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.setClientPose('client-pan-right', centerPose)
 
     const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-pan-right')
+    const clientRx = createLiveInboundReader(client.agentAudio)
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
         position: { placement: 'right' },
       })
       await waitForClipPlaying(host, playId)
-      const mix = await waitForInboundThenCollect(client.agentAudio, 'placement right', 20)
+      const mix = await waitForInboundThenCollect(clientRx, 'placement right', 20)
       assertSideDominates(mix.left, mix.right, wavFixture!.freqHz, 'right', 'clip right')
       host.stopAudioPlay(playId)
     } finally {
+      clientRx.stop()
       closeClient(client)
       await delay(200)
     }
@@ -508,16 +525,18 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.setClientPose('client-pose-pos', centerPose)
 
     const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-pose-pos')
+    const clientRx = createLiveInboundReader(client.agentAudio)
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
         position: { pose: poseAtX(3) },
       })
       await waitForClipPlaying(host, playId)
-      const mix = await waitForInboundThenCollect(client.agentAudio, 'pose +x', 20)
+      const mix = await waitForInboundThenCollect(clientRx, 'pose +x', 20)
       assertSideDominates(mix.left, mix.right, wavFixture!.freqHz, 'right', 'pose +x')
       host.stopAudioPlay(playId)
     } finally {
+      clientRx.stop()
       closeClient(client)
       await delay(200)
     }
@@ -534,16 +553,18 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.setClientPose('client-pose-neg', centerPose)
 
     const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-pose-neg')
+    const clientRx = createLiveInboundReader(client.agentAudio)
     try {
       const { playId } = await host.playAudio({
         source: { path: wavFixture!.path },
         position: { pose: poseAtX(-3) },
       })
       await waitForClipPlaying(host, playId)
-      const mix = await waitForInboundThenCollect(client.agentAudio, 'pose -x', 20)
+      const mix = await waitForInboundThenCollect(clientRx, 'pose -x', 20)
       assertSideDominates(mix.left, mix.right, wavFixture!.freqHz, 'left', 'pose -x')
       host.stopAudioPlay(playId)
     } finally {
+      clientRx.stop()
       closeClient(client)
       await delay(200)
     }
@@ -559,14 +580,16 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     host.setTtsPosition({ placement: 'right' })
 
     const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-tts')
+    const clientRx = createLiveInboundReader(client.agentAudio)
     try {
       const agent = host.sessions.get('client-tts')?.agent
       expect(agent).toBeDefined()
       await agent!.sendTextToTTS('hello')
-      const mix = await collectAgentFrames(client.agentAudio, 'tts placement', 25)
+      const mix = await collectAgentFrames(clientRx, 'tts placement', 25)
       const mockTtsFreq = 440 + 'mock'.length * 10
       assertSideDominates(mix.left, mix.right, mockTtsFreq, 'right', 'tts placement right')
     } finally {
+      clientRx.stop()
       closeClient(client)
       await delay(100)
     }
@@ -584,6 +607,9 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       connectClientToSession(wsUrl, SMOKE_SESSION_IDS[1], SMOKE_PEER_IDS[1]),
       connectClientToSession(wsUrl, SMOKE_SESSION_IDS[2], SMOKE_PEER_IDS[2]),
     ])
+    const client1Rx = createLiveInboundReader(client1.agentAudio)
+    const client2Rx = createLiveInboundReader(client2.agentAudio)
+    const client3Rx = createLiveInboundReader(client3.agentAudio)
 
     try {
       await client1.mic.writeSample(Buffer.alloc(960), 5)
@@ -598,34 +624,29 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       driverHost.createMixGroup({ id: 'clip-shared', clientIds: [...SMOKE_PEER_IDS] })
 
       const bindings = smokeSessionBindings(pod)
-      const listener = client2
       const clipSource = { path: wavFixture!.path }
 
-      await waitForInboundStereoQuiet(listener.agentAudio, {
+      await waitForInboundStereoQuiet(client2Rx, {
         threshold: STEREO_QUIET_THRESHOLD,
         quietWindowMs: QUIET_WINDOW_MS,
         timeoutMs: QUIET_WAIT_MS,
         label: 'quiet baseline before clip play',
       })
-      const quietBaseline = await accumulateInboundStereoRms(
-        listener.agentAudio,
-        QUIET_BASELINE_PROBE_MS,
-      )
+      const quietBaseline = await accumulateInboundStereoRms(client2Rx, QUIET_BASELINE_PROBE_MS)
 
       const [energyGListener, energyGExcluded] = await probeClipPlayInboundEnergy(
         bindings,
         { peerIds: [SMOKE_PEER_IDS[1]] },
-        [listener.agentAudio, client3.agentAudio],
+        [client2Rx, client3Rx],
         clipSource,
       )
       assertMuchQuieter(quietBaseline, energyGListener)
       assertMuchQuieter(energyGExcluded, energyGListener)
 
-      const hClients = [client1, client2, client3]
       const energiesH = await probeClipPlayInboundEnergy(
         bindings,
         {},
-        hClients.map((client) => client.agentAudio),
+        [client1Rx, client2Rx, client3Rx],
         clipSource,
       )
       for (const [index, energy] of energiesH.entries()) {
@@ -642,6 +663,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         }
       }
     } finally {
+      stopLiveReaders([client1Rx, client2Rx, client3Rx])
       closeClient(client1)
       closeClient(client2)
       closeClient(client3)
@@ -661,6 +683,9 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       connectClientToSession(wsUrl, SMOKE_SESSION_IDS[1], SMOKE_PEER_IDS[1]),
       connectClientToSession(wsUrl, SMOKE_SESSION_IDS[2], SMOKE_PEER_IDS[2]),
     ])
+    const client1Rx = createLiveInboundReader(client1.agentAudio)
+    const client2Rx = createLiveInboundReader(client2.agentAudio)
+    const client3Rx = createLiveInboundReader(client3.agentAudio)
 
     try {
       await client1.mic.writeSample(Buffer.alloc(960), 5)
@@ -675,34 +700,29 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       driverHost.createMixGroup({ id: 'clip-url-shared', clientIds: [...SMOKE_PEER_IDS] })
 
       const bindings = smokeSessionBindings(pod)
-      const listener = client2
       const clipSource = { url: clipServer.url }
 
-      await waitForInboundStereoQuiet(listener.agentAudio, {
+      await waitForInboundStereoQuiet(client2Rx, {
         threshold: STEREO_QUIET_THRESHOLD,
         quietWindowMs: QUIET_WINDOW_MS,
         timeoutMs: QUIET_WAIT_MS,
         label: 'quiet baseline before URL clip play',
       })
-      const quietBaseline = await accumulateInboundStereoRms(
-        listener.agentAudio,
-        QUIET_BASELINE_PROBE_MS,
-      )
+      const quietBaseline = await accumulateInboundStereoRms(client2Rx, QUIET_BASELINE_PROBE_MS)
 
       const [energyGListener, energyGExcluded] = await probeClipPlayInboundEnergy(
         bindings,
         { peerIds: [SMOKE_PEER_IDS[1]] },
-        [listener.agentAudio, client3.agentAudio],
+        [client2Rx, client3Rx],
         clipSource,
       )
       assertMuchQuieter(quietBaseline, energyGListener)
       assertMuchQuieter(energyGExcluded, energyGListener)
 
-      const hClients = [client1, client2, client3]
       const energiesH = await probeClipPlayInboundEnergy(
         bindings,
         {},
-        hClients.map((client) => client.agentAudio),
+        [client1Rx, client2Rx, client3Rx],
         clipSource,
       )
       for (const [index, energy] of energiesH.entries()) {
@@ -719,6 +739,7 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
         }
       }
     } finally {
+      stopLiveReaders([client1Rx, client2Rx, client3Rx])
       await clipServer.close()
       closeClient(client1)
       closeClient(client2)
@@ -737,14 +758,16 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
     await host.setTtsPosition({ pose: poseAtX(3) }, { clientId: 'client-tts-pose' })
 
     const client = await connectReadyVoiceClient(host, wsUrl, sessionId, 'client-tts-pose')
+    const clientRx = createLiveInboundReader(client.agentAudio)
     try {
       const agent = host.sessions.get('client-tts-pose')?.agent
       expect(agent).toBeDefined()
       await agent!.sendTextToTTS('hi')
-      const mix = await collectAgentFrames(client.agentAudio, 'tts pose', 25)
+      const mix = await collectAgentFrames(clientRx, 'tts pose', 25)
       const mockTtsFreq = 440 + 'mock'.length * 10
       assertSideDominates(mix.left, mix.right, mockTtsFreq, 'right', 'tts pose +x')
     } finally {
+      clientRx.stop()
       closeClient(client)
       await delay(100)
     }

@@ -275,6 +275,9 @@ export interface JsLanguageIdConfig {
   allowlist?: Array<string>
   minSpeechMs?: number
   continuous?: boolean
+  lidMaxClipMs?: number
+  lidGateMaxWaitMs?: number
+  ttsExclusion?: boolean
 }
 export interface JsVoiceAgentConfig {
   vad?: JsVadConfig
@@ -527,11 +530,7 @@ export declare class JsVoiceAgent {
   attach(outboundTrack: JsLocalAudioTrack): Promise<void>
   start(sessionContext?: JsVoiceSessionContext | undefined | null): Promise<void>
   stop(): Promise<void>
-  /** Synchronous TTS enqueue intent (call before awaiting `send_text_to_tts`). */
-  noteTtsEnqueue(): void
   sendTextToTts(text: string, nonBlocking?: boolean | undefined | null): Promise<void>
-  /** Flush hang-up deferred LID after the `user_speech_final` handler returns. */
-  flushDeferredHangupLanguageId(): Promise<void>
   flushTts(): Promise<void>
   /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */
   waitTtsPlaybackIdle(): Promise<void>

@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **speech** — Default spoken language ID identifies at `user_speaking_end` when buffered speech reaches `minSpeechMs`, not mid-utterance at that threshold. Hang-up LID runs after the `user_speech_final` handler returns (causal flush) or after TTS playback drains — never on a wall-clock timer. Defers while TTS enqueue/synthesis/playback is active so echo `sendTextToTTS` on final cannot overlap Whisper. Continuous mode (`languageId.continuous: true`) still identifies mid-utterance when TTS is idle.
+- **speech** — Default spoken language ID starts at VAD `SpeechEnd` in the STT close window (when TTS is idle and buffered speech reaches `minSpeechMs`). `user_language` precedes `user_speaking_end` and `user_speech_final` when `languageId.ttsExclusion` is enabled (default for `tts.provider: localSherpa`; remote/streaming TTS is never delayed). The final awaits in-flight LID only with exclusion on (fault-path `lidGateMaxWaitMs` only). TTS synthesis waits for any in-flight LID before starting a job when exclusion is on. When TTS is active at `SpeechEnd` with exclusion on, LID defers to playback drain. Clip fed to Whisper is capped at `lidMaxClipMs` (default 5000). Continuous mode (`languageId.continuous: true`) still identifies mid-utterance when TTS is idle.
 
 ## [0.9.6] - 2026-09-11
 

@@ -420,20 +420,71 @@ pub struct LanguageIdConfig {
     /// Optional ISO 639-1 allowlist; other detected codes are ignored.
     #[serde(default)]
     pub allowlist: Option<Vec<String>>,
-    /// Minimum buffered speech (ms) before identify runs at `user_speaking_end` (default mode)
+    /// Minimum buffered speech (ms) before identify runs at VAD `SpeechEnd` (default mode)
     /// or before the first mid-utterance identify when `continuous` is true. Default 1000.
     #[serde(default)]
     pub min_speech_ms: Option<u32>,
     /// When `Some(true)`, start identify after ~`min_speech_ms` of speech while the user is
     /// still speaking (re-run after each pass completes during a long utterance).
-    /// Default (unset/false): buffer inbound PCM during the utterance; identify once at
-    /// `user_speaking_end` when buffered speech reaches `min_speech_ms` (or force at hang-up).
+    /// Default (unset/false): buffer inbound PCM during the utterance; identify at VAD
+    /// `SpeechEnd` when buffered speech reaches `min_speech_ms` (STT close window gates final).
     #[serde(default)]
     pub continuous: Option<bool>,
+    /// Maximum PCM clip (ms) fed to the identifier per identify pass. Default 5000.
+    #[serde(default)]
+    pub lid_max_clip_ms: Option<u32>,
+    /// Fault-path bound (ms) when gating `user_speech_final` on a hung in-flight identify.
+    /// Default 3000. Must not fire under normal mock/test identifiers.
+    #[serde(default)]
+    pub lid_gate_max_wait_ms: Option<u32>,
+    /// When `Some(true)`, defer LID while local TTS is active, gate `user_speech_final` on
+    /// in-flight LID, and make the TTS synthesis worker wait for LID (local Whisper vs local
+    /// Piper CPU conflict). When `Some(false)`, LID still starts at VAD `SpeechEnd` but the
+    /// final and TTS are never delayed; `user_language` arrives when identify completes.
+    /// Default (unset): enabled only when `tts.provider` is `LocalSherpa`; remote/streaming
+    /// TTS vendors must not be delayed by LID.
+    #[serde(default)]
+    pub tts_exclusion: Option<bool>,
 }
 
 fn default_language_id_min_speech_ms() -> u32 {
     1000
+}
+
+fn default_lid_max_clip_ms() -> u32 {
+    5000
+}
+
+fn default_lid_gate_max_wait_ms() -> u32 {
+    3000
+}
+
+pub fn resolved_lid_max_clip_ms(config: &LanguageIdConfig) -> u32 {
+    config
+        .lid_max_clip_ms
+        .unwrap_or_else(default_lid_max_clip_ms)
+        .max(1)
+}
+
+pub fn resolved_lid_gate_max_wait_ms(config: &LanguageIdConfig) -> u32 {
+    config
+        .lid_gate_max_wait_ms
+        .unwrap_or_else(default_lid_gate_max_wait_ms)
+        .max(1)
+}
+
+/// True when LID must not overlap local TTS synthesis (gate final, defer at active TTS, TTS worker wait).
+pub fn lid_tts_exclusion_enabled(
+    language_id: &Option<LanguageIdConfig>,
+    tts: &Option<TtsConfig>,
+) -> bool {
+    if let Some(lid) = language_id {
+        if let Some(explicit) = lid.tts_exclusion {
+            return explicit;
+        }
+    }
+    tts.as_ref()
+        .is_some_and(|cfg| cfg.provider == TtsVendor::LocalSherpa)
 }
 
 /// True when `language_id` should run (non-empty `model_path` and not explicitly disabled).
@@ -489,6 +540,9 @@ mod language_id_config_tests {
             allowlist: None,
             min_speech_ms: None,
             continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
         })));
     }
 
@@ -500,6 +554,9 @@ mod language_id_config_tests {
             allowlist: None,
             min_speech_ms: None,
             continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
         })));
     }
 
@@ -511,6 +568,9 @@ mod language_id_config_tests {
             allowlist: None,
             min_speech_ms: None,
             continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
         })));
     }
 
@@ -522,6 +582,9 @@ mod language_id_config_tests {
             allowlist: Some(vec!["en".into(), "de".into()]),
             min_speech_ms: None,
             continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
         };
         assert!(language_id_allowlist_accepts(&cfg, "en"));
         assert!(language_id_allowlist_accepts(&cfg, "DE"));
@@ -536,6 +599,9 @@ mod language_id_config_tests {
             allowlist: None,
             min_speech_ms: None,
             continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
         };
         assert_eq!(resolved_language_id_min_speech_ms(&cfg), 1000);
     }
@@ -549,6 +615,9 @@ mod language_id_config_tests {
             allowlist: None,
             min_speech_ms: None,
             continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
         })));
         assert!(!language_id_continuous(&Some(LanguageIdConfig {
             enabled: None,
@@ -556,6 +625,9 @@ mod language_id_config_tests {
             allowlist: None,
             min_speech_ms: None,
             continuous: Some(false),
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
         })));
     }
 
@@ -567,7 +639,54 @@ mod language_id_config_tests {
             allowlist: None,
             min_speech_ms: None,
             continuous: Some(true),
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
         })));
+    }
+
+    #[test]
+    fn tts_exclusion_defaults_from_tts_vendor() {
+        let lid = LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/x".into()),
+            allowlist: None,
+            min_speech_ms: None,
+            continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
+        };
+        let local = Some(TtsConfig {
+            provider: TtsVendor::LocalSherpa,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        });
+        let mock = Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        });
+        assert!(lid_tts_exclusion_enabled(&Some(lid.clone()), &local));
+        assert!(!lid_tts_exclusion_enabled(&Some(lid.clone()), &mock));
+        assert!(!lid_tts_exclusion_enabled(
+            &Some(LanguageIdConfig {
+                tts_exclusion: Some(false),
+                ..lid.clone()
+            }),
+            &local,
+        ));
+        assert!(lid_tts_exclusion_enabled(
+            &Some(LanguageIdConfig {
+                tts_exclusion: Some(true),
+                ..lid
+            }),
+            &mock,
+        ));
     }
 }
 

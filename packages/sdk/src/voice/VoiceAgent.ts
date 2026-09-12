@@ -32,7 +32,6 @@ import type {
   VoiceSessionContext,
   SendTextToTtsOptions,
 } from './types'
-import { SPEECH_EVENT_TYPE } from './types.js'
 
 const MODULE = 'voice::VoiceAgent'
 
@@ -307,7 +306,6 @@ export class VoiceAgent {
    */
   async sendTextToTTS(text: string, options?: SendTextToTtsOptions): Promise<void> {
     debugFn(MODULE, 'sendTextToTTS', `chars=${text.length}`)
-    this.native.noteTtsEnqueue()
     await this.native.sendTextToTts(text, options?.nonBlocking ?? undefined)
   }
 
@@ -373,9 +371,6 @@ export class VoiceAgent {
         const event = await this.waitSpeechStreamEvent()
         if (event) {
           yield event
-          if (event.type === SPEECH_EVENT_TYPE.userSpeechFinal) {
-            await this.native.flushDeferredHangupLanguageId()
-          }
         } else {
           await new Promise((resolve) => setTimeout(resolve, 10))
         }
@@ -387,9 +382,6 @@ export class VoiceAgent {
       if (event) {
         const speechEvent = fromJsSpeechEvent(event)
         yield speechEvent
-        if (speechEvent.type === SPEECH_EVENT_TYPE.userSpeechFinal) {
-          await this.native.flushDeferredHangupLanguageId()
-        }
       } else {
         await new Promise((resolve) => setTimeout(resolve, 10))
       }
@@ -424,8 +416,6 @@ export class VoiceAgent {
           this.dispatch(event)
           if (this.eventsMode === 'both') {
             this.enqueueSpeechStreamEvent(event)
-          } else if (event.type === SPEECH_EVENT_TYPE.userSpeechFinal) {
-            await this.native.flushDeferredHangupLanguageId()
           }
         } catch (error: unknown) {
           if (isVoiceDebugEnabled()) {

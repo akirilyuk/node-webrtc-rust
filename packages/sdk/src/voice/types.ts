@@ -146,6 +146,15 @@ export interface LanguageIdConfig {
    * stretching gaps between sentences so short first TTS bursts may be missed.
    */
   continuous?: boolean
+  /** Maximum PCM clip (ms) fed to the identifier per pass. Default 5000. */
+  lidMaxClipMs?: number
+  /** Fault-path max wait (ms) when gating `user_speech_final` on hung LID. Default 3000. */
+  lidGateMaxWaitMs?: number
+  /**
+   * When true, gate final/TTS on in-flight LID (local Sherpa TTS only by default).
+   * When false, final and TTS are never delayed; `userLanguage` follows when identify completes.
+   */
+  ttsExclusion?: boolean
 }
 
 /** Full configuration for {@link VoiceAgent}. */

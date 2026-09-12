@@ -148,6 +148,26 @@ npm run start:roundtrip-counting-echo --workspace=@node-webrtc-rust/example-voic
 
 Other `SHERPA_COUNTING_*` vars apply (`TIMEOUT_MS`, `VERBOSE`, etc.).
 
+## Counting echo + language ID (staging echo-smoke order)
+
+[`src/roundtrip-counting-echo-lid.ts`](./src/roundtrip-counting-echo-lid.ts) matches **staging echo-smoke**: Agent 1 speaks counting; Agent 2 enables Whisper LID (`minSpeechMs` **2500**, cloud default) and on `user_speech_final` **immediately** speaks `echo. {recognized}` — no harness settle gap before echo TTS. Agent 1 inbound STT must include a **non-digit prefix** before the first number word (rejects counting-only transcripts like staging `local STT missing any prefix before counting`).
+
+```bash
+npm run build:native
+npm run download-lid:whisper-tiny --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run start:roundtrip-counting-echo-lid --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Unit tests (no models): `npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa` (includes `roundtrip-counting-echo-lid.test.ts`).
+
+| Env | Default | Purpose |
+| --- | --- | --- |
+| `SHERPA_LID_MODEL_PATH` | `.models/sherpa-onnx-whisper-tiny` | Whisper tiny for Agent 2 LID |
+| `SHERPA_COUNTING_PHRASE` | one … ten | Agent 1 source phrase |
+| `SHERPA_COUNTING_TIMEOUT_MS` | `90000` | Wait for Agent 1 inbound echo transcript |
+
+CI timeout: same bucket as `start:roundtrip-counting-echo` (`sherpa_roundtrip_timeout_sec`).
+
 ## Counting barge-in recovery roundtrip
 
 [`src/roundtrip-counting-barge-recovery.ts`](./src/roundtrip-counting-barge-recovery.ts) extends the echo harness with a **barge-in** step and a **recovery** round:

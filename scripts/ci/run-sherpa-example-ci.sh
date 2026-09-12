@@ -31,7 +31,7 @@ sherpa_roundtrip_timeout_sec() {
       # 120s in-process wall + long TTS; allow one VOICE_DEBUG re-run.
       echo "${CI_SHERPA_COUNTING_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
-    start:roundtrip-counting-echo | start:roundtrip)
+    start:roundtrip-counting-echo | start:roundtrip-counting-echo-lid | start:roundtrip)
       echo "${CI_SHERPA_LONG_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
     *)
@@ -51,6 +51,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-barge-in
   start:roundtrip-barge-in-buffered
   start:roundtrip-counting-echo
+  start:roundtrip-counting-echo-lid
   start:roundtrip-counting-barge-recovery
   start:roundtrip-concurrent-multi-client
   start:roundtrip-language-id

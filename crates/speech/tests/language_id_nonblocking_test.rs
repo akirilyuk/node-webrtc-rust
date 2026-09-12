@@ -677,6 +677,51 @@ async fn language_id_does_not_overlap_tts_synthesis() {
     agent.stop().await.unwrap();
 }
 
+/// Staging echo-smoke order: minSpeechMs LID is already in flight when `speak("echo. …")` runs.
+/// Opposite of `language_id_does_not_overlap_tts_synthesis` (TTS first). Must fail until default
+/// LID defers identify to utterance end (#215 defer alone is not enough).
+#[tokio::test]
+async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let guard = Arc::new(OverlapGuard {
+        lid_in_flight: AtomicUsize::new(0),
+        tts_in_flight: AtomicUsize::new(0),
+        violated: AtomicBool::new(false),
+    });
+    let agent = agent_with_overlap_tracking_lid(Arc::clone(&stt_bytes), Arc::clone(&guard));
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+
+    // Same 12-frame pattern as `language_id_does_not_block_tts_playback` — slow LID in flight.
+    for _ in 0..12 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    agent
+        .send_text_to_tts_with_options(
+            "echo. One, two, three, four, five, six, seven, eight, nine, ten",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    assert!(
+        !guard.violated.load(Ordering::SeqCst),
+        "leftover minSpeechMs LID must not overlap later TTS synthesize (staging 30m voice/billing prefix skip)"
+    );
+
+    agent.stop().await.unwrap();
+}
+
 struct CountingLidTestFactory {
     stt_bytes: Arc<Mutex<usize>>,
     lid_calls: Arc<AtomicUsize>,

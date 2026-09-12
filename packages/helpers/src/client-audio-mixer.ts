@@ -194,7 +194,10 @@ type PeerMixState = {
   pcOutbound?: MixPumpOutboundTrack
   /** Wall-clock pump origin (`performance.now()`). */
   pumpT0: number
-  /** Outbound frames written since {@link pumpT0} (skips do not increment). */
+  /**
+   * Due 20 ms slots consumed since {@link pumpT0}: frames written plus active-window skips.
+   * A skipped slot is consumed too — its wall time has passed and must not accumulate as backlog.
+   */
   pumpWritten: number
   /** Last sidecar full-frame enqueue time (ms). */
   lastSidecarEnqueueAt: number | null
@@ -677,6 +680,8 @@ export class ClientAudioMixer {
         state.consecutiveTtsSkips < TTS_MAX_CONSECUTIVE_SKIPS
       ) {
         state.consecutiveTtsSkips += 1
+        state.pumpWritten += 1
+        due -= 1
         slotsAttempted += 1
         continue
       }

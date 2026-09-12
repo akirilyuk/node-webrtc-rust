@@ -53,8 +53,7 @@ impl OpusDecoder {
             return Err(DecodeError::EmptyPayload);
         }
 
-        let packet =
-            Packet::try_from(payload).map_err(|e| DecodeError::Packet(e.to_string()))?;
+        let packet = Packet::try_from(payload).map_err(|e| DecodeError::Packet(e.to_string()))?;
 
         let output = MutSignals::try_from(&mut self.pcm_scratch[..])
             .map_err(|e| DecodeError::Output(e.to_string()))?;

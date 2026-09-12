@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-09-12
+
+Agent speech no longer reaches clients chopped 20 ms on / 20 ms off (helpers 0.9.6 mix pump double-write); STT keeps sub-threshold speech onset in a continuous pre-roll; default spoken language ID starts at VAD `SpeechEnd`.
+
 ### Fixed
 
 - **speech** — STT pre-roll uses continuous lookback while the gate is closed: sub-threshold speech onset and preceding silence are retained in the ring and flushed at VAD `SpeechStart`, so the first word is no longer clipped when onset is quieter than the VAD threshold.
@@ -22,6 +26,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Tests
 
 - **helpers** — Mix/clip energy probes use a phase-continuous 500 Hz tone instead of a DC "loud" frame (Opus rejects DC, so the old stimulus decoded to silence ~200 ms after each step and only survived thanks to the fixed 0.9.6 double-write), and read remote tracks through a continuously draining `createLiveInboundReader` so windows measure live audio instead of stale receive backlog.
+
+**Compare:** [`release/0.9.6…release/0.9.7`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.6...release/0.9.7)
 
 ## [0.9.6] - 2026-09-11
 

@@ -168,6 +168,31 @@ Unit tests (no models): `npm run test:roundtrip-counting --workspace=@node-webrt
 
 CI timeout: same bucket as `start:roundtrip-counting-echo` (`sherpa_roundtrip_timeout_sec`).
 
+## Counting echo + LID — 5 concurrent sessions (ultimate pool env)
+
+[`src/roundtrip-counting-echo-lid-multi.ts`](./src/roundtrip-counting-echo-lid-multi.ts) runs **five** speaker↔echo pairs in one process (default `SESSIONS=5`), all driven concurrently with a shared `SherpaModelPool`. Echo agents are hosted by **`VoiceAgentSessionHost`** (runner path: fire-and-forget async `onSpeechEvent`). On `user_speech_final`, the handler waits **100 ms** then `ctx.speak(formatEchoSmokeReply(text))` to model runner→child→`speak` IPC. LID uses cloud-default `minSpeechMs` **2500** with local-sherpa TTS (`ttsExclusion` on by default — not set explicitly).
+
+The npm script bakes in ultimate-tier pool/thread env: `SHERPA_POOL_MAX_CONCURRENT_DECODE=2`, `SHERPA_STT_NUM_THREADS=1`, `SHERPA_POOL_MAX_CONCURRENT_TTS=2`, `SHERPA_TTS_NUM_THREADS=1`.
+
+**Proves:** no clipped first/middle/last counting words under concurrent load; inbound echo passes prefix matcher **and** full one…ten order; echo side `user_language` before `user_speech_final`; `user_speaking_end` immediately precedes final; no `agent_speaking_start` before `user_language`.
+
+```bash
+npm run build:native
+npm run download-lid:whisper-tiny --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+SHERPA_COUNTING_VERBOSE=1 npm run start:roundtrip-counting-echo-lid-multi --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Unit tests (no models): `npx vitest run examples/voice-agent-local-sherpa/src/roundtrip-counting-echo-lid-multi-assert.test.ts` or `npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`.
+
+| Env | Default | Purpose |
+| --- | --- | --- |
+| `SESSIONS` | `5` | Concurrent speaker↔echo pairs (1–10) |
+| `SHERPA_ROUNDTRIP_WALL_MS` | `180000` | Process wall clock (5 sessions @ 2-thread pools) |
+| `SHERPA_COUNTING_PHRASE` | one … ten | Speaker source phrase |
+| `SHERPA_COUNTING_TIMEOUT_MS` | `90000` | Per-session STT wait |
+
+CI: `start:roundtrip-counting-echo-lid-multi` in `SHERPA_ROUNDTRIP_E2E` (`run-sherpa-example-ci.sh`).
+
 ## Counting barge-in recovery roundtrip
 
 [`src/roundtrip-counting-barge-recovery.ts`](./src/roundtrip-counting-barge-recovery.ts) extends the echo harness with a **barge-in** step and a **recovery** round:

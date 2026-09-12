@@ -52,6 +52,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-barge-in-buffered
   start:roundtrip-counting-echo
   start:roundtrip-counting-echo-lid
+  start:roundtrip-counting-echo-lid-multi
   start:roundtrip-counting-barge-recovery
   start:roundtrip-concurrent-multi-client
   start:roundtrip-language-id

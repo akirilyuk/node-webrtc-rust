@@ -29,6 +29,7 @@ import {
   playSpeakerTtsWithPostSilence,
   postTtsSilenceSeconds,
   sttFinalizeWaitMs,
+  waitAgentPlaybackEndRace,
 } from './roundtrip-counting.js'
 import { echoVadConfig } from './roundtrip-counting-echo.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
@@ -161,7 +162,7 @@ async function main(): Promise<void> {
   const echoPumpTask = pumpImmediateEchoOnFinal(agent2, agent2EndLatch)
 
   console.log(`Agent1 TTS: "${countingPhrase}"`)
-  const playbackPromise = playSpeakerTtsWithPostSilence({
+  const agent1PlaybackPromise = playSpeakerTtsWithPostSilence({
     speaker: agent1,
     speakerOut: agentOut,
     phrase: countingPhrase,
@@ -170,12 +171,25 @@ async function main(): Promise<void> {
     agentSpeakingEndLatch: agent1EndLatch,
   })
 
+  const agent2EchoPlaybackPromise = waitAgentPlaybackEndRace({
+    phrase: formatEchoSmokeReply(countingPhrase),
+    capMs: timeoutMs,
+    waitForAgentSpeakingEnd: () => agent2EndLatch.waitForNext(timeoutMs),
+  }).then(async () => {
+    if (postTtsSilenceS > 0) {
+      console.log(
+        `[agent2] post-TTS silence ${postTtsSilenceS.toFixed(1)}s on userOut (echo leg)`,
+      )
+      await streamSilence(userOut, postTtsSilenceS)
+    }
+  })
+
   const recognized = await collectorAgent1.waitForNextAfterPlayback(
-    playbackPromise,
+    Promise.all([agent1PlaybackPromise, agent2EchoPlaybackPromise]),
     timeoutMs,
     finalizeWaitMs,
   )
-  await playbackPromise
+  await Promise.all([agent1PlaybackPromise, agent2EchoPlaybackPromise])
 
   const best = collectorAgent1.stats.finals.reduce(
     (a, b) => (a.trim().length >= b.trim().length ? a : b),

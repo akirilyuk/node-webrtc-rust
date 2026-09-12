@@ -82,6 +82,9 @@ fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
     vad.min_silence_duration_ms.max(400).min(600)
 }
 
+/// After `user_speech_final`, allow the app event loop to enqueue TTS before hang-up Whisper.
+const LID_HANGUP_TTS_GRACE_MS: u64 = 50;
+
 /// True when most of the post–speech-end gate hold has elapsed (90%), i.e. resume is a new phrase not a digit gap.
 fn gate_hold_long_pause_elapsed(hold_total: u32, hold_elapsed: u32) -> bool {
     hold_total > 0 && hold_elapsed.saturating_mul(10) > hold_total.saturating_mul(9)
@@ -1611,25 +1614,20 @@ impl VoiceAgent {
         }
 
         if !already_final {
-            let emit_speaking_end = {
+            let (emit_speaking_end, final_text) = {
                 let mut inner = self.inner.lock().await;
                 let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
                 if emit_end {
                     inner.stt_speaking_end_emitted_this_utterance = true;
                 }
-                emit_end
-            };
-            if emit_speaking_end {
-                voice_debug("emit user_speaking_end (forced utterance close)");
-                self.emit_user_speaking_end_with_lid().await;
-            }
-            let final_text = last_partial.unwrap_or_default();
-            {
-                let mut inner = self.inner.lock().await;
                 inner.stt_final_emitted_this_utterance = true;
                 inner.stt_finalize_pending = false;
                 inner.stt_endpoint_closing_started = false;
-            }
+                (
+                    emit_end,
+                    last_partial.unwrap_or_default(),
+                )
+            };
             voice_debug(format!(
                 "emit user_speech_final (forced): {}",
                 if final_text.len() > 80 {
@@ -1639,6 +1637,10 @@ impl VoiceAgent {
                 }
             ));
             self.emit(SpeechEvent::user_speech_final(final_text));
+            if emit_speaking_end {
+                voice_debug("emit user_speaking_end (forced utterance close)");
+                self.emit_user_speaking_end_with_lid().await;
+            }
         }
         Ok(())
     }
@@ -1749,23 +1751,43 @@ impl VoiceAgent {
 
     async fn emit_user_speaking_end_with_lid(&self) {
         self.emit(SpeechEvent::user_speaking_end());
-        let should_force_identify = {
+        let should_defer_hangup_lid = {
             let mut inner = self.inner.lock().await;
             inner.lid_buffering = false;
-            !inner.lid_identify_started_this_utterance && !inner.lid_identify_in_flight
+            if inner.lid_identify_started_this_utterance || inner.lid_identify_in_flight {
+                false
+            } else if !language_id_enabled(&inner.config.language_id) {
+                false
+            } else {
+                inner.lid_identify_deferred = true;
+                inner.lid_identify_started_this_utterance = true;
+                true
+            }
         };
-        if should_force_identify {
-            self.spawn_identify_language(true).await;
+        if !should_defer_hangup_lid {
+            return;
         }
-        // Hang-up defer may land after TTS already drained (short utterance + fast mock TTS).
-        if !self.tts_active_for_lid_defer().await {
-            Self::maybe_spawn_deferred_lid_after_tts(
-                &self.weak_self,
-                &self.tts_synthesis_queue,
-                &self.inner,
-            )
-            .await;
+        if self.tts_active_for_lid_defer().await {
+            voice_debug("LID hang-up identify deferred (TTS active)");
+            return;
         }
+        voice_debug("LID hang-up identify deferred (TTS enqueue grace)");
+        self.schedule_hangup_lid_grace_flush();
+    }
+
+    /// Flush hang-up LID after a short grace so `sendTextToTTS` on `user_speech_final` can queue first.
+    fn schedule_hangup_lid_grace_flush(&self) {
+        let weak_self = self.weak_self.clone();
+        let queue = Arc::clone(&self.tts_synthesis_queue);
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(LID_HANGUP_TTS_GRACE_MS)).await;
+            let still_deferred = inner.lock().await.lid_identify_deferred;
+            if !still_deferred {
+                return;
+            }
+            Self::maybe_spawn_deferred_lid_after_tts(&weak_self, &queue, &inner).await;
+        });
     }
 
     async fn tts_active_for_lid_defer(&self) -> bool {
@@ -2412,10 +2434,6 @@ impl VoiceAgent {
                     inner.stt_endpoint_closing_started = false;
                     emit_end
                 };
-                if emit_speaking_end {
-                    voice_debug("emit user_speaking_end (finalize without vendor final)");
-                    self.emit_user_speaking_end_with_lid().await;
-                }
                 voice_debug(format!(
                     "emit user_speech_final (last partial fallback): {}",
                     if forced_text.len() > 80 {
@@ -2425,6 +2443,10 @@ impl VoiceAgent {
                     }
                 ));
                 self.emit(SpeechEvent::user_speech_final(forced_text));
+                if emit_speaking_end {
+                    voice_debug("emit user_speaking_end (finalize without vendor final)");
+                    self.emit_user_speaking_end_with_lid().await;
+                }
             } else {
                 let emit_speaking_end_without_final = {
                     let mut inner = self.inner.lock().await;
@@ -2570,10 +2592,6 @@ impl VoiceAgent {
                         self.emit(SpeechEvent::stt_stream_end());
                         self.emit(SpeechEvent::user_stt_end());
                     }
-                    if emit_speaking_end {
-                        voice_debug("emit user_speaking_end (paired with STT final)");
-                        self.emit_user_speaking_end_with_lid().await;
-                    }
                     voice_debug(format!(
                         "emit user_speech_final: {}",
                         if text.len() > 80 {
@@ -2583,6 +2601,10 @@ impl VoiceAgent {
                         }
                     ));
                     self.emit(SpeechEvent::user_speech_final(text));
+                    if emit_speaking_end {
+                        voice_debug("emit user_speaking_end (paired with STT final)");
+                        self.emit_user_speaking_end_with_lid().await;
+                    }
                 }
             }
         }

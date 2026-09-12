@@ -744,8 +744,8 @@ async fn language_id_does_not_overlap_tts_synthesis() {
     agent.stop().await.unwrap();
 }
 
-/// Staging echo-smoke order: user speech crosses minSpeechMs, then `speak("echo. …")` runs.
-/// Default mode must not start Whisper mid-utterance; identify after speaking_end must not overlap Piper.
+/// Staging echo-smoke order: speech crosses minSpeechMs, speaking_end, then immediate `speak("echo. …")`.
+/// Hang-up LID must not start Whisper before TTS enqueue; deferred identify must not overlap Piper.
 #[tokio::test]
 async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
@@ -755,17 +755,27 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
         violated: AtomicBool::new(false),
     });
     let agent = agent_with_overlap_tracking_lid(Arc::clone(&stt_bytes), Arc::clone(&guard));
+    let mut rx = agent.subscribe_events();
 
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
     agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
     let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
 
-    // Same 12-frame pattern as `language_id_does_not_block_tts_playback` — buffer only, no mid-utterance LID.
+    // Buffer past min_speech_ms=200 without mid-utterance identify.
     for _ in 0..12 {
         agent
             .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    // Silence → speaking_end + hang-up defer (staging: final handler then immediate speak).
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
             .unwrap();
     }
@@ -782,7 +792,27 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
 
     assert!(
         !guard.violated.load(Ordering::SeqCst),
-        "leftover minSpeechMs LID must not overlap later TTS synthesize (staging 30m voice/billing prefix skip)"
+        "hang-up LID must not overlap TTS synthesize when speak() follows speaking_end (staging echo prefix skip)"
+    );
+
+    let lang_deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_user_language = false;
+    while Instant::now() < lang_deadline {
+        while let Ok(event) = rx.try_recv() {
+            if event.kind == SpeechEventKind::UserLanguage {
+                assert_eq!(event.language.as_deref(), Some("en"));
+                saw_user_language = true;
+                break;
+            }
+        }
+        if saw_user_language {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        saw_user_language,
+        "expected user_language after deferred hang-up identify"
     );
 
     agent.stop().await.unwrap();

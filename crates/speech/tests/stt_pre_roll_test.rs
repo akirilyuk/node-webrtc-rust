@@ -1278,6 +1278,102 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
     );
 }
 
+/// Cold inbound (no frames before the talker): first STT push must be padded to ring capacity.
+#[tokio::test]
+async fn gate_stt_cold_inbound_pre_roll_pad_to_capacity() {
+    let vad = sherpa_like_vad_config();
+    let capacity_ms = stt_pre_roll_capacity_ms(&vad);
+    let capacity_bytes = (capacity_ms as usize * 16_000 / 1000) * 2;
+    let (agent, chunks) = agent_with_recording_stt(vad).await;
+
+    let loud = loud_stereo_frame();
+    let loud_mono = i16_samples_to_bytes(&stereo_48k_to_mono_16k(&loud));
+
+    let mut pre_flush_mono = Vec::new();
+    for _ in 0..20 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+        if chunks.lock().unwrap().is_empty() {
+            pre_flush_mono.extend_from_slice(loud_mono.as_ref());
+        } else {
+            break;
+        }
+    }
+
+    let recorded = chunks.lock().unwrap();
+    assert!(
+        !recorded.is_empty(),
+        "SpeechStart must flush pre-roll to STT"
+    );
+    let first = recorded[0].as_ref();
+    assert_eq!(
+        first.len(),
+        capacity_bytes,
+        "cold inbound flush must be padded to ring capacity ({} ms)",
+        capacity_ms
+    );
+    let pad_len = capacity_bytes - pre_flush_mono.len();
+    assert!(pad_len > 0, "cold path must left-pad short pre-roll");
+    assert!(
+        first[..pad_len].iter().all(|&b| b == 0),
+        "lead-in pad must be digital silence"
+    );
+    assert_eq!(
+        &first[pad_len..],
+        pre_flush_mono.as_slice(),
+        "tail must equal buffered onset frames"
+    );
+}
+
+/// Brief-gap SpeechStart with STT stream already open must not left-pad the pre-roll flush.
+#[tokio::test]
+async fn gate_stt_brief_gap_pre_roll_flush_not_padded() {
+    let mut vad = sherpa_like_vad_config();
+    vad.min_silence_duration_ms = 20;
+    vad.stt_gate_hold_ms = 200;
+    let capacity_bytes = (stt_pre_roll_capacity_ms(&vad) as usize * 16_000 / 1000) * 2;
+    let (agent, chunks) = agent_with_recording_stt(vad).await;
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    // First phrase — opens STT stream.
+    for _ in 0..12 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+    // Brief silence (SpeechEnd but hold not expired — same utterance).
+    for _ in 0..2 {
+        agent
+            .process_inbound_pcm(Bytes::from(silent.clone()), 20)
+            .await
+            .unwrap();
+    }
+    let after_first = chunks.lock().unwrap().len();
+    assert!(after_first > 0, "first phrase must reach STT");
+
+    // Resume speech — brief-gap SpeechStart, stream already open.
+    for _ in 0..12 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    let recorded = chunks.lock().unwrap();
+    for chunk in recorded.iter().skip(after_first) {
+        assert_ne!(
+            chunk.len(),
+            capacity_bytes,
+            "brief-gap pre-roll flush must not be left-padded to full ring capacity"
+        );
+    }
+}
+
 #[tokio::test]
 async fn gate_stt_pre_roll_flush_includes_soft_onset_before_vad_speech_start() {
     let vad = sherpa_like_vad_config();

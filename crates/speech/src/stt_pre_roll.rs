@@ -65,6 +65,43 @@ impl SttPreRollBuffer {
         Bytes::from(out)
     }
 
+    /// Drain buffered mono PCM, left-padding with digital silence when the ring is not full.
+    ///
+    /// Streaming recognizers (e.g. Zipformer) need lead-in context before the first spoken
+    /// sample. A cold inbound path (DTX sender, push-to-talk, loopback harness) may deliver no
+    /// frames before the talker's onset, so the ring holds only the TTS/speech onset at
+    /// VAD `SpeechStart`. Padding to [`Self::capacity_ms`] makes that flush byte-identical in
+    /// shape to a warm path where silence filled the ring first: `[silence pad][buffered onset]`.
+    ///
+    /// Returns empty when the ring is empty — that means the STT stream was already receiving
+    /// frames directly and padding would inject silence mid-stream. Callers opening a **new**
+    /// recognizer stream must only use this when starting a fresh stream, not when continuing
+    /// after a brief-gap `SpeechStart` on an already-open stream.
+    pub fn drain_padded_to_capacity(&mut self) -> Bytes {
+        if self.data.is_empty() {
+            return Bytes::new();
+        }
+        let buffered_len = self.data.len();
+        if buffered_len >= self.max_bytes {
+            return self.drain();
+        }
+        let pad_len = self.max_bytes - buffered_len;
+        let even_pad_len = pad_len & !1;
+        let mut out = Vec::with_capacity(self.max_bytes);
+        out.resize(even_pad_len, 0);
+        out.extend(self.data.drain(..));
+        Bytes::from(out)
+    }
+
+    /// Milliseconds of silence padding [`drain_padded_to_capacity`] would prepend for the
+    /// current buffered length (0 when the ring is empty or already at capacity).
+    pub fn pad_ms_for_len(&self) -> u32 {
+        if self.data.is_empty() || self.data.len() >= self.max_bytes {
+            return 0;
+        }
+        mono_duration_ms_from_bytes(self.max_bytes - self.data.len())
+    }
+
     pub fn clear(&mut self) {
         self.data.clear();
     }
@@ -117,5 +154,52 @@ mod tests {
         config.speech_pad_ms = 400;
         let ring = SttPreRollBuffer::from_vad_config(&config);
         assert_eq!(ring.capacity_ms(), 480);
+    }
+
+    #[test]
+    fn drain_padded_short_ring_prepends_silence_to_capacity() {
+        let mut ring = SttPreRollBuffer::new(700);
+        let frame_20ms = vec![0xAB_u8; 640]; // 20 ms mono @ 16 kHz
+        for _ in 0..12 {
+            ring.push(&frame_20ms);
+        }
+        assert_eq!(ring.len(), 12 * 640);
+        let padded = ring.drain_padded_to_capacity();
+        let capacity_bytes = mono_s16le_bytes_for_duration_ms(700);
+        assert_eq!(padded.len(), capacity_bytes);
+        let pad_len = capacity_bytes - 12 * 640;
+        assert!(pad_len > 0);
+        assert!(padded[..pad_len].iter().all(|&b| b == 0));
+        let mut expected_tail = Vec::with_capacity(12 * 640);
+        for _ in 0..12 {
+            expected_tail.extend_from_slice(&frame_20ms);
+        }
+        assert_eq!(&padded[pad_len..], expected_tail.as_slice());
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn drain_padded_empty_ring_returns_empty() {
+        let mut ring = SttPreRollBuffer::new(700);
+        assert!(ring.drain_padded_to_capacity().is_empty());
+    }
+
+    #[test]
+    fn drain_padded_full_ring_matches_plain_drain() {
+        let mut ring = SttPreRollBuffer::new(700);
+        let frame = vec![0xCD_u8; 640];
+        for _ in 0..40 {
+            ring.push(&frame);
+        }
+        assert_eq!(ring.len(), mono_s16le_bytes_for_duration_ms(700));
+        let plain = {
+            let mut r = SttPreRollBuffer::new(700);
+            for _ in 0..40 {
+                r.push(&frame);
+            }
+            r.drain()
+        };
+        let padded = ring.drain_padded_to_capacity();
+        assert_eq!(padded, plain);
     }
 }

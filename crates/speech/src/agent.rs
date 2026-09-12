@@ -2326,16 +2326,32 @@ impl VoiceAgent {
                     Self::disarm_utterance_finalize_timer(&mut inner);
                 }
                 if gate_stt {
+                    // Cold inbound (no frames before the talker) leaves a short ring at
+                    // SpeechStart; streaming recognizers need left context before onset.
+                    // Pad only when opening a new STT stream — not for brief-gap continuations.
+                    let new_stream = !inner.stt_stream_open;
                     if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
-                        let buffered = pre_roll.drain();
+                        let buffered_len = pre_roll.len();
+                        let buffered = if new_stream {
+                            pre_roll.drain_padded_to_capacity()
+                        } else {
+                            pre_roll.drain()
+                        };
                         if !buffered.is_empty() {
-                            voice_debug(format!(
-                                "STT pre-roll flush: {} bytes (~{} ms)",
+                            let total_ms = crate::pcm::duration_ms_from_mono_s16le(
                                 buffered.len(),
-                                crate::pcm::duration_ms_from_mono_s16le(
-                                    buffered.len(),
-                                    crate::pcm::STT_PCM_SAMPLE_RATE,
-                                )
+                                crate::pcm::STT_PCM_SAMPLE_RATE,
+                            );
+                            let buffered_ms = crate::pcm::duration_ms_from_mono_s16le(
+                                buffered_len,
+                                crate::pcm::STT_PCM_SAMPLE_RATE,
+                            );
+                            let pad_ms = total_ms.saturating_sub(buffered_ms);
+                            voice_debug(format!(
+                                "STT pre-roll flush: {} bytes (~{} ms, lead-in pad {} ms)",
+                                buffered.len(),
+                                total_ms,
+                                pad_ms,
                             ));
                             pre_roll_after_start = Some(buffered);
                         }

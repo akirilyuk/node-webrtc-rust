@@ -165,6 +165,7 @@ Unit tests (no models): `npm run test:roundtrip-counting --workspace=@node-webrt
 | `SHERPA_LID_MODEL_PATH`      | `.models/sherpa-onnx-whisper-tiny` | Whisper tiny for Agent 2 LID             |
 | `SHERPA_COUNTING_PHRASE`     | one … ten                          | Agent 1 source phrase                    |
 | `SHERPA_COUNTING_TIMEOUT_MS` | `90000`                            | Wait for Agent 1 inbound echo transcript |
+| `SHERPA_LID_TTS_EXCLUSION`   | library default                    | `1`/`on` or `0`/`off` → `languageId.ttsExclusion` |
 
 CI timeout: same bucket as `start:roundtrip-counting-echo` (`sherpa_roundtrip_timeout_sec`).
 
@@ -195,7 +196,8 @@ Unit tests (no models): `npx vitest run examples/voice-agent-local-sherpa/src/ro
 
 | Env                            | Default   | Purpose                                                                                 |
 | ------------------------------ | --------- | --------------------------------------------------------------------------------------- |
-| `SESSIONS`                     | `10`      | Concurrent speaker↔echo pairs (1–20)                                                    |
+| `SHERPA_MULTI_SESSIONS`        | `10`      | Concurrent speaker↔echo pairs (1–20); legacy alias `SESSIONS`                           |
+| `SHERPA_LID_TTS_EXCLUSION`     | library default | `1`/`on` or `0`/`off` → `languageId.ttsExclusion` on echo leg                    |
 | `SHERPA_MULTI_SINGLE_PROCESS`  | off       | Single-process comparison (shared ultimate pool)                                        |
 | `SHERPA_MULTI_PCM_CAPTURE`     | `1` (on)  | Per-hop PCM table: echo outbound (child IPC), speaker `readSample`, STT-fed timing      |
 | `SHERPA_MULTI_WAV_DIR`         | auto      | WAV dumps on failure under `.test-logs/multi-wav/<stamp>/`                              |

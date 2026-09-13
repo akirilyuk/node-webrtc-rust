@@ -6,7 +6,8 @@
  *
  * Env:
  *   SHERPA_MULTI_WS_URL   ws://127.0.0.1:<port> (required)
- *   SESSIONS              echo agent count (default 10, max 20)
+ *   SHERPA_MULTI_SESSIONS / SESSIONS   echo agent count (default 10, max 20)
+ *   SHERPA_LID_TTS_EXCLUSION           languageId.ttsExclusion (unset = library default)
  *   VOICE_DEBUG           forwarded from parent for Rust [voice-debug] on stderr
  */
 
@@ -31,9 +32,12 @@ import { resolveRoundtripVoiceConfig, withRoundtripHarnessSilence } from './reso
 import { AgentSpeakingEndLatch } from './roundtrip-counting.js'
 import { echoVadConfig } from './roundtrip-counting-echo.js'
 import {
-  CLOUD_DEFAULT_LID_MIN_SPEECH_MS,
-  formatEchoSmokeReply,
-} from './roundtrip-counting-echo-lid-prefix.js'
+  buildEchoLanguageIdConfig,
+  formatSherpaLidTtsExclusionLabel,
+  parseSherpaLidTtsExclusion,
+  resolveMultiSessionCount,
+} from './roundtrip-counting-echo-lid-env.js'
+import { formatEchoSmokeReply } from './roundtrip-counting-echo-lid-prefix.js'
 import {
   emitEchoIpcMessage,
   type ParentIpcCommand,
@@ -50,20 +54,20 @@ import {
 } from './roundtrip-speech-events.js'
 import type { LifecycleSpeechEvent } from './roundtrip-stt-lifecycle-helpers.js'
 
-const DEFAULT_SESSIONS = 10
 const ECHO_IPC_DELAY_MS = 100
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function echoHostConfig(base: VoiceAgentConfig, lidModelPath: string): VoiceAgentConfig {
+function echoHostConfig(
+  base: VoiceAgentConfig,
+  lidModelPath: string,
+  ttsExclusion?: boolean,
+): VoiceAgentConfig {
   return withRoundtripHarnessSilence({
     ...base,
-    languageId: {
-      modelPath: lidModelPath,
-      minSpeechMs: CLOUD_DEFAULT_LID_MIN_SPEECH_MS,
-    },
+    languageId: buildEchoLanguageIdConfig(lidModelPath, ttsExclusion),
     events: { mode: 'stream' },
     vad: echoVadConfig(base),
   })
@@ -234,14 +238,18 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  const sessionCount = Math.max(1, Math.min(20, Number(process.env.SESSIONS ?? DEFAULT_SESSIONS)))
+  const sessionCount = resolveMultiSessionCount()
+  const lidTtsExclusion = parseSherpaLidTtsExclusion()
   if (!process.env.VOICE_MAX_CONCURRENT_SESSIONS) {
     process.env.VOICE_MAX_CONCURRENT_SESSIONS = String(sessionCount + 4)
   }
 
   const { config: base } = resolveRoundtripVoiceConfig()
   const lidModelPath = resolveLidModelPath()
-  const echoConfig = echoHostConfig(base, lidModelPath)
+  const echoConfig = echoHostConfig(base, lidModelPath, lidTtsExclusion)
+  console.log(
+    `[echo-server] sessions=${sessionCount} SHERPA_LID_TTS_EXCLUSION=${formatSherpaLidTtsExclusionLabel(lidTtsExclusion)}`,
+  )
   const sessionBudget = new VoiceSessionBudget(0)
   const vadThreshold = base.vad?.threshold ?? 0.15
   const connectTimeoutMs = 45_000

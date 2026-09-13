@@ -36,6 +36,11 @@ import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import { resolveLidModelPath } from './roundtrip-language-id.js'
 import {
+  buildEchoLanguageIdConfig,
+  formatSherpaLidTtsExclusionLabel,
+  parseSherpaLidTtsExclusion,
+} from './roundtrip-counting-echo-lid-env.js'
+import {
   CLOUD_DEFAULT_LID_MIN_SPEECH_MS,
   ECHO_SMOKE_REPLY_PREFIX,
   evaluateEchoLidInboundTranscript,
@@ -57,13 +62,11 @@ export {
 function agent2ConfigWithLanguageId(
   base: VoiceAgentConfig,
   lidModelPath: string,
+  ttsExclusion?: boolean,
 ): VoiceAgentConfig {
   return withRoundtripHarnessSilence({
     ...base,
-    languageId: {
-      modelPath: lidModelPath,
-      minSpeechMs: CLOUD_DEFAULT_LID_MIN_SPEECH_MS,
-    },
+    languageId: buildEchoLanguageIdConfig(lidModelPath, ttsExclusion),
     events: { mode: 'stream' },
     vad: echoVadConfig(base),
   })
@@ -113,6 +116,7 @@ async function main(): Promise<void> {
     process.env.SHERPA_COUNTING_PHRASE?.trim() || DEFAULT_COUNTING_PHRASE_ONE_TO_TEN
   const { config: base, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   const lidModelPath = resolveLidModelPath()
+  const lidTtsExclusion = parseSherpaLidTtsExclusion()
   const timeoutMs = Number(process.env.SHERPA_COUNTING_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
   const minNumberWords = Number(
     process.env.SHERPA_COUNTING_MIN_NUMBER_WORDS ?? DEFAULT_MIN_NUMBER_WORDS,
@@ -129,6 +133,7 @@ async function main(): Promise<void> {
   console.log(`STT: ${sttModelPath}`)
   console.log(`TTS: ${ttsModelPath}`)
   console.log(`LID: ${lidModelPath}  minSpeechMs=${CLOUD_DEFAULT_LID_MIN_SPEECH_MS}`)
+  console.log(`SHERPA_LID_TTS_EXCLUSION=${formatSherpaLidTtsExclusionLabel(lidTtsExclusion)}`)
   console.log(`Echo prefix: "${ECHO_SMOKE_REPLY_PREFIX}"`)
   console.log(`Agent1 speaks: "${countingPhrase}"`)
   console.log(`Timing: postTtsSilence=${postTtsSilenceS.toFixed(1)}s  timeout=${timeoutMs}ms`)
@@ -138,7 +143,7 @@ async function main(): Promise<void> {
     await createBidirectionalLoopback()
 
   const agent1 = new VoiceAgent(agent1Config(base))
-  const agent2 = new VoiceAgent(agent2ConfigWithLanguageId(base, lidModelPath))
+  const agent2 = new VoiceAgent(agent2ConfigWithLanguageId(base, lidModelPath, lidTtsExclusion))
 
   await agent1.attach({ inboundTrack: agentInbound, outboundTrack: agentOut })
   await agent2.attach({ inboundTrack: userInbound, outboundTrack: userOut })
@@ -236,7 +241,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    '\nCounting echo + LID roundtrip OK — Agent1 heard reply prefix before counting digits.',
+    `\nCounting echo + LID roundtrip OK — Agent1 heard reply prefix before counting digits (SHERPA_LID_TTS_EXCLUSION=${formatSherpaLidTtsExclusionLabel(lidTtsExclusion)}).`,
   )
   process.exit(0)
 }

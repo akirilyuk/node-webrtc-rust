@@ -7,7 +7,8 @@
  *   npm run start:roundtrip-counting-echo-lid-multi --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
  *
  * Env:
- *   SESSIONS                         concurrent pairs (default 10 = ultimate maxActiveConnectionsPerPod)
+ *   SHERPA_MULTI_SESSIONS            concurrent pairs (default 10; legacy SESSIONS)
+ *   SHERPA_LID_TTS_EXCLUSION         0/1 — languageId.ttsExclusion (unset = library default)
  *   SHERPA_MULTI_SINGLE_PROCESS=1    single-process comparison mode (shared pool)
  *   SHERPA_MULTI_PCM_CAPTURE         per-hop PCM table (default on; set 0 to disable)
  *   SHERPA_MULTI_WAV_DIR             WAV dumps on failure (default .test-logs/multi-wav/<stamp>/)
@@ -53,9 +54,12 @@ import {
 } from './roundtrip-counting.js'
 import { echoVadConfig } from './roundtrip-counting-echo.js'
 import {
-  CLOUD_DEFAULT_LID_MIN_SPEECH_MS,
-  formatEchoSmokeReply,
-} from './roundtrip-counting-echo-lid-prefix.js'
+  buildEchoLanguageIdConfig,
+  formatSherpaLidTtsExclusionLabel,
+  parseSherpaLidTtsExclusion,
+  resolveMultiSessionCount,
+} from './roundtrip-counting-echo-lid-env.js'
+import { formatEchoSmokeReply } from './roundtrip-counting-echo-lid-prefix.js'
 import {
   assertEchoOutboundPcmWithinSpeakingWindow,
   assertFullCountingEcho,
@@ -103,7 +107,6 @@ const EXPORT_SHERPA_SCRIPT = join(__dirname, '../../../scripts/export-sherpa-loc
 
 const DEFAULT_TIMEOUT_MS = 90_000
 const DEFAULT_WARMUP_S = 0.6
-const DEFAULT_SESSIONS = 10
 const ECHO_IPC_DELAY_MS = 100
 
 const ECHO_POOL_ENV = {
@@ -159,13 +162,14 @@ function applyPoolEnv(pool: Record<string, string>): void {
   }
 }
 
-function echoHostConfig(base: VoiceAgentConfig, lidModelPath: string): VoiceAgentConfig {
+function echoHostConfig(
+  base: VoiceAgentConfig,
+  lidModelPath: string,
+  ttsExclusion?: boolean,
+): VoiceAgentConfig {
   return withRoundtripHarnessSilence({
     ...base,
-    languageId: {
-      modelPath: lidModelPath,
-      minSpeechMs: CLOUD_DEFAULT_LID_MIN_SPEECH_MS,
-    },
+    languageId: buildEchoLanguageIdConfig(lidModelPath, ttsExclusion),
     events: { mode: 'stream' },
     vad: echoVadConfig(base),
   })
@@ -778,7 +782,8 @@ async function writeFailureWavs(params: {
 async function runSplitProcess(): Promise<SessionRoundResult[]> {
   applyPoolEnv(SPEAKER_POOL_ENV)
 
-  const sessionCount = Math.max(1, Math.min(20, Number(process.env.SESSIONS ?? DEFAULT_SESSIONS)))
+  const sessionCount = resolveMultiSessionCount()
+  const lidTtsExclusion = parseSherpaLidTtsExclusion()
   if (!process.env.VOICE_MAX_CONCURRENT_SESSIONS) {
     process.env.VOICE_MAX_CONCURRENT_SESSIONS = String(sessionCount + 4)
   }
@@ -798,6 +803,7 @@ async function runSplitProcess(): Promise<SessionRoundResult[]> {
   console.log('=== Sherpa 10-session echo + LID (split echo server + speaker clients) ===')
   console.log(`Pipeline: ${label}`)
   console.log(`Sessions: ${sessionCount} concurrent (Promise.all connect + rounds)`)
+  console.log(`SHERPA_LID_TTS_EXCLUSION=${formatSherpaLidTtsExclusionLabel(lidTtsExclusion)}`)
   console.log(`Topology: split-process (echo child ULTIMATE pool, speaker parent generous pool)`)
   console.log(`SHERPA_MULTI_PCM_CAPTURE=${pcmCaptureEnabled ? '1' : '0'}`)
   console.log(`SHERPA_MULTI_WAV_DIR=${wavDir ?? '(disabled)'}`)
@@ -936,7 +942,8 @@ async function runSplitProcess(): Promise<SessionRoundResult[]> {
 async function runSingleProcess(): Promise<SessionRoundResult[]> {
   applyPoolEnv(ECHO_POOL_ENV)
 
-  const sessionCount = Math.max(1, Math.min(20, Number(process.env.SESSIONS ?? DEFAULT_SESSIONS)))
+  const sessionCount = resolveMultiSessionCount()
+  const lidTtsExclusion = parseSherpaLidTtsExclusion()
   if (!process.env.VOICE_MAX_CONCURRENT_SESSIONS) {
     process.env.VOICE_MAX_CONCURRENT_SESSIONS = String(sessionCount + 4)
   }
@@ -950,7 +957,7 @@ async function runSingleProcess(): Promise<SessionRoundResult[]> {
   const postTtsSilenceS = postTtsSilenceSeconds(base)
   const verbose = process.env.SHERPA_COUNTING_VERBOSE === '1'
   const connectTimeoutMs = Math.min(timeoutMs, 45_000)
-  const echoConfig = echoHostConfig(base, lidModelPath)
+  const echoConfig = echoHostConfig(base, lidModelPath, lidTtsExclusion)
   const sessionBudget = new VoiceSessionBudget(0)
   const pcmCaptureEnabled = isMultiPcmCaptureEnabled()
   const vadThreshold = base.vad?.threshold ?? DEFAULT_VAD_ENERGY_THRESHOLD
@@ -959,6 +966,7 @@ async function runSingleProcess(): Promise<SessionRoundResult[]> {
   console.log('=== Sherpa 10-session echo + LID (single-process comparison mode) ===')
   console.log(`Pipeline: ${label}`)
   console.log(`Sessions: ${sessionCount} concurrent (Promise.all connect + rounds)`)
+  console.log(`SHERPA_LID_TTS_EXCLUSION=${formatSherpaLidTtsExclusionLabel(lidTtsExclusion)}`)
   console.log(`Topology: single-process (SHERPA_MULTI_SINGLE_PROCESS=1)`)
   console.log(`SHERPA_MULTI_PCM_CAPTURE=${pcmCaptureEnabled ? '1' : '0'}`)
   console.log(
@@ -1044,8 +1052,9 @@ async function main(): Promise<void> {
     })
   }
 
+  const lidTtsExclusion = parseSherpaLidTtsExclusion()
   console.log(
-    `\nConcurrent echo + LID roundtrip OK — ${results.length}/${results.length} sessions full echo one..ten.`,
+    `\nConcurrent echo + LID roundtrip OK — ${results.length}/${results.length} sessions full echo one..ten (SHERPA_LID_TTS_EXCLUSION=${formatSherpaLidTtsExclusionLabel(lidTtsExclusion)}).`,
   )
   process.exit(0)
 }

@@ -150,7 +150,7 @@ Other `SHERPA_COUNTING_*` vars apply (`TIMEOUT_MS`, `VERBOSE`, etc.).
 
 ## Counting echo + language ID (staging echo-smoke order)
 
-[`src/roundtrip-counting-echo-lid.ts`](./src/roundtrip-counting-echo-lid.ts) matches **staging echo-smoke**: Agent 1 speaks counting; Agent 2 enables Whisper LID (`minSpeechMs` **2500**, cloud default) and on `user_speech_final` **immediately** speaks `echo. {recognized}` — no harness settle gap before echo TTS. Agent 1 inbound STT must include a **non-digit prefix** before the first number word (rejects counting-only transcripts like staging `local STT missing any prefix before counting`).
+[`src/roundtrip-counting-echo-lid.ts`](./src/roundtrip-counting-echo-lid.ts) matches **staging echo-smoke**: Agent 1 speaks counting; Agent 2 enables Whisper LID (`minSpeechMs` **2500**, cloud default) and on `user_speech_final` **immediately** speaks `Okay. {recognized}` — no harness settle gap before echo TTS. Agent 1 inbound STT must include a **non-digit prefix** before the first number word (rejects counting-only transcripts like staging `local STT missing any prefix before counting`).
 
 ```bash
 npm run build:native

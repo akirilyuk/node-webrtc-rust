@@ -1,9 +1,9 @@
 //! Cold inbound stream: the listener's first-ever inbound frames are the talker's TTS onset.
 //!
 //! Reproduces the Sherpa `start:roundtrip-counting-echo-lid` CI miss where Agent1 heard
-//! `"one two three …"` (no `echo.` prefix): nothing was written to Agent2's outbound track
-//! before the echo TTS, so Agent1's STT pre-roll held only the TTS onset (~240 ms) and the
-//! Zipformer stream started exactly at the first spoken sample with no lead-in context.
+//! `"one two three …"` (no reply prefix before counting): nothing was written to Agent2's
+//! outbound track before the TTS, so Agent1's STT pre-roll held only the TTS onset (~240 ms)
+//! and the Zipformer stream started exactly at the first spoken sample with no lead-in context.
 //!
 //! Kept `#[ignore]` (needs Kroko STT + Piper TTS weights). Run:
 //!
@@ -32,7 +32,7 @@ use tokio::time::sleep;
 
 const FRAME_MS: u32 = 20;
 const STEREO_48K_FRAME_BYTES: usize = 48_000 / 1000 * FRAME_MS as usize * 2 * 2; // 3840
-const ECHO_PHRASE: &str = "echo. One, two, three, four, five six seven eight nine ten";
+const PREFIX_PHRASE: &str = "Okay. One, two, three, four, five six seven eight nine ten";
 /// Same VAD shape as `buildLocalSherpaVoiceConfig` + `echoVadConfig` in the Sherpa examples
 /// (energy VAD 0.05, 200 ms min speech, 500 ms pad → 700 ms pre-roll ring).
 fn harness_vad_config() -> VadConfig {
@@ -107,8 +107,21 @@ impl Transcript {
             .unwrap_or_default()
     }
 
-    fn heard_echo(&self) -> bool {
-        self.best().to_lowercase().contains("echo")
+    fn heard_prefix(&self) -> bool {
+        let first = self
+            .best()
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        if first.is_empty() {
+            return false;
+        }
+        if first.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        first != "one"
     }
 }
 
@@ -199,7 +212,10 @@ async fn cold_inbound_stream_hears_first_tts_sentence() {
     let mut cold_misses = Vec::new();
     let mut warm_misses = Vec::new();
     for render in 0..renders {
-        let chunks = tts.synthesize(ECHO_PHRASE).await.expect("piper synthesis");
+        let chunks = tts
+            .synthesize(PREFIX_PHRASE)
+            .await
+            .expect("piper synthesis");
         let mut pcm = Vec::new();
         for chunk in &chunks {
             pcm.extend_from_slice(&chunk.pcm);
@@ -219,10 +235,10 @@ async fn cold_inbound_stream_hears_first_tts_sentence() {
             warm.best(),
             warm.partials.first(),
         );
-        if !cold.heard_echo() {
+        if !cold.heard_prefix() {
             cold_misses.push((render, cold.best()));
         }
-        if !warm.heard_echo() {
+        if !warm.heard_prefix() {
             warm_misses.push((render, warm.best()));
         }
         if !experiment_only {

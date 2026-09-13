@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import type { LocalAudioTrack, RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 
 import { stereoPcmDurationMs } from './pcm-relay.js'
+import { transcriptHasPrefixBeforeCounting } from './roundtrip-counting-echo-lid-prefix.js'
 
 export const DEFAULT_VAD_ENERGY_THRESHOLD = 0.15
 export const SILENCE_GAP_MS = 120
@@ -417,7 +418,7 @@ export function localizePcmFailure(metrics: PcmHopMetrics): PcmFailureVerdict {
     out: metrics.outBurst,
     rx: metrics.rxBurst,
     recognized: metrics.recognized,
-    missingEchoPrefix: !metrics.recognized.toLowerCase().includes('echo'),
+    missingEchoPrefix: !transcriptHasPrefixBeforeCounting(metrics.recognized),
   })
 }
 
@@ -508,10 +509,5 @@ function fmtAt(value: number | null): string {
 }
 
 export function transcriptMissingEchoPrefix(recognized: string): boolean {
-  const norm = recognized
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  return !norm.startsWith('echo')
+  return !transcriptHasPrefixBeforeCounting(recognized)
 }

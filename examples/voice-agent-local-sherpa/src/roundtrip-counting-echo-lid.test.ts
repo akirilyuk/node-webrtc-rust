@@ -8,9 +8,9 @@ import {
 } from './roundtrip-counting-echo-lid-prefix.js'
 
 describe('roundtrip-counting-echo-lid prefix matcher', () => {
-  it('formatEchoSmokeReply keeps echo. punctuation', () => {
-    expect(formatEchoSmokeReply('one two three')).toBe('echo. one two three')
-    expect(ECHO_SMOKE_REPLY_PREFIX).toBe('echo. ')
+  it('formatEchoSmokeReply keeps Okay. punctuation', () => {
+    expect(formatEchoSmokeReply('one two three')).toBe('Okay. one two three')
+    expect(ECHO_SMOKE_REPLY_PREFIX).toBe('Okay. ')
   })
 
   it('transcriptHasPrefixBeforeCounting accepts non-digit prefix tokens', () => {
@@ -35,9 +35,9 @@ describe('roundtrip-counting-echo-lid prefix matcher', () => {
     expect(result.failures.some((f) => f.includes('missing any prefix before counting'))).toBe(true)
   })
 
-  it('evaluateEchoLidInboundTranscript passes with echo prefix and enough digits', () => {
+  it('evaluateEchoLidInboundTranscript passes with reply prefix and enough digits', () => {
     const result = evaluateEchoLidInboundTranscript({
-      recognized: 'echo one two three four five six seven eight nine ten',
+      recognized: 'okay one two three four five six seven eight nine ten',
       spokenCountingPhrase: 'one two three four five six seven eight nine ten',
       minNumberWords: 8,
     })

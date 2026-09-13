@@ -2,7 +2,7 @@
  * Sherpa bidirectional echo + language ID — staging echo-smoke order.
  *
  * Agent 1 speaks counting; Agent 2 (echo) enables Whisper LID at cloud-default minSpeechMs and
- * **immediately** `sendTextToTTS("echo. " + text)` on `user_speech_final` (no harness settle gap).
+ * **immediately** `sendTextToTTS("Okay. " + text)` on `user_speech_final` (no harness settle gap).
  * Agent 1 inbound STT must hear a non-digit prefix before the first number word — same class as
  * e2e `local STT missing any prefix before counting`.
  *
@@ -176,13 +176,10 @@ async function main(): Promise<void> {
     await waitAgentPlaybackEndRace({
       phrase: formatEchoSmokeReply(countingPhrase),
       capMs: timeoutMs,
-      waitForAgentSpeakingEnd: () =>
-        agent2EndLatch.waitAfterCount(echoEndBaseline, timeoutMs),
+      waitForAgentSpeakingEnd: () => agent2EndLatch.waitAfterCount(echoEndBaseline, timeoutMs),
     })
     if (postTtsSilenceS > 0) {
-      console.log(
-        `[agent2] post-TTS silence ${postTtsSilenceS.toFixed(1)}s on userOut (echo leg)`,
-      )
+      console.log(`[agent2] post-TTS silence ${postTtsSilenceS.toFixed(1)}s on userOut (echo leg)`)
       await streamSilence(userOut, postTtsSilenceS)
     }
   })
@@ -239,7 +236,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    '\nCounting echo + LID roundtrip OK — Agent1 heard echo prefix before counting digits.',
+    '\nCounting echo + LID roundtrip OK — Agent1 heard reply prefix before counting digits.',
   )
   process.exit(0)
 }

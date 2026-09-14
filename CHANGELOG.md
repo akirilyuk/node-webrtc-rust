@@ -8,9 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-09-14
+
 ### Fixed
 
 - **speech** — C1 `user_stt_not_found` defers while Sherpa STT decode backlog is pending (`sttListenBacklogSlackMs`); `sttListenHardTimeoutMs` (default 3× `sttListenTimeoutMs`) caps the wait when the shared decoder is saturated.
+
+**Compare:** [`release/0.9.7…release/0.9.8`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.7...release/0.9.8)
 
 ## [0.9.7] - 2026-09-12
 

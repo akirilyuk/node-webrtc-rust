@@ -74,7 +74,7 @@ vad_triggered → user_stt_start → stt_stream_start → user_speaking_start
   → stt_stream_end → user_stt_end → user_speaking_end → user_speech_final
 ```
 
-**C1 (no partial):** after `sttListenTimeoutMs` → `stt_stream_end` → `user_stt_not_found` → `user_stt_end` — **no** `user_speech_final`.
+**C1 (no partial):** C1 fires after `sttListenTimeoutMs` of decoder-observed silence (no partial while the recognizer is caught up); a hard cap `sttListenHardTimeoutMs` (default 3×) bounds the wait when the shared decoder is saturated → `stt_stream_end` → `user_stt_not_found` → `user_stt_end` — **no** `user_speech_final`.
 
 **C2 (stall):** after `utteranceFinalizeTimeoutMs` (starts when `sttGateHoldMs` drains if gate was open) → forced close with `user_speech_final` from last partial.
 

@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -49,6 +49,8 @@ pub struct SherpaStt {
     config: SttConfig,
     pool: Arc<crate::pool::SherpaModelPool>,
     state: Arc<Mutex<SherpaSttState>>,
+    /// Audio accepted by `push_audio` not yet cleared by `poll_transcript` decode (sync read for C1).
+    accepted_ms: Arc<AtomicU32>,
 }
 
 impl SherpaStt {
@@ -60,6 +62,7 @@ impl SherpaStt {
                 running: false,
                 session: None,
             })),
+            accepted_ms: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -108,6 +111,7 @@ impl SttProvider for SherpaStt {
 
     async fn stop(&mut self) -> SpeechResult<()> {
         let state = Arc::clone(&self.state);
+        self.accepted_ms.store(0, Ordering::Relaxed);
 
         tokio::task::spawn_blocking(move || {
             let mut guard = state.blocking_lock();
@@ -128,6 +132,10 @@ impl SttProvider for SherpaStt {
         Ok(())
     }
 
+    fn decode_backlog_ms(&self) -> u32 {
+        self.accepted_ms.load(Ordering::Relaxed)
+    }
+
     async fn push_audio(&mut self, pcm: Bytes) -> SpeechResult<()> {
         let samples = mono_s16le_bytes_to_f32(pcm.as_ref());
         if samples.is_empty() {
@@ -135,6 +143,8 @@ impl SttProvider for SherpaStt {
         }
 
         let state = Arc::clone(&self.state);
+        let accepted_ms = Arc::clone(&self.accepted_ms);
+        let sample_ms = (samples.len() as u32 * 1000) / SAMPLE_RATE as u32;
         let decode_semaphore = self.pool.decode_semaphore();
         let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
             .await
@@ -149,6 +159,7 @@ impl SttProvider for SherpaStt {
                 return Ok(());
             };
 
+            accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
             session.stream.accept_waveform(SAMPLE_RATE, &samples);
             session.shared.with_recognizer(|recognizer| {
                 let mut decode_steps = 0u32;
@@ -179,6 +190,7 @@ impl SttProvider for SherpaStt {
 
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
         let state = Arc::clone(&self.state);
+        let accepted_ms = Arc::clone(&self.accepted_ms);
         let decode_semaphore = self.pool.decode_semaphore();
         let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
             .await
@@ -194,8 +206,24 @@ impl SttProvider for SherpaStt {
             };
 
             if let Some(pending) = session.pending.pop_front() {
+                accepted_ms.store(0, Ordering::Relaxed);
                 return Ok(Some(pending));
             }
+
+            session.shared.with_recognizer(|recognizer| {
+                let mut decode_steps = 0u32;
+                while recognizer.is_ready(&session.stream) {
+                    recognizer.decode(&session.stream);
+                    decode_steps = decode_steps.saturating_add(1);
+                    if decode_steps >= 64 {
+                        voice_debug(
+                            "sherpa poll decode loop capped at 64 steps (possible is_ready stuck)",
+                        );
+                        break;
+                    }
+                }
+            });
+            accepted_ms.store(0, Ordering::Relaxed);
 
             let (text, endpoint) = session.shared.with_recognizer(|recognizer| {
                 let result = recognizer.get_result(&session.stream);
@@ -233,6 +261,7 @@ impl SttProvider for SherpaStt {
 
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         let state = Arc::clone(&self.state);
+        self.accepted_ms.store(0, Ordering::Relaxed);
         let decode_semaphore = self.pool.decode_semaphore();
         let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
             .await

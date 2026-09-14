@@ -13,10 +13,10 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::config::{
-    language_id_allowlist_accepts, language_id_continuous, language_id_enabled,
-    resolved_language_id_min_speech_ms, resolved_post_utterance_silence_ms, EventDeliveryMode,
-    NoiseSuppressionProvider, SendTextToTtsOptions, VadConfig, VoiceAgentConfig,
-    VoiceSessionContext,
+    effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
+    language_id_enabled, resolved_language_id_min_speech_ms, resolved_post_utterance_silence_ms,
+    EventDeliveryMode, NoiseSuppressionProvider, SendTextToTtsOptions, VadConfig,
+    VoiceAgentConfig, VoiceSessionContext,
 };
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
@@ -119,6 +119,8 @@ struct AgentInner {
     stt_listen_deadline_ms: u32,
     /// Wall-clock anchor for C1 from VAD `SpeechStart` (not PCM `duration_ms`).
     stt_listen_started_at: Option<Instant>,
+    /// One `voice_debug` line per utterance when C1 is deferred due to STT decode backlog.
+    c1_backlog_deferred_logged: bool,
     /// C2: ms remaining until forced `user_speech_final` after last partial or `SpeechEnd`.
     utterance_finalize_deadline_ms: u32,
     /// Wall-clock anchor for C2 when inbound PCM stops (see `c2_wall_clock_ticker`).
@@ -289,6 +291,7 @@ impl VoiceAgent {
                 vad_triggered_this_utterance: false,
                 stt_listen_deadline_ms: 0,
                 stt_listen_started_at: None,
+                c1_backlog_deferred_logged: false,
                 utterance_finalize_deadline_ms: 0,
                 utterance_finalize_armed_at: None,
                 last_inbound_pcm_at: None,
@@ -389,17 +392,51 @@ impl VoiceAgent {
     fn clear_stt_listen_timer(inner: &mut AgentInner) {
         inner.stt_listen_deadline_ms = 0;
         inner.stt_listen_started_at = None;
+        inner.c1_backlog_deferred_logged = false;
     }
 
-    fn c1_listen_expired(inner: &AgentInner) -> bool {
+    fn c1_listen_expired(inner: &AgentInner, backlog_ms: u32) -> bool {
         if inner.stt_listen_deadline_ms == 0 {
             return false;
         }
         let Some(started_at) = inner.stt_listen_started_at else {
             return false;
         };
+        let elapsed = started_at.elapsed();
+        let hard_timeout_ms = effective_stt_listen_hard_timeout_ms(&inner.config.vad);
+        if elapsed >= std::time::Duration::from_millis(hard_timeout_ms) {
+            return true;
+        }
         let timeout_ms = inner.config.vad.stt_listen_timeout_ms as u64;
-        started_at.elapsed() >= std::time::Duration::from_millis(timeout_ms)
+        let slack = inner.config.vad.stt_listen_backlog_slack_ms;
+        elapsed >= std::time::Duration::from_millis(timeout_ms) && backlog_ms <= slack
+    }
+
+    fn maybe_log_c1_backlog_deferred(inner: &mut AgentInner, backlog_ms: u32) {
+        if inner.c1_backlog_deferred_logged || inner.stt_listen_started_at.is_none() {
+            return;
+        }
+        let Some(started_at) = inner.stt_listen_started_at else {
+            return;
+        };
+        let elapsed = started_at.elapsed();
+        let timeout_ms = inner.config.vad.stt_listen_timeout_ms as u64;
+        let hard_timeout_ms = effective_stt_listen_hard_timeout_ms(&inner.config.vad);
+        let slack = inner.config.vad.stt_listen_backlog_slack_ms;
+        if elapsed >= std::time::Duration::from_millis(timeout_ms)
+            && elapsed < std::time::Duration::from_millis(hard_timeout_ms)
+            && backlog_ms > slack
+        {
+            inner.c1_backlog_deferred_logged = true;
+            voice_debug(format!(
+                "C1 deferred: decode backlog {backlog_ms}ms > slack"
+            ));
+        }
+    }
+
+    async fn stt_decode_backlog_ms(&self) -> u32 {
+        let stt = self.stt.lock().await;
+        stt.as_ref().map(|s| s.decode_backlog_ms()).unwrap_or(0)
     }
 
     fn clear_utterance_finalize_timer(inner: &mut AgentInner) {
@@ -483,14 +520,20 @@ impl VoiceAgent {
     }
 
     async fn c2_wall_clock_tick(&self) -> SpeechResult<()> {
+        let backlog_ms = self.stt_decode_backlog_ms().await;
         let c1_expired = {
-            let inner = self.inner.lock().await;
+            let mut inner = self.inner.lock().await;
             if !inner.running || !inner.config.vad.enabled || !Self::stt_pipeline_active(&inner) {
                 false
+            } else if inner.stt_stream_open && !inner.partials_emitted_this_utterance {
+                if Self::c1_listen_expired(&inner, backlog_ms) {
+                    true
+                } else {
+                    Self::maybe_log_c1_backlog_deferred(&mut inner, backlog_ms);
+                    false
+                }
             } else {
-                inner.stt_stream_open
-                    && !inner.partials_emitted_this_utterance
-                    && Self::c1_listen_expired(&inner)
+                false
             }
         };
         if c1_expired {
@@ -1502,6 +1545,7 @@ impl VoiceAgent {
         {
             let mut inner = self.inner.lock().await;
             inner.vad_triggered_this_utterance = true;
+            inner.c1_backlog_deferred_logged = false;
             if has_stt && !inner.partials_emitted_this_utterance {
                 inner.stt_listen_deadline_ms = inner.config.vad.stt_listen_timeout_ms;
                 inner.stt_listen_started_at = Some(Instant::now());
@@ -2235,6 +2279,7 @@ impl VoiceAgent {
         };
 
         // C1 / C2 timeout ticks (only when VAD enabled and STT stream lifecycle active).
+        let backlog_ms = self.stt_decode_backlog_ms().await;
         let (c1_expired, c2_expired) = {
             let mut inner = self.inner.lock().await;
             if !inner.config.vad.enabled || !Self::stt_pipeline_active(&inner) {
@@ -2245,9 +2290,12 @@ impl VoiceAgent {
                 if inner.stt_stream_open
                     && !inner.partials_emitted_this_utterance
                     && inner.stt_listen_started_at.is_some()
-                    && Self::c1_listen_expired(&inner)
                 {
-                    c1 = true;
+                    if Self::c1_listen_expired(&inner, backlog_ms) {
+                        c1 = true;
+                    } else {
+                        Self::maybe_log_c1_backlog_deferred(&mut inner, backlog_ms);
+                    }
                 }
                 if inner.utterance_finalize_deadline_ms > 0
                     && !inner.defer_utterance_finalize_until_hold

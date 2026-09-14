@@ -251,6 +251,12 @@ pub struct VadConfig {
     /// After `vad_triggered`, emit `user_stt_not_found` when no STT partial arrives within this window (default 4000 ms).
     #[serde(default = "default_stt_listen_timeout_ms")]
     pub stt_listen_timeout_ms: u32,
+    /// When STT decode backlog exceeds this slack (ms), defer C1 until backlog drains (default 200).
+    #[serde(default = "default_stt_listen_backlog_slack_ms")]
+    pub stt_listen_backlog_slack_ms: u32,
+    /// Hard cap on C1 wait when decode backlog is high; `0` = 3 × [`Self::stt_listen_timeout_ms`].
+    #[serde(default)]
+    pub stt_listen_hard_timeout_ms: u32,
     /// Grace after the last partial or VAD `SpeechEnd` before forcing `user_speech_final` (default 1500 ms).
     #[serde(default = "default_utterance_finalize_timeout_ms")]
     pub utterance_finalize_timeout_ms: u32,
@@ -285,6 +291,19 @@ fn default_stt_listen_timeout_ms() -> u32 {
     4000
 }
 
+fn default_stt_listen_backlog_slack_ms() -> u32 {
+    200
+}
+
+/// Resolved C1 hard timeout: explicit `stt_listen_hard_timeout_ms` or 3 × `stt_listen_timeout_ms`.
+pub fn effective_stt_listen_hard_timeout_ms(vad: &VadConfig) -> u64 {
+    if vad.stt_listen_hard_timeout_ms > 0 {
+        vad.stt_listen_hard_timeout_ms as u64
+    } else {
+        vad.stt_listen_timeout_ms as u64 * 3
+    }
+}
+
 fn default_utterance_finalize_timeout_ms() -> u32 {
     1500
 }
@@ -304,6 +323,8 @@ impl Default for VadConfig {
             gate_stt_open_on_pending: true,
             stt_gate_hold_ms: default_stt_gate_hold_ms(),
             stt_listen_timeout_ms: default_stt_listen_timeout_ms(),
+            stt_listen_backlog_slack_ms: default_stt_listen_backlog_slack_ms(),
+            stt_listen_hard_timeout_ms: 0,
             utterance_finalize_timeout_ms: default_utterance_finalize_timeout_ms(),
         }
     }

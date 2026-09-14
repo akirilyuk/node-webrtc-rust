@@ -80,6 +80,13 @@ pub trait SttProvider: Send + Sync {
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         Ok(())
     }
+
+    /// Milliseconds of audio accepted by [`Self::push_audio`] and not yet processed by
+    /// [`Self::poll_transcript`] (including time blocked on a shared decode limiter). Used to
+    /// defer C1 `user_stt_not_found` when the decoder is behind.
+    fn decode_backlog_ms(&self) -> u32 {
+        0
+    }
 }
 
 /// Text-to-speech provider trait.

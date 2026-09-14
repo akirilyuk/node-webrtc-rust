@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — C1 `user_stt_not_found` defers while Sherpa STT decode backlog is pending (`sttListenBacklogSlackMs`); `sttListenHardTimeoutMs` (default 3× `sttListenTimeoutMs`) caps the wait when the shared decoder is saturated.
+
 ## [0.9.7] - 2026-09-12
 
 Agent speech no longer reaches clients chopped 20 ms on / 20 ms off (helpers 0.9.6 mix pump double-write); STT keeps sub-threshold speech onset in a continuous pre-roll; default spoken language ID starts at VAD `SpeechEnd`.

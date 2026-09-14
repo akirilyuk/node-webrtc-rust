@@ -27,6 +27,33 @@ export function sineStereoFrame(freqHz: number, amplitude: number, phase: number
   return pcm
 }
 
+/** Test-only: 440 Hz and 880 Hz on opposite stereo channels for pan assertions. */
+export function twoSinePannedStereoFrame(
+  expect440OnRight: boolean,
+  amplitude: number,
+  phase440: number,
+  phase880: number,
+): Buffer {
+  const pcm = Buffer.alloc(FRAME_BYTES)
+  for (let i = 0; i < SAMPLES_PER_CHANNEL; i++) {
+    const t440 = (phase440 + i) / SAMPLE_RATE
+    const t880 = (phase880 + i) / SAMPLE_RATE
+    const s440 = Math.round(amplitude * Math.sin(2 * Math.PI * 440 * t440))
+    const s880 = Math.round(amplitude * Math.sin(2 * Math.PI * 880 * t880))
+    const clamp440 = Math.max(-32_767, Math.min(32_767, s440))
+    const clamp880 = Math.max(-32_767, Math.min(32_767, s880))
+    const base = i * 4
+    if (expect440OnRight) {
+      pcm.writeInt16LE(clamp880, base)
+      pcm.writeInt16LE(clamp440, base + 2)
+    } else {
+      pcm.writeInt16LE(clamp440, base)
+      pcm.writeInt16LE(clamp880, base + 2)
+    }
+  }
+  return pcm
+}
+
 export function extractChannel(pcm: Buffer, channel: 0 | 1): Int16Array {
   const out = new Int16Array(SAMPLES_PER_CHANNEL)
   for (let i = 0; i < SAMPLES_PER_CHANNEL; i++) {
@@ -103,6 +130,20 @@ export function assertTonePresent(samples: Int16Array, freqHz: number, label: st
   }
 }
 
+/** Non-throwing polarity check — used by waitForTwoSinePanSides and unit tests. */
+export function twoSinePanSidesMatch(
+  left: Int16Array,
+  right: Int16Array,
+  expect440OnRight: boolean,
+): boolean {
+  try {
+    assertTwoSinePanSides(left, right, expect440OnRight)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function assertTwoSinePanSides(
   left: Int16Array,
   right: Int16Array,
@@ -145,6 +186,47 @@ export function assertTwoSinePanSides(
 export function appendStereoChannels(left: number[], right: number[], pcm: Buffer): void {
   left.push(...extractChannel(pcm, 0))
   right.push(...extractChannel(pcm, 1))
+}
+
+const PAN_WINDOW_SAMPLES = FRAME_COUNT * SAMPLES_PER_CHANNEL
+
+/**
+ * Read stereo frames until a sliding window of FRAME_COUNT frames satisfies
+ * assertTwoSinePanSides (discards wrong-pan windows from WebRTC playout backlog).
+ */
+export async function waitForTwoSinePanSides(
+  readFrame: () => Promise<Buffer>,
+  expect440OnRight: boolean,
+  timeoutMs = 15_000,
+): Promise<{ left: Int16Array; right: Int16Array }> {
+  const deadline = Date.now() + timeoutMs
+  const left: number[] = []
+  const right: number[] = []
+  let lastError: Error | undefined
+
+  while (Date.now() < deadline) {
+    while (left.length < PAN_WINDOW_SAMPLES) {
+      const pcm = await readFrame()
+      appendStereoChannels(left, right, pcm)
+    }
+
+    const windowLeft = Int16Array.from(left.slice(-PAN_WINDOW_SAMPLES))
+    const windowRight = Int16Array.from(right.slice(-PAN_WINDOW_SAMPLES))
+
+    if (twoSinePanSidesMatch(windowLeft, windowRight, expect440OnRight)) {
+      return { left: windowLeft, right: windowRight }
+    }
+
+    try {
+      assertTwoSinePanSides(windowLeft, windowRight, expect440OnRight)
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+    }
+    left.splice(0, SAMPLES_PER_CHANNEL)
+    right.splice(0, SAMPLES_PER_CHANNEL)
+  }
+
+  throw lastError ?? new Error(`timed out waiting for two-sine pan sides after ${timeoutMs}ms`)
 }
 
 export function waitForConnection(pc: RTCPeerConnection, timeoutMs = 20_000): Promise<void> {

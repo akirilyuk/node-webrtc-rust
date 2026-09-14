@@ -221,6 +221,8 @@ export interface JsVadConfig {
   gateSttOpenOnPending?: boolean
   sttGateHoldMs?: number
   sttListenTimeoutMs?: number
+  sttListenBacklogSlackMs?: number
+  sttListenHardTimeoutMs?: number
   utteranceFinalizeTimeoutMs?: number
 }
 export const enum JsSttVendor {

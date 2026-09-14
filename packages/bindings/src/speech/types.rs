@@ -148,6 +148,8 @@ pub struct JsVadConfig {
     pub gate_stt_open_on_pending: Option<bool>,
     pub stt_gate_hold_ms: Option<u32>,
     pub stt_listen_timeout_ms: Option<u32>,
+    pub stt_listen_backlog_slack_ms: Option<u32>,
+    pub stt_listen_hard_timeout_ms: Option<u32>,
     pub utterance_finalize_timeout_ms: Option<u32>,
 }
 
@@ -169,6 +171,8 @@ impl From<JsVadConfig> for VadConfig {
             gate_stt_open_on_pending: value.gate_stt_open_on_pending.unwrap_or(true),
             stt_gate_hold_ms: value.stt_gate_hold_ms.unwrap_or(1000),
             stt_listen_timeout_ms: value.stt_listen_timeout_ms.unwrap_or(4000),
+            stt_listen_backlog_slack_ms: value.stt_listen_backlog_slack_ms.unwrap_or(200),
+            stt_listen_hard_timeout_ms: value.stt_listen_hard_timeout_ms.unwrap_or(0),
             utterance_finalize_timeout_ms: value.utterance_finalize_timeout_ms.unwrap_or(1500),
         }
     }

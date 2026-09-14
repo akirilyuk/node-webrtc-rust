@@ -1,5 +1,6 @@
 //! VoiceAgent integration: barge-in during TTS drain.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -79,6 +80,61 @@ impl SttProvider for CountingStt {
 
     async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
         Ok(())
+    }
+}
+
+struct BacklogStt {
+    backlog_ms: Arc<AtomicU32>,
+}
+
+#[async_trait::async_trait]
+impl SttProvider for BacklogStt {
+    fn vendor_name(&self) -> &'static str {
+        "backlog"
+    }
+
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, _pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        Ok(None)
+    }
+
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+
+    fn decode_backlog_ms(&self) -> u32 {
+        self.backlog_ms.load(Ordering::Relaxed)
+    }
+}
+
+struct BacklogFactory {
+    backlog_ms: Arc<AtomicU32>,
+}
+
+impl VendorFactory for BacklogFactory {
+    fn create_stt(
+        &self,
+        _config: &node_webrtc_rust_speech::SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        Ok(Box::new(BacklogStt {
+            backlog_ms: Arc::clone(&self.backlog_ms),
+        }))
+    }
+
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn node_webrtc_rust_speech::TtsProvider>> {
+        MockFactory.create_tts(config)
     }
 }
 
@@ -754,6 +810,140 @@ async fn c1_no_partial_emits_user_stt_not_found() {
     assert!(
         !saw_final,
         "C1: must not emit user_speech_final without partial"
+    );
+}
+
+async fn run_c1_backlog_scenario(
+    backlog_ms: Arc<AtomicU32>,
+    vad: VadConfig,
+) -> (
+    Arc<VoiceAgent>,
+    tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::SpeechEvent>,
+) {
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::new(BacklogFactory {
+            backlog_ms: Arc::clone(&backlog_ms),
+        }),
+    );
+    registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+
+    let config = VoiceAgentConfig {
+        stt: Some(node_webrtc_rust_speech::SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+        }),
+        tts: None,
+        vad,
+        ..Default::default()
+    };
+
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let events = agent.subscribe_events();
+    let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    for _ in 0..4 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
+
+    (Arc::clone(&agent), events)
+}
+
+fn drain_user_stt_not_found(
+    events: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::SpeechEvent>,
+) -> bool {
+    let mut saw = false;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == SpeechEventKind::UserSttNotFound {
+            saw = true;
+        }
+    }
+    saw
+}
+
+#[tokio::test]
+async fn c1_deferred_while_decode_backlog() {
+    let backlog_ms = Arc::new(AtomicU32::new(1500));
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.gate_stt = true;
+    vad.stt_listen_timeout_ms = 200;
+    vad.barge_in.enabled = false;
+
+    let (agent, mut events) = run_c1_backlog_scenario(Arc::clone(&backlog_ms), vad).await;
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    agent
+        .process_inbound_pcm(Bytes::from(vec![0_u8; 3840]), 20)
+        .await
+        .unwrap();
+    assert!(
+        !drain_user_stt_not_found(&mut events),
+        "C1 must defer while decode backlog exceeds slack"
+    );
+
+    backlog_ms.store(0, Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    agent
+        .process_inbound_pcm(Bytes::from(vec![0_u8; 3840]), 20)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == SpeechEventKind::UserSttNotFound {
+            agent.stop().await.unwrap();
+            return;
+        }
+    }
+    agent.stop().await.unwrap();
+    panic!("expected user_stt_not_found after backlog cleared");
+}
+
+#[tokio::test]
+async fn c1_hard_timeout_fires_despite_backlog() {
+    let backlog_ms = Arc::new(AtomicU32::new(1500));
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.gate_stt = true;
+    vad.stt_listen_timeout_ms = 200;
+    vad.stt_listen_hard_timeout_ms = 600;
+    vad.barge_in.enabled = false;
+
+    let (agent, mut events) = run_c1_backlog_scenario(Arc::clone(&backlog_ms), vad).await;
+
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    agent
+        .process_inbound_pcm(Bytes::from(vec![0_u8; 3840]), 20)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut saw_not_found = drain_user_stt_not_found(&mut events);
+    while let Ok(event) = events.try_recv() {
+        if event.kind == SpeechEventKind::UserSttNotFound {
+            saw_not_found = true;
+        }
+    }
+    agent.stop().await.unwrap();
+    assert!(
+        saw_not_found,
+        "C1 hard timeout must fire despite decode backlog"
     );
 }
 

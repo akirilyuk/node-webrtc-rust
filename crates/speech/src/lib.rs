@@ -60,9 +60,10 @@ pub mod vad;
 
 pub use agent::{PcmReader, PcmWriter, VoiceAgent};
 pub use config::{
-    language_id_allowlist_accepts, language_id_enabled, resolve_min_stt_partial_tokens,
-    resolved_language_id_min_speech_ms, resolved_post_utterance_silence_ms,
-    stt_partial_token_count, BargeInConfig, EventDeliveryMode, EventsConfig, LanguageIdConfig,
+    effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_enabled,
+    resolve_min_stt_partial_tokens, resolved_language_id_min_speech_ms,
+    resolved_post_utterance_silence_ms, stt_partial_token_count, BargeInConfig, EventDeliveryMode,
+    EventsConfig, LanguageIdConfig,
     NoiseSuppressionConfig, NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, SttVendor,
     TtsConfig, TtsVendor, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };

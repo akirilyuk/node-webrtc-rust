@@ -356,6 +356,9 @@ export class SessionPod {
 
     this.bindAgentSignalingReconnect(slot)
     this.slots.set(sessionId, slot)
+    if (this.teardownIdle) {
+      this.scheduleIdleTeardown(sessionId, 'never_connected', this.neverConnectedRejoinGraceMs)
+    }
     await Promise.resolve(
       this.options.onSessionChange?.({
         sessionId,

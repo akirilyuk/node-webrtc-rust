@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { SignalingServer } from '@node-webrtc-rust/signaling'
 
 import {
   DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS,
@@ -19,6 +21,7 @@ type SessionPodTestAccess = SessionPod & {
     {
       sessionId: string
       host: { activeClientCount: number }
+      signaling: { emit: (event: string, peerId: string) => void }
     }
   >
 }
@@ -106,5 +109,120 @@ describe('SessionPod rejoin grace', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('SessionPod prepare never-connected teardown', () => {
+  let server: SignalingServer | undefined
+
+  afterEach(async () => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    if (server) {
+      await server.close().catch(() => undefined)
+      server = undefined
+    }
+  })
+
+  it('arms never-connected teardown after prepareSessionSlot', async () => {
+    server = new SignalingServer({ pingIntervalMs: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const pod = new SessionPod(server, {
+      signalingUrl: `ws://127.0.0.1:${port}/ws`,
+      iceServers: [],
+      voiceConfig: {} as never,
+      sessionMode: 'data-only',
+      teardownIdleSessions: true,
+    }) as SessionPodTestAccess
+    const scheduleIdleTeardown = vi.spyOn(pod, 'scheduleIdleTeardown')
+
+    await pod.ensureSession('session-prepare')
+
+    expect(scheduleIdleTeardown).toHaveBeenCalledWith(
+      'session-prepare',
+      'never_connected',
+      DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS,
+    )
+    await pod.close().catch(() => undefined)
+    server = undefined
+  })
+
+  it('tears down prepared slot after never-connected grace with no joins', async () => {
+    vi.useFakeTimers()
+    server = new SignalingServer({ pingIntervalMs: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const pod = new SessionPod(server, {
+      signalingUrl: `ws://127.0.0.1:${port}/ws`,
+      iceServers: [],
+      voiceConfig: {} as never,
+      sessionMode: 'data-only',
+      teardownIdleSessions: true,
+    })
+
+    await pod.ensureSession('session-prepare')
+    expect(pod.activeSessionCount).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS)
+    await vi.waitFor(() => expect(pod.activeSessionCount).toBe(0))
+
+    await pod.close().catch(() => undefined)
+    server = undefined
+  })
+
+  it('cancels prepare never-connected teardown on onPeerConnected', async () => {
+    vi.useFakeTimers()
+    server = new SignalingServer({ pingIntervalMs: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const handler: VoiceSessionHandler = {
+      onPeerConnected: vi.fn(),
+    }
+    const pod = new SessionPod(server, {
+      signalingUrl: `ws://127.0.0.1:${port}/ws`,
+      iceServers: [],
+      voiceConfig: {} as never,
+      sessionMode: 'data-only',
+      teardownIdleSessions: true,
+      voiceHandler: handler,
+    }) as SessionPodTestAccess
+
+    await pod.ensureSession('session-prepare')
+    const wrapped = pod.wrapVoiceHandler('session-prepare', handler)
+    await wrapped?.onPeerConnected?.({ peerId: 'client-a' } as VoiceSessionContext)
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS)
+    expect(pod.activeSessionCount).toBe(1)
+
+    await pod.close().catch(() => undefined)
+    server = undefined
+  })
+
+  it('cancels prepare never-connected teardown on peer-joined client', async () => {
+    vi.useFakeTimers()
+    server = new SignalingServer({ pingIntervalMs: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const pod = new SessionPod(server, {
+      signalingUrl: `ws://127.0.0.1:${port}/ws`,
+      iceServers: [],
+      voiceConfig: {} as never,
+      sessionMode: 'data-only',
+      teardownIdleSessions: true,
+    }) as SessionPodTestAccess
+
+    await pod.ensureSession('session-prepare')
+    pod.slots.get('session-prepare')?.signaling.emit('peer-joined', 'client-a')
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS)
+    expect(pod.activeSessionCount).toBe(1)
+
+    await pod.close().catch(() => undefined)
+    server = undefined
   })
 })

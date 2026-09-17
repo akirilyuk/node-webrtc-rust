@@ -25,8 +25,6 @@ function delayMs(ms: number): Promise<void> {
 
 /** Post-mute outbound bursts (~380ms) to replace pre-mute WebRTC playout buffer. */
 const MIX_MUTE_FLUSH_FRAMES = 19
-/** Post-pose flush (~500ms) — must cover staging ENERGY_PROBE_MS / quiet window after TTS pan flip. */
-const MIX_POSE_FLUSH_FRAMES = 25
 /** Sidecar TTS FIFO cap (~1 s at 20 ms/frame); oldest dropped on overflow. */
 const TTS_QUEUE_MAX_FRAMES = 50
 /** Max outbound frames emitted from one interval tick (avoids silence catch-up bursts). */
@@ -467,41 +465,13 @@ export class ClientAudioMixer {
     this.graph.setTtsMixPlacement(placement)
   }
 
-  /**
-   * Pause pump, drain in-flight writes, apply graph pose, then burst post-pose mix so
-   * WebRTC playout cannot deliver pre-flip pan into the next utterance RMS window.
-   */
-  private async drainMixAfterTtsPoseChange(
-    clientId: string,
-    applyPose: () => void,
-    frames = MIX_POSE_FLUSH_FRAMES,
-  ): Promise<void> {
-    const state = this.peers.get(clientId)
-    if (!state) {
-      applyPose()
-      return
-    }
-    await this.pauseMixPump(clientId)
-    state.ttsQueue.length = 0
-    state.sidecarLeftover = Buffer.alloc(0)
-    state.lastSidecarEnqueueAt = null
-    state.consecutiveTtsSkips = 0
-    applyPose()
-    try {
-      await this.pacedBurstOutboundMix(clientId, frames)
-      await (this.pumpWrites.get(clientId) ?? Promise.resolve())
-    } finally {
-      this.resumeMixPump(clientId)
-    }
-  }
-
-  /** Clears pending TTS and flushes post-pose silence on the listener outbound (WebRTC playout drain). */
+  /** Updates TTS pan pose on the mix graph; queued sidecar PCM is panned at mix time. */
   async setTtsPose(clientId: string, pose: ClientPose): Promise<void> {
-    await this.drainMixAfterTtsPoseChange(clientId, () => this.graph.setTtsPose(clientId, pose))
+    this.graph.setTtsPose(clientId, pose)
   }
 
   async clearTtsPose(clientId: string): Promise<void> {
-    await this.drainMixAfterTtsPoseChange(clientId, () => this.graph.clearTtsPose(clientId))
+    this.graph.clearTtsPose(clientId)
   }
 
   /**

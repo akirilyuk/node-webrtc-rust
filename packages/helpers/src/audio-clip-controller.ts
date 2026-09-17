@@ -10,6 +10,8 @@ import {
   type ClipPlayerStatus,
 } from '@node-webrtc-rust/sdk/player'
 
+import type { ClientPose } from '@node-webrtc-rust/sdk/mix'
+
 import { assertAudioPositionExclusive, type AudioPosition } from './audio-position.js'
 import {
   sumStereoPcm,
@@ -149,6 +151,20 @@ export class AudioClipController {
     }
     this.teardownPlay(play)
     return stopClip(playId)
+  }
+
+  /** Live clip pose update for an active mix-graph play (does not restart playback). */
+  setPlayPose(playId: string, pose: ClientPose): boolean {
+    const play = this.plays.get(playId)
+    if (!play?.usesMixGraph) {
+      return false
+    }
+    const graph = this.getMixer()?.getMixGraph()
+    if (!graph) {
+      return false
+    }
+    this.applyPlayPosition(graph, play.mixInputId, { pose })
+    return true
   }
 
   onPeerDisconnected(peerId: string, deps: Pick<AudioClipPlayDeps, 'listRegisteredPeers'>): void {

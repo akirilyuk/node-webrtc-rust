@@ -516,7 +516,7 @@ describe('ClientAudioMixer', () => {
     expect(graph.calls.clearTtsPose).toEqual(['peer-1'])
   })
 
-  it('flushes outbound mix when TTS pose changes', async () => {
+  it('setTtsPose updates graph without flushing mix pump', async () => {
     const graph = createMockGraph()
     const mixer = new ClientAudioMixer({ graph })
     mixer.registerPeer('peer-1')
@@ -527,12 +527,10 @@ describe('ClientAudioMixer', () => {
       orientation: { x: 0, y: 0, z: 0, w: 1 },
     }
     const renderBefore = graph.calls.renderOutput.length
-    const flushPromise = mixer.setTtsPose('peer-1', pose)
-    await vi.advanceTimersByTimeAsync(25 * PCM_FRAME_DURATION_MS)
-    await flushPromise
+    await mixer.setTtsPose('peer-1', pose)
     expect(graph.calls.setTtsPose).toEqual([{ peer: 'peer-1', pose }])
-    expect(graph.calls.renderOutput.length).toBeGreaterThan(renderBefore)
-    expect(pcTrack.writeSample).toHaveBeenCalled()
+    expect(graph.calls.renderOutput.length).toBe(renderBefore)
+    expect(pcTrack.writeSample).not.toHaveBeenCalled()
   })
 
   it('forwards global mute to the graph and flushes post-mute mix', async () => {

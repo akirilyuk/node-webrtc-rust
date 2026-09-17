@@ -1399,9 +1399,7 @@ export class VoiceAgentSessionHost {
     const wait = {
       peerId,
       pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
-        | 'ok'
-        | 'failed'
-        | 'pending',
+        'ok' | 'failed' | 'pending',
       agent: (agentStatus === 'timed_out'
         ? 'pending'
         : componentOk(agentStatus)
@@ -1615,6 +1613,12 @@ export class VoiceAgentSessionHost {
   stopAudioPlay(playId: string): boolean {
     this.assertAudioPlayCapable()
     return this.audioClips.stop(playId)
+  }
+
+  /** Live clip pose update for a playing {@link playAudio} session (mix graph only). */
+  setPlayPose(playId: string, pose: ClientPose): boolean {
+    this.assertAudioPlayCapable()
+    return this.audioClips.setPlayPose(playId, pose)
   }
 
   private assertAudioPlayCapable(): void {

@@ -8,6 +8,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-09-17
+
+### Fixed
+
+- **helpers** — `setTtsPose` / `clearTtsPose` update MixGraph pose only (no mix-queue drain / 25-frame flush), so rapid live orbit ticks do not clip in-flight TTS or clip PCM. (#244)
+- **helpers** — expire never-joined prepared session slots. (#243)
+
+### Added
+
+- **helpers** — `AudioClipController.setPlayPose` / host `setPlayPose` to update a playing clip's world pose without restarting playback. (#244)
+
+**Compare:** [`release/0.9.8…release/0.9.9`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.8...release/0.9.9)
+
 ## [0.9.8] - 2026-09-14
 
 ### Fixed

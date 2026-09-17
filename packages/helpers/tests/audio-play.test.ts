@@ -377,6 +377,55 @@ describe('VoiceAgentSessionHost playAudio', () => {
     expect(graph.setSourceMixPlacement).toHaveBeenCalledWith('play:play-bytes', 'left')
   })
 
+  it('setPlayPose updates mix graph pose for a playing clip', async () => {
+    const graph = createMockMixGraph()
+    const host = createHost('voice+data', graph)
+    host.sessions.set('client-a', {
+      agent: { stop: vi.fn(async () => undefined) },
+      agentStarted: true,
+    })
+    host.getClientMixer()?.registerPeer('client-a')
+    const initialPose = {
+      position: { x: 2, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    const updatedPose = {
+      position: { x: -2, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+
+    const { playId } = await host.playAudio({
+      source: { bytes: Buffer.from('wav') },
+      peerIds: ['client-a'],
+      position: { pose: initialPose },
+    })
+    const mixInputId = clipPlayInputId(playId)
+    expect(graph.setPose).toHaveBeenCalledWith(mixInputId, initialPose)
+
+    expect(host.setPlayPose(playId, updatedPose)).toBe(true)
+    expect(graph.setPose).toHaveBeenLastCalledWith(mixInputId, updatedPose)
+    expect(graph.setPositionalEnabled).toHaveBeenCalledWith(true)
+    expect(playerMocks.stopClip).not.toHaveBeenCalled()
+  })
+
+  it('setPlayPose returns false for unknown playId', () => {
+    const host = createHost('voice+data', createMockMixGraph())
+    const pose = {
+      position: { x: 0, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    expect(host.setPlayPose('missing-play', pose)).toBe(false)
+  })
+
+  it('rejects setPlayPose on data-only sessions', () => {
+    const host = createHost('data-only')
+    const pose = {
+      position: { x: 0, y: 0, z: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    }
+    expect(() => host.setPlayPose('play-1', pose)).toThrow(AUDIO_PLAY_REQUIRES_VOICE)
+  })
+
   it('applies clip pose via setPose and enables positional mixing', async () => {
     const graph = createMockMixGraph()
     const host = createHost('voice+data', graph)

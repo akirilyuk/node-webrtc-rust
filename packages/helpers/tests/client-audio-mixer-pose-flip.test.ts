@@ -65,9 +65,7 @@ describe.skipIf(!mixGraphNativeAvailable())(
       }
       mixer.startMixPump(peerId, outbound)
 
-      const poseRight = mixer.setTtsPose(peerId, poseAtX(3))
-      await vi.advanceTimersByTimeAsync(25 * 20)
-      await poseRight
+      await mixer.setTtsPose(peerId, poseAtX(3))
       const rightPhaseStart = captured.length
       for (let i = 0; i < 10; i++) {
         injectTtsSidecarPendingFrame(mixer, peerId, createLoudStereoFrame())
@@ -76,9 +74,7 @@ describe.skipIf(!mixGraphNativeAvailable())(
       const rightPeak = peakRmsFromFrames(captured.slice(rightPhaseStart))
       assertRightLouder(rightPeak.left, rightPeak.right)
 
-      const poseLeft = mixer.setTtsPose(peerId, poseAtX(-3))
-      await vi.advanceTimersByTimeAsync(25 * 20)
-      await poseLeft
+      await mixer.setTtsPose(peerId, poseAtX(-3))
       const leftPhaseStart = captured.length
       for (let i = 0; i < 10; i++) {
         injectTtsSidecarPendingFrame(mixer, peerId, createLoudStereoFrame())
@@ -89,6 +85,54 @@ describe.skipIf(!mixGraphNativeAvailable())(
 
       mixer.stopMixPump(peerId)
       expect(captured.length).toBeGreaterThan(leftPhaseStart)
+    })
+
+    it('keeps queued TTS frames when setTtsPose is called rapidly', async () => {
+      type MixerTtsTestAccess = ClientAudioMixer & {
+        peers: Map<string, { ttsQueue: Buffer[] }>
+      }
+      const graph = new AudioMixGraph()
+      graph.setPositionalEnabled(true)
+      const mixer = new ClientAudioMixer({ graph })
+      const peerId = 'listener'
+      mixer.registerPeer(peerId)
+      mixer.setClientPose(peerId, { position: vec3Zero(), orientation: quatIdentity() })
+
+      const captured: Buffer[] = []
+      mixer.startMixPump(peerId, {
+        writeSample: async (data: Buffer) => {
+          captured.push(Buffer.from(data))
+        },
+      })
+
+      const queuedFrames = 5
+      for (let i = 0; i < queuedFrames; i++) {
+        injectTtsSidecarPendingFrame(mixer, peerId, createLoudStereoFrame())
+      }
+      const queueBeforePose = (mixer as MixerTtsTestAccess).peers.get(peerId)!.ttsQueue.length
+      expect(queueBeforePose).toBe(queuedFrames)
+
+      await mixer.setTtsPose(peerId, poseAtX(3))
+      await mixer.setTtsPose(peerId, poseAtX(-1))
+      await mixer.setTtsPose(peerId, poseAtX(-3))
+
+      expect((mixer as MixerTtsTestAccess).peers.get(peerId)!.ttsQueue.length).toBe(queueBeforePose)
+
+      const afterQueuedStart = captured.length
+      for (let i = 0; i < queuedFrames; i++) {
+        await vi.advanceTimersByTimeAsync(20)
+      }
+      expect(captured.length).toBeGreaterThan(afterQueuedStart)
+
+      const postPoseStart = captured.length
+      for (let i = 0; i < 10; i++) {
+        injectTtsSidecarPendingFrame(mixer, peerId, createLoudStereoFrame())
+        await vi.advanceTimersByTimeAsync(20)
+      }
+      const postPosePeak = peakRmsFromFrames(captured.slice(postPoseStart))
+      assertLeftLouder(postPosePeak.left, postPosePeak.right)
+
+      mixer.stopMixPump(peerId)
     })
   },
 )

@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **helpers** — clear prepare `never_connected` pending end reason on join/transport-ready so data-only disconnects are not billed as never-connected (#243 leftover).
+
 ## [0.9.9] - 2026-09-17
 
 ### Fixed

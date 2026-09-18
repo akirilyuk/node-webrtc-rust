@@ -6,6 +6,7 @@ import {
   DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS,
   DEFAULT_SESSION_REJOIN_GRACE_MS,
   SessionPod,
+  type SessionPodChangeEvent,
 } from '../src/session-pod.js'
 import type { VoiceSessionContext, VoiceSessionHandler } from '../src/voice-session-handler.js'
 
@@ -20,6 +21,7 @@ type SessionPodTestAccess = SessionPod & {
     string,
     {
       sessionId: string
+      pendingEndReason?: string
       host: { activeClientCount: number }
       signaling: { emit: (event: string, peerId: string) => void }
     }
@@ -155,12 +157,16 @@ describe('SessionPod prepare never-connected teardown', () => {
     await server.listen(0)
     const port = server.port
 
+    const destroyedEvents: SessionPodChangeEvent[] = []
     const pod = new SessionPod(server, {
       signalingUrl: `ws://127.0.0.1:${port}/ws`,
       iceServers: [],
       voiceConfig: {} as never,
       sessionMode: 'data-only',
       teardownIdleSessions: true,
+      onSessionChange: (event) => {
+        if (event.action === 'destroyed') destroyedEvents.push(event)
+      },
     })
 
     await pod.ensureSession('session-prepare')
@@ -168,6 +174,8 @@ describe('SessionPod prepare never-connected teardown', () => {
 
     await vi.advanceTimersByTimeAsync(DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS)
     await vi.waitFor(() => expect(pod.activeSessionCount).toBe(0))
+    expect(destroyedEvents).toHaveLength(1)
+    expect(destroyedEvents[0]?.endReason).toBe('never_connected')
 
     await pod.close().catch(() => undefined)
     server = undefined
@@ -217,10 +225,137 @@ describe('SessionPod prepare never-connected teardown', () => {
     }) as SessionPodTestAccess
 
     await pod.ensureSession('session-prepare')
+    expect(pod.slots.get('session-prepare')?.pendingEndReason).toBe('never_connected')
     pod.slots.get('session-prepare')?.signaling.emit('peer-joined', 'client-a')
+    expect(pod.slots.get('session-prepare')?.pendingEndReason).toBeUndefined()
 
     await vi.advanceTimersByTimeAsync(DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS)
     expect(pod.activeSessionCount).toBe(1)
+
+    await pod.close().catch(() => undefined)
+    server = undefined
+  })
+
+  it('sets pendingEndReason never_connected after prepareSessionSlot', async () => {
+    server = new SignalingServer({ pingIntervalMs: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const pod = new SessionPod(server, {
+      signalingUrl: `ws://127.0.0.1:${port}/ws`,
+      iceServers: [],
+      voiceConfig: {} as never,
+      sessionMode: 'data-only',
+      teardownIdleSessions: true,
+    }) as SessionPodTestAccess
+
+    await pod.ensureSession('session-prepare')
+    expect(pod.slots.get('session-prepare')?.pendingEndReason).toBe('never_connected')
+
+    await pod.close().catch(() => undefined)
+    server = undefined
+  })
+
+  it('clears pending never_connected on onPeerConnected', async () => {
+    vi.useFakeTimers()
+    server = new SignalingServer({ pingIntervalMs: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const handler: VoiceSessionHandler = {
+      onPeerConnected: vi.fn(),
+    }
+    const pod = new SessionPod(server, {
+      signalingUrl: `ws://127.0.0.1:${port}/ws`,
+      iceServers: [],
+      voiceConfig: {} as never,
+      sessionMode: 'data-only',
+      teardownIdleSessions: true,
+      voiceHandler: handler,
+    }) as SessionPodTestAccess
+
+    await pod.ensureSession('session-prepare')
+    expect(pod.slots.get('session-prepare')?.pendingEndReason).toBe('never_connected')
+    const wrapped = pod.wrapVoiceHandler('session-prepare', handler)
+    await wrapped?.onPeerConnected?.({ peerId: 'client-a' } as VoiceSessionContext)
+    expect(pod.slots.get('session-prepare')?.pendingEndReason).toBeUndefined()
+
+    await pod.close().catch(() => undefined)
+    server = undefined
+  })
+
+  it('clears pending never_connected on onPeerTransportReady', async () => {
+    vi.useFakeTimers()
+    server = new SignalingServer({ pingIntervalMs: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const handler: VoiceSessionHandler = {
+      onPeerTransportReady: vi.fn(),
+    }
+    const pod = new SessionPod(server, {
+      signalingUrl: `ws://127.0.0.1:${port}/ws`,
+      iceServers: [],
+      voiceConfig: {} as never,
+      sessionMode: 'data-only',
+      teardownIdleSessions: true,
+      voiceHandler: handler,
+    }) as SessionPodTestAccess
+
+    await pod.ensureSession('session-prepare')
+    expect(pod.slots.get('session-prepare')?.pendingEndReason).toBe('never_connected')
+    const wrapped = pod.wrapVoiceHandler('session-prepare', handler)
+    await wrapped?.onPeerTransportReady?.({ peerId: 'client-a' } as VoiceSessionContext)
+    expect(pod.slots.get('session-prepare')?.pendingEndReason).toBeUndefined()
+
+    await pod.close().catch(() => undefined)
+    server = undefined
+  })
+
+  it('post-connect idle teardown does not use never_connected endReason', async () => {
+    vi.useFakeTimers()
+    server = new SignalingServer({ pingIntervalMs: 0 })
+    await server.listen(0)
+    const port = server.port
+
+    const destroyedEvents: SessionPodChangeEvent[] = []
+    const handler: VoiceSessionHandler = {
+      onPeerConnected: vi.fn(),
+      onPeerDisconnected: vi.fn(),
+    }
+    const pod = new SessionPod(server, {
+      signalingUrl: `ws://127.0.0.1:${port}/ws`,
+      iceServers: [],
+      voiceConfig: {} as never,
+      sessionMode: 'data-only',
+      teardownIdleSessions: true,
+      rejoinGraceMs: 400,
+      voiceHandler: handler,
+      onSessionChange: (event) => {
+        if (event.action === 'destroyed') destroyedEvents.push(event)
+      },
+    }) as SessionPodTestAccess
+
+    await pod.ensureSession('session-post-connect')
+    expect(pod.slots.get('session-post-connect')?.pendingEndReason).toBe('never_connected')
+
+    const wrapped = pod.wrapVoiceHandler('session-post-connect', handler)
+    await wrapped?.onPeerConnected?.({ peerId: 'client-a' } as VoiceSessionContext)
+    expect(pod.slots.get('session-post-connect')?.pendingEndReason).toBeUndefined()
+
+    const slot = pod.slots.get('session-post-connect')
+    expect(slot).toBeDefined()
+    let activeClients = 1
+    vi.spyOn(slot!.host, 'activeClientCount', 'get').mockImplementation(() => activeClients)
+    wrapped?.onPeerDisconnected?.({ peerId: 'client-a' } as VoiceSessionContext)
+    activeClients = 0
+
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(400)
+    await vi.waitFor(() => expect(pod.activeSessionCount).toBe(0))
+
+    expect(destroyedEvents).toHaveLength(1)
+    expect(destroyedEvents[0]?.endReason).not.toBe('never_connected')
 
     await pod.close().catch(() => undefined)
     server = undefined

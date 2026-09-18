@@ -169,6 +169,10 @@ export class SessionPod {
       clearTimeout(timer)
       this.teardownTimers.delete(sessionId)
     }
+    const slot = this.slots.get(sessionId)
+    if (slot?.pendingEndReason === 'never_connected') {
+      slot.pendingEndReason = undefined
+    }
   }
 
   private scheduleIdleTeardown(

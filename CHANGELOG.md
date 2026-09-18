@@ -8,9 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-09-18
+
 ### Fixed
 
-- **helpers** — clear prepare `never_connected` pending end reason on join/transport-ready so data-only disconnects are not billed as never-connected (#243 leftover).
+- **helpers** — clear prepare `never_connected` pending end reason on join/transport-ready so data-only disconnects are not billed as never-connected (#247; leftover from #243).
+
+**Compare:** [`release/0.9.9…release/0.9.10`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.9...release/0.9.10)
 
 ## [0.9.9] - 2026-09-17
 

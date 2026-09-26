@@ -15,8 +15,8 @@ use tokio::sync::{broadcast, Mutex, Notify};
 use crate::config::{
     effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
     language_id_enabled, resolved_language_id_min_speech_ms, resolved_post_utterance_silence_ms,
-    EventDeliveryMode, NoiseSuppressionProvider, SendTextToTtsOptions, VadConfig,
-    VoiceAgentConfig, VoiceSessionContext,
+    EventDeliveryMode, NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, TtsConfig,
+    VadConfig, VoiceAgentConfig, VoiceSessionContext,
 };
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
@@ -158,6 +158,10 @@ struct AgentInner {
     lid_identify_deferred: bool,
     /// True once inbound speech started or deferred LID for this utterance (skip hang-up force identify).
     lid_identify_started_this_utterance: bool,
+    /// Swapped onto the STT provider after the current utterance finalizes.
+    pending_stt_config: Option<SttConfig>,
+    /// Swapped onto the TTS provider before the next synthesis job.
+    pending_tts_config: Option<TtsConfig>,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -312,6 +316,8 @@ impl VoiceAgent {
                 lid_identify_in_flight: false,
                 lid_identify_deferred: false,
                 lid_identify_started_this_utterance: false,
+                pending_stt_config: None,
+                pending_tts_config: None,
             })),
             stt: Mutex::new(stt),
             language_id: Mutex::new(language_id),
@@ -364,6 +370,76 @@ impl VoiceAgent {
         if !enabled {
             Self::reset_stt_pipeline_state(&mut inner);
         }
+    }
+
+    /// Queue a new STT vendor config; applies after the current utterance finalizes (or immediately when idle).
+    pub async fn update_stt_config(&self, config: SttConfig) -> SpeechResult<()> {
+        let apply_now = {
+            let mut inner = self.inner.lock().await;
+            inner.pending_stt_config = Some(config);
+            !Self::utterance_in_progress(&inner)
+        };
+        if apply_now {
+            self.apply_pending_stt_config_if_any().await?;
+        }
+        Ok(())
+    }
+
+    /// Queue a new TTS vendor config; applies before the next synthesis job.
+    pub async fn update_tts_config(&self, config: TtsConfig) -> SpeechResult<()> {
+        self.inner.lock().await.pending_tts_config = Some(config);
+        Ok(())
+    }
+
+    async fn apply_pending_stt_config_if_any(&self) -> SpeechResult<()> {
+        let config = self.inner.lock().await.pending_stt_config.take();
+        let Some(config) = config else {
+            return Ok(());
+        };
+        let session_ctx = self.inner.lock().await.otel.session_context.clone();
+        {
+            let mut stt = self.stt.lock().await;
+            if let Some(current) = stt.as_mut() {
+                current.stop().await?;
+            }
+            let mut new_stt = self.registry.create_stt(&config)?;
+            new_stt.bind_session_context(&session_ctx);
+            if self.inner.lock().await.running {
+                new_stt.start().await?;
+            }
+            *stt = Some(new_stt);
+        }
+        {
+            let mut inner = self.inner.lock().await;
+            inner.config.stt = Some(config.clone());
+        }
+        self.emit(SpeechEvent::stt_config_updated(config.language.clone()));
+        Ok(())
+    }
+
+    async fn apply_pending_tts_config_if_any(&self) -> SpeechResult<()> {
+        let config = self.inner.lock().await.pending_tts_config.take();
+        let Some(config) = config else {
+            return Ok(());
+        };
+        let session_ctx = self.inner.lock().await.otel.session_context.clone();
+        let new_tts = self.registry.create_tts(&config)?;
+        new_tts.bind_session_context(&session_ctx);
+        *self.tts.lock().await = Some(new_tts);
+        {
+            let mut inner = self.inner.lock().await;
+            inner.config.tts = Some(config.clone());
+        }
+        self.emit(SpeechEvent::tts_config_updated(config.voice.clone()));
+        Ok(())
+    }
+
+    fn utterance_in_progress(inner: &AgentInner) -> bool {
+        inner.stt_finalize_pending
+            || inner.vad_triggered_this_utterance
+            || inner.stt_stream_open
+            || inner.stt_gate_hold_ms > 0
+            || inner.stt_endpoint_closing_started
     }
 
     fn stt_pipeline_active(inner: &AgentInner) -> bool {
@@ -635,16 +711,15 @@ impl VoiceAgent {
         self.tts_workers_shutdown.store(false, Ordering::SeqCst);
         self.tts_shutdown_unhealthy.store(false, Ordering::SeqCst);
 
+        let session_ctx = self.inner.lock().await.otel.session_context.clone();
         let mut stt = self.stt.lock().await;
         if let Some(stt) = stt.as_mut() {
+            stt.bind_session_context(&session_ctx);
             stt.start().await?;
             voice_debug(format!("STT started ({})", stt.vendor_name()));
         }
-        {
-            let ctx = self.inner.lock().await.otel.session_context.clone();
-            if let Some(tts) = self.tts.lock().await.as_ref() {
-                tts.bind_session_context(&ctx);
-            }
+        if let Some(tts) = self.tts.lock().await.as_ref() {
+            tts.bind_session_context(&session_ctx);
         }
         self.ensure_tts_drain_worker().await;
         if let Some(this) = self.weak_self.upgrade() {
@@ -965,6 +1040,9 @@ impl VoiceAgent {
         tts_synthesis_busy: &Arc<AtomicBool>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
+        if let Some(agent) = weak_self.upgrade() {
+            agent.apply_pending_tts_config_if_any().await?;
+        }
         if tts_stream_chunks_enabled() {
             Self::run_tts_synthesis_job_streaming(
                 text,
@@ -2698,6 +2776,7 @@ impl VoiceAgent {
         }
         self.poll_stt_transcripts().await?;
         otel::record_stt_latency_ms(stt_started.elapsed().as_secs_f64() * 1000.0, &stt_attrs);
+        self.apply_pending_stt_config_if_any().await?;
         Ok(())
     }
 

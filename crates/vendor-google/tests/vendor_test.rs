@@ -12,6 +12,7 @@ fn google_factory_creates_providers() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         })
         .is_ok());
     assert!(factory
@@ -21,6 +22,7 @@ fn google_factory_creates_providers() {
             model_path: None,
             voice: Some("en-US-Neural2-A".into()),
             api_key: None,
+            endpoint: None,
         })
         .is_ok());
 }

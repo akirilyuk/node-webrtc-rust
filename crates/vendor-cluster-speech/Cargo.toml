@@ -1,0 +1,25 @@
+[package]
+name = "node-webrtc-rust-vendor-cluster-speech"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-cluster gRPC STT/TTS vendor (cluster-sherpa)"
+
+[dependencies]
+async-trait = "0.1"
+bytes = { workspace = true }
+node-webrtc-rust-speech = { path = "../speech" }
+node-webrtc-rust-speech-proto = { path = "../speech-proto", features = ["client"] }
+prost = "0.13"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+tonic = { version = "0.12", default-features = false, features = ["transport", "codegen", "prost"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+node-webrtc-rust-speech-proto = { path = "../speech-proto", features = ["client", "server"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
+tokio-stream = "0.1"

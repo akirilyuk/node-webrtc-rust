@@ -63,6 +63,7 @@ fn vad_rnnoise_config(provider: NoiseSuppressionProvider) -> VoiceAgentConfig {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()

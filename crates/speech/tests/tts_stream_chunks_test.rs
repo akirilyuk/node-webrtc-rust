@@ -146,6 +146,7 @@ fn agent_config() -> VoiceAgentConfig {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         ..Default::default()
     }

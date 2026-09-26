@@ -42,6 +42,7 @@ fn tts_config(model_path: String) -> TtsConfig {
         model_path: Some(model_path),
         voice: Some("0".into()),
         api_key: None,
+        endpoint: None,
     }
 }
 

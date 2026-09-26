@@ -34,6 +34,7 @@ fn sherpa_factory_creates_stt() {
         model_path: None,
         language: Some("en".into()),
         api_key: None,
+        endpoint: None,
     });
     assert!(stt.is_ok());
 }
@@ -47,6 +48,7 @@ fn sherpa_factory_creates_tts() {
         model_path: None,
         voice: Some("0".into()),
         api_key: None,
+        endpoint: None,
     });
     assert!(tts.is_ok());
 }
@@ -63,6 +65,7 @@ async fn tts_synthesize_fails_without_model_path_when_env_unset() {
             model_path: None,
             voice: Some("0".into()),
             api_key: None,
+            endpoint: None,
         })
         .expect("factory should create TTS");
 
@@ -83,6 +86,7 @@ async fn stt_start_fails_without_model_path_when_env_unset() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         })
         .expect("factory should create STT");
 
@@ -104,6 +108,7 @@ async fn tts_synthesize_produces_stereo_pcm_with_model() {
             model_path: Some(model_path),
             voice: Some("0".into()),
             api_key: None,
+            endpoint: None,
         })
         .expect("factory should create TTS");
 

@@ -251,6 +251,7 @@ export interface JsSttConfig {
   modelPath?: string
   language?: string
   apiKey?: string
+  endpoint?: string
 }
 export interface JsTtsConfig {
   provider: JsTtsVendor
@@ -258,6 +259,7 @@ export interface JsTtsConfig {
   modelPath?: string
   voice?: string
   apiKey?: string
+  endpoint?: string
   postUtteranceSilenceMs?: number
 }
 export const enum JsNoiseSuppressionProvider {
@@ -309,7 +311,9 @@ export const enum JsSpeechEventType {
   UserSttEnd = 'user_stt_end',
   UserSttNotFound = 'user_stt_not_found',
   BargeIn = 'barge_in',
-  Error = 'error'
+  Error = 'error',
+  SttConfigUpdated = 'stt_config_updated',
+  TtsConfigUpdated = 'tts_config_updated'
 }
 export interface JsSpeechEvent {
   eventType: JsSpeechEventType
@@ -548,4 +552,8 @@ export declare class JsVoiceAgent {
   /** When `false`, inbound PCM still runs VAD but skips STT and user speech events. */
   setSttEnabled(enabled: boolean): Promise<void>
   sttEnabled(): Promise<boolean>
+  /** Apply a new STT config after the current utterance finalizes (or immediately when idle). */
+  updateStt(config: JsSttConfig): Promise<void>
+  /** Apply a new TTS config before the next synthesis job. */
+  updateTts(config: JsTtsConfig): Promise<void>
 }

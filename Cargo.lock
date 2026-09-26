@@ -2256,6 +2256,7 @@ dependencies = [
  "node-webrtc-rust-speech",
  "node-webrtc-rust-vendor-assemblyai",
  "node-webrtc-rust-vendor-cartesia",
+ "node-webrtc-rust-vendor-cluster-speech",
  "node-webrtc-rust-vendor-deepgram",
  "node-webrtc-rust-vendor-elevenlabs",
  "node-webrtc-rust-vendor-google",
@@ -2399,6 +2400,22 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "node-webrtc-rust-vendor-cluster-speech"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "node-webrtc-rust-speech",
+ "node-webrtc-rust-speech-proto",
+ "prost",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

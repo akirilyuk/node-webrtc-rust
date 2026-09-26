@@ -41,6 +41,8 @@ pub enum SpeechEventKind {
     UserSttNotFound,
     BargeIn,
     Error,
+    SttConfigUpdated,
+    TtsConfigUpdated,
 }
 
 /// A speech event with optional payload text.
@@ -187,6 +189,24 @@ impl SpeechEvent {
             text: None,
             language: None,
             error: Some(message.into()),
+        }
+    }
+
+    pub fn stt_config_updated(language: Option<String>) -> Self {
+        Self {
+            kind: SpeechEventKind::SttConfigUpdated,
+            text: None,
+            language,
+            error: None,
+        }
+    }
+
+    pub fn tts_config_updated(voice: Option<String>) -> Self {
+        Self {
+            kind: SpeechEventKind::TtsConfigUpdated,
+            text: voice,
+            language: None,
+            error: None,
         }
     }
 }

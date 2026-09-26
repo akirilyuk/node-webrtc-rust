@@ -123,6 +123,7 @@ mod tests {
             model_path: None,
             voice: None,
             api_key: Some("test".into()),
+            endpoint: None,
         })
         .unwrap();
         assert_eq!(tts.voice_id(), DEFAULT_VOICE_ID);

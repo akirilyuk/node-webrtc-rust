@@ -81,6 +81,9 @@ pub trait SttProvider: Send + Sync {
         Ok(())
     }
 
+    /// Optional session labels for remote STT (cluster-sherpa gRPC metadata).
+    fn bind_session_context(&self, _ctx: &VoiceSessionContext) {}
+
     /// Milliseconds of audio accepted by [`Self::push_audio`] and not yet processed by
     /// [`Self::poll_transcript`] (including time blocked on a shared decode limiter). Used to
     /// defer C1 `user_stt_not_found` when the decoder is behind.

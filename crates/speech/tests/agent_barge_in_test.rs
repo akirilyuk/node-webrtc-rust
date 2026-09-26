@@ -47,6 +47,7 @@ fn speaker_config() -> VoiceAgentConfig {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()
@@ -254,6 +255,7 @@ async fn agent_playback_guard_suppresses_early_barge_in() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()
@@ -331,6 +333,7 @@ async fn use_vad_false_skips_auto_barge_on_speech_start() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()
@@ -399,6 +402,7 @@ async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() 
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -406,6 +410,7 @@ async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() 
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()
@@ -539,6 +544,7 @@ async fn stt_partial_gated_barge_flushes_agent_tts_after_partial() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -546,6 +552,7 @@ async fn stt_partial_gated_barge_flushes_agent_tts_after_partial() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()
@@ -630,6 +637,7 @@ async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -637,6 +645,7 @@ async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()
@@ -723,6 +732,7 @@ async fn c1_no_partial_emits_user_stt_not_found() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: None,
         vad,
@@ -836,6 +846,7 @@ async fn run_c1_backlog_scenario(
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: None,
         vad,
@@ -1028,6 +1039,7 @@ async fn c2_partial_stall_forces_user_speech_final() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: None,
         vad,
@@ -1106,6 +1118,7 @@ async fn c2_partial_stall_no_pcm_forces_user_speech_final() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: None,
         vad,
@@ -1189,6 +1202,7 @@ async fn c2_does_not_force_during_active_vad_speech() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: None,
         vad,
@@ -1273,6 +1287,7 @@ async fn second_turn_stt_finalizes_after_prior_utterance_final() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -1280,6 +1295,7 @@ async fn second_turn_stt_finalizes_after_prior_utterance_final() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()
@@ -1342,6 +1358,7 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -1349,6 +1366,7 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         vad,
         ..Default::default()

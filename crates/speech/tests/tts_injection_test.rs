@@ -60,6 +60,7 @@ async fn tts_injection_emits_agent_speaking_events() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         ..Default::default()
     };
@@ -123,6 +124,7 @@ fn slow_tts_config() -> VoiceAgentConfig {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         ..Default::default()
     }
@@ -220,6 +222,7 @@ fn mock_tts_only_config() -> VoiceAgentConfig {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         ..Default::default()
     }

@@ -405,6 +405,8 @@ pub struct SttConfig {
     pub language: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 /// TTS vendor configuration.
@@ -420,6 +422,8 @@ pub struct TtsConfig {
     pub voice: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 /// Resolved post-TTS silence duration for outbound pacing.
@@ -692,6 +696,7 @@ mod language_id_config_tests {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         });
         let mock = Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -699,6 +704,7 @@ mod language_id_config_tests {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         });
         let cluster = Some(TtsConfig {
             provider: TtsVendor::ClusterSherpa,
@@ -706,6 +712,7 @@ mod language_id_config_tests {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         });
         assert!(lid_tts_exclusion_enabled(&Some(lid.clone()), &local));
         assert!(!lid_tts_exclusion_enabled(&Some(lid.clone()), &mock));
@@ -731,6 +738,27 @@ mod language_id_config_tests {
 #[cfg(test)]
 mod vendor_wire_tests {
     use super::*;
+
+    #[test]
+    fn stt_tts_endpoint_serde_omits_when_none() {
+        let stt = SttConfig {
+            provider: SttVendor::ClusterSherpa,
+            model: None,
+            model_path: Some("/models/sherpa/stt/en".into()),
+            language: Some("en".into()),
+            api_key: None,
+            endpoint: None,
+        };
+        let json = serde_json::to_string(&stt).unwrap();
+        assert!(!json.contains("endpoint"));
+        let with_ep = SttConfig {
+            endpoint: Some("http://speech-stt:50051".into()),
+            ..stt.clone()
+        };
+        let parsed: SttConfig = serde_json::from_str(&serde_json::to_string(&with_ep).unwrap())
+            .unwrap();
+        assert_eq!(parsed.endpoint.as_deref(), Some("http://speech-stt:50051"));
+    }
 
     #[test]
     fn cluster_sherpa_serde_round_trip() {
@@ -822,6 +850,7 @@ impl Default for VoiceAgentConfig {
                 model_path: None,
                 language: Some("en".to_string()),
                 api_key: None,
+                endpoint: None,
             }),
             tts: Some(TtsConfig {
                 provider: TtsVendor::Mock,
@@ -829,6 +858,7 @@ impl Default for VoiceAgentConfig {
                 model_path: None,
                 voice: None,
                 api_key: None,
+                endpoint: None,
             }),
             language_id: None,
             post_utterance_silence_ms: None,

@@ -145,6 +145,7 @@ mod tests {
             model_path: None,
             voice: Some("en-US-Neural2-A".into()),
             api_key: None,
+            endpoint: None,
         })
         .unwrap();
         assert_eq!(tts.language, "en-US");

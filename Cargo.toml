@@ -17,6 +17,7 @@ members = [
     "crates/vendor-assemblyai",
     "crates/vendor-mock",
     "crates/vendor-sherpa-onnx",
+    "crates/vendor-cluster-speech",
     "packages/bindings",
 ]
 

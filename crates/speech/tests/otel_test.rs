@@ -21,6 +21,7 @@ fn mock_agent() -> std::sync::Arc<VoiceAgent> {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -28,6 +29,7 @@ fn mock_agent() -> std::sync::Arc<VoiceAgent> {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         ..Default::default()
     };

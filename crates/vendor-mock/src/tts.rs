@@ -58,6 +58,7 @@ mod tests {
             model_path: None,
             voice: Some("test".into()),
             api_key: None,
+            endpoint: None,
         });
         let chunks = tts.synthesize("hello").await.unwrap();
         assert_eq!(chunks.len(), 1);

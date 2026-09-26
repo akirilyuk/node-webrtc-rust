@@ -11,6 +11,7 @@ fn assemblyai_factory_creates_stt() {
         model_path: None,
         language: Some("en".into()),
         api_key: Some("test-key".into()),
+        endpoint: None,
     });
     assert!(stt.is_ok());
 }

@@ -91,6 +91,7 @@ function toJsSttConfig(stt: SttConfig): JsSttConfig {
     modelPath: stt.modelPath,
     language: stt.language,
     apiKey: stt.apiKey,
+    endpoint: stt.endpoint,
   }
 }
 
@@ -101,6 +102,7 @@ function toJsTtsConfig(tts: TtsConfig): JsTtsConfig {
     modelPath: tts.modelPath,
     voice: tts.voice,
     apiKey: tts.apiKey,
+    endpoint: tts.endpoint,
     postUtteranceSilenceMs: tts.postUtteranceSilenceMs,
   }
 }
@@ -267,6 +269,10 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'user_stt_not_found'
     case JsSpeechEventType.BargeIn:
       return 'barge_in'
+    case JsSpeechEventType.SttConfigUpdated:
+      return 'stt_config_updated'
+    case JsSpeechEventType.TtsConfigUpdated:
+      return 'tts_config_updated'
     default:
       return 'error'
   }
@@ -374,6 +380,25 @@ export class VoiceAgent {
   /** Returns whether STT is enabled for inbound PCM. */
   async sttEnabled(): Promise<boolean> {
     return this.native.sttEnabled()
+  }
+
+  /**
+   * Queue a new STT config; native applies it after the current utterance finalizes
+   * (or immediately when no utterance is in progress).
+   *
+   * @internal Runner / language-switch path — not used by OSS examples.
+   */
+  async updateStt(config: SttConfig): Promise<void> {
+    await this.native.updateStt(toJsSttConfig(config))
+  }
+
+  /**
+   * Queue a new TTS config; native applies it before the next synthesis job.
+   *
+   * @internal Runner / language-switch path — not used by OSS examples.
+   */
+  async updateTts(config: TtsConfig): Promise<void> {
+    await this.native.updateTts(toJsTtsConfig(config))
   }
 
   /** Subscribe to `event` or `'speech'` for all event types. */

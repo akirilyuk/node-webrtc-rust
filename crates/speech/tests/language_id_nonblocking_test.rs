@@ -208,6 +208,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -215,6 +216,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -262,6 +264,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -269,6 +272,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -597,6 +601,7 @@ fn agent_with_overlap_tracking_lid(
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -604,6 +609,7 @@ fn agent_with_overlap_tracking_lid(
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -898,6 +904,7 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -905,6 +912,7 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -984,6 +992,7 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
                 model_path: None,
                 language: Some("en".into()),
                 api_key: None,
+                endpoint: None,
             }),
             tts: Some(TtsConfig {
                 provider: TtsVendor::Mock,
@@ -991,6 +1000,7 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
                 model_path: None,
                 voice: None,
                 api_key: None,
+                endpoint: None,
             }),
             language_id: Some(LanguageIdConfig {
                 enabled: Some(true),
@@ -1087,6 +1097,7 @@ fn agent_with_counting_lid(
                 model_path: None,
                 language: Some("en".into()),
                 api_key: None,
+                endpoint: None,
             })
         } else {
             None
@@ -1097,6 +1108,7 @@ fn agent_with_counting_lid(
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -1249,6 +1261,7 @@ fn agent_with_timed_overlap_lid(
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -1256,6 +1269,7 @@ fn agent_with_timed_overlap_lid(
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -1785,6 +1799,7 @@ async fn lid_error_does_not_block_final() {
             model_path: None,
             language: Some("en".into()),
             api_key: None,
+            endpoint: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -1792,6 +1807,7 @@ async fn lid_error_does_not_block_final() {
             model_path: None,
             voice: None,
             api_key: None,
+            endpoint: None,
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -1921,6 +1937,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
                 model_path: None,
                 language: Some("en".into()),
                 api_key: None,
+                endpoint: None,
             }),
             tts: Some(TtsConfig {
                 provider: TtsVendor::Mock,
@@ -1928,6 +1945,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
                 model_path: None,
                 voice: None,
                 api_key: None,
+                endpoint: None,
             }),
             language_id: Some(LanguageIdConfig {
                 enabled: Some(true),
@@ -2189,6 +2207,7 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
                 model_path: None,
                 language: Some("en".into()),
                 api_key: None,
+                endpoint: None,
             }),
             tts: Some(TtsConfig {
                 provider: TtsVendor::Mock,
@@ -2196,6 +2215,7 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
                 model_path: None,
                 voice: None,
                 api_key: None,
+                endpoint: None,
             }),
             language_id: Some(LanguageIdConfig {
                 enabled: Some(true),

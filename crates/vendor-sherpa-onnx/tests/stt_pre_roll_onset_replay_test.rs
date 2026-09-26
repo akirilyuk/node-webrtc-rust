@@ -60,6 +60,7 @@ fn stt_config(model_path: String) -> SttConfig {
         model_path: Some(model_path),
         language: Some("en".into()),
         api_key: None,
+        endpoint: None,
     }
 }
 

@@ -129,6 +129,8 @@ export interface SttConfig {
   modelPath?: string
   language?: string
   apiKey?: string
+  /** @internal gRPC speech-service / pool Service URL (runner only). */
+  endpoint?: string
 }
 
 export interface TtsConfig {
@@ -139,6 +141,8 @@ export interface TtsConfig {
   /** Speaker id for multi-speaker Piper models (default 0). */
   voice?: string
   apiKey?: string
+  /** @internal gRPC speech-service / pool Service URL (runner only). */
+  endpoint?: string
   /**
    * Real-time silence (ms) on outbound audio after each TTS utterance. `0` disables.
    * When unset, derived from VAD gate hold + min silence + 250 ms.
@@ -232,6 +236,8 @@ export type SpeechEventType =
   | 'user_stt_not_found'
   | 'barge_in'
   | 'error'
+  | 'stt_config_updated'
+  | 'tts_config_updated'
 
 /**
  * Runtime names for {@link SpeechEventType} — use in tests and E2E harnesses
@@ -253,6 +259,8 @@ export const SPEECH_EVENT_TYPE = {
   userSttNotFound: 'user_stt_not_found',
   bargeIn: 'barge_in',
   error: 'error',
+  sttConfigUpdated: 'stt_config_updated',
+  ttsConfigUpdated: 'tts_config_updated',
 } as const satisfies Record<string, SpeechEventType>
 
 /** Payload for callback and `speechEvents()` delivery. */

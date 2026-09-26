@@ -26,6 +26,8 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::UserSttNotFound => JsSpeechEventType::UserSttNotFound,
             SpeechEventKind::BargeIn => JsSpeechEventType::BargeIn,
             SpeechEventKind::Error => JsSpeechEventType::Error,
+            SpeechEventKind::SttConfigUpdated => JsSpeechEventType::SttConfigUpdated,
+            SpeechEventKind::TtsConfigUpdated => JsSpeechEventType::TtsConfigUpdated,
         },
         text: event.text,
         language: event.language,

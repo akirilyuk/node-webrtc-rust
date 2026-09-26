@@ -148,6 +148,7 @@ mod tests {
             model_path: None,
             voice: None,
             api_key: Some("test".into()),
+            endpoint: None,
         })
         .unwrap();
         assert_eq!(tts.model, "tts-1");

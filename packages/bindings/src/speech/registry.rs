@@ -12,6 +12,7 @@ use node_webrtc_rust_vendor_elevenlabs::ElevenLabsFactory;
 use node_webrtc_rust_vendor_google::GoogleFactory;
 use node_webrtc_rust_vendor_mock::MockFactory;
 use node_webrtc_rust_vendor_openai::OpenAiFactory;
+use node_webrtc_rust_vendor_cluster_speech::ClusterSherpaFactory;
 use node_webrtc_rust_vendor_sherpa_onnx::SherpaFactory;
 
 fn arc_factory<F: VendorFactory + 'static>(factory: F) -> Arc<dyn VendorFactory> {
@@ -37,6 +38,9 @@ pub fn default_vendor_registry() -> Arc<VendorRegistry> {
 
     registry.register_stt(SttVendor::LocalSherpa, arc_factory(SherpaFactory));
     registry.register_tts(TtsVendor::LocalSherpa, arc_factory(SherpaFactory));
+
+    registry.register_stt(SttVendor::ClusterSherpa, arc_factory(ClusterSherpaFactory));
+    registry.register_tts(TtsVendor::ClusterSherpa, arc_factory(ClusterSherpaFactory));
 
     registry.register_stt(SttVendor::Mock, arc_factory(MockFactory));
     registry.register_tts(TtsVendor::Mock, arc_factory(MockFactory));

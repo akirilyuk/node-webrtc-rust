@@ -11,6 +11,7 @@ fn openai_factory_creates_providers() {
         model_path: None,
         language: Some("en".into()),
         api_key: Some("test-key".into()),
+        endpoint: None,
     });
     assert!(stt.is_ok());
 
@@ -20,6 +21,7 @@ fn openai_factory_creates_providers() {
         model_path: None,
         voice: Some("alloy".into()),
         api_key: Some("test-key".into()),
+        endpoint: None,
     });
     assert!(tts.is_ok());
 }

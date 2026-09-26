@@ -11,6 +11,7 @@ fn cartesia_factory_creates_tts() {
         model_path: None,
         voice: Some("default".into()),
         api_key: Some("test-key".into()),
+        endpoint: None,
     });
     assert!(tts.is_ok());
 }

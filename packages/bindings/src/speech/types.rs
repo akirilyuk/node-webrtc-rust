@@ -254,6 +254,7 @@ pub struct JsSttConfig {
     pub model_path: Option<String>,
     pub language: Option<String>,
     pub api_key: Option<String>,
+    pub endpoint: Option<String>,
 }
 
 impl From<JsSttConfig> for SttConfig {
@@ -264,6 +265,7 @@ impl From<JsSttConfig> for SttConfig {
             model_path: value.model_path,
             language: value.language,
             api_key: value.api_key,
+            endpoint: value.endpoint,
         }
     }
 }
@@ -276,6 +278,7 @@ pub struct JsTtsConfig {
     pub model_path: Option<String>,
     pub voice: Option<String>,
     pub api_key: Option<String>,
+    pub endpoint: Option<String>,
     pub post_utterance_silence_ms: Option<u32>,
 }
 
@@ -287,6 +290,7 @@ impl From<JsTtsConfig> for TtsConfig {
             model_path: value.model_path,
             voice: value.voice,
             api_key: value.api_key,
+            endpoint: value.endpoint,
         }
     }
 }
@@ -472,6 +476,10 @@ pub enum JsSpeechEventType {
     BargeIn,
     #[napi(value = "error")]
     Error,
+    #[napi(value = "stt_config_updated")]
+    SttConfigUpdated,
+    #[napi(value = "tts_config_updated")]
+    TtsConfigUpdated,
 }
 
 #[napi(object)]

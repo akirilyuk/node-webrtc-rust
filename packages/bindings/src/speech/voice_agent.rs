@@ -15,7 +15,9 @@ use tokio::sync::{broadcast, Mutex};
 use crate::media::JsLocalAudioTrack;
 use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
-use crate::speech::types::{speech_err, JsSpeechEvent, JsVoiceAgentConfig, JsVoiceSessionContext};
+use crate::speech::types::{
+    speech_err, JsSpeechEvent, JsSttConfig, JsTtsConfig, JsVoiceAgentConfig, JsVoiceSessionContext,
+};
 
 fn voice_debug_enabled() -> bool {
     matches!(
@@ -176,5 +178,23 @@ impl JsVoiceAgent {
     #[napi]
     pub async fn stt_enabled(&self) -> Result<bool> {
         Ok(self.inner.stt_enabled().await)
+    }
+
+    /// Apply a new STT config after the current utterance finalizes (or immediately when idle).
+    #[napi]
+    pub async fn update_stt(&self, config: JsSttConfig) -> Result<()> {
+        self.inner
+            .update_stt_config(config.into())
+            .await
+            .map_err(speech_err)
+    }
+
+    /// Apply a new TTS config before the next synthesis job.
+    #[napi]
+    pub async fn update_tts(&self, config: JsTtsConfig) -> Result<()> {
+        self.inner
+            .update_tts_config(config.into())
+            .await
+            .map_err(speech_err)
     }
 }

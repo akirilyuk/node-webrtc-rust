@@ -102,9 +102,25 @@ export interface EventsConfig {
   mode?: EventDeliveryMode
 }
 
-export type SttVendor = 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'local-sherpa' | 'mock'
+export type SttVendor =
+  | 'openai'
+  | 'deepgram'
+  | 'google'
+  | 'assemblyai'
+  | 'local-sherpa'
+  /** @internal cloud runner only */
+  | 'cluster-sherpa'
+  | 'mock'
 
-export type TtsVendor = 'openai' | 'elevenlabs' | 'google' | 'cartesia' | 'local-sherpa' | 'mock'
+export type TtsVendor =
+  | 'openai'
+  | 'elevenlabs'
+  | 'google'
+  | 'cartesia'
+  | 'local-sherpa'
+  /** @internal cloud runner only */
+  | 'cluster-sherpa'
+  | 'mock'
 
 export interface SttConfig {
   provider: SttVendor

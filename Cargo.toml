@@ -8,6 +8,7 @@ members = [
     "crates/conference",
     "crates/signaling",
     "crates/speech",
+    "crates/speech-proto",
     "crates/vendor-openai",
     "crates/vendor-deepgram",
     "crates/vendor-elevenlabs",

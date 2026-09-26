@@ -1,0 +1,55 @@
+syntax = "proto3";
+package speech.v1;
+
+service Speech {
+  // Load/verify models before serving. Used by runner warmup (fail closed) and k8s preStart.
+  rpc Prepare(PrepareRequest) returns (PrepareResponse);
+  // One stream == one SttProvider lifetime (VoiceAgent start..stop). Many utterances per stream.
+  rpc Transcribe(stream TranscribeRequest) returns (stream TranscribeResponse);
+  // One call == one synthesize_progressive. Client cancel (drop stream) == barge-in.
+  rpc Synthesize(SynthesizeRequest) returns (stream SynthesizeResponse);
+}
+
+message ModelRef {
+  string model_path = 1;   // absolute path under SHERPA_MODEL_ROOT, e.g. /models/sherpa/stt/<bundle>
+  string catalog_id = 2;   // reserved (unused in v1)
+}
+
+message SessionContext {         // mirrors VoiceSessionContext; used for logs, OTel, TTS phrase-cache scope
+  string session_id = 1; string project_id = 2; string org_id = 3;
+  string trace_id = 4; string build_id = 5; string traceparent = 6;
+}
+
+message PrepareRequest  { repeated ModelRef stt = 1; repeated ModelRef tts = 2; }
+message PrepareResponse { uint32 stt_loaded = 1; uint32 tts_loaded = 2; string server_version = 3; }
+
+message SttStart { ModelRef model = 1; string language = 2; SessionContext ctx = 3; }
+message SttAudio { bytes pcm_s16le = 1; }              // mono 16 kHz; any frame size; client coalesces ≤ 60 ms
+message SttFinalize {}                                  // == finalize_utterance
+message SttStop {}
+
+// [SWITCH] There is deliberately NO set_model / set_language message. A speech pod serves one model for its
+// whole life and never changes it. A session that needs another language opens a NEW Transcribe on the pool
+// that serves that model (§6.9) and stops the old stream; TTS simply sends its next Synthesize to the other pool.
+message TranscribeRequest {
+  reserved 4;                                           // was set_model in the 2026-09-11 draft — removed 2026-09-24
+  oneof msg { SttStart start = 1; SttAudio audio = 2; SttFinalize finalize = 3; SttStop stop = 5; }
+}
+
+message SttReady { string model_path = 1; }             // sent once after Start (model resolved + stream created)
+message SttTranscript { bool is_final = 1; string text = 2; }
+message SttFinalized {}                                 // sent after Finalize even when no Final text (client unblocks)
+message SttError { string code = 1; string message = 2; }
+message SttRelocate {}                                  // [POOL] pod is draining; client reopens Transcribe on the same pool URL
+                                                        // at this utterance boundary (server sends it only after `finalized` or when idle)
+
+message TranscribeResponse {
+  oneof msg { SttReady ready = 1; SttTranscript transcript = 2; SttFinalized finalized = 3; SttError error = 4; SttRelocate relocate = 5; }
+}
+
+message SynthesizeRequest {
+  ModelRef model = 1; string text = 2; string speaker_id = 3;   // TtsConfig.voice
+  string speed = 4;                                            // TtsConfig.model (Piper speed overload, "0.2".."2.0")
+  SessionContext ctx = 5;
+}
+message SynthesizeResponse { bytes pcm_s16le = 1; uint32 duration_ms = 2; bool last = 3; }  // == TtsAudioChunk

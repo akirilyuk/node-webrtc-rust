@@ -191,6 +191,9 @@ pub enum JsSttVendor {
     Assemblyai,
     #[napi(value = "local-sherpa")]
     LocalSherpa,
+    /// @internal cloud runner transport. Not a public vendor.
+    #[napi(value = "cluster-sherpa")]
+    ClusterSherpa,
     #[napi(value = "mock")]
     Mock,
 }
@@ -203,6 +206,7 @@ impl From<JsSttVendor> for SttVendor {
             JsSttVendor::Google => Self::Google,
             JsSttVendor::Assemblyai => Self::Assemblyai,
             JsSttVendor::LocalSherpa => Self::LocalSherpa,
+            JsSttVendor::ClusterSherpa => Self::ClusterSherpa,
             JsSttVendor::Mock => Self::Mock,
         }
     }
@@ -221,6 +225,9 @@ pub enum JsTtsVendor {
     Cartesia,
     #[napi(value = "local-sherpa")]
     LocalSherpa,
+    /// @internal cloud runner transport. Not a public vendor.
+    #[napi(value = "cluster-sherpa")]
+    ClusterSherpa,
     #[napi(value = "mock")]
     Mock,
 }
@@ -233,6 +240,7 @@ impl From<JsTtsVendor> for TtsVendor {
             JsTtsVendor::Google => Self::Google,
             JsTtsVendor::Cartesia => Self::Cartesia,
             JsTtsVendor::LocalSherpa => Self::LocalSherpa,
+            JsTtsVendor::ClusterSherpa => Self::ClusterSherpa,
             JsTtsVendor::Mock => Self::Mock,
         }
     }

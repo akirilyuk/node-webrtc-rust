@@ -1,0 +1,21 @@
+[package]
+name = "node-webrtc-rust-speech-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Committed gRPC contract for in-cluster speech (tonic 0.12 / prost 0.13)"
+
+[features]
+default = ["client"]
+client = ["tonic/channel"]
+server = ["tonic/server"]
+regen-proto = ["dep:tonic-build", "dep:protoc-bin-vendored"]
+
+[dependencies]
+prost = "0.13"
+tonic = { version = "0.12", default-features = false, features = ["codegen", "prost"] }
+
+[build-dependencies]
+tonic-build = { version = "0.12", optional = true }
+protoc-bin-vendored = { version = "3", optional = true }

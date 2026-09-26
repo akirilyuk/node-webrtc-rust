@@ -340,6 +340,9 @@ pub enum SttVendor {
     Assemblyai,
     #[serde(rename = "local-sherpa")]
     LocalSherpa,
+    /// In-cluster Sherpa transport. `@internal` — not a public SDK vendor.
+    #[serde(rename = "cluster-sherpa")]
+    ClusterSherpa,
     Mock,
 }
 
@@ -352,6 +355,7 @@ impl SttVendor {
             Self::Google => "google",
             Self::Assemblyai => "assemblyai",
             Self::LocalSherpa => "local-sherpa",
+            Self::ClusterSherpa => "cluster-sherpa",
             Self::Mock => "mock",
         }
     }
@@ -367,6 +371,9 @@ pub enum TtsVendor {
     Cartesia,
     #[serde(rename = "local-sherpa")]
     LocalSherpa,
+    /// In-cluster Sherpa transport. `@internal` — not a public SDK vendor.
+    #[serde(rename = "cluster-sherpa")]
+    ClusterSherpa,
     Mock,
 }
 
@@ -379,6 +386,7 @@ impl TtsVendor {
             Self::Google => "google",
             Self::Cartesia => "cartesia",
             Self::LocalSherpa => "local-sherpa",
+            Self::ClusterSherpa => "cluster-sherpa",
             Self::Mock => "mock",
         }
     }
@@ -692,8 +700,17 @@ mod language_id_config_tests {
             voice: None,
             api_key: None,
         });
+        let cluster = Some(TtsConfig {
+            provider: TtsVendor::ClusterSherpa,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+        });
         assert!(lid_tts_exclusion_enabled(&Some(lid.clone()), &local));
         assert!(!lid_tts_exclusion_enabled(&Some(lid.clone()), &mock));
+        // Remote cluster TTS must not be gated by local LID (only LocalSherpa enables it).
+        assert!(!lid_tts_exclusion_enabled(&Some(lid.clone()), &cluster));
         assert!(!lid_tts_exclusion_enabled(
             &Some(LanguageIdConfig {
                 tts_exclusion: Some(false),
@@ -708,6 +725,33 @@ mod language_id_config_tests {
             }),
             &mock,
         ));
+    }
+}
+
+#[cfg(test)]
+mod vendor_wire_tests {
+    use super::*;
+
+    #[test]
+    fn cluster_sherpa_serde_round_trip() {
+        for (json, stt) in [
+            ("\"cluster-sherpa\"", SttVendor::ClusterSherpa),
+            ("\"local-sherpa\"", SttVendor::LocalSherpa),
+        ] {
+            let parsed: SttVendor = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed, stt);
+            assert_eq!(parsed.as_str(), json.trim_matches('"'));
+            assert_eq!(serde_json::to_string(&parsed).unwrap(), json);
+        }
+        for (json, tts) in [
+            ("\"cluster-sherpa\"", TtsVendor::ClusterSherpa),
+            ("\"local-sherpa\"", TtsVendor::LocalSherpa),
+        ] {
+            let parsed: TtsVendor = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed, tts);
+            assert_eq!(parsed.as_str(), json.trim_matches('"'));
+            assert_eq!(serde_json::to_string(&parsed).unwrap(), json);
+        }
     }
 }
 

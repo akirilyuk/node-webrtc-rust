@@ -231,6 +231,8 @@ export const enum JsSttVendor {
   Google = 'google',
   Assemblyai = 'assemblyai',
   LocalSherpa = 'local-sherpa',
+  /** @internal cloud runner transport. Not a public vendor. */
+  ClusterSherpa = 'cluster-sherpa',
   Mock = 'mock'
 }
 export const enum JsTtsVendor {
@@ -239,6 +241,8 @@ export const enum JsTtsVendor {
   Google = 'google',
   Cartesia = 'cartesia',
   LocalSherpa = 'local-sherpa',
+  /** @internal cloud runner transport. Not a public vendor. */
+  ClusterSherpa = 'cluster-sherpa',
   Mock = 'mock'
 }
 export interface JsSttConfig {

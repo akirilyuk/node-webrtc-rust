@@ -25,7 +25,9 @@ import type {
   SpeechEventName,
   SpeechEventType,
   SttConfig,
+  SttVendor,
   TtsConfig,
+  TtsVendor,
   VadConfig,
   VoiceAgentConfig,
   VoiceAttachOptions,
@@ -103,7 +105,8 @@ function toJsTtsConfig(tts: TtsConfig): JsTtsConfig {
   }
 }
 
-function sttVendorToJs(vendor: SttConfig['provider']): JsSttVendor {
+/** @internal Maps SDK STT vendor strings onto NAPI enums. Unknown runtime values become Mock. */
+export function sttVendorToJs(vendor: SttConfig['provider']): JsSttVendor {
   switch (vendor) {
     case 'openai':
       return JsSttVendor.Openai
@@ -115,12 +118,15 @@ function sttVendorToJs(vendor: SttConfig['provider']): JsSttVendor {
       return JsSttVendor.Assemblyai
     case 'local-sherpa':
       return JsSttVendor.LocalSherpa
+    case 'cluster-sherpa':
+      return JsSttVendor.ClusterSherpa
     default:
       return JsSttVendor.Mock
   }
 }
 
-function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
+/** @internal Maps SDK TTS vendor strings onto NAPI enums. Unknown runtime values become Mock. */
+export function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
   switch (vendor) {
     case 'openai':
       return JsTtsVendor.Openai
@@ -132,10 +138,39 @@ function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
       return JsTtsVendor.Cartesia
     case 'local-sherpa':
       return JsTtsVendor.LocalSherpa
+    case 'cluster-sherpa':
+      return JsTtsVendor.ClusterSherpa
     default:
       return JsTtsVendor.Mock
   }
 }
+
+/** @internal Every `SttVendor` string. Typecheck fails if the union grows without this list. */
+export const STT_VENDOR_VALUES = [
+  'openai',
+  'deepgram',
+  'google',
+  'assemblyai',
+  'local-sherpa',
+  'cluster-sherpa',
+  'mock',
+] as const satisfies readonly SttVendor[]
+
+/** @internal Every `TtsVendor` string. Typecheck fails if the union grows without this list. */
+export const TTS_VENDOR_VALUES = [
+  'openai',
+  'elevenlabs',
+  'google',
+  'cartesia',
+  'local-sherpa',
+  'cluster-sherpa',
+  'mock',
+] as const satisfies readonly TtsVendor[]
+
+type _AssertNever<T extends never> = T
+type _SttVendorsCovered = _AssertNever<Exclude<SttVendor, (typeof STT_VENDOR_VALUES)[number]>>
+type _TtsVendorsCovered = _AssertNever<Exclude<TtsVendor, (typeof TTS_VENDOR_VALUES)[number]>>
+export type InternalVendorCoverage = _SttVendorsCovered | _TtsVendorsCovered
 
 function toJsSessionContext(ctx?: VoiceSessionContext): JsVoiceSessionContext | undefined {
   if (!ctx) return undefined

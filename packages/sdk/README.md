@@ -161,6 +161,10 @@ Providers are **mix-and-match** per session. **Official API docs:** [`examples/s
 | `local-sherpa` | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
 | `mock`         | ✓   | ✓   | _(none — use for CI/local)_                                             | —                                                                                                                              |
 
+#### Internal vendors
+
+`cluster-sherpa` is `@internal` (cloud runner transport only) and is not a public vendor.
+
 Example pairings when a vendor only supports one direction:
 
 ```typescript

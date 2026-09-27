@@ -80,15 +80,9 @@ pub fn documented_realtime_model(mode: SttRealtimeMode) -> &'static str {
     }
 }
 
-/// Realtime WebSocket per <https://developers.openai.com/api/docs/guides/realtime-websocket>
-/// (`wss://api.openai.com/v1/realtime?model=…`) using the **transcription** model, then
-/// Realtime transcription guide `session.update` with `session.type=transcription`.
-pub fn realtime_websocket_url(transcription_model: &str) -> String {
-    format!(
-        "wss://api.openai.com/v1/realtime?model={}",
-        transcription_model.trim()
-    )
-}
+/// Documented Realtime WebSocket base (Getting started + WebSockets guide).
+/// Connect with `Authorization: Bearer <ek_…>` from `POST /v1/realtime/client_secrets`.
+pub const REALTIME_WEBSOCKET_URL: &str = "wss://api.openai.com/v1/realtime";
 
 pub fn tts_delivery_plan(model: &str) -> TtsDeliveryPlan {
     match model {
@@ -162,10 +156,10 @@ mod tests {
     }
 
     #[test]
-    fn realtime_websocket_url_uses_transcription_model_query_not_intent() {
-        let url = realtime_websocket_url("gpt-live-transcribe");
-        assert_eq!(url, "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe");
-        assert!(!url.contains("intent="));
+    fn realtime_websocket_base_has_no_query_or_intent() {
+        assert_eq!(REALTIME_WEBSOCKET_URL, "wss://api.openai.com/v1/realtime");
+        assert!(!REALTIME_WEBSOCKET_URL.contains('?'));
+        assert!(!REALTIME_WEBSOCKET_URL.contains("intent="));
     }
 
     #[test]

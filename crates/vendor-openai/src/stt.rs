@@ -1,7 +1,7 @@
 //! OpenAI STT per published docs:
 //! <https://developers.openai.com/api/docs/guides/speech-to-text> (file JSON + file SSE),
 //! <https://developers.openai.com/api/docs/guides/realtime-transcription> (WS `session.type=transcription`),
-//! <https://developers.openai.com/api/docs/guides/realtime-websocket> (`wss://…/realtime?model=…`).
+//! <https://developers.openai.com/api/docs/guides/realtime-websocket> (`wss://…/realtime`, Bearer `ek_…` from `POST /v1/realtime/client_secrets`).
 //!
 //! HTTP models buffer 16 kHz PCM while the VAD gate is open; one upload runs on
 //! [`SttProvider::finalize_utterance`]. [`SttProvider::poll_transcript`] drains JSON/SSE/Realtime
@@ -32,7 +32,7 @@ use tokio_tungstenite::{
 };
 
 use crate::matrix::{
-    realtime_websocket_url, stt_default_transport, stt_file_sse_supported, SttDefaultTransport,
+    stt_default_transport, stt_file_sse_supported, SttDefaultTransport, REALTIME_WEBSOCKET_URL,
 };
 
 const OPENAI_PCM_RATE: u32 = 24_000;
@@ -66,6 +66,7 @@ pub(crate) fn transcriptions_url(api_base: &str) -> String {
 
 pub struct OpenAiStt {
     api_key: Option<String>,
+    api_base: String,
     model: String,
     language: Option<String>,
     transport: Transport,
@@ -168,7 +169,7 @@ impl OpenAiStt {
                     });
                 }
                 SttDefaultTransport::FileJson | SttDefaultTransport::FileSse => {
-                    Transport::Http(HttpBackend::new(api_base, file_sse))
+                    Transport::Http(HttpBackend::new(api_base.clone(), file_sse))
                 }
             }
         } else {
@@ -177,16 +178,17 @@ impl OpenAiStt {
                     Transport::Realtime(RealtimeBackend::new())
                 }
                 SttDefaultTransport::FileJson => {
-                    Transport::Http(HttpBackend::new(api_base, false))
+                    Transport::Http(HttpBackend::new(api_base.clone(), false))
                 }
                 SttDefaultTransport::FileSse => {
                     let sse = stt_file_sse_supported(&model);
-                    Transport::Http(HttpBackend::new(api_base, sse))
+                    Transport::Http(HttpBackend::new(api_base.clone(), sse))
                 }
             }
         };
         Ok(Self {
             api_key,
+            api_base,
             model,
             language: config.language.clone(),
             transport,
@@ -614,8 +616,13 @@ pub(crate) fn transcription_session_update_body(model: &str, language: Option<&s
     })
 }
 
-/// Realtime transcription guide `session.update` with `session.type=transcription`.
-pub(crate) fn session_update_body(model: &str, language: Option<&str>) -> Value {
+/// `POST /v1/realtime/client_secrets` body (`session.type=transcription`).
+pub(crate) fn transcription_client_secret_request(model: &str, language: Option<&str>) -> Value {
+    let session = transcription_session_config(model, language);
+    serde_json::json!({ "session": session })
+}
+
+fn transcription_session_config(model: &str, language: Option<&str>) -> Value {
     let mut transcription = serde_json::json!({ "model": model });
     if let Some(language) = language {
         if model.contains("live-transcribe") {
@@ -625,18 +632,172 @@ pub(crate) fn session_update_body(model: &str, language: Option<&str>) -> Value 
         }
     }
     serde_json::json!({
-        "type": "session.update",
-        "session": {
-            "type": "transcription",
-            "audio": {
-                "input": {
-                    "format": { "type": "audio/pcm", "rate": OPENAI_PCM_RATE },
-                    "transcription": transcription,
-                    "turn_detection": null
-                }
+        "type": "transcription",
+        "audio": {
+            "input": {
+                "format": { "type": "audio/pcm", "rate": OPENAI_PCM_RATE },
+                "transcription": transcription,
+                "turn_detection": null
             }
         }
     })
+}
+
+/// Realtime transcription guide `session.update` with `session.type=transcription`.
+pub(crate) fn session_update_body(model: &str, language: Option<&str>) -> Value {
+    serde_json::json!({
+        "type": "session.update",
+        "session": transcription_session_config(model, language),
+    })
+}
+
+#[cfg(feature = "live")]
+async fn mint_transcription_client_secret(
+    api_key: &str,
+    api_base: &str,
+    model: &str,
+    language: Option<&str>,
+) -> SpeechResult<String> {
+    let url = format!(
+        "{}/realtime/client_secrets",
+        api_base.trim_end_matches('/')
+    );
+    let body = transcription_client_secret_request(model, language);
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: format!("POST /v1/realtime/client_secrets: {err}"),
+        })?;
+    let status = response.status();
+    let payload: Value = response.json().await.map_err(|err| SpeechError::Vendor {
+        vendor: "openai".into(),
+        message: format!("POST /v1/realtime/client_secrets JSON: {err}"),
+    })?;
+    if !status.is_success() {
+        return Err(SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: format!(
+                "POST /v1/realtime/client_secrets HTTP {}: {}",
+                status,
+                payload
+            ),
+        });
+    }
+    if let Some(value) = payload.get("value").and_then(Value::as_str) {
+        return Ok(value.to_string());
+    }
+    if let Some(value) = payload
+        .pointer("/client_secret/value")
+        .and_then(Value::as_str)
+    {
+        return Ok(value.to_string());
+    }
+    Err(SpeechError::Vendor {
+        vendor: "openai".into(),
+        message: "POST /v1/realtime/client_secrets missing value".into(),
+    })
+}
+
+#[cfg(feature = "live")]
+fn realtime_ws_urls_after_error(first_error: &str) -> Vec<String> {
+    use crate::matrix::REALTIME_WEBSOCKET_URL;
+    let mut urls = vec![REALTIME_WEBSOCKET_URL.to_string()];
+    if first_error.contains("model parameter") || first_error.contains("?model=") {
+        if let Some(start) = first_error.find("?model=") {
+            let tail = &first_error[start + "?model=".len()..];
+            let model = tail
+                .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                .next()
+                .unwrap_or("gpt-realtime-1.5");
+            urls.push(format!("{REALTIME_WEBSOCKET_URL}?model={model}"));
+        } else {
+            urls.push(format!("{REALTIME_WEBSOCKET_URL}?model=gpt-realtime-1.5"));
+        }
+    }
+    urls
+}
+
+#[cfg(feature = "live")]
+async fn connect_realtime_websocket(
+    ephemeral_key: &str,
+    ws_url: &str,
+) -> SpeechResult<(
+    futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Message,
+    >,
+    futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    >,
+)> {
+    let mut request = ws_url
+        .into_client_request()
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: err.to_string(),
+        })?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {ephemeral_key}")
+            .parse()
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: format!("invalid auth header: {err}"),
+            })?,
+    );
+    let (ws, _) = connect_async(request)
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: format!("WebSocket {ws_url}: {err}"),
+        })?;
+    Ok(ws.split())
+}
+
+#[cfg(feature = "live")]
+type RealtimeWsSplit = (
+    futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Message,
+    >,
+    futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    >,
+);
+
+#[cfg(feature = "live")]
+async fn connect_realtime_with_url_fallback(ephemeral_key: &str) -> SpeechResult<RealtimeWsSplit> {
+    let mut urls = vec![REALTIME_WEBSOCKET_URL.to_string()];
+    let mut last_err: Option<SpeechError> = None;
+    let mut i = 0usize;
+    while i < urls.len() {
+        let url = urls[i].clone();
+        match connect_realtime_websocket(ephemeral_key, &url).await {
+            Ok(split) => return Ok(split),
+            Err(err) => {
+                let msg = err.to_string();
+                last_err = Some(err);
+                if i == 0 {
+                    for extra in realtime_ws_urls_after_error(&msg) {
+                        if !urls.contains(&extra) {
+                            urls.push(extra);
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| SpeechError::Vendor {
+        vendor: "openai".into(),
+        message: "WebSocket connect failed with no error".into(),
+    }))
 }
 
 fn realtime_error_message(event: &Value) -> Option<String> {
@@ -836,7 +997,12 @@ impl SttProvider for OpenAiStt {
                 #[cfg(feature = "live")]
                 {
                     return rt
-                        .start_realtime(&self.api_key, &self.model, self.language.as_deref())
+                        .start_realtime(
+                            &self.api_key,
+                            &self.api_base,
+                            &self.model,
+                            self.language.as_deref(),
+                        )
                         .await;
                 }
                 #[cfg(not(feature = "live"))]
@@ -888,34 +1054,15 @@ impl RealtimeBackend {
     async fn start_realtime(
         &mut self,
         api_key: &Option<String>,
+        api_base: &str,
         model: &str,
         language: Option<&str>,
     ) -> SpeechResult<()> {
         let api_key = crate::factory::api_key_from(api_key, "OPENAI_API_KEY")?;
-        let ws_url = realtime_websocket_url(model);
-        let mut request = ws_url
-            .into_client_request()
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: err.to_string(),
-            })?;
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {api_key}")
-                .parse()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "openai".into(),
-                    message: format!("invalid auth header: {err}"),
-                })?,
-        );
+        let ephemeral =
+            mint_transcription_client_secret(&api_key, api_base, model, language).await?;
+        let (mut sink, mut stream) = connect_realtime_with_url_fallback(&ephemeral).await?;
 
-        let (ws, _) = connect_async(request)
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: err.to_string(),
-            })?;
-        let (mut sink, mut stream) = ws.split();
         let session = session_update_body(model, language);
         sink.send(Message::Text(session.to_string().into()))
             .await

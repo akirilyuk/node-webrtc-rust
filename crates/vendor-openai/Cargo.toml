@@ -12,6 +12,7 @@ live = [
     "dep:async-openai",
     "dep:base64",
     "dep:futures-util",
+    "dep:reqwest",
     "dep:tokio-tungstenite",
 ]
 
@@ -20,7 +21,8 @@ async-openai = { version = "0.28", optional = true }
 async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
 bytes = { workspace = true }
-futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 node-webrtc-rust-speech = { path = "../speech" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

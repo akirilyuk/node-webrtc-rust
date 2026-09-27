@@ -95,21 +95,48 @@ pub struct SharedTtsEngine {
 }
 
 /// Pool of offline TTS engines for one model directory (parallel synthesis up to pool size).
+///
+/// The first engine is loaded before `new` returns so the process can listen.
+/// Further engines load on a background thread; until they finish, acquire
+/// shares the engines that are already up.
 pub struct TtsEnginePool {
-    engines: Vec<Arc<SharedTtsEngine>>,
+    engines: Arc<Mutex<Vec<Arc<SharedTtsEngine>>>>,
     next: AtomicUsize,
 }
 
 impl TtsEnginePool {
     fn new(config: &TtsConfig, tts_semaphore: Arc<Semaphore>) -> SpeechResult<Self> {
-        let slots = max_concurrent_tts();
-        let mut engines = Vec::with_capacity(slots);
-        for _ in 0..slots {
-            let engine = create_offline_tts(config)?;
-            engines.push(Arc::new(SharedTtsEngine::new(
-                engine,
-                Arc::clone(&tts_semaphore),
-            )));
+        let slots = max_concurrent_tts().max(1);
+        let first = create_offline_tts(config)?;
+        let engines = Arc::new(Mutex::new(vec![Arc::new(SharedTtsEngine::new(
+            first,
+            Arc::clone(&tts_semaphore),
+        ))]));
+        if slots > 1 {
+            let config = config.clone();
+            let pending = Arc::clone(&engines);
+            let semaphore = Arc::clone(&tts_semaphore);
+            let _ = std::thread::Builder::new()
+                .name("sherpa-tts-preload".into())
+                .spawn(move || {
+                    for _ in 1..slots {
+                        match create_offline_tts(&config) {
+                            Ok(engine) => {
+                                let Ok(mut guard) = pending.lock() else {
+                                    return;
+                                };
+                                guard.push(Arc::new(SharedTtsEngine::new(
+                                    engine,
+                                    Arc::clone(&semaphore),
+                                )));
+                            }
+                            Err(error) => {
+                                eprintln!("sherpa tts extra engine load failed: {error}");
+                                return;
+                            }
+                        }
+                    }
+                });
         }
         Ok(Self {
             engines,
@@ -118,12 +145,16 @@ impl TtsEnginePool {
     }
 
     pub fn acquire(&self) -> Arc<SharedTtsEngine> {
-        let index = self.next.fetch_add(1, Ordering::Relaxed) % self.engines.len();
-        Arc::clone(&self.engines[index])
+        let engines = self.engines.lock().expect("tts engine pool lock");
+        let index = self.next.fetch_add(1, Ordering::Relaxed) % engines.len();
+        Arc::clone(&engines[index])
     }
 
     pub fn len(&self) -> usize {
-        self.engines.len()
+        self.engines
+            .lock()
+            .map(|engines| engines.len())
+            .unwrap_or(0)
     }
 }
 

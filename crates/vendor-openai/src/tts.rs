@@ -18,8 +18,8 @@ const DEFAULT_API_ROOT: &str = "https://api.openai.com/v1";
 
 /// How this vendor instance turns text into PCM.
 ///
-/// Starts as chunked PCM. Switches to the buffered speech call for the rest of
-/// this instance if OpenAI rejects `stream_format`.
+/// Starts as chunked PCM. If that request fails before any audio is forwarded,
+/// this instance uses the buffered speech call from then on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpeechDelivery {
     /// Chunked raw PCM (`stream_format: audio`).
@@ -33,7 +33,7 @@ pub struct OpenAiTts {
     model: String,
     voice: String,
     endpoint: Option<String>,
-    /// Chunked PCM until a speech response rejects `stream_format`.
+    /// Chunked PCM until a stream attempt fails before any audio is sent.
     #[cfg(feature = "live")]
     delivery: Mutex<SpeechDelivery>,
 }
@@ -149,7 +149,7 @@ impl OpenAiTts {
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
         match self.read_pcm_stream(text, sink.as_ref()).await {
             Ok(chunks) => Ok(chunks),
-            Err(StreamAttempt::Rejected) => {
+            Err(StreamAttempt::UseFullBody) => {
                 *self.delivery.lock().await = SpeechDelivery::FullBody;
                 let chunks = self.synthesize_full_body(text).await?;
                 emit_chunks(sink.as_ref(), &chunks);
@@ -189,12 +189,7 @@ impl OpenAiTts {
             .json(&body)
             .send()
             .await
-            .map_err(|err| {
-                StreamAttempt::Failed(SpeechError::Vendor {
-                    vendor: "openai".into(),
-                    message: format!("speech stream: {err}"),
-                })
-            })?;
+            .map_err(|_| StreamAttempt::UseFullBody)?;
         let status = response.status();
         let content_type = response
             .headers()
@@ -203,14 +198,7 @@ impl OpenAiTts {
             .unwrap_or("")
             .to_string();
         if !status.is_success() || content_type.contains("application/json") {
-            let text_body = response.text().await.unwrap_or_default();
-            if stream_format_rejected(status.as_u16(), &text_body) {
-                return Err(StreamAttempt::Rejected);
-            }
-            return Err(StreamAttempt::Failed(SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: format!("speech HTTP {}: {text_body}", status.as_u16()),
-            }));
+            return Err(StreamAttempt::UseFullBody);
         }
 
         let mut pending = Vec::new();
@@ -243,10 +231,7 @@ impl OpenAiTts {
             chunks.push(chunk);
         }
         if chunks.is_empty() {
-            return Err(StreamAttempt::Failed(SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: "speech stream returned no PCM".into(),
-            }));
+            return Err(StreamAttempt::UseFullBody);
         }
         Ok(chunks)
     }
@@ -254,8 +239,8 @@ impl OpenAiTts {
 
 #[cfg(feature = "live")]
 enum StreamAttempt {
-    /// API refused `stream_format`; caller switches this instance to full-body.
-    Rejected,
+    /// Nothing was forwarded yet. Caller uses the buffered speech call.
+    UseFullBody,
     Failed(SpeechError),
 }
 
@@ -285,16 +270,6 @@ fn api_root(endpoint: &Option<String>) -> String {
         .unwrap_or(DEFAULT_API_ROOT)
         .trim_end_matches('/')
         .to_string()
-}
-
-fn stream_format_rejected(status: u16, body: &str) -> bool {
-    // 200 is included because a JSON error body can still arrive with that status
-    // when `Content-Type` is `application/json` (checked by the caller).
-    if !matches!(status, 200 | 400 | 404 | 422) {
-        return false;
-    }
-    let lower = body.to_ascii_lowercase();
-    lower.contains("stream_format") || lower.contains("stream format")
 }
 
 #[cfg(feature = "live")]
@@ -349,23 +324,6 @@ mod tests {
         let even = take_even_s16le(&mut buf);
         assert_eq!(even, vec![1, 2]);
         assert_eq!(buf, vec![3]);
-    }
-
-    #[test]
-    fn stream_format_rejection_is_narrow() {
-        assert!(stream_format_rejected(
-            400,
-            r#"{"error":{"param":"stream_format","message":"not supported"}}"#
-        ));
-        assert!(!stream_format_rejected(
-            400,
-            r#"{"error":{"param":"voice","message":"invalid voice"}}"#
-        ));
-        assert!(stream_format_rejected(
-            200,
-            r#"{"error":{"param":"stream_format"}}"#
-        ));
-        assert!(!stream_format_rejected(500, "stream_format"));
     }
 
     #[cfg(feature = "live")]

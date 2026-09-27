@@ -707,17 +707,16 @@ async fn mint_transcription_client_secret(
 #[cfg(feature = "live")]
 fn realtime_ws_urls_after_error(first_error: &str) -> Vec<String> {
     use crate::matrix::REALTIME_WEBSOCKET_URL;
-    let mut urls = vec![REALTIME_WEBSOCKET_URL.to_string()];
-    if first_error.contains("model parameter") || first_error.contains("?model=") {
-        if let Some(start) = first_error.find("?model=") {
-            let tail = &first_error[start + "?model=".len()..];
-            let model = tail
-                .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
-                .next()
-                .unwrap_or("gpt-realtime-1.5");
+    let mut urls = Vec::new();
+    // Only retry `?model=` when the vendor error itself names that query (websocket docs).
+    if let Some(start) = first_error.find("?model=") {
+        let tail = &first_error[start + "?model=".len()..];
+        if let Some(model) = tail
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+            .next()
+            .filter(|m| !m.is_empty())
+        {
             urls.push(format!("{REALTIME_WEBSOCKET_URL}?model={model}"));
-        } else {
-            urls.push(format!("{REALTIME_WEBSOCKET_URL}?model=gpt-realtime-1.5"));
         }
     }
     urls

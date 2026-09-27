@@ -100,14 +100,6 @@ pub trait TtsProvider: Send + Sync {
     /// Optional hook when a voice session starts (e.g. Sherpa phrase-cache project scope).
     fn bind_session_context(&self, _ctx: &VoiceSessionContext) {}
 
-    /// Resolve vendor choices once per session start (model capabilities, stream vs full body).
-    ///
-    /// Default is a no-op. Called from [`crate::agent::VoiceAgent::start`] after
-    /// [`Self::bind_session_context`].
-    async fn prepare(&self) -> SpeechResult<()> {
-        Ok(())
-    }
-
     /// Fully synthesize `text` and return all PCM chunks (legacy / cache-friendly path).
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>>;
 

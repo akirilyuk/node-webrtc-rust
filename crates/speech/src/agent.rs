@@ -425,6 +425,9 @@ impl VoiceAgent {
         let session_ctx = self.inner.lock().await.otel.session_context.clone();
         let new_tts = self.registry.create_tts(&config)?;
         new_tts.bind_session_context(&session_ctx);
+        if self.inner.lock().await.running {
+            new_tts.prepare().await?;
+        }
         *self.tts.lock().await = Some(new_tts);
         {
             let mut inner = self.inner.lock().await;
@@ -720,6 +723,7 @@ impl VoiceAgent {
         }
         if let Some(tts) = self.tts.lock().await.as_ref() {
             tts.bind_session_context(&session_ctx);
+            tts.prepare().await?;
         }
         self.ensure_tts_drain_worker().await;
         if let Some(this) = self.weak_self.upgrade() {

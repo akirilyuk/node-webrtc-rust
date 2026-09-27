@@ -22,9 +22,9 @@ async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
 bytes = { workspace = true }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
 node-webrtc-rust-speech = { path = "../speech" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }

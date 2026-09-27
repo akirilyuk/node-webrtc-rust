@@ -11,6 +11,7 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 use tokio::sync::Mutex;
 
 use crate::factory::api_key_from;
+use crate::matrix::{tts_delivery_plan, tts_sse_allowed, TtsStreamFormat};
 
 /// OpenAI TTS PCM output sample rate (16-bit mono LE).
 const OPENAI_TTS_PCM_SAMPLE_RATE: u32 = 24_000;
@@ -334,6 +335,13 @@ mod tests {
             parse_speech_model("tts-1-hd"),
             SpeechModel::Tts1Hd
         ));
+    }
+
+    #[test]
+    fn tts_matrix_forbids_sse_on_tts1() {
+        assert!(!tts_sse_allowed("tts-1"));
+        let plan = tts_delivery_plan("tts-1");
+        assert_eq!(plan.try_stream, TtsStreamFormat::Audio);
     }
 
     #[test]

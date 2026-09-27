@@ -8,6 +8,25 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-09-27
+
+### Fixed
+
+- **vendor-openai** — stream STT audio on the Realtime transcription socket and commit once when the client VAD ends, so a multi-second phrase is not finalized after the first second. (#254)
+- **vendor-openai** — stream TTS as chunked PCM (`stream_format: audio`). If that request fails before any audio is forwarded, use the buffered speech response. (#255)
+- **vendor-sherpa** — start listening after the first TTS engine loads. (#253)
+
+**Compare:** [`release/0.9.11…release/0.9.12`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.11...release/0.9.12)
+
+## [0.9.11] - 2026-09-26
+
+### Added
+
+- **speech** — `cluster-sherpa` vendor enum, gRPC proto, and config swap APIs. (#250)
+- **vendor-cluster-speech** — gRPC client for the cluster speech service. (#251)
+
+**Compare:** [`release/0.9.10…release/0.9.11`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.10...release/0.9.11)
+
 ## [0.9.10] - 2026-09-18
 
 ### Fixed

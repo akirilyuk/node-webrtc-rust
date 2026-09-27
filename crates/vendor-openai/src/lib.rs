@@ -12,3 +12,4 @@ pub use matrix::{
 
 pub use factory::OpenAiFactory;
 pub use stt::OpenAiStt;
+pub use tts::OpenAiTts;

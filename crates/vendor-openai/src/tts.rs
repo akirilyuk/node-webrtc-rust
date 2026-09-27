@@ -2,6 +2,10 @@
 use async_openai::types::{CreateSpeechRequestArgs, SpeechModel, SpeechResponseFormat, Voice};
 #[cfg(feature = "live")]
 use async_openai::Client;
+#[cfg(feature = "live")]
+use base64::Engine;
+#[cfg(feature = "live")]
+use serde_json::Value;
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
@@ -236,6 +240,149 @@ impl OpenAiTts {
         }
         Ok(chunks)
     }
+
+    /// `stream_format=sse` per OpenAPI `CreateSpeechResponseStreamEvent`
+    /// (`speech.audio.delta` / `speech.audio.done`). Not for VoiceAgent default.
+    #[cfg(feature = "live")]
+    pub async fn synthesize_pcm_sse(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+        if !tts_sse_allowed(&self.model) {
+            return Err(SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: format!(
+                    "stream_format=sse is not supported for OpenAI TTS model `{}`",
+                    self.model
+                ),
+            });
+        }
+        use futures_util::StreamExt;
+
+        let api_key = api_key_from(&self.api_key, "OPENAI_API_KEY")?;
+        let url = format!("{}/audio/speech", api_root(&self.endpoint));
+        let body = serde_json::json!({
+            "model": self.model,
+            "input": text,
+            "voice": self.voice,
+            "response_format": "pcm",
+            "stream_format": "sse",
+        });
+        let http = reqwest::Client::builder().build().map_err(|err| {
+            SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: format!("HTTP client: {err}"),
+            }
+        })?;
+        let response = http
+            .post(url)
+            .bearer_auth(api_key)
+            .header("Accept", "text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: err.to_string(),
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: format!("speech SSE HTTP {}: {}", status, body),
+            });
+        }
+
+        let mut pending_pcm = Vec::new();
+        let mut chunks = Vec::new();
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        while let Some(next) = stream.next().await {
+            let bytes = next.map_err(|err| SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: format!("speech SSE read: {err}"),
+            })?;
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+            while let Some(pos) = buffer.find("\n\n").or_else(|| buffer.find("\r\n\r\n")) {
+                let sep_len = if buffer.get(pos..pos + 4) == Some("\r\n\r\n") {
+                    4
+                } else {
+                    2
+                };
+                let frame = buffer[..pos].to_string();
+                buffer.drain(..pos + sep_len);
+                for line in frame.lines() {
+                    let line = line.trim();
+                    if !line.starts_with("data:") {
+                        continue;
+                    }
+                    let payload = line.trim_start_matches("data:").trim();
+                    if payload.is_empty() || payload == "[DONE]" {
+                        continue;
+                    }
+                    let event: Value = serde_json::from_str(payload).map_err(|err| {
+                        SpeechError::Vendor {
+                            vendor: "openai".into(),
+                            message: format!("speech SSE JSON: {err}"),
+                        }
+                    })?;
+                    match event.get("type").and_then(Value::as_str) {
+                        Some("speech.audio.delta") => {
+                            let audio_b64 = event
+                                .get("audio")
+                                .and_then(Value::as_str)
+                                .ok_or_else(|| SpeechError::Vendor {
+                                    vendor: "openai".into(),
+                                    message: "speech.audio.delta missing audio".into(),
+                                })?;
+                            let decoded = base64::engine::general_purpose::STANDARD
+                                .decode(audio_b64)
+                                .map_err(|err| SpeechError::Vendor {
+                                    vendor: "openai".into(),
+                                    message: format!("speech.audio.delta base64: {err}"),
+                                })?;
+                            pending_pcm.extend_from_slice(&decoded);
+                            let aligned = take_even_s16le(&mut pending_pcm);
+                            if aligned.is_empty() {
+                                continue;
+                            }
+                            let duration_ms = duration_ms_from_mono_s16le(
+                                aligned.len(),
+                                OPENAI_TTS_PCM_SAMPLE_RATE,
+                            );
+                            let pcm = mono_24k_s16le_to_stereo_48k(&aligned);
+                            chunks.push(TtsAudioChunk { pcm, duration_ms });
+                        }
+                        Some("speech.audio.done") => {}
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let aligned = take_even_s16le(&mut pending_pcm);
+        if !aligned.is_empty() {
+            let duration_ms =
+                duration_ms_from_mono_s16le(aligned.len(), OPENAI_TTS_PCM_SAMPLE_RATE);
+            let pcm = mono_24k_s16le_to_stereo_48k(&aligned);
+            chunks.push(TtsAudioChunk { pcm, duration_ms });
+        }
+        if chunks.is_empty() {
+            return Err(SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: "speech SSE stream produced no PCM".into(),
+            });
+        }
+        Ok(chunks)
+    }
+}
+
+#[cfg(feature = "live")]
+pub(crate) fn parse_speech_sse_event_for_test(event: &Value) -> Option<Vec<u8>> {
+    if event.get("type").and_then(Value::as_str) != Some("speech.audio.delta") {
+        return None;
+    }
+    let audio_b64 = event.get("audio").and_then(Value::as_str)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(audio_b64)
+        .ok()
 }
 
 #[cfg(feature = "live")]
@@ -342,6 +489,20 @@ mod tests {
         assert!(!tts_sse_allowed("tts-1"));
         let plan = tts_delivery_plan("tts-1");
         assert_eq!(plan.try_stream, TtsStreamFormat::Audio);
+    }
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn parse_speech_audio_delta_openapi_shape() {
+        use base64::Engine;
+        use serde_json::json;
+        let pcm = vec![1_u8, 2, 3, 4];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pcm);
+        let event = json!({
+            "type": "speech.audio.delta",
+            "audio": b64
+        });
+        assert_eq!(parse_speech_sse_event_for_test(&event), Some(pcm));
     }
 
     #[test]

@@ -32,8 +32,7 @@ use tokio_tungstenite::{
 };
 
 use crate::matrix::{
-    realtime_transcription_websocket_url, stt_default_transport, stt_file_sse_supported,
-    SttDefaultTransport,
+    realtime_websocket_url, stt_default_transport, stt_file_sse_supported, SttDefaultTransport,
 };
 
 const OPENAI_PCM_RATE: u32 = 24_000;
@@ -125,16 +124,26 @@ enum Incoming {
 
 impl OpenAiStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
-        Self::new_inner(config, false)
+        Self::new_inner(config, false, None)
     }
 
     /// Realtime WS for `gpt-transcribe` committed-turn live tests (not the VoiceAgent default).
     #[cfg(feature = "live")]
     pub fn new_force_realtime(config: &SttConfig) -> SpeechResult<Self> {
-        Self::new_inner(config, true)
+        Self::new_inner(config, true, None)
     }
 
-    fn new_inner(config: &SttConfig, force_realtime: bool) -> SpeechResult<Self> {
+    /// Force file HTTP with `stream=true` off (live matrix: mini-transcribe JSON path).
+    #[cfg(feature = "live")]
+    pub fn new_force_http_file_json(config: &SttConfig) -> SpeechResult<Self> {
+        Self::new_inner(config, false, Some(false))
+    }
+
+    fn new_inner(
+        config: &SttConfig,
+        force_realtime: bool,
+        force_http_file_sse: Option<bool>,
+    ) -> SpeechResult<Self> {
         let api_key = config
             .api_key
             .clone()
@@ -150,12 +159,26 @@ impl OpenAiStt {
         })?;
         let transport = if force_realtime {
             Transport::Realtime(RealtimeBackend::new())
+        } else if let Some(file_sse) = force_http_file_sse {
+            match default {
+                SttDefaultTransport::RealtimeLive => {
+                    return Err(SpeechError::Vendor {
+                        vendor: "openai".into(),
+                        message: "file HTTP override does not apply to Realtime STT models".into(),
+                    });
+                }
+                SttDefaultTransport::FileJson | SttDefaultTransport::FileSse => {
+                    Transport::Http(HttpBackend::new(api_base, file_sse))
+                }
+            }
         } else {
             match default {
                 SttDefaultTransport::RealtimeLive => {
                     Transport::Realtime(RealtimeBackend::new())
                 }
-                SttDefaultTransport::FileJson => Transport::Http(HttpBackend::new(api_base, false)),
+                SttDefaultTransport::FileJson => {
+                    Transport::Http(HttpBackend::new(api_base, false))
+                }
                 SttDefaultTransport::FileSse => {
                     let sse = stt_file_sse_supported(&model);
                     Transport::Http(HttpBackend::new(api_base, sse))
@@ -300,7 +323,7 @@ impl HttpBackend {
         match rx.recv().await {
             Some(transcript) => {
                 let is_final = matches!(&transcript, SttTranscript::Final(_));
-                if is_final || rx.is_empty() {
+                if is_final {
                     *rx_guard = None;
                     self.poll_task.lock().await.take();
                     self.on_final_delivered();
@@ -575,6 +598,23 @@ impl TranscriptAssembler {
     }
 }
 
+/// OpenAPI `transcription_session.update` on a Realtime WebSocket (`?model=` handshake).
+pub(crate) fn transcription_session_update_body(model: &str, language: Option<&str>) -> Value {
+    let mut input_audio_transcription = serde_json::json!({ "model": model });
+    if let Some(language) = language {
+        input_audio_transcription["language"] = serde_json::json!(language);
+    }
+    serde_json::json!({
+        "type": "transcription_session.update",
+        "session": {
+            "input_audio_format": "pcm16",
+            "input_audio_transcription": input_audio_transcription,
+            "turn_detection": null
+        }
+    })
+}
+
+/// Realtime transcription guide `session.update` with `session.type=transcription`.
 pub(crate) fn session_update_body(model: &str, language: Option<&str>) -> Value {
     let mut transcription = serde_json::json!({ "model": model });
     if let Some(language) = language {
@@ -852,7 +892,7 @@ impl RealtimeBackend {
         language: Option<&str>,
     ) -> SpeechResult<()> {
         let api_key = crate::factory::api_key_from(api_key, "OPENAI_API_KEY")?;
-        let ws_url = realtime_transcription_websocket_url();
+        let ws_url = realtime_websocket_url(model);
         let mut request = ws_url
             .into_client_request()
             .map_err(|err| SpeechError::Vendor {
@@ -1098,8 +1138,9 @@ where
                 message,
             });
         }
-        if let Some("session.updated" | "transcription_session.updated") =
-            event.get("type").and_then(Value::as_str)
+        if let Some(
+            "session.updated" | "transcription_session.updated" | "transcription_session.created",
+        ) = event.get("type").and_then(Value::as_str)
         {
             return Ok(());
         }
@@ -1179,6 +1220,16 @@ mod tests {
         assert!(appends > 1);
         assert_eq!(chunked, oneshot_24k(&pcm));
         assert_eq!(chunked.len(), pcm.len() / 2 * 3);
+    }
+
+    #[test]
+    fn transcription_session_update_openapi_shape() {
+        let body = transcription_session_update_body("gpt-4o-mini-transcribe", Some("en"));
+        assert_eq!(body["type"], "transcription_session.update");
+        assert_eq!(
+            body["session"]["input_audio_transcription"]["model"],
+            "gpt-4o-mini-transcribe"
+        );
     }
 
     #[test]

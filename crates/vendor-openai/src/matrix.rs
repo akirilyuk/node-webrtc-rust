@@ -58,8 +58,6 @@ pub fn stt_default_transport(model: &str) -> Result<SttDefaultTransport, String>
         }
         "gpt-transcribe" => Ok(SttDefaultTransport::FileSse),
         "gpt-live-transcribe" => Ok(SttDefaultTransport::RealtimeLive),
-        other if other.starts_with("whisper") => Ok(SttDefaultTransport::FileJson),
-        other if other.contains("transcribe") => Ok(SttDefaultTransport::FileSse),
         unknown => Err(format!(
             "unsupported OpenAI STT model `{unknown}`; documented models: {}",
             DOCUMENTED_STT_MODELS.join(", ")
@@ -82,16 +80,14 @@ pub fn documented_realtime_model(mode: SttRealtimeMode) -> &'static str {
     }
 }
 
-/// Realtime **conversation** sessions use `?model=` (e.g. `gpt-realtime-2.1`) per
-/// <https://developers.openai.com/api/docs/guides/realtime-websocket>. Transcription-only
-/// sessions (`session.type=transcription`) require a transcription WebSocket endpoint;
-/// the API rejects transcription `session.update` on a conversation `?model=` connection.
-pub const REALTIME_CONVERSATION_SESSION_MODEL: &str = "gpt-realtime-2.1";
-
-/// WebSocket URL for Realtime **transcription** sessions (`gpt-live-transcribe`, committed-turn `gpt-transcribe`).
-/// Transcription models are passed only in `session.update` → `audio.input.transcription.model`.
-pub fn realtime_transcription_websocket_url() -> &'static str {
-    "wss://api.openai.com/v1/realtime?intent=transcription"
+/// Realtime WebSocket per <https://developers.openai.com/api/docs/guides/realtime-websocket>
+/// (`wss://api.openai.com/v1/realtime?model=…`) using the **transcription** model, then
+/// Realtime transcription guide `session.update` with `session.type=transcription`.
+pub fn realtime_websocket_url(transcription_model: &str) -> String {
+    format!(
+        "wss://api.openai.com/v1/realtime?model={}",
+        transcription_model.trim()
+    )
 }
 
 pub fn tts_delivery_plan(model: &str) -> TtsDeliveryPlan {
@@ -166,15 +162,16 @@ mod tests {
     }
 
     #[test]
-    fn realtime_transcription_url_uses_intent_not_transcription_model_in_query() {
-        let url = realtime_transcription_websocket_url();
-        assert!(url.contains("intent=transcription"));
-        assert!(!url.contains("gpt-live-transcribe"));
-        assert!(!url.contains("model=gpt-transcribe"));
+    fn realtime_websocket_url_uses_transcription_model_query_not_intent() {
+        let url = realtime_websocket_url("gpt-live-transcribe");
+        assert_eq!(url, "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe");
+        assert!(!url.contains("intent="));
     }
 
     #[test]
     fn unknown_stt_model_errors() {
         assert!(stt_default_transport("not-a-model").is_err());
+        assert!(stt_default_transport("whisper-2").is_err());
+        assert!(stt_default_transport("my-transcribe").is_err());
     }
 }

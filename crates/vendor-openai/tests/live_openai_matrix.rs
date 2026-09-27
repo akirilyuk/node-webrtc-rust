@@ -6,7 +6,7 @@ use bytes::Bytes;
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::pcm::{i16_samples_to_bytes, stereo_48k_to_mono_16k, STT_MIN_BATCH_BYTES};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider, VendorFactory};
-use node_webrtc_rust_vendor_openai::{OpenAiFactory, OpenAiStt};
+use node_webrtc_rust_vendor_openai::{OpenAiFactory, OpenAiStt, OpenAiTts};
 
 const COUNTING_PHRASE: &str =
     "one. two. three. four. five. six. seven. eight. nine. ten.";
@@ -31,10 +31,6 @@ fn stt_config(model: &str) -> SttConfig {
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         endpoint: None,
     }
-}
-
-fn pcm_above_min() -> Bytes {
-    Bytes::from(vec![0_u8; STT_MIN_BATCH_BYTES + 4096])
 }
 
 async fn counting_pcm_via_tts() -> Bytes {
@@ -62,11 +58,22 @@ async fn counting_pcm_via_tts() -> Bytes {
     Bytes::from(mono16k)
 }
 
+async fn drain_until_final(stt: &mut OpenAiStt) -> String {
+    for _ in 0..48 {
+        match stt.poll_transcript().await.expect("poll") {
+            Some(SttTranscript::Final(text)) => return text,
+            Some(SttTranscript::Partial(_)) => continue,
+            None => break,
+        }
+    }
+    panic!("expected SttTranscript::Final from vendor");
+}
+
 async fn run_http_finalize(
     model: &str,
     pcm: Bytes,
     force_realtime: bool,
-) -> Option<SttTranscript> {
+) -> String {
     let mut stt = if force_realtime {
         OpenAiStt::new_force_realtime(&stt_config(model)).expect("stt")
     } else {
@@ -75,18 +82,9 @@ async fn run_http_finalize(
     stt.start().await.expect("start");
     stt.push_audio(pcm).await.expect("push");
     stt.finalize_utterance().await.expect("finalize");
-    let mut last = None;
-    for _ in 0..8 {
-        if let Some(t) = stt.poll_transcript().await.expect("poll") {
-            let is_final = matches!(&t, SttTranscript::Final(_));
-            last = Some(t);
-            if is_final {
-                break;
-            }
-        }
-    }
+    let text = drain_until_final(&mut stt).await;
     stt.stop().await.ok();
-    last
+    text
 }
 
 fn assert_counting_words(text: &str) {
@@ -111,11 +109,24 @@ async fn live_file_json_whisper1() {
         return;
     }
     let pcm = counting_pcm_via_tts().await;
-    let t = run_http_finalize("whisper-1", pcm, false).await;
-    let SttTranscript::Final(text) = t.expect("final") else {
-        panic!("expected final");
-    };
+    let text = run_http_finalize("whisper-1", pcm, false).await;
     assert_counting_words(&text);
+}
+
+#[tokio::test]
+async fn live_file_json_gpt_4o_mini_transcribe_sse_off() {
+    if skip_live() {
+        return;
+    }
+    let pcm = counting_pcm_via_tts().await;
+    let mut stt = OpenAiStt::new_force_http_file_json(&stt_config("gpt-4o-mini-transcribe"))
+        .expect("stt");
+    stt.start().await.expect("start");
+    stt.push_audio(pcm).await.expect("push");
+    stt.finalize_utterance().await.expect("finalize");
+    let text = drain_until_final(&mut stt).await;
+    assert_counting_words(&text);
+    stt.stop().await.ok();
 }
 
 #[tokio::test]
@@ -129,23 +140,8 @@ async fn live_file_sse_mini_and_gpt_transcribe() {
         stt.start().await.expect("start");
         stt.push_audio(pcm.clone()).await.expect("push");
         stt.finalize_utterance().await.expect("finalize");
-        let mut saw_delta_or_done = false;
-        let mut final_text = None;
-        for _ in 0..32 {
-            match stt.poll_transcript().await.expect("poll") {
-                Some(SttTranscript::Partial(_)) => saw_delta_or_done = true,
-                Some(SttTranscript::Final(text)) => {
-                    saw_delta_or_done = true;
-                    final_text = Some(text);
-                    break;
-                }
-                None => break,
-            }
-        }
-        assert!(saw_delta_or_done, "expected SSE partial or final for {model}");
-        if let Some(text) = final_text {
-            assert_counting_words(&text);
-        }
+        let text = drain_until_final(&mut stt).await;
+        assert_counting_words(&text);
         stt.stop().await.ok();
     }
 }
@@ -156,10 +152,8 @@ async fn live_realtime_gpt_live_transcribe() {
         return;
     }
     let pcm = counting_pcm_via_tts().await;
-    let t = run_http_finalize("gpt-live-transcribe", pcm, false).await;
-    if let Some(SttTranscript::Final(text)) = t {
-        assert_counting_words(&text);
-    }
+    let text = run_http_finalize("gpt-live-transcribe", pcm, false).await;
+    assert_counting_words(&text);
 }
 
 #[tokio::test]
@@ -168,10 +162,8 @@ async fn live_realtime_committed_gpt_transcribe() {
         return;
     }
     let pcm = counting_pcm_via_tts().await;
-    let t = run_http_finalize("gpt-transcribe", pcm, true).await;
-    if let Some(SttTranscript::Final(text)) = t {
-        assert_counting_words(&text);
-    }
+    let text = run_http_finalize("gpt-transcribe", pcm, true).await;
+    assert_counting_words(&text);
 }
 
 #[tokio::test]
@@ -200,4 +192,34 @@ async fn live_tts_audio_and_full_body() {
             .expect("progressive");
         assert!(!prog.is_empty());
     }
+}
+
+#[tokio::test]
+async fn live_tts_sse_gpt_4o_mini_tts() {
+    if skip_live() {
+        return;
+    }
+    let tts = OpenAiTts::new(&TtsConfig {
+        provider: TtsVendor::Openai,
+        model: Some("gpt-4o-mini-tts".into()),
+        model_path: None,
+        voice: Some("alloy".into()),
+        api_key: std::env::var("OPENAI_API_KEY").ok(),
+        endpoint: None,
+    })
+    .expect("tts");
+    let chunks = tts.synthesize_pcm_sse("hello").await.expect("sse pcm");
+    assert!(!chunks.is_empty());
+    assert!(chunks.iter().any(|c| !c.pcm.is_empty()));
+
+    let tts1 = OpenAiTts::new(&TtsConfig {
+        provider: TtsVendor::Openai,
+        model: Some("tts-1".into()),
+        model_path: None,
+        voice: Some("alloy".into()),
+        api_key: std::env::var("OPENAI_API_KEY").ok(),
+        endpoint: None,
+    })
+    .expect("tts");
+    assert!(tts1.synthesize_pcm_sse("hello").await.is_err());
 }

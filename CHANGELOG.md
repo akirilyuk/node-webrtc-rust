@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **vendor-openai** — stream TTS as chunked PCM (`stream_format: audio`). If that request fails before any audio is forwarded, use the buffered speech response.
+
 ## [0.9.10] - 2026-09-18
 
 ### Fixed

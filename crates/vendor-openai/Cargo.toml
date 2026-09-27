@@ -8,12 +8,21 @@ description = "OpenAI STT/TTS vendor adapter for node-webrtc-rust"
 
 [features]
 default = []
-live = ["dep:async-openai"]
+live = [
+    "dep:async-openai",
+    "dep:base64",
+    "dep:futures-util",
+    "dep:tokio-tungstenite",
+]
 
 [dependencies]
 async-openai = { version = "0.28", optional = true }
 async-trait = "0.1"
+base64 = { version = "0.22", optional = true }
 bytes = { workspace = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
 node-webrtc-rust-speech = { path = "../speech" }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }

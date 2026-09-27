@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider, VendorFactory};
@@ -27,12 +25,4 @@ pub(crate) fn api_key_from(config_key: &Option<String>, env: &str) -> SpeechResu
     }
     std::env::var(env)
         .map_err(|_| SpeechError::Config(format!("missing API key: set config.apiKey or {env}")))
-}
-
-pub(crate) type SharedSttState = Arc<tokio::sync::Mutex<OpenAiSttState>>;
-
-pub(crate) struct OpenAiSttState {
-    pub buffered: Vec<u8>,
-    pub running: bool,
-    pub pending: Option<node_webrtc_rust_speech::pipeline::SttTranscript>,
 }

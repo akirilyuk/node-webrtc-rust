@@ -2482,10 +2482,14 @@ version = "0.1.0"
 dependencies = [
  "async-openai",
  "async-trait",
+ "base64",
  "bytes",
+ "futures-util",
  "node-webrtc-rust-speech",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

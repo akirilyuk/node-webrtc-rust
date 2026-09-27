@@ -1,9 +1,10 @@
-//! OpenAI STT over the Realtime transcription websocket.
+//! OpenAI STT: HTTP [`POST /v1/audio/transcriptions`](https://platform.openai.com/docs/api-reference/audio/createTranscription)
+//! for catalog transcription models (`whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`).
 //!
-//! Audio is appended as it arrives (`input_audio_buffer.append`). The agent's
-//! VAD owns the utterance: turn detection stays off, and `finalize_utterance`
-//! sends one `input_audio_buffer.commit`. A 1-second HTTP flush, or OpenAI
-//! server VAD, would close the transcript in the middle of a counting phrase.
+//! Realtime transcription websocket is used only when the configured model is documented for
+//! Realtime (`gpt-transcribe`, `gpt-live-transcribe`). HTTP models buffer 16 kHz PCM while the VAD
+//! gate is open; one WAV upload runs on [`SttProvider::finalize_utterance`], and
+//! [`SttProvider::poll_transcript`] returns the result.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use bytes::Bytes;
 use node_webrtc_rust_speech::config::SttConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{
-    duration_ms_from_mono_s16le, STT_MIN_BATCH_BYTES, STT_PCM_SAMPLE_RATE,
+    duration_ms_from_mono_s16le, mono16_le_to_wav, STT_MIN_BATCH_BYTES, STT_PCM_SAMPLE_RATE,
 };
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 use serde_json::Value;
@@ -31,14 +32,60 @@ use tokio_tungstenite::{
 
 const OPENAI_REALTIME_URL: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
 const OPENAI_PCM_RATE: u32 = 24_000;
+const DEFAULT_OPENAI_API_BASE: &str = "https://api.openai.com/v1";
+
+/// Models documented for Realtime transcription only.
+pub(crate) fn model_uses_realtime_transcription(model: &str) -> bool {
+    matches!(model, "gpt-transcribe" | "gpt-live-transcribe")
+}
+
+pub(crate) fn normalize_openai_api_base(endpoint: Option<&str>) -> String {
+    match endpoint {
+        Some(base) if !base.is_empty() => base.trim_end_matches('/').to_string(),
+        _ => DEFAULT_OPENAI_API_BASE.to_string(),
+    }
+}
+
+pub(crate) fn transcriptions_url(api_base: &str) -> String {
+    let base = api_base.trim_end_matches('/');
+    if base.ends_with("/audio/transcriptions") {
+        base.to_string()
+    } else if base.ends_with("/v1") {
+        format!("{base}/audio/transcriptions")
+    } else {
+        format!("{base}/v1/audio/transcriptions")
+    }
+}
 
 pub struct OpenAiStt {
     api_key: Option<String>,
     model: String,
     language: Option<String>,
+    transport: Transport,
+}
+
+enum Transport {
+    Http(HttpBackend),
+    Realtime(RealtimeBackend),
+}
+
+struct HttpBackend {
+    api_base: String,
+    inner: Mutex<HttpInner>,
+    live_backlog_ms: AtomicU32,
+    frozen_backlog_ms: AtomicU32,
+    commit_waiting: AtomicBool,
+}
+
+struct HttpInner {
+    running: bool,
+    buffered: Vec<u8>,
+    in_flight: Option<tokio::task::JoinHandle<SpeechResult<Option<SttTranscript>>>>,
+}
+
+struct RealtimeBackend {
     resampler: Pcm16kTo24k,
     inner: Arc<Mutex<StreamInner>>,
-    /// Audio accepted since the last commit. Reported while a commit is in flight.
     live_backlog_ms: AtomicU32,
     frozen_backlog_ms: AtomicU32,
     commit_waiting: AtomicBool,
@@ -70,26 +117,38 @@ impl OpenAiStt {
             .api_key
             .clone()
             .or_else(|| std::env::var("OPENAI_API_KEY").ok());
+        let model = config
+            .model
+            .clone()
+            .unwrap_or_else(|| "whisper-1".to_string());
+        let api_base = normalize_openai_api_base(config.endpoint.as_deref());
+        let transport = if model_uses_realtime_transcription(&model) {
+            Transport::Realtime(RealtimeBackend::new())
+        } else {
+            Transport::Http(HttpBackend::new(api_base))
+        };
         Ok(Self {
             api_key,
-            model: config
-                .model
-                .clone()
-                .unwrap_or_else(|| "whisper-1".to_string()),
+            model,
             language: config.language.clone(),
-            resampler: Pcm16kTo24k::default(),
-            inner: Arc::new(Mutex::new(StreamInner {
+            transport,
+        })
+    }
+}
+
+impl HttpBackend {
+    fn new(api_base: String) -> Self {
+        Self {
+            api_base,
+            inner: Mutex::new(HttpInner {
                 running: false,
-                tx: None,
-                rx: None,
-                reader: None,
-                writer: None,
-            })),
+                buffered: Vec::new(),
+                in_flight: None,
+            }),
             live_backlog_ms: AtomicU32::new(0),
             frozen_backlog_ms: AtomicU32::new(0),
             commit_waiting: AtomicBool::new(false),
-            uncommitted_bytes: 0,
-        })
+        }
     }
 
     fn note_pushed_audio(&self, pcm_len: usize) {
@@ -116,6 +175,170 @@ impl OpenAiStt {
     fn on_final_delivered(&self) {
         self.commit_waiting.store(false, Ordering::Relaxed);
         self.frozen_backlog_ms.store(0, Ordering::Relaxed);
+    }
+
+    fn decode_backlog_ms(&self) -> u32 {
+        if self.commit_waiting.load(Ordering::Relaxed) {
+            self.frozen_backlog_ms.load(Ordering::Relaxed)
+        } else {
+            self.live_backlog_ms.load(Ordering::Relaxed)
+        }
+    }
+
+    async fn start(&mut self) -> SpeechResult<()> {
+        self.stop().await?;
+        let mut inner = self.inner.lock().await;
+        inner.running = true;
+        inner.buffered.clear();
+        inner.in_flight = None;
+        self.clear_backlog();
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> SpeechResult<()> {
+        let mut inner = self.inner.lock().await;
+        inner.running = false;
+        inner.buffered.clear();
+        if let Some(task) = inner.in_flight.take() {
+            task.abort();
+        }
+        self.clear_backlog();
+        Ok(())
+    }
+
+    async fn push_audio(&mut self, pcm: Bytes) -> SpeechResult<()> {
+        let mut inner = self.inner.lock().await;
+        if !inner.running || pcm.is_empty() {
+            return Ok(());
+        }
+        inner.buffered.extend_from_slice(pcm.as_ref());
+        drop(inner);
+        self.note_pushed_audio(pcm.len());
+        Ok(())
+    }
+
+    async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
+        let mut inner = self.inner.lock().await;
+        if let Some(task) = inner.in_flight.as_mut() {
+            if task.is_finished() {
+                let task = inner.in_flight.take().expect("in_flight");
+                drop(inner);
+                let result = task.await.unwrap_or_else(|_| {
+                    Err(SpeechError::Vendor {
+                        vendor: "openai".into(),
+                        message: "transcription task aborted".into(),
+                    })
+                })?;
+                if let Some(transcript) = result {
+                    self.on_final_delivered();
+                    return Ok(Some(transcript));
+                }
+                self.on_final_delivered();
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    }
+
+    async fn finalize_utterance(
+        &mut self,
+        api_key: &Option<String>,
+        model: &str,
+        language: &Option<String>,
+    ) -> SpeechResult<()> {
+        let pcm = {
+            let mut inner = self.inner.lock().await;
+            if !inner.running {
+                return Ok(());
+            }
+            if inner.in_flight.is_some() {
+                return Ok(());
+            }
+            std::mem::take(&mut inner.buffered)
+        };
+
+        if pcm.len() < STT_MIN_BATCH_BYTES {
+            self.clear_backlog();
+            return Ok(());
+        }
+
+        self.freeze_backlog_for_commit();
+
+        #[cfg(feature = "live")]
+        {
+            let api_key = crate::factory::api_key_from(api_key, "OPENAI_API_KEY")?;
+            let url = transcriptions_url(&self.api_base);
+            let model = model.to_string();
+            let language = language.clone();
+            let pcm = Bytes::from(pcm);
+            let handle = tokio::spawn(async move {
+                http_transcribe(pcm, &api_key, &url, &model, language.as_deref()).await
+            });
+            self.inner.lock().await.in_flight = Some(handle);
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "live"))]
+        {
+            let _ = (api_key, model, language, pcm);
+            Err(SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: "live OpenAI STT requires `--features live` on vendor-openai".into(),
+            })
+        }
+    }
+}
+
+impl RealtimeBackend {
+    fn new() -> Self {
+        Self {
+            resampler: Pcm16kTo24k::default(),
+            inner: Arc::new(Mutex::new(StreamInner {
+                running: false,
+                tx: None,
+                rx: None,
+                reader: None,
+                writer: None,
+            })),
+            live_backlog_ms: AtomicU32::new(0),
+            frozen_backlog_ms: AtomicU32::new(0),
+            commit_waiting: AtomicBool::new(false),
+            uncommitted_bytes: 0,
+        }
+    }
+
+    fn note_pushed_audio(&self, pcm_len: usize) {
+        if pcm_len == 0 {
+            return;
+        }
+        let ms = duration_ms_from_mono_s16le(pcm_len, STT_PCM_SAMPLE_RATE);
+        self.live_backlog_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+
+    fn freeze_backlog_for_commit(&self) {
+        let utterance_ms = self.live_backlog_ms.swap(0, Ordering::Relaxed);
+        self.frozen_backlog_ms
+            .store(utterance_ms, Ordering::Relaxed);
+        self.commit_waiting.store(true, Ordering::Relaxed);
+    }
+
+    fn clear_backlog(&self) {
+        self.live_backlog_ms.store(0, Ordering::Relaxed);
+        self.frozen_backlog_ms.store(0, Ordering::Relaxed);
+        self.commit_waiting.store(false, Ordering::Relaxed);
+    }
+
+    fn on_final_delivered(&self) {
+        self.commit_waiting.store(false, Ordering::Relaxed);
+        self.frozen_backlog_ms.store(0, Ordering::Relaxed);
+    }
+
+    fn decode_backlog_ms(&self) -> u32 {
+        if self.commit_waiting.load(Ordering::Relaxed) {
+            self.frozen_backlog_ms.load(Ordering::Relaxed)
+        } else {
+            self.live_backlog_ms.load(Ordering::Relaxed)
+        }
     }
 
     async fn send_event(&self, event: ClientEvent) -> SpeechResult<()> {
@@ -200,7 +423,6 @@ impl Pcm16kTo24k {
         .floor() as u64;
         if consumed > self.src_dropped {
             let drop = ((consumed - self.src_dropped) as usize).min(self.src.len());
-            // Keep the sample the next output still interpolates against.
             let drop = drop.saturating_sub(1);
             if drop > 0 {
                 self.src.drain(..drop);
@@ -250,7 +472,11 @@ impl TranscriptAssembler {
                     .to_string();
                 self.text.clear();
                 self.item_id.clear();
-                Some(SttTranscript::Final(transcript))
+                if transcript.is_empty() {
+                    None
+                } else {
+                    Some(SttTranscript::Final(transcript))
+                }
             }
             Some("error") => None,
             _ => None,
@@ -296,6 +522,59 @@ fn realtime_error_message(event: &Value) -> Option<String> {
     )
 }
 
+#[cfg(feature = "live")]
+async fn http_transcribe(
+    pcm: Bytes,
+    api_key: &str,
+    transcriptions_url: &str,
+    model: &str,
+    language: Option<&str>,
+) -> SpeechResult<Option<SttTranscript>> {
+    use async_openai::types::{AudioInput, CreateTranscriptionRequestArgs, InputSource};
+
+    let wav = mono16_le_to_wav(pcm.as_ref());
+    let mut builder = CreateTranscriptionRequestArgs::default();
+    builder.model(model);
+    if let Some(language) = language {
+        builder.language(language);
+    }
+    let request = builder
+        .file(AudioInput {
+            source: InputSource::Bytes {
+                filename: "audio.wav".into(),
+                bytes: wav.into(),
+            },
+        })
+        .build()
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: err.to_string(),
+        })?;
+
+    let api_base = transcriptions_url
+        .trim_end_matches("/audio/transcriptions")
+        .trim_end_matches('/');
+    let client = async_openai::Client::with_config(
+        async_openai::config::OpenAIConfig::new()
+            .with_api_key(api_key)
+            .with_api_base(api_base),
+    );
+    let response = client
+        .audio()
+        .transcribe(request)
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: err.to_string(),
+        })?;
+
+    let text = response.text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(SttTranscript::Final(text.to_string())))
+}
+
 #[async_trait]
 impl SttProvider for OpenAiStt {
     fn vendor_name(&self) -> &'static str {
@@ -303,26 +582,178 @@ impl SttProvider for OpenAiStt {
     }
 
     fn decode_backlog_ms(&self) -> u32 {
-        if self.commit_waiting.load(Ordering::Relaxed) {
-            self.frozen_backlog_ms.load(Ordering::Relaxed)
-        } else {
-            self.live_backlog_ms.load(Ordering::Relaxed)
+        match &self.transport {
+            Transport::Http(http) => http.decode_backlog_ms(),
+            Transport::Realtime(rt) => rt.decode_backlog_ms(),
         }
     }
 
     async fn start(&mut self) -> SpeechResult<()> {
-        self.stop().await?;
-        #[cfg(feature = "live")]
-        {
-            return self.start_realtime().await;
+        match &mut self.transport {
+            Transport::Http(http) => http.start().await,
+            Transport::Realtime(rt) => {
+                rt.stop().await?;
+                #[cfg(feature = "live")]
+                {
+                    return rt
+                        .start_realtime(&self.api_key, &self.model, self.language.as_deref())
+                        .await;
+                }
+                #[cfg(not(feature = "live"))]
+                {
+                    Err(SpeechError::Vendor {
+                        vendor: "openai".into(),
+                        message: "live OpenAI STT requires `--features live` on vendor-openai"
+                            .into(),
+                    })
+                }
+            }
         }
-        #[cfg(not(feature = "live"))]
-        {
-            Err(SpeechError::Vendor {
+    }
+
+    async fn stop(&mut self) -> SpeechResult<()> {
+        match &mut self.transport {
+            Transport::Http(http) => http.stop().await,
+            Transport::Realtime(rt) => rt.stop().await,
+        }
+    }
+
+    async fn push_audio(&mut self, pcm: Bytes) -> SpeechResult<()> {
+        match &mut self.transport {
+            Transport::Http(http) => http.push_audio(pcm).await,
+            Transport::Realtime(rt) => rt.push_audio(pcm).await,
+        }
+    }
+
+    async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
+        match &mut self.transport {
+            Transport::Http(http) => http.poll_transcript().await,
+            Transport::Realtime(rt) => rt.poll_transcript().await,
+        }
+    }
+
+    async fn finalize_utterance(&mut self) -> SpeechResult<()> {
+        match &mut self.transport {
+            Transport::Http(http) => {
+                http.finalize_utterance(&self.api_key, &self.model, &self.language)
+                    .await
+            }
+            Transport::Realtime(rt) => rt.finalize_utterance().await,
+        }
+    }
+}
+
+#[cfg(feature = "live")]
+impl RealtimeBackend {
+    async fn start_realtime(
+        &mut self,
+        api_key: &Option<String>,
+        model: &str,
+        language: Option<&str>,
+    ) -> SpeechResult<()> {
+        let api_key = crate::factory::api_key_from(api_key, "OPENAI_API_KEY")?;
+        let mut request =
+            OPENAI_REALTIME_URL
+                .into_client_request()
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "openai".into(),
+                    message: err.to_string(),
+                })?;
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {api_key}")
+                .parse()
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "openai".into(),
+                    message: format!("invalid auth header: {err}"),
+                })?,
+        );
+
+        let (ws, _) = connect_async(request)
+            .await
+            .map_err(|err| SpeechError::Vendor {
                 vendor: "openai".into(),
-                message: "live OpenAI STT requires `--features live` on vendor-openai".into(),
-            })
-        }
+                message: err.to_string(),
+            })?;
+        let (mut sink, mut stream) = ws.split();
+        let session = session_update_body(model, language);
+        sink.send(Message::Text(session.to_string().into()))
+            .await
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: err.to_string(),
+            })?;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_until_session_ready(&mut stream),
+        )
+        .await
+        .map_err(|_| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: "realtime transcription session was not ready".into(),
+        })??;
+
+        let (audio_tx, audio_rx) = mpsc::unbounded_channel();
+        let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+
+        let reader = tokio::spawn(async move {
+            let mut assembler = TranscriptAssembler::default();
+            while let Some(message) = stream.next().await {
+                let Ok(message) = message else { break };
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let Ok(event) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                if let Some(message) = realtime_error_message(&event) {
+                    let _ = incoming_tx.send(Incoming::Failed(message));
+                    break;
+                }
+                if let Some(transcript) = assembler.push(&event) {
+                    if incoming_tx.send(Incoming::Update(transcript)).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let writer = tokio::spawn(async move {
+            let mut audio_rx = audio_rx;
+            while let Some(event) = audio_rx.recv().await {
+                let payload = match event {
+                    ClientEvent::Append(pcm) => serde_json::json!({
+                        "type": "input_audio_buffer.append",
+                        "audio": base64::engine::general_purpose::STANDARD.encode(pcm),
+                    }),
+                    ClientEvent::Commit => serde_json::json!({
+                        "type": "input_audio_buffer.commit"
+                    }),
+                    ClientEvent::Clear => serde_json::json!({
+                        "type": "input_audio_buffer.clear"
+                    }),
+                };
+                if sink
+                    .send(Message::Text(payload.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            let _ = sink.send(Message::Close(None)).await;
+        });
+
+        let mut inner = self.inner.lock().await;
+        inner.running = true;
+        inner.tx = Some(audio_tx);
+        inner.rx = Some(incoming_rx);
+        inner.reader = Some(reader);
+        inner.writer = Some(writer);
+        self.uncommitted_bytes = 0;
+        self.clear_backlog();
+        Ok(())
     }
 
     async fn stop(&mut self) -> SpeechResult<()> {
@@ -406,111 +837,21 @@ impl SttProvider for OpenAiStt {
     }
 }
 
-#[cfg(feature = "live")]
-impl OpenAiStt {
-    async fn start_realtime(&mut self) -> SpeechResult<()> {
-        let api_key = crate::factory::api_key_from(&self.api_key, "OPENAI_API_KEY")?;
-        let mut request =
-            OPENAI_REALTIME_URL
-                .into_client_request()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "openai".into(),
-                    message: err.to_string(),
-                })?;
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {api_key}")
-                .parse()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "openai".into(),
-                    message: format!("invalid auth header: {err}"),
-                })?,
-        );
+#[cfg(not(feature = "live"))]
+impl RealtimeBackend {
+    async fn stop(&mut self) -> SpeechResult<()> {
+        Ok(())
+    }
 
-        let (ws, _) = connect_async(request)
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: err.to_string(),
-            })?;
-        let (mut sink, mut stream) = ws.split();
-        let session = session_update_body(&self.model, self.language.as_deref());
-        sink.send(Message::Text(session.to_string().into()))
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: err.to_string(),
-            })?;
+    async fn push_audio(&mut self, _pcm: Bytes) -> SpeechResult<()> {
+        Ok(())
+    }
 
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            wait_until_session_ready(&mut stream),
-        )
-        .await
-        .map_err(|_| SpeechError::Vendor {
-            vendor: "openai".into(),
-            message: "realtime transcription session was not ready".into(),
-        })??;
+    async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
+        Ok(None)
+    }
 
-        let (audio_tx, audio_rx) = mpsc::unbounded_channel();
-        let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
-
-        let reader = tokio::spawn(async move {
-            let mut assembler = TranscriptAssembler::default();
-            while let Some(message) = stream.next().await {
-                let Ok(message) = message else { break };
-                let Message::Text(text) = message else {
-                    continue;
-                };
-                let Ok(event) = serde_json::from_str::<Value>(&text) else {
-                    continue;
-                };
-                if let Some(message) = realtime_error_message(&event) {
-                    let _ = incoming_tx.send(Incoming::Failed(message));
-                    break;
-                }
-                if let Some(transcript) = assembler.push(&event) {
-                    if incoming_tx.send(Incoming::Update(transcript)).is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-
-        let writer = tokio::spawn(async move {
-            let mut audio_rx = audio_rx;
-            while let Some(event) = audio_rx.recv().await {
-                let payload = match event {
-                    ClientEvent::Append(pcm) => serde_json::json!({
-                        "type": "input_audio_buffer.append",
-                        "audio": base64::engine::general_purpose::STANDARD.encode(pcm),
-                    }),
-                    ClientEvent::Commit => serde_json::json!({
-                        "type": "input_audio_buffer.commit"
-                    }),
-                    ClientEvent::Clear => serde_json::json!({
-                        "type": "input_audio_buffer.clear"
-                    }),
-                };
-                if sink
-                    .send(Message::Text(payload.to_string().into()))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            let _ = sink.send(Message::Close(None)).await;
-        });
-
-        let mut inner = self.inner.lock().await;
-        inner.running = true;
-        inner.tx = Some(audio_tx);
-        inner.rx = Some(incoming_rx);
-        inner.reader = Some(reader);
-        inner.writer = Some(writer);
-        self.uncommitted_bytes = 0;
-        self.clear_backlog();
+    async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         Ok(())
     }
 }
@@ -553,12 +894,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn oneshot_24k(pcm16: &[u8]) -> Vec<u8> {
         let mut resampler = Pcm16kTo24k::default();
         let mut out = resampler.push_s16le(pcm16);
         out.extend(resampler.finish());
         out
+    }
+
+    fn test_stt_config(model: &str, endpoint: Option<String>) -> SttConfig {
+        SttConfig {
+            provider: node_webrtc_rust_speech::config::SttVendor::Openai,
+            model: Some(model.into()),
+            model_path: None,
+            language: Some("en".into()),
+            api_key: Some("test-key".into()),
+            endpoint,
+        }
+    }
+
+    fn pcm_above_min_batch() -> Bytes {
+        Bytes::from(vec![0_u8; STT_MIN_BATCH_BYTES + 64])
+    }
+
+    #[test]
+    fn catalog_models_use_http_not_realtime() {
+        assert!(!model_uses_realtime_transcription("whisper-1"));
+        assert!(!model_uses_realtime_transcription("gpt-4o-mini-transcribe"));
+        assert!(!model_uses_realtime_transcription("gpt-4o-transcribe"));
+        assert!(model_uses_realtime_transcription("gpt-transcribe"));
+        assert!(model_uses_realtime_transcription("gpt-live-transcribe"));
+    }
+
+    #[test]
+    fn transcriptions_url_from_api_base() {
+        assert_eq!(
+            transcriptions_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            transcriptions_url("http://127.0.0.1:9/v1"),
+            "http://127.0.0.1:9/v1/audio/transcriptions"
+        );
     }
 
     #[test]
@@ -586,19 +964,14 @@ mod tests {
 
     #[test]
     fn session_update_commits_on_our_vad_not_server_vad() {
-        let body = session_update_body("gpt-4o-mini-transcribe", Some("en"));
+        let body = session_update_body("gpt-transcribe", Some("en"));
         assert_eq!(body["type"], "session.update");
         assert_eq!(body["session"]["type"], "transcription");
         assert!(body["session"]["audio"]["input"]["turn_detection"].is_null());
         assert_eq!(
             body["session"]["audio"]["input"]["transcription"]["model"],
-            "gpt-4o-mini-transcribe"
+            "gpt-transcribe"
         );
-        assert_eq!(
-            body["session"]["audio"]["input"]["transcription"]["language"],
-            "en"
-        );
-        assert_eq!(body["session"]["audio"]["input"]["format"]["rate"], 24_000);
     }
 
     #[test]
@@ -612,14 +985,6 @@ mod tests {
             }))
             .expect("partial");
         assert_eq!(partial, SttTranscript::Partial("one. two.".into()));
-        let grown = assembler
-            .push(&serde_json::json!({
-                "type": "conversation.item.input_audio_transcription.delta",
-                "item_id": "item_1",
-                "delta": "three."
-            }))
-            .expect("grown");
-        assert_eq!(grown, SttTranscript::Partial("one. two. three.".into()));
         let final_text = assembler
             .push(&serde_json::json!({
                 "type": "conversation.item.input_audio_transcription.completed",
@@ -636,6 +1001,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_realtime_completion_is_not_a_final() {
+        let mut assembler = TranscriptAssembler::default();
+        assert!(assembler
+            .push(&serde_json::json!({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item_1",
+                "transcript": ""
+            }))
+            .is_none());
+    }
+
+    #[test]
     fn error_event_is_a_failure_message() {
         let message = realtime_error_message(&serde_json::json!({
             "type": "error",
@@ -644,19 +1021,150 @@ mod tests {
         assert_eq!(message.as_deref(), Some("buffer too small"));
     }
 
+    #[tokio::test]
+    async fn http_poll_does_not_upload_while_buffering() {
+        let mut stt =
+            OpenAiStt::new(&test_stt_config("gpt-4o-mini-transcribe", None)).expect("stt");
+        stt.start().await.expect("start");
+        stt.push_audio(pcm_above_min_batch()).await.expect("push");
+        assert!(stt.poll_transcript().await.expect("poll").is_none());
+        stt.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn http_finalize_below_min_batch_does_not_post() {
+        let mut stt =
+            OpenAiStt::new(&test_stt_config("gpt-4o-mini-transcribe", None)).expect("stt");
+        stt.start().await.expect("start");
+        stt.push_audio(Bytes::from(vec![0_u8; STT_MIN_BATCH_BYTES - 1]))
+            .await
+            .expect("push");
+        stt.finalize_utterance().await.expect("finalize");
+        assert!(stt.poll_transcript().await.expect("poll").is_none());
+    }
+
+    #[cfg(feature = "live")]
+    mod live_http {
+        use super::*;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        async fn spawn_transcription_mock(model: &str) -> (String, Arc<AtomicUsize>) {
+            let posts = Arc::new(AtomicUsize::new(0));
+            let posts_c = posts.clone();
+            let model = model.to_string();
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    posts_c.fetch_add(1, Ordering::SeqCst);
+                    let mut buf = vec![0_u8; 65_536];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    assert!(
+                        req.contains("/v1/audio/transcriptions"),
+                        "unexpected path: {}",
+                        req.lines().next().unwrap_or("")
+                    );
+                    assert!(req.contains(&model), "request should include model field");
+                    let body = r#"{"text":"one. two. three."}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown();
+                }
+            });
+            (format!("http://{addr}/v1"), posts)
+        }
+
+        #[tokio::test]
+        async fn http_finalize_posts_once_and_poll_returns_final() {
+            let (api_base, posts) = spawn_transcription_mock("gpt-4o-mini-transcribe").await;
+            let mut stt =
+                OpenAiStt::new(&test_stt_config("gpt-4o-mini-transcribe", Some(api_base)))
+                    .expect("stt");
+            stt.start().await.expect("start");
+            stt.push_audio(pcm_above_min_batch()).await.expect("push");
+            assert!(stt.poll_transcript().await.expect("poll").is_none());
+            stt.finalize_utterance().await.expect("finalize");
+
+            let mut transcript = None;
+            for _ in 0..50 {
+                if let Some(t) = stt.poll_transcript().await.expect("poll") {
+                    transcript = Some(t);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(
+                transcript,
+                Some(SttTranscript::Final("one. two. three.".into()))
+            );
+            assert_eq!(posts.load(Ordering::SeqCst), 1);
+        }
+
+        #[tokio::test]
+        async fn http_empty_transcription_response_is_not_final() {
+            let posts = Arc::new(AtomicUsize::new(0));
+            let posts_c = posts.clone();
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    posts_c.fetch_add(1, Ordering::SeqCst);
+                    let mut buf = vec![0_u8; 65_536];
+                    let _ = stream.read(&mut buf).await;
+                    let body = r#"{"text":""}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                }
+            });
+            let api_base = format!("http://{addr}/v1");
+            let mut stt =
+                OpenAiStt::new(&test_stt_config("whisper-1", Some(api_base))).expect("stt");
+            stt.start().await.expect("start");
+            stt.push_audio(pcm_above_min_batch()).await.expect("push");
+            stt.finalize_utterance().await.expect("finalize");
+            for _ in 0..50 {
+                if stt.poll_transcript().await.expect("poll").is_none() {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    continue;
+                }
+                panic!("empty vendor text must not surface as Final");
+            }
+            assert_eq!(posts.load(Ordering::SeqCst), 1);
+        }
+    }
+
     #[cfg(not(feature = "live"))]
     #[tokio::test]
-    async fn without_live_feature_start_does_not_open_a_socket() {
-        let mut stt = OpenAiStt::new(&node_webrtc_rust_speech::config::SttConfig {
-            provider: node_webrtc_rust_speech::config::SttVendor::Openai,
-            model: Some("gpt-4o-mini-transcribe".into()),
-            model_path: None,
-            language: Some("en".into()),
-            api_key: Some("test-key".into()),
-            endpoint: None,
-        })
-        .expect("stt");
-        let err = stt.start().await.expect_err("no socket");
+    async fn without_live_feature_http_buffers_but_finalize_needs_live() {
+        let mut stt =
+            OpenAiStt::new(&test_stt_config("gpt-4o-mini-transcribe", None)).expect("stt");
+        stt.start().await.expect("http start does not need live");
+        stt.push_audio(pcm_above_min_batch()).await.expect("push");
+        let err = stt
+            .finalize_utterance()
+            .await
+            .expect_err("transcribe needs live");
+        let SpeechError::Vendor { message, .. } = err else {
+            panic!("expected vendor error");
+        };
+        assert!(message.contains("live"));
+    }
+
+    #[cfg(not(feature = "live"))]
+    #[tokio::test]
+    async fn without_live_feature_realtime_start_errors() {
+        let mut stt = OpenAiStt::new(&test_stt_config("gpt-transcribe", None)).expect("stt");
+        let err = stt.start().await.expect_err("realtime needs live");
         let SpeechError::Vendor { message, .. } = err else {
             panic!("expected vendor error");
         };

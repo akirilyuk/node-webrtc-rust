@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **vendor-openai** — transcribe catalog models (`whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`) with one `POST /v1/audio/transcriptions` on VAD end instead of the Realtime websocket, so `gpt-4o-mini-transcribe` is not sent to an unsupported Realtime session. Realtime remains for `gpt-transcribe` / `gpt-live-transcribe` only. Empty vendor text is not emitted as `user_speech_final`.
+
 ## [0.9.12] - 2026-09-27
 
 ### Fixed

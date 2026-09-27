@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
@@ -19,6 +19,36 @@ use crate::model_paths::resolve_stt_model_dir;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
 
 static GLOBAL_POOL: OnceLock<Arc<SherpaModelPool>> = OnceLock::new();
+
+extern "C" {
+    fn atexit(func: extern "C" fn()) -> i32;
+}
+
+/// Join TTS preload threads before ONNX static destructors run.
+///
+/// `OnceLock` statics are not dropped on process exit. A detached preload
+/// thread still inside `create_offline_tts` then races Sherpa teardown
+/// (SIGSEGV after otherwise-green ignored TTS tests). `atexit` is LIFO, and
+/// this handler is registered after the first engine exists, so it runs
+/// before ONNX's own exit handlers.
+extern "C" fn join_tts_preloads_at_exit() {
+    let Some(pool) = GLOBAL_POOL.get() else {
+        return;
+    };
+    pool.join_tts_preloads();
+}
+
+fn register_tts_preload_exit_join() {
+    static REGISTERED: Once = Once::new();
+    REGISTERED.call_once(|| {
+        // SAFETY: process-global C `atexit`. The handler only joins threads
+        // this pool already spawned.
+        let rc = unsafe { atexit(join_tts_preloads_at_exit) };
+        if rc != 0 {
+            eprintln!("sherpa tts preload exit join registration failed");
+        }
+    });
+}
 
 /// Pool key for shared STT weights (canonical model directory).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -95,35 +125,95 @@ pub struct SharedTtsEngine {
 }
 
 /// Pool of offline TTS engines for one model directory (parallel synthesis up to pool size).
+///
+/// The first engine is loaded before `new` returns so the process can listen.
+/// Further engines load on a background thread; until they finish, acquire
+/// shares the engines that are already up.
+///
+/// The preload [`JoinHandle`] is joined in [`Drop`] before the engines are
+/// dropped. Discarding it detaches the thread; ONNX teardown then races the
+/// still-running `create_offline_tts` and SIGSEGV on process exit.
 pub struct TtsEnginePool {
-    engines: Vec<Arc<SharedTtsEngine>>,
+    engines: Arc<Mutex<Vec<Arc<SharedTtsEngine>>>>,
     next: AtomicUsize,
+    /// `None` when only one slot is configured or the thread failed to spawn.
+    preload: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl TtsEnginePool {
     fn new(config: &TtsConfig, tts_semaphore: Arc<Semaphore>) -> SpeechResult<Self> {
-        let slots = max_concurrent_tts();
-        let mut engines = Vec::with_capacity(slots);
-        for _ in 0..slots {
-            let engine = create_offline_tts(config)?;
-            engines.push(Arc::new(SharedTtsEngine::new(
-                engine,
-                Arc::clone(&tts_semaphore),
-            )));
-        }
+        let slots = max_concurrent_tts().max(1);
+        let first = create_offline_tts(config)?;
+        let engines = Arc::new(Mutex::new(vec![Arc::new(SharedTtsEngine::new(
+            first,
+            Arc::clone(&tts_semaphore),
+        ))]));
+        let preload = if slots > 1 {
+            register_tts_preload_exit_join();
+            let config = config.clone();
+            let pending = Arc::clone(&engines);
+            let semaphore = Arc::clone(&tts_semaphore);
+            std::thread::Builder::new()
+                .name("sherpa-tts-preload".into())
+                .spawn(move || {
+                    for _ in 1..slots {
+                        match create_offline_tts(&config) {
+                            Ok(engine) => {
+                                let Ok(mut guard) = pending.lock() else {
+                                    return;
+                                };
+                                guard.push(Arc::new(SharedTtsEngine::new(
+                                    engine,
+                                    Arc::clone(&semaphore),
+                                )));
+                            }
+                            Err(error) => {
+                                eprintln!("sherpa tts extra engine load failed: {error}");
+                                return;
+                            }
+                        }
+                    }
+                })
+                .ok()
+        } else {
+            None
+        };
         Ok(Self {
             engines,
             next: AtomicUsize::new(0),
+            preload: Mutex::new(preload),
         })
     }
 
+    /// Wait for extra engines before `OfflineTts` drops. Does not lock `engines`
+    /// (the preload thread locks that mutex only to push).
+    fn join_preload(&self) {
+        let mut slot = match self.preload.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(handle) = slot.take() {
+            let _ = handle.join();
+        }
+    }
+
     pub fn acquire(&self) -> Arc<SharedTtsEngine> {
-        let index = self.next.fetch_add(1, Ordering::Relaxed) % self.engines.len();
-        Arc::clone(&self.engines[index])
+        let engines = self.engines.lock().expect("tts engine pool lock");
+        let index = self.next.fetch_add(1, Ordering::Relaxed) % engines.len();
+        Arc::clone(&engines[index])
     }
 
     pub fn len(&self) -> usize {
-        self.engines.len()
+        self.engines
+            .lock()
+            .map(|engines| engines.len())
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for TtsEnginePool {
+    fn drop(&mut self) {
+        self.join_preload();
     }
 }
 
@@ -163,6 +253,16 @@ impl SherpaModelPool {
 
     pub fn tts_semaphore(&self) -> Arc<Semaphore> {
         Arc::clone(&self.tts_semaphore)
+    }
+
+    /// Join every TTS preload thread. Safe to call more than once.
+    fn join_tts_preloads(&self) {
+        let Ok(map) = self.tts.lock() else {
+            return;
+        };
+        for pool in map.values() {
+            pool.join_preload();
+        }
     }
 
     /// Returns the process-wide pool (lazy init).

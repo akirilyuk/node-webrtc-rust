@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest'
+import { readFileSync } from 'node:fs'
 import {
   VOICE_VENDORS,
   allVendorIds,
@@ -167,5 +168,16 @@ describe('crate-aligned allowlist snapshots', () => {
     for (const vendor of VOICE_VENDORS) {
       expect(vendor.home).toMatch(/^https?:\/\//)
     }
+  })
+})
+
+describe('esm json import attributes', () => {
+  test('postbuild patch script rewrites both catalog JSON imports', () => {
+    const src = readFileSync(
+      new URL('../scripts/patch-esm-json-imports.mjs', import.meta.url),
+      'utf8',
+    )
+    expect(src).toContain("from '../catalog/vendors.json' with { type: 'json' }")
+    expect(src).toContain("from '../catalog/azure-tts-voices.json' with { type: 'json' }")
   })
 })

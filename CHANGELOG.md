@@ -8,6 +8,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-09-28
+
+### Fixed
+
+- **speech** — ignore empty leftover `user_speech_final` while VAD is still speaking so a Zipformer / cluster-sherpa leftover Final cannot close the STT stream before the real utterance. In-process Sherpa already swallowed empty text; dedicated speech-service forwards empty `is_final`. (#264)
+
+**Compare:** [`release/0.9.14…release/0.9.15`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.14...release/0.9.15)
+
 ## [0.9.14] - 2026-09-28
 
 ### Added

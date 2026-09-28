@@ -36,7 +36,9 @@ fn skip_live() -> bool {
 }
 
 fn stt_config(model: &str) -> SttConfig {
-    // Diarize model does not support prompts; omit language if the API rejects `language=en`.
+    // Diarize does not support prompts (speech-to-text guide). Omit `language` so the
+    // live connect matches a documented diarize request; VoiceAgent still forwards
+    // `SttConfig.language` when the dashboard sets one.
     let language = if model == "gpt-4o-transcribe-diarize" {
         None
     } else {

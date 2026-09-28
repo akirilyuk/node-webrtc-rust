@@ -66,7 +66,13 @@ pub fn stt_default_transport(model: &str) -> Result<SttDefaultTransport, String>
 }
 
 pub fn stt_file_sse_supported(model: &str) -> bool {
-    !matches!(model, "whisper-1")
+    matches!(
+        model,
+        "gpt-4o-mini-transcribe"
+            | "gpt-4o-transcribe"
+            | "gpt-4o-transcribe-diarize"
+            | "gpt-transcribe"
+    )
 }
 
 pub fn stt_uses_realtime_ws(default: SttDefaultTransport) -> bool {
@@ -163,7 +169,7 @@ mod tests {
             ("gpt-4o-transcribe", SttDefaultTransport::FileSse, true),
             ("gpt-4o-transcribe-diarize", SttDefaultTransport::FileSse, true),
             ("gpt-transcribe", SttDefaultTransport::FileSse, true),
-            ("gpt-live-transcribe", SttDefaultTransport::RealtimeLive, true),
+            ("gpt-live-transcribe", SttDefaultTransport::RealtimeLive, false),
         ];
         assert_eq!(
             DOCUMENTED_STT_MODELS.len(),

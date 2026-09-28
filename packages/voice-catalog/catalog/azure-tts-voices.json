@@ -1,12 +1,8 @@
-//! Official Azure TTS ShortNames from Microsoft language-support (TTS tab).
-//!
-//! Source snapshot: 2026-09-28 —
-//! <https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts>
-//! Live regional catalog: GET `…/cognitiveservices/voices/list` — see REST TTS docs.
-//!
-//! Voice count: 761
-
-pub const DOCUMENTED_TTS_VOICES: &[&str] = &[
+{
+  "snapshotDate": "2026-09-28",
+  "source": "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts",
+  "voicesListDoc": "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech#get-a-list-of-voices",
+  "voices": [
     "af-ZA-AdriNeural",
     "af-ZA-WillemNeural",
     "am-ET-MekdesNeural",
@@ -767,5 +763,6 @@ pub const DOCUMENTED_TTS_VOICES: &[&str] = &[
     "zh-TW-YunJheNeural",
     "zh-TW-HsiaoYuNeural",
     "zu-ZA-ThandoNeural",
-    "zu-ZA-ThembaNeural",
-];
+    "zu-ZA-ThembaNeural"
+  ]
+}

@@ -21,6 +21,7 @@ async-trait = "0.1"
 bytes = { workspace = true }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 node-webrtc-rust-speech = { path = "../speech" }
+node-webrtc-rust-voice-catalog = { path = "../voice-catalog" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

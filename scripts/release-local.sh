@@ -251,7 +251,7 @@ for dir in "$BINDINGS"/npm/*/; do
   fi
 done
 
-echo "==> Publishing packages (order: platform bindings → bindings → signaling → sdk → helpers)"
+echo "==> Publishing packages (order: voice-catalog → platform bindings → bindings → signaling → sdk → helpers)"
 
 if [[ "$DRY_RUN" == true ]]; then
   echo "  [DRY RUN MODE]"
@@ -271,6 +271,9 @@ publish_one() {
   fi
   bash "$ROOT/scripts/ci/publish-npm-if-needed.sh" "$dir" "$pkg" "$VERSION" "${extra[@]}"
 }
+
+# 0. Voice catalog (pure TS — no native deps)
+publish_one "$ROOT/packages/voice-catalog" "@node-webrtc-rust/voice-catalog" --ignore-scripts
 
 # 1. Platform-specific binding packages (only the ones that have a .node file)
 for dir in "$BINDINGS"/npm/*/; do

@@ -18,6 +18,7 @@ NODE_MAJOR="${TS_DIST_NODE_MAJOR:-20}"
   # Package manifests + lock (compiler identity lives in lockfile)
   printf '%s\n' package.json package-lock.json
   printf '%s\n' \
+    packages/voice-catalog/package.json \
     packages/sdk/package.json \
     packages/signaling/package.json \
     packages/helpers/package.json
@@ -31,10 +32,10 @@ NODE_MAJOR="${TS_DIST_NODE_MAJOR:-20}"
     scripts/ci/tsconfig.build-sdk.esm.json
 
   # Sources
-  find packages/sdk/src packages/signaling/src packages/helpers/src -type f 2>/dev/null || true
+  find packages/voice-catalog/src packages/voice-catalog/catalog packages/sdk/src packages/signaling/src packages/helpers/src -type f 2>/dev/null || true
 
   # Package + base tsconfigs
-  find packages/sdk packages/signaling packages/helpers -maxdepth 1 -name 'tsconfig*.json' -type f 2>/dev/null || true
+  find packages/voice-catalog packages/sdk packages/signaling packages/helpers -maxdepth 1 -name 'tsconfig*.json' -type f 2>/dev/null || true
   [[ -f tsconfig.base.json ]] && printf '%s\n' tsconfig.base.json
 } | LC_ALL=C sort -u | while IFS= read -r path; do
   if [[ "$path" == node-major=* || "$path" == build-contract=* ]]; then

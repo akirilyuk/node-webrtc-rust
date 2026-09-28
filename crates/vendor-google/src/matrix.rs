@@ -5,10 +5,15 @@
 //! TTS streaming: <https://docs.cloud.google.com/text-to-speech/docs/create-audio-text-streaming>
 //! TTS voices: <https://cloud.google.com/text-to-speech/docs/voices>
 
+use std::sync::LazyLock;
+
 use node_webrtc_rust_speech::config::SttConfig;
+use node_webrtc_rust_voice_catalog as voice_catalog;
 
 /// Documented Speech-to-Text model identifiers (V2 table + V1 `latest_long`).
-pub const DOCUMENTED_STT_MODELS: &[&str] = &["chirp_3", "chirp_2", "telephony", "latest_long"];
+
+pub static DOCUMENTED_STT_MODELS: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::stt_models("google").expect("google in voice catalog"));
 
 /// Doc URL when V2 streaming requires project/location/recognizer.
 pub const STT_V2_STREAMING_DOC: &str =
@@ -52,7 +57,12 @@ pub fn stt_uses_v2_streaming(transport: SttDefaultTransport) -> bool {
 /// Resolve V2 recognizer path from `SttConfig.endpoint` (`projects/…/locations/…/recognizers/…`)
 /// or `GOOGLE_CLOUD_PROJECT`, `GOOGLE_SPEECH_LOCATION`, `GOOGLE_SPEECH_RECOGNIZER`.
 pub fn parse_v2_locator(config: &SttConfig) -> Option<GoogleSttV2Locator> {
-    if let Some(endpoint) = config.endpoint.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(endpoint) = config
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if let Some(loc) = parse_recognizer_resource(endpoint) {
             return Some(loc);
         }
@@ -128,7 +138,9 @@ mod tests {
             stt_default_transport("chirp_3").unwrap(),
             SttDefaultTransport::V2StreamingRecognize
         );
-        assert!(stt_uses_v2_streaming(SttDefaultTransport::V2StreamingRecognize));
+        assert!(stt_uses_v2_streaming(
+            SttDefaultTransport::V2StreamingRecognize
+        ));
     }
 
     #[test]
@@ -141,16 +153,16 @@ mod tests {
 
     #[test]
     fn chirp3_hd_voice_streams() {
-        assert!(voice_supports_streaming_synthesize("en-US-Chirp3-HD-Charon"));
+        assert!(voice_supports_streaming_synthesize(
+            "en-US-Chirp3-HD-Charon"
+        ));
         assert!(!voice_supports_streaming_synthesize("en-US-Neural2-A"));
     }
 
     #[test]
     fn parse_recognizer_endpoint() {
-        let loc = parse_recognizer_resource(
-            "projects/my-proj/locations/us/recognizers/my-rec",
-        )
-        .expect("parse");
+        let loc = parse_recognizer_resource("projects/my-proj/locations/us/recognizers/my-rec")
+            .expect("parse");
         assert_eq!(loc.project, "my-proj");
         assert_eq!(loc.location, "us");
         assert_eq!(loc.recognizer, "my-rec");
@@ -169,8 +181,11 @@ mod tests {
 
     #[test]
     fn every_documented_stt_model_has_row() {
-        for model in DOCUMENTED_STT_MODELS {
-            assert!(stt_default_transport(model).is_ok(), "missing row for `{model}`");
+        for model in *DOCUMENTED_STT_MODELS {
+            assert!(
+                stt_default_transport(model).is_ok(),
+                "missing row for `{model}`"
+            );
         }
     }
 

@@ -2,7 +2,6 @@ mod factory;
 mod matrix;
 mod stt;
 mod tts;
-mod voices;
 
 pub use factory::AzureFactory;
 pub use matrix::{

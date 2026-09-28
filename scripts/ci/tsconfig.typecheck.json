@@ -11,10 +11,13 @@
       "@node-webrtc-rust/sdk/*": ["packages/sdk/src/*"],
       "@node-webrtc-rust/signaling": ["packages/signaling/src/index.ts"],
       "@node-webrtc-rust/helpers": ["packages/helpers/src/index.ts"],
-      "@node-webrtc-rust/helpers/*": ["packages/helpers/src/*"]
+      "@node-webrtc-rust/helpers/*": ["packages/helpers/src/*"],
+      "@node-webrtc-rust/voice-catalog": ["packages/voice-catalog/src/index.ts"],
+      "@node-webrtc-rust/voice-catalog/*": ["packages/voice-catalog/src/*"]
     }
   },
   "include": [
+    "../../packages/voice-catalog/src/**/*.ts",
     "../../packages/sdk/src/**/*.ts",
     "../../packages/signaling/src/**/*.ts",
     "../../packages/helpers/src/**/*.ts"

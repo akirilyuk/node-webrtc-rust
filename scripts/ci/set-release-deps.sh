@@ -42,7 +42,7 @@ for opt in \
   set_json_field "$BINDINGS/package.json" "optionalDependencies.@node-webrtc-rust/${opt}" "$VERSION"
 done
 
-for pkg in sdk signaling helpers; do
+for pkg in sdk signaling helpers voice-catalog; do
   set_json_field "$ROOT/packages/$pkg/package.json" "version" "$VERSION"
 done
 

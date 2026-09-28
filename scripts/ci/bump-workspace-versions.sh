@@ -68,6 +68,7 @@ set_json_field "$BINDINGS/package.json" "version" "$VERSION"
 set_json_field "$ROOT/packages/sdk/package.json" "version" "$VERSION"
 set_json_field "$ROOT/packages/signaling/package.json" "version" "$VERSION"
 set_json_field "$ROOT/packages/helpers/package.json" "version" "$VERSION"
+set_json_field "$ROOT/packages/voice-catalog/package.json" "version" "$VERSION"
 
 set_json_field "$ROOT/packages/sdk/package.json" "dependencies.@node-webrtc-rust/bindings" "$VERSION"
 set_json_field "$ROOT/packages/sdk/package.json" "dependencies.@node-webrtc-rust/signaling" "$VERSION"
@@ -96,7 +97,7 @@ for dir in "$BINDINGS"/npm/*/; do
   fi
 done
 
-for pkg in sdk signaling helpers; do
+for pkg in sdk signaling helpers voice-catalog; do
   bump_node_webrtc_deps "$ROOT/packages/$pkg/package.json"
 done
 

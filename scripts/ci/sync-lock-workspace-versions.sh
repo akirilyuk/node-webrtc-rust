@@ -39,6 +39,7 @@ function syncLockEntry(rel) {
 
 for (const rel of [
   'packages/bindings',
+  'packages/voice-catalog',
   'packages/helpers',
   'packages/sdk',
   'packages/signaling',

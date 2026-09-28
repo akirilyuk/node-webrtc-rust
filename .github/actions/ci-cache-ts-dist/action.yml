@@ -1,5 +1,5 @@
 name: Cache TypeScript dist
-description: Restore/save sdk, signaling, and helpers dist/ keyed by full TS build contract
+description: Restore/save voice-catalog, sdk, signaling, and helpers dist/ keyed by full TS build contract
 
 inputs:
   node_major:
@@ -38,6 +38,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: |
+          packages/voice-catalog/dist
           packages/sdk/dist
           packages/signaling/dist
           packages/helpers/dist

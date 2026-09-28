@@ -21,6 +21,7 @@ members = [
     "crates/vendor-mock",
     "crates/vendor-sherpa-onnx",
     "crates/vendor-cluster-speech",
+    "crates/voice-catalog",
     "packages/bindings",
 ]
 

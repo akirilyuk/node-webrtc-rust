@@ -10,6 +10,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+echo "==> build voice-catalog"
+npm run build --workspace=@node-webrtc-rust/voice-catalog
+
 echo "==> clean sdk dist"
 rm -rf packages/sdk/dist
 

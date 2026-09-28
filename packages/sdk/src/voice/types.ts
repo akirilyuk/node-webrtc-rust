@@ -105,6 +105,7 @@ export interface EventsConfig {
 export type SttVendor =
   | 'openai'
   | 'deepgram'
+  | 'elevenlabs'
   | 'google'
   | 'assemblyai'
   | 'local-sherpa'
@@ -114,6 +115,7 @@ export type SttVendor =
 
 export type TtsVendor =
   | 'openai'
+  | 'deepgram'
   | 'elevenlabs'
   | 'google'
   | 'cartesia'

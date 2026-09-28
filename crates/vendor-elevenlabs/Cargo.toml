@@ -4,13 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ElevenLabs TTS vendor adapter"
+description = "ElevenLabs STT/TTS vendor adapter"
 
 [features]
 default = []
 live = [
     "dep:reqwest",
-    "dep:serde_json",
     "dep:base64",
     "dep:futures-util",
     "dep:tokio-tungstenite",
@@ -24,7 +23,7 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 node-webrtc-rust-speech = { path = "../speech" }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { workspace = true }
-serde_json = { workspace = true, optional = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }

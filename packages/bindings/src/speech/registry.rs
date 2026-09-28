@@ -26,7 +26,9 @@ pub fn default_vendor_registry() -> Arc<VendorRegistry> {
     registry.register_tts(TtsVendor::Openai, arc_factory(OpenAiFactory));
 
     registry.register_stt(SttVendor::Deepgram, arc_factory(DeepgramFactory));
+    registry.register_tts(TtsVendor::Deepgram, arc_factory(DeepgramFactory));
 
+    registry.register_stt(SttVendor::Elevenlabs, arc_factory(ElevenLabsFactory));
     registry.register_tts(TtsVendor::Elevenlabs, arc_factory(ElevenLabsFactory));
 
     registry.register_stt(SttVendor::Google, arc_factory(GoogleFactory));

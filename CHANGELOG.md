@@ -11,9 +11,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **vendor-google** — Hardcoded STT/TTS matrices from Google Cloud docs: V2 `StreamingRecognize` with `interim_results` for `chirp_3` / `chirp_2` / `telephony` (requires V2 recognizer path); V1 REST `speech:recognize` for `latest_long`; Chirp 3 HD `StreamingSynthesize` progressive TTS; Neural2 voices stay `text:synthesize`.
-- **vendor-elevenlabs** — TTS matrix: HTTP `/stream` progressive PCM and WebSocket `stream-input` (never for `eleven_v3`); full-body POST fallback.
+- **vendor-deepgram** — Listen model matrix (`nova-2`, `nova-3`) and documented live listen query params (`interim_results`, …). TTS Aura `/v1/speak` REST + WS and Flux `/v2/speak` REST + WS (`Speak` / `Flush`; server `SpeechStarted`, `SpeechMetadata`); `aura-*` vs `flux-*` endpoint routing.
+- **vendor-elevenlabs** — TTS matrix: HTTP `/stream` progressive PCM and WebSocket `stream-input` (never for `eleven_v3`); full-body POST fallback. STT Scribe v2 Realtime WebSocket (`partial_transcript`, `committed_transcript`, manual `input_audio_chunk` commit).
 - **vendor-cartesia** — TTS matrix with documented WebSocket models (`sonic-3`, …); WS `chunk` / `done` progressive path with `/tts/bytes` fallback; default model `sonic-3`.
-- **vendor-deepgram** — Listen model matrix (`nova-2`, `nova-3`) and documented live listen query params (`interim_results`, …).
 - **vendor-assemblyai** — Streaming v3 WebSocket with documented `speech_model` query; `Turn` / `Terminate` messages (STT-only).
 
 ### Fixed

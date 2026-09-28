@@ -185,6 +185,8 @@ pub enum JsSttVendor {
     Openai,
     #[napi(value = "deepgram")]
     Deepgram,
+    #[napi(value = "elevenlabs")]
+    Elevenlabs,
     #[napi(value = "google")]
     Google,
     #[napi(value = "assemblyai")]
@@ -203,6 +205,7 @@ impl From<JsSttVendor> for SttVendor {
         match value {
             JsSttVendor::Openai => Self::Openai,
             JsSttVendor::Deepgram => Self::Deepgram,
+            JsSttVendor::Elevenlabs => Self::Elevenlabs,
             JsSttVendor::Google => Self::Google,
             JsSttVendor::Assemblyai => Self::Assemblyai,
             JsSttVendor::LocalSherpa => Self::LocalSherpa,
@@ -217,6 +220,8 @@ impl From<JsSttVendor> for SttVendor {
 pub enum JsTtsVendor {
     #[napi(value = "openai")]
     Openai,
+    #[napi(value = "deepgram")]
+    Deepgram,
     #[napi(value = "elevenlabs")]
     Elevenlabs,
     #[napi(value = "google")]
@@ -236,6 +241,7 @@ impl From<JsTtsVendor> for TtsVendor {
     fn from(value: JsTtsVendor) -> Self {
         match value {
             JsTtsVendor::Openai => Self::Openai,
+            JsTtsVendor::Deepgram => Self::Deepgram,
             JsTtsVendor::Elevenlabs => Self::Elevenlabs,
             JsTtsVendor::Google => Self::Google,
             JsTtsVendor::Cartesia => Self::Cartesia,

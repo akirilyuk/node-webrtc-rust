@@ -336,6 +336,7 @@ impl Default for VadConfig {
 pub enum SttVendor {
     Openai,
     Deepgram,
+    Elevenlabs,
     Google,
     Assemblyai,
     #[serde(rename = "local-sherpa")]
@@ -352,6 +353,7 @@ impl SttVendor {
         match self {
             Self::Openai => "openai",
             Self::Deepgram => "deepgram",
+            Self::Elevenlabs => "elevenlabs",
             Self::Google => "google",
             Self::Assemblyai => "assemblyai",
             Self::LocalSherpa => "local-sherpa",
@@ -366,6 +368,7 @@ impl SttVendor {
 #[serde(rename_all = "lowercase")]
 pub enum TtsVendor {
     Openai,
+    Deepgram,
     Elevenlabs,
     Google,
     Cartesia,
@@ -382,6 +385,7 @@ impl TtsVendor {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Openai => "openai",
+            Self::Deepgram => "deepgram",
             Self::Elevenlabs => "elevenlabs",
             Self::Google => "google",
             Self::Cartesia => "cartesia",

@@ -10,6 +10,9 @@ export type LiveVendorId =
   | 'cartesia'
   | 'assemblyai'
   | 'google'
+  | 'groq'
+  | 'azure'
+  | 'aws'
 
 export interface LiveVendorPresetMeta {
   id: LiveVendorId
@@ -27,14 +30,14 @@ export const LIVE_VENDOR_METAS: LiveVendorPresetMeta[] = [
   },
   {
     id: 'deepgram',
-    requiredEnv: ['DEEPGRAM_API_KEY', 'OPENAI_API_KEY'],
+    requiredEnv: ['DEEPGRAM_API_KEY'],
     sttProvider: 'deepgram',
-    ttsProvider: 'openai',
+    ttsProvider: 'deepgram',
   },
   {
     id: 'elevenlabs',
-    requiredEnv: ['ELEVENLABS_API_KEY', 'OPENAI_API_KEY'],
-    sttProvider: 'openai',
+    requiredEnv: ['ELEVENLABS_API_KEY'],
+    sttProvider: 'elevenlabs',
     ttsProvider: 'elevenlabs',
   },
   {
@@ -54,6 +57,24 @@ export const LIVE_VENDOR_METAS: LiveVendorPresetMeta[] = [
     requiredEnv: ['GOOGLE_APPLICATION_CREDENTIALS'],
     sttProvider: 'google',
     ttsProvider: 'google',
+  },
+  {
+    id: 'groq',
+    requiredEnv: ['GROQ_API_KEY'],
+    sttProvider: 'groq',
+    ttsProvider: 'groq',
+  },
+  {
+    id: 'azure',
+    requiredEnv: ['AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION', 'AZURE_SPEECH_RESOURCE'],
+    sttProvider: 'azure',
+    ttsProvider: 'azure',
+  },
+  {
+    id: 'aws',
+    requiredEnv: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'],
+    sttProvider: 'aws',
+    ttsProvider: 'aws',
   },
 ]
 
@@ -80,17 +101,17 @@ export function voiceConfigForVendor(id: LiveVendorId) {
     case 'deepgram':
       return {
         stt: { provider: 'deepgram' as const, model: 'nova-2', language: 'en' },
-        tts: { provider: 'openai' as const, model: 'tts-1', voice: 'alloy' },
+        tts: { provider: 'deepgram' as const, model: 'aura-asteria-en', voice: 'aura-asteria-en' },
       }
     case 'elevenlabs':
       return {
-        stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
+        stt: { provider: 'elevenlabs' as const, model: 'scribe_v2_realtime', language: 'en' },
         tts: { provider: 'elevenlabs' as const, model: 'eleven_multilingual_v2', voice: 'demo' },
       }
     case 'cartesia':
       return {
         stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
-        tts: { provider: 'cartesia' as const, model: 'sonic-english', voice: 'default' },
+        tts: { provider: 'cartesia' as const, model: 'sonic-3', voice: 'default' },
       }
     case 'assemblyai':
       return {
@@ -105,6 +126,36 @@ export function voiceConfigForVendor(id: LiveVendorId) {
       return {
         stt: { provider: 'google' as const, model: 'latest_long', language: 'en-US' },
         tts: { provider: 'google' as const, model: 'en-US-Neural2-A', voice: 'en-US-Neural2-A' },
+      }
+    case 'groq':
+      return {
+        stt: { provider: 'groq' as const, model: 'whisper-large-v3-turbo', language: 'en' },
+        tts: {
+          provider: 'groq' as const,
+          model: 'canopylabs/orpheus-v1-english',
+          voice: 'troy',
+        },
+      }
+    case 'azure':
+      return {
+        stt: {
+          provider: 'azure' as const,
+          model: 'conversation',
+          language: 'en-US',
+          // Construct-only: native AzureStt requires a locator (no live call).
+          endpoint: 'example.cognitiveservices.azure.com',
+        },
+        tts: {
+          provider: 'azure' as const,
+          model: 'en-US-JennyNeural',
+          voice: 'en-US-JennyNeural',
+          endpoint: 'eastus.tts.speech.microsoft.com',
+        },
+      }
+    case 'aws':
+      return {
+        stt: { provider: 'aws' as const, model: 'en-US', language: 'en-US' },
+        tts: { provider: 'aws' as const, model: 'Joanna', voice: 'Joanna' },
       }
   }
 }

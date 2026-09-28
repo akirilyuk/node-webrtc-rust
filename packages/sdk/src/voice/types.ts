@@ -105,8 +105,12 @@ export interface EventsConfig {
 export type SttVendor =
   | 'openai'
   | 'deepgram'
+  | 'elevenlabs'
   | 'google'
   | 'assemblyai'
+  | 'groq'
+  | 'azure'
+  | 'aws'
   | 'local-sherpa'
   /** @internal cloud runner only */
   | 'cluster-sherpa'
@@ -114,9 +118,13 @@ export type SttVendor =
 
 export type TtsVendor =
   | 'openai'
+  | 'deepgram'
   | 'elevenlabs'
   | 'google'
   | 'cartesia'
+  | 'groq'
+  | 'azure'
+  | 'aws'
   | 'local-sherpa'
   /** @internal cloud runner only */
   | 'cluster-sherpa'

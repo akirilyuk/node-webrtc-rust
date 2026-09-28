@@ -185,10 +185,18 @@ pub enum JsSttVendor {
     Openai,
     #[napi(value = "deepgram")]
     Deepgram,
+    #[napi(value = "elevenlabs")]
+    Elevenlabs,
     #[napi(value = "google")]
     Google,
     #[napi(value = "assemblyai")]
     Assemblyai,
+    #[napi(value = "groq")]
+    Groq,
+    #[napi(value = "azure")]
+    Azure,
+    #[napi(value = "aws")]
+    Aws,
     #[napi(value = "local-sherpa")]
     LocalSherpa,
     /// @internal cloud runner transport. Not a public vendor.
@@ -203,8 +211,12 @@ impl From<JsSttVendor> for SttVendor {
         match value {
             JsSttVendor::Openai => Self::Openai,
             JsSttVendor::Deepgram => Self::Deepgram,
+            JsSttVendor::Elevenlabs => Self::Elevenlabs,
             JsSttVendor::Google => Self::Google,
             JsSttVendor::Assemblyai => Self::Assemblyai,
+            JsSttVendor::Groq => Self::Groq,
+            JsSttVendor::Azure => Self::Azure,
+            JsSttVendor::Aws => Self::Aws,
             JsSttVendor::LocalSherpa => Self::LocalSherpa,
             JsSttVendor::ClusterSherpa => Self::ClusterSherpa,
             JsSttVendor::Mock => Self::Mock,
@@ -217,12 +229,20 @@ impl From<JsSttVendor> for SttVendor {
 pub enum JsTtsVendor {
     #[napi(value = "openai")]
     Openai,
+    #[napi(value = "deepgram")]
+    Deepgram,
     #[napi(value = "elevenlabs")]
     Elevenlabs,
     #[napi(value = "google")]
     Google,
     #[napi(value = "cartesia")]
     Cartesia,
+    #[napi(value = "groq")]
+    Groq,
+    #[napi(value = "azure")]
+    Azure,
+    #[napi(value = "aws")]
+    Aws,
     #[napi(value = "local-sherpa")]
     LocalSherpa,
     /// @internal cloud runner transport. Not a public vendor.
@@ -236,9 +256,13 @@ impl From<JsTtsVendor> for TtsVendor {
     fn from(value: JsTtsVendor) -> Self {
         match value {
             JsTtsVendor::Openai => Self::Openai,
+            JsTtsVendor::Deepgram => Self::Deepgram,
             JsTtsVendor::Elevenlabs => Self::Elevenlabs,
             JsTtsVendor::Google => Self::Google,
             JsTtsVendor::Cartesia => Self::Cartesia,
+            JsTtsVendor::Groq => Self::Groq,
+            JsTtsVendor::Azure => Self::Azure,
+            JsTtsVendor::Aws => Self::Aws,
             JsTtsVendor::LocalSherpa => Self::LocalSherpa,
             JsTtsVendor::ClusterSherpa => Self::ClusterSherpa,
             JsTtsVendor::Mock => Self::Mock,

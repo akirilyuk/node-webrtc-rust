@@ -18,10 +18,20 @@ describe('VoiceAgent vendor config surface', () => {
     },
   )
 
-  test('lists six supported live vendor presets', () => {
-    expect(LIVE_VENDOR_METAS).toHaveLength(6)
+  test('lists nine supported live vendor presets', () => {
+    expect(LIVE_VENDOR_METAS).toHaveLength(9)
     expect(LIVE_VENDOR_METAS.map((m) => m.id).sort()).toEqual(
-      ['assemblyai', 'cartesia', 'deepgram', 'elevenlabs', 'google', 'openai'].sort(),
+      [
+        'assemblyai',
+        'aws',
+        'azure',
+        'cartesia',
+        'deepgram',
+        'elevenlabs',
+        'google',
+        'groq',
+        'openai',
+      ].sort(),
     )
   })
 })

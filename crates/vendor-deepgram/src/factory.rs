@@ -1,8 +1,9 @@
 use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
-use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::error::SpeechResult;
 use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider, VendorFactory};
 
 use crate::stt::DeepgramStt;
+use crate::tts::DeepgramTts;
 
 pub struct DeepgramFactory;
 
@@ -11,7 +12,7 @@ impl VendorFactory for DeepgramFactory {
         Ok(Box::new(DeepgramStt::new(config)?))
     }
 
-    fn create_tts(&self, _config: &TtsConfig) -> SpeechResult<Box<dyn TtsProvider>> {
-        Err(SpeechError::Config("Deepgram does not provide TTS".into()))
+    fn create_tts(&self, config: &TtsConfig) -> SpeechResult<Box<dyn TtsProvider>> {
+        Ok(Box::new(DeepgramTts::new(config)?))
     }
 }

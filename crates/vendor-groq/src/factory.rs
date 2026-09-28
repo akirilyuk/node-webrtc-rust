@@ -1,0 +1,28 @@
+use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider, VendorFactory};
+
+use crate::stt::GroqStt;
+use crate::tts::GroqTts;
+
+pub struct GroqFactory;
+
+impl VendorFactory for GroqFactory {
+    fn create_stt(&self, config: &SttConfig) -> SpeechResult<Box<dyn SttProvider>> {
+        Ok(Box::new(GroqStt::new(config)?))
+    }
+
+    fn create_tts(&self, config: &TtsConfig) -> SpeechResult<Box<dyn TtsProvider>> {
+        Ok(Box::new(GroqTts::new(config)?))
+    }
+}
+
+pub(crate) fn api_key_from(config_key: &Option<String>, env: &str) -> SpeechResult<String> {
+    if let Some(key) = config_key {
+        if !key.is_empty() {
+            return Ok(key.clone());
+        }
+    }
+    std::env::var(env)
+        .map_err(|_| SpeechError::Config(format!("missing API key: set config.apiKey or {env}")))
+}

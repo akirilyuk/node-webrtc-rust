@@ -4,10 +4,12 @@ use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{
     duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
 };
-use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProvider};
+use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
+
+use crate::matrix::voice_supports_streaming_synthesize;
 
 #[cfg(feature = "live")]
-use crate::auth::{google_access_token, google_api_key};
+use crate::tts_live;
 
 pub struct GoogleTts {
     voice: String,
@@ -40,17 +42,35 @@ impl TtsProvider for GoogleTts {
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+        self.synthesize_progressive(text, None).await
+    }
+
+    async fn synthesize_progressive(
+        &self,
+        text: &str,
+        sink: Option<TtsProgressiveSink>,
+    ) -> SpeechResult<Vec<TtsAudioChunk>> {
         #[cfg(feature = "live")]
         {
-            let mono = synthesize_linear16(text, &self.voice, &self.language).await?;
-            let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
-            let pcm = mono_s16le_to_stereo(&mono);
-            return Ok(vec![TtsAudioChunk { pcm, duration_ms }]);
+            if voice_supports_streaming_synthesize(&self.voice) {
+                return tts_live::streaming_synthesize(&self.voice, &self.language, text, sink)
+                    .await;
+            }
+            let mono = tts_live::synthesize_linear16(text, &self.voice, &self.language).await?;
+            let chunks = vec![pcm_chunk_from_mono(&mono)];
+            if let Some(s) = sink {
+                for chunk in &chunks {
+                    if !s.send(chunk.clone()) {
+                        break;
+                    }
+                }
+            }
+            return Ok(chunks);
         }
 
         #[cfg(not(feature = "live"))]
         {
-            let _ = (text, &self.voice);
+            let _ = (text, sink, &self.voice);
             Err(SpeechError::Vendor {
                 vendor: "google".into(),
                 message: "live Google TTS requires `--features live` on vendor-google".into(),
@@ -59,77 +79,10 @@ impl TtsProvider for GoogleTts {
     }
 }
 
-#[cfg(feature = "live")]
-async fn synthesize_linear16(text: &str, voice: &str, language: &str) -> SpeechResult<Vec<u8>> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    use serde_json::json;
-
-    let client = reqwest::Client::new();
-    let body = json!({
-        "input": { "text": text },
-        "voice": {
-            "languageCode": language,
-            "name": voice
-        },
-        "audioConfig": {
-            "audioEncoding": "LINEAR16",
-            "sampleRateHertz": WEBRTC_PCM_SAMPLE_RATE,
-            "speakingRate": 1.0
-        }
-    });
-
-    let request = if let Some(api_key) = google_api_key() {
-        client.post(format!(
-            "https://texttospeech.googleapis.com/v1/text:synthesize?key={api_key}"
-        ))
-    } else {
-        let token = google_access_token()
-            .await?
-            .ok_or_else(|| SpeechError::Vendor {
-                vendor: "google".into(),
-                message: "failed to obtain Google access token".into(),
-            })?;
-        client
-            .post("https://texttospeech.googleapis.com/v1/text:synthesize")
-            .bearer_auth(token)
-    };
-
-    let response = request
-        .json(&body)
-        .send()
-        .await
-        .map_err(|err| SpeechError::Vendor {
-            vendor: "google".into(),
-            message: err.to_string(),
-        })?;
-
-    let status = response.status();
-    let payload: serde_json::Value = response.json().await.map_err(|err| SpeechError::Vendor {
-        vendor: "google".into(),
-        message: err.to_string(),
-    })?;
-
-    if !status.is_success() {
-        return Err(SpeechError::Vendor {
-            vendor: "google".into(),
-            message: payload.to_string(),
-        });
-    }
-
-    let audio_b64 = payload
-        .get("audioContent")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| SpeechError::Vendor {
-            vendor: "google".into(),
-            message: "missing audioContent in TTS response".into(),
-        })?;
-
-    STANDARD
-        .decode(audio_b64)
-        .map_err(|err| SpeechError::Vendor {
-            vendor: "google".into(),
-            message: err.to_string(),
-        })
+fn pcm_chunk_from_mono(mono: &[u8]) -> TtsAudioChunk {
+    let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
+    let pcm = mono_s16le_to_stereo(mono);
+    TtsAudioChunk { pcm, duration_ms }
 }
 
 #[cfg(test)]
@@ -150,5 +103,10 @@ mod tests {
         .unwrap();
         assert_eq!(tts.language, "en-US");
         assert_eq!(tts.voice, "en-US-Neural2-A");
+    }
+
+    #[test]
+    fn neural2_not_streaming_voice() {
+        assert!(!voice_supports_streaming_synthesize("en-US-Neural2-A"));
     }
 }

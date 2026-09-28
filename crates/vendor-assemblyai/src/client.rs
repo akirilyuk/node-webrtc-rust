@@ -1,6 +1,7 @@
-//! AssemblyAI realtime WebSocket client.
+//! AssemblyAI streaming v3 WebSocket client.
+//!
+//! <https://www.assemblyai.com/docs/speech-to-text/streaming>
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
@@ -12,8 +13,11 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, Message},
 };
 
+use crate::matrix::{parse_turn_message, streaming_websocket_url};
+
 pub struct AssemblyAiClient {
     api_key: Option<String>,
+    speech_model: String,
     inner: Arc<Mutex<AssemblyAiInner>>,
 }
 
@@ -24,15 +28,17 @@ struct AssemblyAiInner {
 }
 
 impl AssemblyAiClient {
-    pub fn new(api_key: Option<String>) -> Self {
-        Self {
+    pub fn new(api_key: Option<String>, speech_model: String) -> SpeechResult<Self> {
+        crate::matrix::validate_speech_model(&speech_model).map_err(SpeechError::Config)?;
+        Ok(Self {
             api_key,
+            speech_model,
             inner: Arc::new(Mutex::new(AssemblyAiInner {
                 audio_tx: None,
                 transcript_rx: None,
                 ws_task: None,
             })),
-        }
+        })
     }
 
     fn api_key(&self) -> SpeechResult<String> {
@@ -46,7 +52,7 @@ impl AssemblyAiClient {
 
     pub async fn connect(&self) -> SpeechResult<()> {
         let api_key = self.api_key()?;
-        let url = "wss://api.assemblyai.com/v2/realtime/ws?sample_rate=16000";
+        let url = streaming_websocket_url(&self.speech_model).map_err(SpeechError::Config)?;
         let mut request = url
             .into_client_request()
             .map_err(|err| SpeechError::Vendor {
@@ -76,27 +82,20 @@ impl AssemblyAiClient {
                 tokio::select! {
                     audio = audio_rx.recv() => {
                         let Some(chunk) = audio else { break };
-                        let payload = serde_json::json!({
-                            "audio_data": STANDARD.encode(chunk.as_ref())
-                        });
-                        if ws_tx
-                            .send(Message::Text(payload.to_string().into()))
-                            .await
-                            .is_err()
-                        {
+                        if ws_tx.send(Message::Binary(chunk)).await.is_err() {
                             break;
                         }
                     }
                     msg = ws_rx.next() => {
                         let Some(Ok(Message::Text(text))) = msg else { break };
-                        if let Some(transcript) = parse_assemblyai_message(&text) {
+                        if let Some(transcript) = parse_turn_message(&text) {
                             let _ = transcript_tx.send(transcript);
                         }
                     }
                 }
             }
             let _ = ws_tx
-                .send(Message::Text(r#"{"terminate_session": true}"#.into()))
+                .send(Message::Text(r#"{"type":"Terminate"}"#.into()))
                 .await;
         });
 
@@ -134,16 +133,12 @@ impl AssemblyAiClient {
     }
 }
 
-fn parse_assemblyai_message(raw: &str) -> Option<SttTranscript> {
-    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let message_type = value.get("message_type")?.as_str()?;
-    let text = value.get("text")?.as_str()?.trim();
-    if text.is_empty() {
-        return None;
-    }
-    match message_type {
-        "PartialTranscript" => Some(SttTranscript::Partial(text.to_string())),
-        "FinalTranscript" => Some(SttTranscript::Final(text.to_string())),
-        _ => None,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unknown_speech_model() {
+        assert!(AssemblyAiClient::new(Some("k".into()), "bad-model".into()).is_err());
     }
 }

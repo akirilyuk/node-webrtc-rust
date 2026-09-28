@@ -8,7 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.9.15] - 2026-09-28
+### Added
+
+- **vendor-google** — Hardcoded STT/TTS matrices from Google Cloud docs: V2 `StreamingRecognize` with `interim_results` for `chirp_3` / `chirp_2` / `telephony` (requires V2 recognizer path); V1 REST `speech:recognize` for `latest_long`; Chirp 3 HD `StreamingSynthesize` progressive TTS; Neural2 voices stay `text:synthesize`.
+- **vendor-deepgram** — Listen model matrix (`nova-2`, `nova-3`) and documented live listen query params (`interim_results`, …). TTS Aura `/v1/speak` REST + WS and Flux `/v2/speak` REST + WS (`Speak` / `Flush`; server `SpeechStarted`, `SpeechMetadata`); `aura-*` vs `flux-*` endpoint routing.
+- **vendor-elevenlabs** — TTS matrix: HTTP `/stream` progressive PCM and WebSocket `stream-input` (never for `eleven_v3`); full-body POST fallback. STT Scribe v2 Realtime WebSocket (`partial_transcript`, `committed_transcript`, manual `input_audio_chunk` commit).
+- **vendor-cartesia** — TTS matrix with documented WebSocket models (`sonic-3`, …); WS `chunk` / `done` progressive path with `/tts/bytes` fallback; default model `sonic-3`.
+- **vendor-assemblyai** — Streaming v3 WebSocket with documented `speech_model` query; `Turn` / `Terminate` messages (STT-only).
+- **vendor-groq** — File multipart STT (`whisper-large-v3-turbo`, `whisper-large-v3`); full-body Orpheus TTS (`canopylabs/orpheus-v1-english`, `canopylabs/orpheus-arabic-saudi`). No live STT socket in Groq docs.
+- **vendor-azure** — REST short-audio STT (`conversation` mode, final `DisplayText` only); REST SSML TTS with sample neural voices. Voice Live / SDK WS partials not implemented (documented gap).
+- **vendor-aws** — Transcribe streaming STT (SDK, documented language codes); Polly `SynthesizeSpeech` neural PCM TTS. Generative synthesis stream out of scope.
+- **docs** — `VOICE_VENDOR_REFERENCE.md`, `voice-vendor-docs.ts`, SDK README/VOICE-API streaming semantics, and live presets for all cloud vendors (dual-role Deepgram + ElevenLabs; groq/azure/aws env tables).
 
 ### Fixed
 

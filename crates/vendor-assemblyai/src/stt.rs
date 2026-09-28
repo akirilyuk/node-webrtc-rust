@@ -5,6 +5,7 @@ use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 
 use crate::client::AssemblyAiClient;
+use crate::matrix::default_speech_model;
 
 pub struct AssemblyAiStt {
     client: AssemblyAiClient,
@@ -13,13 +14,18 @@ pub struct AssemblyAiStt {
 
 impl AssemblyAiStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        let speech_model = config
+            .model
+            .clone()
+            .unwrap_or_else(|| default_speech_model().to_string());
         Ok(Self {
             client: AssemblyAiClient::new(
                 config
                     .api_key
                     .clone()
                     .or_else(|| std::env::var("ASSEMBLYAI_API_KEY").ok()),
-            ),
+                speech_model,
+            )?,
             running: false,
         })
     }
@@ -63,5 +69,10 @@ impl SttProvider for AssemblyAiStt {
             return Ok(None);
         }
         self.client.poll_transcript().await
+    }
+
+    async fn finalize_utterance(&mut self) -> SpeechResult<()> {
+        // Documented v3: `{"type":"Terminate"}` finalizes the open turn (disconnect also sends it).
+        Ok(())
     }
 }

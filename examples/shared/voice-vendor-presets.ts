@@ -9,11 +9,14 @@
  * | Provider   | STT in SDK | TTS in SDK | Typical pairing in demos      |
  * |------------|------------|------------|-------------------------------|
  * | openai     | yes        | yes        | OpenAI + OpenAI               |
- * | deepgram   | yes        | no         | Deepgram STT + OpenAI TTS     |
- * | elevenlabs | no         | yes        | OpenAI STT + ElevenLabs TTS   |
+ * | deepgram   | yes        | yes        | Deepgram listen + Aura TTS    |
+ * | elevenlabs | yes        | yes        | Scribe STT + ElevenLabs TTS   |
  * | cartesia   | no         | yes        | OpenAI STT + Cartesia TTS     |
- * | assemblyai | yes      | no         | AssemblyAI STT + OpenAI TTS   |
+ * | assemblyai | yes        | no         | AssemblyAI STT + OpenAI TTS   |
  * | google     | yes        | yes        | Google STT + Google TTS       |
+ * | groq       | yes        | yes        | Groq Whisper file + Orpheus   |
+ * | azure      | yes        | yes        | Azure REST STT + REST TTS     |
+ * | aws        | yes        | yes        | Transcribe stream + Polly     |
  *
  * Production apps can mix providers freely via `VoiceAgentConfig.stt` / `.tts`.
  *
@@ -42,6 +45,9 @@ export type LiveVendorId =
   | 'cartesia'
   | 'assemblyai'
   | 'google'
+  | 'groq'
+  | 'azure'
+  | 'aws'
 
 export interface LiveVendorPreset {
   id: LiveVendorId
@@ -80,12 +86,20 @@ function resolveTtsApiKey(tts: TtsConfig): string | undefined {
   switch (tts.provider) {
     case 'openai':
       return env('OPENAI_API_KEY')
+    case 'deepgram':
+      return env('DEEPGRAM_API_KEY')
     case 'elevenlabs':
       return env('ELEVENLABS_API_KEY')
     case 'cartesia':
       return env('CARTESIA_API_KEY')
     case 'google':
       return env('GOOGLE_API_KEY')
+    case 'groq':
+      return env('GROQ_API_KEY')
+    case 'azure':
+      return env('AZURE_SPEECH_KEY') ?? env('SPEECH_KEY')
+    case 'aws':
+      return undefined
     default:
       return undefined
   }
@@ -105,22 +119,33 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
   },
   deepgram: {
     id: 'deepgram',
-    label: 'Deepgram STT',
-    requiredEnv: ['DEEPGRAM_API_KEY', 'OPENAI_API_KEY'],
+    label: 'Deepgram (listen + Aura TTS)',
+    requiredEnv: ['DEEPGRAM_API_KEY'],
     config: withKeys(
       { provider: 'deepgram', model: 'nova-2', language: 'en', apiKey: env('DEEPGRAM_API_KEY') },
-      { provider: 'openai', model: 'tts-1', voice: 'alloy' },
+      {
+        provider: 'deepgram',
+        model: 'aura-asteria-en',
+        voice: 'aura-asteria-en',
+        apiKey: env('DEEPGRAM_API_KEY'),
+      },
     ),
     ttsPhrase:
-      'Deepgram STT with OpenAI TTS pairing. Speak into the user leg to test transcription.',
-    notes: 'Deepgram is STT-only in this SDK; TTS uses OpenAI for the demo pairing.',
+      'Deepgram Nova listen with Aura speech. Speak into the user leg to test partials and finals.',
+    notes:
+      'Single DEEPGRAM_API_KEY. Listen models: nova-2 / nova-3 only (Flux listen not documented). TTS: aura-* on /v1 or flux-* on /v2.',
   },
   elevenlabs: {
     id: 'elevenlabs',
-    label: 'ElevenLabs TTS',
-    requiredEnv: ['ELEVENLABS_API_KEY', 'OPENAI_API_KEY'],
+    label: 'ElevenLabs (Scribe + TTS)',
+    requiredEnv: ['ELEVENLABS_API_KEY'],
     config: withKeys(
-      { provider: 'openai', model: 'whisper-1', language: 'en' },
+      {
+        provider: 'elevenlabs',
+        model: 'scribe_v2_realtime',
+        language: 'en',
+        apiKey: env('ELEVENLABS_API_KEY'),
+      },
       {
         provider: 'elevenlabs',
         model: 'eleven_multilingual_v2',
@@ -128,8 +153,9 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
         apiKey: env('ELEVENLABS_API_KEY'),
       },
     ),
-    ttsPhrase: 'ElevenLabs text to speech live check.',
-    notes: 'Set ELEVENLABS_VOICE_ID to override the default Rachel voice id.',
+    ttsPhrase: 'ElevenLabs Scribe and text to speech live check.',
+    notes:
+      'Single ELEVENLABS_API_KEY. Set ELEVENLABS_VOICE_ID to override the default Rachel voice id.',
   },
   cartesia: {
     id: 'cartesia',
@@ -139,13 +165,13 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
       { provider: 'openai', model: 'whisper-1', language: 'en' },
       {
         provider: 'cartesia',
-        model: 'sonic-english',
+        model: 'sonic-3',
         voice: process.env.CARTESIA_VOICE_ID ?? 'default',
         apiKey: env('CARTESIA_API_KEY'),
       },
     ),
     ttsPhrase: 'Cartesia sonic live synthesis check.',
-    notes: 'Set CARTESIA_VOICE_ID to your Cartesia voice id.',
+    notes: 'Set CARTESIA_VOICE_ID to your Cartesia voice id. STT uses OpenAI for the demo pairing.',
   },
   assemblyai: {
     id: 'assemblyai',
@@ -174,6 +200,68 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
     ),
     ttsPhrase: 'Google Cloud text to speech live check.',
     notes: 'Uses Application Default Credentials via GOOGLE_APPLICATION_CREDENTIALS.',
+  },
+  groq: {
+    id: 'groq',
+    label: 'Groq',
+    requiredEnv: ['GROQ_API_KEY'],
+    config: withKeys(
+      {
+        provider: 'groq',
+        model: 'whisper-large-v3-turbo',
+        language: 'en',
+        apiKey: env('GROQ_API_KEY'),
+      },
+      {
+        provider: 'groq',
+        model: 'canopylabs/orpheus-v1-english',
+        voice: 'troy',
+        apiKey: env('GROQ_API_KEY'),
+      },
+    ),
+    ttsPhrase: 'Groq Orpheus text to speech live check.',
+    notes:
+      'File STT on VAD finalize only — no live partials. TTS is full-body WAV then framed for playback.',
+  },
+  azure: {
+    id: 'azure',
+    label: 'Azure AI Speech',
+    requiredEnv: ['AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION', 'AZURE_SPEECH_RESOURCE'],
+    optionalEnv: ['SPEECH_KEY'],
+    config: withKeys(
+      {
+        provider: 'azure',
+        model: 'conversation',
+        language: process.env.AZURE_SPEECH_LANGUAGE ?? 'en-US',
+        apiKey: env('AZURE_SPEECH_KEY') ?? env('SPEECH_KEY'),
+        endpoint: env('AZURE_SPEECH_RESOURCE'),
+      },
+      {
+        provider: 'azure',
+        model: 'en-US-JennyNeural',
+        voice: 'en-US-JennyNeural',
+        apiKey: env('AZURE_SPEECH_KEY') ?? env('SPEECH_KEY'),
+        endpoint: process.env.AZURE_SPEECH_REGION
+          ? `${process.env.AZURE_SPEECH_REGION}.tts.speech.microsoft.com`
+          : undefined,
+      },
+    ),
+    ttsPhrase: 'Azure neural text to speech live check.',
+    notes:
+      'REST short-audio STT — finals only, no user_speech_partial. Same key for STT resource host and regional TTS.',
+  },
+  aws: {
+    id: 'aws',
+    label: 'AWS Transcribe + Polly',
+    requiredEnv: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'],
+    optionalEnv: ['AWS_SESSION_TOKEN'],
+    config: withKeys(
+      { provider: 'aws', model: 'en-US', language: 'en-US' },
+      { provider: 'aws', model: 'Joanna', voice: 'Joanna' },
+    ),
+    ttsPhrase: 'Amazon Polly neural text to speech live check.',
+    notes:
+      'Standard AWS credential chain. Transcribe streaming partials; Polly SynthesizeSpeech full-body PCM.',
   },
 }
 

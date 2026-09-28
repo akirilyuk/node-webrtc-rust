@@ -114,10 +114,18 @@ export function sttVendorToJs(vendor: SttConfig['provider']): JsSttVendor {
       return JsSttVendor.Openai
     case 'deepgram':
       return JsSttVendor.Deepgram
+    case 'elevenlabs':
+      return JsSttVendor.Elevenlabs
     case 'google':
       return JsSttVendor.Google
     case 'assemblyai':
       return JsSttVendor.Assemblyai
+    case 'groq':
+      return JsSttVendor.Groq
+    case 'azure':
+      return JsSttVendor.Azure
+    case 'aws':
+      return JsSttVendor.Aws
     case 'local-sherpa':
       return JsSttVendor.LocalSherpa
     case 'cluster-sherpa':
@@ -132,12 +140,20 @@ export function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
   switch (vendor) {
     case 'openai':
       return JsTtsVendor.Openai
+    case 'deepgram':
+      return JsTtsVendor.Deepgram
     case 'elevenlabs':
       return JsTtsVendor.Elevenlabs
     case 'google':
       return JsTtsVendor.Google
     case 'cartesia':
       return JsTtsVendor.Cartesia
+    case 'groq':
+      return JsTtsVendor.Groq
+    case 'azure':
+      return JsTtsVendor.Azure
+    case 'aws':
+      return JsTtsVendor.Aws
     case 'local-sherpa':
       return JsTtsVendor.LocalSherpa
     case 'cluster-sherpa':
@@ -151,8 +167,12 @@ export function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
 export const STT_VENDOR_VALUES = [
   'openai',
   'deepgram',
+  'elevenlabs',
   'google',
   'assemblyai',
+  'groq',
+  'azure',
+  'aws',
   'local-sherpa',
   'cluster-sherpa',
   'mock',
@@ -161,9 +181,13 @@ export const STT_VENDOR_VALUES = [
 /** @internal Every `TtsVendor` string. Typecheck fails if the union grows without this list. */
 export const TTS_VENDOR_VALUES = [
   'openai',
+  'deepgram',
   'elevenlabs',
   'google',
   'cartesia',
+  'groq',
+  'azure',
+  'aws',
   'local-sherpa',
   'cluster-sherpa',
   'mock',

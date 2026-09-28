@@ -336,8 +336,12 @@ impl Default for VadConfig {
 pub enum SttVendor {
     Openai,
     Deepgram,
+    Elevenlabs,
     Google,
     Assemblyai,
+    Groq,
+    Azure,
+    Aws,
     #[serde(rename = "local-sherpa")]
     LocalSherpa,
     /// In-cluster Sherpa transport. `@internal` — not a public SDK vendor.
@@ -352,8 +356,12 @@ impl SttVendor {
         match self {
             Self::Openai => "openai",
             Self::Deepgram => "deepgram",
+            Self::Elevenlabs => "elevenlabs",
             Self::Google => "google",
             Self::Assemblyai => "assemblyai",
+            Self::Groq => "groq",
+            Self::Azure => "azure",
+            Self::Aws => "aws",
             Self::LocalSherpa => "local-sherpa",
             Self::ClusterSherpa => "cluster-sherpa",
             Self::Mock => "mock",
@@ -366,9 +374,13 @@ impl SttVendor {
 #[serde(rename_all = "lowercase")]
 pub enum TtsVendor {
     Openai,
+    Deepgram,
     Elevenlabs,
     Google,
     Cartesia,
+    Groq,
+    Azure,
+    Aws,
     #[serde(rename = "local-sherpa")]
     LocalSherpa,
     /// In-cluster Sherpa transport. `@internal` — not a public SDK vendor.
@@ -382,9 +394,13 @@ impl TtsVendor {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Openai => "openai",
+            Self::Deepgram => "deepgram",
             Self::Elevenlabs => "elevenlabs",
             Self::Google => "google",
             Self::Cartesia => "cartesia",
+            Self::Groq => "groq",
+            Self::Azure => "azure",
+            Self::Aws => "aws",
             Self::LocalSherpa => "local-sherpa",
             Self::ClusterSherpa => "cluster-sherpa",
             Self::Mock => "mock",

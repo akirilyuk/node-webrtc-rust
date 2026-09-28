@@ -2,6 +2,15 @@
 
 Local **streaming speech-to-text** via [sherpa-onnx](https://crates.io/crates/sherpa-onnx) transducer models (Zipformer, etc.).
 
+## Streaming decisions
+
+| Choice | What we implemented | Why |
+|---|---|---|
+| STT | In-process **streaming Zipformer** (`OnlineRecognizer`) | Official Sherpa-ONNX streaming ASR. Partials and finals without a network hop. |
+| TTS | In-process Piper/VITS (and Melo where catalogued) | Official Sherpa TTS bundles. |
+| **Not** offline STT | Cohere / non-Zipformer layouts | Different ONNX graph (`OfflineRecognizer`). See [`docs/offline-sherpa-stt-plan.md`](../../docs/offline-sherpa-stt-plan.md). |
+| **Not** cloud STT | — | This crate never calls a third-party speech API. |
+
 Included in the **default** native bindings — no optional Cargo feature.
 
 ## Model directory layout

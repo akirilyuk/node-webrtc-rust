@@ -8,16 +8,30 @@ description = "Google Cloud Speech/TTS vendor adapter"
 
 [features]
 default = []
-live = ["dep:base64", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:yup-oauth2"]
+live = [
+    "dep:base64",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:yup-oauth2",
+    "dep:futures-util",
+    "dep:tokio-stream",
+    "dep:google-cloud-speech-v2",
+    "dep:google-cloud-texttospeech-v1",
+]
 
 [dependencies]
 async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
 bytes = { workspace = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
+google-cloud-speech-v2 = { version = "1.15", optional = true }
+google-cloud-texttospeech-v1 = { version = "1.16", optional = true }
 node-webrtc-rust-speech = { path = "../speech" }
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { version = "0.1", optional = true }
 yup-oauth2 = { version = "11", optional = true }

@@ -16,6 +16,9 @@ export type VoiceVendorId =
   | 'cartesia'
   | 'assemblyai'
   | 'google'
+  | 'groq'
+  | 'azure'
+  | 'aws'
   | 'local-sherpa'
   | 'mock'
 
@@ -92,20 +95,22 @@ export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
     id: 'deepgram',
     label: 'Deepgram',
     stt: true,
-    tts: false,
-    defaultModels: { stt: 'nova-2' },
+    tts: true,
+    defaultModels: { stt: 'nova-2', tts: 'aura-asteria-en' },
     home: 'https://developers.deepgram.com/',
     sttDocs: 'https://developers.deepgram.com/docs/live-streaming-audio',
+    ttsDocs: 'https://developers.deepgram.com/reference/text-to-speech/speak',
     modelsDocs: 'https://developers.deepgram.com/docs/models',
   },
   {
     id: 'elevenlabs',
     label: 'ElevenLabs',
-    stt: false,
+    stt: true,
     tts: true,
-    defaultModels: { tts: 'eleven_multilingual_v2' },
+    defaultModels: { stt: 'scribe_v2_realtime', tts: 'eleven_multilingual_v2' },
     home: 'https://elevenlabs.io/docs',
-    ttsDocs: 'https://elevenlabs.io/docs/api-reference/text-to-speech/convert',
+    sttDocs: 'https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime',
+    ttsDocs: 'https://elevenlabs.io/docs/api-reference/text-to-speech/stream',
     modelsDocs: 'https://elevenlabs.io/docs/voices',
   },
   {
@@ -113,9 +118,9 @@ export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
     label: 'Cartesia',
     stt: false,
     tts: true,
-    defaultModels: { tts: 'sonic-english' },
+    defaultModels: { tts: 'sonic-3' },
     home: 'https://docs.cartesia.ai/',
-    ttsDocs: 'https://docs.cartesia.ai/api-reference/tts/bytes',
+    ttsDocs: 'https://docs.cartesia.ai/api-reference/tts/websocket',
     modelsDocs: 'https://docs.cartesia.ai/models',
   },
   {
@@ -136,9 +141,44 @@ export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
     tts: true,
     defaultModels: { stt: 'latest_long', tts: 'en-US-Neural2-A' },
     home: 'https://cloud.google.com/speech-to-text',
-    sttDocs: 'https://cloud.google.com/speech-to-text/docs',
-    ttsDocs: 'https://cloud.google.com/text-to-speech/docs',
+    sttDocs: 'https://docs.cloud.google.com/speech-to-text/docs/models/chirp-3',
+    ttsDocs: 'https://docs.cloud.google.com/text-to-speech/docs/create-audio-text-streaming',
     modelsDocs: 'https://cloud.google.com/text-to-speech/docs/voices',
+  },
+  {
+    id: 'groq',
+    label: 'Groq',
+    stt: true,
+    tts: true,
+    defaultModels: {
+      stt: 'whisper-large-v3-turbo',
+      tts: 'canopylabs/orpheus-v1-english',
+    },
+    home: 'https://console.groq.com/docs',
+    sttDocs: 'https://console.groq.com/docs/speech-to-text',
+    ttsDocs: 'https://console.groq.com/docs/text-to-speech',
+  },
+  {
+    id: 'azure',
+    label: 'Azure AI Speech',
+    stt: true,
+    tts: true,
+    defaultModels: { stt: 'conversation', tts: 'en-US-JennyNeural' },
+    home: 'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/',
+    sttDocs:
+      'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short',
+    ttsDocs:
+      'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech',
+  },
+  {
+    id: 'aws',
+    label: 'AWS (Transcribe + Polly)',
+    stt: true,
+    tts: true,
+    defaultModels: { stt: 'en-US', tts: 'Joanna' },
+    home: 'https://docs.aws.amazon.com/transcribe/',
+    sttDocs: 'https://docs.aws.amazon.com/transcribe/latest/dg/streaming-setting-up.html',
+    ttsDocs: 'https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html',
   },
   {
     id: 'local-sherpa',

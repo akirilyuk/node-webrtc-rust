@@ -300,6 +300,30 @@ grep -q 'Publish npm package if needed' .github/workflows/publish-npm-if-needed.
   || fail "missing publish-npm-if-needed workflow"
 grep -q 'packages: read' .github/workflows/publish-npm-if-needed.yml \
   || fail "publish-npm-if-needed must have packages: read to pull ci-build from GHCR"
+python3 - "$release" .github/workflows/publish-npm-if-needed.yml <<'PY' || fail "GHA publish list missing voice-catalog"
+from pathlib import Path
+import sys
+
+release, resume = sys.argv[1:]
+rel = Path(release).read_text(encoding="utf-8")
+marker = "name: Publish npm packages"
+start = rel.find(marker)
+if start < 0:
+    raise SystemExit("release.yml missing Publish npm packages step")
+# Next top-level step after the publish shell block
+end = rel.find("\n      - name:", start + len(marker))
+block = rel[start:end if end > 0 else None]
+catalog = block.find("packages/voice-catalog/")
+bindings = block.find("Platform binding packages")
+if catalog < 0:
+    raise SystemExit("release.yml Publish step must publish packages/voice-catalog")
+if bindings < 0 or catalog > bindings:
+    raise SystemExit("voice-catalog must publish before platform bindings")
+resume_text = Path(resume).read_text(encoding="utf-8")
+if "- voice-catalog" not in resume_text:
+    raise SystemExit("publish-npm-if-needed.yml must offer voice-catalog")
+print("ok: GHA publish order includes voice-catalog first")
+PY
 echo "ok: release publish skips packages already on npm"
 
 # plan emits rebuilt_targets

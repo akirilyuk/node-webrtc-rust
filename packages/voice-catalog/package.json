@@ -1,0 +1,53 @@
+{
+  "name": "@node-webrtc-rust/voice-catalog",
+  "version": "0.9.15",
+  "description": "Published STT/TTS vendor allowlists and documentation links for VoiceAgent providers",
+  "keywords": [
+    "webrtc",
+    "voice-agent",
+    "stt",
+    "tts",
+    "speech",
+    "catalog",
+    "typescript"
+  ],
+  "homepage": "https://github.com/akirilyuk/node-webrtc-rust#readme",
+  "bugs": {
+    "url": "https://github.com/akirilyuk/node-webrtc-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akirilyuk/node-webrtc-rust.git",
+    "directory": "packages/voice-catalog"
+  },
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cjs/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./catalog/vendors.json": "./catalog/vendors.json",
+    "./catalog/azure-tts-voices.json": "./catalog/azure-tts-voices.json"
+  },
+  "files": [
+    "dist",
+    "catalog"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

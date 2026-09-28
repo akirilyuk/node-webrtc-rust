@@ -21,7 +21,7 @@ npm ci
 echo "==> rollup native binary (Linux CI — npm optional-deps bug)"
 bash scripts/fix-rollup-native.sh
 
-echo "==> typecheck (sdk + signaling + helpers sources)"
+echo "==> typecheck (voice-catalog + sdk + signaling + helpers sources)"
 npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json
 
 echo "==> lint"

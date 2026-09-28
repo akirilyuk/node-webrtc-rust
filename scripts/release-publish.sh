@@ -386,6 +386,9 @@ publish_one() {
   bash "$ROOT/scripts/ci/publish-npm-if-needed.sh" "$dir" "$pkg" "$VERSION" "${extra[@]}"
 }
 
+echo "==> Publish @node-webrtc-rust/voice-catalog (pure TS; no native bindings)"
+publish_one "$ROOT/packages/voice-catalog" "@node-webrtc-rust/voice-catalog" --ignore-scripts
+
 echo "==> Publish platform binding packages (must go first)"
 for dir in "$BINDINGS"/npm/*/; do
   pkg=$(cd "$dir" && npm pkg get name | tr -d '"')

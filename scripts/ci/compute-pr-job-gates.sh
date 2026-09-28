@@ -47,7 +47,7 @@ classify_path() {
     run_quality=true
     return 0
   fi
-  if [[ "$path" =~ ^packages/sdk/ || "$path" =~ ^packages/signaling/ || "$path" =~ ^packages/helpers/ || "$path" == package.json || "$path" == package-lock.json || "$path" == eslint.config.js || "$path" == .prettierrc* || "$path" == *tsconfig*.json ]]; then
+  if [[ "$path" =~ ^packages/sdk/ || "$path" =~ ^packages/signaling/ || "$path" =~ ^packages/helpers/ || "$path" =~ ^packages/voice-catalog/ || "$path" == package.json || "$path" == package-lock.json || "$path" == eslint.config.js || "$path" == .prettierrc* || "$path" == *tsconfig*.json ]]; then
     run_build_ts=true
     run_test=true
     run_quality=true

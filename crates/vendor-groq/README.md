@@ -32,8 +32,6 @@ Optional `config.apiKey` overrides the env var.
 
 Translations endpoint is out of scope.
 
-Translations endpoint is out of scope.
-
 ## TTS models (`config.model`)
 
 | Model | Transport |

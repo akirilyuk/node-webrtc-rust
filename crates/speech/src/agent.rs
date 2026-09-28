@@ -2811,6 +2811,18 @@ impl VoiceAgent {
                     self.try_stt_gated_barge_in(&text).await?;
                 }
                 SttTranscript::Final(text) => {
+                    if text.trim().is_empty() {
+                        let still_speaking = {
+                            let inner = self.inner.lock().await;
+                            Self::vad_is_speaking(&inner)
+                        };
+                        if still_speaking {
+                            voice_debug(
+                                "ignore empty leftover user_speech_final while VAD still speaking",
+                            );
+                            continue;
+                        }
+                    }
                     voice_debug(format!("STT final: {text}"));
                     self.emit_user_speaking_start_if_needed().await;
                     self.try_stt_gated_barge_in(&text).await?;

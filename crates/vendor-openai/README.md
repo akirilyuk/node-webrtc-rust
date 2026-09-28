@@ -82,3 +82,17 @@ cargo test -p node-webrtc-rust-vendor-openai --lib
 cargo test -p node-webrtc-rust-vendor-openai --features live --lib
 OPENAI_LIVE=1 OPENAI_API_KEY=sk-... cargo test -p node-webrtc-rust-vendor-openai --features live --test live_openai_matrix
 ```
+
+`src/matrix.rs` unit tests assert every `DOCUMENTED_STT_MODELS` row (default transport + `stt_file_sse_supported`) and TTS SSE deny for `tts-1` / `tts-1-hd`.
+
+Live matrix (`tests/live_openai_matrix.rs`, `OPENAI_LIVE=1`):
+
+| Matrix cell | Live test |
+|-------------|-----------|
+| STT default transport (all six models) | `live_stt_default_transport_every_documented_model` |
+| STT file JSON (`new_force_http_file_json`) for SSE-capable file models | `live_stt_file_json_sse_capable_models` |
+| STT Realtime committed-turn (`gpt-transcribe`, `new_force_realtime`) | `live_stt_realtime_committed_gpt_transcribe` |
+| TTS `stream_format=audio` + progressive (`tts-1`, `tts-1-hd`, `gpt-4o-mini-tts`) | `live_tts_audio_and_progressive` |
+| TTS SSE allow (`gpt-4o-mini-tts`) / deny (`tts-1`, `tts-1-hd`) | `live_tts_sse_allow_and_deny` |
+
+Optional: `gpt-4o-mini-tts-2025-12-15` is exercised inside `live_tts_audio_and_progressive` when the API accepts that model id.

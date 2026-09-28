@@ -6,10 +6,23 @@ use bytes::Bytes;
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::pcm::{i16_samples_to_bytes, stereo_48k_to_mono_16k, STT_MIN_BATCH_BYTES};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider, VendorFactory};
-use node_webrtc_rust_vendor_openai::{OpenAiFactory, OpenAiStt, OpenAiTts};
+use node_webrtc_rust_vendor_openai::{DOCUMENTED_STT_MODELS, OpenAiFactory, OpenAiStt, OpenAiTts};
+use tokio::sync::Mutex;
 
 const COUNTING_PHRASE: &str =
     "one. two. three. four. five. six. seven. eight. nine. ten.";
+
+/// Models that support file HTTP with `stream=true` (default VoiceAgent path), excluding Realtime-only.
+const FILE_SSE_STT_MODELS: &[&str] = &[
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-transcribe",
+    "gpt-4o-transcribe-diarize",
+    "gpt-transcribe",
+];
+
+const TTS_AUDIO_MODELS: &[&str] = &["tts-1", "tts-1-hd", "gpt-4o-mini-tts"];
+
+static COUNTING_PCM: Mutex<Option<Bytes>> = Mutex::const_new(None);
 
 fn live_enabled() -> bool {
     std::env::var("OPENAI_LIVE").as_deref() == Ok("1")
@@ -23,28 +36,38 @@ fn skip_live() -> bool {
 }
 
 fn stt_config(model: &str) -> SttConfig {
+    // Diarize model does not support prompts; omit language if the API rejects `language=en`.
+    let language = if model == "gpt-4o-transcribe-diarize" {
+        None
+    } else {
+        Some("en".into())
+    };
     SttConfig {
         provider: SttVendor::Openai,
         model: Some(model.into()),
         model_path: None,
-        language: Some("en".into()),
+        language,
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         endpoint: None,
     }
 }
 
-async fn counting_pcm_via_tts() -> Bytes {
+fn tts_config(model: &str) -> TtsConfig {
+    TtsConfig {
+        provider: TtsVendor::Openai,
+        model: Some(model.into()),
+        model_path: None,
+        voice: Some("alloy".into()),
+        api_key: std::env::var("OPENAI_API_KEY").ok(),
+        endpoint: None,
+    }
+}
+
+async fn build_counting_pcm() -> Bytes {
     let factory = OpenAiFactory;
     let tts = factory
-        .create_tts(&TtsConfig {
-            provider: TtsVendor::Openai,
-            model: Some("gpt-4o-mini-tts".into()),
-            model_path: None,
-            voice: Some("alloy".into()),
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
-            endpoint: None,
-        })
-        .expect("tts");
+        .create_tts(&tts_config("gpt-4o-mini-tts"))
+        .expect("tts for counting pcm");
     let chunks = tts.synthesize(COUNTING_PHRASE).await.expect("tts synth");
     let mut pcm = Vec::new();
     for chunk in chunks {
@@ -58,6 +81,14 @@ async fn counting_pcm_via_tts() -> Bytes {
     Bytes::from(mono16k)
 }
 
+async fn counting_pcm() -> Bytes {
+    let mut guard = COUNTING_PCM.lock().await;
+    if guard.is_none() {
+        *guard = Some(build_counting_pcm().await);
+    }
+    guard.as_ref().expect("counting pcm").clone()
+}
+
 async fn drain_until_final(stt: &mut OpenAiStt) -> String {
     for _ in 0..48 {
         match stt.poll_transcript().await.expect("poll") {
@@ -69,22 +100,20 @@ async fn drain_until_final(stt: &mut OpenAiStt) -> String {
     panic!("expected SttTranscript::Final from vendor");
 }
 
-async fn run_http_finalize(
-    model: &str,
-    pcm: Bytes,
-    force_realtime: bool,
-) -> String {
-    let mut stt = if force_realtime {
-        OpenAiStt::new_force_realtime(&stt_config(model)).expect("stt")
-    } else {
-        OpenAiStt::new(&stt_config(model)).expect("stt")
-    };
-    stt.start().await.expect("start");
-    stt.push_audio(pcm).await.expect("push");
-    stt.finalize_utterance().await.expect("finalize");
-    let text = drain_until_final(&mut stt).await;
-    stt.stop().await.ok();
-    text
+async fn run_finalize(stt: &mut OpenAiStt, pcm: Bytes, model: &str) -> String {
+    stt.start()
+        .await
+        .map_err(|e| format!("model `{model}` start: {e}"))
+        .expect("start");
+    stt.push_audio(pcm)
+        .await
+        .map_err(|e| format!("model `{model}` push: {e}"))
+        .expect("push");
+    stt.finalize_utterance()
+        .await
+        .map_err(|e| format!("model `{model}` finalize: {e}"))
+        .expect("finalize");
+    drain_until_final(stt).await
 }
 
 fn assert_counting_words(text: &str) {
@@ -104,122 +133,112 @@ fn assert_counting_words(text: &str) {
 }
 
 #[tokio::test]
-async fn live_file_json_whisper1() {
+async fn live_stt_default_transport_every_documented_model() {
     if skip_live() {
         return;
     }
-    let pcm = counting_pcm_via_tts().await;
-    let text = run_http_finalize("whisper-1", pcm, false).await;
-    assert_counting_words(&text);
-}
-
-#[tokio::test]
-async fn live_file_json_gpt_4o_mini_transcribe_sse_off() {
-    if skip_live() {
-        return;
-    }
-    let pcm = counting_pcm_via_tts().await;
-    let mut stt = OpenAiStt::new_force_http_file_json(&stt_config("gpt-4o-mini-transcribe"))
-        .expect("stt");
-    stt.start().await.expect("start");
-    stt.push_audio(pcm).await.expect("push");
-    stt.finalize_utterance().await.expect("finalize");
-    let text = drain_until_final(&mut stt).await;
-    assert_counting_words(&text);
-    stt.stop().await.ok();
-}
-
-#[tokio::test]
-async fn live_file_sse_mini_and_gpt_transcribe() {
-    if skip_live() {
-        return;
-    }
-    let pcm = counting_pcm_via_tts().await;
-    for model in ["gpt-4o-mini-transcribe", "gpt-transcribe"] {
-        let mut stt = OpenAiStt::new(&stt_config(model)).expect("stt");
-        stt.start().await.expect("start");
-        stt.push_audio(pcm.clone()).await.expect("push");
-        stt.finalize_utterance().await.expect("finalize");
-        let text = drain_until_final(&mut stt).await;
+    let pcm = counting_pcm().await;
+    for model in DOCUMENTED_STT_MODELS {
+        let mut stt = OpenAiStt::new(&stt_config(model))
+            .map_err(|e| format!("model `{model}` OpenAiStt::new: {e}"))
+            .expect("stt new");
+        let text = run_finalize(&mut stt, pcm.clone(), model).await;
         assert_counting_words(&text);
         stt.stop().await.ok();
     }
 }
 
 #[tokio::test]
-async fn live_realtime_gpt_live_transcribe() {
+async fn live_stt_file_json_sse_capable_models() {
     if skip_live() {
         return;
     }
-    let pcm = counting_pcm_via_tts().await;
-    let text = run_http_finalize("gpt-live-transcribe", pcm, false).await;
-    assert_counting_words(&text);
+    let pcm = counting_pcm().await;
+    for model in FILE_SSE_STT_MODELS {
+        let mut stt = OpenAiStt::new_force_http_file_json(&stt_config(model))
+            .map_err(|e| format!("model `{model}` new_force_http_file_json: {e}"))
+            .expect("stt");
+        let text = run_finalize(&mut stt, pcm.clone(), model).await;
+        assert_counting_words(&text);
+        stt.stop().await.ok();
+    }
 }
 
 #[tokio::test]
-async fn live_realtime_committed_gpt_transcribe() {
+async fn live_stt_realtime_committed_gpt_transcribe() {
     if skip_live() {
         return;
     }
-    let pcm = counting_pcm_via_tts().await;
-    let text = run_http_finalize("gpt-transcribe", pcm, true).await;
+    let pcm = counting_pcm().await;
+    let model = "gpt-transcribe";
+    let mut stt = OpenAiStt::new_force_realtime(&stt_config(model))
+        .map_err(|e| format!("model `{model}` new_force_realtime: {e}"))
+        .expect("stt");
+    let text = run_finalize(&mut stt, pcm, model).await;
     assert_counting_words(&text);
+    stt.stop().await.ok();
 }
 
 #[tokio::test]
-async fn live_tts_audio_and_full_body() {
+async fn live_tts_audio_and_progressive() {
     if skip_live() {
         return;
     }
     let factory = OpenAiFactory;
-    for model in ["tts-1", "gpt-4o-mini-tts"] {
+    for model in TTS_AUDIO_MODELS {
         let tts = factory
-            .create_tts(&TtsConfig {
-                provider: TtsVendor::Openai,
-                model: Some(model.into()),
-                model_path: None,
-                voice: Some("alloy".into()),
-                api_key: std::env::var("OPENAI_API_KEY").ok(),
-                endpoint: None,
-            })
+            .create_tts(&tts_config(model))
+            .map_err(|e| format!("model `{model}` create_tts: {e}"))
             .expect("tts");
-        let chunks = tts.synthesize("hello").await.expect("full body");
-        assert!(!chunks.is_empty());
-        assert!(!chunks[0].pcm.is_empty());
+        let chunks = tts
+            .synthesize("hello")
+            .await
+            .map_err(|e| format!("model `{model}` synthesize: {e}"))
+            .expect("full body");
+        assert!(!chunks.is_empty(), "model `{model}`");
+        assert!(!chunks[0].pcm.is_empty(), "model `{model}`");
         let prog = tts
             .synthesize_progressive("hello", None)
             .await
+            .map_err(|e| format!("model `{model}` synthesize_progressive: {e}"))
             .expect("progressive");
-        assert!(!prog.is_empty());
+        assert!(!prog.is_empty(), "model `{model}` progressive");
+    }
+
+    // Same delivery plan as gpt-4o-mini-tts; run when the dated snapshot is available.
+    let optional = "gpt-4o-mini-tts-2025-12-15";
+    if let Ok(tts) = factory.create_tts(&tts_config(optional)) {
+        if let Ok(chunks) = tts.synthesize("hello").await {
+            if !chunks.is_empty() && !chunks[0].pcm.is_empty() {
+                let _ = tts.synthesize_progressive("hello", None).await;
+            }
+        }
     }
 }
 
 #[tokio::test]
-async fn live_tts_sse_gpt_4o_mini_tts() {
+async fn live_tts_sse_allow_and_deny() {
     if skip_live() {
         return;
     }
-    let tts = OpenAiTts::new(&TtsConfig {
-        provider: TtsVendor::Openai,
-        model: Some("gpt-4o-mini-tts".into()),
-        model_path: None,
-        voice: Some("alloy".into()),
-        api_key: std::env::var("OPENAI_API_KEY").ok(),
-        endpoint: None,
-    })
-    .expect("tts");
-    let chunks = tts.synthesize_pcm_sse("hello").await.expect("sse pcm");
+    let mini = OpenAiTts::new(&tts_config("gpt-4o-mini-tts")).expect("tts");
+    let chunks = mini
+        .synthesize_pcm_sse("hello")
+        .await
+        .expect("gpt-4o-mini-tts sse pcm");
     assert!(!chunks.is_empty());
     assert!(chunks.iter().any(|c| !c.pcm.is_empty()));
 
-    let tts1 = OpenAiTts::new(&TtsConfig {
-        provider: TtsVendor::Openai,
-        model: Some("tts-1".into()),
-        model_path: None,
-        voice: Some("alloy".into()),
-        api_key: std::env::var("OPENAI_API_KEY").ok(),
-        endpoint: None,
-    })
-    .expect("tts");
-    assert!(tts1.synthesize_pcm_sse("hello").await.is_err());
+    for model in ["tts-1", "tts-1-hd"] {
+        let tts = OpenAiTts::new(&tts_config(model)).expect("tts");
+        let err = tts
+            .synthesize_pcm_sse("hello")
+            .await
+            .expect_err(&format!("model `{model}` must reject SSE"));
+        let msg = err.to_string();
+        assert!(
+            !msg.is_empty(),
+            "model `{model}` SSE error should be descriptive"
+        );
+    }
 }

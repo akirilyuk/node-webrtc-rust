@@ -156,6 +156,57 @@ mod tests {
     }
 
     #[test]
+    fn every_documented_stt_model_has_explicit_matrix_row() {
+        let rows: &[(&str, SttDefaultTransport, bool)] = &[
+            ("whisper-1", SttDefaultTransport::FileJson, false),
+            ("gpt-4o-mini-transcribe", SttDefaultTransport::FileSse, true),
+            ("gpt-4o-transcribe", SttDefaultTransport::FileSse, true),
+            ("gpt-4o-transcribe-diarize", SttDefaultTransport::FileSse, true),
+            ("gpt-transcribe", SttDefaultTransport::FileSse, true),
+            ("gpt-live-transcribe", SttDefaultTransport::RealtimeLive, true),
+        ];
+        assert_eq!(
+            DOCUMENTED_STT_MODELS.len(),
+            rows.len(),
+            "keep DOCUMENTED_STT_MODELS and this table in sync"
+        );
+        for (model, expected_transport, file_sse) in rows {
+            assert_eq!(
+                stt_default_transport(model).unwrap(),
+                *expected_transport,
+                "default transport for `{model}`"
+            );
+            assert_eq!(
+                stt_file_sse_supported(model),
+                *file_sse,
+                "stt_file_sse_supported for `{model}`"
+            );
+            assert!(
+                DOCUMENTED_STT_MODELS.contains(model),
+                "`{model}` missing from DOCUMENTED_STT_MODELS"
+            );
+        }
+        for model in DOCUMENTED_STT_MODELS {
+            assert!(
+                rows.iter().any(|(m, _, _)| m == model),
+                "`{model}` missing from explicit matrix test rows"
+            );
+        }
+    }
+
+    #[test]
+    fn gpt_4o_transcribe_and_diarize_file_sse_not_realtime() {
+        for model in ["gpt-4o-transcribe", "gpt-4o-transcribe-diarize"] {
+            assert_eq!(
+                stt_default_transport(model).unwrap(),
+                SttDefaultTransport::FileSse
+            );
+            assert!(stt_file_sse_supported(model));
+            assert!(!stt_uses_realtime_ws(SttDefaultTransport::FileSse));
+        }
+    }
+
+    #[test]
     fn realtime_websocket_base_has_no_query_or_intent() {
         assert_eq!(REALTIME_WEBSOCKET_URL, "wss://api.openai.com/v1/realtime");
         assert!(!REALTIME_WEBSOCKET_URL.contains('?'));

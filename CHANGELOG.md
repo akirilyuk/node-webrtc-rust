@@ -10,6 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **vendor-openai** — README documents the STT model matrix and why Realtime uses WebSocket from the server (not a second WebRTC hop to OpenAI).
 - **vendor-openai** — Hardcoded STT/TTS capability matrix from OpenAI docs: file JSON, file SSE (`transcript.text.delta` / `transcript.text.done`), Realtime transcription via `POST /v1/realtime/client_secrets` (`session.type=transcription`) and `wss://api.openai.com/v1/realtime` with Bearer ephemeral `ek_…`, optional `session.update`, `input_audio_buffer` append/commit, and `conversation.item.input_audio_transcription` events. TTS `stream_format=sse` (`speech.audio.delta` / `speech.audio.done`). Default `gpt-4o-mini-transcribe` / `gpt-transcribe` use file SSE; `gpt-live-transcribe` uses Realtime live. `poll_transcript` waits while file/SSE/commit is in flight.
 
 ## [0.9.13] - 2026-09-28

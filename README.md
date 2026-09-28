@@ -165,7 +165,7 @@ sendTextToTTS(text) ──► TTS vendor adapter ──► TtsPlaybackBuffer
 | Layer         | Location                      | Role                                                             |
 | ------------- | ----------------------------- | ---------------------------------------------------------------- |
 | Orchestration | `crates/speech`               | Config, event bus, VAD, barge-in, TTS queue                      |
-| Vendors       | `crates/vendor-*`             | OpenAI, Deepgram, ElevenLabs, Google, Cartesia, AssemblyAI, mock |
+| Vendors       | `crates/vendor-*`             | OpenAI ([STT matrix](crates/vendor-openai/README.md)), Deepgram, ElevenLabs, Google, Cartesia, AssemblyAI, mock |
 | Node API      | `@node-webrtc-rust/sdk/voice` | `VoiceAgent`, typed config, callbacks + `speechEvents()`         |
 | Transport     | `@node-webrtc-rust/sdk`       | `RTCPeerConnection`, `LocalAudioTrack`, `RemoteAudioTrack`       |
 

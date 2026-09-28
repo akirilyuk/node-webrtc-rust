@@ -1,10 +1,11 @@
-//! OpenAI STT: HTTP [`POST /v1/audio/transcriptions`](https://platform.openai.com/docs/api-reference/audio/createTranscription)
-//! for catalog transcription models (`whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`).
+//! OpenAI STT per published docs:
+//! <https://developers.openai.com/api/docs/guides/speech-to-text> (file JSON + file SSE),
+//! <https://developers.openai.com/api/docs/guides/realtime-transcription> (WS `session.type=transcription`),
+//! <https://developers.openai.com/api/docs/guides/realtime-websocket> (`wss://…/realtime`, Bearer `ek_…` from `POST /v1/realtime/client_secrets`).
 //!
-//! Realtime transcription websocket is used only when the configured model is documented for
-//! Realtime (`gpt-transcribe`, `gpt-live-transcribe`). HTTP models buffer 16 kHz PCM while the VAD
-//! gate is open; one WAV upload runs on [`SttProvider::finalize_utterance`], and
-//! [`SttProvider::poll_transcript`] returns the result.
+//! HTTP models buffer 16 kHz PCM while the VAD gate is open; one upload runs on
+//! [`SttProvider::finalize_utterance`]. [`SttProvider::poll_transcript`] drains JSON/SSE/Realtime
+//! events and does not return `None` while a file POST or post-commit transcription is in flight.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -30,13 +31,19 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, Message},
 };
 
-const OPENAI_REALTIME_URL: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
+use crate::matrix::{
+    stt_default_transport, stt_file_sse_supported, SttDefaultTransport, REALTIME_WEBSOCKET_URL,
+};
+
 const OPENAI_PCM_RATE: u32 = 24_000;
 const DEFAULT_OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 
-/// Models documented for Realtime transcription only.
+/// Legacy test helper — only `gpt-live-transcribe` uses Realtime by default in VoiceAgent.
 pub(crate) fn model_uses_realtime_transcription(model: &str) -> bool {
-    matches!(model, "gpt-transcribe" | "gpt-live-transcribe")
+    matches!(
+        stt_default_transport(model),
+        Ok(SttDefaultTransport::RealtimeLive)
+    )
 }
 
 pub(crate) fn normalize_openai_api_base(endpoint: Option<&str>) -> String {
@@ -59,9 +66,12 @@ pub(crate) fn transcriptions_url(api_base: &str) -> String {
 
 pub struct OpenAiStt {
     api_key: Option<String>,
+    api_base: String,
     model: String,
     language: Option<String>,
     transport: Transport,
+    /// When set, force Realtime WS (committed-turn / live tests) instead of the file default.
+    force_realtime: bool,
 }
 
 enum Transport {
@@ -71,7 +81,10 @@ enum Transport {
 
 struct HttpBackend {
     api_base: String,
+    file_sse: bool,
     inner: Mutex<HttpInner>,
+    poll_rx: Mutex<Option<mpsc::UnboundedReceiver<SttTranscript>>>,
+    poll_task: Mutex<Option<tokio::task::JoinHandle<SpeechResult<()>>>>,
     live_backlog_ms: AtomicU32,
     frozen_backlog_ms: AtomicU32,
     commit_waiting: AtomicBool,
@@ -80,7 +93,6 @@ struct HttpBackend {
 struct HttpInner {
     running: bool,
     buffered: Vec<u8>,
-    in_flight: Option<tokio::task::JoinHandle<SpeechResult<Option<SttTranscript>>>>,
 }
 
 struct RealtimeBackend {
@@ -113,6 +125,26 @@ enum Incoming {
 
 impl OpenAiStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        Self::new_inner(config, false, None)
+    }
+
+    /// Realtime WS for `gpt-transcribe` committed-turn live tests (not the VoiceAgent default).
+    #[cfg(feature = "live")]
+    pub fn new_force_realtime(config: &SttConfig) -> SpeechResult<Self> {
+        Self::new_inner(config, true, None)
+    }
+
+    /// Force file HTTP with `stream=true` off (live matrix: mini-transcribe JSON path).
+    #[cfg(feature = "live")]
+    pub fn new_force_http_file_json(config: &SttConfig) -> SpeechResult<Self> {
+        Self::new_inner(config, false, Some(false))
+    }
+
+    fn new_inner(
+        config: &SttConfig,
+        force_realtime: bool,
+        force_http_file_sse: Option<bool>,
+    ) -> SpeechResult<Self> {
         let api_key = config
             .api_key
             .clone()
@@ -122,33 +154,71 @@ impl OpenAiStt {
             .clone()
             .unwrap_or_else(|| "whisper-1".to_string());
         let api_base = normalize_openai_api_base(config.endpoint.as_deref());
-        let transport = if model_uses_realtime_transcription(&model) {
+        let default = stt_default_transport(&model).map_err(|message| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message,
+        })?;
+        let transport = if force_realtime {
             Transport::Realtime(RealtimeBackend::new())
+        } else if let Some(file_sse) = force_http_file_sse {
+            match default {
+                SttDefaultTransport::RealtimeLive => {
+                    return Err(SpeechError::Vendor {
+                        vendor: "openai".into(),
+                        message: "file HTTP override does not apply to Realtime STT models".into(),
+                    });
+                }
+                SttDefaultTransport::FileJson | SttDefaultTransport::FileSse => {
+                    Transport::Http(HttpBackend::new(api_base.clone(), file_sse))
+                }
+            }
         } else {
-            Transport::Http(HttpBackend::new(api_base))
+            match default {
+                SttDefaultTransport::RealtimeLive => {
+                    Transport::Realtime(RealtimeBackend::new())
+                }
+                SttDefaultTransport::FileJson => {
+                    Transport::Http(HttpBackend::new(api_base.clone(), false))
+                }
+                SttDefaultTransport::FileSse => {
+                    let sse = stt_file_sse_supported(&model);
+                    Transport::Http(HttpBackend::new(api_base.clone(), sse))
+                }
+            }
         };
         Ok(Self {
             api_key,
+            api_base,
             model,
             language: config.language.clone(),
             transport,
+            force_realtime,
         })
     }
 }
 
 impl HttpBackend {
-    fn new(api_base: String) -> Self {
+    fn new(api_base: String, file_sse: bool) -> Self {
         Self {
             api_base,
+            file_sse,
             inner: Mutex::new(HttpInner {
                 running: false,
                 buffered: Vec::new(),
-                in_flight: None,
             }),
+            poll_rx: Mutex::new(None),
+            poll_task: Mutex::new(None),
             live_backlog_ms: AtomicU32::new(0),
             frozen_backlog_ms: AtomicU32::new(0),
             commit_waiting: AtomicBool::new(false),
         }
+    }
+
+    async fn clear_in_flight(&self) {
+        if let Some(task) = self.poll_task.lock().await.take() {
+            task.abort();
+        }
+        *self.poll_rx.lock().await = None;
     }
 
     fn note_pushed_audio(&self, pcm_len: usize) {
@@ -190,7 +260,7 @@ impl HttpBackend {
         let mut inner = self.inner.lock().await;
         inner.running = true;
         inner.buffered.clear();
-        inner.in_flight = None;
+        self.clear_in_flight().await;
         self.clear_backlog();
         Ok(())
     }
@@ -199,9 +269,7 @@ impl HttpBackend {
         let mut inner = self.inner.lock().await;
         inner.running = false;
         inner.buffered.clear();
-        if let Some(task) = inner.in_flight.take() {
-            task.abort();
-        }
+        self.clear_in_flight().await;
         self.clear_backlog();
         Ok(())
     }
@@ -218,26 +286,59 @@ impl HttpBackend {
     }
 
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
-        let mut inner = self.inner.lock().await;
-        if let Some(task) = inner.in_flight.as_mut() {
-            if task.is_finished() {
-                let task = inner.in_flight.take().expect("in_flight");
-                drop(inner);
-                let result = task.await.unwrap_or_else(|_| {
-                    Err(SpeechError::Vendor {
-                        vendor: "openai".into(),
-                        message: "transcription task aborted".into(),
-                    })
-                })?;
-                if let Some(transcript) = result {
-                    self.on_final_delivered();
-                    return Ok(Some(transcript));
-                }
+        let mut rx_guard = self.poll_rx.lock().await;
+        let Some(rx) = rx_guard.as_mut() else {
+            return Ok(None);
+        };
+        if let Ok(transcript) = rx.try_recv() {
+            let is_final = matches!(&transcript, SttTranscript::Final(_));
+            if is_final {
+                *rx_guard = None;
+                self.poll_task.lock().await.take();
                 self.on_final_delivered();
-                return Ok(None);
+            }
+            return Ok(Some(transcript));
+        }
+        let task_finished = self
+            .poll_task
+            .lock()
+            .await
+            .as_ref()
+            .is_none_or(|task| task.is_finished());
+        if task_finished {
+            *rx_guard = None;
+            if let Some(task) = self.poll_task.lock().await.take() {
+                match task.await {
+                    Ok(inner) => inner?,
+                    Err(_) => {
+                        return Err(SpeechError::Vendor {
+                            vendor: "openai".into(),
+                            message: "transcription task aborted".into(),
+                        });
+                    }
+                }
+            }
+            self.on_final_delivered();
+            return Ok(None);
+        }
+        // In flight: wait for the next documented event instead of returning None.
+        match rx.recv().await {
+            Some(transcript) => {
+                let is_final = matches!(&transcript, SttTranscript::Final(_));
+                if is_final {
+                    *rx_guard = None;
+                    self.poll_task.lock().await.take();
+                    self.on_final_delivered();
+                }
+                Ok(Some(transcript))
+            }
+            None => {
+                *rx_guard = None;
+                self.poll_task.lock().await.take();
+                self.on_final_delivered();
+                Ok(None)
             }
         }
-        Ok(None)
     }
 
     async fn finalize_utterance(
@@ -246,12 +347,13 @@ impl HttpBackend {
         model: &str,
         language: &Option<String>,
     ) -> SpeechResult<()> {
+        if self.poll_rx.lock().await.is_some() {
+            return Ok(());
+        }
+
         let pcm = {
             let mut inner = self.inner.lock().await;
             if !inner.running {
-                return Ok(());
-            }
-            if inner.in_flight.is_some() {
                 return Ok(());
             }
             std::mem::take(&mut inner.buffered)
@@ -271,10 +373,24 @@ impl HttpBackend {
             let model = model.to_string();
             let language = language.clone();
             let pcm = Bytes::from(pcm);
+            let use_sse = self.file_sse;
+            let (tx, rx) = mpsc::unbounded_channel();
             let handle = tokio::spawn(async move {
-                http_transcribe(pcm, &api_key, &url, &model, language.as_deref()).await
+                if use_sse {
+                    http_transcribe_sse(pcm, &api_key, &url, &model, language.as_deref(), tx)
+                        .await
+                } else {
+                    match http_transcribe(pcm, &api_key, &url, &model, language.as_deref()).await? {
+                        Some(transcript) => {
+                            let _ = tx.send(transcript);
+                        }
+                        None => {}
+                    }
+                    Ok(())
+                }
             });
-            self.inner.lock().await.in_flight = Some(handle);
+            *self.poll_rx.lock().await = Some(rx);
+            *self.poll_task.lock().await = Some(handle);
             return Ok(());
         }
 
@@ -484,7 +600,29 @@ impl TranscriptAssembler {
     }
 }
 
-pub(crate) fn session_update_body(model: &str, language: Option<&str>) -> Value {
+/// OpenAPI `transcription_session.update` on a Realtime WebSocket (`?model=` handshake).
+pub(crate) fn transcription_session_update_body(model: &str, language: Option<&str>) -> Value {
+    let mut input_audio_transcription = serde_json::json!({ "model": model });
+    if let Some(language) = language {
+        input_audio_transcription["language"] = serde_json::json!(language);
+    }
+    serde_json::json!({
+        "type": "transcription_session.update",
+        "session": {
+            "input_audio_format": "pcm16",
+            "input_audio_transcription": input_audio_transcription,
+            "turn_detection": null
+        }
+    })
+}
+
+/// `POST /v1/realtime/client_secrets` body (`session.type=transcription`).
+pub(crate) fn transcription_client_secret_request(model: &str, language: Option<&str>) -> Value {
+    let session = transcription_session_config(model, language);
+    serde_json::json!({ "session": session })
+}
+
+fn transcription_session_config(model: &str, language: Option<&str>) -> Value {
     let mut transcription = serde_json::json!({ "model": model });
     if let Some(language) = language {
         if model.contains("live-transcribe") {
@@ -494,18 +632,171 @@ pub(crate) fn session_update_body(model: &str, language: Option<&str>) -> Value 
         }
     }
     serde_json::json!({
-        "type": "session.update",
-        "session": {
-            "type": "transcription",
-            "audio": {
-                "input": {
-                    "format": { "type": "audio/pcm", "rate": OPENAI_PCM_RATE },
-                    "transcription": transcription,
-                    "turn_detection": null
-                }
+        "type": "transcription",
+        "audio": {
+            "input": {
+                "format": { "type": "audio/pcm", "rate": OPENAI_PCM_RATE },
+                "transcription": transcription,
+                "turn_detection": null
             }
         }
     })
+}
+
+/// Realtime transcription guide `session.update` with `session.type=transcription`.
+pub(crate) fn session_update_body(model: &str, language: Option<&str>) -> Value {
+    serde_json::json!({
+        "type": "session.update",
+        "session": transcription_session_config(model, language),
+    })
+}
+
+#[cfg(feature = "live")]
+async fn mint_transcription_client_secret(
+    api_key: &str,
+    api_base: &str,
+    model: &str,
+    language: Option<&str>,
+) -> SpeechResult<String> {
+    let url = format!(
+        "{}/realtime/client_secrets",
+        api_base.trim_end_matches('/')
+    );
+    let body = transcription_client_secret_request(model, language);
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: format!("POST /v1/realtime/client_secrets: {err}"),
+        })?;
+    let status = response.status();
+    let payload: Value = response.json().await.map_err(|err| SpeechError::Vendor {
+        vendor: "openai".into(),
+        message: format!("POST /v1/realtime/client_secrets JSON: {err}"),
+    })?;
+    if !status.is_success() {
+        return Err(SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: format!(
+                "POST /v1/realtime/client_secrets HTTP {}: {}",
+                status,
+                payload
+            ),
+        });
+    }
+    if let Some(value) = payload.get("value").and_then(Value::as_str) {
+        return Ok(value.to_string());
+    }
+    if let Some(value) = payload
+        .pointer("/client_secret/value")
+        .and_then(Value::as_str)
+    {
+        return Ok(value.to_string());
+    }
+    Err(SpeechError::Vendor {
+        vendor: "openai".into(),
+        message: "POST /v1/realtime/client_secrets missing value".into(),
+    })
+}
+
+#[cfg(feature = "live")]
+fn realtime_ws_urls_after_error(first_error: &str) -> Vec<String> {
+    use crate::matrix::REALTIME_WEBSOCKET_URL;
+    let mut urls = Vec::new();
+    // Only retry `?model=` when the vendor error itself names that query (websocket docs).
+    if let Some(start) = first_error.find("?model=") {
+        let tail = &first_error[start + "?model=".len()..];
+        if let Some(model) = tail
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+            .next()
+            .filter(|m| !m.is_empty())
+        {
+            urls.push(format!("{REALTIME_WEBSOCKET_URL}?model={model}"));
+        }
+    }
+    urls
+}
+
+#[cfg(feature = "live")]
+async fn connect_realtime_websocket(
+    ephemeral_key: &str,
+    ws_url: &str,
+) -> SpeechResult<(
+    futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Message,
+    >,
+    futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    >,
+)> {
+    let mut request = ws_url
+        .into_client_request()
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: err.to_string(),
+        })?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {ephemeral_key}")
+            .parse()
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: format!("invalid auth header: {err}"),
+            })?,
+    );
+    let (ws, _) = connect_async(request)
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: format!("WebSocket {ws_url}: {err}"),
+        })?;
+    Ok(ws.split())
+}
+
+#[cfg(feature = "live")]
+type RealtimeWsSplit = (
+    futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Message,
+    >,
+    futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    >,
+);
+
+#[cfg(feature = "live")]
+async fn connect_realtime_with_url_fallback(ephemeral_key: &str) -> SpeechResult<RealtimeWsSplit> {
+    let mut urls = vec![REALTIME_WEBSOCKET_URL.to_string()];
+    let mut last_err: Option<SpeechError> = None;
+    let mut i = 0usize;
+    while i < urls.len() {
+        let url = urls[i].clone();
+        match connect_realtime_websocket(ephemeral_key, &url).await {
+            Ok(split) => return Ok(split),
+            Err(err) => {
+                let msg = err.to_string();
+                last_err = Some(err);
+                if i == 0 {
+                    for extra in realtime_ws_urls_after_error(&msg) {
+                        if !urls.contains(&extra) {
+                            urls.push(extra);
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| SpeechError::Vendor {
+        vendor: "openai".into(),
+        message: "WebSocket connect failed with no error".into(),
+    }))
 }
 
 fn realtime_error_message(event: &Value) -> Option<String> {
@@ -575,6 +866,115 @@ async fn http_transcribe(
     Ok(Some(SttTranscript::Final(text.to_string())))
 }
 
+#[cfg(feature = "live")]
+fn push_file_sse_event(event: &Value, tx: &mpsc::UnboundedSender<SttTranscript>) {
+    match event.get("type").and_then(Value::as_str) {
+        Some("transcript.text.delta") => {
+            if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                let text = delta.trim();
+                if !text.is_empty() {
+                    let _ = tx.send(SttTranscript::Partial(text.to_string()));
+                }
+            }
+        }
+        Some("transcript.text.done") => {
+            let text = event
+                .get("text")
+                .and_then(Value::as_str)
+                .or_else(|| event.pointer("/transcript").and_then(Value::as_str))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !text.is_empty() {
+                let _ = tx.send(SttTranscript::Final(text));
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(feature = "live")]
+async fn http_transcribe_sse(
+    pcm: Bytes,
+    api_key: &str,
+    transcriptions_url: &str,
+    model: &str,
+    language: Option<&str>,
+    tx: mpsc::UnboundedSender<SttTranscript>,
+) -> SpeechResult<()> {
+    use futures_util::StreamExt;
+
+    let wav = mono16_le_to_wav(pcm.as_ref());
+    let part = reqwest::multipart::Part::bytes(wav)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: err.to_string(),
+        })?;
+    let mut form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("model", model.to_string())
+        .text("stream", "true");
+    if let Some(language) = language {
+        form = form.text("language", language.to_string());
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(transcriptions_url)
+        .bearer_auth(api_key)
+        .header("Accept", "text/event-stream")
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: err.to_string(),
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: format!("transcription SSE HTTP {}: {}", status, body),
+        });
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| SpeechError::Vendor {
+            vendor: "openai".into(),
+            message: err.to_string(),
+        })?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(pos) = buffer.find("\n\n").or_else(|| buffer.find("\r\n\r\n")) {
+            let sep_len = if buffer.get(pos..pos + 4) == Some("\r\n\r\n") {
+                4
+            } else {
+                2
+            };
+            let frame = buffer[..pos].to_string();
+            buffer.drain(..pos + sep_len);
+            for line in frame.lines() {
+                let line = line.trim();
+                if !line.starts_with("data:") {
+                    continue;
+                }
+                let payload = line.trim_start_matches("data:").trim();
+                if payload.is_empty() || payload == "[DONE]" {
+                    continue;
+                }
+                if let Ok(event) = serde_json::from_str::<Value>(payload) {
+                    push_file_sse_event(&event, &tx);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl SttProvider for OpenAiStt {
     fn vendor_name(&self) -> &'static str {
@@ -596,7 +996,12 @@ impl SttProvider for OpenAiStt {
                 #[cfg(feature = "live")]
                 {
                     return rt
-                        .start_realtime(&self.api_key, &self.model, self.language.as_deref())
+                        .start_realtime(
+                            &self.api_key,
+                            &self.api_base,
+                            &self.model,
+                            self.language.as_deref(),
+                        )
                         .await;
                 }
                 #[cfg(not(feature = "live"))]
@@ -648,34 +1053,15 @@ impl RealtimeBackend {
     async fn start_realtime(
         &mut self,
         api_key: &Option<String>,
+        api_base: &str,
         model: &str,
         language: Option<&str>,
     ) -> SpeechResult<()> {
         let api_key = crate::factory::api_key_from(api_key, "OPENAI_API_KEY")?;
-        let mut request =
-            OPENAI_REALTIME_URL
-                .into_client_request()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "openai".into(),
-                    message: err.to_string(),
-                })?;
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {api_key}")
-                .parse()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "openai".into(),
-                    message: format!("invalid auth header: {err}"),
-                })?,
-        );
+        let ephemeral =
+            mint_transcription_client_secret(&api_key, api_base, model, language).await?;
+        let (mut sink, mut stream) = connect_realtime_with_url_fallback(&ephemeral).await?;
 
-        let (ws, _) = connect_async(request)
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: err.to_string(),
-            })?;
-        let (mut sink, mut stream) = ws.split();
         let session = session_update_body(model, language);
         sink.send(Message::Text(session.to_string().into()))
             .await
@@ -792,28 +1178,47 @@ impl RealtimeBackend {
     }
 
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
+        let waiting = self.commit_waiting.load(Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         let Some(rx) = inner.rx.as_mut() else {
             return Ok(None);
         };
-        match rx.try_recv() {
-            Ok(Incoming::Update(transcript)) => {
-                let is_final = matches!(transcript, SttTranscript::Final(_));
-                drop(inner);
-                if is_final {
-                    self.on_final_delivered();
+        let recv_next = async {
+            match rx.try_recv() {
+                Ok(Incoming::Update(transcript)) => Ok(Some(transcript)),
+                Ok(Incoming::Failed(message)) => Err(SpeechError::Vendor {
+                    vendor: "openai".into(),
+                    message,
+                }),
+                Err(mpsc::error::TryRecvError::Empty) if waiting => {
+                    match rx.recv().await {
+                        Some(Incoming::Update(transcript)) => Ok(Some(transcript)),
+                        Some(Incoming::Failed(message)) => Err(SpeechError::Vendor {
+                            vendor: "openai".into(),
+                            message,
+                        }),
+                        None => Err(SpeechError::Vendor {
+                            vendor: "openai".into(),
+                            message: "realtime transcription socket closed".into(),
+                        }),
+                    }
                 }
-                Ok(Some(transcript))
+                Err(mpsc::error::TryRecvError::Empty) => Ok(None),
+                Err(mpsc::error::TryRecvError::Disconnected) => Err(SpeechError::Vendor {
+                    vendor: "openai".into(),
+                    message: "realtime transcription socket closed".into(),
+                }),
             }
-            Ok(Incoming::Failed(message)) => Err(SpeechError::Vendor {
-                vendor: "openai".into(),
-                message,
-            }),
-            Err(mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::error::TryRecvError::Disconnected) => Err(SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: "realtime transcription socket closed".into(),
-            }),
+        };
+        let transcript = recv_next.await?;
+        drop(inner);
+        if let Some(transcript) = transcript {
+            if matches!(transcript, SttTranscript::Final(_)) {
+                self.on_final_delivered();
+            }
+            Ok(Some(transcript))
+        } else {
+            Ok(None)
         }
     }
 
@@ -879,8 +1284,9 @@ where
                 message,
             });
         }
-        if let Some("session.updated" | "transcription_session.updated") =
-            event.get("type").and_then(Value::as_str)
+        if let Some(
+            "session.updated" | "transcription_session.updated" | "transcription_session.created",
+        ) = event.get("type").and_then(Value::as_str)
         {
             return Ok(());
         }
@@ -923,7 +1329,7 @@ mod tests {
         assert!(!model_uses_realtime_transcription("whisper-1"));
         assert!(!model_uses_realtime_transcription("gpt-4o-mini-transcribe"));
         assert!(!model_uses_realtime_transcription("gpt-4o-transcribe"));
-        assert!(model_uses_realtime_transcription("gpt-transcribe"));
+        assert!(!model_uses_realtime_transcription("gpt-transcribe"));
         assert!(model_uses_realtime_transcription("gpt-live-transcribe"));
     }
 
@@ -960,6 +1366,16 @@ mod tests {
         assert!(appends > 1);
         assert_eq!(chunked, oneshot_24k(&pcm));
         assert_eq!(chunked.len(), pcm.len() / 2 * 3);
+    }
+
+    #[test]
+    fn transcription_session_update_openapi_shape() {
+        let body = transcription_session_update_body("gpt-4o-mini-transcribe", Some("en"));
+        assert_eq!(body["type"], "transcription_session.update");
+        assert_eq!(
+            body["session"]["input_audio_transcription"]["model"],
+            "gpt-4o-mini-transcribe"
+        );
     }
 
     #[test]
@@ -1082,10 +1498,9 @@ mod tests {
 
         #[tokio::test]
         async fn http_finalize_posts_once_and_poll_returns_final() {
-            let (api_base, posts) = spawn_transcription_mock("gpt-4o-mini-transcribe").await;
-            let mut stt =
-                OpenAiStt::new(&test_stt_config("gpt-4o-mini-transcribe", Some(api_base)))
-                    .expect("stt");
+            let (api_base, posts) = spawn_transcription_mock("whisper-1").await;
+            let mut stt = OpenAiStt::new(&test_stt_config("whisper-1", Some(api_base)))
+                .expect("stt");
             stt.start().await.expect("start");
             stt.push_audio(pcm_above_min_batch()).await.expect("push");
             assert!(stt.poll_transcript().await.expect("poll").is_none());
@@ -1101,6 +1516,47 @@ mod tests {
             }
             assert_eq!(
                 transcript,
+                Some(SttTranscript::Final("one. two. three.".into()))
+            );
+            assert_eq!(posts.load(Ordering::SeqCst), 1);
+        }
+
+        #[tokio::test]
+        async fn http_finalize_sse_emits_partial_then_final() {
+            let posts = Arc::new(AtomicUsize::new(0));
+            let posts_c = posts.clone();
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    posts_c.fetch_add(1, Ordering::SeqCst);
+                    let mut buf = vec![0_u8; 65_536];
+                    let _ = stream.read(&mut buf).await;
+                    let body = [
+                        "data: {\"type\":\"transcript.text.delta\",\"delta\":\"one.\"}\n\n",
+                        "data: {\"type\":\"transcript.text.done\",\"text\":\"one. two. three.\"}\n\n",
+                    ]
+                    .join("");
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                }
+            });
+            let api_base = format!("http://{addr}/v1");
+            let mut stt =
+                OpenAiStt::new(&test_stt_config("gpt-4o-mini-transcribe", Some(api_base)))
+                    .expect("stt");
+            stt.start().await.expect("start");
+            stt.push_audio(pcm_above_min_batch()).await.expect("push");
+            stt.finalize_utterance().await.expect("finalize");
+            let partial = stt.poll_transcript().await.expect("poll");
+            assert_eq!(partial, Some(SttTranscript::Partial("one.".into())));
+            let final_t = stt.poll_transcript().await.expect("poll");
+            assert_eq!(
+                final_t,
                 Some(SttTranscript::Final("one. two. three.".into()))
             );
             assert_eq!(posts.load(Ordering::SeqCst), 1);
@@ -1163,7 +1619,7 @@ mod tests {
     #[cfg(not(feature = "live"))]
     #[tokio::test]
     async fn without_live_feature_realtime_start_errors() {
-        let mut stt = OpenAiStt::new(&test_stt_config("gpt-transcribe", None)).expect("stt");
+        let mut stt = OpenAiStt::new(&test_stt_config("gpt-live-transcribe", None)).expect("stt");
         let err = stt.start().await.expect_err("realtime needs live");
         let SpeechError::Vendor { message, .. } = err else {
             panic!("expected vendor error");

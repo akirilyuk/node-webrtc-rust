@@ -3387,6 +3387,7 @@ dependencies = [
  "node-webrtc-rust-vendor-mock",
  "node-webrtc-rust-vendor-openai",
  "node-webrtc-rust-vendor-sherpa-onnx",
+ "rustls 0.23.40",
  "serde_json",
  "tokio",
 ]

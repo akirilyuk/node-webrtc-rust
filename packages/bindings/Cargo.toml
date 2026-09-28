@@ -38,6 +38,9 @@ node-webrtc-rust-vendor-sherpa-onnx = { path = "../../crates/vendor-sherpa-onnx"
 node-webrtc-rust-vendor-cluster-speech = { path = "../../crates/vendor-cluster-speech" }
 napi = { workspace = true, features = ["async", "napi4", "tokio_rt"] }
 napi-derive = { workspace = true }
+# Direct dep so NAPI `module_init` can install a process-level CryptoProvider
+# before any rustls 0.23 client runs (AWS `aws-lc-rs` + reqwest `ring`).
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }

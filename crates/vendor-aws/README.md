@@ -37,6 +37,12 @@ Optional session token via `AWS_SESSION_TOKEN`.
 | Voices | Sample neural ids: `Joanna` (default), `Matthew`, `Amy`, `Brian`, `Ruth`, `Stephen` | Documented neural voices. Unknown ids fail validation. |
 | **Not** `StartSpeechSynthesisStream` | — | Official stream API exists but **only the `generative` engine** is supported. Neural voices on that call error. Progressive TTS for `Joanna` is **not** documented on `SynthesizeSpeech`. Generative stream is a second product (HTTP/2 `TextEvent` / `AudioEvent`), not an upgrade of the neural path. |
 
+## rustls CryptoProvider (native bindings)
+
+The AWS SDK default HTTPS client enables rustls `aws-lc-rs`. Other vendors enable rustls `ring` (reqwest / `tokio-tungstenite`). rustls 0.23 panics if both features are linked and no process-level `CryptoProvider` is installed.
+
+NAPI `module_init` in `packages/bindings/src/runtime.rs` installs the **ring** provider before any TLS/DTLS work. Do not remove that install when changing AWS crate features.
+
 ## Tests
 
 ```bash

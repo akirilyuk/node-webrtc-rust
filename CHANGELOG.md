@@ -8,11 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-09-28
+
 ### Added
 
 - **vendor-openai** — README documents the STT model matrix, why Realtime uses WebSocket from the server (not a second WebRTC hop to OpenAI), and the JSON/base64 size (base64 +33%, ~38% total vs 24 kHz PCM at 20 ms frames; OpenAI bills duration, not encoded bytes).
-- **vendor-openai** — Hardcoded STT/TTS capability matrix from OpenAI docs: file JSON, file SSE (`transcript.text.delta` / `transcript.text.done`), Realtime transcription via `POST /v1/realtime/client_secrets` (`session.type=transcription`) and `wss://api.openai.com/v1/realtime` with Bearer ephemeral `ek_…`, optional `session.update`, `input_audio_buffer` append/commit, and `conversation.item.input_audio_transcription` events. TTS `stream_format=sse` (`speech.audio.delta` / `speech.audio.done`). Default `gpt-4o-mini-transcribe` / `gpt-transcribe` use file SSE; `gpt-live-transcribe` uses Realtime live. `poll_transcript` waits while file/SSE/commit is in flight.
+- **vendor-openai** — Hardcoded STT/TTS capability matrix from OpenAI docs: file JSON, file SSE (`transcript.text.delta` / `transcript.text.done`), Realtime transcription via `POST /v1/realtime/client_secrets` (`session.type=transcription`) and `wss://api.openai.com/v1/realtime` with Bearer ephemeral `ek_…`, optional `session.update`, `input_audio_buffer` append/commit, and `conversation.item.input_audio_transcription` events. TTS `stream_format=sse` (`speech.audio.delta` / `speech.audio.done`). Default `gpt-4o-mini-transcribe` / `gpt-transcribe` use file SSE; `gpt-live-transcribe` uses Realtime live. `poll_transcript` waits while file/SSE/commit is in flight. (#261)
 - **vendor-openai** — Matrix unit tests cover every documented STT model row; live matrix tests connect each documented STT/TTS model on every implemented transport (file JSON/SSE, Realtime live/committed-turn, TTS audio/SSE allow/deny). README Tests section maps live tests to matrix cells.
+
+**Compare:** [`release/0.9.13…release/0.9.14`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.13...release/0.9.14)
 
 ## [0.9.13] - 2026-09-28
 

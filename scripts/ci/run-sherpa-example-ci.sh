@@ -61,12 +61,7 @@ SHERPA_ROUNDTRIP_E2E=(
 )
 
 ensure_ts_dist() {
-  if [[ ! -f packages/sdk/dist/cjs/index.js ]] \
-    || [[ ! -f packages/signaling/dist/cjs/index.js ]] \
-    || [[ ! -f packages/helpers/dist/cjs/index.js ]]; then
-    echo "==> build TypeScript workspace (dist missing for Sherpa example typecheck)"
-    bash "$ROOT/scripts/ci/build-ts-workspace.sh"
-  fi
+  bash "$ROOT/scripts/ci/ensure-ts-dist.sh"
 }
 
 ensure_native_node() {

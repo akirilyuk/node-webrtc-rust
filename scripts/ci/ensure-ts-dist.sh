@@ -13,7 +13,7 @@ cd "$ROOT"
 
 STAMP_FILE="packages/sdk/dist/.ci-ts-dist-key"
 REQUIRED=(
-  packages/voice-catalog/dist/cjs/index.js
+  packages/voice-catalog/dist/cjs/src/index.js
   packages/sdk/dist/cjs/index.js
   packages/signaling/dist/cjs/index.js
   packages/helpers/dist/cjs/index.js

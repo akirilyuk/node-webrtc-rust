@@ -22,15 +22,21 @@ Azure AI Speech STT/TTS for `@node-webrtc-rust/sdk` VoiceAgent (documented REST 
 
 `config.endpoint` can override STT host or TTS regional host. `config.apiKey` overrides speech keys.
 
-## STT (`config.model` = recognition mode)
+## Streaming decisions (STT)
 
-| Mode | Transport |
-|---|---|
-| `conversation` | REST short audio POST (default) |
+| Choice | What we implemented | Why |
+|---|---|---|
+| Transport | REST short audio `POST …/stt/speech/recognition/conversation/…` | Official [short-audio REST](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short). **Final `DisplayText` only** — no interims. |
+| Mode | `conversation` only | Documented REST path segment. `dictation` / `interactive` are not wired. |
+| Timing | Buffer PCM until `finalize_utterance`, then one POST | Matches the short-audio API (utterance file, not live frames). |
 
-**No partials:** Microsoft documents that the short-audio REST API returns **final results only**.
+**Not implemented (by design):**
 
-**Not implemented (by design):** Microsoft publishes a conversation **WebSocket URL** (`wss://…/stt/speech/recognition/conversation/…`) and Voice Live realtime JSON (`wss://…/voice-live/realtime`). Official “how to recognize speech” directs clients to the **Speech SDK**; the short-audio REST page does **not** publish the SDK binary/text frame protocol (`Path`, `X-RequestId`, `speech.hypothesis`, …) for custom raw clients. This crate does **not** reverse-engineer SDK frames. Live partial STT is a documented gap; use a vendor with published streaming (e.g. Deepgram, AWS Transcribe) if you need `user_speech_partial`.
+1. **Speech SDK WebSocket** (`wss://…/stt/speech/recognition/conversation/…`). Microsoft publishes the **URL** (custom-speech endpoint links, format notes). Official “how to recognize speech” tells you to use the **Speech SDK**. The short-audio REST page does **not** specify `Path` / `X-RequestId` / `speech.hypothesis` framing for a raw client. We do not reverse-engineer SDK frames.
+
+2. **Voice Live** (`wss://…/voice-live/realtime?api-version=…&model=…`). Documented JSON events, compatible with Azure OpenAI Realtime. It is a **full realtime conversation** (instructions, Azure VAD, model replies, output voice) — not a drop-in `SttProvider` for VoiceAgent. VoiceAgent already owns VAD, the customer agent LLM (`@voicethere/agent` / local handler), and TTS. Voice Live would replace that stack (like a hosted realtime agent), not fill Azure REST partials. OpenAI in this repo uses Realtime as **`session.type=transcription` only**; Voice Live is not documented as that same transcription-only VoiceAgent adapter.
+
+If you need `user_speech_partial`, use Deepgram listen, AWS Transcribe, ElevenLabs Scribe, Google Chirp V2, or OpenAI `gpt-live-transcribe`.
 
 ## TTS (`config.voice`)
 

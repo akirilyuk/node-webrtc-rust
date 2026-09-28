@@ -2,6 +2,8 @@
 
 Official API documentation for every speech provider supported by `@node-webrtc-rust/sdk/voice`.
 
+**Streaming decisions** (what we implemented vs documented gaps) live in each crate README under `crates/vendor-*/README.md`.
+
 Canonical machine-readable list: [`voice-vendor-docs.ts`](./voice-vendor-docs.ts).  
 Sherpa local model catalog (download scripts): [`sherpa-local-model-catalog.json`](./sherpa-local-model-catalog.json).
 

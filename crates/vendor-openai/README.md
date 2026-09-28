@@ -13,6 +13,18 @@ Official docs:
 - [Realtime WebRTC](https://platform.openai.com/docs/guides/realtime-webrtc)
 - [Create speech](https://platform.openai.com/docs/api-reference/audio/createSpeech)
 
+## Streaming decisions (summary)
+
+| STT model | VoiceAgent default transport | Partials while speaking |
+|---|---|---|
+| `whisper-1` | File JSON (`POST /v1/audio/transcriptions`) | No |
+| `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, `gpt-4o-transcribe-diarize`, `gpt-transcribe` | File SSE (`stream=true`) | Text deltas of a **finished** utterance WAV, not live-mic |
+| `gpt-live-transcribe` | Realtime WS `session.type=transcription` | Yes (`input_audio_buffer.append` while VAD is open) |
+
+TTS: default `stream_format=audio` (chunked PCM). SSE (`speech.audio.delta`) only for models that document it (`gpt-4o-mini-tts`). **Never** send `stream_format=sse` for `tts-1` / `tts-1-hd`.
+
+We do **not** open a second WebRTC peer to OpenAI. See below.
+
 ## Why Realtime uses WebSocket (not a second WebRTC hop)
 
 OpenAI documents **two** Realtime transports:

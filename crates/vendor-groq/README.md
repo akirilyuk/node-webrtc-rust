@@ -24,7 +24,13 @@ Optional `config.apiKey` overrides the env var.
 | `whisper-large-v3-turbo` | File `POST …/audio/transcriptions` on VAD finalize (default) |
 | `whisper-large-v3` | Same |
 
-**Not streamed:** Groq docs describe file/url transcription only — no documented live WebSocket. No partial transcripts; `poll_transcript` waits while the multipart POST is in flight after `finalize_utterance`.
+## Streaming decisions
+
+**STT — file only.** Groq’s published STT docs are multipart `POST …/audio/transcriptions` (Whisper file/url). There is **no** documented live listen WebSocket. We do not invent one. After VoiceAgent VAD `finalize_utterance`, this crate POSTs the utterance WAV and emits a single final (`user_speech_partial` never fires).
+
+**TTS — full body.** Groq TTS is `POST …/audio/speech` returning a complete WAV. There is no documented progressive SSE/chunked speech stream. `synthesize_progressive` waits for the full response, then frames PCM for the outbound track.
+
+Translations endpoint is out of scope.
 
 Translations endpoint is out of scope.
 

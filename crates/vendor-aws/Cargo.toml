@@ -1,0 +1,30 @@
+[package]
+name = "node-webrtc-rust-vendor-aws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AWS Transcribe streaming STT and Polly TTS vendor adapter"
+
+[features]
+default = []
+live = [
+    "dep:aws-config",
+    "dep:aws-sdk-transcribestreaming",
+    "dep:aws-sdk-polly",
+    "dep:aws-smithy-types",
+    "dep:futures-util",
+]
+
+[dependencies]
+async-trait = "0.1"
+bytes = { workspace = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+node-webrtc-rust-speech = { path = "../speech" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+aws-config = { version = "1", optional = true, features = ["behavior-version-latest"] }
+aws-sdk-transcribestreaming = { version = "1", optional = true }
+aws-sdk-polly = { version = "1", optional = true }
+aws-smithy-types = { version = "1", optional = true, features = ["byte-stream-poll-next"] }

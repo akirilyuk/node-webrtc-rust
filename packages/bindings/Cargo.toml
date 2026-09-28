@@ -25,10 +25,13 @@ node-webrtc-rust-conference = { path = "../../crates/conference" }
 node-webrtc-rust-player = { path = "../../crates/player" }
 node-webrtc-rust-speech = { path = "../../crates/speech" }
 node-webrtc-rust-vendor-assemblyai = { path = "../../crates/vendor-assemblyai" }
+node-webrtc-rust-vendor-aws = { path = "../../crates/vendor-aws", features = ["live"] }
+node-webrtc-rust-vendor-azure = { path = "../../crates/vendor-azure", features = ["live"] }
 node-webrtc-rust-vendor-cartesia = { path = "../../crates/vendor-cartesia", features = ["live"] }
 node-webrtc-rust-vendor-deepgram = { path = "../../crates/vendor-deepgram", features = ["live"] }
 node-webrtc-rust-vendor-elevenlabs = { path = "../../crates/vendor-elevenlabs", features = ["live"] }
 node-webrtc-rust-vendor-google = { path = "../../crates/vendor-google", features = ["live"] }
+node-webrtc-rust-vendor-groq = { path = "../../crates/vendor-groq", features = ["live"] }
 node-webrtc-rust-vendor-mock = { path = "../../crates/vendor-mock" }
 node-webrtc-rust-vendor-openai = { path = "../../crates/vendor-openai", features = ["live"] }
 node-webrtc-rust-vendor-sherpa-onnx = { path = "../../crates/vendor-sherpa-onnx" }

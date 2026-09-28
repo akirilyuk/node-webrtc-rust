@@ -120,6 +120,12 @@ export function sttVendorToJs(vendor: SttConfig['provider']): JsSttVendor {
       return JsSttVendor.Google
     case 'assemblyai':
       return JsSttVendor.Assemblyai
+    case 'groq':
+      return JsSttVendor.Groq
+    case 'azure':
+      return JsSttVendor.Azure
+    case 'aws':
+      return JsSttVendor.Aws
     case 'local-sherpa':
       return JsSttVendor.LocalSherpa
     case 'cluster-sherpa':
@@ -142,6 +148,12 @@ export function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
       return JsTtsVendor.Google
     case 'cartesia':
       return JsTtsVendor.Cartesia
+    case 'groq':
+      return JsTtsVendor.Groq
+    case 'azure':
+      return JsTtsVendor.Azure
+    case 'aws':
+      return JsTtsVendor.Aws
     case 'local-sherpa':
       return JsTtsVendor.LocalSherpa
     case 'cluster-sherpa':
@@ -158,6 +170,9 @@ export const STT_VENDOR_VALUES = [
   'elevenlabs',
   'google',
   'assemblyai',
+  'groq',
+  'azure',
+  'aws',
   'local-sherpa',
   'cluster-sherpa',
   'mock',
@@ -170,6 +185,9 @@ export const TTS_VENDOR_VALUES = [
   'elevenlabs',
   'google',
   'cartesia',
+  'groq',
+  'azure',
+  'aws',
   'local-sherpa',
   'cluster-sherpa',
   'mock',

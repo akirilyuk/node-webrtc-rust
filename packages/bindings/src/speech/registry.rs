@@ -6,10 +6,13 @@ use node_webrtc_rust_speech::config::{SttVendor, TtsVendor};
 use node_webrtc_rust_speech::pipeline::VendorFactory;
 use node_webrtc_rust_speech::registry::VendorRegistry;
 use node_webrtc_rust_vendor_assemblyai::AssemblyAiFactory;
+use node_webrtc_rust_vendor_aws::AwsFactory;
+use node_webrtc_rust_vendor_azure::AzureFactory;
 use node_webrtc_rust_vendor_cartesia::CartesiaFactory;
 use node_webrtc_rust_vendor_deepgram::DeepgramFactory;
 use node_webrtc_rust_vendor_elevenlabs::ElevenLabsFactory;
 use node_webrtc_rust_vendor_google::GoogleFactory;
+use node_webrtc_rust_vendor_groq::GroqFactory;
 use node_webrtc_rust_vendor_mock::MockFactory;
 use node_webrtc_rust_vendor_openai::OpenAiFactory;
 use node_webrtc_rust_vendor_cluster_speech::ClusterSherpaFactory;
@@ -37,6 +40,15 @@ pub fn default_vendor_registry() -> Arc<VendorRegistry> {
     registry.register_tts(TtsVendor::Cartesia, arc_factory(CartesiaFactory));
 
     registry.register_stt(SttVendor::Assemblyai, arc_factory(AssemblyAiFactory));
+
+    registry.register_stt(SttVendor::Groq, arc_factory(GroqFactory));
+    registry.register_tts(TtsVendor::Groq, arc_factory(GroqFactory));
+
+    registry.register_stt(SttVendor::Azure, arc_factory(AzureFactory));
+    registry.register_tts(TtsVendor::Azure, arc_factory(AzureFactory));
+
+    registry.register_stt(SttVendor::Aws, arc_factory(AwsFactory));
+    registry.register_tts(TtsVendor::Aws, arc_factory(AwsFactory));
 
     registry.register_stt(SttVendor::LocalSherpa, arc_factory(SherpaFactory));
     registry.register_tts(TtsVendor::LocalSherpa, arc_factory(SherpaFactory));

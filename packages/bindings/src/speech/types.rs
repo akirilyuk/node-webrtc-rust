@@ -191,6 +191,12 @@ pub enum JsSttVendor {
     Google,
     #[napi(value = "assemblyai")]
     Assemblyai,
+    #[napi(value = "groq")]
+    Groq,
+    #[napi(value = "azure")]
+    Azure,
+    #[napi(value = "aws")]
+    Aws,
     #[napi(value = "local-sherpa")]
     LocalSherpa,
     /// @internal cloud runner transport. Not a public vendor.
@@ -208,6 +214,9 @@ impl From<JsSttVendor> for SttVendor {
             JsSttVendor::Elevenlabs => Self::Elevenlabs,
             JsSttVendor::Google => Self::Google,
             JsSttVendor::Assemblyai => Self::Assemblyai,
+            JsSttVendor::Groq => Self::Groq,
+            JsSttVendor::Azure => Self::Azure,
+            JsSttVendor::Aws => Self::Aws,
             JsSttVendor::LocalSherpa => Self::LocalSherpa,
             JsSttVendor::ClusterSherpa => Self::ClusterSherpa,
             JsSttVendor::Mock => Self::Mock,
@@ -228,6 +237,12 @@ pub enum JsTtsVendor {
     Google,
     #[napi(value = "cartesia")]
     Cartesia,
+    #[napi(value = "groq")]
+    Groq,
+    #[napi(value = "azure")]
+    Azure,
+    #[napi(value = "aws")]
+    Aws,
     #[napi(value = "local-sherpa")]
     LocalSherpa,
     /// @internal cloud runner transport. Not a public vendor.
@@ -245,6 +260,9 @@ impl From<JsTtsVendor> for TtsVendor {
             JsTtsVendor::Elevenlabs => Self::Elevenlabs,
             JsTtsVendor::Google => Self::Google,
             JsTtsVendor::Cartesia => Self::Cartesia,
+            JsTtsVendor::Groq => Self::Groq,
+            JsTtsVendor::Azure => Self::Azure,
+            JsTtsVendor::Aws => Self::Aws,
             JsTtsVendor::LocalSherpa => Self::LocalSherpa,
             JsTtsVendor::ClusterSherpa => Self::ClusterSherpa,
             JsTtsVendor::Mock => Self::Mock,

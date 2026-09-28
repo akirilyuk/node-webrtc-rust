@@ -108,6 +108,9 @@ export type SttVendor =
   | 'elevenlabs'
   | 'google'
   | 'assemblyai'
+  | 'groq'
+  | 'azure'
+  | 'aws'
   | 'local-sherpa'
   /** @internal cloud runner only */
   | 'cluster-sherpa'
@@ -119,6 +122,9 @@ export type TtsVendor =
   | 'elevenlabs'
   | 'google'
   | 'cartesia'
+  | 'groq'
+  | 'azure'
+  | 'aws'
   | 'local-sherpa'
   /** @internal cloud runner only */
   | 'cluster-sherpa'

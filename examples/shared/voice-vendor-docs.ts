@@ -1,26 +1,20 @@
 /**
  * Official API documentation links for VoiceAgent STT/TTS providers.
  *
- * Single source of truth — referenced from example READMEs and presets.
- * Update here when adding a vendor or changing default models.
- *
+ * Vendor ids, URLs, defaults, and allowlists come from `@node-webrtc-rust/voice-catalog`.
  * Sherpa local model list: `sherpa-local-model-catalog.json` (shared with download scripts).
  */
 
+import {
+  VOICE_VENDORS,
+  getVendor,
+  type VoiceVendorEntry,
+  type VoiceVendorId,
+} from '@node-webrtc-rust/voice-catalog'
+
 import sherpaCatalog from './sherpa-local-model-catalog.json'
 
-export type VoiceVendorId =
-  | 'openai'
-  | 'deepgram'
-  | 'elevenlabs'
-  | 'cartesia'
-  | 'assemblyai'
-  | 'google'
-  | 'groq'
-  | 'azure'
-  | 'aws'
-  | 'local-sherpa'
-  | 'mock'
+export type { VoiceVendorId } from '@node-webrtc-rust/voice-catalog'
 
 export interface VendorDocLinks {
   /** SDK `stt.provider` / `tts.provider` id */
@@ -78,133 +72,34 @@ export function defaultSherpaTtsModelPath(repoRoot = '$PWD'): string {
   return `${repoRoot}/${SHERPA_EXAMPLE_DIR}/.models/${SHERPA_DEFAULT_EN_TTS_BUNDLE}`
 }
 
-/** All supported providers — cloud + local + mock. */
-export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    stt: true,
-    tts: true,
-    defaultModels: { stt: 'whisper-1', tts: 'tts-1' },
-    home: 'https://platform.openai.com/docs',
-    sttDocs: 'https://platform.openai.com/docs/guides/speech-to-text',
-    ttsDocs: 'https://platform.openai.com/docs/guides/text-to-speech',
-    modelsDocs: 'https://platform.openai.com/docs/models',
-  },
-  {
-    id: 'deepgram',
-    label: 'Deepgram',
-    stt: true,
-    tts: true,
-    defaultModels: { stt: 'nova-2', tts: 'aura-asteria-en' },
-    home: 'https://developers.deepgram.com/',
-    sttDocs: 'https://developers.deepgram.com/docs/live-streaming-audio',
-    ttsDocs: 'https://developers.deepgram.com/reference/text-to-speech/speak',
-    modelsDocs: 'https://developers.deepgram.com/docs/models',
-  },
-  {
-    id: 'elevenlabs',
-    label: 'ElevenLabs',
-    stt: true,
-    tts: true,
-    defaultModels: { stt: 'scribe_v2_realtime', tts: 'eleven_multilingual_v2' },
-    home: 'https://elevenlabs.io/docs',
-    sttDocs: 'https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime',
-    ttsDocs: 'https://elevenlabs.io/docs/api-reference/text-to-speech/stream',
-    modelsDocs: 'https://elevenlabs.io/docs/voices',
-  },
-  {
-    id: 'cartesia',
-    label: 'Cartesia',
-    stt: false,
-    tts: true,
-    defaultModels: { tts: 'sonic-3' },
-    home: 'https://docs.cartesia.ai/',
-    ttsDocs: 'https://docs.cartesia.ai/api-reference/tts/websocket',
-    modelsDocs: 'https://docs.cartesia.ai/models',
-  },
-  {
-    id: 'assemblyai',
-    label: 'AssemblyAI',
-    stt: true,
-    tts: false,
-    defaultModels: { stt: 'universal-streaming-english' },
-    home: 'https://www.assemblyai.com/docs',
-    sttDocs: 'https://www.assemblyai.com/docs/speech-to-text/streaming',
-    modelsDocs:
-      'https://www.assemblyai.com/docs/speech-to-text/pre-recorded-audio/select-the-speech-model',
-  },
-  {
-    id: 'google',
-    label: 'Google Cloud',
-    stt: true,
-    tts: true,
-    defaultModels: { stt: 'latest_long', tts: 'en-US-Neural2-A' },
-    home: 'https://cloud.google.com/speech-to-text',
-    sttDocs: 'https://docs.cloud.google.com/speech-to-text/docs/models/chirp-3',
-    ttsDocs: 'https://docs.cloud.google.com/text-to-speech/docs/create-audio-text-streaming',
-    modelsDocs: 'https://cloud.google.com/text-to-speech/docs/voices',
-  },
-  {
-    id: 'groq',
-    label: 'Groq',
-    stt: true,
-    tts: true,
-    defaultModels: {
-      stt: 'whisper-large-v3-turbo',
-      tts: 'canopylabs/orpheus-v1-english',
-    },
-    home: 'https://console.groq.com/docs',
-    sttDocs: 'https://console.groq.com/docs/speech-to-text',
-    ttsDocs: 'https://console.groq.com/docs/text-to-speech',
-  },
-  {
-    id: 'azure',
-    label: 'Azure AI Speech',
-    stt: true,
-    tts: true,
-    defaultModels: { stt: 'conversation', tts: 'en-US-JennyNeural' },
-    home: 'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/',
-    sttDocs:
-      'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short',
-    ttsDocs:
-      'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech',
-  },
-  {
-    id: 'aws',
-    label: 'AWS (Transcribe + Polly)',
-    stt: true,
-    tts: true,
-    defaultModels: { stt: 'en-US', tts: 'Joanna' },
-    home: 'https://docs.aws.amazon.com/transcribe/',
-    sttDocs: 'https://docs.aws.amazon.com/transcribe/latest/dg/streaming-setting-up.html',
-    ttsDocs: 'https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html',
-  },
-  {
-    id: 'local-sherpa',
-    label: 'Sherpa-ONNX (local)',
-    stt: true,
-    tts: true,
-    defaultModels: {
-      stt: 'sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06',
-      tts: 'vits-piper-en_US-amy-low',
-    },
-    home: 'https://github.com/k2-fsa/sherpa-onnx',
-    sttDocs: 'https://k2-fsa.github.io/sherpa/onnx/',
-    ttsDocs: 'https://k2-fsa.github.io/sherpa/onnx/tts/index.html',
-    modelsDocs: 'https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models',
-  },
-  {
-    id: 'mock',
-    label: 'Mock (CI / local)',
-    stt: true,
-    tts: true,
-    home: 'https://github.com/akirilyuk/node-webrtc-rust/tree/main/crates/vendor-mock',
-  },
-]
+function entryToDocLinks(entry: VoiceVendorEntry): VendorDocLinks {
+  const defaultModels =
+    entry.defaultSttModel || entry.defaultTtsModel
+      ? {
+          ...(entry.defaultSttModel ? { stt: entry.defaultSttModel } : {}),
+          ...(entry.defaultTtsModel ? { tts: entry.defaultTtsModel } : {}),
+        }
+      : undefined
+
+  return {
+    id: entry.id,
+    label: entry.label,
+    stt: entry.stt,
+    tts: entry.tts,
+    defaultModels,
+    home: entry.home,
+    sttDocs: entry.sttDocs,
+    ttsDocs: entry.ttsDocs,
+    modelsDocs: entry.modelsDocs,
+  }
+}
+
+/** All supported providers — cloud + local + mock (from published catalog). */
+export const VOICE_VENDOR_DOCS: VendorDocLinks[] = VOICE_VENDORS.map(entryToDocLinks)
 
 export function getVendorDocs(id: string): VendorDocLinks | undefined {
-  return VOICE_VENDOR_DOCS.find((entry) => entry.id === id)
+  const entry = getVendor(id)
+  return entry ? entryToDocLinks(entry) : undefined
 }
 
 /** Markdown table rows for README copy-paste (STT column). */

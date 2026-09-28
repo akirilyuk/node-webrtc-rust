@@ -25,6 +25,9 @@ pub struct MockSpeechState {
     pub relocate_after_finalize: Arc<AtomicBool>,
     pub close_after_finalize: Arc<AtomicBool>,
     pub error_on_audio: Arc<AtomicBool>,
+    /// First inbound audio emits leftover empty `is_final` (dedicated speech-service class).
+    pub leftover_empty_final_on_first_audio: Arc<AtomicBool>,
+    pub leftover_empty_emitted: Arc<AtomicUsize>,
 }
 
 pub struct MockSpeech {
@@ -50,16 +53,13 @@ impl Speech for MockSpeech {
         }))
     }
 
-    type TranscribeStream =
-        ReceiverStream<Result<TranscribeResponse, Status>>;
+    type TranscribeStream = ReceiverStream<Result<TranscribeResponse, Status>>;
 
     async fn transcribe(
         &self,
         request: Request<Streaming<TranscribeRequest>>,
     ) -> Result<Response<Self::TranscribeStream>, Status> {
-        self.state
-            .transcribe_streams
-            .fetch_add(1, Ordering::SeqCst);
+        self.state.transcribe_streams.fetch_add(1, Ordering::SeqCst);
         let mut inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(32);
         let state = self.state.clone();
@@ -76,9 +76,7 @@ impl Speech for MockSpeech {
                 match req.msg {
                     Some(transcribe_request::Msg::Audio(SttAudio { pcm_s16le })) => {
                         utterance_open = true;
-                        state
-                            .audio_frames
-                            .fetch_add(1, Ordering::SeqCst);
+                        state.audio_frames.fetch_add(1, Ordering::SeqCst);
                         if state.error_on_audio.load(Ordering::SeqCst) {
                             let _ = tx
                                 .send(Ok(TranscribeResponse {
@@ -89,6 +87,24 @@ impl Speech for MockSpeech {
                                 }))
                                 .await;
                             break;
+                        }
+                        if state
+                            .leftover_empty_final_on_first_audio
+                            .load(Ordering::SeqCst)
+                            && state.leftover_empty_emitted.load(Ordering::SeqCst) == 0
+                        {
+                            state.leftover_empty_emitted.fetch_add(1, Ordering::SeqCst);
+                            let _ = tx
+                                .send(Ok(TranscribeResponse {
+                                    msg: Some(transcribe_response::Msg::Transcript(
+                                        SttTranscript {
+                                            text: String::new(),
+                                            is_final: true,
+                                        },
+                                    )),
+                                }))
+                                .await;
+                            continue;
                         }
                         if !pcm_s16le.is_empty() {
                             let _ = tx
@@ -108,7 +124,14 @@ impl Speech for MockSpeech {
                         let _ = tx
                             .send(Ok(TranscribeResponse {
                                 msg: Some(transcribe_response::Msg::Transcript(SttTranscript {
-                                    text: "final text".into(),
+                                    text: if state
+                                        .leftover_empty_final_on_first_audio
+                                        .load(Ordering::SeqCst)
+                                    {
+                                        "one two three".into()
+                                    } else {
+                                        "final text".into()
+                                    },
                                     is_final: true,
                                 })),
                             }))

@@ -16,6 +16,9 @@ export type VoiceVendorId =
   | 'cartesia'
   | 'assemblyai'
   | 'google'
+  | 'groq'
+  | 'azure'
+  | 'aws'
   | 'local-sherpa'
   | 'mock'
 
@@ -141,6 +144,41 @@ export const VOICE_VENDOR_DOCS: VendorDocLinks[] = [
     sttDocs: 'https://docs.cloud.google.com/speech-to-text/docs/models/chirp-3',
     ttsDocs: 'https://docs.cloud.google.com/text-to-speech/docs/create-audio-text-streaming',
     modelsDocs: 'https://cloud.google.com/text-to-speech/docs/voices',
+  },
+  {
+    id: 'groq',
+    label: 'Groq',
+    stt: true,
+    tts: true,
+    defaultModels: {
+      stt: 'whisper-large-v3-turbo',
+      tts: 'canopylabs/orpheus-v1-english',
+    },
+    home: 'https://console.groq.com/docs',
+    sttDocs: 'https://console.groq.com/docs/speech-to-text',
+    ttsDocs: 'https://console.groq.com/docs/text-to-speech',
+  },
+  {
+    id: 'azure',
+    label: 'Azure AI Speech',
+    stt: true,
+    tts: true,
+    defaultModels: { stt: 'conversation', tts: 'en-US-JennyNeural' },
+    home: 'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/',
+    sttDocs:
+      'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short',
+    ttsDocs:
+      'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech',
+  },
+  {
+    id: 'aws',
+    label: 'AWS (Transcribe + Polly)',
+    stt: true,
+    tts: true,
+    defaultModels: { stt: 'en-US', tts: 'Joanna' },
+    home: 'https://docs.aws.amazon.com/transcribe/',
+    sttDocs: 'https://docs.aws.amazon.com/transcribe/latest/dg/streaming-setting-up.html',
+    ttsDocs: 'https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html',
   },
   {
     id: 'local-sherpa',

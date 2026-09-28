@@ -228,8 +228,12 @@ export interface JsVadConfig {
 export const enum JsSttVendor {
   Openai = 'openai',
   Deepgram = 'deepgram',
+  Elevenlabs = 'elevenlabs',
   Google = 'google',
   Assemblyai = 'assemblyai',
+  Groq = 'groq',
+  Azure = 'azure',
+  Aws = 'aws',
   LocalSherpa = 'local-sherpa',
   /** @internal cloud runner transport. Not a public vendor. */
   ClusterSherpa = 'cluster-sherpa',
@@ -237,9 +241,13 @@ export const enum JsSttVendor {
 }
 export const enum JsTtsVendor {
   Openai = 'openai',
+  Deepgram = 'deepgram',
   Elevenlabs = 'elevenlabs',
   Google = 'google',
   Cartesia = 'cartesia',
+  Groq = 'groq',
+  Azure = 'azure',
+  Aws = 'aws',
   LocalSherpa = 'local-sherpa',
   /** @internal cloud runner transport. Not a public vendor. */
   ClusterSherpa = 'cluster-sherpa',

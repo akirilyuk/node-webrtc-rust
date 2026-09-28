@@ -153,11 +153,14 @@ Providers are **mix-and-match** per session. **Official API docs:** [`examples/s
 | Provider       | STT | TTS | Typical env var                                                         | API docs                                                                                                                       |
 | -------------- | --- | --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `openai`       | ✓   | ✓   | `OPENAI_API_KEY`                                                        | [STT](https://platform.openai.com/docs/guides/speech-to-text) · [TTS](https://platform.openai.com/docs/guides/text-to-speech)  |
-| `deepgram`     | ✓   | —   | `DEEPGRAM_API_KEY`                                                      | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio)                                                    |
-| `elevenlabs`   | —   | ✓   | `ELEVENLABS_API_KEY`                                                    | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)                                                     |
-| `cartesia`     | —   | ✓   | `CARTESIA_API_KEY`                                                      | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes)                                                                  |
+| `deepgram`     | ✓   | ✓   | `DEEPGRAM_API_KEY`                                                      | [Listen](https://developers.deepgram.com/docs/live-streaming-audio) · [Speak](https://developers.deepgram.com/reference/text-to-speech/speak) |
+| `elevenlabs`   | ✓   | ✓   | `ELEVENLABS_API_KEY`                                                    | [Scribe STT](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) · [TTS stream](https://elevenlabs.io/docs/api-reference/text-to-speech/stream) |
+| `cartesia`     | —   | ✓   | `CARTESIA_API_KEY`                                                      | [TTS WebSocket](https://docs.cartesia.ai/api-reference/tts/websocket) · [bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
 | `assemblyai`   | ✓   | —   | `ASSEMBLYAI_API_KEY`                                                    | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                      |
 | `google`       | ✓   | ✓   | `GOOGLE_APPLICATION_CREDENTIALS`                                        | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs)                      |
+| `groq`         | ✓   | ✓   | `GROQ_API_KEY`                                                          | [STT](https://console.groq.com/docs/speech-to-text) · [TTS](https://console.groq.com/docs/text-to-speech) — file STT, no live partials |
+| `azure`        | ✓   | ✓   | `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `AZURE_SPEECH_RESOURCE`      | [REST STT](https://learn.microsoft.com/azure/ai-services/speech-service/rest-speech-to-text-short) · [REST TTS](https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech) — finals-only STT |
+| `aws`          | ✓   | ✓   | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`              | [Transcribe stream](https://docs.aws.amazon.com/transcribe/latest/dg/streaming-setting-up.html) · [Polly](https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html) |
 | `local-sherpa` | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
 | `mock`         | ✓   | ✓   | _(none — use for CI/local)_                                             | —                                                                                                                              |
 
@@ -168,13 +171,17 @@ Providers are **mix-and-match** per session. **Official API docs:** [`examples/s
 Example pairings when a vendor only supports one direction:
 
 ```typescript
-// Deepgram listen + OpenAI speech
+// Deepgram listen + Aura TTS (one API key)
 stt: { provider: 'deepgram', model: 'nova-2', language: 'en' },
-tts: { provider: 'openai', model: 'tts-1', voice: 'alloy' },
+tts: { provider: 'deepgram', model: 'aura-asteria-en', voice: 'aura-asteria-en' },
 
-// AssemblyAI STT + ElevenLabs TTS
-stt: { provider: 'assemblyai', model: 'universal-streaming-english' },
+// ElevenLabs Scribe + TTS (one API key)
+stt: { provider: 'elevenlabs', model: 'scribe_v2_realtime', language: 'en' },
 tts: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice: '...' },
+
+// AssemblyAI STT + OpenAI TTS (AssemblyAI is STT-only)
+stt: { provider: 'assemblyai', model: 'universal-streaming-english' },
+tts: { provider: 'openai', model: 'tts-1', voice: 'alloy' },
 ```
 
 API keys via `apiKey` in config or env vars. Never logged or returned in speech events.
@@ -296,7 +303,7 @@ dc.onopen = () => {
 
 Full browser + Node demo: [`examples/voice-agent-browser`](../../examples/voice-agent-browser/README.md).
 
-**Live vendors:** default is mock. Set `VOICE_VENDOR=openai|deepgram|elevenlabs|cartesia|assemblyai|google` and the vendor’s API keys, then run `npm run start:live:<vendor> --workspace=@node-webrtc-rust/example-voice-agent-browser`. See that README for env vars and pairing notes.
+**Live vendors:** default is mock. Presets in [`examples/shared/voice-vendor-presets.ts`](../../examples/shared/voice-vendor-presets.ts) cover `openai`, `deepgram`, `elevenlabs`, `cartesia`, `assemblyai`, `google`, `groq`, `azure`, and `aws`. Browser demos: set `VOICE_VENDOR` + keys — see [`voice-agent-browser/README.md`](../../examples/voice-agent-browser/README.md). Streaming caveats (partials, Flux listen, Azure finals-only): [`VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#streaming-transport-matrix-voiceagent).
 
 ### API summary
 

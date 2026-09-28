@@ -138,8 +138,19 @@ export function voiceConfigForVendor(id: LiveVendorId) {
       }
     case 'azure':
       return {
-        stt: { provider: 'azure' as const, model: 'conversation', language: 'en-US' },
-        tts: { provider: 'azure' as const, model: 'en-US-JennyNeural', voice: 'en-US-JennyNeural' },
+        stt: {
+          provider: 'azure' as const,
+          model: 'conversation',
+          language: 'en-US',
+          // Construct-only: native AzureStt requires a locator (no live call).
+          endpoint: 'example.cognitiveservices.azure.com',
+        },
+        tts: {
+          provider: 'azure' as const,
+          model: 'en-US-JennyNeural',
+          voice: 'en-US-JennyNeural',
+          endpoint: 'eastus.tts.speech.microsoft.com',
+        },
       }
     case 'aws':
       return {

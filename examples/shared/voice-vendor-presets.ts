@@ -234,12 +234,16 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
         model: 'conversation',
         language: process.env.AZURE_SPEECH_LANGUAGE ?? 'en-US',
         apiKey: env('AZURE_SPEECH_KEY') ?? env('SPEECH_KEY'),
+        endpoint: env('AZURE_SPEECH_RESOURCE'),
       },
       {
         provider: 'azure',
         model: 'en-US-JennyNeural',
         voice: 'en-US-JennyNeural',
         apiKey: env('AZURE_SPEECH_KEY') ?? env('SPEECH_KEY'),
+        endpoint: process.env.AZURE_SPEECH_REGION
+          ? `${process.env.AZURE_SPEECH_REGION}.tts.speech.microsoft.com`
+          : undefined,
       },
     ),
     ttsPhrase: 'Azure neural text to speech live check.',

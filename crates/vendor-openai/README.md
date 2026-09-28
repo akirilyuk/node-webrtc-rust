@@ -27,7 +27,23 @@ This crate is the first kind. The customer already has a WebRTC hop into the hos
 We do **not** forward the customer media track to OpenAI as another WebRTC peer:
 
 1. **The first hop is already paid.** Decode from the customer is done. A new peer to OpenAI adds ICE, DTLS, SRTP, and SDP. From a typical worker (NAT, often TURN) that is slower to start and easier to break than `wss://api.openai.com/v1/realtime` after `POST /v1/realtime/client_secrets`.
-2. **RTP vs WebSocket is not the STT bottleneck.** After the session is up, both send 24 kHz mono. JSON/base64 on the socket is extra bytes, not extra model time. Utterance delay is VAD hold, commit, and the transcribe model — the same on both transports. OpenAI’s WebRTC “faster / more consistent” guidance is about **client** networks (jitter, NAT), not a server that already has PCM.
+2. **RTP vs WebSocket is not the STT bottleneck.** After the session is up, both send 24 kHz mono. JSON/base64 on the socket is extra **bytes**, not extra model time. Utterance delay is VAD hold, commit, and the transcribe model — the same on both transports. OpenAI’s WebRTC “faster / more consistent” guidance is about **client** networks (jitter, NAT), not a server that already has PCM.
+
+   **How much JSON/base64 actually is** (Realtime live only; VoiceAgent pushes ~20 ms frames, then we resample 16 kHz → 24 kHz `pcm16` and `input_audio_buffer.append`):
+
+   | | Per 20 ms frame | Per second of gated speech |
+   |---|----------------:|---------------------------:|
+   | Raw PCM (24 kHz mono s16le) | 960 B | 48 KB/s (384 kbit/s) |
+   | Base64 of that PCM | 1280 B (+33.3%) | 64 KB/s |
+   | JSON wrapper (`{"type":"input_audio_buffer.append","audio":…}`) | 47 B | 2.4 KB/s |
+   | JSON body on the wire | 1327 B (**+38%** vs PCM) | 66.4 KB/s (531 kbit/s) |
+
+   Almost all of the expansion is **base64** (fixed 4/3). The JSON keys are 47 bytes per message — about 4% of a 20 ms frame, ~1.5% if we batched to 100 ms, and noise if we batched to 1 s. CPU to base64-encode 48 KB/s is microseconds; it is not a session-cost line.
+
+   OpenAI bills Realtime transcription by **audio duration**, not by encoded bytes, so JSON/base64 does not change the vendor invoice. The leftover cost is **our egress**: ~1.1 MB extra per minute of gated speech (~4.0 MB/min JSON vs 2.9 MB/min raw PCM). At typical cloud egress (~$0.09/GB) that is ~$0.0001 per minute — on the order of **$6 per 1000 hours** of Realtime speech, not per 1000 hours of wall-clock sessions (file-default models never pay this).
+
+   WebRTC’s large bandwidth win would be **Opus** (often ~16–40 kbit/s), not dropping JSON. That is codec compression plus a second PeerConnection, not a cheaper encoding of the same PCM. We still decode locally for VAD/mix/recording, so a raw forward does not remove the first hop.
+
 3. **A raw forward skips this stack.** OpenAI WebRTC uses SDP-negotiated audio; you must not send `input_audio_buffer.append` on the data channel. Mix, recording, and barge-in all assume `SttProvider` PCM. Forking the track still means decode locally **and** ship RTP.
 4. **Most VoiceAgent OpenAI STT is not Realtime.** Default for `gpt-4o-mini-transcribe` (and other file models) is `POST /v1/audio/transcriptions`. WebRTC to OpenAI only applies to Realtime models.
 

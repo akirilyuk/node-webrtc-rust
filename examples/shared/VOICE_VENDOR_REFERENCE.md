@@ -9,14 +9,14 @@ Sherpa local model catalog (download scripts): [`sherpa-local-model-catalog.json
 
 ## Speech-to-text (STT)
 
-| Provider            | SDK id         | Default model (examples)                              | Official docs                                                                                                                              |
-| ------------------- | -------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| OpenAI              | `openai`       | `whisper-1`                                           | [Speech to text](https://platform.openai.com/docs/guides/speech-to-text)                                                                   |
-| Deepgram            | `deepgram`     | `nova-2`                                              | [Live streaming audio](https://developers.deepgram.com/docs/live-streaming-audio) · [Models](https://developers.deepgram.com/docs/models)  |
-| Google Cloud        | `google`       | `latest_long`                                         | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs)                                                                             |
-| AssemblyAI          | `assemblyai`   | `universal-streaming-english`                         | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                                  |
-| Sherpa-ONNX (local) | `local-sherpa` | `sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Pre-trained models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
-| Mock                | `mock`         | _(deterministic test harness)_                        | [`crates/vendor-mock`](../../crates/vendor-mock/)                                                                                          |
+| Provider            | SDK id         | Default model (examples)                                     | Official docs                                                                                                                                                                    |
+| ------------------- | -------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenAI              | `openai`       | `whisper-1`                                                  | [Speech to text](https://platform.openai.com/docs/guides/speech-to-text)                                                                                                         |
+| Deepgram            | `deepgram`     | `nova-2`                                                     | Live WS listen (`interim_results`) — [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) · [Models](https://developers.deepgram.com/docs/models)         |
+| Google Cloud        | `google`       | `latest_long` (STT); `chirp_3` + V2 recognizer for streaming | V2 `StreamingRecognize` / V1 REST — [Chirp 3](https://docs.cloud.google.com/speech-to-text/docs/models/chirp-3) · [Speech-to-Text](https://cloud.google.com/speech-to-text/docs) |
+| AssemblyAI          | `assemblyai`   | `universal-streaming-english`                                | v3 WS `Turn` events — [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                                                  |
+| Sherpa-ONNX (local) | `local-sherpa` | `sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`        | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Pre-trained models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)                                       |
+| Mock                | `mock`         | _(deterministic test harness)_                               | [`crates/vendor-mock`](../../crates/vendor-mock/)                                                                                                                                |
 
 ### Local Sherpa-ONNX — free on-device STT (recommended)
 
@@ -71,14 +71,14 @@ export SHERPA_STT_LANGUAGE=de   # optional — inferred from model path when omi
 
 ## Text-to-speech (TTS)
 
-| Provider            | SDK id         | Default model (examples)       | Official docs                                                                                                                                   |
-| ------------------- | -------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenAI              | `openai`       | `tts-1`                        | [Text to speech](https://platform.openai.com/docs/guides/text-to-speech)                                                                        |
-| ElevenLabs          | `elevenlabs`   | `eleven_multilingual_v2`       | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert) · [Voices](https://elevenlabs.io/docs/voices)                        |
-| Google Cloud        | `google`       | `en-US-Neural2-A`              | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs) · [Voice list](https://cloud.google.com/text-to-speech/docs/voices)              |
-| Cartesia            | `cartesia`     | `sonic-english`                | [TTS bytes API](https://docs.cartesia.ai/api-reference/tts/bytes) · [Models](https://docs.cartesia.ai/models)                                   |
-| Sherpa-ONNX (local) | `local-sherpa` | `vits-piper-en_US-amy-low`     | [Sherpa TTS](https://k2-fsa.github.io/sherpa/onnx/tts/index.html) · [TTS models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models) |
-| Mock                | `mock`         | _(deterministic test harness)_ | [`crates/vendor-mock`](../../crates/vendor-mock/)                                                                                               |
+| Provider            | SDK id         | Default model (examples)                                   | Official docs                                                                                                                                                                                                                      |
+| ------------------- | -------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenAI              | `openai`       | `tts-1`                                                    | [Text to speech](https://platform.openai.com/docs/guides/text-to-speech)                                                                                                                                                           |
+| ElevenLabs          | `elevenlabs`   | `eleven_multilingual_v2`                                   | HTTP `/stream` + WS `stream-input` (not `eleven_v3`) — [Stream API](https://elevenlabs.io/docs/api-reference/text-to-speech/stream) · [Realtime WS](https://elevenlabs.io/docs/eleven-api/guides/how-to/websockets/realtime-tts)   |
+| Google Cloud        | `google`       | `en-US-Neural2-A` (batch); `en-US-Chirp3-HD-*` (streaming) | REST `text:synthesize` or `StreamingSynthesize` (Chirp 3 HD only) — [Streaming TTS](https://docs.cloud.google.com/text-to-speech/docs/create-audio-text-streaming) · [Voices](https://cloud.google.com/text-to-speech/docs/voices) |
+| Cartesia            | `cartesia`     | `sonic-3`                                                  | WS contexts + `/tts/bytes` fallback — [WebSocket](https://docs.cartesia.ai/api-reference/tts/websocket) · [Bytes](https://docs.cartesia.ai/api-reference/tts/bytes)                                                                |
+| Sherpa-ONNX (local) | `local-sherpa` | `vits-piper-en_US-amy-low`                                 | [Sherpa TTS](https://k2-fsa.github.io/sherpa/onnx/tts/index.html) · [TTS models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models)                                                                                    |
+| Mock                | `mock`         | _(deterministic test harness)_                             | [`crates/vendor-mock`](../../crates/vendor-mock/)                                                                                                                                                                                  |
 
 ---
 

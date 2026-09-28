@@ -6,6 +6,8 @@ use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
+use crate::matrix::{default_listen_model, listen_websocket_url, parse_listen_results_message};
+
 #[cfg(feature = "live")]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "live")]
@@ -31,12 +33,17 @@ struct DeepgramSttInner {
 
 impl DeepgramStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        let model = config
+            .model
+            .clone()
+            .unwrap_or_else(|| default_listen_model().to_string());
+        crate::matrix::validate_listen_model(&model).map_err(SpeechError::Config)?;
         Ok(Self {
             api_key: config
                 .api_key
                 .clone()
                 .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok()),
-            model: config.model.clone().unwrap_or_else(|| "nova-2".to_string()),
+            model,
             language: config.language.clone(),
             state: Arc::new(Mutex::new(DeepgramSttInner {
                 running: false,
@@ -68,19 +75,11 @@ impl SttProvider for DeepgramStt {
         #[cfg(feature = "live")]
         {
             let api_key = self.api_key()?;
-            let model = self.model.clone();
-            let language = self.language.clone();
+            let url = listen_websocket_url(&self.model, self.language.as_deref())
+                .map_err(SpeechError::Config)?;
+
             let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Bytes>();
             let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttTranscript>();
-
-            let mut url = format!(
-                "wss://api.deepgram.com/v1/listen?model={}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true",
-                model
-            );
-            if let Some(language) = language {
-                url.push_str("&language=");
-                url.push_str(&language);
-            }
 
             let mut request = url
                 .into_client_request()
@@ -110,7 +109,7 @@ impl SttProvider for DeepgramStt {
                 while let Some(msg) = ws_rx.next().await {
                     let Ok(msg) = msg else { break };
                     if let Message::Text(text) = msg {
-                        if let Some(transcript) = parse_deepgram_message(&text) {
+                        if let Some(transcript) = parse_listen_results_message(&text) {
                             let _ = transcript_tx.send(transcript);
                         }
                     }
@@ -182,31 +181,23 @@ impl SttProvider for DeepgramStt {
     }
 }
 
-#[cfg(feature = "live")]
-fn parse_deepgram_message(raw: &str) -> Option<SttTranscript> {
-    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
-    if value.get("type")?.as_str()? != "Results" {
-        return None;
-    }
-    let transcript = value
-        .pointer("/channel/alternatives/0/transcript")?
-        .as_str()?
-        .trim();
-    if transcript.is_empty() {
-        return None;
-    }
-    let is_final = value
-        .get("is_final")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    if is_final {
-        Some(SttTranscript::Final(transcript.to_string()))
-    } else {
-        Some(SttTranscript::Partial(transcript.to_string()))
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use node_webrtc_rust_speech::config::SttVendor;
 
-#[cfg(not(feature = "live"))]
-fn parse_deepgram_message(_raw: &str) -> Option<SttTranscript> {
-    None
+    #[test]
+    fn rejects_undocumented_model_at_new() {
+        assert!(matches!(
+            DeepgramStt::new(&SttConfig {
+                provider: SttVendor::Deepgram,
+                model: Some("flux-general".into()),
+                model_path: None,
+                language: None,
+                api_key: Some("k".into()),
+                endpoint: None,
+            }),
+            Err(SpeechError::Config(_))
+        ));
+    }
 }

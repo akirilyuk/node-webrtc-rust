@@ -5,16 +5,18 @@
 
 pub const STREAMING_DOC: &str = "https://www.assemblyai.com/docs/speech-to-text/streaming";
 
+use std::sync::LazyLock;
+
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
 /// Documented `speech_model` values from the streaming quickstart / WebSocket examples.
-pub const DOCUMENTED_SPEECH_MODELS: &[&str] = &[
-    "universal-3-6-pro",
-    "universal-streaming-english",
-];
+pub static DOCUMENTED_SPEECH_MODELS: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::stt_models("assemblyai").expect("assemblyai in voice catalog"));
 
 pub const STREAMING_WS_BASE: &str = "wss://streaming.assemblyai.com/v3/ws";
 
 pub fn default_speech_model() -> &'static str {
-    "universal-streaming-english"
+    voice_catalog::default_stt_model("assemblyai").expect("assemblyai default STT in voice catalog")
 }
 
 pub fn validate_speech_model(model: &str) -> Result<(), String> {
@@ -64,7 +66,7 @@ mod tests {
 
     #[test]
     fn documented_models_build_url() {
-        for model in DOCUMENTED_SPEECH_MODELS {
+        for model in *DOCUMENTED_SPEECH_MODELS {
             let url = streaming_websocket_url(model).unwrap();
             assert!(url.contains("speech_model="));
             assert!(url.contains("pcm_s16le"));
@@ -73,15 +75,13 @@ mod tests {
 
     #[test]
     fn parse_turn_partial_and_final() {
-        let partial = parse_turn_message(
-            r#"{"type":"Turn","transcript":"hello","end_of_turn":false}"#,
-        )
-        .unwrap();
+        let partial =
+            parse_turn_message(r#"{"type":"Turn","transcript":"hello","end_of_turn":false}"#)
+                .unwrap();
         assert_eq!(partial, SttTranscript::Partial("hello".into()));
-        let fin = parse_turn_message(
-            r#"{"type":"Turn","transcript":"hello world","end_of_turn":true}"#,
-        )
-        .unwrap();
+        let fin =
+            parse_turn_message(r#"{"type":"Turn","transcript":"hello world","end_of_turn":true}"#)
+                .unwrap();
         assert_eq!(fin, SttTranscript::Final("hello world".into()));
     }
 }

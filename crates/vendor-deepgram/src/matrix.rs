@@ -3,13 +3,18 @@
 //! Live listen: <https://developers.deepgram.com/docs/live-streaming-audio>
 //! Models: <https://developers.deepgram.com/docs/models>
 
+use std::sync::LazyLock;
+
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
 /// Documented `model` query values for `wss://api.deepgram.com/v1/listen`.
-pub const DOCUMENTED_LISTEN_MODELS: &[&str] = &["nova-2", "nova-3"];
+pub static DOCUMENTED_LISTEN_MODELS: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::stt_models("deepgram").expect("deepgram in voice catalog"));
 
 pub const LISTEN_DOC: &str = "https://developers.deepgram.com/docs/live-streaming-audio";
 
 pub fn default_listen_model() -> &'static str {
-    "nova-2"
+    voice_catalog::default_stt_model("deepgram").expect("deepgram default STT in voice catalog")
 }
 
 pub fn validate_listen_model(model: &str) -> Result<(), String> {
@@ -36,7 +41,9 @@ pub fn listen_websocket_url(model: &str, language: Option<&str>) -> Result<Strin
 }
 
 /// Parse documented `Results` WebSocket message (`type`, `is_final`, `channel.alternatives.0.transcript`).
-pub fn parse_listen_results_message(raw: &str) -> Option<node_webrtc_rust_speech::pipeline::SttTranscript> {
+pub fn parse_listen_results_message(
+    raw: &str,
+) -> Option<node_webrtc_rust_speech::pipeline::SttTranscript> {
     use node_webrtc_rust_speech::pipeline::SttTranscript;
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     if value.get("type")?.as_str()? != "Results" {

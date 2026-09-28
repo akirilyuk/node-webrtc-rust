@@ -40,7 +40,7 @@ If you need `user_speech_partial`, use Deepgram listen, AWS Transcribe, ElevenLa
 
 ## TTS (`config.voice`)
 
-**761** official TTS ShortNames from the [language-support TTS table](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts) (snapshot **2026-09-28** in `src/voices.rs` / `azure-tts-voices.txt`). Includes Neural, MultilingualNeural, DragonHD (`locale-Name:DragonHDLatestNeural`), MAI-Voice-2, regional zh-CN variants, etc.
+**761** official TTS ShortNames from the [language-support TTS table](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts) (snapshot **2026-09-28** in `packages/voice-catalog/catalog/azure-tts-voices.json`). Includes Neural, MultilingualNeural, DragonHD (`locale-Name:DragonHDLatestNeural`), MAI-Voice-2, regional zh-CN variants, etc.
 
 Default: `en-US-JennyNeural`. Unknown ShortNames are rejected at validation.
 

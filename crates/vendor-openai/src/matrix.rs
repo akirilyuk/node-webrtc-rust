@@ -7,15 +7,13 @@
 //! TTS: <https://developers.openai.com/api/docs/guides/text-to-speech>,
 //! <https://developers.openai.com/api/docs/api-reference/audio/createSpeech>
 
+use std::sync::LazyLock;
+
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
 /// Documented transcription models (VoiceAgent auto-pick and error messages).
-pub const DOCUMENTED_STT_MODELS: &[&str] = &[
-    "whisper-1",
-    "gpt-4o-mini-transcribe",
-    "gpt-4o-transcribe",
-    "gpt-4o-transcribe-diarize",
-    "gpt-transcribe",
-    "gpt-live-transcribe",
-];
+pub static DOCUMENTED_STT_MODELS: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::stt_models("openai").expect("openai in voice catalog"));
 
 /// How an STT model is reached by default for bounded VoiceAgent utterances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,9 +165,17 @@ mod tests {
             ("whisper-1", SttDefaultTransport::FileJson, false),
             ("gpt-4o-mini-transcribe", SttDefaultTransport::FileSse, true),
             ("gpt-4o-transcribe", SttDefaultTransport::FileSse, true),
-            ("gpt-4o-transcribe-diarize", SttDefaultTransport::FileSse, true),
+            (
+                "gpt-4o-transcribe-diarize",
+                SttDefaultTransport::FileSse,
+                true,
+            ),
             ("gpt-transcribe", SttDefaultTransport::FileSse, true),
-            ("gpt-live-transcribe", SttDefaultTransport::RealtimeLive, false),
+            (
+                "gpt-live-transcribe",
+                SttDefaultTransport::RealtimeLive,
+                false,
+            ),
         ];
         assert_eq!(
             DOCUMENTED_STT_MODELS.len(),
@@ -192,7 +198,7 @@ mod tests {
                 "`{model}` missing from DOCUMENTED_STT_MODELS"
             );
         }
-        for model in DOCUMENTED_STT_MODELS {
+        for model in *DOCUMENTED_STT_MODELS {
             assert!(
                 rows.iter().any(|(m, _, _)| m == model),
                 "`{model}` missing from explicit matrix test rows"

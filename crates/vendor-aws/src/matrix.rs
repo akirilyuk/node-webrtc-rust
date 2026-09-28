@@ -8,20 +8,24 @@ pub const TRANSCRIBE_STREAMING_DOC: &str =
 pub const POLLY_SYNTH_DOC: &str =
     "https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html";
 
+use std::sync::LazyLock;
+
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
 /// Language codes documented for streaming examples (config `model` holds the code; default `en-US`).
-pub const DOCUMENTED_STT_LANGUAGE_CODES: &[&str] = &[
-    "en-US", "es-US", "fr-FR", "de-DE", "pt-BR", "ja-JP", "ko-KR", "zh-CN", "it-IT", "hi-IN",
-];
+pub static DOCUMENTED_STT_LANGUAGE_CODES: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::stt_models("aws").expect("aws in voice catalog"));
 
 /// Sample Polly neural voices (voice id in `TtsConfig.voice`; engine `neural` unless noted).
-pub const DOCUMENTED_TTS_VOICES: &[&str] = &["Joanna", "Matthew", "Amy", "Brian", "Ruth", "Stephen"];
+pub static DOCUMENTED_TTS_VOICES: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::tts_voices("aws").expect("aws in voice catalog"));
 
 pub fn default_stt_language_code() -> &'static str {
-    "en-US"
+    voice_catalog::default_stt_model("aws").expect("aws default STT in voice catalog")
 }
 
 pub fn default_tts_voice() -> &'static str {
-    "Joanna"
+    voice_catalog::default_tts_voice("aws").expect("aws default TTS voice in voice catalog")
 }
 
 pub fn validate_stt_language_code(code: &str) -> Result<(), String> {
@@ -49,7 +53,10 @@ pub fn parse_transcript_event_json(raw: &str) -> Option<(bool, String)> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let results = value.pointer("/Transcript/Results")?.as_array()?;
     let first = results.first()?;
-    let is_partial = first.get("IsPartial").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_partial = first
+        .get("IsPartial")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let transcript = first
         .pointer("/Alternatives/0/Transcript")?
         .as_str()?
@@ -66,7 +73,7 @@ mod tests {
 
     #[test]
     fn language_codes_matrix() {
-        for code in DOCUMENTED_STT_LANGUAGE_CODES {
+        for code in *DOCUMENTED_STT_LANGUAGE_CODES {
             assert!(validate_stt_language_code(code).is_ok());
         }
         assert!(validate_stt_language_code("xx-XX").is_err());
@@ -74,7 +81,7 @@ mod tests {
 
     #[test]
     fn polly_voices_matrix() {
-        for voice in DOCUMENTED_TTS_VOICES {
+        for voice in *DOCUMENTED_TTS_VOICES {
             assert!(validate_tts_voice(voice).is_ok());
         }
         assert!(validate_tts_voice("NotAVoice").is_err());

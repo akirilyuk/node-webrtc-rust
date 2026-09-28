@@ -3,28 +3,32 @@
 //! STT: <https://console.groq.com/docs/speech-to-text>
 //! TTS: <https://console.groq.com/docs/text-to-speech>
 
-pub const STT_DOC: &str = "https://console.groq.com/docs/speech-to-text";
-pub const TTS_DOC: &str = "https://console.groq.com/docs/text-to-speech";
+use std::sync::LazyLock;
 
-pub const DEFAULT_TRANSCRIPTIONS_URL: &str =
-    "https://api.groq.com/openai/v1/audio/transcriptions";
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
+pub static STT_DOC: LazyLock<&'static str> =
+    LazyLock::new(|| voice_catalog::stt_docs_url("groq").expect("groq stt docs in voice catalog"));
+pub static TTS_DOC: LazyLock<&'static str> =
+    LazyLock::new(|| voice_catalog::tts_docs_url("groq").expect("groq tts docs in voice catalog"));
+
+pub const DEFAULT_TRANSCRIPTIONS_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
 pub const DEFAULT_SPEECH_URL: &str = "https://api.groq.com/openai/v1/audio/speech";
 
 /// Documented transcription `model` values (Groq STT page).
-pub const DOCUMENTED_STT_MODELS: &[&str] = &["whisper-large-v3-turbo", "whisper-large-v3"];
+pub static DOCUMENTED_STT_MODELS: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::stt_models("groq").expect("groq in voice catalog"));
 
 /// Documented TTS `model` values (Groq TTS page).
-pub const DOCUMENTED_TTS_MODELS: &[&str] = &[
-    "canopylabs/orpheus-v1-english",
-    "canopylabs/orpheus-arabic-saudi",
-];
+pub static DOCUMENTED_TTS_MODELS: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::tts_models("groq").expect("groq in voice catalog"));
 
 pub fn default_stt_model() -> &'static str {
-    "whisper-large-v3-turbo"
+    voice_catalog::default_stt_model("groq").expect("groq default STT in voice catalog")
 }
 
 pub fn default_tts_model() -> &'static str {
-    "canopylabs/orpheus-v1-english"
+    voice_catalog::default_tts_model("groq").expect("groq default TTS in voice catalog")
 }
 
 pub fn validate_stt_model(model: &str) -> Result<(), String> {
@@ -64,7 +68,7 @@ mod tests {
 
     #[test]
     fn documented_stt_models_allowed() {
-        for model in DOCUMENTED_STT_MODELS {
+        for model in *DOCUMENTED_STT_MODELS {
             assert!(validate_stt_model(model).is_ok());
         }
     }
@@ -76,7 +80,7 @@ mod tests {
 
     #[test]
     fn every_documented_stt_row() {
-        for model in DOCUMENTED_STT_MODELS {
+        for model in *DOCUMENTED_STT_MODELS {
             assert_eq!(validate_stt_model(model).unwrap(), ());
         }
         assert_eq!(DOCUMENTED_STT_MODELS.len(), 2);
@@ -84,7 +88,7 @@ mod tests {
 
     #[test]
     fn documented_tts_models_allowed() {
-        for model in DOCUMENTED_TTS_MODELS {
+        for model in *DOCUMENTED_TTS_MODELS {
             assert!(validate_tts_model(model).is_ok());
         }
     }

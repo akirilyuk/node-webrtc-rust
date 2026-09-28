@@ -5,7 +5,13 @@
 //! Language + voice support (TTS ShortNames): <https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts>
 //! Regional voice list API: <https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech#get-a-list-of-voices>
 
-pub use crate::voices::DOCUMENTED_TTS_VOICES;
+use std::sync::LazyLock;
+
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// Official Azure TTS ShortNames from shared `azure-tts-voices.json`.
+pub static DOCUMENTED_TTS_VOICES: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::azure_tts_voices());
 
 pub const STT_SHORT_AUDIO_DOC: &str =
     "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short";
@@ -23,14 +29,15 @@ pub const TTS_VOICES_LIST_DOC: &str =
 /// clients to the **Speech SDK**; the short-audio REST page is **finals only** and does **not** publish the
 /// SDK binary/text frame protocol (`Path`, `X-RequestId`, `speech.hypothesis`, …) for custom raw clients.
 /// This crate implements REST short audio only — no invented WebSocket frames.
-pub const DOCUMENTED_STT_RECOGNITION_MODES: &[&str] = &["conversation"];
+pub static DOCUMENTED_STT_RECOGNITION_MODES: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::stt_models("azure").expect("azure in voice catalog"));
 
 pub fn default_stt_mode() -> &'static str {
-    "conversation"
+    voice_catalog::default_stt_model("azure").expect("azure default STT in voice catalog")
 }
 
 pub fn default_tts_voice() -> &'static str {
-    "en-US-JennyNeural"
+    voice_catalog::default_tts_voice("azure").expect("azure default TTS voice in voice catalog")
 }
 
 pub fn validate_stt_mode(mode: &str) -> Result<(), String> {
@@ -107,7 +114,7 @@ mod tests {
 
     #[test]
     fn all_documented_voices_allowed() {
-        for voice in DOCUMENTED_TTS_VOICES {
+        for voice in *DOCUMENTED_TTS_VOICES {
             assert!(validate_tts_voice(voice).is_ok(), "voice: {voice}");
         }
     }

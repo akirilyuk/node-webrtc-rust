@@ -14,6 +14,7 @@ live = ["dep:reqwest", "dep:serde"]
 async-trait = "0.1"
 bytes = { workspace = true }
 node-webrtc-rust-speech = { path = "../speech" }
+node-webrtc-rust-voice-catalog = { path = "../voice-catalog" }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true }

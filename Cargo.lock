@@ -3506,6 +3506,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3525,6 +3526,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
@@ -3537,6 +3539,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3553,6 +3556,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3586,6 +3590,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3603,6 +3608,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3622,6 +3628,7 @@ dependencies = [
  "google-cloud-speech-v2",
  "google-cloud-texttospeech-v1",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3638,6 +3645,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3666,6 +3674,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
  "serde_json",
  "thiserror 1.0.69",
@@ -3683,6 +3692,14 @@ dependencies = [
  "sherpa-onnx",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "node-webrtc-rust-voice-catalog"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -140,7 +140,7 @@ async fn live_stt_default_transport_every_documented_model() {
         return;
     }
     let pcm = counting_pcm().await;
-    for model in DOCUMENTED_STT_MODELS {
+    for model in *DOCUMENTED_STT_MODELS {
         let mut stt = OpenAiStt::new(&stt_config(model))
             .map_err(|e| format!("model `{model}` OpenAiStt::new: {e}"))
             .expect("stt new");

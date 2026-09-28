@@ -6,8 +6,7 @@
 
 pub const WS_STREAM_INPUT_DOC: &str =
     "https://elevenlabs.io/docs/eleven-api/guides/how-to/websockets/realtime-tts";
-pub const HTTP_STREAM_DOC: &str =
-    "https://elevenlabs.io/docs/api-reference/text-to-speech/stream";
+pub const HTTP_STREAM_DOC: &str = "https://elevenlabs.io/docs/api-reference/text-to-speech/stream";
 
 pub const DEFAULT_MODEL_ID: &str = "eleven_multilingual_v2";
 
@@ -47,15 +46,11 @@ pub fn tts_progressive_transport(model: &str) -> TtsProgressiveTransport {
 }
 
 pub fn http_stream_url(voice_id: &str) -> String {
-    format!(
-        "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream?output_format=pcm_48000"
-    )
+    format!("https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream?output_format=pcm_48000")
 }
 
 pub fn websocket_stream_input_url(voice_id: &str, model_id: &str) -> String {
-    format!(
-        "wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id={model_id}"
-    )
+    format!("wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id={model_id}")
 }
 
 #[cfg(test)]

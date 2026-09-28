@@ -7,10 +7,20 @@
 pub const WS_DOC: &str = "https://docs.cartesia.ai/api-reference/tts/websocket";
 pub const BYTES_DOC: &str = "https://docs.cartesia.ai/api-reference/tts/bytes";
 
-/// Default from current WebSocket `model_id` enum (not legacy `sonic-english`).
-pub const DEFAULT_MODEL_ID: &str = "sonic-3";
+use std::sync::LazyLock;
 
-pub const DOCUMENTED_WS_MODELS: &[&str] = &["sonic-3.6", "sonic-3.5", "sonic-3", "sonic-latest"];
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// Default from current WebSocket `model_id` enum (not legacy `sonic-english`).
+pub fn default_model_id() -> &'static str {
+    voice_catalog::default_tts_model("cartesia").expect("cartesia default TTS in voice catalog")
+}
+
+/// Alias for callers that expect a `DEFAULT_MODEL_ID` name.
+pub static DEFAULT_MODEL_ID: LazyLock<&'static str> = LazyLock::new(|| default_model_id());
+
+pub static DOCUMENTED_WS_MODELS: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::tts_models("cartesia").expect("cartesia in voice catalog"));
 
 /// Documented `Cartesia-Version` / `cartesia_version` query (WS AsyncAPI).
 pub const DEFAULT_API_VERSION: &str = "2026-08-14";
@@ -45,7 +55,7 @@ mod tests {
 
     #[test]
     fn default_model_in_documented_set() {
-        assert!(DOCUMENTED_WS_MODELS.contains(&DEFAULT_MODEL_ID));
+        assert!(DOCUMENTED_WS_MODELS.contains(&*DEFAULT_MODEL_ID));
     }
 
     #[test]

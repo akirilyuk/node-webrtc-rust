@@ -528,6 +528,9 @@ jobs:
           BINDINGS="packages/bindings"
           PUBLISH=(bash scripts/ci/publish-npm-if-needed.sh)
 
+          echo "==> @node-webrtc-rust/voice-catalog (pure TS; no native bindings)"
+          "${PUBLISH[@]}" "packages/voice-catalog/" "@node-webrtc-rust/voice-catalog" "$VERSION" --ignore-scripts
+
           echo "==> Platform binding packages"
           for dir in "${BINDINGS}"/npm/*/; do
             pkg="$(node -p "require('./${dir}package.json').name")"

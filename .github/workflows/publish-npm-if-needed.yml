@@ -11,6 +11,7 @@ on:
         description: Workspace package directory under packages/
         type: choice
         options:
+          - voice-catalog
           - helpers
           - sdk
           - signaling

@@ -246,6 +246,9 @@ export type SpeechEventType =
   | 'error'
   | 'stt_config_updated'
   | 'tts_config_updated'
+  | 'voice_language_switching'
+  | 'voice_language_changed'
+  | 'voice_language_switch_failed'
 
 /**
  * Runtime names for {@link SpeechEventType} — use in tests and E2E harnesses
@@ -269,6 +272,9 @@ export const SPEECH_EVENT_TYPE = {
   error: 'error',
   sttConfigUpdated: 'stt_config_updated',
   ttsConfigUpdated: 'tts_config_updated',
+  voiceLanguageSwitching: 'voice_language_switching',
+  voiceLanguageChanged: 'voice_language_changed',
+  voiceLanguageSwitchFailed: 'voice_language_switch_failed',
 } as const satisfies Record<string, SpeechEventType>
 
 /** Payload for callback and `speechEvents()` delivery. */
@@ -280,6 +286,24 @@ export interface SpeechEvent {
   language?: string
   /** Present on `error`. */
   error?: string
+  /** Shared across `user_speaking_start` … `user_speech_final` for one utterance. */
+  utteranceId?: string
+  /** True when this final was produced by {@link VoiceAgent.replayLastUtterance}. */
+  replay?: boolean
+  /** Original utterance id when `replay` is true. */
+  replacesUtteranceId?: string
+  /** Runner may set when releasing a held final after a failed language switch. */
+  languageMismatch?: boolean
+  /** TTS voice on `tts_config_updated`. */
+  voice?: string
+  modelPath?: string
+  endpoint?: string
+}
+
+/** Options for {@link VoiceAgent.updateTts}. */
+export interface UpdateTtsOptions {
+  /** When true, cancel in-flight synthesis and flush playback before applying config. */
+  cancelInflight?: boolean
 }
 
 /** Tracks for one peer connection session. */

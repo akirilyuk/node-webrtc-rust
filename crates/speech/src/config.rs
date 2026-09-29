@@ -442,6 +442,13 @@ pub struct TtsConfig {
     pub endpoint: Option<String>,
 }
 
+/// Options for [`crate::agent::VoiceAgent::update_tts_config`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UpdateTtsConfigOptions {
+    /// When true, cancel in-flight synthesis and flush outbound TTS before applying config.
+    pub cancel_inflight: bool,
+}
+
 /// Resolved post-TTS silence duration for outbound pacing.
 pub fn resolved_post_utterance_silence_ms(config: &VoiceAgentConfig) -> u32 {
     let explicit = config.post_utterance_silence_ms;

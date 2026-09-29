@@ -9,6 +9,7 @@ import {
   type JsSpeechEvent,
   type JsSttConfig,
   type JsTtsConfig,
+  type JsUpdateTtsOptions,
   type JsVadConfig,
   type JsVoiceAgent,
   type JsVoiceAgentConfig,
@@ -28,6 +29,7 @@ import type {
   SttVendor,
   TtsConfig,
   TtsVendor,
+  UpdateTtsOptions,
   VadConfig,
   VoiceAgentConfig,
   VoiceAttachOptions,
@@ -255,11 +257,24 @@ function eventModeToJs(mode: EventDeliveryMode): JsEventDeliveryMode {
 function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
   const rawType =
     event.eventType ?? (event as JsSpeechEvent & { event_type?: JsSpeechEventType }).event_type
+  const extended = event as JsSpeechEvent & {
+    utterance_id?: string
+    replaces_utterance_id?: string
+    language_mismatch?: boolean
+    model_path?: string
+  }
   return {
     type: jsEventTypeToString(rawType ?? JsSpeechEventType.Error),
     text: event.text ?? undefined,
     language: event.language ?? undefined,
     error: event.error ?? undefined,
+    utteranceId: event.utteranceId ?? extended.utterance_id ?? undefined,
+    replay: event.replay ?? undefined,
+    replacesUtteranceId: event.replacesUtteranceId ?? extended.replaces_utterance_id ?? undefined,
+    languageMismatch: event.languageMismatch ?? extended.language_mismatch ?? undefined,
+    voice: event.voice ?? undefined,
+    modelPath: event.modelPath ?? extended.model_path ?? undefined,
+    endpoint: event.endpoint ?? undefined,
   }
 }
 
@@ -421,8 +436,20 @@ export class VoiceAgent {
    *
    * @internal Runner / language-switch path — not used by OSS examples.
    */
-  async updateTts(config: TtsConfig): Promise<void> {
-    await this.native.updateTts(toJsTtsConfig(config))
+  async updateTts(config: TtsConfig, options?: UpdateTtsOptions): Promise<void> {
+    const jsOptions: JsUpdateTtsOptions | undefined = options
+      ? { cancelInflight: options.cancelInflight }
+      : undefined
+    await this.native.updateTts(toJsTtsConfig(config), jsOptions)
+  }
+
+  /**
+   * Re-feed the last utterance's post-RNNoise PCM into STT after {@link updateStt}.
+   *
+   * @internal Runner language-switch path — see multi-client `start:replay-last-utterance` demo.
+   */
+  async replayLastUtterance(): Promise<void> {
+    await this.native.replayLastUtterance()
   }
 
   /** Subscribe to `event` or `'speech'` for all event types. */

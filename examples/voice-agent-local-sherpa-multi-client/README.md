@@ -54,6 +54,7 @@ Uses `sessionMode: 'voice+data'` (voice tracks + sync data channel) and `VoiceAg
 | `start:cap-2`   | Same with `VOICE_MAX_CONCURRENT_SESSIONS=2` |
 | `start:debug`   | Same with `VOICE_DEBUG=1` and `WEBRTC_DEBUG=1` |
 | `start:mix-groups` | Voice+Data mix groups demo (`sessionMode: 'voice+data'`) — [mix APIs](../../packages/helpers/src/voice-agent-session-host.ts) |
+| `start:replay-last-utterance` | Headless **mock** `updateStt` + `replayLastUtterance` (no browser, no Sherpa) — see [`src/replay-last-utterance-demo.ts`](./src/replay-last-utterance-demo.ts) and [VOICE-API.md](../../packages/sdk/VOICE-API.md#mid-session-stttts-language-and-model-switch) |
 | `test`          | Vitest (session budget; no models) |
 | `typecheck`     | `tsc --noEmit` |
 

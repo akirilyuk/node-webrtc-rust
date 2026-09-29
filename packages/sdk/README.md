@@ -24,7 +24,7 @@ npm install @node-webrtc-rust/sdk @node-webrtc-rust/signaling @node-webrtc-rust/
 
 Import **`@node-webrtc-rust/sdk/voice`** when you need a conversational loop without reimplementing PCM timing or vendor HTTP/WebSocket clients in Node.
 
-**API reference:** [VOICE-API.md](./VOICE-API.md) (exports, speech events, data-channel bridge) · [VOICE-VAD-AND-BARGE-IN.md](./VOICE-VAD-AND-BARGE-IN.md) (tuning)
+**API reference:** [VOICE-API.md](./VOICE-API.md) (exports, speech events, [mid-session STT/TTS switch](./VOICE-API.md#mid-session-stttts-language-and-model-switch), data-channel bridge) · [VOICE-VAD-AND-BARGE-IN.md](./VOICE-VAD-AND-BARGE-IN.md) (tuning)
 
 ### Problem this solves
 
@@ -243,6 +243,24 @@ Three layers — **VAD activity**, **STT session / vendor feed**, and **text**:
 
 Lifecycle detail: [VOICE-VAD-AND-BARGE-IN.md § STT utterance lifecycle](./VOICE-VAD-AND-BARGE-IN.md#stt-utterance-lifecycle-vad--stt-events).
 
+User turns on the same session also expose **`utteranceId`** on `user_speaking_start` through `user_speech_final` (and on `user_language` when LID is enabled). Replay finals add `replay: true` and `replacesUtteranceId`.
+
+### Mid-session STT/TTS language switch
+
+Swap recognition or synthesis **without** renegotiating WebRTC:
+
+| API | Role |
+| --- | ---- |
+| `updateStt(config)` | New STT vendor/model/language; applies after the current utterance finalizes (or immediately when idle). Emits `stt_config_updated` (`language`, `modelPath`, `endpoint`). |
+| `updateTts(config, { cancelInflight? })` | New TTS before the next `sendTextToTTS`; `cancelInflight: true` stops in-flight speech. Emits `tts_config_updated`. |
+| `replayLastUtterance()` | Re-run the last finalized user PCM through the **new** STT so the triggering phrase is transcribed again (`user_speech_final` with `replay: true`). |
+
+**LID does not auto-switch:** `user_language` from optional `languageId` is a hint only. Your application (or a host coordinator above `VoiceAgent`) must call `updateStt` / `updateTts` when you want a new locale or model. Auto-switch on LID is an **application policy** — not always-on in the SDK.
+
+**Coordinator events:** `voice_language_switching`, `voice_language_changed`, and `voice_language_switch_failed` are typed for hosts that emit switch lifecycle on the same `speech_event` stream; native `VoiceAgent` emits `stt_config_updated` / `tts_config_updated` when configs apply.
+
+Full timing, error cases, and flow diagram: [VOICE-API.md § Mid-session STT/TTS language and model switch](./VOICE-API.md#mid-session-stttts-language-and-model-switch). Headless mock check: `npm run start:replay-last-utterance --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client`.
+
 ### VAD and barge-in
 
 **Full guide:** [`VOICE-VAD-AND-BARGE-IN.md`](./VOICE-VAD-AND-BARGE-IN.md) — **energy vs Silero**, weight/comparison, use cases, defaults, when to tune.
@@ -317,6 +335,9 @@ Full browser + Node demo: [`examples/voice-agent-browser`](../../examples/voice-
 | `on(type, fn)` / `off`                    | Callback handlers                                                    |
 | `speechEvents()`                          | Async generator of all speech events                                 |
 | `wireVoiceAgentToDataChannel(agent, dc)`  | Forward speech events + handle `{ type: 'speak' }` on a data channel |
+| `updateStt(config)`                       | Mid-session STT swap (utterance boundary)                            |
+| `updateTts(config, options?)`           | Mid-session TTS swap (next synthesis job)                          |
+| `replayLastUtterance()`                   | Re-decode last utterance after STT swap                            |
 
 ### Examples and live vendor testing
 

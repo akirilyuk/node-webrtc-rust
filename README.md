@@ -216,7 +216,8 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 | `user_speaking_end`            | VAD + hold   | End-of-utterance hint (`gateStt`: after `sttGateHoldMs`, not first pause) |
 | `user_speech_partial`          | STT          | Live captions, early LLM prefetch                                         |
 | `user_speech_final`            | STT          | **Primary turn trigger** for LLM                                          |
-| `user_language`                | LID (Sherpa) | ISO 639-1 from first ~1s of user speech — route TTS/prompts               |
+| `user_language`                | LID (Sherpa) | ISO 639-1 hint — **does not** change STT/TTS; call `updateStt` / `updateTts` in your app if needed |
+| `stt_config_updated` / `tts_config_updated` | Pipeline | Fired when mid-session vendor configs apply — see SDK [VOICE-API.md](packages/sdk/VOICE-API.md#mid-session-stttts-language-and-model-switch) |
 | `agent_speaking_start` / `end` | TTS playback | UI/state machine                                                          |
 | `barge_in`                     | VAD + config | User interrupted agent — cancel LLM/TTS                                   |
 | `error`                        | Any          | Vendor or pipeline failure                                                |
@@ -255,9 +256,13 @@ const agent = new VoiceAgent({
 
 agent.on('user_language', (event) => {
   const lang = event.language ?? event.text
-  // Switch TTS voice / system prompt per detected language
+  // Optional: your policy — e.g. await agent.updateStt({ ...stt, language: lang })
+  // and agent.updateTts({ ...tts, voice: pickVoice(lang) }, { cancelInflight: true })
+  // LID alone does not swap vendors; see packages/sdk/VOICE-API.md § Mid-session STT/TTS switch
 })
 ```
+
+**Mid-session STT/TTS swap** (no new PeerConnection): `VoiceAgent.updateStt`, `updateTts`, and `replayLastUtterance()` — documented in [packages/sdk/VOICE-API.md](packages/sdk/VOICE-API.md#mid-session-stttts-language-and-model-switch).
 
 **Download Whisper tiny for LID** (local Sherpa example):
 

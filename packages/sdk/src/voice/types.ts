@@ -158,7 +158,12 @@ export interface TtsConfig {
   postUtteranceSilenceMs?: number
 }
 
-/** Offline spoken-language identification (e.g. Sherpa Whisper tiny). */
+/**
+ * Offline spoken-language identification (e.g. Sherpa Whisper tiny).
+ *
+ * Emits `user_language` only — does **not** call {@link VoiceAgent.updateStt} or
+ * {@link VoiceAgent.updateTts}. Wire LID to mid-session swap in your application if desired.
+ */
 export interface LanguageIdConfig {
   /** Default true when `modelPath` is set. Set `false` to disable. */
   enabled?: boolean
@@ -246,8 +251,11 @@ export type SpeechEventType =
   | 'error'
   | 'stt_config_updated'
   | 'tts_config_updated'
+  /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
   | 'voice_language_switching'
+  /** Host coordinator: switch succeeded. */
   | 'voice_language_changed'
+  /** Host coordinator: switch failed (`error` may be set). */
   | 'voice_language_switch_failed'
 
 /**

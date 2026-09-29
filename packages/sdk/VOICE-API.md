@@ -31,6 +31,9 @@ One instance per WebRTC conversation (one inbound + one outbound audio track).
 | `on(event, listener)`                     | Subscribe: event name or `'speech'` for all types.                                                                                          |
 | `off(event, listener)`                    | Unsubscribe.                                                                                                                                |
 | `speechEvents()`                          | Async iterator (`events.mode: 'stream'` or `'both'`). **Agent TTS events only on this agent’s stream** — not on the remote peer’s listener. |
+| `updateStt(config)`                     | Queue a new STT vendor config; applies at utterance boundary (or immediately when idle). See [Mid-session language / model switch](#mid-session-stttts-language-and-model-switch). |
+| `updateTts(config, options?)`           | Queue a new TTS vendor config before the next `sendTextToTTS` job; optional `cancelInflight`. Same section. |
+| `replayLastUtterance()`                 | Re-decode the last finalized utterance with the current STT after a swap. Same section. |
 
 ### Lifecycle
 
@@ -61,6 +64,14 @@ new VoiceAgent(config)
 | `user_stt_not_found`   | VAD fired but no partial within C1 timeout   | No `user_speech_final` — nothing to reply to                       |
 | `barge_in`             | Barge-in path fired (VAD and/or STT partial) | Cancel LLM stream; TTS may already be flushed                      |
 | `error`                | Vendor or pipeline failure                   | Log / recover                                                      |
+| `user_language`        | LID (optional `languageId`)                  | **Detection only** — does not change STT/TTS; your app calls `updateStt` / `updateTts` if needed |
+| `stt_config_updated`   | After pending STT config is applied          | Confirm `language`, `modelPath`, `endpoint` on the active recognizer |
+| `tts_config_updated`   | After pending TTS config is applied            | Confirm `voice`, `modelPath`, `endpoint` on the active synthesizer |
+| `voice_language_switching` | Host coordinator (optional)              | UI “switching language…” — **not** emitted by `VoiceAgent` alone; typed for forwarded `speech_event` payloads |
+| `voice_language_changed`   | Host coordinator (optional)              | Switch succeeded (host metadata in `text` / `language`) |
+| `voice_language_switch_failed` | Host coordinator (optional)            | Switch rejected or vendor error (`error` may be set) |
+
+**Utterance correlation:** `user_speaking_start`, `user_speech_partial`, `user_speech_final`, `user_speaking_end`, and `user_language` on the same turn share `utteranceId` when the native pipeline assigns one. Replay finals set `replay: true` and `replacesUtteranceId` to the original id.
 
 Use `SPEECH_EVENT_TYPE` constants instead of string literals in tests.
 
@@ -90,6 +101,99 @@ With **`gateStt: true`** (`VOICE_AGENT_VAD_PRESET`):
 4. **`user_speaking_end`** is emitted **paired with** `user_speech_final` (not on the first short pause mid-phrase).
 
 Without STT, `user_speaking_end` may follow gate hold only.
+
+## Mid-session STT/TTS language and model switch
+
+Change recognition or synthesis **without** tearing down the `RTCPeerConnection` or calling `attach()` again. The same `VoiceAgent` instance keeps the inbound `readSample` loop and outbound TTS queue; only the Rust STT/TTS vendor instances are recreated from your new config.
+
+**Application policy:** the library does **not** automatically swap STT/TTS when `user_language` fires. Spoken language ID (LID) is an optional hint event. Whether you switch on LID, on a UI locale picker, or on LLM-detected language is entirely up to your host code (or a session coordinator above `VoiceAgent`). A deployed voice product may opt into LID-driven auto-switch in **that** layer — that is not always-on behavior inside `@node-webrtc-rust/sdk`.
+
+### Typical coordinator flow
+
+```text
+user_speech_final (or user_language)
+  → decide target locale / model catalog ids
+  → await agent.updateStt({ … language, modelPath, … })
+  → optional: await agent.updateTts({ … voice, modelPath, … }, { cancelInflight: true })
+  → optional: await agent.replayLastUtterance()  // re-decode phrase that triggered the switch
+  → listen for stt_config_updated / tts_config_updated
+  → handle new user_speech_final (check event.replay)
+  → run LLM + sendTextToTTS with the updated TTS config
+```
+
+Keep the **PeerConnection** and **tracks** stable; only vendor configs change.
+
+### `updateStt(config)`
+
+Queues a full `SttConfig` (same shape as `VoiceAgent` constructor `stt`).
+
+| When | Behavior |
+| ---- | -------- |
+| **Idle** (no utterance in progress) | Applies immediately: stops the current STT provider, starts the new one, emits `stt_config_updated`. |
+| **Mid-utterance** | Config is held until the current utterance finishes (finalize, `user_speech_final`, gate hold drained). Then the swap runs before the next listen window. |
+
+“Utterance in progress” includes open STT stream, gate hold, and endpoint closing — not only visible partials.
+
+After apply, `stt_config_updated` carries:
+
+| Field on `SpeechEvent` | Source |
+| ---------------------- | ------ |
+| `language`             | `stt.language` |
+| `modelPath`            | `stt.modelPath` (e.g. Sherpa ONNX directory) |
+| `endpoint`             | Custom STT endpoint when set |
+
+### `updateTts(config, options?)`
+
+Queues a full `TtsConfig`. The swap runs **before the next** `sendTextToTTS` synthesis job (not necessarily before the next inbound utterance).
+
+| Option | Effect |
+| ------ | ------ |
+| `cancelInflight: false` (default) | Pending synthesis and playback may finish on the old voice; the next phrase uses the new config. |
+| `cancelInflight: true` | Cancels in-flight synthesis and calls the same flush path as barge-in before applying the new TTS provider. Use when the user changed language mid-reply and old-locale audio must stop immediately. |
+
+`tts_config_updated` includes `voice`, `modelPath`, and `endpoint` from the applied config.
+
+### `replayLastUtterance()`
+
+After `updateStt`, the utterance that **triggered** the switch may already have been finalized with the **previous** recognizer. `replayLastUtterance()` re-feeds that turn’s **post-RNNoise** PCM (from an internal ring buffer) through the **current** STT, then emits a new `user_speech_final` with:
+
+- `replay: true`
+- `replacesUtteranceId` — id of the original final
+- fresh `utteranceId` for the replay pass
+
+Call **only when** no utterance is in progress (after the original final landed). Common pattern: on `user_language` or first final in the wrong locale → `updateStt` → `replayLastUtterance` → treat the replay final as the LLM turn input.
+
+**Failures** (rejected promise / `error` event depending on binding):
+
+| Condition | Meaning |
+| --------- | ------- |
+| No snapshot yet | No finalized utterance buffered (demo: [`start:replay-last-utterance`](../../examples/voice-agent-local-sherpa-multi-client/README.md)) |
+| Utterance still open | Wait for `user_speech_final` before replay |
+| Buffer overflow / empty / too old | PCM was not retained — user must speak again |
+
+Full PCM + replay final behavior: Rust `cargo test -p node-webrtc-rust-speech replay_last_utterance`.
+
+### Host-level speech events (`voice_language_*`)
+
+`SpeechEventType` includes `voice_language_switching`, `voice_language_changed`, and `voice_language_switch_failed` so **session coordinators** can mirror switch lifecycle on the same `speech_event` wire as STT/TTS events (for example when forwarding to a browser DataChannel). The native `VoiceAgent` pipeline emits `stt_config_updated` / `tts_config_updated`; the `voice_language_*` kinds are for **your** coordinator to emit when it orchestrates catalog lookups, secrets, and `updateStt` / `updateTts` as one logical “switch.”
+
+### LID vs mid-session swap
+
+| Mechanism | What it does |
+| --------- | ------------ |
+| `languageId` + `user_language` | Offline identify → ISO 639-1 hint on the utterance (`utteranceId` when assigned). |
+| `updateStt` / `updateTts` | Actually changes vendors/models/voices for subsequent audio. |
+| Auto-switch on LID | **Not built into the SDK** — implement in app code (or a host worker) if you want it. |
+
+See [README § Spoken language identification](../../README.md#spoken-language-identification) for LID setup; see [packages/sdk/README.md](./README.md#mid-session-stttts-language-switch) for a Node-oriented summary.
+
+### Headless SDK check (no Sherpa models)
+
+```bash
+npm run start:replay-last-utterance --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa-multi-client
+```
+
+Uses `mock` vendors to exercise `updateStt` and the error path when replay has no buffered utterance.
 
 ## Presets
 
@@ -163,6 +267,6 @@ Full transport × model tables: [`examples/shared/VOICE_VENDOR_REFERENCE.md`](..
 
 ## Related
 
-- [README.md](./README.md) — quick start and Pipeline B
+- [README.md](./README.md) — quick start, Pipeline B, [mid-session language switch](./README.md#mid-session-stttts-language-switch)
 - [VOICE-VAD-AND-BARGE-IN.md](./VOICE-VAD-AND-BARGE-IN.md) — tuning guide
 - [crates/speech/src/lib.rs](../../crates/speech/src/lib.rs) — rustdoc entry point

@@ -422,19 +422,29 @@ export class VoiceAgent {
   }
 
   /**
-   * Queue a new STT config; native applies it after the current utterance finalizes
-   * (or immediately when no utterance is in progress).
+   * Queue a new STT config for mid-session language or model change without re-attaching tracks.
    *
-   * @internal Runner / language-switch path — not used by OSS examples.
+   * Native applies the config after the current utterance finalizes (gate hold and STT close
+   * included), or immediately when no utterance is in progress. Emits `stt_config_updated`
+   * with `language`, `modelPath`, and `endpoint` from the applied config.
+   *
+   * Does not run automatically on `user_language` — your application decides when to call this.
+   *
+   * @see {@link replayLastUtterance} to re-decode the utterance that triggered a switch
+   * @see [VOICE-API.md](../../VOICE-API.md#mid-session-stttts-language-and-model-switch)
    */
   async updateStt(config: SttConfig): Promise<void> {
     await this.native.updateStt(toJsSttConfig(config))
   }
 
   /**
-   * Queue a new TTS config; native applies it before the next synthesis job.
+   * Queue a new TTS config; native applies it before the next {@link sendTextToTTS} job.
    *
-   * @internal Runner / language-switch path — not used by OSS examples.
+   * When `cancelInflight` is true, cancels in-flight synthesis and flushes playback before
+   * swapping vendors (same flush path as barge-in). Emits `tts_config_updated` with `voice`,
+   * `modelPath`, and `endpoint`.
+   *
+   * @see [VOICE-API.md](../../VOICE-API.md#mid-session-stttts-language-and-model-switch)
    */
   async updateTts(config: TtsConfig, options?: UpdateTtsOptions): Promise<void> {
     const jsOptions: JsUpdateTtsOptions | undefined = options
@@ -444,9 +454,17 @@ export class VoiceAgent {
   }
 
   /**
-   * Re-feed the last utterance's post-RNNoise PCM into STT after {@link updateStt}.
+   * Re-feed the last finalized utterance's post-RNNoise PCM into the current STT after
+   * {@link updateStt}, producing a new `user_speech_final` with `replay: true` and
+   * `replacesUtteranceId` set to the original turn.
    *
-   * @internal Runner language-switch path — see multi-client `start:replay-last-utterance` demo.
+   * Call when idle (after the original final). Rejects when no PCM snapshot exists, an
+   * utterance is still open, or the buffer overflowed.
+   *
+   * Headless mock check: `npm run start:replay-last-utterance` in
+   * `example-voice-agent-local-sherpa-multi-client`.
+   *
+   * @see [VOICE-API.md](../../VOICE-API.md#replaylastutterance)
    */
   async replayLastUtterance(): Promise<void> {
     await this.native.replayLastUtterance()

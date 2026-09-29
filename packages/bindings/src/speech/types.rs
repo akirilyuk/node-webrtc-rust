@@ -513,6 +513,19 @@ pub struct JsSpeechEvent {
     pub text: Option<String>,
     pub language: Option<String>,
     pub error: Option<String>,
+    pub utterance_id: Option<String>,
+    pub replay: Option<bool>,
+    pub replaces_utterance_id: Option<String>,
+    pub language_mismatch: Option<bool>,
+    pub voice: Option<String>,
+    pub model_path: Option<String>,
+    pub endpoint: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsUpdateTtsOptions {
+    pub cancel_inflight: Option<bool>,
 }
 
 pub fn speech_err(err: node_webrtc_rust_speech::SpeechError) -> Error {

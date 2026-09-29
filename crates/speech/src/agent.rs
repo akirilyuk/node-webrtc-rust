@@ -16,8 +16,9 @@ use crate::config::{
     effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
     language_id_enabled, resolved_language_id_min_speech_ms, resolved_post_utterance_silence_ms,
     EventDeliveryMode, NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, TtsConfig,
-    VadConfig, VoiceAgentConfig, VoiceSessionContext,
+    UpdateTtsConfigOptions, VadConfig, VoiceAgentConfig, VoiceSessionContext,
 };
+use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::otel;
@@ -39,6 +40,16 @@ pub type PcmWriter = Arc<dyn Fn(Bytes, u32) -> SpeechResult<()> + Send + Sync>;
 pub type PcmReader = Arc<dyn Fn() -> SpeechResult<Option<(Bytes, u32)>> + Send + Sync>;
 
 static INBOUND_PCM_FRAMES: AtomicU64 = AtomicU64::new(0);
+static UTTERANCE_ID_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_utterance_id() -> String {
+    let n = UTTERANCE_ID_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("utt-{n}")
+}
+
+struct ReplayFinalContext {
+    replaces_utterance_id: String,
+}
 
 /// Decrements `tts_worker_tasks_alive` on task exit (including abort).
 struct TtsWorkerAliveGuard(Arc<AtomicUsize>);
@@ -162,6 +173,14 @@ struct AgentInner {
     pending_stt_config: Option<SttConfig>,
     /// Swapped onto the TTS provider before the next synthesis job.
     pending_tts_config: Option<TtsConfig>,
+    /// Id for the open user utterance (`user_speaking_start` … final).
+    current_utterance_id: Option<String>,
+    /// Post-RNNoise STT feed captured for `replay_last_utterance`.
+    utterance_replay_buffer: UtteranceReplayBuffer,
+    /// Last finalized utterance eligible for replay.
+    last_replay_snapshot: Option<UtteranceReplaySnapshot>,
+    /// When set, the next STT `Final` is emitted as a replay final.
+    replay_final_context: Option<ReplayFinalContext>,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -318,6 +337,10 @@ impl VoiceAgent {
                 lid_identify_started_this_utterance: false,
                 pending_stt_config: None,
                 pending_tts_config: None,
+                current_utterance_id: None,
+                utterance_replay_buffer: UtteranceReplayBuffer::new(),
+                last_replay_snapshot: None,
+                replay_final_context: None,
             })),
             stt: Mutex::new(stt),
             language_id: Mutex::new(language_id),
@@ -386,9 +409,102 @@ impl VoiceAgent {
     }
 
     /// Queue a new TTS vendor config; applies before the next synthesis job.
-    pub async fn update_tts_config(&self, config: TtsConfig) -> SpeechResult<()> {
+    pub async fn update_tts_config(
+        &self,
+        config: TtsConfig,
+        options: UpdateTtsConfigOptions,
+    ) -> SpeechResult<()> {
+        if options.cancel_inflight {
+            self.cancel_pending_tts_synthesis().await;
+            self.flush_tts().await?;
+        }
         self.inner.lock().await.pending_tts_config = Some(config);
         Ok(())
+    }
+
+    /// Re-feed the last utterance's post-RNNoise PCM into the current STT stream after a config swap.
+    pub async fn replay_last_utterance(&self) -> SpeechResult<()> {
+        let running = self.inner.lock().await.running;
+        if !running {
+            return Err(SpeechError::NotRunning);
+        }
+        {
+            let inner = self.inner.lock().await;
+            if Self::utterance_in_progress(&inner) {
+                return Err(SpeechError::Internal(
+                    "cannot replay while an utterance is in progress".into(),
+                ));
+            }
+        }
+        self.apply_pending_stt_config_if_any().await?;
+
+        let snapshot = {
+            let inner = self.inner.lock().await;
+            inner.last_replay_snapshot.clone()
+        };
+        let snapshot = snapshot.ok_or_else(|| {
+            SpeechError::Internal("no buffered utterance available for replay".into())
+        })?;
+        if !snapshot.replayable() {
+            return Err(SpeechError::Internal(
+                "utterance replay unavailable (overflow, empty, or too old)".into(),
+            ));
+        }
+
+        let replaces_id = snapshot.utterance_id.clone();
+        {
+            let mut inner = self.inner.lock().await;
+            inner.replay_final_context = Some(ReplayFinalContext {
+                replaces_utterance_id: replaces_id.clone(),
+            });
+        }
+
+        let pcm = snapshot.pcm;
+        {
+            let mut stt = self.stt.lock().await;
+            let Some(stt) = stt.as_mut() else {
+                return Err(SpeechError::Stt("STT not configured".into()));
+            };
+            for chunk in pcm.chunks(640) {
+                stt.push_audio(Bytes::copy_from_slice(chunk)).await?;
+            }
+            stt.finalize_utterance().await?;
+        }
+        self.poll_stt_transcripts().await?;
+
+        let mut inner = self.inner.lock().await;
+        if inner.replay_final_context.is_some() {
+            inner.replay_final_context = None;
+            return Err(SpeechError::Internal(
+                "replay did not produce an STT final".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn commit_utterance_replay_snapshot(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.utterance_replay_buffer.end_utterance();
+        let utterance_id = inner
+            .current_utterance_id
+            .clone()
+            .unwrap_or_else(|| "utt-unknown".into());
+        let overflow = inner.utterance_replay_buffer.overflowed();
+        let pcm = inner.utterance_replay_buffer.snapshot_pcm();
+        inner.last_replay_snapshot = Some(match pcm {
+            Some(pcm) => UtteranceReplaySnapshot {
+                pcm,
+                utterance_id,
+                finalized_at: Instant::now(),
+                overflow,
+            },
+            None => UtteranceReplaySnapshot {
+                pcm: Bytes::new(),
+                utterance_id,
+                finalized_at: Instant::now(),
+                overflow: true,
+            },
+        });
     }
 
     async fn apply_pending_stt_config_if_any(&self) -> SpeechResult<()> {
@@ -413,7 +529,7 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             inner.config.stt = Some(config.clone());
         }
-        self.emit(SpeechEvent::stt_config_updated(config.language.clone()));
+        self.emit(SpeechEvent::stt_config_updated(&config));
         Ok(())
     }
 
@@ -430,7 +546,7 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             inner.config.tts = Some(config.clone());
         }
-        self.emit(SpeechEvent::tts_config_updated(config.voice.clone()));
+        self.emit(SpeechEvent::tts_config_updated(&config));
         Ok(())
     }
 
@@ -1778,7 +1894,9 @@ impl VoiceAgent {
                     final_text.clone()
                 }
             ));
-            self.emit(SpeechEvent::user_speech_final(final_text));
+            let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+            self.emit(SpeechEvent::user_speech_final(final_text, utterance_id));
+            self.clear_utterance_id_after_final().await;
         }
         Ok(())
     }
@@ -1894,9 +2012,15 @@ impl VoiceAgent {
         self.try_spawn_default_mode_lid(false, "utterance close")
             .await;
         self.await_lid_gate_before_utterance_close().await;
-        self.emit(SpeechEvent::user_speaking_end());
+        let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+        self.emit(SpeechEvent::user_speaking_end(utterance_id));
         let mut inner = self.inner.lock().await;
         inner.lid_buffering = false;
+    }
+
+    async fn clear_utterance_id_after_final(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.current_utterance_id = None;
     }
 
     /// Start default-mode LID when eligible. `context` is for debug only.
@@ -2135,7 +2259,8 @@ impl VoiceAgent {
                     } else {
                         inner.lid_last_emitted = Some(code.clone());
                         voice_debug(format!("emit user_language: {code}"));
-                        agent.emit(SpeechEvent::user_language(code));
+                        let utterance_id = inner.current_utterance_id.clone();
+                        agent.emit(SpeechEvent::user_language(code, utterance_id));
                     }
                 }
                 Ok(None) => {}
@@ -2189,8 +2314,15 @@ impl VoiceAgent {
             }
         };
         if emit {
+            let utterance_id = {
+                let mut inner = self.inner.lock().await;
+                let id = next_utterance_id();
+                inner.current_utterance_id = Some(id.clone());
+                inner.utterance_replay_buffer.begin_utterance();
+                id
+            };
             voice_debug("emit user_speaking_start (before STT transcript)");
-            self.emit(SpeechEvent::user_speaking_start());
+            self.emit(SpeechEvent::user_speaking_start(utterance_id));
             self.start_lid_buffering().await;
         }
     }
@@ -2691,7 +2823,9 @@ impl VoiceAgent {
                         forced_text.clone()
                     }
                 ));
-                self.emit(SpeechEvent::user_speech_final(forced_text));
+                let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+                self.emit(SpeechEvent::user_speech_final(forced_text, utterance_id));
+                self.clear_utterance_id_after_final().await;
             } else {
                 let emit_speaking_end_at_finalize = {
                     let mut inner = self.inner.lock().await;
@@ -2718,6 +2852,12 @@ impl VoiceAgent {
         if !self.inner.lock().await.stt_enabled {
             return Ok(());
         }
+        {
+            let mut inner = self.inner.lock().await;
+            inner
+                .utterance_replay_buffer
+                .push(mono_bytes.as_ref());
+        }
         let mut stt = self.stt.lock().await;
         if let Some(stt) = stt.as_mut() {
             stt.push_audio(mono_bytes).await?;
@@ -2740,6 +2880,7 @@ impl VoiceAgent {
 
     async fn finalize_stt_utterance(&self) -> SpeechResult<()> {
         voice_debug("STT finalize_utterance: vendor finalize + poll");
+        self.commit_utterance_replay_snapshot().await;
         let stt_started = Instant::now();
         let (ctx, stt_vendor, stt_attrs) = {
             let inner = self.inner.lock().await;
@@ -2807,7 +2948,8 @@ impl VoiceAgent {
                     }
                     self.emit_user_speaking_start_if_needed().await;
                     // Partial must precede barge_in in the event stream (semantic roundtrip E2E).
-                    self.emit(SpeechEvent::user_speech_partial(text.clone()));
+                    let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+                    self.emit(SpeechEvent::user_speech_partial(text.clone(), utterance_id));
                     self.try_stt_gated_barge_in(&text).await?;
                 }
                 SttTranscript::Final(text) => {
@@ -2863,7 +3005,23 @@ impl VoiceAgent {
                             text.clone()
                         }
                     ));
-                    self.emit(SpeechEvent::user_speech_final(text));
+                    let replay_ctx = {
+                        let mut inner = self.inner.lock().await;
+                        inner.replay_final_context.take()
+                    };
+                    if let Some(ctx) = replay_ctx {
+                        let new_id = next_utterance_id();
+                        self.emit(SpeechEvent::user_speech_final_replay(
+                            text,
+                            Some(new_id),
+                            ctx.replaces_utterance_id,
+                        ));
+                    } else {
+                        let utterance_id =
+                            self.inner.lock().await.current_utterance_id.clone();
+                        self.emit(SpeechEvent::user_speech_final(text, utterance_id));
+                        self.clear_utterance_id_after_final().await;
+                    }
                 }
             }
         }

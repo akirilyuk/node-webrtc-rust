@@ -328,6 +328,16 @@ export interface JsSpeechEvent {
   text?: string
   language?: string
   error?: string
+  utteranceId?: string
+  replay?: boolean
+  replacesUtteranceId?: string
+  languageMismatch?: boolean
+  voice?: string
+  modelPath?: string
+  endpoint?: string
+}
+export interface JsUpdateTtsOptions {
+  cancelInflight?: boolean
 }
 export declare function version(): string
 /** One conference room with participant and mixing controls. */
@@ -563,5 +573,7 @@ export declare class JsVoiceAgent {
   /** Apply a new STT config after the current utterance finalizes (or immediately when idle). */
   updateStt(config: JsSttConfig): Promise<void>
   /** Apply a new TTS config before the next synthesis job. */
-  updateTts(config: JsTtsConfig): Promise<void>
+  updateTts(config: JsTtsConfig, options?: JsUpdateTtsOptions | undefined | null): Promise<void>
+  /** Re-transcribe the last utterance PCM on the current STT provider (after `update_stt`). */
+  replayLastUtterance(): Promise<void>
 }

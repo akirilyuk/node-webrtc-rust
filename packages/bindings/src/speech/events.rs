@@ -32,6 +32,13 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         text: event.text,
         language: event.language,
         error: event.error,
+        utterance_id: event.utterance_id,
+        replay: event.replay,
+        replaces_utterance_id: event.replaces_utterance_id,
+        language_mismatch: event.language_mismatch,
+        voice: event.voice,
+        model_path: event.model_path,
+        endpoint: event.endpoint,
     }
 }
 
@@ -42,10 +49,11 @@ mod speech_event_to_js_tests {
 
     #[test]
     fn user_language_maps_language_field() {
-        let js = speech_event_to_js(SpeechEvent::user_language("fr"));
+        let js = speech_event_to_js(SpeechEvent::user_language("fr", Some("utt-1".into())));
         assert_eq!(js.event_type, JsSpeechEventType::UserLanguage);
         assert_eq!(js.language.as_deref(), Some("fr"));
         assert_eq!(js.text.as_deref(), Some("fr"));
+        assert_eq!(js.utterance_id.as_deref(), Some("utt-1"));
     }
 }
 

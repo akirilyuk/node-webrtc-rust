@@ -9,7 +9,7 @@ async fn event_bus_delivers_to_subscriber() {
     let bus = SpeechEventBus::new();
     let mut rx = bus.subscribe();
 
-    bus.emit(SpeechEvent::user_speaking_start());
+    bus.emit(SpeechEvent::user_speaking_start("utt-test"));
 
     let event = timeout(Duration::from_secs(1), rx.recv())
         .await

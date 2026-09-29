@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-09-29
+
+### Added
+
+- **sdk** — `VoiceAgent.updateStt` / `updateTts` for mid-session STT/TTS vendor swaps without a new `RTCPeerConnection`; `updateTts` accepts `{ cancelInflight?: boolean }` to cancel in-flight synthesis and flush playback before applying a new voice.
+- **sdk** — `VoiceAgent.replayLastUtterance()` re-decodes the last finalized user utterance through the current STT after a swap; replay finals set `replay: true`, a fresh `utteranceId`, and `replacesUtteranceId` pointing at the original final.
+- **sdk** — `SpeechEvent` / coordinator typings: `utteranceId`, `replacesUtteranceId`, and optional host lifecycle events `voice_language_switching`, `voice_language_changed`, `voice_language_switch_failed` on the `speech_event` stream.
+- **docs** — [VOICE-API.md](packages/sdk/VOICE-API.md#mid-session-stttts-language-and-model-switch) documents mid-session language/model switch flow, `cancelInflight`, and `replayLastUtterance`; root README and `examples/voice-agent-local-sherpa-multi-client` replay demo cross-link the same contract.
+
+**Compare:** [`release/0.9.16…release/0.9.17`](https://github.com/akirilyuk/node-webrtc-rust/compare/release/0.9.16...release/0.9.17)
+
 ## [0.9.16] - 2026-09-28
 
 ### Added

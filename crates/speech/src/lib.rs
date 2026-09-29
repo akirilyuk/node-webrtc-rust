@@ -56,6 +56,7 @@ pub mod registry;
 pub mod session_recorder;
 pub mod stt_pre_roll;
 pub mod tts_buffer;
+pub mod utterance_replay;
 pub mod vad;
 
 pub use agent::{PcmReader, PcmWriter, VoiceAgent};
@@ -65,10 +66,12 @@ pub use config::{
     resolved_post_utterance_silence_ms, stt_partial_token_count, BargeInConfig, EventDeliveryMode,
     EventsConfig, LanguageIdConfig,
     NoiseSuppressionConfig, NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, SttVendor,
-    TtsConfig, TtsVendor, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    TtsConfig, TtsVendor, UpdateTtsConfigOptions, VadConfig, VadSampleRate, VoiceAgentConfig,
+    VoiceSessionContext,
 };
 pub use error::{SpeechError, SpeechResult};
 pub use events::{SpeechEvent, SpeechEventBus, SpeechEventKind};
+pub use utterance_replay::SPEECH_REPLAY_MAX_MS;
 pub use node_webrtc_rust_denoise::Stereo48kRnnoise;
 pub use pcm::{pcm_rms_i16, stereo_48k_to_mono_16k};
 pub use pipeline::{

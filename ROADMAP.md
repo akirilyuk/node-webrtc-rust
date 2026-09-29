@@ -36,6 +36,16 @@ Details and current status: [`docs/webrtc-api-parity.md`](docs/webrtc-api-parity
 
 ---
 
+## Voice agent
+
+### Mid-session language and model switch (shipped)
+
+- **`VoiceAgent.updateStt` / `updateTts` / `replayLastUtterance`** — swap STT/TTS vendors without tearing down WebRTC; utterance-boundary STT apply; optional TTS `cancelInflight`; replay last user PCM after STT swap.
+- **`utteranceId`** on speech events; richer `stt_config_updated` / `tts_config_updated`; SDK types for host-emitted `voice_language_*` switch lifecycle events.
+- **Docs:** [packages/sdk/VOICE-API.md](packages/sdk/VOICE-API.md#mid-session-stttts-language-and-model-switch) and [packages/sdk/README.md](packages/sdk/README.md#mid-session-stttts-language-switch). LID (`user_language`) remains detection-only unless application code calls the update APIs.
+
+---
+
 ## Integrations
 
 ### Discord voice channels

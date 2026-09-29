@@ -8,6 +8,6 @@ pub use session_recorder::{JsSessionAudioFormat, JsSessionFinalizeResult, JsSess
 pub use types::{
     JsBargeInConfig, JsEventDeliveryMode, JsNoiseSuppressionConfig, JsNoiseSuppressionProvider,
     JsSpeechEvent, JsSpeechEventType, JsSttConfig, JsSttVendor, JsTtsConfig, JsTtsVendor,
-    JsVadConfig, JsVadSampleRate, JsVoiceAgentConfig,
+    JsUpdateTtsOptions, JsVadConfig, JsVadSampleRate, JsVoiceAgentConfig,
 };
 pub use voice_agent::JsVoiceAgent;

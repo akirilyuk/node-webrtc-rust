@@ -8,7 +8,7 @@ use napi::bindgen_prelude::*;
 use napi::JsFunction;
 use napi_derive::napi;
 use node_webrtc_rust_speech::{
-    PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, VoiceAgent,
+    PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, UpdateTtsConfigOptions, VoiceAgent,
 };
 use tokio::sync::{broadcast, Mutex};
 
@@ -16,7 +16,8 @@ use crate::media::JsLocalAudioTrack;
 use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
 use crate::speech::types::{
-    speech_err, JsSpeechEvent, JsSttConfig, JsTtsConfig, JsVoiceAgentConfig, JsVoiceSessionContext,
+    speech_err, JsSpeechEvent, JsSttConfig, JsTtsConfig, JsUpdateTtsOptions, JsVoiceAgentConfig,
+    JsVoiceSessionContext,
 };
 
 fn voice_debug_enabled() -> bool {
@@ -191,9 +192,24 @@ impl JsVoiceAgent {
 
     /// Apply a new TTS config before the next synthesis job.
     #[napi]
-    pub async fn update_tts(&self, config: JsTtsConfig) -> Result<()> {
+    pub async fn update_tts(&self, config: JsTtsConfig, options: Option<JsUpdateTtsOptions>) -> Result<()> {
+        let opts = options.unwrap_or_default();
         self.inner
-            .update_tts_config(config.into())
+            .update_tts_config(
+                config.into(),
+                UpdateTtsConfigOptions {
+                    cancel_inflight: opts.cancel_inflight.unwrap_or(false),
+                },
+            )
+            .await
+            .map_err(speech_err)
+    }
+
+    /// Re-transcribe the last utterance PCM on the current STT provider (after `update_stt`).
+    #[napi]
+    pub async fn replay_last_utterance(&self) -> Result<()> {
+        self.inner
+            .replay_last_utterance()
             .await
             .map_err(speech_err)
     }

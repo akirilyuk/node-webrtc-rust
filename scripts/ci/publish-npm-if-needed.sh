@@ -4,6 +4,15 @@
 # Usage:
 #   bash scripts/ci/publish-npm-if-needed.sh <dir> <pkg> <version> [npm publish extras...]
 #
+# Deferred verify (platform binding packages only):
+#   NPM_PUBLISH_DEFER_VERIFY=1 NPM_PUBLISH_PENDING_FILE=<file>
+# After a successful `npm publish`, do ONE visibility check. If the package is not visible yet,
+# record "<pkg> <version>" in the pending file and return 0 so the caller can publish the next
+# platform package. The caller MUST then run wait-for-pending-npm-packages.sh before publishing
+# anything that needs those packages resolvable at install time:
+#   platform bindings -> (wait pending) -> bindings -> signaling -> sdk -> helpers
+# Dependents (bindings, sdk, ...) are never published with deferral; they use the strict wait.
+#
 # Examples:
 #   bash scripts/ci/publish-npm-if-needed.sh packages/helpers/ @node-webrtc-rust/helpers 0.8.1 --ignore-scripts
 set -euo pipefail
@@ -34,4 +43,14 @@ echo "  publishing ${PKG}@${VERSION}"
   cd "$pkg_dir"
   npm publish --access public "$@"
 )
+if [[ "${NPM_PUBLISH_DEFER_VERIFY:-}" == "1" ]]; then
+  if bash "$ROOT/scripts/ci/npm-registry-visible.sh" "$PKG" "$VERSION"; then
+    echo "  verified ${PKG}@${VERSION} on registry"
+  else
+    : "${NPM_PUBLISH_PENDING_FILE:?NPM_PUBLISH_PENDING_FILE required with NPM_PUBLISH_DEFER_VERIFY=1}"
+    echo "${PKG} ${VERSION}" >>"$NPM_PUBLISH_PENDING_FILE"
+    echo "  deferred verify of ${PKG}@${VERSION} (not visible yet; will wait before dependents)"
+  fi
+  exit 0
+fi
 bash "$ROOT/scripts/ci/wait-for-npm-package.sh" "$PKG" "$VERSION"

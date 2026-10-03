@@ -276,16 +276,21 @@ publish_one() {
 publish_one "$ROOT/packages/voice-catalog" "@node-webrtc-rust/voice-catalog" --ignore-scripts
 
 # 1. Platform-specific binding packages (only the ones that have a .node file)
+export NPM_PUBLISH_PENDING_FILE="$(mktemp)"
 for dir in "$BINDINGS"/npm/*/; do
   if [[ -f "${dir}package.json" ]]; then
     shopt -s nullglob
     nodes=("${dir}"*.node)
     if [[ ${#nodes[@]} -gt 0 ]]; then
       pkg=$(node -e "console.log(require('${dir}package.json').name)")
-      publish_one "$dir" "$pkg"
+      NPM_PUBLISH_DEFER_VERIFY=1 publish_one "$dir" "$pkg"
     fi
   fi
 done
+# bindings lists these as optionalDependencies: they must all be visible first.
+if [[ "$DRY_RUN" != true ]]; then
+  bash "$ROOT/scripts/ci/wait-for-pending-npm-packages.sh"
+fi
 
 # 2. Main bindings package (--ignore-scripts: skip prepublishOnly which re-publishes platform pkgs)
 publish_one "$BINDINGS" "@node-webrtc-rust/bindings" --ignore-scripts

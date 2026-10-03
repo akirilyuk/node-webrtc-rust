@@ -390,10 +390,15 @@ echo "==> Publish @node-webrtc-rust/voice-catalog (pure TS; no native bindings)"
 publish_one "$ROOT/packages/voice-catalog" "@node-webrtc-rust/voice-catalog" --ignore-scripts
 
 echo "==> Publish platform binding packages (must go first)"
+export NPM_PUBLISH_PENDING_FILE="$(mktemp)"
 for dir in "$BINDINGS"/npm/*/; do
   pkg=$(cd "$dir" && npm pkg get name | tr -d '"')
-  publish_one "$dir" "$pkg"
+  NPM_PUBLISH_DEFER_VERIFY=1 publish_one "$dir" "$pkg"
 done
+# bindings lists these as optionalDependencies: they must all be visible first.
+if [[ "$DRY_RUN" != true ]]; then
+  bash "$ROOT/scripts/ci/wait-for-pending-npm-packages.sh"
+fi
 
 echo "==> Publish @node-webrtc-rust/bindings"
 echo "    (--ignore-scripts: prepublish already ran; avoids npm fetching optionalDeps from registry)"

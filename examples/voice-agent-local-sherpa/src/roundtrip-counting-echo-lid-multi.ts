@@ -527,12 +527,15 @@ async function runSpeakerRound(params: {
     }
   })
 
-  const recognized = await session.collector.waitForNextAfterPlayback(
+  const waited = await session.collector.waitForNextAfterPlayback(
     playbackAndEchoDone,
     timeoutMs,
     finalizeWaitMs,
   )
   await playbackAndEchoDone
+  // A starved host delays the STT final past the wall-clock partial fallback; the partial is a
+  // truncated prefix. Take the pipeline's real final instead (event-driven).
+  const recognized = await session.collector.finalAfterPartialFallback(waited, timeoutMs)
 
   session.pcmCapture?.stopRxCapture()
 
@@ -591,12 +594,15 @@ async function runFullSessionRound(params: {
     }
   })
 
-  const recognized = await session.collector.waitForNextAfterPlayback(
+  const waited = await session.collector.waitForNextAfterPlayback(
     playbackAndEchoDone,
     timeoutMs,
     finalizeWaitMs,
   )
   await playbackAndEchoDone
+  // A starved host delays the STT final past the wall-clock partial fallback; the partial is a
+  // truncated prefix. Take the pipeline's real final instead (event-driven).
+  const recognized = await session.collector.finalAfterPartialFallback(waited, timeoutMs)
 
   session.pcmCapture?.stopRxCapture()
   session.pcmCapture?.stopEchoOutboundCapture()

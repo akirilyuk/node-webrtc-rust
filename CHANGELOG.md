@@ -8,10 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — `VoiceAgent.stop()` no longer hangs when a TTS worker cannot be cancelled. After the 2 s join bound `stop()` aborted the worker and then awaited it without a limit; a worker parked in a blocking section (the NAPI PCM writer calls `block_in_place` + `block_on(write_sample)`, which stalls when nothing consumes the outbound track) cannot be cancelled, so `await agent.stop()` never resolved. The wait after abort is now bounded (500 ms) and `stop()` returns the existing `TtsShutdownUnhealthy` recycle signal. Covered by `stop_blocked_writer_test` and, for the open-STT-utterance case, `stop_open_utterance_test` (Sherpa, opt-in).
+- **speech** — Constructing a `VoiceAgent` with `languageId` no longer waits for a Whisper LID model that another session is loading. `SherpaLanguageId::new` (called on the Node main thread or a tokio worker) checked "already loaded?" under the `lid` pool map lock, which `get_or_create_lid` holds for the whole model load, so a second session's setup stalled for the load (about 0.7 s warm on CI, longer cold) and with it every session served by that thread. The check now reads a separate `lid_loaded` set that is never held across a load. Inference was already off the audio path (one dedicated OS thread per identify, serialised on the shared model's mutex). Covered by `pool::tests::spawn_lid_preload_does_not_wait_for_a_model_that_is_loading`.
+- **examples** — `start:roundtrip-counting-echo-lid-multi` no longer fails with a truncated inbound transcript (for example `Okay, one, two, three, four five`) on a CPU-starved host. The collector resolved from a wall-clock partial fallback (`finalizeWaitMs` after the last partial) while the STT pipeline was only late; the full final arrived afterwards. `ListenerUtteranceCollector.finalAfterPartialFallback` now waits event-driven for that real final, and a final that never arrives still fails the assertions on the partial. The failure reproduces on `release/0.9.17` as well as `0.9.18`, so it is not a 0.9.18 regression.
+
 ## [0.9.18] - 2026-10-04
 
 ### Fixed
 
+- **speech** — Fixes a pool deadlock present in 0.9.16 and 0.9.17: `SherpaModelPool` held its `stt` map lock while taking the `lid` lock (entry gauge) and the `lid` lock while taking `stt`, so loading a new STT model (for example an STT swap or a new `VoiceAgent` on another model) while the first LID identify was loading the Whisper model froze `VoiceAgent.start()` forever. Map locks are no longer nested; `lid_shared_model_test::stt_and_lid_loads_overlap_without_deadlock` guards it.
 - **speech** — Spoken-language-ID model is now loaded once per process and started in the background when a `VoiceAgent` with `languageId` is constructed, instead of on the first identify of each process. The first utterance's `user_language` no longer waits for the Whisper model load (first-utterance `user_language` landed 1.2-4.7 s after the final on cold staging pods). Pool keys use the canonical model directory, and `VOICE_DEBUG=1` logs `LID model load` / `LID compute` timings (ms, sample counts; no transcript text).
 
 ### Added

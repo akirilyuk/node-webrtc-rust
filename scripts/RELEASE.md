@@ -290,6 +290,19 @@ Required secrets: **`NPM_TOKEN`**, **`GITHUB_TOKEN`** (publish, release, and aut
 
 Release prep PR bumps git `package.json` versions; the **post-release PR** updates `package-lock.json` from npm so `main` stays valid for `npm ci`. Merge that PR promptly after each tag.
 
+### Partial publish / registry lag
+
+`npm publish` can succeed while the package stays invisible for a long time (npm eventual consistency; the 33 MB `bindings-linux-arm64-gnu` tarball took ~17 min in release 0.9.18). The publish step handles this in two ways:
+
+- **Strict verify** (`wait-for-npm-package.sh`): polls `npm view` and `GET https://registry.npmjs.org/{package}/{version}` with backoff for about 30 min (`NPM_REGISTRY_VERIFY_ATTEMPTS`, `NPM_REGISTRY_VERIFY_MAX_SLEEP`).
+- **Deferred verify for platform binding packages** (`NPM_PUBLISH_DEFER_VERIFY=1`): a platform package that is not yet visible is recorded in `NPM_PUBLISH_PENDING_FILE`, and the loop moves on to the next platform package. `wait-for-pending-npm-packages.sh` then waits (shared ~30 min budget, `NPM_REGISTRY_VERIFY_TOTAL_SECONDS`) and fails naming every package still missing. Only after that do `bindings` -> `signaling` -> `sdk` -> `helpers` publish, each with strict verify, so no package is published before its dependencies are resolvable.
+
+If the job still fails with `Not on npm registry after publish`:
+
+1. Wait until the package is visible (`npm view <pkg>@<version> version`).
+2. Re-run only the failed jobs: `gh run rerun <run-id> --failed -R akirilyuk/node-webrtc-rust`. This is a resume of a partial publish, not a flaky-test re-run: `publish-npm-if-needed.sh` skips versions already on the registry and continues with the rest.
+3. Alternatively, run **Publish npm package if needed** (`publish-npm-if-needed.yml`) for the remaining package(s).
+
 ### Catch-up: repo behind npm (e.g. after 0.4.0 without a version PR)
 
 If npm already has `X.Y.Z` but git does not:

@@ -241,6 +241,11 @@ pub struct SherpaModelPool {
     stt: Mutex<HashMap<SttPoolKey, Arc<SharedSttRecognizer>>>,
     tts: Mutex<HashMap<TtsPoolKey, Arc<TtsEnginePool>>>,
     lid: Mutex<HashMap<LidPoolKey, Arc<SharedLidRecognizer>>>,
+    /// Model directories whose LID model is resident. Written (briefly) right after the model is
+    /// inserted into `lid`, and never held across a load, so callers on a session's setup path
+    /// can ask "is it loaded?" without queueing behind the `lid` map lock a loading thread holds.
+    /// Lock order: `lid` then `lid_loaded` (nothing takes them the other way round).
+    lid_loaded: Mutex<HashSet<LidPoolKey>>,
     /// Model directories with a background LID preload thread currently running.
     lid_preloading: Mutex<HashSet<LidPoolKey>>,
     lid_preload_handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
@@ -254,6 +259,7 @@ impl SherpaModelPool {
             stt: Mutex::new(HashMap::new()),
             tts: Mutex::new(HashMap::new()),
             lid: Mutex::new(HashMap::new()),
+            lid_loaded: Mutex::new(HashSet::new()),
             lid_preloading: Mutex::new(HashSet::new()),
             lid_preload_handles: Mutex::new(Vec::new()),
             decode_semaphore: Arc::new(Semaphore::new(max_concurrent_decode())),
@@ -341,7 +347,10 @@ impl SherpaModelPool {
         }
         let identifier = create_spoken_language_identification(config)?;
         let shared = Arc::new(SharedLidRecognizer::new(identifier));
-        map.insert(key, Arc::clone(&shared));
+        map.insert(key.clone(), Arc::clone(&shared));
+        if let Ok(mut loaded) = self.lid_loaded.lock() {
+            loaded.insert(key);
+        }
         drop(map);
         self.publish_entry_gauge();
         Ok(shared)
@@ -358,15 +367,19 @@ impl SherpaModelPool {
     /// Start loading the shared LID model on a background thread and return immediately.
     ///
     /// No-op when the model is already loaded or a preload for the same directory is running.
-    /// Errors are only logged (`VOICE_DEBUG`): the first identify retries and reports them.
+    /// Never blocks on a model load in progress (see `lid_loaded`). Errors are only logged (`VOICE_DEBUG`): the first identify retries and reports them.
     pub fn spawn_lid_preload(self: &Arc<Self>, config: &LanguageIdConfig) {
         let Ok(key) = lid_pool_key(config).map(LidPoolKey) else {
             return;
         };
+        // Runs on the caller's thread (a session being set up: Node main thread or a tokio
+        // worker). Never touch the `lid` map lock here: a loading model holds it for the whole
+        // load (hundreds of ms warm, seconds cold), which would stall every session this thread
+        // serves. `lid_loaded` is only ever held for a set insert/lookup.
         if self
-            .lid
+            .lid_loaded
             .lock()
-            .map(|map| map.contains_key(&key))
+            .map(|loaded| loaded.contains(&key))
             .unwrap_or(true)
         {
             return;
@@ -626,6 +639,44 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+    }
+
+    #[test]
+    fn spawn_lid_preload_does_not_wait_for_a_model_that_is_loading() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let pool = Arc::new(SherpaModelPool::new());
+        let config = LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/nonexistent/nwr-lid-preload-nonblocking".into()),
+            allowlist: None,
+            min_speech_ms: None,
+            continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
+        };
+
+        // `get_or_create_lid` holds the `lid` map lock for the whole model load. Hold it here to
+        // park a "load in progress" deterministically, then construct a second session's
+        // provider: it must return without waiting for that load.
+        let loading = pool.lid.lock().expect("lid map lock");
+        let (done_tx, done_rx) = mpsc::channel();
+        let setup_pool = Arc::clone(&pool);
+        let setup_config = config.clone();
+        let setup = std::thread::spawn(move || {
+            setup_pool.spawn_lid_preload(&setup_config);
+            let _ = done_tx.send(());
+        });
+        let returned = done_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        drop(loading);
+        setup.join().expect("setup thread");
+        pool.join_lid_preloads();
+        assert!(
+            returned,
+            "spawn_lid_preload blocked on the LID pool lock held by a model load"
+        );
     }
 
     #[test]

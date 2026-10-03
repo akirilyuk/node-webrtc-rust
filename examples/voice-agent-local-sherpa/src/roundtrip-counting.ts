@@ -700,6 +700,11 @@ export class ListenerUtteranceCollector {
   private bestDeferredTranscript = ''
   /** Final observed while speaker playback was still running (not counted in stats until accepted). */
   private deferredFinalText = ''
+  /** The last transcript wait resolved from a wall-clock partial fallback, not from a final. */
+  private resolvedViaPartialFallback = false
+  /** First `user_speech_final` seen after such a fallback (the pipeline's real answer). */
+  private lateFinalText: string | null = null
+  private lateFinalWaiters: Array<(text: string) => void> = []
 
   constructor(
     private readonly listener: VoiceAgent,
@@ -923,6 +928,15 @@ export class ListenerUtteranceCollector {
 
     switch (event.type as SpeechEventType) {
       case 'user_speech_final': {
+        if (this.resolvedViaPartialFallback && this.lateFinalText == null) {
+          const late = (event.text ?? '').trim()
+          if (late) {
+            this.lateFinalText = late
+            const waiters = this.lateFinalWaiters
+            this.lateFinalWaiters = []
+            for (const waiter of waiters) waiter(late)
+          }
+        }
         this.stats.finals.push((event.text ?? '').trim())
         if (this.stats.speechFinalAtMs == null) {
           this.stats.speechFinalAtMs = Date.now()
@@ -1040,6 +1054,9 @@ export class ListenerUtteranceCollector {
     this.lastPartial = ''
     this.bestDeferredTranscript = ''
     this.deferredFinalText = ''
+    this.resolvedViaPartialFallback = false
+    this.lateFinalText = null
+    this.lateFinalWaiters = []
     this.deferFinalUntilPlaybackDone = playbackPromise != null
     this.playbackFinished = playbackPromise == null
     this.finalizeWaitMs = finalizeWaitMs
@@ -1094,9 +1111,35 @@ export class ListenerUtteranceCollector {
     }, this.finalizeWaitMs)
   }
 
+  /**
+   * `waitForNext*` may resolve from a wall-clock partial fallback (`finalizeWaitMs` after the last
+   * partial, no final yet). On a CPU-starved host the STT pipeline is merely late, not finished:
+   * its real final arrives after the fallback fired and the partial is a truncated prefix.
+   * Call this after the wait: when it resolved from a fallback, wait (event-driven, bounded only
+   * by `timeoutMs` as a deadlock guard) for the pipeline's real final and return it; otherwise
+   * return `recognized` unchanged. A final that never arrives still returns the partial, so the
+   * caller's assertions fail on the truncated text instead of hiding it.
+   */
+  async finalAfterPartialFallback(recognized: string, timeoutMs: number): Promise<string> {
+    if (!this.resolvedViaPartialFallback) return recognized
+    if (this.lateFinalText != null) return this.lateFinalText
+    return new Promise<string>((resolve) => {
+      const timer = setTimeout(() => {
+        this.lateFinalWaiters = this.lateFinalWaiters.filter((w) => w !== waiter)
+        resolve(recognized)
+      }, timeoutMs)
+      const waiter = (text: string): void => {
+        clearTimeout(timer)
+        resolve(text)
+      }
+      this.lateFinalWaiters.push(waiter)
+    })
+  }
+
   private finish(text: string, reason: string): void {
     if (this.settled) return
     this.settled = true
+    this.resolvedViaPartialFallback = !reason.startsWith('final')
     if (this.overallTimer) clearTimeout(this.overallTimer)
     if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
     if (this.progressTimer) clearInterval(this.progressTimer)

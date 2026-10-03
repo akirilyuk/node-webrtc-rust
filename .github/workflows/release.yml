@@ -531,7 +531,9 @@ jobs:
           echo "==> @node-webrtc-rust/voice-catalog (pure TS; no native bindings)"
           "${PUBLISH[@]}" "packages/voice-catalog/" "@node-webrtc-rust/voice-catalog" "$VERSION" --ignore-scripts
 
-          echo "==> Platform binding packages"
+          echo "==> Platform binding packages (registry verify deferred; see publish-npm-if-needed.sh)"
+          export NPM_PUBLISH_PENDING_FILE="${RUNNER_TEMP:-/tmp}/npm-publish-pending.txt"
+          : >"$NPM_PUBLISH_PENDING_FILE"
           for dir in "${BINDINGS}"/npm/*/; do
             pkg="$(node -p "require('./${dir}package.json').name")"
             shopt -s nullglob
@@ -540,8 +542,10 @@ jobs:
               echo "Missing .node in $dir" >&2
               exit 1
             fi
-            "${PUBLISH[@]}" "$dir" "$pkg" "$VERSION"
+            NPM_PUBLISH_DEFER_VERIFY=1 "${PUBLISH[@]}" "$dir" "$pkg" "$VERSION"
           done
+          # bindings lists these as optionalDependencies: they must all be visible first.
+          bash scripts/ci/wait-for-pending-npm-packages.sh
 
           echo "==> @node-webrtc-rust/bindings"
           "${PUBLISH[@]}" "$BINDINGS/" "@node-webrtc-rust/bindings" "$VERSION" --ignore-scripts

@@ -238,7 +238,7 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 
 On-device **spoken language ID** uses Sherpa-ONNX `SpokenLanguageIdentification` with the Whisper tiny multilingual bundle. After the user speaks for at least ~1 second, the pipeline emits `user_language` with an ISO 639-1 code in `language` and `text` (same value).
 
-**Enable** by setting `languageId.modelPath` to a directory with `tiny-encoder.int8.onnx` and `tiny-decoder.int8.onnx` (or non-int8 fallbacks). LID runs offline on a buffered PCM clip and does not block STT.
+**Enable** by setting `languageId.modelPath` to a directory with `tiny-encoder.int8.onnx` and `tiny-decoder.int8.onnx` (or non-int8 fallbacks). LID runs offline on a buffered PCM clip and does not block STT. The model loads once per process and is shared by all agents with the same `modelPath`; a host that boots before any session can `await preloadLanguageId({ modelPath })` (from `@node-webrtc-rust/sdk/voice`) so the first utterance never pays the load.
 
 ```typescript
 import { VoiceAgent, VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'

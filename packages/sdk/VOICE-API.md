@@ -185,6 +185,8 @@ Full PCM + replay final behavior: Rust `cargo test -p node-webrtc-rust-speech re
 | `updateStt` / `updateTts` | Actually changes vendors/models/voices for subsequent audio. |
 | Auto-switch on LID | **Not built into the SDK** — implement in app code (or a host worker) if you want it. |
 
+**LID model residency:** the Whisper tiny identifier is loaded once per process and shared by every `VoiceAgent` with the same `languageId.modelPath` (inference calls serialise on one lock; each call uses its own stream). Constructing a `VoiceAgent` starts that load in the background. A host that starts before any session exists (a runner pod) should await `preloadLanguageId({ modelPath })` from `@node-webrtc-rust/sdk/voice` at boot so the first utterance never pays the load. Set `VOICE_DEBUG=1` to see `LID model load` and `LID identify` timings (no transcript text).
+
 See [README § Spoken language identification](../../README.md#spoken-language-identification) for LID setup; see [packages/sdk/README.md](./README.md#mid-session-stttts-language-switch) for a Node-oriented summary.
 
 ### Headless SDK check (no Sherpa models)

@@ -1,6 +1,7 @@
 //! Sherpa ONNX model construction (shared by pool and tests).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
@@ -10,7 +11,9 @@ use sherpa_onnx::{
     SpokenLanguageIdentificationConfig, SpokenLanguageIdentificationWhisperConfig,
 };
 
-use crate::lid_model_paths::{lid_paths_to_strings, resolve_lid_model_paths};
+use crate::lid_model_paths::{
+    lid_paths_to_strings, resolve_lid_model_dir, resolve_lid_model_paths,
+};
 use crate::model_paths::resolve_model_paths;
 use crate::tts_model_paths::resolve_tts_model_paths;
 
@@ -56,6 +59,17 @@ fn parse_bool_env(name: &str) -> Option<bool> {
 
 static STT_RECOGNIZER_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static TTS_ENGINE_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static LID_MODEL_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// `[voice-debug]` line on stderr when `VOICE_DEBUG=1|true|yes` (never logs transcript text).
+pub(crate) fn voice_debug(message: impl AsRef<str>) {
+    if matches!(
+        std::env::var("VOICE_DEBUG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    ) {
+        eprintln!("[voice-debug] {}", message.as_ref());
+    }
+}
 
 pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecognizer> {
     let paths = resolve_model_paths(config)?;
@@ -139,11 +153,20 @@ pub fn create_spoken_language_identification(
         provider: Some("cpu".to_string()),
     };
 
-    SpokenLanguageIdentification::create(&lid_config).ok_or_else(|| SpeechError::Vendor {
-        vendor: "local-sherpa".into(),
-        message: "failed to create SpokenLanguageIdentification — check languageId.modelPath"
-            .into(),
-    })
+    let started = Instant::now();
+    let identifier =
+        SpokenLanguageIdentification::create(&lid_config).ok_or_else(|| SpeechError::Vendor {
+            vendor: "local-sherpa".into(),
+            message: "failed to create SpokenLanguageIdentification — check languageId.modelPath"
+                .into(),
+        })?;
+    LID_MODEL_CREATE_COUNT.fetch_add(1, Ordering::SeqCst);
+    voice_debug(format!(
+        "LID model load: {} ms (dir={})",
+        started.elapsed().as_millis(),
+        resolve_lid_model_dir(config)?.display()
+    ));
+    Ok(identifier)
 }
 
 pub fn path_to_string(path: &std::path::Path) -> SpeechResult<String> {
@@ -160,9 +183,15 @@ pub fn tts_engine_create_count() -> usize {
     TTS_ENGINE_CREATE_COUNT.load(Ordering::SeqCst)
 }
 
+/// Number of `SpokenLanguageIdentification::create` calls since process start / last reset.
+pub fn lid_model_create_count() -> usize {
+    LID_MODEL_CREATE_COUNT.load(Ordering::SeqCst)
+}
+
 pub fn reset_create_counters() {
     STT_RECOGNIZER_CREATE_COUNT.store(0, Ordering::SeqCst);
     TTS_ENGINE_CREATE_COUNT.store(0, Ordering::SeqCst);
+    LID_MODEL_CREATE_COUNT.store(0, Ordering::SeqCst);
 }
 
 #[cfg(test)]

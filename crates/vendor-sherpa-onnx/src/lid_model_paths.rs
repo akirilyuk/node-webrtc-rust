@@ -76,8 +76,10 @@ pub fn resolve_lid_model_paths(config: &LanguageIdConfig) -> SpeechResult<LidMod
     Ok(LidModelPaths { encoder, decoder })
 }
 
+/// Canonical model directory so `/m/lid` and `/m/./lid` share one loaded model.
 pub fn lid_pool_key(config: &LanguageIdConfig) -> SpeechResult<PathBuf> {
-    resolve_lid_model_dir(config)
+    let dir = resolve_lid_model_dir(config)?;
+    Ok(std::fs::canonicalize(&dir).unwrap_or(dir))
 }
 
 pub fn lid_paths_to_strings(paths: &LidModelPaths) -> SpeechResult<(String, String)> {
@@ -85,4 +87,36 @@ pub fn lid_paths_to_strings(paths: &LidModelPaths) -> SpeechResult<(String, Stri
         path_to_string(&paths.encoder)?,
         path_to_string(&paths.decoder)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_for(path: &str) -> LanguageIdConfig {
+        LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some(path.into()),
+            allowlist: None,
+            min_speech_ms: None,
+            continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
+        }
+    }
+
+    #[test]
+    fn pool_key_canonicalizes_equivalent_paths() {
+        let dir = std::env::temp_dir().join(format!("nwr-lid-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let plain = config_for(dir.to_str().expect("utf8"));
+        let dotted = config_for(dir.join(".").to_str().expect("utf8"));
+        assert_eq!(
+            lid_pool_key(&plain).expect("plain"),
+            lid_pool_key(&dotted).expect("dotted"),
+            "equivalent spellings of one model dir must share a pool entry"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

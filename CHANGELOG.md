@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-10-04
+
 ### Fixed
 
 - **speech** — `VoiceAgent.stop()` no longer hangs when a TTS worker cannot be cancelled. After the 2 s join bound `stop()` aborted the worker and then awaited it without a limit; a worker parked in a blocking section (the NAPI PCM writer calls `block_in_place` + `block_on(write_sample)`, which stalls when nothing consumes the outbound track) cannot be cancelled, so `await agent.stop()` never resolved. The wait after abort is now bounded (500 ms) and `stop()` returns the existing `TtsShutdownUnhealthy` recycle signal. Covered by `stop_blocked_writer_test` and, for the open-STT-utterance case, `stop_open_utterance_test` (Sherpa, opt-in).

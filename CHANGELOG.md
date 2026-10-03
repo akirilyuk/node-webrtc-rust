@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-10-04
+
 ### Fixed
 
 - **speech** — Spoken-language-ID model is now loaded once per process and started in the background when a `VoiceAgent` with `languageId` is constructed, instead of on the first identify of each process. The first utterance's `user_language` no longer waits for the Whisper model load (first-utterance `user_language` landed 1.2-4.7 s after the final on cold staging pods). Pool keys use the canonical model directory, and `VOICE_DEBUG=1` logs `LID model load` / `LID compute` timings (ms, sample counts; no transcript text).

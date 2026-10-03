@@ -1,4 +1,5 @@
 mod events;
+mod preload;
 mod registry;
 mod session_recorder;
 mod types;
@@ -10,4 +11,5 @@ pub use types::{
     JsSpeechEvent, JsSpeechEventType, JsSttConfig, JsSttVendor, JsTtsConfig, JsTtsVendor,
     JsUpdateTtsOptions, JsVadConfig, JsVadSampleRate, JsVoiceAgentConfig,
 };
+pub use preload::preload_language_id;
 pub use voice_agent::JsVoiceAgent;

@@ -14,6 +14,9 @@
 /** Main session type — one instance per WebRTC conversation. */
 export { VoiceAgent } from './VoiceAgent.js'
 
+/** Load the shared spoken-language-ID model once per process (host boot). */
+export { preloadLanguageId } from './preload.js'
+
 /** Stable event name constants for tests and harnesses. */
 export { SPEECH_EVENT_TYPE } from './types.js'
 

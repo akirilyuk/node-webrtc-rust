@@ -1,6 +1,6 @@
 //! Process-wide pool for Sherpa ONNX STT recognizers and TTS engines.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use crate::lid_model_paths::lid_pool_key;
 use crate::loader::{
     create_offline_tts, create_online_recognizer, create_spoken_language_identification,
+    voice_debug,
 };
 use crate::model_paths::resolve_stt_model_dir;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
@@ -24,7 +25,7 @@ extern "C" {
     fn atexit(func: extern "C" fn()) -> i32;
 }
 
-/// Join TTS preload threads before ONNX static destructors run.
+/// Join TTS and LID preload threads before ONNX static destructors run.
 ///
 /// `OnceLock` statics are not dropped on process exit. A detached preload
 /// thread still inside `create_offline_tts` then races Sherpa teardown
@@ -36,6 +37,7 @@ extern "C" fn join_tts_preloads_at_exit() {
         return;
     };
     pool.join_tts_preloads();
+    pool.join_lid_preloads();
 }
 
 fn register_tts_preload_exit_join() {
@@ -221,7 +223,14 @@ impl Drop for TtsEnginePool {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LidPoolKey(PathBuf);
 
-/// Shared spoken-language identifier (one per model directory).
+/// Shared spoken-language identifier (one per model directory, process-wide).
+///
+/// Thread-safety: `SpokenLanguageIdentification` is not documented as safe for concurrent
+/// `compute` on one instance, so the model sits behind a [`Mutex`]. Each inference locks it,
+/// creates a fresh per-call stream, computes, and drops the stream; concurrent sessions
+/// therefore serialise on inference (tiny Whisper, a few hundred ms) but never reload the
+/// 250 MB+ weights. The pool map lock is held while a model loads, so concurrent first callers
+/// for the same directory wait for one load instead of loading twice (single flight).
 pub struct SharedLidRecognizer {
     pub(crate) identifier: Mutex<SpokenLanguageIdentification>,
     pub(crate) active_sessions: Arc<AtomicUsize>,
@@ -232,6 +241,9 @@ pub struct SherpaModelPool {
     stt: Mutex<HashMap<SttPoolKey, Arc<SharedSttRecognizer>>>,
     tts: Mutex<HashMap<TtsPoolKey, Arc<TtsEnginePool>>>,
     lid: Mutex<HashMap<LidPoolKey, Arc<SharedLidRecognizer>>>,
+    /// Model directories with a background LID preload thread currently running.
+    lid_preloading: Mutex<HashSet<LidPoolKey>>,
+    lid_preload_handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
     decode_semaphore: Arc<Semaphore>,
     tts_semaphore: Arc<Semaphore>,
 }
@@ -242,6 +254,8 @@ impl SherpaModelPool {
             stt: Mutex::new(HashMap::new()),
             tts: Mutex::new(HashMap::new()),
             lid: Mutex::new(HashMap::new()),
+            lid_preloading: Mutex::new(HashSet::new()),
+            lid_preload_handles: Mutex::new(Vec::new()),
             decode_semaphore: Arc::new(Semaphore::new(max_concurrent_decode())),
             tts_semaphore: Arc::new(Semaphore::new(max_concurrent_tts())),
         }
@@ -265,6 +279,30 @@ impl SherpaModelPool {
         }
     }
 
+    /// Publish the total pooled-model gauge.
+    ///
+    /// Takes each map lock on its own, never while another map lock (or a model load) is held.
+    /// Nesting them (stt -> lid in one path, lid -> stt in another) deadlocked an STT load
+    /// against a concurrent LID load: callers must drop their own map guard first.
+    fn publish_entry_gauge(&self) {
+        let stt = self.stt.lock().map(|m| m.len()).unwrap_or(0);
+        let tts = self.tts.lock().map(|m| m.len()).unwrap_or(0);
+        let lid = self.lid.lock().map(|m| m.len()).unwrap_or(0);
+        otel::set_sherpa_pool_entries((stt + tts + lid) as i64);
+    }
+
+    /// Join every LID preload thread (blocks until background loads finish). Safe to call
+    /// more than once; also runs at process exit.
+    pub fn join_lid_preloads(&self) {
+        let handles = match self.lid_preload_handles.lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(_) => return,
+        };
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
+
     /// Returns the process-wide pool (lazy init).
     pub fn global() -> Arc<Self> {
         GLOBAL_POOL.get_or_init(|| Arc::new(Self::new())).clone()
@@ -283,11 +321,8 @@ impl SherpaModelPool {
         let recognizer = create_online_recognizer(config)?;
         let shared = Arc::new(SharedSttRecognizer::new(recognizer));
         map.insert(key, Arc::clone(&shared));
-        otel::set_sherpa_pool_entries(
-            (map.len()
-                + self.tts.lock().expect("lock").len()
-                + self.lid.lock().expect("lock").len()) as i64,
-        );
+        drop(map);
+        self.publish_entry_gauge();
         Ok(shared)
     }
 
@@ -307,12 +342,77 @@ impl SherpaModelPool {
         let identifier = create_spoken_language_identification(config)?;
         let shared = Arc::new(SharedLidRecognizer::new(identifier));
         map.insert(key, Arc::clone(&shared));
-        otel::set_sherpa_pool_entries(
-            (self.stt.lock().expect("lock").len()
-                + self.tts.lock().expect("lock").len()
-                + map.len()) as i64,
-        );
+        drop(map);
+        self.publish_entry_gauge();
         Ok(shared)
+    }
+
+    /// Load (or find) the shared LID model for `config`, blocking until it is resident.
+    ///
+    /// Call from a blocking context at process boot so the first utterance never pays the
+    /// load. Idempotent: a second call for the same model directory is a pool lookup.
+    pub fn preload_lid(&self, config: &LanguageIdConfig) -> SpeechResult<()> {
+        self.get_or_create_lid(config).map(|_| ())
+    }
+
+    /// Start loading the shared LID model on a background thread and return immediately.
+    ///
+    /// No-op when the model is already loaded or a preload for the same directory is running.
+    /// Errors are only logged (`VOICE_DEBUG`): the first identify retries and reports them.
+    pub fn spawn_lid_preload(self: &Arc<Self>, config: &LanguageIdConfig) {
+        let Ok(key) = lid_pool_key(config).map(LidPoolKey) else {
+            return;
+        };
+        if self
+            .lid
+            .lock()
+            .map(|map| map.contains_key(&key))
+            .unwrap_or(true)
+        {
+            return;
+        }
+        {
+            let Ok(mut running) = self.lid_preloading.lock() else {
+                return;
+            };
+            if !running.insert(key.clone()) {
+                return;
+            }
+        }
+        register_tts_preload_exit_join();
+        let pool = Arc::clone(self);
+        let config = config.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sherpa-lid-preload".into())
+            .spawn(move || {
+                if let Err(error) = pool.preload_lid(&config) {
+                    voice_debug(format!("LID preload failed: {error}"));
+                }
+                if let Ok(mut running) = pool.lid_preloading.lock() {
+                    running.remove(&key);
+                }
+            });
+        match spawned {
+            Ok(handle) => {
+                if let Ok(mut handles) = self.lid_preload_handles.lock() {
+                    handles.retain(|h| !h.is_finished());
+                    handles.push(handle);
+                }
+            }
+            Err(error) => {
+                voice_debug(format!("LID preload thread spawn failed: {error}"));
+            }
+        }
+    }
+
+    /// Pointer identity of the shared LID entry for `config`, if loaded.
+    pub fn shared_lid_ptr(&self, config: &LanguageIdConfig) -> Option<usize> {
+        let key = LidPoolKey(lid_pool_key(config).ok()?);
+        self.lid
+            .lock()
+            .ok()?
+            .get(&key)
+            .map(|entry| Arc::as_ptr(entry) as usize)
     }
 
     /// Number of distinct LID model directories loaded in the pool.
@@ -332,11 +432,8 @@ impl SherpaModelPool {
         }
         let pool = Arc::new(TtsEnginePool::new(config, Arc::clone(&self.tts_semaphore))?);
         map.insert(key, Arc::clone(&pool));
-        otel::set_sherpa_pool_entries(
-            (self.stt.lock().expect("lock").len()
-                + map.len()
-                + self.lid.lock().expect("lock").len()) as i64,
-        );
+        drop(map);
+        self.publish_entry_gauge();
         Ok(pool)
     }
 

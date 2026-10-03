@@ -172,6 +172,14 @@ export declare function takeClipFrame(playId: string): Buffer | null
 export interface JsRtcRtpTransceiverInit {
   direction?: string
 }
+/**
+ * Load the shared spoken-language-ID model (Sherpa Whisper tiny) into the process-wide pool.
+ *
+ * Resolves once the model is resident. Idempotent: every `VoiceAgent` with the same
+ * `languageId.modelPath` then reuses this one instance, so the first utterance never pays
+ * the load. Rejects when `modelPath` is missing or not a Whisper bundle directory.
+ */
+export declare function preloadLanguageId(config: JsLanguageIdConfig): Promise<void>
 /** Export format for {@link JsSessionRecorder.finalize}. */
 export const enum JsSessionAudioFormat {
   Wav = 'Wav',

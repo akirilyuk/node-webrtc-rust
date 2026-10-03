@@ -960,6 +960,7 @@ impl VoiceAgent {
             return;
         };
         const JOIN_BOUND: std::time::Duration = std::time::Duration::from_millis(2_000);
+        const ABORT_BOUND: std::time::Duration = std::time::Duration::from_millis(500);
         tokio::select! {
             result = &mut handle => {
                 if let Err(err) = result {
@@ -968,7 +969,11 @@ impl VoiceAgent {
             }
             _ = tokio::time::sleep(JOIN_BOUND) => {
                 handle.abort();
-                let _ = handle.await;
+                // Never wait unboundedly on the aborted task: a worker parked inside a blocking
+                // section (the NAPI PCM writer uses `block_in_place` + `block_on(write_sample)`,
+                // which stalls when nothing consumes the outbound track) cannot be cancelled until
+                // that call returns, so `handle.await` here would hang `stop()` with it.
+                let _ = tokio::time::timeout(ABORT_BOUND, &mut handle).await;
                 unhealthy.store(true, Ordering::SeqCst);
                 voice_debug(format!(
                     "TTS {name} worker join timed out after {}ms — marked shutdown unhealthy (recycle)",

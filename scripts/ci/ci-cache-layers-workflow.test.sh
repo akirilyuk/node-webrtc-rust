@@ -362,13 +362,21 @@ job = m.group(1)
 for needle in (
     "actions: write",
     "pull-requests: write",
-    'gh workflow run build.yml --ref "$PR_BRANCH"',
+    "actions/github-script@v7",
+    "createWorkflowDispatch",
+    'workflow_id: "build.yml"',
     "pull-request-branch",
-    'gh pr merge "$PR_NUMBER" --auto --squash --delete-branch',
+    "enablePullRequestAutoMerge",
+    "mergeMethod: SQUASH",
 ):
     if needle not in job:
         raise SystemExit(f"sync-main-package-lock missing: {needle}")
-if job.find("gh workflow run build.yml") > job.find("--auto --squash"):
+# Self-hosted runner has no gh CLI (release 0.9.20): no step may shell out to gh.
+for line in job.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("gh ") or " gh " in stripped and ("run:" in stripped):
+        raise SystemExit(f"sync-main-package-lock must not call the gh CLI: {stripped}")
+if job.find("createWorkflowDispatch") > job.find("enablePullRequestAutoMerge"):
     raise SystemExit("dispatch must precede enabling auto-merge")
 print("ok: post-release PR dispatches build.yml and enables auto-merge")
 PY

@@ -590,7 +590,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      # gh workflow run build.yml (workflow_dispatch) for the bot PR branch
+      # createWorkflowDispatch (build.yml) on the bot PR branch
       actions: write
     steps:
       - name: Prepare workspace
@@ -655,31 +655,55 @@ jobs:
       # workflow_dispatch / repository_dispatch are exempt), so without REPO_SYNC_PAT the
       # PR would sit with no CI. Dispatch Build & Test on the PR branch; its check runs land
       # on the branch head SHA under the same names the main ruleset requires.
+      # The self-hosted runner has no gh CLI (release 0.9.20: "gh: command not found"),
+      # so both steps call the REST / GraphQL APIs through actions/github-script.
       - name: Run PR CI via workflow_dispatch
         if: steps.open_pr.outputs.pull-request-number != '' && steps.open_pr.outputs.pull-request-operation != 'closed'
-        shell: bash
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ github.token }}
           HAS_REPO_SYNC_PAT: ${{ secrets.REPO_SYNC_PAT != '' && 'true' || 'false' }}
           PR_BRANCH: ${{ steps.open_pr.outputs.pull-request-branch }}
-        run: |
-          set -euo pipefail
-          if [[ "$HAS_REPO_SYNC_PAT" == "true" ]]; then
-            echo "REPO_SYNC_PAT set: pull_request CI runs normally; skipping dispatch."
-            exit 0
-          fi
-          gh workflow run build.yml --ref "$PR_BRANCH"
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            if (process.env.HAS_REPO_SYNC_PAT === "true") {
+              core.info("REPO_SYNC_PAT set: pull_request CI runs normally; skipping dispatch.");
+              return;
+            }
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "build.yml",
+              ref: process.env.PR_BRANCH,
+            });
+            core.info(`Dispatched build.yml on ${process.env.PR_BRANCH}`);
 
       # Squash-merge automatically once required checks pass (and the branch is up to
       # date: the ruleset has strict_required_status_checks_policy). Needs repo
-      # allow_auto_merge=true. If main moves first, auto-merge waits until the branch is updated.
+      # allow_auto_merge=true; the head branch is deleted by repo delete_branch_on_merge.
+      # If main moves first, auto-merge waits until the branch is updated.
       - name: Enable auto-merge
         if: steps.open_pr.outputs.pull-request-number != '' && steps.open_pr.outputs.pull-request-operation != 'closed'
-        shell: bash
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ secrets.REPO_SYNC_PAT != '' && secrets.REPO_SYNC_PAT || github.token }}
           PR_NUMBER: ${{ steps.open_pr.outputs.pull-request-number }}
-        run: gh pr merge "$PR_NUMBER" --auto --squash --delete-branch -R "$GITHUB_REPOSITORY"
+        with:
+          github-token: ${{ secrets.REPO_SYNC_PAT != '' && secrets.REPO_SYNC_PAT || github.token }}
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(process.env.PR_NUMBER),
+            });
+            await github.graphql(
+              `mutation($id: ID!) {
+                enablePullRequestAutoMerge(input: { pullRequestId: $id, mergeMethod: SQUASH }) {
+                  pullRequest { number }
+                }
+              }`,
+              { id: pr.node_id },
+            );
+            core.info(`Auto-merge (squash) enabled for #${pr.number}`);
 
       - name: Manual PR fallback (when GITHUB_TOKEN cannot open PRs)
         if: failure() && steps.open_pr.outcome == 'failure'

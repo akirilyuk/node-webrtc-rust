@@ -289,6 +289,13 @@ export interface VoiceAgentSessionHostOptions {
    */
   voiceHandler?: VoiceSessionHandler
   /**
+   * Decides which speech events are forwarded to the client's voice-control data channel.
+   * Return `false` to keep an event off the wire (for example a host that sends its own
+   * enriched copy of `stt_hold_started`). Default: forward every event.
+   * Only the wire is filtered; {@link VoiceSessionHandler.onSpeechEvent} still sees every event.
+   */
+  speechEventFilter?: (event: SpeechEvent) => boolean
+  /**
    * Optional second outbound data channel for high-frequency binary sync.
    * Defaults to disabled for `voice` / `data-only`; auto-enabled for `voice+data`.
    * Label {@link VOICE_SYNC_CHANNEL_LABEL} when enabled.
@@ -1156,7 +1163,9 @@ export class VoiceAgentSessionHost {
       return () => undefined
     }
     if (!voiceHandler?.onSpeechEvent) {
-      return forwardVoiceAgentSpeechToDataChannel(session.agent, session.controlChannel)
+      return forwardVoiceAgentSpeechToDataChannel(session.agent, session.controlChannel, {
+        filter: this.options.speechEventFilter,
+      })
     }
 
     if (!session.agent) {
@@ -1188,6 +1197,7 @@ export class VoiceAgentSessionHost {
   }
 
   private sendSpeechEventToControlChannel(channel: RTCDataChannel, event: SpeechEvent): void {
+    if (this.options.speechEventFilter && !this.options.speechEventFilter(event)) return
     if (channel.readyState !== 'open') return
     channel.send(
       JSON.stringify(speechEventToControlMessage(event, { ts: new Date().toISOString() })),

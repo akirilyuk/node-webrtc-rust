@@ -59,4 +59,12 @@ if ! grep -q 'STAMP_FILE' "$ensure" || ! grep -q 'TS_DIST_CACHE_HIT' "$ensure"; 
 fi
 echo "ok: ensure-ts-dist validates stamp"
 
+# helpers unit tests must not run against a stale dist (missing-file checks are not enough)
+helpers_tests="$ROOT/scripts/ci/run-helpers-unit-tests.sh"
+if ! grep -q 'scripts/ci/ensure-ts-dist.sh' "$helpers_tests"; then
+  echo "FAIL: run-helpers-unit-tests.sh must call ensure-ts-dist.sh before vitest" >&2
+  exit 1
+fi
+echo "ok: run-helpers-unit-tests uses ensure-ts-dist"
+
 echo "ts-dist-cache-key.test.sh: all checks passed"

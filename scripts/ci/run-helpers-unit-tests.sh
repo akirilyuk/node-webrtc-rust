@@ -15,17 +15,10 @@ if [[ -d node_modules/rollup ]]; then
 fi
 
 # Helpers imports workspace sdk + signaling packages (NodeNext resolution needs their dist/).
-# Building helpers alone fails on a fresh checkout — same as CI Typecheck & lint job.
-# `sdk/mix` and `sdk/player` are separate exports; a stale dist that only has sdk/index.js
-# (or mix but not player) will fail vitest with "Failed to load url @node-webrtc-rust/sdk/player".
-if [[ ! -f packages/helpers/dist/cjs/index.js ]] \
-  || [[ ! -f packages/sdk/dist/cjs/index.js ]] \
-  || [[ ! -f packages/sdk/dist/cjs/mix/index.js ]] \
-  || [[ ! -f packages/sdk/dist/cjs/player/index.js ]] \
-  || [[ ! -f packages/signaling/dist/cjs/index.js ]]; then
-  echo "==> build TypeScript workspace (sdk → signaling → helpers; dist missing)"
-  bash "$ROOT/scripts/ci/build-ts-workspace.sh"
-fi
+# ensure-ts-dist.sh rebuilds when dist is missing OR its source stamp does not match. A
+# "missing files only" check let a stale local dist (built before a pull) fail these tests
+# against old SDK code while a clean CI tree passed.
+bash "$ROOT/scripts/ci/ensure-ts-dist.sh"
 
 echo "==> vitest @node-webrtc-rust/helpers"
 npm run test --workspace=@node-webrtc-rust/helpers

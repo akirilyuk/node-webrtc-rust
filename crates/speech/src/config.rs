@@ -937,12 +937,21 @@ pub struct SendTextToTtsOptions {
     /// and outbound playback for this call before resolving.
     #[serde(default)]
     pub non_blocking: bool,
+    /// When false, VAD and STT-partial barge-in do not flush or cancel this utterance while it
+    /// is synthesizing or playing. Default true. Explicit `flush_tts` / `stop` still cancel it.
+    #[serde(default = "default_send_text_interruptible")]
+    pub interruptible: bool,
+}
+
+fn default_send_text_interruptible() -> bool {
+    true
 }
 
 impl Default for SendTextToTtsOptions {
     fn default() -> Self {
         Self {
             non_blocking: false,
+            interruptible: true,
         }
     }
 }

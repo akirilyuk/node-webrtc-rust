@@ -223,6 +223,9 @@ impl Default for AgentOtelState {
 struct TtsSynthesisJob {
     text: String,
     done: Option<tokio::sync::oneshot::Sender<SpeechResult<()>>>,
+    /// When false, VAD / STT-partial barge-in must not flush or cancel this job (explicit
+    /// `flush_tts` / `stop` still do).
+    interruptible: bool,
 }
 
 /// One voice agent session bound to a single peer connection.
@@ -244,6 +247,8 @@ pub struct VoiceAgent {
     tts_synthesis_wake: Arc<Notify>,
     tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_busy: Arc<AtomicBool>,
+    /// True while a non-interruptible job (`interruptible: false`) is synthesizing or playing.
+    tts_protected_active: Arc<AtomicBool>,
     /// Woken when an in-flight LID identify task completes (STT close gate + TTS synthesis wait).
     lid_completion_notify: Arc<Notify>,
     /// Count of fault-path `lid_gate_max_wait_ms` expirations (tests only).
@@ -371,6 +376,7 @@ impl VoiceAgent {
             lid_gate_bound_hits: Arc::new(AtomicUsize::new(0)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
             tts_generate_cancel: Arc::new(AtomicBool::new(false)),
+            tts_protected_active: Arc::new(AtomicBool::new(false)),
             tts_workers_shutdown: Arc::new(AtomicBool::new(false)),
             tts_workers_shutdown_wake: Arc::new(Notify::new()),
             tts_shutdown_unhealthy: Arc::new(AtomicBool::new(false)),
@@ -1277,6 +1283,7 @@ impl VoiceAgent {
             queue.push_back(TtsSynthesisJob {
                 text: trimmed.to_string(),
                 done: done_tx,
+                interruptible: options.interruptible,
             });
         }
 
@@ -1316,6 +1323,7 @@ impl VoiceAgent {
         let synthesis_busy = Arc::clone(&self.tts_synthesis_busy);
         let synthesis_epoch = Arc::clone(&self.tts_synthesis_epoch);
         let generate_cancel = Arc::clone(&self.tts_generate_cancel);
+        let protected_active = Arc::clone(&self.tts_protected_active);
         let shutdown = Arc::clone(&self.tts_workers_shutdown);
         let shutdown_wake = Arc::clone(&self.tts_workers_shutdown_wake);
         let alive = Arc::clone(&self.tts_worker_tasks_alive);
@@ -1356,6 +1364,7 @@ impl VoiceAgent {
                     Self::await_in_flight_lid_before_tts(&weak_self, &inner, &lid_notify).await;
 
                     synthesis_busy.store(true, Ordering::SeqCst);
+                    protected_active.store(!job.interruptible, Ordering::SeqCst);
                     let result = Self::run_tts_synthesis_job(
                         &job.text,
                         &tts,
@@ -1375,6 +1384,7 @@ impl VoiceAgent {
                         &queue,
                     )
                     .await;
+                    protected_active.store(false, Ordering::SeqCst);
                     synthesis_busy.store(false, Ordering::SeqCst);
                     Self::maybe_spawn_deferred_lid_after_tts(&weak_self, &queue, &inner).await;
 
@@ -1887,7 +1897,16 @@ impl VoiceAgent {
         crate::config::stt_partial_token_count(text) >= min_tokens
     }
 
+    /// True while a job queued with `interruptible: false` is synthesizing or playing.
+    fn protected_tts_active(&self) -> bool {
+        self.tts_protected_active.load(Ordering::SeqCst)
+    }
+
     async fn try_stt_gated_barge_in(&self, partial_text: &str) -> SpeechResult<()> {
+        if self.protected_tts_active() {
+            voice_debug("STT-gated barge-in suppressed: non-interruptible TTS job active");
+            return Ok(());
+        }
         let (should_barge, barge_in) = {
             let inner = self.inner.lock().await;
             let barge_in_cfg = &inner.config.vad.barge_in;
@@ -2010,6 +2029,10 @@ impl VoiceAgent {
         }
 
         if barge_in.enabled && barge_in.use_vad && agent_speaking {
+            if self.protected_tts_active() {
+                voice_debug("barge-in suppressed: non-interruptible TTS job active");
+                return Ok(());
+            }
             if guard_active {
                 voice_debug(format!(
                     "barge-in suppressed: agent playback guard {} ms",

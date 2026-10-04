@@ -153,7 +153,7 @@ async fn non_blocking_send_returns_before_slow_synthesis_finishes() {
 
     let started = Instant::now();
     agent
-        .send_text_to_tts_with_options("hello", SendTextToTtsOptions { non_blocking: true })
+        .send_text_to_tts_with_options("hello", SendTextToTtsOptions { non_blocking: true, ..Default::default() })
         .await
         .unwrap();
     assert!(
@@ -192,7 +192,7 @@ async fn non_blocking_two_jobs_still_play_in_order() {
     agent.attach(reader, writer).await.unwrap();
     agent.start(None).await.unwrap();
 
-    let opts = SendTextToTtsOptions { non_blocking: true };
+    let opts = SendTextToTtsOptions { non_blocking: true, ..Default::default() };
     agent
         .send_text_to_tts_with_options("first phrase here", opts)
         .await
@@ -397,7 +397,7 @@ async fn tts_worker_stress_enqueue_interrupt_close_returns_to_baseline() {
     agent.start(None).await.unwrap();
 
     let baseline = agent.tts_worker_tasks_alive();
-    let opts = SendTextToTtsOptions { non_blocking: true };
+    let opts = SendTextToTtsOptions { non_blocking: true, ..Default::default() };
     for i in 0..8 {
         agent
             .send_text_to_tts_with_options(&format!("phrase {i}"), opts)
@@ -446,7 +446,7 @@ async fn blocked_vendor_shutdown_is_bounded_and_reported_unhealthy() {
     agent
         .send_text_to_tts_with_options(
             "blocked synthesis",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();

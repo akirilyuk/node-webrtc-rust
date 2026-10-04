@@ -454,6 +454,10 @@ await Promise.all(contexts.map((ctx) => ctx.speak(text, { nonBlocking: true })))
 
 Cross-session ONNX work is still capped by `SHERPA_POOL_MAX_CONCURRENT_TTS` (Sherpa engine pool). Per-session utterances always synthesize and play in FIFO order.
 
+### Non-interruptible utterances (`interruptible: false`)
+
+`sendTextToTTS(text, { interruptible: false })` (Rust: `SendTextToTtsOptions { interruptible: false, .. }`) protects one utterance from barge-in. While that job synthesizes or plays, VAD barge-in and STT-partial barge-in are suppressed: TTS is not flushed, the synthesis queue is not cancelled, and neither `barge_in` nor `agent_speaking_end` is emitted. VAD and `user_speaking_*` events are unchanged. Utterances queued after the protected one remain interruptible, and a barge-in that fired while the protected job played is not replayed when it ends. Explicit `flushTts()`, `stop()` and `updateTts(..., { cancelInflight: true })` still cancel it. Default is `interruptible: true`.
+
 **Requirements for auto barge:**
 
 1. Same `VoiceAgent` that calls `sendTextToTTS`

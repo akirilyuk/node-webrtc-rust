@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.23] - 2026-10-04
+
 ### Fixed
 
 - **speech** — Language ID `minSpeechMs` now counts speech from the first to the last voiced frame (VAD), not the buffered audio length. Pauses between words count; silence after the caller stops speaking (endpoint tail, gate hold) no longer does, so a short utterance followed by silence no longer passes the threshold. `early` timing starts the identify only after `minSpeechMs` of actual speech.

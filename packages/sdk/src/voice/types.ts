@@ -171,7 +171,10 @@ export interface LanguageIdConfig {
   modelPath?: string
   /** Optional ISO 639-1 allowlist; other detected codes are ignored. */
   allowlist?: string[]
-  /** Minimum buffered speech (ms) before the first identify attempt. Default 1000. */
+  /**
+   * Minimum speech (ms) before the first identify attempt. Counts VAD-voiced audio;
+   * pauses between words count, silence after the caller stops speaking does not. Default 1000.
+   */
   minSpeechMs?: number
   /**
    * @deprecated Use `timing: 'continuous'`. When `true`, re-run identify during a long

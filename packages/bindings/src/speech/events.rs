@@ -28,6 +28,8 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::Error => JsSpeechEventType::Error,
             SpeechEventKind::SttConfigUpdated => JsSpeechEventType::SttConfigUpdated,
             SpeechEventKind::TtsConfigUpdated => JsSpeechEventType::TtsConfigUpdated,
+            SpeechEventKind::SttHoldStarted => JsSpeechEventType::SttHoldStarted,
+            SpeechEventKind::SttHoldEnded => JsSpeechEventType::SttHoldEnded,
         },
         text: event.text,
         language: event.language,
@@ -39,6 +41,10 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         voice: event.voice,
         model_path: event.model_path,
         endpoint: event.endpoint,
+        hold_mode: event.hold_mode,
+        hold_outcome: event.hold_outcome,
+        buffered_ms: event.buffered_ms,
+        dropped_ms: event.dropped_ms,
     }
 }
 

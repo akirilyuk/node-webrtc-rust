@@ -18,6 +18,10 @@ use crate::config::{
     EventDeliveryMode, NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, TtsConfig,
     UpdateTtsConfigOptions, VadConfig, VoiceAgentConfig, VoiceSessionContext,
 };
+use crate::stt_hold::{
+    resolved_hold_max_buffer_ms, resolved_replay_max_age_ms, BeginSttHoldOptions,
+    ReleaseSttHoldOptions, SttHold,
+};
 use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
@@ -181,6 +185,10 @@ struct AgentInner {
     last_replay_snapshot: Option<UtteranceReplaySnapshot>,
     /// When set, the next STT `Final` is emitted as a replay final.
     replay_final_context: Option<ReplayFinalContext>,
+    /// Active host STT hold (`begin_stt_hold`): STT is not fed or polled, PCM is buffered.
+    stt_hold: Option<SttHold>,
+    /// The replay ring was started at the SpeechStart pre-roll flush (keeps the onset audio).
+    replay_begun_at_pre_roll: bool,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -341,6 +349,8 @@ impl VoiceAgent {
                 utterance_replay_buffer: UtteranceReplayBuffer::new(),
                 last_replay_snapshot: None,
                 replay_final_context: None,
+                stt_hold: None,
+                replay_begun_at_pre_roll: false,
             })),
             stt: Mutex::new(stt),
             language_id: Mutex::new(language_id),
@@ -430,6 +440,11 @@ impl VoiceAgent {
         }
         {
             let inner = self.inner.lock().await;
+            if inner.stt_hold.is_some() {
+                return Err(SpeechError::Internal(
+                    "cannot replay while an STT hold is active (use release_stt_hold)".into(),
+                ));
+            }
             if Self::utterance_in_progress(&inner) {
                 return Err(SpeechError::Internal(
                     "cannot replay while an utterance is in progress".into(),
@@ -445,7 +460,11 @@ impl VoiceAgent {
         let snapshot = snapshot.ok_or_else(|| {
             SpeechError::Internal("no buffered utterance available for replay".into())
         })?;
-        if !snapshot.replayable() {
+        let max_age_ms = {
+            let inner = self.inner.lock().await;
+            resolved_replay_max_age_ms(&inner.config.replay)
+        };
+        if !snapshot.replayable_within(max_age_ms) {
             return Err(SpeechError::Internal(
                 "utterance replay unavailable (overflow, empty, or too old)".into(),
             ));
@@ -479,6 +498,235 @@ impl VoiceAgent {
                 "replay did not produce an STT final".into(),
             ));
         }
+        Ok(())
+    }
+
+    /// Start a host STT hold (see [`crate::stt_hold`]).
+    ///
+    /// From now on inbound user PCM is no longer fed to the current STT and the current STT is no
+    /// longer polled, so no final or partial from the old model is emitted after this call
+    /// returns. VAD and `user_speaking_*` events keep flowing; the utterance in progress is seeded
+    /// into the hold buffer (bounded by the 15 s utterance replay ring). Semantic STT-partial
+    /// barge-in is inactive while held (VAD barge-in still works).
+    pub async fn begin_stt_hold(&self, options: BeginSttHoldOptions) -> SpeechResult<()> {
+        let max_ms = resolved_hold_max_buffer_ms(options.max_buffer_ms);
+        let buffered_ms = {
+            let mut inner = self.inner.lock().await;
+            if !inner.running {
+                return Err(SpeechError::NotRunning);
+            }
+            if inner.stt_hold.is_some() {
+                return Err(SpeechError::Internal("STT hold already active".into()));
+            }
+            let open_utterance = inner.utterance_replay_buffer.is_active();
+            let seed = if open_utterance {
+                inner.utterance_replay_buffer.snapshot_pcm()
+            } else {
+                None
+            };
+            let mut hold = SttHold::new(options.mode, max_ms, seed.as_deref());
+            if open_utterance || Self::utterance_in_progress(&inner) {
+                hold.replaces_utterance_id = inner.current_utterance_id.clone();
+            }
+            let buffered_ms = hold.buffered_ms();
+            inner.stt_hold = Some(hold);
+            // Old-model text must not resurface; the last-utterance snapshot is stale after a hold.
+            inner.last_partial_text = None;
+            inner.last_replay_snapshot = None;
+            inner.utterance_replay_buffer.invalidate();
+            buffered_ms
+        };
+        self.emit(SpeechEvent::stt_hold_started(
+            options.mode.as_str(),
+            buffered_ms,
+        ));
+        Ok(())
+    }
+
+    /// End the hold after the host swapped the STT (`update_stt_config`).
+    ///
+    /// `replay: true` decodes the held audio through the current (new) STT and emits finals with
+    /// `replay: true` (and `replaces_utterance_id` when an original existed), then resumes live
+    /// audio. The held audio is fed while live audio keeps being diverted into the same buffer
+    /// and the hold is cleared atomically once the buffer is empty (under the STT lock), so
+    /// ordering is held audio first, then live, with no gap and no duplicate.
+    /// `replay: false` drops the buffer.
+    pub async fn release_stt_hold(&self, options: ReleaseSttHoldOptions) -> SpeechResult<()> {
+        if self.inner.lock().await.stt_hold.is_none() {
+            return Err(SpeechError::Internal("no STT hold active".into()));
+        }
+        // The host normally swapped already; apply a config still queued behind the open utterance.
+        self.apply_pending_stt_config_if_any().await?;
+
+        if !options.replay {
+            let hold = self.inner.lock().await.stt_hold.take();
+            if let Some(hold) = hold {
+                self.emit(SpeechEvent::stt_hold_ended(
+                    "released_drop",
+                    hold.buffered_ms(),
+                    hold.dropped_ms(),
+                ));
+            }
+            return Ok(());
+        }
+
+        enum Step {
+            Feed(Vec<u8>),
+            Done {
+                live_open: bool,
+                replaces: Option<String>,
+                dropped_ms: u32,
+            },
+        }
+
+        let mut stt_guard = self.stt.lock().await;
+        let Some(stt) = stt_guard.as_mut() else {
+            return Err(SpeechError::Stt("STT not configured".into()));
+        };
+        let mut fed_bytes: usize = 0;
+        let mut failure: Option<SpeechError> = None;
+        let (live_open, replaces, dropped_ms) = loop {
+            let step = {
+                let mut inner = self.inner.lock().await;
+                let pcm = match inner.stt_hold.as_mut() {
+                    Some(hold) => hold.take_pcm(),
+                    None => return Err(SpeechError::Internal("STT hold ended during release".into())),
+                };
+                if pcm.is_empty() {
+                    let hold = inner.stt_hold.take().expect("hold present");
+                    let live_open = inner.stt_stream_open || Self::vad_is_speaking(&inner);
+                    let replaces = hold.replaces_utterance_id.clone();
+                    if live_open {
+                        // Utterance still open: its final comes from the live path, flagged as replay.
+                        inner.last_partial_text = None;
+                        if let Some(id) = replaces.clone() {
+                            inner.replay_final_context = Some(ReplayFinalContext {
+                                replaces_utterance_id: id,
+                            });
+                        }
+                    }
+                    Step::Done {
+                        live_open,
+                        replaces,
+                        dropped_ms: hold.dropped_ms(),
+                    }
+                } else {
+                    Step::Feed(pcm)
+                }
+            };
+            match step {
+                Step::Feed(pcm) => {
+                    fed_bytes += pcm.len();
+                    for chunk in pcm.chunks(640) {
+                        if let Err(err) = stt.push_audio(Bytes::copy_from_slice(chunk)).await {
+                            failure = Some(err);
+                            break;
+                        }
+                    }
+                    if failure.is_some() {
+                        let hold = self.inner.lock().await.stt_hold.take();
+                        let dropped = hold.map(|h| h.dropped_ms()).unwrap_or(0);
+                        self.emit(SpeechEvent::stt_hold_ended(
+                            "failed",
+                            crate::stt_hold::pcm_bytes_to_ms(fed_bytes),
+                            dropped,
+                        ));
+                        return Err(failure.take().expect("failure set"));
+                    }
+                }
+                Step::Done {
+                    live_open,
+                    replaces,
+                    dropped_ms,
+                } => break (live_open, replaces, dropped_ms),
+            }
+        };
+
+        let mut result = Ok(());
+        if !live_open && fed_bytes > 0 {
+            match stt.finalize_utterance().await {
+                Ok(()) => loop {
+                    match stt.poll_transcript().await {
+                        Ok(Some(SttTranscript::Final(text))) => {
+                            if text.trim().is_empty() {
+                                continue;
+                            }
+                            self.emit(SpeechEvent::user_speech_final_held_replay(
+                                text,
+                                Some(next_utterance_id()),
+                                replaces.clone(),
+                            ));
+                        }
+                        Ok(Some(SttTranscript::Partial(_))) => {}
+                        Ok(None) => break,
+                        Err(err) => {
+                            result = Err(err);
+                            break;
+                        }
+                    }
+                },
+                Err(err) => result = Err(err),
+            }
+        }
+        drop(stt_guard);
+        self.emit(SpeechEvent::stt_hold_ended(
+            if result.is_ok() { "released_replay" } else { "failed" },
+            crate::stt_hold::pcm_bytes_to_ms(fed_bytes),
+            dropped_ms,
+        ));
+        result
+    }
+
+    /// Abort the hold: resume the old STT; buffered audio is fed to it in order (switch failed).
+    /// Drops a still-queued STT config so the old STT stays in place.
+    pub async fn cancel_stt_hold(&self) -> SpeechResult<()> {
+        if self.inner.lock().await.stt_hold.is_none() {
+            return Err(SpeechError::Internal("no STT hold active".into()));
+        }
+        self.inner.lock().await.pending_stt_config = None;
+
+        let mut fed_bytes: usize = 0;
+        let (finalize_needed, dropped_ms) = {
+            let mut stt_guard = self.stt.lock().await;
+            loop {
+                let (pcm, done) = {
+                    let mut inner = self.inner.lock().await;
+                    let pcm = match inner.stt_hold.as_mut() {
+                        Some(hold) => hold.take_pcm(),
+                        None => {
+                            return Err(SpeechError::Internal("STT hold ended during cancel".into()))
+                        }
+                    };
+                    if pcm.is_empty() {
+                        let hold = inner.stt_hold.take().expect("hold present");
+                        let live_open = inner.stt_stream_open || Self::vad_is_speaking(&inner);
+                        break (
+                            hold.finalize_seen && !live_open && fed_bytes > 0,
+                            hold.dropped_ms(),
+                        );
+                    }
+                    (pcm, false)
+                };
+                let _ = done;
+                if let Some(stt) = stt_guard.as_mut() {
+                    for chunk in pcm.chunks(640) {
+                        fed_bytes += chunk.len();
+                        stt.push_audio(Bytes::copy_from_slice(chunk)).await?;
+                    }
+                }
+            }
+        };
+        if finalize_needed {
+            // Utterances that ended while held: close them on the old STT through the normal path.
+            self.finalize_stt_utterance().await?;
+        } else {
+            self.poll_stt_transcripts().await?;
+        }
+        self.emit(SpeechEvent::stt_hold_ended(
+            "cancelled",
+            crate::stt_hold::pcm_bytes_to_ms(fed_bytes),
+            dropped_ms,
+        ));
         Ok(())
     }
 
@@ -899,6 +1147,7 @@ impl VoiceAgent {
                 return Err(SpeechError::NotRunning);
             }
             inner.running = false;
+            inner.stt_hold = None;
             otel::end_session(&mut inner.otel);
             true
         };
@@ -1829,9 +2078,9 @@ impl VoiceAgent {
 
     async fn force_close_utterance(&self) -> SpeechResult<()> {
         voice_debug("force_close_utterance (C2 timeout or stall)");
-        let last_partial = {
+        let (last_partial, held) = {
             let inner = self.inner.lock().await;
-            inner.last_partial_text.clone()
+            (inner.last_partial_text.clone(), inner.stt_hold.is_some())
         };
 
         let needs_finalize = {
@@ -1890,6 +2139,10 @@ impl VoiceAgent {
             if emit_speaking_end {
                 voice_debug("emit user_speaking_end (forced utterance close)");
                 self.emit_user_speaking_end_after_lid_gate().await;
+            }
+            if held {
+                // Old-model partial text must not surface while the STT is held.
+                return Ok(());
             }
             voice_debug(format!(
                 "emit user_speech_final (forced): {}",
@@ -2323,7 +2576,12 @@ impl VoiceAgent {
                 let mut inner = self.inner.lock().await;
                 let id = next_utterance_id();
                 inner.current_utterance_id = Some(id.clone());
-                inner.utterance_replay_buffer.begin_utterance();
+                if inner.replay_begun_at_pre_roll {
+                    // Ring already holds the pre-roll/onset audio flushed at SpeechStart.
+                    inner.replay_begun_at_pre_roll = false;
+                } else {
+                    inner.utterance_replay_buffer.begin_utterance();
+                }
                 id
             };
             voice_debug("emit user_speaking_start (before STT transcript)");
@@ -2505,6 +2763,7 @@ impl VoiceAgent {
                 if inner.stt_stream_open
                     && !inner.partials_emitted_this_utterance
                     && inner.stt_listen_started_at.is_some()
+                    && inner.stt_hold.is_none()
                 {
                     if Self::c1_listen_expired(&inner, backlog_ms) {
                         c1 = true;
@@ -2623,6 +2882,13 @@ impl VoiceAgent {
             }
             if let Some(buffered) = pre_roll_after_start {
                 if !buffered.is_empty() {
+                    {
+                        let mut inner = self.inner.lock().await;
+                        if inner.stt_enabled && inner.stt_hold.is_none() {
+                            inner.utterance_replay_buffer.begin_utterance();
+                            inner.replay_begun_at_pre_roll = true;
+                        }
+                    }
                     self.push_stt_audio_bytes(buffered).await?;
                 }
             }
@@ -2794,7 +3060,8 @@ impl VoiceAgent {
                 Self::clear_utterance_finalize_timer(&mut inner);
                 inner.vad_triggered_this_utterance = false;
                 let need_forced = !inner.stt_final_emitted_this_utterance
-                    && inner.partials_emitted_this_utterance;
+                    && inner.partials_emitted_this_utterance
+                    && inner.stt_hold.is_none();
                 let forced_text = inner.last_partial_text.clone().unwrap_or_default();
                 (stream, session, need_forced, forced_text)
             };
@@ -2859,6 +3126,16 @@ impl VoiceAgent {
         }
         {
             let mut inner = self.inner.lock().await;
+            if inner.stt_hold.is_some() {
+                // Host hold: keep the PCM for the swapped STT; never feed the old model.
+                let utterance_id = inner.current_utterance_id.clone();
+                let hold = inner.stt_hold.as_mut().expect("checked");
+                if hold.replaces_utterance_id.is_none() {
+                    hold.replaces_utterance_id = utterance_id;
+                }
+                hold.push(mono_bytes.as_ref());
+                return Ok(());
+            }
             inner
                 .utterance_replay_buffer
                 .push(mono_bytes.as_ref());
@@ -2884,6 +3161,14 @@ impl VoiceAgent {
     }
 
     async fn finalize_stt_utterance(&self) -> SpeechResult<()> {
+        {
+            let mut inner = self.inner.lock().await;
+            if let Some(hold) = inner.stt_hold.as_mut() {
+                voice_debug("STT finalize_utterance deferred (host STT hold)");
+                hold.note_finalize();
+                return Ok(());
+            }
+        }
         voice_debug("STT finalize_utterance: vendor finalize + poll");
         self.commit_utterance_replay_snapshot().await;
         let stt_started = Instant::now();
@@ -2927,8 +3212,12 @@ impl VoiceAgent {
     }
 
     async fn poll_stt_transcripts(&self) -> SpeechResult<()> {
-        if !self.inner.lock().await.stt_enabled {
-            return Ok(());
+        {
+            let inner = self.inner.lock().await;
+            // While held, results of the old STT are never emitted.
+            if !inner.stt_enabled || inner.stt_hold.is_some() {
+                return Ok(());
+            }
         }
         loop {
             let transcript = {

@@ -2,6 +2,7 @@ import {
   JsEventDeliveryMode,
   JsNoiseSuppressionProvider,
   JsSpeechEventType,
+  JsSttHoldMode,
   JsSttVendor,
   JsTtsVendor,
   JsVadSampleRate,
@@ -20,6 +21,10 @@ import type { RemoteAudioTrack } from '../RemoteAudioTrack'
 import { debugEvent, debugFn } from '../debug'
 import { isVoiceDebugEnabled, voiceDebugLog } from './debug'
 import type {
+  BeginSttHoldOptions,
+  ReleaseSttHoldOptions,
+  SttHoldMode,
+  SttHoldOutcome,
   EventDeliveryMode,
   SpeechEvent,
   SpeechEventListener,
@@ -230,6 +235,7 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
         }
       : undefined,
     postUtteranceSilenceMs,
+    replay: config.replay ? { maxAgeMs: config.replay.maxAgeMs } : undefined,
     noiseSuppression: config.noiseSuppression
       ? {
           provider:
@@ -262,6 +268,10 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     replaces_utterance_id?: string
     language_mismatch?: boolean
     model_path?: string
+    hold_mode?: string
+    hold_outcome?: string
+    buffered_ms?: number
+    dropped_ms?: number
   }
   return {
     type: jsEventTypeToString(rawType ?? JsSpeechEventType.Error),
@@ -275,6 +285,12 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     voice: event.voice ?? undefined,
     modelPath: event.modelPath ?? extended.model_path ?? undefined,
     endpoint: event.endpoint ?? undefined,
+    holdMode: (event.holdMode ?? extended.hold_mode ?? undefined) as SttHoldMode | undefined,
+    holdOutcome: (event.holdOutcome ?? extended.hold_outcome ?? undefined) as
+      | SttHoldOutcome
+      | undefined,
+    bufferedMs: event.bufferedMs ?? extended.buffered_ms ?? undefined,
+    droppedMs: event.droppedMs ?? extended.dropped_ms ?? undefined,
   }
 }
 
@@ -312,6 +328,10 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'stt_config_updated'
     case JsSpeechEventType.TtsConfigUpdated:
       return 'tts_config_updated'
+    case JsSpeechEventType.SttHoldStarted:
+      return 'stt_hold_started'
+    case JsSpeechEventType.SttHoldEnded:
+      return 'stt_hold_ended'
     default:
       return 'error'
   }
@@ -454,12 +474,63 @@ export class VoiceAgent {
   }
 
   /**
+   * Start a host-controlled STT hold for a switch that takes seconds (cold STT pool).
+   *
+   * From the moment this resolves, inbound user audio is no longer sent to the current STT and
+   * the current STT is no longer polled, so **no `user_speech_partial` / `user_speech_final` from
+   * the old model is emitted afterwards**. VAD and `user_speaking_*` events keep flowing, and
+   * semantic (STT-partial) barge-in is inactive while held (VAD barge-in still works).
+   *
+   * - `buffer_replay`: all PCM that would have gone to STT is buffered, starting with the audio of
+   *   the utterance in progress (seeded from the 15 s utterance replay ring) until release,
+   *   bounded by `maxBufferMs` (default 45000, cap 120000; oldest audio dropped first and counted).
+   * - `first_utterance`: only the triggering utterance is kept; later speech is dropped.
+   *
+   * Emits `stt_hold_started` (`holdMode`, `bufferedMs`). Rejects when a hold is already active.
+   * Pair with {@link releaseSttHold} (after {@link updateStt}) or {@link cancelSttHold}.
+   *
+   * @see [VOICE-API.md](../../VOICE-API.md#stt-hold-slow-stt-swap)
+   */
+  async beginSttHold(options: BeginSttHoldOptions): Promise<void> {
+    await this.native.beginSttHold({
+      mode:
+        options.mode === 'first_utterance'
+          ? JsSttHoldMode.FirstUtterance
+          : JsSttHoldMode.BufferReplay,
+      maxBufferMs: options.maxBufferMs,
+    })
+  }
+
+  /**
+   * End the hold after the host swapped the STT with {@link updateStt}.
+   *
+   * `replay: true` decodes the held audio through the new STT and emits `user_speech_final`
+   * with `replay: true` (and `replacesUtteranceId` when an original utterance existed), then
+   * resumes live audio. Ordering: held audio first, then live audio, no gap and no duplicate
+   * (live audio keeps being buffered until the held buffer is empty). `replay: false` drops the
+   * buffer. Emits `stt_hold_ended` (`holdOutcome`, `bufferedMs`, `droppedMs`; no transcript text).
+   */
+  async releaseSttHold(options: ReleaseSttHoldOptions): Promise<void> {
+    await this.native.releaseSttHold({ replay: options.replay })
+  }
+
+  /**
+   * Abort the hold (switch failed): the old STT resumes and receives the buffered audio in order;
+   * a still-queued {@link updateStt} config is discarded. Emits `stt_hold_ended` with
+   * `holdOutcome: 'cancelled'`.
+   */
+  async cancelSttHold(): Promise<void> {
+    await this.native.cancelSttHold()
+  }
+
+  /**
    * Re-feed the last finalized utterance's post-RNNoise PCM into the current STT after
    * {@link updateStt}, producing a new `user_speech_final` with `replay: true` and
    * `replacesUtteranceId` set to the original turn.
    *
    * Call when idle (after the original final). Rejects when no PCM snapshot exists, an
-   * utterance is still open, or the buffer overflowed.
+   * utterance is still open, an STT hold is active, the buffer overflowed, or the snapshot is
+   * older than `config.replay.maxAgeMs` (default 10 s, cap 120 s).
    *
    * Headless mock check: `npm run start:replay-last-utterance` in
    * `example-voice-agent-local-sherpa-multi-client`.

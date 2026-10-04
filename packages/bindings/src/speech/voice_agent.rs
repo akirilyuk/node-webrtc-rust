@@ -16,8 +16,8 @@ use crate::media::JsLocalAudioTrack;
 use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
 use crate::speech::types::{
-    speech_err, JsSpeechEvent, JsSttConfig, JsTtsConfig, JsUpdateTtsOptions, JsVoiceAgentConfig,
-    JsVoiceSessionContext,
+    speech_err, JsBeginSttHoldOptions, JsReleaseSttHoldOptions, JsSpeechEvent, JsSttConfig,
+    JsSttHoldMode, JsTtsConfig, JsUpdateTtsOptions, JsVoiceAgentConfig, JsVoiceSessionContext,
 };
 
 fn voice_debug_enabled() -> bool {
@@ -203,6 +203,40 @@ impl JsVoiceAgent {
             )
             .await
             .map_err(speech_err)
+    }
+
+    /// Start a host STT hold: stop feeding/polling the current STT and buffer user PCM.
+    #[napi]
+    pub async fn begin_stt_hold(&self, options: JsBeginSttHoldOptions) -> Result<()> {
+        use node_webrtc_rust_speech::stt_hold::{BeginSttHoldOptions, SttHoldMode};
+        self.inner
+            .begin_stt_hold(BeginSttHoldOptions {
+                mode: match options.mode {
+                    JsSttHoldMode::BufferReplay => SttHoldMode::BufferReplay,
+                    JsSttHoldMode::FirstUtterance => SttHoldMode::FirstUtterance,
+                },
+                max_buffer_ms: options.max_buffer_ms,
+            })
+            .await
+            .map_err(speech_err)
+    }
+
+    /// End the hold after `update_stt`; `replay` decodes held audio through the new STT.
+    #[napi]
+    pub async fn release_stt_hold(&self, options: JsReleaseSttHoldOptions) -> Result<()> {
+        use node_webrtc_rust_speech::stt_hold::ReleaseSttHoldOptions;
+        self.inner
+            .release_stt_hold(ReleaseSttHoldOptions {
+                replay: options.replay,
+            })
+            .await
+            .map_err(speech_err)
+    }
+
+    /// Abort the hold: the old STT resumes and receives the buffered audio.
+    #[napi]
+    pub async fn cancel_stt_hold(&self) -> Result<()> {
+        self.inner.cancel_stt_hold().await.map_err(speech_err)
     }
 
     /// Re-transcribe the last utterance PCM on the current STT provider (after `update_stt`).

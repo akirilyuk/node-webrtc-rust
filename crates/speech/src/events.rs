@@ -45,6 +45,10 @@ pub enum SpeechEventKind {
     Error,
     SttConfigUpdated,
     TtsConfigUpdated,
+    /// `begin_stt_hold` accepted (`hold_mode`, `buffered_ms` seeded from the open utterance).
+    SttHoldStarted,
+    /// Hold finished (`hold_outcome`, `buffered_ms`, `dropped_ms`). No transcript text.
+    SttHoldEnded,
 }
 
 /// A speech event with optional payload text.
@@ -67,6 +71,14 @@ pub struct SpeechEvent {
     pub voice: Option<String>,
     pub model_path: Option<String>,
     pub endpoint: Option<String>,
+    /// `stt_hold_started`: `buffer_replay` | `first_utterance`.
+    pub hold_mode: Option<String>,
+    /// `stt_hold_ended`: `released_replay` | `released_drop` | `cancelled`.
+    pub hold_outcome: Option<String>,
+    /// Held PCM duration (ms) on `stt_hold_*`.
+    pub buffered_ms: Option<u32>,
+    /// PCM duration (ms) dropped by the buffer bound or `first_utterance` on `stt_hold_ended`.
+    pub dropped_ms: Option<u32>,
 }
 
 impl SpeechEvent {
@@ -83,7 +95,26 @@ impl SpeechEvent {
             voice: None,
             model_path: None,
             endpoint: None,
+            hold_mode: None,
+            hold_outcome: None,
+            buffered_ms: None,
+            dropped_ms: None,
         }
+    }
+
+    pub fn stt_hold_started(mode: &str, buffered_ms: u32) -> Self {
+        let mut ev = Self::base(SpeechEventKind::SttHoldStarted);
+        ev.hold_mode = Some(mode.to_string());
+        ev.buffered_ms = Some(buffered_ms);
+        ev
+    }
+
+    pub fn stt_hold_ended(outcome: &str, buffered_ms: u32, dropped_ms: u32) -> Self {
+        let mut ev = Self::base(SpeechEventKind::SttHoldEnded);
+        ev.hold_outcome = Some(outcome.to_string());
+        ev.buffered_ms = Some(buffered_ms);
+        ev.dropped_ms = Some(dropped_ms);
+        ev
     }
 
     pub fn with_utterance_id(mut self, utterance_id: Option<String>) -> Self {
@@ -119,6 +150,17 @@ impl SpeechEvent {
         Self::user_speech_final(text, utterance_id)
             .with_replay(true)
             .with_replaces_utterance_id(Some(replaces_utterance_id.into()))
+    }
+
+    /// Final produced by `release_stt_hold({ replay: true })`; `replaces` is set when an original existed.
+    pub fn user_speech_final_held_replay(
+        text: impl Into<String>,
+        utterance_id: Option<String>,
+        replaces_utterance_id: Option<String>,
+    ) -> Self {
+        Self::user_speech_final(text, utterance_id)
+            .with_replay(true)
+            .with_replaces_utterance_id(replaces_utterance_id)
     }
 
     pub fn user_language(lang: impl Into<String>, utterance_id: Option<String>) -> Self {

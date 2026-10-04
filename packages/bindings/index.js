@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { JsConferenceRoom, JsConferenceServer, JsMixGraph, JsMixPlacement, JsRoomNoiseSuppression, JsMuteScope, JsRtcDataChannel, JsMediaStreamTrack, JsMediaStream, JsLocalAudioTrack, JsPeerConnection, JsRtpReceiver, JsRtpSender, JsRtpTransceiver, JsSessionAudioFormat, JsSessionRecorder, JsEventDeliveryMode, JsNoiseSuppressionProvider, JsVadSampleRate, JsSttVendor, JsTtsVendor, JsSpeechEventType, JsVoiceAgent, JsClipStatus, JsGrowingClipWriter, playClipFromPath, playClipFromBytes, playClipProgressive, getClipStatus, stopClip, takeClipFrame, preloadLanguageId, jsQuatIdentity, jsVec3Zero, version } = nativeBinding
+const { JsConferenceRoom, JsConferenceServer, JsMixGraph, JsMixPlacement, JsRoomNoiseSuppression, JsMuteScope, JsRtcDataChannel, JsMediaStreamTrack, JsMediaStream, JsLocalAudioTrack, JsPeerConnection, JsRtpReceiver, JsRtpSender, JsRtpTransceiver, JsSessionAudioFormat, JsSessionRecorder, JsEventDeliveryMode, JsNoiseSuppressionProvider, JsVadSampleRate, JsSttVendor, JsTtsVendor, JsSpeechEventType, JsSttHoldMode, JsVoiceAgent, JsClipStatus, JsGrowingClipWriter, playClipFromPath, playClipFromBytes, playClipProgressive, getClipStatus, stopClip, takeClipFrame, preloadLanguageId, jsQuatIdentity, jsVec3Zero, version } = nativeBinding
 
 module.exports.JsConferenceRoom = JsConferenceRoom
 module.exports.JsConferenceServer = JsConferenceServer
@@ -334,6 +334,7 @@ module.exports.JsVadSampleRate = JsVadSampleRate
 module.exports.JsSttVendor = JsSttVendor
 module.exports.JsTtsVendor = JsTtsVendor
 module.exports.JsSpeechEventType = JsSpeechEventType
+module.exports.JsSttHoldMode = JsSttHoldMode
 module.exports.JsVoiceAgent = JsVoiceAgent
 module.exports.JsClipStatus = JsClipStatus
 module.exports.JsGrowingClipWriter = JsGrowingClipWriter

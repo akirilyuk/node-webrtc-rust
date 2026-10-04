@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { SPEECH_EVENT_TYPE } from '../src/voice/types'
+import { SPEECH_EVENT_TYPE, type LanguageIdSkipReason } from '../src/voice/types'
 import { speechEventToControlMessage } from '../src/voice/speech-event-bridge'
 
 describe('user_language speech events', () => {
@@ -45,5 +45,12 @@ describe('language_id_skipped speech events', () => {
       speechMs: 120,
       ts: undefined,
     })
+  })
+
+  test('undetermined is a valid skip reason', () => {
+    const reason: LanguageIdSkipReason = 'undetermined'
+    expect(speechEventToControlMessage({ type: 'language_id_skipped', reason }).reason).toBe(
+      'undetermined',
+    )
   })
 })

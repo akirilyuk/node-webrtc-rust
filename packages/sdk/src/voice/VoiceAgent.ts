@@ -233,6 +233,7 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
           allowlist: config.languageId.allowlist,
           minSpeechMs: config.languageId.minSpeechMs,
           continuous: config.languageId.continuous,
+          timing: config.languageId.timing,
         }
       : undefined,
     postUtteranceSilenceMs,

@@ -32,7 +32,7 @@ export interface VoiceControlSpeechEventMessage {
   text?: string
   language?: string
   error?: string
-  /** `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio`. */
+  /** `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio` | `undetermined`. */
   reason?: string
   /** `language_id_skipped`: buffered speech (ms). */
   speechMs?: number

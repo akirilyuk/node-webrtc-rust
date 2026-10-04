@@ -8,7 +8,7 @@ use tokio::sync::Notify;
 
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    LanguageIdConfig, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor,
+    LanguageIdConfig, LanguageIdTiming, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor,
     VadConfig, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::SpeechEventKind;
@@ -226,6 +226,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: Some(true),
         }),
         vad,
@@ -282,6 +283,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: Some(true),
         }),
         vad,
@@ -619,6 +621,7 @@ fn agent_with_overlap_tracking_lid(
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: Some(true),
         }),
         vad,
@@ -922,6 +925,7 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: Some(true),
         }),
         vad,
@@ -1010,6 +1014,7 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
                 continuous: None,
                 lid_max_clip_ms: None,
                 lid_gate_max_wait_ms: Some(300),
+                timing: None,
                 tts_exclusion: Some(true),
             }),
             vad,
@@ -1068,6 +1073,49 @@ fn agent_with_counting_lid(
     include_stt: bool,
     lid_languages: Vec<String>,
 ) -> Arc<VoiceAgent> {
+    agent_with_counting_lid_allowlist(
+        stt_bytes,
+        lid_calls,
+        gate_stt,
+        continuous,
+        include_stt,
+        lid_languages,
+        None,
+    )
+}
+
+fn agent_with_counting_lid_allowlist(
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_calls: Arc<AtomicUsize>,
+    gate_stt: bool,
+    continuous: Option<bool>,
+    include_stt: bool,
+    lid_languages: Vec<String>,
+    allowlist: Option<Vec<String>>,
+) -> Arc<VoiceAgent> {
+    agent_with_counting_lid_timing(
+        stt_bytes,
+        lid_calls,
+        gate_stt,
+        continuous,
+        include_stt,
+        lid_languages,
+        allowlist,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn agent_with_counting_lid_timing(
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_calls: Arc<AtomicUsize>,
+    gate_stt: bool,
+    continuous: Option<bool>,
+    include_stt: bool,
+    lid_languages: Vec<String>,
+    allowlist: Option<Vec<String>>,
+    timing: Option<LanguageIdTiming>,
+) -> Arc<VoiceAgent> {
     let factory = Arc::new(CountingLidTestFactory {
         stt_bytes: Arc::clone(&stt_bytes),
         lid_calls: Arc::clone(&lid_calls),
@@ -1113,11 +1161,12 @@ fn agent_with_counting_lid(
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
-            allowlist: None,
+            allowlist,
             min_speech_ms: Some(200),
             continuous,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing,
             tts_exclusion: Some(true),
         }),
         vad,
@@ -1279,6 +1328,7 @@ fn agent_with_timed_overlap_lid(
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: Some(true),
         }),
         vad,
@@ -1817,6 +1867,7 @@ async fn lid_error_does_not_block_final() {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: Some(true),
         }),
         vad,
@@ -1955,6 +2006,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
                 continuous: Some(true),
                 lid_max_clip_ms: None,
                 lid_gate_max_wait_ms: None,
+                timing: None,
             tts_exclusion: Some(true),
             }),
             vad,
@@ -2225,6 +2277,7 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
                 continuous: None,
                 lid_max_clip_ms: None,
                 lid_gate_max_wait_ms: None,
+                timing: None,
                 tts_exclusion: Some(false),
             }),
             vad,
@@ -2491,4 +2544,314 @@ async fn tts_active_at_speech_end_emits_language_id_skipped_deferred_tts() {
     assert!(skipped_idx < lang_idx);
 
     agent.stop().await.unwrap();
+}
+
+/// Default-mode utterance with `loud_frames` of speech, then silence until idle; returns all events.
+async fn run_one_utterance_events(
+    agent: &VoiceAgent,
+    rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+    loud_frames: usize,
+) -> Vec<node_webrtc_rust_speech::events::SpeechEvent> {
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    drive_loud_frames(agent, &loud, loud_frames).await;
+    drive_silent_frames(agent, &silent, 15).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    drive_silent_frames(agent, &silent, 5).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drain_events(rx)
+}
+
+/// Invariant: exactly one of `user_language` / `language_id_skipped` per closed utterance.
+fn assert_one_first_outcome(
+    events: &[node_webrtc_rust_speech::events::SpeechEvent],
+) -> &node_webrtc_rust_speech::events::SpeechEvent {
+    let outcomes: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.kind,
+                SpeechEventKind::UserLanguage | SpeechEventKind::LanguageIdSkipped
+            )
+        })
+        .collect();
+    assert_eq!(outcomes.len(), 1, "expected exactly one outcome: {outcomes:?}");
+    outcomes[0]
+}
+
+#[tokio::test]
+async fn identify_returning_empty_code_emits_undetermined() {
+    let agent = agent_with_counting_lid(
+        Arc::new(Mutex::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        false,
+        None,
+        false,
+        vec!["".into()],
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 12).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::LanguageIdSkipped);
+    assert_eq!(outcome.reason.as_deref(), Some("undetermined"));
+    assert!(outcome.speech_ms.unwrap_or(0) >= 200);
+    // Identify finished before close, so the skipped event precedes user_speaking_end.
+    let skipped_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::LanguageIdSkipped)
+        .unwrap();
+    let end_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeakingEnd)
+        .unwrap();
+    assert!(skipped_idx < end_idx);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn identify_returning_disallowed_code_emits_undetermined() {
+    let agent = agent_with_counting_lid_allowlist(
+        Arc::new(Mutex::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        false,
+        None,
+        false,
+        vec!["de".into()],
+        Some(vec!["en".into(), "fr".into()]),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 12).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::LanguageIdSkipped);
+    assert_eq!(outcome.reason.as_deref(), Some("undetermined"));
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn long_utterance_emits_exactly_one_user_language() {
+    let agent = agent_with_counting_lid(
+        Arc::new(Mutex::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        false,
+        None,
+        false,
+        vec!["en".into()],
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 12).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::UserLanguage);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn same_language_on_second_utterance_still_reports_first_outcome() {
+    let agent = agent_with_counting_lid(
+        Arc::new(Mutex::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        false,
+        None,
+        true,
+        vec!["en".into()],
+    );
+    let mut rx = agent.subscribe_events();
+    let first = run_one_utterance_events(&agent, &mut rx, 12).await;
+    assert_eq!(assert_one_first_outcome(&first).kind, SpeechEventKind::UserLanguage);
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    drive_loud_frames(&agent, &loud, 12).await;
+    drive_silent_frames(&agent, &silent, 15).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    drive_silent_frames(&agent, &silent, 5).await;
+    let second = drain_events(&mut rx);
+    assert_eq!(assert_one_first_outcome(&second).kind, SpeechEventKind::UserLanguage);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn no_audio_or_short_utterances_report_one_outcome() {
+    // too_short: covered with ordering in short_utterance_emits_language_id_skipped_*; here the
+    // invariant form (exactly one outcome, no user_language).
+    let agent = agent_with_counting_lid(
+        Arc::new(Mutex::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        false,
+        None,
+        false,
+        vec!["en".into()],
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 3).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.reason.as_deref(), Some("too_short"));
+    agent.stop().await.unwrap();
+}
+
+fn timing_agent(
+    timing: Option<LanguageIdTiming>,
+    continuous: Option<bool>,
+    languages: Vec<String>,
+    lid_calls: Arc<AtomicUsize>,
+) -> Arc<VoiceAgent> {
+    // No STT: VAD closes the utterance by itself (single-utterance tests).
+    agent_with_counting_lid_timing(
+        Arc::new(Mutex::new(0)),
+        lid_calls,
+        false,
+        continuous,
+        false,
+        languages,
+        None,
+        timing,
+    )
+}
+
+#[tokio::test]
+async fn early_timing_identifies_once_before_close_for_long_utterance() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = timing_agent(
+        Some(LanguageIdTiming::Early),
+        None,
+        vec!["en".into(), "de".into()],
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    // Long continuous speech: well past min_speech_ms several times over.
+    drive_loud_frames(&agent, &loud, 12).await;
+    // user_language must arrive while the user is still speaking (early), before any close.
+    assert!(
+        wait_for_user_language(&agent, &mut rx).await,
+        "early mode should emit user_language mid-utterance"
+    );
+    drive_loud_frames(&agent, &loud, 80).await;
+    drive_silent_frames(&agent, &silent, 15).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let events = drain_events(&mut rx);
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "early mode must identify exactly once per utterance"
+    );
+    // The first user_language was consumed above; nothing else for this utterance.
+    assert_eq!(count_kind(&events, SpeechEventKind::UserLanguage), 0);
+    assert_eq!(count_kind(&events, SpeechEventKind::LanguageIdSkipped), 0);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_timing_user_language_precedes_final() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = timing_agent(
+        Some(LanguageIdTiming::Early),
+        None,
+        vec!["en".into()],
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 12).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::UserLanguage);
+    let lang_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserLanguage)
+        .unwrap();
+    let end_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeakingEnd)
+        .unwrap();
+    assert!(lang_idx < end_idx);
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_timing_short_utterance_emits_too_short_without_identify() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = timing_agent(
+        Some(LanguageIdTiming::Early),
+        None,
+        vec!["en".into()],
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 3).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.reason.as_deref(), Some("too_short"));
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 0);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn continuous_alias_matches_timing_continuous() {
+    // `continuous: true` (deprecated) must behave as timing=continuous: repeated identifies.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = timing_agent(None, Some(true), vec!["en".into()], Arc::clone(&lid_calls));
+    let mut rx = agent.subscribe_events();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    let loud = loud_stereo_frame();
+    drive_loud_frames(&agent, &loud, 12).await;
+    assert!(wait_for_user_language(&agent, &mut rx).await);
+    drive_loud_frames(&agent, &loud, 80).await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && lid_calls.load(Ordering::SeqCst) < 2 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(lid_calls.load(Ordering::SeqCst) > 1, "alias must be continuous");
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn explicit_timing_overrides_continuous_flag() {
+    // timing=end_of_utterance wins over continuous=true: no mid-utterance identify.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = timing_agent(
+        Some(LanguageIdTiming::EndOfUtterance),
+        Some(true),
+        vec!["en".into()],
+        Arc::clone(&lid_calls),
+    );
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    let loud = loud_stereo_frame();
+    drive_loud_frames(&agent, &loud, 40).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 0, "no identify before the utterance closes");
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn one_outcome_per_utterance_in_all_timings() {
+    for (timing, loud_frames, expect_language) in [
+        (LanguageIdTiming::EndOfUtterance, 12, true),
+        (LanguageIdTiming::EndOfUtterance, 3, false),
+        (LanguageIdTiming::Early, 12, true),
+        (LanguageIdTiming::Early, 3, false),
+        (LanguageIdTiming::Continuous, 12, true),
+        (LanguageIdTiming::Continuous, 3, false),
+    ] {
+        let lid_calls = Arc::new(AtomicUsize::new(0));
+        let agent = timing_agent(Some(timing), None, vec!["en".into()], lid_calls);
+        let mut rx = agent.subscribe_events();
+        let events = run_one_utterance_events(&agent, &mut rx, loud_frames).await;
+        let outcome = assert_one_first_outcome(&events);
+        let expected = if expect_language {
+            SpeechEventKind::UserLanguage
+        } else {
+            SpeechEventKind::LanguageIdSkipped
+        };
+        assert_eq!(outcome.kind, expected, "timing={timing:?} frames={loud_frames}");
+        agent.stop().await.unwrap();
+    }
 }

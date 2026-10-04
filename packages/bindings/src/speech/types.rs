@@ -415,6 +415,7 @@ pub struct JsLanguageIdConfig {
     pub allowlist: Option<Vec<String>>,
     pub min_speech_ms: Option<u32>,
     pub continuous: Option<bool>,
+    pub timing: Option<String>,
     pub lid_max_clip_ms: Option<u32>,
     pub lid_gate_max_wait_ms: Option<u32>,
     pub tts_exclusion: Option<bool>,
@@ -428,6 +429,10 @@ impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdCon
             allowlist: value.allowlist,
             min_speech_ms: value.min_speech_ms,
             continuous: value.continuous,
+            timing: value
+                .timing
+                .as_deref()
+                .and_then(node_webrtc_rust_speech::config::LanguageIdTiming::parse),
             lid_max_clip_ms: value.lid_max_clip_ms,
             lid_gate_max_wait_ms: value.lid_gate_max_wait_ms,
             tts_exclusion: value.tts_exclusion,

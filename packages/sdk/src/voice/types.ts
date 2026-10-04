@@ -174,11 +174,18 @@ export interface LanguageIdConfig {
   /** Minimum buffered speech (ms) before the first identify attempt. Default 1000. */
   minSpeechMs?: number
   /**
-   * When `true`, re-run identify during a long utterance after each pass completes.
-   * Default (unset/false): once per utterance. Uses extra CPU and can starve Piper TTS,
+   * @deprecated Use `timing: 'continuous'`. When `true`, re-run identify during a long
+   * utterance after each pass completes. Default (unset/false): once per utterance. Uses extra CPU and can starve Piper TTS,
    * stretching gaps between sentences so short first TTS bursts may be missed.
    */
   continuous?: boolean
+  /**
+   * When language ID runs. Default `'end_of_utterance'`: one identify at utterance close.
+   * `'early'`: exactly one identify as soon as `minSpeechMs` of speech is buffered, never again
+   * for that utterance (same CPU cost as `end_of_utterance`, but earlier). `'continuous'`:
+   * repeated passes during a long utterance (more CPU). Takes precedence over `continuous`.
+   */
+  timing?: LanguageIdTiming
   /** Maximum PCM clip (ms) fed to the identifier per pass. Default 5000. */
   lidMaxClipMs?: number
   /** Fault-path max wait (ms) when gating `user_speech_final` on hung LID. Default 3000. */
@@ -331,8 +338,11 @@ export interface SpeechEvent {
   speechMs?: number
 }
 
+/** `languageId.timing` values. */
+export type LanguageIdTiming = 'end_of_utterance' | 'early' | 'continuous'
+
 /** `reason` on `language_id_skipped`. */
-export type LanguageIdSkipReason = 'too_short' | 'deferred_tts' | 'no_audio'
+export type LanguageIdSkipReason = 'too_short' | 'deferred_tts' | 'no_audio' | 'undetermined'
 
 /** What {@link VoiceAgent.beginSttHold} keeps. */
 export type SttHoldMode = 'buffer_replay' | 'first_utterance'

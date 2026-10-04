@@ -102,6 +102,7 @@ mod tests {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         }
     }

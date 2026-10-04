@@ -82,7 +82,7 @@ pub struct SpeechEvent {
     pub buffered_ms: Option<u32>,
     /// PCM duration (ms) dropped by the buffer bound or `first_utterance` on `stt_hold_ended`.
     pub dropped_ms: Option<u32>,
-    /// `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio`.
+    /// `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio` | `undetermined`.
     pub reason: Option<String>,
     /// `language_id_skipped`: buffered user speech (ms) at the decision point.
     pub speech_ms: Option<u32>,

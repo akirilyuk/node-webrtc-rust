@@ -299,6 +299,7 @@ export interface JsLanguageIdConfig {
   allowlist?: Array<string>
   minSpeechMs?: number
   continuous?: boolean
+  timing?: string
   lidMaxClipMs?: number
   lidGateMaxWaitMs?: number
   ttsExclusion?: boolean

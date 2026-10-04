@@ -3493,7 +3493,7 @@ impl VoiceAgent {
         let drain_hold = tts_buffer.drain_hold();
 
         loop {
-            let Some(chunk) = tts_buffer.pop_chunk().await else {
+            let Some(chunk) = drain_hold.pop_chunk().await else {
                 // Progressive synth may still be producing — wait for the next wake
                 // instead of ending the utterance early.
                 if tts_buffer.is_producing().await

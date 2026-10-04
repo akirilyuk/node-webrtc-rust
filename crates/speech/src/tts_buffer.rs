@@ -13,15 +13,24 @@ use crate::pipeline::TtsAudioChunk;
 #[derive(Clone, Default)]
 pub struct TtsBuffer {
     inner: Arc<Mutex<TtsBufferInner>>,
-    /// True from the moment a chunk is handed to the drain worker until that drain pass has
-    /// finished writing it (see [`TtsDrainHold`]). Without it, `speaking` is false in the gap
+    /// True from the moment a chunk is handed to the drain worker through a [`TtsDrainHold`]
+    /// until that drain pass has finished writing it. Without it, `speaking` is false in the gap
     /// between "last chunk popped" and "first frame written", so idle checks (blocking send,
     /// `wait_tts_playback_idle`) can return before any PCM is written.
     held: Arc<AtomicBool>,
 }
 
-/// Drop guard that marks the chunk(s) a drain pass holds as finished.
+/// One drain pass. Chunks popped through it count as in flight until it is dropped, so the
+/// hold cannot outlive the pass that owns the chunks (a plain [`TtsBuffer::pop_chunk`] never
+/// sets it).
 pub struct TtsDrainHold(TtsBuffer);
+
+impl TtsDrainHold {
+    /// Pop the next chunk and keep the buffer "speaking" until this guard is dropped.
+    pub async fn pop_chunk(&self) -> Option<TtsAudioChunk> {
+        self.0.pop_chunk_marking(true).await
+    }
+}
 
 impl Drop for TtsDrainHold {
     fn drop(&mut self) {
@@ -115,6 +124,10 @@ impl TtsBuffer {
     }
 
     pub async fn pop_chunk(&self) -> Option<TtsAudioChunk> {
+        self.pop_chunk_marking(false).await
+    }
+
+    async fn pop_chunk_marking(&self, hold: bool) -> Option<TtsAudioChunk> {
         let mut inner = self.inner.lock().await;
         let chunk = inner.queue.pop_front();
         // Clear `speaking` only when the drain worker finds nothing left to pop. Clearing it
@@ -124,13 +137,14 @@ impl TtsBuffer {
         if chunk.is_none() && !inner.producing {
             inner.speaking = false;
         }
-        if chunk.is_some() {
+        // Set under the buffer lock so `is_speaking` never sees the chunk in neither place.
+        if hold && chunk.is_some() {
             self.held.store(true, Ordering::SeqCst);
         }
         chunk
     }
 
-    /// Guard for one drain pass: while alive, popped chunks count as in flight even when the
+    /// Guard for one drain pass: chunks popped through it count as in flight even when the
     /// queue is empty and nothing is producing. Dropping it releases them.
     pub fn drain_hold(&self) -> TtsDrainHold {
         TtsDrainHold(self.clone())
@@ -199,7 +213,7 @@ mod tests {
         buf.set_producing(true).await;
         buf.enqueue(vec![chunk(20)]).await;
         let hold = buf.drain_hold();
-        assert!(buf.pop_chunk().await.is_some());
+        assert!(hold.pop_chunk().await.is_some());
         buf.set_producing(false).await;
         assert!(buf.is_speaking().await, "chunk in hand must not look idle");
         drop(hold);
@@ -210,8 +224,8 @@ mod tests {
     async fn flush_releases_held_chunk() {
         let buf = TtsBuffer::new();
         buf.enqueue(vec![chunk(20)]).await;
-        let _hold = buf.drain_hold();
-        let _ = buf.pop_chunk().await;
+        let hold = buf.drain_hold();
+        let _ = hold.pop_chunk().await;
         buf.flush().await;
         assert!(!buf.is_speaking().await);
     }

@@ -12,6 +12,7 @@
 //! | `UserSpeechPartial` | STT streaming |
 //! | `UserSpeechFinal` | STT `finalize_utterance` — primary turn boundary for LLM |
 //! | `UserLanguage` | Offline spoken-language ID on buffered user PCM |
+//! | `LanguageIdSkipped` | Utterance closed (or LID deferred for TTS) without an identify running; no `user_language` will follow unless a deferred identify later runs |
 //! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound |
 //! | `AgentSpeakingEnd` | TTS queue drained — **only on the agent that plays TTS** |
 //! | `VadTriggered` | VAD `SpeechStart` when `vad.enabled` — opens STT listen for this utterance |
@@ -33,6 +34,8 @@ pub enum SpeechEventKind {
     UserSpeechPartial,
     UserSpeechFinal,
     UserLanguage,
+    /// No language decision for this utterance (`reason`, `speech_ms`). No transcript text.
+    LanguageIdSkipped,
     AgentSpeakingStart,
     AgentSpeakingEnd,
     VadTriggered,
@@ -79,6 +82,10 @@ pub struct SpeechEvent {
     pub buffered_ms: Option<u32>,
     /// PCM duration (ms) dropped by the buffer bound or `first_utterance` on `stt_hold_ended`.
     pub dropped_ms: Option<u32>,
+    /// `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio` | `undetermined`.
+    pub reason: Option<String>,
+    /// `language_id_skipped`: buffered user speech (ms) at the decision point.
+    pub speech_ms: Option<u32>,
 }
 
 impl SpeechEvent {
@@ -99,6 +106,8 @@ impl SpeechEvent {
             hold_outcome: None,
             buffered_ms: None,
             dropped_ms: None,
+            reason: None,
+            speech_ms: None,
         }
     }
 
@@ -169,6 +178,13 @@ impl SpeechEvent {
             .with_utterance_id(utterance_id)
             .with_language(Some(code.clone()))
             .with_text(code)
+    }
+
+    pub fn language_id_skipped(reason: &str, speech_ms: u32, utterance_id: Option<String>) -> Self {
+        let mut ev = Self::base(SpeechEventKind::LanguageIdSkipped).with_utterance_id(utterance_id);
+        ev.reason = Some(reason.to_string());
+        ev.speech_ms = Some(speech_ms);
+        ev
     }
 
     pub fn agent_speaking_start() -> Self {
@@ -306,5 +322,15 @@ mod user_language_event_tests {
         assert_eq!(event.language.as_deref(), Some("de"));
         assert_eq!(event.text.as_deref(), Some("de"));
         assert_eq!(event.utterance_id.as_deref(), Some("utt-1"));
+    }
+
+    #[test]
+    fn language_id_skipped_sets_reason_and_speech_ms() {
+        let event = SpeechEvent::language_id_skipped("too_short", 120, Some("utt-1".into()));
+        assert_eq!(event.kind, SpeechEventKind::LanguageIdSkipped);
+        assert_eq!(event.reason.as_deref(), Some("too_short"));
+        assert_eq!(event.speech_ms, Some(120));
+        assert_eq!(event.utterance_id.as_deref(), Some("utt-1"));
+        assert!(event.text.is_none());
     }
 }

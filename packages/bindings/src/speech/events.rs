@@ -16,6 +16,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::UserSpeechPartial => JsSpeechEventType::UserSpeechPartial,
             SpeechEventKind::UserSpeechFinal => JsSpeechEventType::UserSpeechFinal,
             SpeechEventKind::UserLanguage => JsSpeechEventType::UserLanguage,
+            SpeechEventKind::LanguageIdSkipped => JsSpeechEventType::LanguageIdSkipped,
             SpeechEventKind::AgentSpeakingStart => JsSpeechEventType::AgentSpeakingStart,
             SpeechEventKind::AgentSpeakingEnd => JsSpeechEventType::AgentSpeakingEnd,
             SpeechEventKind::VadTriggered => JsSpeechEventType::VadTriggered,
@@ -45,6 +46,8 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         hold_outcome: event.hold_outcome,
         buffered_ms: event.buffered_ms,
         dropped_ms: event.dropped_ms,
+        reason: event.reason,
+        speech_ms: event.speech_ms,
     }
 }
 
@@ -60,6 +63,19 @@ mod speech_event_to_js_tests {
         assert_eq!(js.language.as_deref(), Some("fr"));
         assert_eq!(js.text.as_deref(), Some("fr"));
         assert_eq!(js.utterance_id.as_deref(), Some("utt-1"));
+    }
+
+    #[test]
+    fn language_id_skipped_maps_reason_and_speech_ms() {
+        let js = speech_event_to_js(SpeechEvent::language_id_skipped(
+            "deferred_tts",
+            80,
+            Some("utt-2".into()),
+        ));
+        assert_eq!(js.event_type, JsSpeechEventType::LanguageIdSkipped);
+        assert_eq!(js.reason.as_deref(), Some("deferred_tts"));
+        assert_eq!(js.speech_ms, Some(80));
+        assert!(js.text.is_none());
     }
 }
 

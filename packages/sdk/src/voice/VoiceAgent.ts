@@ -24,6 +24,7 @@ import type {
   BeginSttHoldOptions,
   ReleaseSttHoldOptions,
   SttHoldMode,
+  LanguageIdSkipReason,
   SttHoldOutcome,
   EventDeliveryMode,
   SpeechEvent,
@@ -232,6 +233,7 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
           allowlist: config.languageId.allowlist,
           minSpeechMs: config.languageId.minSpeechMs,
           continuous: config.languageId.continuous,
+          timing: config.languageId.timing,
         }
       : undefined,
     postUtteranceSilenceMs,
@@ -272,6 +274,7 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     hold_outcome?: string
     buffered_ms?: number
     dropped_ms?: number
+    speech_ms?: number
   }
   return {
     type: jsEventTypeToString(rawType ?? JsSpeechEventType.Error),
@@ -291,6 +294,8 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
       | undefined,
     bufferedMs: event.bufferedMs ?? extended.buffered_ms ?? undefined,
     droppedMs: event.droppedMs ?? extended.dropped_ms ?? undefined,
+    reason: (event.reason ?? undefined) as LanguageIdSkipReason | undefined,
+    speechMs: event.speechMs ?? extended.speech_ms ?? undefined,
   }
 }
 
@@ -306,6 +311,8 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'user_speech_final'
     case JsSpeechEventType.UserLanguage:
       return 'user_language'
+    case JsSpeechEventType.LanguageIdSkipped:
+      return 'language_id_skipped'
     case JsSpeechEventType.AgentSpeakingStart:
       return 'agent_speaking_start'
     case JsSpeechEventType.AgentSpeakingEnd:

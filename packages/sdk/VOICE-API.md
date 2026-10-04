@@ -68,6 +68,7 @@ new VoiceAgent(config)
 | `barge_in`             | Barge-in path fired (VAD and/or STT partial) | Cancel LLM stream; TTS may already be flushed                      |
 | `error`                | Vendor or pipeline failure                   | Log / recover                                                      |
 | `user_language`        | LID (optional `languageId`)                  | **Detection only** — does not change STT/TTS; your app calls `updateStt` / `updateTts` if needed |
+| `language_id_skipped`  | LID (optional `languageId`)                  | No language decision for this utterance: `reason` (`too_short` \| `deferred_tts` \| `no_audio` \| `undetermined`), `speechMs`; no transcript text. Stop holding the final for `user_language` (see below) |
 | `stt_config_updated`   | After pending STT config is applied          | Confirm `language`, `modelPath`, `endpoint` on the active recognizer |
 | `tts_config_updated`   | After pending TTS config is applied            | Confirm `voice`, `modelPath`, `endpoint` on the active synthesizer |
 | `stt_hold_started`     | After `beginSttHold` accepted                  | `holdMode`, `bufferedMs` (audio of the open utterance already held); no transcript text |
@@ -212,6 +213,35 @@ LID says "de" (or the agent asks for German)
 ### Host-level speech events (`voice_language_*`)
 
 `SpeechEventType` includes `voice_language_switching`, `voice_language_changed`, and `voice_language_switch_failed` so **session coordinators** can mirror switch lifecycle on the same `speech_event` wire as STT/TTS events (for example when forwarding to a browser DataChannel). The native `VoiceAgent` pipeline emits `stt_config_updated` / `tts_config_updated`; the `voice_language_*` kinds are for **your** coordinator to emit when it orchestrates catalog lookups, secrets, and `updateStt` / `updateTts` as one logical “switch.”
+
+### `languageId.timing`
+
+`languageId.timing` chooses when the identify runs:
+
+| `timing` | Behaviour | CPU |
+| -------- | --------- | --- |
+| `end_of_utterance` (default) | One identify at utterance close, when at least `minSpeechMs` of speech is buffered. | One identify per utterance of at least `minSpeechMs`. |
+| `early` | One identify as soon as `minSpeechMs` of speech is buffered while the user is still speaking, never again for that utterance. If the utterance closes first, `language_id_skipped` (`too_short`) is emitted. `user_language` normally arrives before the final, without waiting for the utterance to end. | Same as `end_of_utterance` (exactly one identify per utterance of at least `minSpeechMs`), just earlier. |
+| `continuous` | The first identify like `early`, then repeated passes during a long utterance; a changed code emits `user_language` again. | Repeated passes; can starve TTS. |
+
+`continuous: true` still works as an alias for `timing: 'continuous'` and is deprecated; an explicit `timing` takes precedence over it. Hosts opt in to `early`; the library default stays `end_of_utterance`. The one-outcome invariant below holds for all three timings.
+
+### `language_id_skipped` (hosts that hold finals for `user_language`)
+
+`language_id_skipped` is emitted with `utteranceId`, `reason` and `speechMs` (buffered user speech in ms at the decision point). It never carries transcript text. Exactly one is emitted per utterance, only when `languageId` is enabled:
+
+| `reason` | When | Will `user_language` follow? |
+| -------- | ---- | ---------------------------- |
+| `too_short` | The utterance closed and no identify was started because buffered speech was below `minSpeechMs` (all timings; in `early` and `continuous` no mid-utterance identify ran either). | No |
+| `no_audio` | The utterance closed with no buffered speech. | No |
+| `undetermined` | An identify ran but returned no usable decision: no language code, an empty code, a code outside `allowlist`, or an identify error. | No (for this identify) |
+| `deferred_tts` | Identify could not start because TTS was active; it is deferred to playback drain. Emitted at the point of deferral. | Maybe: if the deferred identify runs and yields a new language code, a normal `user_language` follows after TTS drains. |
+
+Invariant: the FIRST outcome per utterance is always reported, as either `user_language` or `language_id_skipped`, once `languageId` is enabled. Later results for the same utterance are reported only when they add information: a different code (continuous mode) emits `user_language`; the same code as the one already emitted for this utterance emits nothing. A first result for a new utterance is emitted as `user_language` even when the code equals the previous utterance's code (previously suppressed), so a host never waits for a decision that was silently dropped. After a `deferred_tts` skip the deferred identify may still emit `user_language` (a second event for that utterance); if it is undetermined nothing more is emitted.
+
+Ordering: for `too_short` / `no_audio`, `language_id_skipped` is emitted before `user_speaking_end`, and therefore before the utterance's `user_speech_final` (the final is always emitted after `user_speaking_end`). For `deferred_tts` it is emitted when the identify is deferred (at or before utterance close with `end_of_utterance`, mid-utterance with `early` / `continuous`), also before `user_speech_final`. For `undetermined`, the event is emitted when the identify finishes: before `user_speaking_end` / `user_speech_final` when the identify finished before the utterance closed (always the case with `languageId.ttsExclusion` on, apart from the `lidGateMaxWaitMs` fault bound), otherwise after the final, at the moment it finishes. When an identify yields a code, no `language_id_skipped` is emitted for that utterance.
+
+Host use: if you hold `user_speech_final` until `user_language` arrives, release the held final as soon as `language_id_skipped` arrives for the same `utteranceId` with `too_short` or `no_audio`, instead of waiting for your fallback timeout. For `deferred_tts` the language may still arrive after the agent finishes speaking; decide whether to keep waiting or release.
 
 ### LID vs mid-session swap
 

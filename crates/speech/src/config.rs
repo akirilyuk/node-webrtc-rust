@@ -463,6 +463,29 @@ pub fn resolved_post_utterance_silence_ms(config: &VoiceAgentConfig) -> u32 {
     }
 }
 
+/// When spoken-language ID runs relative to the utterance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageIdTiming {
+    /// One identify at utterance close (default).
+    EndOfUtterance,
+    /// One identify as soon as `min_speech_ms` is buffered during the utterance.
+    Early,
+    /// Repeated identifies during a long utterance.
+    Continuous,
+}
+
+impl LanguageIdTiming {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "end_of_utterance" => Some(Self::EndOfUtterance),
+            "early" => Some(Self::Early),
+            "continuous" => Some(Self::Continuous),
+            _ => None,
+        }
+    }
+}
+
 /// Spoken language identification (offline clip, e.g. Sherpa Whisper tiny).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -486,6 +509,11 @@ pub struct LanguageIdConfig {
     /// `SpeechEnd` when buffered speech reaches `min_speech_ms` (STT close window gates final).
     #[serde(default)]
     pub continuous: Option<bool>,
+    /// When to run language ID: `end_of_utterance` (default), `early` (one identify as soon as
+    /// `min_speech_ms` is buffered, never again for that utterance) or `continuous` (repeated
+    /// passes). Takes precedence over the deprecated `continuous` flag.
+    #[serde(default)]
+    pub timing: Option<LanguageIdTiming>,
     /// Maximum PCM clip (ms) fed to the identifier per identify pass. Default 5000.
     #[serde(default)]
     pub lid_max_clip_ms: Option<u32>,
@@ -565,9 +593,27 @@ pub fn resolved_language_id_min_speech_ms(config: &LanguageIdConfig) -> u32 {
         .max(1)
 }
 
-/// True only when `continuous` is explicitly `Some(true)`.
+/// Effective timing: explicit `timing` wins; else `continuous: true` means `Continuous`;
+/// else `EndOfUtterance`.
+pub fn language_id_timing(config: &Option<LanguageIdConfig>) -> LanguageIdTiming {
+    match config.as_ref() {
+        Some(cfg) => match (cfg.timing, cfg.continuous) {
+            (Some(t), _) => t,
+            (None, Some(true)) => LanguageIdTiming::Continuous,
+            _ => LanguageIdTiming::EndOfUtterance,
+        },
+        None => LanguageIdTiming::EndOfUtterance,
+    }
+}
+
+/// True when the effective timing is `continuous` (explicit, or the `continuous: true` alias).
 pub fn language_id_continuous(config: &Option<LanguageIdConfig>) -> bool {
-    matches!(config.as_ref(), Some(cfg) if cfg.continuous == Some(true))
+    language_id_timing(config) == LanguageIdTiming::Continuous
+}
+
+/// True when the effective timing is `early`.
+pub fn language_id_early(config: &Option<LanguageIdConfig>) -> bool {
+    language_id_timing(config) == LanguageIdTiming::Early
 }
 
 /// Returns true when `language` passes the optional allowlist (case-insensitive ISO 639-1).
@@ -598,6 +644,7 @@ mod language_id_config_tests {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         })));
     }
@@ -612,6 +659,7 @@ mod language_id_config_tests {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         })));
     }
@@ -626,6 +674,7 @@ mod language_id_config_tests {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         })));
     }
@@ -640,6 +689,7 @@ mod language_id_config_tests {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         };
         assert!(language_id_allowlist_accepts(&cfg, "en"));
@@ -657,6 +707,7 @@ mod language_id_config_tests {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         };
         assert_eq!(resolved_language_id_min_speech_ms(&cfg), 1000);
@@ -673,6 +724,7 @@ mod language_id_config_tests {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         })));
         assert!(!language_id_continuous(&Some(LanguageIdConfig {
@@ -683,6 +735,7 @@ mod language_id_config_tests {
             continuous: Some(false),
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         })));
     }
@@ -697,6 +750,7 @@ mod language_id_config_tests {
             continuous: Some(true),
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         })));
     }
@@ -711,6 +765,7 @@ mod language_id_config_tests {
             continuous: None,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
+            timing: None,
             tts_exclusion: None,
         };
         let local = Some(TtsConfig {
@@ -755,6 +810,34 @@ mod language_id_config_tests {
             }),
             &mock,
         ));
+    }
+    #[test]
+    fn timing_resolves_with_continuous_alias() {
+        let mk = |timing, continuous| {
+            Some(LanguageIdConfig {
+                enabled: None,
+                model_path: None,
+                allowlist: None,
+                min_speech_ms: None,
+                continuous,
+                lid_max_clip_ms: None,
+                lid_gate_max_wait_ms: None,
+                timing,
+                tts_exclusion: None,
+            })
+        };
+        assert_eq!(language_id_timing(&None), LanguageIdTiming::EndOfUtterance);
+        assert_eq!(language_id_timing(&mk(None, None)), LanguageIdTiming::EndOfUtterance);
+        assert_eq!(language_id_timing(&mk(None, Some(true))), LanguageIdTiming::Continuous);
+        assert_eq!(language_id_timing(&mk(Some(LanguageIdTiming::Early), None)), LanguageIdTiming::Early);
+        // Explicit timing wins over the deprecated flag.
+        assert_eq!(
+            language_id_timing(&mk(Some(LanguageIdTiming::EndOfUtterance), Some(true))),
+            LanguageIdTiming::EndOfUtterance
+        );
+        assert!(language_id_early(&mk(Some(LanguageIdTiming::Early), None)));
+        assert_eq!(LanguageIdTiming::parse("early"), Some(LanguageIdTiming::Early));
+        assert_eq!(LanguageIdTiming::parse("bogus"), None);
     }
 }
 

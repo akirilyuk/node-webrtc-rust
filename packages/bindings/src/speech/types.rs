@@ -415,6 +415,7 @@ pub struct JsLanguageIdConfig {
     pub allowlist: Option<Vec<String>>,
     pub min_speech_ms: Option<u32>,
     pub continuous: Option<bool>,
+    pub timing: Option<String>,
     pub lid_max_clip_ms: Option<u32>,
     pub lid_gate_max_wait_ms: Option<u32>,
     pub tts_exclusion: Option<bool>,
@@ -428,6 +429,10 @@ impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdCon
             allowlist: value.allowlist,
             min_speech_ms: value.min_speech_ms,
             continuous: value.continuous,
+            timing: value
+                .timing
+                .as_deref()
+                .and_then(node_webrtc_rust_speech::config::LanguageIdTiming::parse),
             lid_max_clip_ms: value.lid_max_clip_ms,
             lid_gate_max_wait_ms: value.lid_gate_max_wait_ms,
             tts_exclusion: value.tts_exclusion,
@@ -493,6 +498,8 @@ pub enum JsSpeechEventType {
     UserSpeechFinal,
     #[napi(value = "user_language")]
     UserLanguage,
+    #[napi(value = "language_id_skipped")]
+    LanguageIdSkipped,
     #[napi(value = "agent_speaking_start")]
     AgentSpeakingStart,
     #[napi(value = "agent_speaking_end")]
@@ -541,6 +548,8 @@ pub struct JsSpeechEvent {
     pub hold_outcome: Option<String>,
     pub buffered_ms: Option<u32>,
     pub dropped_ms: Option<u32>,
+    pub reason: Option<String>,
+    pub speech_ms: Option<u32>,
 }
 
 #[napi(string_enum)]

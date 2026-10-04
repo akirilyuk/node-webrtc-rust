@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.21] - 2026-10-04
+
 ### Added
 
 - **speech / sdk** — New speech event `language_id_skipped` (`utteranceId`, `reason`: `too_short` | `deferred_tts` | `no_audio`, `speechMs`; no transcript text; Rust `SpeechEventKind::LanguageIdSkipped`, NAPI `JsSpeechEventType.LanguageIdSkipped`, `SPEECH_EVENT_TYPE.languageIdSkipped`). Emitted exactly once per utterance when no language decision will be made (buffered speech below `minSpeechMs`, no audio, identify deferred while TTS is active, or an identify that returned no usable code: reason `undetermined`), before `user_speaking_end` and `user_speech_final`. The first outcome per utterance is always reported (`user_language` or `language_id_skipped`); a first identify result is now emitted as `user_language` even when its code equals the previous utterance's code. Hosts that hold finals for `user_language` can release them immediately instead of waiting for a fallback timeout.

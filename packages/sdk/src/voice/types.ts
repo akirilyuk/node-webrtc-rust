@@ -321,7 +321,11 @@ export interface SpeechEvent {
   error?: string
   /** Shared across `user_speaking_start` … `user_speech_final` for one utterance. */
   utteranceId?: string
-  /** True when this final was produced by {@link VoiceAgent.replayLastUtterance}. */
+  /**
+   * True when this final was produced by `replayLastUtterance()` or by
+   * `releaseSttHold({ replay: true })` (then `replacesUtteranceId` is set only when an original
+   * final existed).
+   */
   replay?: boolean
   /** Original utterance id when `replay` is true. */
   replacesUtteranceId?: string

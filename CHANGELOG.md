@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.22] - 2026-10-04
+
 ### Added
 
 - **sdk / helpers** — The client `speech_event` wire message now carries every optional `SpeechEvent` field that was previously dropped: `holdMode` and `bufferedMs` on `stt_hold_started`; `holdOutcome`, `bufferedMs` and `droppedMs` on `stt_hold_ended`; plus `utteranceId`, `replay`, `replacesUtteranceId` and `languageMismatch` on any event that sets them (`VoiceControlSpeechEventMessage`, `speechEventToControlMessage`). `modelPath` / `endpoint` / `voice` stay server-side.

@@ -411,7 +411,7 @@ async fn language_id_does_not_block_tts_playback() {
     agent
         .send_text_to_tts_with_options(
             "one two three",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -660,7 +660,7 @@ async fn language_id_does_not_overlap_tts_synthesis() {
     agent
         .send_text_to_tts_with_options(
             "one two three",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -735,7 +735,7 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
     agent
         .send_text_to_tts_with_options(
             "echo. One, two, three, four, five, six, seven, eight, nine, ten",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -1530,7 +1530,7 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     agent
         .send_text_to_tts_with_options(
             "one two three",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -1611,7 +1611,7 @@ async fn short_utterance_still_gets_user_language_after_tts_idle() {
     agent
         .send_text_to_tts_with_options(
             "one two three",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -1725,7 +1725,7 @@ async fn detached_speak_after_final_never_overlaps_lid() {
         agent_spawn
             .send_text_to_tts_with_options(
                 "echo. one two three",
-                SendTextToTtsOptions { non_blocking: true },
+                SendTextToTtsOptions { non_blocking: true, ..Default::default() },
             )
             .await
             .unwrap();
@@ -1766,7 +1766,7 @@ async fn tts_active_at_speech_end_defers_lid_to_drain() {
     agent
         .send_text_to_tts_with_options(
             "this is a longer agent preface to keep playback active across user speech end",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -2035,7 +2035,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
     agent
         .send_text_to_tts_with_options(
             "during lid",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -2312,7 +2312,7 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
     agent
         .send_text_to_tts_with_options(
             "remote echo",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -2509,7 +2509,7 @@ async fn tts_active_at_speech_end_emits_language_id_skipped_deferred_tts() {
     agent
         .send_text_to_tts_with_options(
             "this is a longer agent preface to keep playback active across user speech end",
-            SendTextToTtsOptions { non_blocking: true },
+            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
         .unwrap();

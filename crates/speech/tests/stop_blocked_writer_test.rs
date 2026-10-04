@@ -57,7 +57,7 @@ async fn stop_returns_when_outbound_writer_is_blocked() {
     agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
     agent
-        .send_text_to_tts_with_options("hello", SendTextToTtsOptions { non_blocking: true })
+        .send_text_to_tts_with_options("hello", SendTextToTtsOptions { non_blocking: true, ..Default::default() })
         .await
         .unwrap();
     tokio::task::spawn_blocking(move || {

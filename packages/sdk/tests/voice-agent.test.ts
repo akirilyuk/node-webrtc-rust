@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import { SPEECH_EVENT_TYPE, VoiceAgent, type SpeechEvent } from '../src/voice'
 import { createVoiceLoopback, mockVoiceConfig } from './voice-helpers'
@@ -16,6 +16,28 @@ describe('VoiceAgent', () => {
     await agent.attach({ inboundTrack: userInbound, outboundTrack: agentOut })
     await agent.start()
     await agent.sendTextToTTS('Hello from mock TTS')
+    await agent.stop()
+    await cleanup()
+  })
+
+  test('sendTextToTTS forwards interruptible to native (default undefined = interruptible)', async () => {
+    const agent = new VoiceAgent(mockVoiceConfig)
+    const spy = vi.spyOn(agent.getNativeAgent(), 'sendTextToTts').mockResolvedValue(undefined)
+
+    await agent.sendTextToTTS('default')
+    await agent.sendTextToTTS('protected', { interruptible: false, nonBlocking: true })
+
+    expect(spy).toHaveBeenNthCalledWith(1, 'default', undefined, undefined)
+    expect(spy).toHaveBeenNthCalledWith(2, 'protected', true, false)
+  })
+
+  test('sendTextToTTS interruptible:false plays through native end to end', async () => {
+    const { agentOut, userInbound, cleanup } = await createVoiceLoopback()
+    const agent = new VoiceAgent(mockVoiceConfig)
+
+    await agent.attach({ inboundTrack: userInbound, outboundTrack: agentOut })
+    await agent.start()
+    await agent.sendTextToTTS('Please wait', { interruptible: false })
     await agent.stop()
     await cleanup()
   })

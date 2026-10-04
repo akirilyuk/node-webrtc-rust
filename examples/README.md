@@ -195,3 +195,7 @@ npm run start --workspace=@node-webrtc-rust/example-conference-room-manual-signa
 
 Runs on **port 8081** by default so it can coexist with the standard conference demo.
 See [`conference-room-manual-signaling/README.md`](conference-room-manual-signaling/README.md).
+
+## Non-interruptible speech
+
+No example demonstrates `sendTextToTTS(text, { interruptible: false })` yet. It protects one utterance from VAD and STT-partial barge-in (for example a "please wait" notice spoken while the user is still talking); see [`packages/sdk/VOICE-API.md`](../packages/sdk/VOICE-API.md#sendtexttotts-options-and-non-interruptible-speech) and the Rust test `crates/speech/tests/noninterruptible_speak_test.rs`.

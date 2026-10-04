@@ -101,7 +101,11 @@ impl TtsBuffer {
     pub async fn pop_chunk(&self) -> Option<TtsAudioChunk> {
         let mut inner = self.inner.lock().await;
         let chunk = inner.queue.pop_front();
-        if inner.queue.is_empty() && !inner.producing {
+        // Clear `speaking` only when the drain worker finds nothing left to pop. Clearing it
+        // when the last chunk is handed out opens a gap (chunk popped, first frame not yet
+        // written, `agent_speaking` still false) in which a blocking send sees "idle" and
+        // returns before playback starts.
+        if chunk.is_none() && !inner.producing {
             inner.speaking = false;
         }
         chunk
@@ -146,6 +150,18 @@ mod tests {
         assert!(buf.pop_chunk().await.is_none());
         assert!(buf.is_speaking().await);
         buf.set_producing(false).await;
+        assert!(!buf.is_speaking().await);
+    }
+
+    /// Handing out the last chunk must not look idle until the drain worker has finished it
+    /// (next pop finds nothing), or a blocking send can return before playback starts.
+    #[tokio::test]
+    async fn last_popped_chunk_keeps_speaking_until_next_pop() {
+        let buf = TtsBuffer::new();
+        buf.enqueue(vec![chunk(20)]).await;
+        assert!(buf.pop_chunk().await.is_some());
+        assert!(buf.is_speaking().await);
+        assert!(buf.pop_chunk().await.is_none());
         assert!(!buf.is_speaking().await);
     }
 

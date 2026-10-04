@@ -52,7 +52,7 @@ fn next_utterance_id() -> String {
 }
 
 struct ReplayFinalContext {
-    replaces_utterance_id: String,
+    replaces_utterance_id: Option<String>,
 }
 
 /// Decrements `tts_worker_tasks_alive` on task exit (including abort).
@@ -490,7 +490,7 @@ impl VoiceAgent {
         {
             let mut inner = self.inner.lock().await;
             inner.replay_final_context = Some(ReplayFinalContext {
-                replaces_utterance_id: replaces_id.clone(),
+                replaces_utterance_id: Some(replaces_id.clone()),
             });
         }
 
@@ -615,11 +615,9 @@ impl VoiceAgent {
                     if live_open {
                         // Utterance still open: its final comes from the live path, flagged as replay.
                         inner.last_partial_text = None;
-                        if let Some(id) = replaces.clone() {
-                            inner.replay_final_context = Some(ReplayFinalContext {
-                                replaces_utterance_id: id,
-                            });
-                        }
+                        inner.replay_final_context = Some(ReplayFinalContext {
+                            replaces_utterance_id: replaces.clone(),
+                        });
                     }
                     Step::Done {
                         live_open,
@@ -3437,11 +3435,23 @@ impl VoiceAgent {
                     };
                     if let Some(ctx) = replay_ctx {
                         let new_id = next_utterance_id();
-                        self.emit(SpeechEvent::user_speech_final_replay(
-                            text,
-                            Some(new_id),
-                            ctx.replaces_utterance_id,
-                        ));
+                        match ctx.replaces_utterance_id {
+                            Some(id) => self.emit(SpeechEvent::user_speech_final_replay(
+                                text,
+                                Some(new_id),
+                                id,
+                            )),
+                            None => {
+                                self.emit(SpeechEvent::user_speech_final_held_replay(
+                                    text,
+                                    Some(new_id),
+                                    None,
+                                ));
+                                // Held release with no original final: this final closes the
+                                // live utterance, so drop its id or the next utterance inherits it.
+                                self.clear_utterance_id_after_final().await;
+                            }
+                        }
                     } else {
                         let utterance_id =
                             self.inner.lock().await.current_utterance_id.clone();

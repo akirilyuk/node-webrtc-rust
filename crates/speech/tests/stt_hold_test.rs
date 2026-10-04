@@ -558,3 +558,76 @@ async fn replay_max_age_is_configurable() {
     agent.replay_last_utterance().await.unwrap();
     agent.stop().await.unwrap();
 }
+
+#[tokio::test]
+async fn release_replay_with_open_utterance_and_no_original_final_flags_replay() {
+    let factory = Arc::new(RecordingFactory::default());
+    let agent = start_agent(&factory, ReplayConfig::default()).await;
+    let mut rx = agent.subscribe_events();
+
+    // Hold begins while idle; the user starts speaking during the hold (no original final).
+    agent
+        .begin_stt_hold(BeginSttHoldOptions::default())
+        .await
+        .unwrap();
+    speech(&agent, LEVEL_B, 25).await;
+    agent
+        .update_stt_config(stt_config("b", "de"))
+        .await
+        .unwrap();
+    drain(&mut rx);
+    // Release while the utterance is still open: the final comes from the live path.
+    agent
+        .release_stt_hold(ReleaseSttHoldOptions { replay: true })
+        .await
+        .unwrap();
+    speech(&agent, LEVEL_B, 5).await;
+    close_utterance(&agent).await;
+
+    let events = drain(&mut rx);
+    let all = finals(&events);
+    assert_eq!(all.len(), 1, "{events:?}");
+    assert_eq!(all[0].replay, Some(true), "{events:?}");
+    // The hold captured the live utterance id when speech began during the hold.
+    assert!(all[0].replaces_utterance_id.is_some(), "{events:?}");
+    assert!(!all[0].text.as_deref().unwrap_or("").is_empty());
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn release_replay_after_original_final_keeps_replaces_id() {
+    let factory = Arc::new(RecordingFactory::default());
+    let agent = start_agent(&factory, ReplayConfig::default()).await;
+    let mut rx = agent.subscribe_events();
+
+    speech(&agent, LEVEL_A, 25).await;
+    let utterance_id = drain(&mut rx)
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::UserSpeakingStart)
+        .and_then(|e| e.utterance_id.clone())
+        .expect("speaking start");
+    agent
+        .begin_stt_hold(BeginSttHoldOptions::default())
+        .await
+        .unwrap();
+    agent
+        .update_stt_config(stt_config("b", "de"))
+        .await
+        .unwrap();
+    agent
+        .release_stt_hold(ReleaseSttHoldOptions { replay: true })
+        .await
+        .unwrap();
+    speech(&agent, LEVEL_A, 5).await;
+    close_utterance(&agent).await;
+
+    let events = drain(&mut rx);
+    let all = finals(&events);
+    assert_eq!(all.len(), 1, "{events:?}");
+    assert_eq!(all[0].replay, Some(true));
+    assert_eq!(
+        all[0].replaces_utterance_id.as_deref(),
+        Some(utterance_id.as_str())
+    );
+    agent.stop().await.unwrap();
+}

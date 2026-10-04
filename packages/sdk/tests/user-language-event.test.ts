@@ -24,3 +24,26 @@ describe('user_language speech events', () => {
     })
   })
 })
+
+describe('language_id_skipped speech events', () => {
+  test('SPEECH_EVENT_TYPE includes language_id_skipped', () => {
+    expect(SPEECH_EVENT_TYPE.languageIdSkipped).toBe('language_id_skipped')
+  })
+
+  test('speechEventToControlMessage forwards reason and speechMs without text', () => {
+    expect(
+      speechEventToControlMessage({
+        type: 'language_id_skipped',
+        reason: 'too_short',
+        speechMs: 120,
+        utteranceId: 'utt-1',
+      }),
+    ).toEqual({
+      type: 'speech_event',
+      event: 'language_id_skipped',
+      reason: 'too_short',
+      speechMs: 120,
+      ts: undefined,
+    })
+  })
+})

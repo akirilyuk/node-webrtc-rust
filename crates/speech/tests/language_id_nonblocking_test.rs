@@ -2302,3 +2302,193 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
 
     agent.stop().await.unwrap();
 }
+
+fn count_kind(
+    events: &[node_webrtc_rust_speech::events::SpeechEvent],
+    kind: SpeechEventKind,
+) -> usize {
+    events.iter().filter(|e| e.kind == kind).count()
+}
+
+fn drain_events(
+    rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+) -> Vec<node_webrtc_rust_speech::events::SpeechEvent> {
+    let mut events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+    events
+}
+
+#[tokio::test]
+async fn short_utterance_emits_language_id_skipped_too_short_before_final() {
+    let agent = agent_with_final_once_stt(50);
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    // Below min_speech_ms=200: no identify is started.
+    drive_loud_frames(&agent, &loud, 3).await;
+    let mut events = collect_events_until_final(&mut rx, &agent, &silent).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    events.extend(drain_events(&mut rx));
+
+    assert_eq!(
+        count_kind(&events, SpeechEventKind::LanguageIdSkipped),
+        1,
+        "exactly one language_id_skipped per short utterance"
+    );
+    assert_eq!(count_kind(&events, SpeechEventKind::UserLanguage), 0);
+    let skipped_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::LanguageIdSkipped)
+        .unwrap();
+    let skipped = &events[skipped_idx];
+    assert_eq!(skipped.reason.as_deref(), Some("too_short"));
+    let speech_ms = skipped.speech_ms.expect("speech_ms");
+    assert!(speech_ms > 0 && speech_ms < 200, "speech_ms={speech_ms}");
+    assert!(skipped.utterance_id.is_some());
+    assert!(skipped.text.is_none());
+    let end_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeakingEnd)
+        .expect("user_speaking_end");
+    let final_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        .expect("user_speech_final");
+    assert!(
+        skipped_idx < end_idx,
+        "skipped must precede user_speaking_end"
+    );
+    assert!(
+        skipped_idx < final_idx,
+        "skipped must precede user_speech_final"
+    );
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn long_utterance_does_not_emit_language_id_skipped() {
+    let agent = agent_with_final_once_stt(50);
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    drive_loud_frames(&agent, &loud, 12).await;
+    let mut events = collect_events_until_final(&mut rx, &agent, &silent).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    events.extend(drain_events(&mut rx));
+
+    assert_eq!(count_kind(&events, SpeechEventKind::UserLanguage), 1);
+    assert_eq!(count_kind(&events, SpeechEventKind::LanguageIdSkipped), 0);
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn continuous_short_utterance_emits_language_id_skipped_too_short() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = agent_with_counting_lid(
+        Arc::clone(&stt_bytes),
+        Arc::clone(&lid_calls),
+        false,
+        Some(true),
+        false,
+        vec!["en".into()],
+    );
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    drive_loud_frames(&agent, &loud, 3).await;
+    drive_silent_frames(&agent, &silent, 10).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let events = drain_events(&mut rx);
+
+    assert_eq!(count_kind(&events, SpeechEventKind::LanguageIdSkipped), 1);
+    let skipped = events
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::LanguageIdSkipped)
+        .unwrap();
+    assert_eq!(skipped.reason.as_deref(), Some("too_short"));
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 0, "no identify may run");
+    assert_eq!(count_kind(&events, SpeechEventKind::UserLanguage), 0);
+
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn tts_active_at_speech_end_emits_language_id_skipped_deferred_tts() {
+    let stt_bytes = Arc::new(Mutex::new(0_usize));
+    let guard = Arc::new(OverlapGuard {
+        lid_in_flight: AtomicUsize::new(0),
+        tts_in_flight: AtomicUsize::new(0),
+        violated: AtomicBool::new(false),
+    });
+    let agent = agent_with_overlap_tracking_lid(Arc::clone(&stt_bytes), Arc::clone(&guard));
+    let mut rx = agent.subscribe_events();
+
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+
+    agent
+        .send_text_to_tts_with_options(
+            "this is a longer agent preface to keep playback active across user speech end",
+            SendTextToTtsOptions { non_blocking: true },
+        )
+        .await
+        .unwrap();
+
+    drive_loud_frames(&agent, &loud, 8).await;
+    drive_silent_frames(&agent, &silent, 40).await;
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    // Keep every event (do not use wait_for_event, which discards what it skips).
+    let mut events = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline && count_kind(&events, SpeechEventKind::UserLanguage) == 0 {
+        drive_silent_frames(&agent, &silent, 5).await;
+        events.extend(drain_events(&mut rx));
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert_eq!(
+        count_kind(&events, SpeechEventKind::LanguageIdSkipped),
+        1,
+        "exactly one language_id_skipped for the deferred utterance"
+    );
+    let skipped_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::LanguageIdSkipped)
+        .unwrap();
+    assert_eq!(events[skipped_idx].reason.as_deref(), Some("deferred_tts"));
+    let lang_idx = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserLanguage)
+        .expect("deferred identify still yields user_language after TTS drain");
+    assert!(skipped_idx < lang_idx);
+
+    agent.stop().await.unwrap();
+}

@@ -173,6 +173,8 @@ struct AgentInner {
     lid_identify_deferred: bool,
     /// True once inbound speech started or deferred LID for this utterance (skip hang-up force identify).
     lid_identify_started_this_utterance: bool,
+    /// `language_id_skipped` already emitted for this utterance (exactly once).
+    lid_skip_emitted_this_utterance: bool,
     /// Swapped onto the STT provider after the current utterance finalizes.
     pending_stt_config: Option<SttConfig>,
     /// Swapped onto the TTS provider before the next synthesis job.
@@ -343,6 +345,7 @@ impl VoiceAgent {
                 lid_identify_in_flight: false,
                 lid_identify_deferred: false,
                 lid_identify_started_this_utterance: false,
+                lid_skip_emitted_this_utterance: false,
                 pending_stt_config: None,
                 pending_tts_config: None,
                 current_utterance_id: None,
@@ -2222,6 +2225,7 @@ impl VoiceAgent {
         inner.lid_identify_in_flight = false;
         inner.lid_identify_deferred = false;
         inner.lid_identify_started_this_utterance = false;
+        inner.lid_skip_emitted_this_utterance = false;
     }
 
     async fn start_lid_buffering(&self) {
@@ -2270,10 +2274,46 @@ impl VoiceAgent {
         self.try_spawn_default_mode_lid(false, "utterance close")
             .await;
         self.await_lid_gate_before_utterance_close().await;
+        {
+            // No identify was started (default or continuous): tell the host no `user_language`
+            // will follow for this utterance. Emitted before `user_speaking_end` / the final.
+            let mut inner = self.inner.lock().await;
+            if language_id_enabled(&inner.config.language_id)
+                && !inner.lid_identify_started_this_utterance
+                && !inner.lid_identify_in_flight
+            {
+                let reason = if inner.lid_pcm_buffer.is_empty() {
+                    "no_audio"
+                } else {
+                    "too_short"
+                };
+                self.emit_language_id_skipped_once(&mut inner, reason);
+            }
+        }
         let utterance_id = self.inner.lock().await.current_utterance_id.clone();
         self.emit(SpeechEvent::user_speaking_end(utterance_id));
         let mut inner = self.inner.lock().await;
         inner.lid_buffering = false;
+    }
+
+    /// Emit `language_id_skipped` once per utterance. Carries buffered speech ms, no transcript.
+    fn emit_language_id_skipped_once(&self, inner: &mut AgentInner, reason: &str) {
+        if inner.lid_skip_emitted_this_utterance {
+            return;
+        }
+        inner.lid_skip_emitted_this_utterance = true;
+        let speech_ms = crate::pcm::duration_ms_from_mono_s16le(
+            inner.lid_pcm_buffer.len(),
+            crate::pcm::STT_PCM_SAMPLE_RATE,
+        );
+        voice_debug(format!(
+            "emit language_id_skipped: reason={reason} speech_ms={speech_ms}"
+        ));
+        self.emit(SpeechEvent::language_id_skipped(
+            reason,
+            speech_ms,
+            inner.current_utterance_id.clone(),
+        ));
     }
 
     async fn clear_utterance_id_after_final(&self) {
@@ -2303,6 +2343,7 @@ impl VoiceAgent {
                 inner.lid_identify_deferred = true;
                 inner.lid_identify_started_this_utterance = true;
                 voice_debug(format!("LID at {context} deferred (TTS active)"));
+                self.emit_language_id_skipped_once(&mut inner, "deferred_tts");
                 return false;
             }
         }
@@ -2424,6 +2465,7 @@ impl VoiceAgent {
                 inner.lid_identify_deferred = true;
                 inner.lid_identify_started_this_utterance = true;
                 voice_debug("LID identify deferred (TTS active)");
+                self.emit_language_id_skipped_once(&mut inner, "deferred_tts");
                 return false;
             }
         }

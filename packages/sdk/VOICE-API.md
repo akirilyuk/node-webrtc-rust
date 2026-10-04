@@ -68,6 +68,7 @@ new VoiceAgent(config)
 | `barge_in`             | Barge-in path fired (VAD and/or STT partial) | Cancel LLM stream; TTS may already be flushed                      |
 | `error`                | Vendor or pipeline failure                   | Log / recover                                                      |
 | `user_language`        | LID (optional `languageId`)                  | **Detection only** — does not change STT/TTS; your app calls `updateStt` / `updateTts` if needed |
+| `language_id_skipped`  | LID (optional `languageId`)                  | No language decision for this utterance: `reason` (`too_short` \| `deferred_tts` \| `no_audio`), `speechMs`; no transcript text. Stop holding the final for `user_language` (see below) |
 | `stt_config_updated`   | After pending STT config is applied          | Confirm `language`, `modelPath`, `endpoint` on the active recognizer |
 | `tts_config_updated`   | After pending TTS config is applied            | Confirm `voice`, `modelPath`, `endpoint` on the active synthesizer |
 | `stt_hold_started`     | After `beginSttHold` accepted                  | `holdMode`, `bufferedMs` (audio of the open utterance already held); no transcript text |
@@ -212,6 +213,20 @@ LID says "de" (or the agent asks for German)
 ### Host-level speech events (`voice_language_*`)
 
 `SpeechEventType` includes `voice_language_switching`, `voice_language_changed`, and `voice_language_switch_failed` so **session coordinators** can mirror switch lifecycle on the same `speech_event` wire as STT/TTS events (for example when forwarding to a browser DataChannel). The native `VoiceAgent` pipeline emits `stt_config_updated` / `tts_config_updated`; the `voice_language_*` kinds are for **your** coordinator to emit when it orchestrates catalog lookups, secrets, and `updateStt` / `updateTts` as one logical “switch.”
+
+### `language_id_skipped` (hosts that hold finals for `user_language`)
+
+`language_id_skipped` is emitted with `utteranceId`, `reason` and `speechMs` (buffered user speech in ms at the decision point). It never carries transcript text. Exactly one is emitted per utterance, only when `languageId` is enabled:
+
+| `reason` | When | Will `user_language` follow? |
+| -------- | ---- | ---------------------------- |
+| `too_short` | The utterance closed and no identify was started because buffered speech was below `minSpeechMs` (default and continuous mode; in continuous mode, no mid-utterance identify ran either). | No |
+| `no_audio` | The utterance closed with no buffered speech. | No |
+| `deferred_tts` | Identify could not start because TTS was active; it is deferred to playback drain. Emitted at the point of deferral. | Maybe: if the deferred identify runs and yields a new language code, a normal `user_language` follows after TTS drains. |
+
+Ordering: for `too_short` / `no_audio`, `language_id_skipped` is emitted before `user_speaking_end`, and therefore before the utterance's `user_speech_final` (the final is always emitted after `user_speaking_end`). For `deferred_tts` it is emitted when the identify is deferred (at or before utterance close in default mode, mid-utterance in continuous mode), also before `user_speech_final`. When an identify does run (`user_language` path), no `language_id_skipped` is emitted for that utterance. An identify that runs but returns no code, a code outside the allowlist, or an unchanged code emits neither event.
+
+Host use: if you hold `user_speech_final` until `user_language` arrives, release the held final as soon as `language_id_skipped` arrives for the same `utteranceId` with `too_short` or `no_audio`, instead of waiting for your fallback timeout. For `deferred_tts` the language may still arrive after the agent finishes speaking; decide whether to keep waiting or release.
 
 ### LID vs mid-session swap
 

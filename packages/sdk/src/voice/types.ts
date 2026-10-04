@@ -241,6 +241,8 @@ export type SpeechEventType =
   | 'user_speech_partial'
   | 'user_speech_final'
   | 'user_language'
+  /** No language decision for this utterance (`reason`, `speechMs`); see VOICE-API.md. */
+  | 'language_id_skipped'
   | 'agent_speaking_start'
   | 'agent_speaking_end'
   | 'vad_triggered'
@@ -274,6 +276,7 @@ export const SPEECH_EVENT_TYPE = {
   userSpeechPartial: 'user_speech_partial',
   userSpeechFinal: 'user_speech_final',
   userLanguage: 'user_language',
+  languageIdSkipped: 'language_id_skipped',
   agentSpeakingStart: 'agent_speaking_start',
   agentSpeakingEnd: 'agent_speaking_end',
   vadTriggered: 'vad_triggered',
@@ -322,7 +325,14 @@ export interface SpeechEvent {
   bufferedMs?: number
   /** `stt_hold_ended`: PCM dropped by the buffer bound (oldest first) or by `first_utterance` (ms). */
   droppedMs?: number
+  /** `language_id_skipped`: why no language decision will be made for this utterance. */
+  reason?: LanguageIdSkipReason
+  /** `language_id_skipped`: buffered user speech (ms) at the decision point. */
+  speechMs?: number
 }
+
+/** `reason` on `language_id_skipped`. */
+export type LanguageIdSkipReason = 'too_short' | 'deferred_tts' | 'no_audio'
 
 /** What {@link VoiceAgent.beginSttHold} keeps. */
 export type SttHoldMode = 'buffer_replay' | 'first_utterance'

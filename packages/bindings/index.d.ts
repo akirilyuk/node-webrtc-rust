@@ -322,6 +322,7 @@ export const enum JsSpeechEventType {
   UserSpeechPartial = 'user_speech_partial',
   UserSpeechFinal = 'user_speech_final',
   UserLanguage = 'user_language',
+  LanguageIdSkipped = 'language_id_skipped',
   AgentSpeakingStart = 'agent_speaking_start',
   AgentSpeakingEnd = 'agent_speaking_end',
   VadTriggered = 'vad_triggered',
@@ -353,6 +354,8 @@ export interface JsSpeechEvent {
   holdOutcome?: string
   bufferedMs?: number
   droppedMs?: number
+  reason?: string
+  speechMs?: number
 }
 export const enum JsSttHoldMode {
   BufferReplay = 'buffer_replay',

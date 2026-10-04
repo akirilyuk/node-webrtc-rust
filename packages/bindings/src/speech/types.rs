@@ -493,6 +493,8 @@ pub enum JsSpeechEventType {
     UserSpeechFinal,
     #[napi(value = "user_language")]
     UserLanguage,
+    #[napi(value = "language_id_skipped")]
+    LanguageIdSkipped,
     #[napi(value = "agent_speaking_start")]
     AgentSpeakingStart,
     #[napi(value = "agent_speaking_end")]
@@ -541,6 +543,8 @@ pub struct JsSpeechEvent {
     pub hold_outcome: Option<String>,
     pub buffered_ms: Option<u32>,
     pub dropped_ms: Option<u32>,
+    pub reason: Option<String>,
+    pub speech_ms: Option<u32>,
 }
 
 #[napi(string_enum)]

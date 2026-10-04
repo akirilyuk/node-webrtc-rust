@@ -32,6 +32,10 @@ export interface VoiceControlSpeechEventMessage {
   text?: string
   language?: string
   error?: string
+  /** `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio`. */
+  reason?: string
+  /** `language_id_skipped`: buffered speech (ms). */
+  speechMs?: number
 }
 
 /** Server → client: text queued for agent TTS (`ctx.speak` / `sendTextToTTS`). */
@@ -71,6 +75,8 @@ export function speechEventToControlMessage(
     text: event.text,
     language: event.language,
     error: event.error,
+    reason: event.reason,
+    speechMs: event.speechMs,
   }
 }
 

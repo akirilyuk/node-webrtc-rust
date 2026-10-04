@@ -25,6 +25,7 @@ type Pcm = Arc<Mutex<Vec<u8>>>;
 
 const LEVEL_A: i16 = i16::MAX / 3; // 10922
 const LEVEL_B: i16 = i16::MAX / 2; // 16383
+const SILENCE_FRAMES: usize = 16;
 const LEVEL_C: i16 = i16::MAX / 4; // 8191
 
 fn stereo_frame(level: i16) -> Vec<u8> {
@@ -81,6 +82,40 @@ impl SttProvider for RecordingStt {
     }
 }
 
+/// Emits one partial and never a vendor final.
+struct NoFinalStt {
+    sent: bool,
+}
+
+#[async_trait]
+impl SttProvider for NoFinalStt {
+    fn vendor_name(&self) -> &'static str {
+        "nofinal"
+    }
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        self.sent = false;
+        Ok(())
+    }
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+    async fn push_audio(&mut self, _pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        if self.sent {
+            return Ok(None);
+        }
+        self.sent = true;
+        Ok(Some(SttTranscript::Partial("hola buenos días".into())))
+    }
+    async fn finalize_utterance(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct RecordingFactory {
     by_tag: Mutex<HashMap<String, Pcm>>,
@@ -105,6 +140,9 @@ impl VendorFactory for SharedFactory {
         config: &SttConfig,
     ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
         let tag = config.model.clone().unwrap_or_else(|| "default".into());
+        if tag == "nofinal" {
+            return Ok(Box::new(NoFinalStt { sent: false }));
+        }
         let pcm = self
             .0
             .by_tag
@@ -139,10 +177,17 @@ fn stt_config(model: &str, lang: &str) -> SttConfig {
     }
 }
 
-fn agent_config(replay: ReplayConfig) -> VoiceAgentConfig {
+fn agent_config(
+    replay: ReplayConfig,
+    finalize_timeout_ms: Option<u32>,
+    gate_stt: bool,
+) -> VoiceAgentConfig {
     let mut vad = VadConfig::default();
+    if let Some(ms) = finalize_timeout_ms {
+        vad.utterance_finalize_timeout_ms = ms;
+    }
     vad.enabled = true;
-    vad.gate_stt = true;
+    vad.gate_stt = gate_stt;
     vad.min_silence_duration_ms = 200;
     vad.stt_gate_hold_ms = 100;
     VoiceAgentConfig {
@@ -162,13 +207,26 @@ fn agent_config(replay: ReplayConfig) -> VoiceAgentConfig {
 }
 
 async fn start_agent(factory: &Arc<RecordingFactory>, replay: ReplayConfig) -> Arc<VoiceAgent> {
+    start_agent_with(factory, replay, None, true).await
+}
+
+async fn start_agent_with(
+    factory: &Arc<RecordingFactory>,
+    replay: ReplayConfig,
+    finalize_timeout_ms: Option<u32>,
+    gate_stt: bool,
+) -> Arc<VoiceAgent> {
     let mut registry = VendorRegistry::new();
     registry.register_stt(
         SttVendor::Mock,
         Arc::new(SharedFactory(Arc::clone(factory))),
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
-    let agent = VoiceAgent::new(agent_config(replay), Arc::new(registry)).unwrap();
+    let agent = VoiceAgent::new(
+        agent_config(replay, finalize_timeout_ms, gate_stt),
+        Arc::new(registry),
+    )
+    .unwrap();
     let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_p, _m| Ok(()));
     let reader: node_webrtc_rust_speech::PcmReader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
@@ -559,39 +617,63 @@ async fn replay_max_age_is_configurable() {
     agent.stop().await.unwrap();
 }
 
-#[tokio::test]
-async fn release_replay_with_open_utterance_and_no_original_final_flags_replay() {
+/// Hold begins while an utterance is open; the swapped-to STT never yields a vendor `Final`
+/// (only a partial), so the final is produced by the fallback at `path`.
+async fn held_replay_without_vendor_final(finalize_fast: bool) -> Vec<SpeechEvent> {
     let factory = Arc::new(RecordingFactory::default());
-    let agent = start_agent(&factory, ReplayConfig::default()).await;
+    let agent = start_agent_with(&factory, ReplayConfig::default(), Some(300), finalize_fast).await;
     let mut rx = agent.subscribe_events();
 
-    // Hold begins while idle; the user starts speaking during the hold (no original final).
+    speech(&agent, LEVEL_A, 25).await;
     agent
         .begin_stt_hold(BeginSttHoldOptions::default())
         .await
         .unwrap();
-    speech(&agent, LEVEL_B, 25).await;
+    speech(&agent, LEVEL_B, 5).await;
     agent
-        .update_stt_config(stt_config("b", "de"))
+        .update_stt_config(stt_config("nofinal", "es"))
         .await
         .unwrap();
     drain(&mut rx);
-    // Release while the utterance is still open: the final comes from the live path.
     agent
         .release_stt_hold(ReleaseSttHoldOptions { replay: true })
         .await
         .unwrap();
-    speech(&agent, LEVEL_B, 5).await;
-    close_utterance(&agent).await;
-
+    if finalize_fast {
+        close_utterance(&agent).await;
+    } else {
+        // Ungated STT: ending VAD speech arms the finalize timer directly (no gate hold), and
+        // once PCM stops only the wall-clock finalize timeout can close the utterance.
+        speech(&agent, LEVEL_B, 3).await;
+        for _ in 0..SILENCE_FRAMES {
+            agent
+                .process_inbound_pcm(Bytes::from(vec![0_u8; 3840]), 20)
+                .await
+                .unwrap();
+        }
+        sleep(Duration::from_millis(1500)).await;
+    }
     let events = drain(&mut rx);
+    agent.stop().await.unwrap();
+    events
+}
+
+#[tokio::test]
+async fn held_replay_final_via_last_partial_fallback_is_flagged_replay() {
+    let events = held_replay_without_vendor_final(true).await;
     let all = finals(&events);
     assert_eq!(all.len(), 1, "{events:?}");
     assert_eq!(all[0].replay, Some(true), "{events:?}");
-    // The hold captured the live utterance id when speech began during the hold.
-    assert!(all[0].replaces_utterance_id.is_some(), "{events:?}");
-    assert!(!all[0].text.as_deref().unwrap_or("").is_empty());
-    agent.stop().await.unwrap();
+    assert_eq!(all[0].text.as_deref(), Some("hola buenos días"));
+}
+
+#[tokio::test]
+async fn held_replay_final_via_forced_close_is_flagged_replay() {
+    let events = held_replay_without_vendor_final(false).await;
+    let all = finals(&events);
+    assert_eq!(all.len(), 1, "{events:?}");
+    assert_eq!(all[0].replay, Some(true), "{events:?}");
+    assert_eq!(all[0].text.as_deref(), Some("hola buenos días"));
 }
 
 #[tokio::test]

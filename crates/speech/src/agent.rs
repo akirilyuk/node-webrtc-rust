@@ -2192,11 +2192,47 @@ impl VoiceAgent {
                     final_text.clone()
                 }
             ));
-            let utterance_id = self.inner.lock().await.current_utterance_id.clone();
-            self.emit(SpeechEvent::user_speech_final(final_text, utterance_id));
-            self.clear_utterance_id_after_final().await;
+            self.emit_utterance_final(final_text, true).await;
         }
         Ok(())
+    }
+
+    /// Emit the utterance final; if a held/replay context is pending, the final is the replay final.
+    /// `close_utterance` clears the open utterance id after a replay final (forced close and
+    /// last-partial fallback end the utterance; the vendor-final path leaves it as before).
+    async fn emit_utterance_final(&self, text: String, close_utterance: bool) {
+        let replay_ctx = self.inner.lock().await.replay_final_context.take();
+        match replay_ctx {
+            Some(ReplayFinalContext {
+                replaces_utterance_id: Some(id),
+            }) => {
+                self.emit(SpeechEvent::user_speech_final_replay(
+                    text,
+                    Some(next_utterance_id()),
+                    id,
+                ));
+                if close_utterance {
+                    self.clear_utterance_id_after_final().await;
+                }
+            }
+            Some(ReplayFinalContext {
+                replaces_utterance_id: None,
+            }) => {
+                // Held release with no original final: this final closes the live utterance,
+                // so drop its id or the next utterance inherits it.
+                self.emit(SpeechEvent::user_speech_final_held_replay(
+                    text,
+                    Some(next_utterance_id()),
+                    None,
+                ));
+                self.clear_utterance_id_after_final().await;
+            }
+            None => {
+                let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+                self.emit(SpeechEvent::user_speech_final(text, utterance_id));
+                self.clear_utterance_id_after_final().await;
+            }
+        }
     }
 
     fn arm_stt_hold_if_idle(inner: &mut AgentInner) {
@@ -3225,9 +3261,7 @@ impl VoiceAgent {
                         forced_text.clone()
                     }
                 ));
-                let utterance_id = self.inner.lock().await.current_utterance_id.clone();
-                self.emit(SpeechEvent::user_speech_final(forced_text, utterance_id));
-                self.clear_utterance_id_after_final().await;
+                self.emit_utterance_final(forced_text, true).await;
             } else {
                 let emit_speaking_end_at_finalize = {
                     let mut inner = self.inner.lock().await;
@@ -3429,35 +3463,7 @@ impl VoiceAgent {
                             text.clone()
                         }
                     ));
-                    let replay_ctx = {
-                        let mut inner = self.inner.lock().await;
-                        inner.replay_final_context.take()
-                    };
-                    if let Some(ctx) = replay_ctx {
-                        let new_id = next_utterance_id();
-                        match ctx.replaces_utterance_id {
-                            Some(id) => self.emit(SpeechEvent::user_speech_final_replay(
-                                text,
-                                Some(new_id),
-                                id,
-                            )),
-                            None => {
-                                self.emit(SpeechEvent::user_speech_final_held_replay(
-                                    text,
-                                    Some(new_id),
-                                    None,
-                                ));
-                                // Held release with no original final: this final closes the
-                                // live utterance, so drop its id or the next utterance inherits it.
-                                self.clear_utterance_id_after_final().await;
-                            }
-                        }
-                    } else {
-                        let utterance_id =
-                            self.inner.lock().await.current_utterance_id.clone();
-                        self.emit(SpeechEvent::user_speech_final(text, utterance_id));
-                        self.clear_utterance_id_after_final().await;
-                    }
+                    self.emit_utterance_final(text, false).await;
                 }
             }
         }

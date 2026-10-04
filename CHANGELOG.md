@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **speech** — A final produced after `releaseSttHold({ replay: true })` while the utterance is still open now carries `replay: true` even when no original final existed (`replacesUtteranceId` stays unset), so hosts no longer treat it as a new utterance.
+- **speech** — The final that follows `releaseSttHold({ replay: true })` is now flagged `replay` on every finalize path (vendor final, last-partial fallback, forced close), so hosts no longer treat it as a new utterance.
 
 ## [0.9.22] - 2026-10-04
 

@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.21] - 2026-10-04
+
 ### Added
 
 - **speech / sdk** — Per-utterance non-interruptible speech: `sendTextToTTS(text, { interruptible: false })` (Rust `SendTextToTtsOptions.interruptible`, NAPI `sendTextToTts(text, nonBlocking?, interruptible?)`). While a protected utterance synthesizes or plays, VAD and STT-partial barge-in do not flush or cancel it and emit no `barge_in` / `agent_speaking_end`; later queued utterances stay interruptible, and `flushTts()` / `stop()` / `updateTts({ cancelInflight: true })` still stop it. Default stays `interruptible: true`.

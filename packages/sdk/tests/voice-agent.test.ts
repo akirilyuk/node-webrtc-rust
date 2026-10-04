@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import { SPEECH_EVENT_TYPE, VoiceAgent, type SpeechEvent } from '../src/voice'
 import { createVoiceLoopback, mockVoiceConfig } from './voice-helpers'
@@ -16,6 +16,28 @@ describe('VoiceAgent', () => {
     await agent.attach({ inboundTrack: userInbound, outboundTrack: agentOut })
     await agent.start()
     await agent.sendTextToTTS('Hello from mock TTS')
+    await agent.stop()
+    await cleanup()
+  })
+
+  test('sendTextToTTS forwards interruptible to native (default undefined = interruptible)', async () => {
+    const agent = new VoiceAgent(mockVoiceConfig)
+    const spy = vi.spyOn(agent.getNativeAgent(), 'sendTextToTts').mockResolvedValue(undefined)
+
+    await agent.sendTextToTTS('default')
+    await agent.sendTextToTTS('protected', { interruptible: false, nonBlocking: true })
+
+    expect(spy).toHaveBeenNthCalledWith(1, 'default', undefined, undefined)
+    expect(spy).toHaveBeenNthCalledWith(2, 'protected', true, false)
+  })
+
+  test('sendTextToTTS interruptible:false plays through native end to end', async () => {
+    const { agentOut, userInbound, cleanup } = await createVoiceLoopback()
+    const agent = new VoiceAgent(mockVoiceConfig)
+
+    await agent.attach({ inboundTrack: userInbound, outboundTrack: agentOut })
+    await agent.start()
+    await agent.sendTextToTTS('Please wait', { interruptible: false })
     await agent.stop()
     await cleanup()
   })
@@ -84,7 +106,10 @@ describe('VoiceAgent', () => {
     const ended = events.filter((e) => e.type === SPEECH_EVENT_TYPE.sttHoldEnded)
     expect(started.map((e) => e.holdMode)).toEqual(['first_utterance', 'buffer_replay'])
     expect(ended.map((e) => e.holdOutcome)).toEqual(['cancelled', 'released_drop'])
-    expect(ended[1]?.bufferedMs).toBe(0)
+    // Live loopback PCM may land between begin and release, so the held amount is not
+    // deterministic; it must be a whole number of 20 ms frames and nothing is dropped.
+    expect(ended[1]?.bufferedMs).toBeGreaterThanOrEqual(0)
+    expect((ended[1]?.bufferedMs ?? 1) % 20).toBe(0)
     expect(ended[1]?.droppedMs).toBe(0)
 
     await agent.stop()

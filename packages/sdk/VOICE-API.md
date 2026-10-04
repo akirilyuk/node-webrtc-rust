@@ -25,7 +25,7 @@ One instance per WebRTC conversation (one inbound + one outbound audio track).
 | `attach({ inboundTrack, outboundTrack })` | Binds `RemoteAudioTrack` (user mic) and `LocalAudioTrack` (agent TTS out).                                                                  |
 | `start()`                                 | Starts STT vendor, TTS drain worker, and inbound `readSample` → `processInboundPcm` loop.                                                   |
 | `stop()`                                  | Stops STT and inbound loop.                                                                                                                 |
-| `sendTextToTTS(text)`                     | Synthesizes and enqueues PCM on outbound track (20 ms frames).                                                                              |
+| `sendTextToTTS(text, options?)`           | Synthesizes and enqueues PCM on outbound track (20 ms frames). Options: `nonBlocking`, `interruptible` ([below](#sendtexttotts-options-and-non-interruptible-speech)). |
 | `flushTts()`                              | Clears pending TTS (manual barge / cancel).                                                                                                 |
 | `waitTtsPlaybackIdle()`                   | Blocks until outbound queue drained and `agent_speaking` false (prefer events in app code).                                                 |
 | `on(event, listener)`                     | Subscribe: event name or `'speech'` for all types.                                                                                          |
@@ -48,6 +48,20 @@ new VoiceAgent(config)
   → sendTextToTTS / flushTts
   → stop()
 ```
+
+### `sendTextToTTS` options and non-interruptible speech
+
+```typescript
+await agent.sendTextToTTS(text, { nonBlocking?: boolean, interruptible?: boolean })
+```
+
+Rust: `send_text_to_tts_with_options(text, SendTextToTtsOptions { non_blocking, interruptible })`. `SendTextToTtsOptions::default()` and the plain `sendTextToTTS(text)` call keep the old behavior (`interruptible: true`).
+
+With **`interruptible: false`** the utterance is protected while it synthesizes and plays, for example a "please wait" message spoken while the user is still talking:
+
+- VAD barge-in and STT-partial (semantic) barge-in do **not** flush or cancel it. No `barge_in` and no `agent_speaking_end` is emitted for the suppressed barge; `vad_triggered`, `user_speaking_*` and STT events keep flowing as usual.
+- Jobs queued after it stay interruptible. A barge-in that happens while they play flushes them as usual. A barge-in that happened while the protected job played is not replayed afterwards.
+- An explicit host cancel still stops it: `flushTts()`, `stop()`, `updateTts(config, { cancelInflight: true })`.
 
 ## Speech events
 
@@ -278,9 +292,9 @@ Both include semantic barge-in defaults (`requireSttPartial: true`).
 | ------------------------------------------------------ | ------------------------------------------------------------------------ |
 | `VOICE_CONTROL_CHANNEL_LABEL`                          | Recommended label: `'voice-control'`                                     |
 | `wireVoiceAgentToDataChannel(agent, channel)`          | Inbound `{ type: 'speak', text }` → `sendTextToTTS`                      |
-| `forwardVoiceAgentSpeechToDataChannel(agent, channel)` | `speechEvents()` → JSON `speech_event` on channel (call after `start()`) |
+| `forwardVoiceAgentSpeechToDataChannel(agent, channel, { filter? })` | `speechEvents()` → JSON `speech_event` on channel (call after `start()`); `filter(event) === false` keeps an event off the wire |
 | `parseVoiceControlClientMessage(raw)`                  | Parse client JSON                                                        |
-| `speechEventToControlMessage(event)`                   | Serialize for wire                                                       |
+| `speechEventToControlMessage(event)`                   | Serialize for wire: `text`, `language`, `error`, `reason`, `speechMs`, `utteranceId`, `replay`, `replacesUtteranceId`, `languageMismatch`, `holdMode`, `holdOutcome`, `bufferedMs`, `droppedMs` when set |
 
 ## Debug
 

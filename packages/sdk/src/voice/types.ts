@@ -234,6 +234,13 @@ export interface VoiceSessionContext {
 export interface SendTextToTtsOptions {
   /** When true, resolve as soon as the utterance is queued. Default: wait for synthesis + playback. */
   nonBlocking?: boolean
+  /**
+   * Default `true`. When `false`, VAD and STT-partial barge-in do not flush or cancel this
+   * utterance while it synthesizes or plays (no `barge_in` / `agent_speaking_end` is emitted
+   * for the suppressed barge). Jobs queued after it stay interruptible. Explicit `flushTts()`,
+   * `stop()` and `updateTts({ cancelInflight: true })` still stop it.
+   */
+  interruptible?: boolean
 }
 
 /**

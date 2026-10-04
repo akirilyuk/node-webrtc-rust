@@ -413,7 +413,11 @@ export class VoiceAgent {
    */
   async sendTextToTTS(text: string, options?: SendTextToTtsOptions): Promise<void> {
     debugFn(MODULE, 'sendTextToTTS', `chars=${text.length}`)
-    await this.native.sendTextToTts(text, options?.nonBlocking ?? undefined)
+    await this.native.sendTextToTts(
+      text,
+      options?.nonBlocking ?? undefined,
+      options?.interruptible ?? undefined,
+    )
   }
 
   /**

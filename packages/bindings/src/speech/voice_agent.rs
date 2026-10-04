@@ -107,9 +107,15 @@ impl JsVoiceAgent {
     }
 
     #[napi]
-    pub async fn send_text_to_tts(&self, text: String, non_blocking: Option<bool>) -> Result<()> {
+    pub async fn send_text_to_tts(
+        &self,
+        text: String,
+        non_blocking: Option<bool>,
+        interruptible: Option<bool>,
+    ) -> Result<()> {
         let options = SendTextToTtsOptions {
             non_blocking: non_blocking.unwrap_or(false),
+            interruptible: interruptible.unwrap_or(true),
         };
         self.inner
             .send_text_to_tts_with_options(&text, options)

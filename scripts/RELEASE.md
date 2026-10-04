@@ -124,12 +124,12 @@ flowchart TD
 | 2. Tag `release/X.Y.Z`   | Human                         | Triggers [`.github/workflows/release.yml`](../.github/workflows/release.yml)       |
 | 3. Publish job           | CI                            | npm packages @ `X.Y.Z` (does not commit to `main`)                                 |
 | 4. **Post-release PR**   | CI (`sync-main-package-lock`) | `package-lock.json` + any version alignment from registry                          |
-| 5. Merge post-release PR | Human                         | `main` valid for `npm ci`                                                          |
+| 5. Merge post-release PR | CI (auto-merge)               | `main` valid for `npm ci` (human only if checks fail or the branch falls behind)   |
 
 **Checklist after each tag:**
 
 - [ ] Release workflow finished green (including **Publish**).
-- [ ] Open and merge PR **`chore(ci): sync package-lock after release X.Y.Z`** (created automatically; see Actions run for the tag).
+- [ ] PR **`chore(ci): sync package-lock after release X.Y.Z`** was created, ran CI, and auto-merged (see Actions run for the tag). Intervene only if checks failed or the branch fell behind `main`.
 - [ ] Confirm **`Package-lock optional bindings`** job is green on `main` afterward.
 
 Until step 5, `main` may fail the always-on **`validate-package-lock`** CI job — expected.
@@ -187,6 +187,10 @@ Job **`Sync main package-lock (PR)`** in [`release.yml`](../.github/workflows/re
 3. Runs [`post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh) with the tag version.
 4. Opens a PR via [`peter-evans/create-pull-request`](https://github.com/peter-evans/create-pull-request) — branch `chore/post-release-package-lock-X.Y.Z`, labels `dependencies`, `automation`.
 5. Skips opening a PR if there is no diff.
+6. **Runs CI itself:** `GITHUB_TOKEN` events never start `pull_request` workflows, so the job runs `gh workflow run build.yml --ref chore/post-release-package-lock-X.Y.Z` (`workflow_dispatch` is exempt). The run attaches to the branch head SHA with the same check names the `main` ruleset requires (`Build TypeScript`, `Typecheck & lint`, `Compile native`, `Test`), so no close/reopen is needed. Skipped when `REPO_SYNC_PAT` is set (the PAT triggers normal PR CI).
+7. **Auto-merges:** `gh pr merge --auto --squash --delete-branch` (repo has `allow_auto_merge`). The ruleset uses strict up-to-date checks: if `main` moves before checks finish, the PR waits until the branch is updated (`gh pr update-branch <n>` or the UI button, then re-dispatch `build.yml` on the branch).
+
+**Trade-off:** a merge made by `GITHUB_TOKEN` auto-merge does not trigger `push` workflows, so [`build-main.yml`](../.github/workflows/build-main.yml) does not run for that merge commit. `build-main.yml` has no `workflow_dispatch`; the next real push to `main` runs it. The lockfile-only change is covered by `validate-package-lock` on the PR run.
 
 Requires workflow permission **`pull-requests: write`**. If the org disables **“Allow GitHub Actions to create and approve pull requests”**, `GITHUB_TOKEN` cannot open the PR (the branch may still be pushed). Fix one of:
 
@@ -264,7 +268,7 @@ Do not tag from a stale local `main`, a feature worktree, or the prep branch. Do
 
 ### 3. Merge post-release package-lock PR
 
-When the Release workflow finishes, merge the automated PR **`chore(ci): sync package-lock after release X.Y.Z`** → `main`. See [checklist](#end-to-end-release-flow-git--npm--lockfile).
+When the Release workflow finishes, the automated PR **`chore(ci): sync package-lock after release X.Y.Z`** runs CI and auto-merges into `main`; check it landed. See [checklist](#end-to-end-release-flow-git--npm--lockfile).
 
 Supported **tag** forms (not branch names):
 
@@ -284,7 +288,7 @@ The segment after `release/` must match committed `package.json` versions. CI us
 2. **Test** — format, lint, typecheck, `cargo test`, `npm test` (with coturn)
 3. **Publish** — stage artifacts, bump versions in workspace, build TS, publish to npm (including `@node-webrtc-rust/helpers`)
 4. **GitHub Release** — creates a release with the matching section from `CHANGELOG.md`
-5. **Sync main package-lock** — checks out `main`, runs [`post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh), opens PR `chore/post-release-package-lock-X.Y.Z` → `main` (merge when green)
+5. **Sync main package-lock** — checks out `main`, runs [`post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh), opens PR `chore/post-release-package-lock-X.Y.Z` → `main`, dispatches `build.yml` on it, and enables auto-merge
 
 Required secrets: **`NPM_TOKEN`**, **`GITHUB_TOKEN`** (publish, release, and automated PR).
 

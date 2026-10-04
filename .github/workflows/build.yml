@@ -3,6 +3,10 @@ name: Build & Test
 on:
   pull_request:
     branches: [main]
+  # Dispatched by release.yml `sync-main-package-lock` for the bot PR branch: events from
+  # GITHUB_TOKEN never start pull_request runs, but workflow_dispatch is exempt. The run is
+  # attached to the branch head SHA, so its check names satisfy the main ruleset.
+  workflow_dispatch:
 
 # New pushes to the same PR cancel the in-flight run and start a fresh one.
 concurrency:
@@ -221,8 +225,10 @@ jobs:
       - name: Compute PR job gates
         id: pr_gates
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # workflow_dispatch has no pull_request payload: diff against origin/main (full
+          # clone via fetch-depth: 0) and the dispatched branch tip.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           FILTER_NATIVE: ${{ steps.filter.outputs.native }}
           FILTER_WORKFLOWS_NATIVE: ${{ steps.filter.outputs.workflows_native }}
         run: |

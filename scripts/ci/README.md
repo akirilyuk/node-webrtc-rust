@@ -10,13 +10,15 @@ Human-readable reference for GitHub Actions workflows, reusable jobs, caches, an
 
 | Workflow                | File                                                                                         | Trigger                              | Purpose                                                               |
 | ----------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------------------- |
-| **Build & Test (PR)**   | [`.github/workflows/build.yml`](../../.github/workflows/build.yml)                           | PR → `main`                          | Path-filtered quality, native compile, TS build, integration tests    |
+| **Build & Test (PR)**   | [`.github/workflows/build.yml`](../../.github/workflows/build.yml)                           | PR → `main`, `workflow_dispatch`     | Path-filtered quality, native compile, TS build, integration tests    |
 | **Build & Test (main)** | [`.github/workflows/build-main.yml`](../../.github/workflows/build-main.yml)                 | Push → `main`                        | Full release native matrix + full test suite + `native-main-bundle`   |
 | **Release**             | [`.github/workflows/release.yml`](../../.github/workflows/release.yml)                       | Tag `release/*`                      | Resolve/reuse main bundle → tests → npm publish → GitHub Release      |
 | **CI Docker image**     | [`.github/workflows/ci-image.yml`](../../.github/workflows/ci-image.yml)                     | Push → `ci`/`main` (paths), dispatch | Publish `ci-build` + `ci-build-alpine` (`:latest` + immutable `:SHA`) |
 | **Native cache smoke**  | [`.github/workflows/native-cache-smoke.yml`](../../.github/workflows/native-cache-smoke.yml) | **`workflow_dispatch` only**         | Non-publishing cache reuse + release-style resolve (see below)        |
 
 Every PR/main/release workflow starts with **`validate-package-lock`** (no path filter) — fails in seconds if `package-lock.json` has stub optional `@node-webrtc-rust/bindings-*` entries. Local: `npm run ci:validate:package-lock`.
+
+`build.yml` also accepts `workflow_dispatch`: [`release.yml`](../../.github/workflows/release.yml) job `sync-main-package-lock` dispatches it on the post-release lockfile PR branch (GITHUB_TOKEN-created PRs get no `pull_request` runs) and enables squash auto-merge. Under dispatch, `Detect changes` diffs `origin/main` against the branch tip; check names are unchanged so the `main` ruleset is satisfied. See [`RELEASE.md`](../RELEASE.md#post-release-pr-automation).
 
 Reusable workflows (called via `workflow_call`, not triggered directly):
 

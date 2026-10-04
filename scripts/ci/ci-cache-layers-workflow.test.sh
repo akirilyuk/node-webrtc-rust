@@ -330,4 +330,47 @@ echo "ok: release publish skips packages already on npm"
 grep -q 'rebuilt_targets' scripts/ci/plan-native-builds.sh || fail "plan missing rebuilt_targets"
 echo "ok: plan rebuilt_targets output"
 
+# --- Post-release lockfile PR: CI via workflow_dispatch + auto-merge ---
+# GITHUB_TOKEN-created PRs get no pull_request runs; only workflow_dispatch is exempt.
+python3 - "$pr" "$release" <<'PY' || fail "post-release PR CI/auto-merge contract"
+from pathlib import Path
+import re
+import sys
+
+pr = Path(sys.argv[1]).read_text(encoding="utf-8")
+rel = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+on_block = pr.split("\njobs:", 1)[0]
+if "workflow_dispatch:" not in on_block:
+    raise SystemExit("build.yml must declare workflow_dispatch")
+
+# Required checks (main ruleset) must not be gated on the pull_request event.
+if "github.event_name" in pr:
+    raise SystemExit("build.yml jobs must not branch on github.event_name (skipped under dispatch)")
+for name in ("Typecheck & lint", "Compile native", "Build TypeScript", "Test"):
+    if f"name: {name}\n" not in pr:
+        raise SystemExit(f"build.yml missing required check job name: {name}")
+# Every pull_request payload ref needs a dispatch fallback.
+for ref in re.findall(r"\$\{\{([^}]*github\.event\.pull_request\.[^}]*)\}\}", pr):
+    if "||" not in ref and "pull_request.number" not in ref:
+        raise SystemExit(f"build.yml ref without dispatch fallback: {ref.strip()}")
+
+m = re.search(r"(?ms)^  sync-main-package-lock:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)", rel)
+if not m:
+    raise SystemExit("release.yml missing sync-main-package-lock")
+job = m.group(1)
+for needle in (
+    "actions: write",
+    "pull-requests: write",
+    'gh workflow run build.yml --ref "$PR_BRANCH"',
+    "pull-request-branch",
+    'gh pr merge "$PR_NUMBER" --auto --squash --delete-branch',
+):
+    if needle not in job:
+        raise SystemExit(f"sync-main-package-lock missing: {needle}")
+if job.find("gh workflow run build.yml") > job.find("--auto --squash"):
+    raise SystemExit("dispatch must precede enabling auto-merge")
+print("ok: post-release PR dispatches build.yml and enables auto-merge")
+PY
+
 echo "ci-cache-layers-workflow.test.sh: all checks passed"

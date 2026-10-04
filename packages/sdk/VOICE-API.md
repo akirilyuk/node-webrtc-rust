@@ -292,9 +292,9 @@ Both include semantic barge-in defaults (`requireSttPartial: true`).
 | ------------------------------------------------------ | ------------------------------------------------------------------------ |
 | `VOICE_CONTROL_CHANNEL_LABEL`                          | Recommended label: `'voice-control'`                                     |
 | `wireVoiceAgentToDataChannel(agent, channel)`          | Inbound `{ type: 'speak', text }` → `sendTextToTTS`                      |
-| `forwardVoiceAgentSpeechToDataChannel(agent, channel)` | `speechEvents()` → JSON `speech_event` on channel (call after `start()`) |
+| `forwardVoiceAgentSpeechToDataChannel(agent, channel, { filter? })` | `speechEvents()` → JSON `speech_event` on channel (call after `start()`); `filter(event) === false` keeps an event off the wire |
 | `parseVoiceControlClientMessage(raw)`                  | Parse client JSON                                                        |
-| `speechEventToControlMessage(event)`                   | Serialize for wire                                                       |
+| `speechEventToControlMessage(event)`                   | Serialize for wire: `text`, `language`, `error`, `reason`, `speechMs`, `utteranceId`, `replay`, `replacesUtteranceId`, `languageMismatch`, `holdMode`, `holdOutcome`, `bufferedMs`, `droppedMs` when set |
 
 ## Debug
 

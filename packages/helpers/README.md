@@ -30,6 +30,7 @@ npm run ci:pre-push
 | `SessionPod`                           | One Node process, one signaling entry point, many concurrent sessions |
 | `VoiceAgentSessionHost`                | One signaling room; spawns one `VoiceAgent` + PC per browser client   |
 | `startMultiClientVoiceServer`          | One room, many tabs — wraps signaling + host + `/api/capacity`        |
+| `speechEventFilter` (host option)      | `(event) => boolean`; return `false` to keep a speech event off the client's voice-control channel (`voiceHandler.onSpeechEvent` still sees it) |
 | `VoiceAgentSessionHost.broadcastSpeak` | TTS `text` on every connected client in the room                      |
 | `VoiceSessionHandler`                  | Per-tab hooks: transport/agent lifecycle, STT/VAD, speak requests     |
 | `VoiceSessionBudget`                   | Process-wide cap (`VOICE_MAX_CONCURRENT_SESSIONS`)                    |

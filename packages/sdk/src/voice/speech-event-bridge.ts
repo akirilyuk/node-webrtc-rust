@@ -9,7 +9,13 @@ import type { RTCDataChannel } from '../RTCDataChannel'
 import type { MessageEvent } from '../types'
 import type { VoiceAgent } from './VoiceAgent'
 import { isVoiceDebugEnabled, voiceDebugLog } from './debug'
-import type { SpeechEvent, SpeechEventType } from './types'
+import type {
+  LanguageIdSkipReason,
+  SpeechEvent,
+  SpeechEventType,
+  SttHoldMode,
+  SttHoldOutcome,
+} from './types'
 
 /** Data channel label used by `examples/voice-agent-browser` and recommended for apps. */
 export const VOICE_CONTROL_CHANNEL_LABEL = 'voice-control'
@@ -33,9 +39,25 @@ export interface VoiceControlSpeechEventMessage {
   language?: string
   error?: string
   /** `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio` | `undetermined`. */
-  reason?: string
+  reason?: LanguageIdSkipReason
   /** `language_id_skipped`: buffered speech (ms). */
   speechMs?: number
+  /** Shared across `user_speaking_start` … `user_speech_final` for one utterance. */
+  utteranceId?: string
+  /** True when this final was produced by a replay. */
+  replay?: boolean
+  /** Original utterance id when `replay` is true. */
+  replacesUtteranceId?: string
+  /** Set by a host when releasing a held final after a failed language switch. */
+  languageMismatch?: boolean
+  /** `stt_hold_started`: the hold mode. */
+  holdMode?: SttHoldMode
+  /** `stt_hold_ended`: how the hold ended. */
+  holdOutcome?: SttHoldOutcome
+  /** `stt_hold_started` / `stt_hold_ended`: PCM buffered (ms). */
+  bufferedMs?: number
+  /** `stt_hold_ended`: PCM dropped by the buffer bound or `first_utterance` (ms). */
+  droppedMs?: number
 }
 
 /** Server → client: text queued for agent TTS (`ctx.speak` / `sendTextToTTS`). */
@@ -48,8 +70,7 @@ export interface VoiceControlAgentSpeakMessage {
 export type VoiceControlClientMessage = VoiceControlSpeakMessage
 
 export type VoiceControlServerMessage =
-  | VoiceControlSpeechEventMessage
-  | VoiceControlAgentSpeakMessage
+  VoiceControlSpeechEventMessage | VoiceControlAgentSpeakMessage
 
 /** Maps agent TTS text to the wire format sent before playback starts. */
 export function agentSpeakToControlMessage(
@@ -77,6 +98,14 @@ export function speechEventToControlMessage(
     error: event.error,
     reason: event.reason,
     speechMs: event.speechMs,
+    utteranceId: event.utteranceId,
+    replay: event.replay,
+    replacesUtteranceId: event.replacesUtteranceId,
+    languageMismatch: event.languageMismatch,
+    holdMode: event.holdMode,
+    holdOutcome: event.holdOutcome,
+    bufferedMs: event.bufferedMs,
+    droppedMs: event.droppedMs,
   }
 }
 
@@ -125,6 +154,10 @@ function sendSpeechEventToChannel(channel: RTCDataChannel, event: SpeechEvent): 
 export function forwardVoiceAgentSpeechToDataChannel(
   agent: VoiceAgent,
   channel: RTCDataChannel,
+  options?: {
+    /** Return `false` to keep an event off the wire (default: forward every event). */
+    filter?: (event: SpeechEvent) => boolean
+  },
 ): () => void {
   let active = true
 
@@ -132,6 +165,9 @@ export function forwardVoiceAgentSpeechToDataChannel(
     for await (const event of agent.speechEvents()) {
       if (!active) {
         break
+      }
+      if (options?.filter && !options.filter(event)) {
+        continue
       }
       sendSpeechEventToChannel(channel, event)
     }

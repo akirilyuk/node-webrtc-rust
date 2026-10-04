@@ -14,8 +14,9 @@ describe('roundtrip-language-id', () => {
     }
   })
 
-  test('once-per-utterance LID window captures enough inbound PCM before first identify', () => {
-    expect(LISTENER_MIN_SPEECH_MS).toBeGreaterThanOrEqual(4500)
+  test("once-per-utterance LID window is speech ms, below the shortest leg phrase's ~2580 ms of speech", () => {
+    expect(LISTENER_MIN_SPEECH_MS).toBeGreaterThanOrEqual(1500)
+    expect(LISTENER_MIN_SPEECH_MS).toBeLessThanOrEqual(2400)
   })
 
   test('Spanish leg uses es-glados Piper with a distinctive Spanish opener', () => {

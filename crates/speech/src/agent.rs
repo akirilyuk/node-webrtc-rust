@@ -163,6 +163,13 @@ struct AgentInner {
     stt_enabled: bool,
     /// PCM collected for offline spoken-language ID during the current user utterance.
     lid_pcm_buffer: Vec<u8>,
+    /// Speech from the first voiced frame to the last voiced frame of the utterance, including
+    /// gaps between words; silence after the last voiced frame is not counted. `minSpeechMs`
+    /// compares against this, not the buffer length.
+    lid_voiced_ms: u32,
+    /// Gap (silence while the VAD is still speaking) since the last voiced frame; folded into
+    /// `lid_voiced_ms` only if speech resumes.
+    lid_pending_silence_ms: u32,
     /// True while buffering user PCM for LID after `user_speaking_start`.
     lid_buffering: bool,
     /// Last emitted ISO 639-1 code (`user_language`); re-emit only when it changes.
@@ -350,6 +357,8 @@ impl VoiceAgent {
                 denoise,
                 stt_enabled: true,
                 lid_pcm_buffer: Vec::new(),
+                lid_voiced_ms: 0,
+                lid_pending_silence_ms: 0,
                 lid_buffering: false,
                 lid_last_emitted: None,
                 lid_identify_in_flight: false,
@@ -2260,6 +2269,8 @@ impl VoiceAgent {
         inner.last_partial_text = None;
         inner.partials_emitted_this_utterance = false;
         inner.lid_pcm_buffer.clear();
+        inner.lid_voiced_ms = 0;
+        inner.lid_pending_silence_ms = 0;
         inner.lid_buffering = false;
         inner.lid_identify_in_flight = false;
         inner.lid_identify_deferred = false;
@@ -2278,16 +2289,36 @@ impl VoiceAgent {
         }
         let mut inner = self.inner.lock().await;
         inner.lid_pcm_buffer.clear();
+        inner.lid_voiced_ms = 0;
+        inner.lid_pending_silence_ms = 0;
         inner.lid_buffering = true;
     }
 
-    async fn append_lid_pcm_if_buffering(&self, mono_bytes: &Bytes) {
+    async fn append_lid_pcm_if_buffering(
+        &self,
+        mono_bytes: &Bytes,
+        frame_active: bool,
+        vad_speaking: bool,
+        duration_ms: u32,
+    ) {
         let cross_threshold = {
             let mut inner = self.inner.lock().await;
             if !inner.lid_buffering || !language_id_enabled(&inner.config.language_id) {
                 return;
             }
             inner.lid_pcm_buffer.extend_from_slice(mono_bytes);
+            if frame_active {
+                inner.lid_voiced_ms = inner
+                    .lid_voiced_ms
+                    .saturating_add(inner.lid_pending_silence_ms)
+                    .saturating_add(duration_ms);
+                inner.lid_pending_silence_ms = 0;
+            } else if vad_speaking {
+                // Gap inside the utterance; counts only if speech resumes.
+                inner.lid_pending_silence_ms =
+                    inner.lid_pending_silence_ms.saturating_add(duration_ms);
+            }
+            // else: utterance tail / not speaking, never counted.
             // Default (end of utterance): buffer only until user_speaking_end.
             let continuous = language_id_continuous(&inner.config.language_id);
             let early = language_id_early(&inner.config.language_id);
@@ -2301,12 +2332,7 @@ impl VoiceAgent {
             let min_ms = resolved_language_id_min_speech_ms(
                 inner.config.language_id.as_ref().expect("enabled"),
             );
-            let buffer_len = inner.lid_pcm_buffer.len();
-            let duration_ms = crate::pcm::duration_ms_from_mono_s16le(
-                buffer_len,
-                crate::pcm::STT_PCM_SAMPLE_RATE,
-            );
-            duration_ms >= min_ms
+            inner.lid_voiced_ms >= min_ms
         };
         if cross_threshold {
             self.spawn_identify_language(false).await;
@@ -2344,10 +2370,7 @@ impl VoiceAgent {
 
     /// Emit `language_id_skipped` once per utterance. Carries buffered speech ms, no transcript.
     fn emit_language_id_skipped_once(&self, inner: &mut AgentInner, reason: &str) {
-        let speech_ms = crate::pcm::duration_ms_from_mono_s16le(
-            inner.lid_pcm_buffer.len(),
-            crate::pcm::STT_PCM_SAMPLE_RATE,
-        );
+        let speech_ms = inner.lid_voiced_ms;
         self.emit_language_id_skipped_with_ms(inner, reason, speech_ms);
     }
 
@@ -2544,14 +2567,15 @@ impl VoiceAgent {
                 inner.config.language_id.as_ref().expect("enabled"),
             );
             let buffer_len = inner.lid_pcm_buffer.len();
-            let duration_ms = crate::pcm::duration_ms_from_mono_s16le(
+            let buffered_ms = crate::pcm::duration_ms_from_mono_s16le(
                 buffer_len,
                 crate::pcm::STT_PCM_SAMPLE_RATE,
             );
+            let duration_ms = inner.lid_voiced_ms;
             if buffer_len == 0 || (!force && duration_ms < min_ms) {
                 if !force && buffer_len > 0 && duration_ms < min_ms {
                     voice_debug(format!(
-                        "LID identify skipped: buffered {duration_ms} ms < min_speech_ms {min_ms}"
+                        "LID identify skipped: {duration_ms} ms speech ({buffered_ms} ms buffered) < min_speech_ms {min_ms}"
                     ));
                 }
                 return false;
@@ -2577,6 +2601,8 @@ impl VoiceAgent {
                 Bytes::from(buffer)
             };
             inner.lid_pcm_buffer.clear();
+            inner.lid_voiced_ms = 0;
+        inner.lid_pending_silence_ms = 0;
             let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
             Some((
                 pcm,
@@ -2762,14 +2788,13 @@ impl VoiceAgent {
 
         let mono = crate::pcm::stereo_48k_to_mono_16k(pcm.as_ref());
         let mono_bytes = i16_samples_to_bytes(&mono);
-        self.append_lid_pcm_if_buffering(&mono_bytes).await;
 
         let (
             transitions,
             gate_stt,
             speech_start,
             complete_previous_utterance,
-            _frame_active,
+            frame_active,
             vad_pending,
             vad_speaking,
         ) = {
@@ -2778,7 +2803,8 @@ impl VoiceAgent {
 
             let (transitions, frame_active) = match inner.vad.as_mut() {
                 Some(vad) => vad.process_webrtc_pcm(pcm.as_ref(), duration_ms)?,
-                None => (Vec::new(), false),
+                // No VAD: every frame counts as voiced (LID `minSpeechMs` keeps buffer-length behaviour).
+                None => (Vec::new(), true),
             };
 
             let vad_pending = inner
@@ -2882,6 +2908,12 @@ impl VoiceAgent {
                 vad_speaking,
             )
         };
+
+        // Append after the VAD decision so the LID buffer knows whether this frame was voiced.
+        // `frame_active` is the per-frame VAD decision (excludes hangover). SpeechStart handling
+        // below starts buffering after this point, so the onset frame is not appended (as before).
+        self.append_lid_pcm_if_buffering(&mono_bytes, frame_active, vad_speaking, duration_ms)
+            .await;
 
         // C1 / C2 timeout ticks (only when VAD enabled and STT stream lifecycle active).
         let backlog_ms = self.stt_decode_backlog_ms().await;

@@ -39,8 +39,12 @@ const DEFAULT_TIMEOUT_MS = 90_000
 const DEFAULT_WARMUP_S = 0.6
 /** Wait after TTS+post-silence so the single once-per-utterance LID identify can finish. */
 const LID_SETTLE_MS = 1500
-/** First identify window (default LID is once per utterance). Long enough for es-glados Piper — Whisper tiny confuses es→ja in the first ~2 s. */
-export const LISTENER_MIN_SPEECH_MS = 4800
+/**
+ * LID `minSpeechMs`, in speech ms (pauses between words count, trailing silence does not). Gate
+ * only: below the shortest leg phrase (de ≈ 2580 ms of speech); identify still runs on the full
+ * utterance at close (default `end_of_utterance` timing), so Whisper sees the same audio as before.
+ */
+export const LISTENER_MIN_SPEECH_MS = 2000
 
 /** Piper bundles from sherpa-tts-model-catalog.json */
 const TTS_BUNDLES: Record<string, string> = {

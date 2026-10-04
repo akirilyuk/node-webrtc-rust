@@ -1,6 +1,7 @@
 //! Outbound TTS PCM buffer with flush support for barge-in.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -12,6 +13,29 @@ use crate::pipeline::TtsAudioChunk;
 #[derive(Clone, Default)]
 pub struct TtsBuffer {
     inner: Arc<Mutex<TtsBufferInner>>,
+    /// True from the moment a chunk is handed to the drain worker through a [`TtsDrainHold`]
+    /// until that drain pass has finished writing it. Without it, `speaking` is false in the gap
+    /// between "last chunk popped" and "first frame written", so idle checks (blocking send,
+    /// `wait_tts_playback_idle`) can return before any PCM is written.
+    held: Arc<AtomicBool>,
+}
+
+/// One drain pass. Chunks popped through it count as in flight until it is dropped, so the
+/// hold cannot outlive the pass that owns the chunks (a plain [`TtsBuffer::pop_chunk`] never
+/// sets it).
+pub struct TtsDrainHold(TtsBuffer);
+
+impl TtsDrainHold {
+    /// Pop the next chunk and keep the buffer "speaking" until this guard is dropped.
+    pub async fn pop_chunk(&self) -> Option<TtsAudioChunk> {
+        self.0.pop_chunk_marking(true).await
+    }
+}
+
+impl Drop for TtsDrainHold {
+    fn drop(&mut self) {
+        self.0.held.store(false, Ordering::SeqCst);
+    }
 }
 
 #[derive(Default)]
@@ -81,6 +105,7 @@ impl TtsBuffer {
         inner.frame_carry.clear();
         inner.speaking = false;
         inner.producing = false;
+        self.held.store(false, Ordering::SeqCst);
         inner.generation = inner.generation.wrapping_add(1);
         inner.flushed_generation = inner.generation;
         inner.generation
@@ -99,6 +124,10 @@ impl TtsBuffer {
     }
 
     pub async fn pop_chunk(&self) -> Option<TtsAudioChunk> {
+        self.pop_chunk_marking(false).await
+    }
+
+    async fn pop_chunk_marking(&self, hold: bool) -> Option<TtsAudioChunk> {
         let mut inner = self.inner.lock().await;
         let chunk = inner.queue.pop_front();
         // Clear `speaking` only when the drain worker finds nothing left to pop. Clearing it
@@ -108,13 +137,24 @@ impl TtsBuffer {
         if chunk.is_none() && !inner.producing {
             inner.speaking = false;
         }
+        // Set under the buffer lock so `is_speaking` never sees the chunk in neither place.
+        if hold && chunk.is_some() {
+            self.held.store(true, Ordering::SeqCst);
+        }
         chunk
     }
 
-    /// True when PCM is queued **or** synthesis is still producing chunks.
+    /// Guard for one drain pass: chunks popped through it count as in flight even when the
+    /// queue is empty and nothing is producing. Dropping it releases them.
+    pub fn drain_hold(&self) -> TtsDrainHold {
+        TtsDrainHold(self.clone())
+    }
+
+    /// True when PCM is queued, synthesis is still producing chunks, **or** the drain worker
+    /// holds a popped chunk it has not finished writing.
     pub async fn is_speaking(&self) -> bool {
         let inner = self.inner.lock().await;
-        inner.speaking || inner.producing
+        inner.speaking || inner.producing || self.held.load(Ordering::SeqCst)
     }
 
     pub async fn pending_count(&self) -> usize {
@@ -162,6 +202,31 @@ mod tests {
         assert!(buf.pop_chunk().await.is_some());
         assert!(buf.is_speaking().await);
         assert!(buf.pop_chunk().await.is_none());
+        assert!(!buf.is_speaking().await);
+    }
+
+    /// Gap: last chunk popped, `set_producing(false)` (synthesis done), first frame not yet
+    /// written. The buffer must still report speaking until the drain pass releases its hold.
+    #[tokio::test]
+    async fn popped_chunk_in_hand_keeps_speaking_until_hold_released() {
+        let buf = TtsBuffer::new();
+        buf.set_producing(true).await;
+        buf.enqueue(vec![chunk(20)]).await;
+        let hold = buf.drain_hold();
+        assert!(hold.pop_chunk().await.is_some());
+        buf.set_producing(false).await;
+        assert!(buf.is_speaking().await, "chunk in hand must not look idle");
+        drop(hold);
+        assert!(!buf.is_speaking().await);
+    }
+
+    #[tokio::test]
+    async fn flush_releases_held_chunk() {
+        let buf = TtsBuffer::new();
+        buf.enqueue(vec![chunk(20)]).await;
+        let hold = buf.drain_hold();
+        let _ = hold.pop_chunk().await;
+        buf.flush().await;
         assert!(!buf.is_speaking().await);
     }
 

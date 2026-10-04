@@ -99,6 +99,25 @@ fn drain_kinds(
     out
 }
 
+/// Blocks until `kind` is observed (event-driven; no wall-clock guess about scheduling).
+async fn wait_for_kind(
+    events: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+    kind: SpeechEventKind,
+    nth: usize,
+) -> Vec<SpeechEventKind> {
+    let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while seen.iter().filter(|k| **k == kind).count() < nth {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {kind:?} #{nth}: {seen:?}"
+        );
+        seen.extend(drain_kinds(events));
+        sleep(Duration::from_millis(5)).await;
+    }
+    seen
+}
+
 #[test]
 fn default_options_are_interruptible() {
     let o = SendTextToTtsOptions::default();
@@ -118,9 +137,12 @@ async fn protected_job_survives_vad_barge_in_and_plays_fully() {
     let text = "please wait while i switch to your language ".repeat(2);
     let expected_ms = mock_tts_duration_ms(&text);
 
+    // The user bursts in only once the protected job is audibly playing, so a barge-in is
+    // guaranteed to be attempted against it regardless of scheduler timing.
     let a = Arc::clone(&agent);
+    let mut gate_events = agent.subscribe_events();
     tokio::spawn(async move {
-        sleep(Duration::from_millis(40)).await;
+        wait_for_kind(&mut gate_events, SpeechEventKind::AgentSpeakingStart, 1).await;
         user_burst(&a).await;
     });
 
@@ -181,24 +203,10 @@ async fn job_queued_after_protected_job_is_flushed_by_later_barge_in() {
         .unwrap();
 
     // Barge-in while the protected job plays: swallowed.
-    sleep(Duration::from_millis(40)).await;
+    let mut seen = wait_for_kind(&mut events, SpeechEventKind::AgentSpeakingStart, 1).await;
     user_burst(&agent).await;
-    // Wait for the second job's playback (second agent_speaking_start).
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut seen: Vec<SpeechEventKind> = Vec::new();
-    while seen
-        .iter()
-        .filter(|k| **k == SpeechEventKind::AgentSpeakingStart)
-        .count()
-        < 2
-    {
-        assert!(
-            Instant::now() < deadline,
-            "second job never started: {seen:?}"
-        );
-        seen.extend(drain_kinds(&mut events));
-        sleep(Duration::from_millis(10)).await;
-    }
+    // Wait for the second job's playback (next agent_speaking_start).
+    seen.extend(wait_for_kind(&mut events, SpeechEventKind::AgentSpeakingStart, 1).await);
     assert!(
         !seen.contains(&SpeechEventKind::BargeIn),
         "barge-in during the protected job must be swallowed: {seen:?}"
@@ -224,6 +232,7 @@ async fn job_queued_after_protected_job_is_flushed_by_later_barge_in() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn explicit_flush_cancels_protected_job() {
     let (agent, written_ms) = make_agent().await;
+    let mut events = agent.subscribe_events();
     let text = "this protected message is long and gets cancelled by the host ".repeat(6);
     let expected_ms = mock_tts_duration_ms(&text);
 
@@ -237,7 +246,7 @@ async fn explicit_flush_cancels_protected_job() {
         )
         .await
         .unwrap();
-    sleep(Duration::from_millis(150)).await;
+    wait_for_kind(&mut events, SpeechEventKind::AgentSpeakingStart, 1).await;
     agent.flush_tts().await.unwrap();
     agent.wait_tts_playback_idle().await.unwrap();
     agent.stop().await.unwrap();
@@ -253,6 +262,7 @@ async fn explicit_flush_cancels_protected_job() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn explicit_stop_cancels_protected_job() {
     let (agent, written_ms) = make_agent().await;
+    let mut events = agent.subscribe_events();
     let text = "this protected message is long and gets cancelled by stop ".repeat(6);
     let expected_ms = mock_tts_duration_ms(&text);
 
@@ -266,7 +276,7 @@ async fn explicit_stop_cancels_protected_job() {
         )
         .await
         .unwrap();
-    sleep(Duration::from_millis(150)).await;
+    wait_for_kind(&mut events, SpeechEventKind::AgentSpeakingStart, 1).await;
     agent.stop().await.unwrap();
 
     let played = *written_ms.lock().unwrap();

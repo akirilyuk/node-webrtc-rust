@@ -303,6 +303,9 @@ export interface JsLanguageIdConfig {
   lidGateMaxWaitMs?: number
   ttsExclusion?: boolean
 }
+export interface JsReplayConfig {
+  maxAgeMs?: number
+}
 export interface JsVoiceAgentConfig {
   vad?: JsVadConfig
   events?: JsEventsConfig
@@ -311,6 +314,7 @@ export interface JsVoiceAgentConfig {
   languageId?: JsLanguageIdConfig
   postUtteranceSilenceMs?: number
   noiseSuppression?: JsNoiseSuppressionConfig
+  replay?: JsReplayConfig
 }
 export const enum JsSpeechEventType {
   UserSpeakingStart = 'user_speaking_start',
@@ -329,7 +333,9 @@ export const enum JsSpeechEventType {
   BargeIn = 'barge_in',
   Error = 'error',
   SttConfigUpdated = 'stt_config_updated',
-  TtsConfigUpdated = 'tts_config_updated'
+  TtsConfigUpdated = 'tts_config_updated',
+  SttHoldStarted = 'stt_hold_started',
+  SttHoldEnded = 'stt_hold_ended'
 }
 export interface JsSpeechEvent {
   eventType: JsSpeechEventType
@@ -343,6 +349,21 @@ export interface JsSpeechEvent {
   voice?: string
   modelPath?: string
   endpoint?: string
+  holdMode?: string
+  holdOutcome?: string
+  bufferedMs?: number
+  droppedMs?: number
+}
+export const enum JsSttHoldMode {
+  BufferReplay = 'buffer_replay',
+  FirstUtterance = 'first_utterance'
+}
+export interface JsBeginSttHoldOptions {
+  mode: JsSttHoldMode
+  maxBufferMs?: number
+}
+export interface JsReleaseSttHoldOptions {
+  replay: boolean
 }
 export interface JsUpdateTtsOptions {
   cancelInflight?: boolean
@@ -582,6 +603,12 @@ export declare class JsVoiceAgent {
   updateStt(config: JsSttConfig): Promise<void>
   /** Apply a new TTS config before the next synthesis job. */
   updateTts(config: JsTtsConfig, options?: JsUpdateTtsOptions | undefined | null): Promise<void>
+  /** Start a host STT hold: stop feeding/polling the current STT and buffer user PCM. */
+  beginSttHold(options: JsBeginSttHoldOptions): Promise<void>
+  /** End the hold after `update_stt`; `replay` decodes held audio through the new STT. */
+  releaseSttHold(options: JsReleaseSttHoldOptions): Promise<void>
+  /** Abort the hold: the old STT resumes and receives the buffered audio. */
+  cancelSttHold(): Promise<void>
   /** Re-transcribe the last utterance PCM on the current STT provider (after `update_stt`). */
   replayLastUtterance(): Promise<void>
 }

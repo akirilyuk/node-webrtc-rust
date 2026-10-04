@@ -8,6 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **speech / sdk** — Host-controlled STT hold for slow STT swaps (cold model pools): `VoiceAgent.beginSttHold({ mode: 'buffer_replay' | 'first_utterance', maxBufferMs? })`, `releaseSttHold({ replay })`, `cancelSttHold()` (Rust `begin_stt_hold` / `release_stt_hold` / `cancel_stt_hold`, NAPI, `@node-webrtc-rust/sdk/voice`). While held the current STT is not fed and not polled, so no final or partial from the old model reaches the host; VAD and `user_speaking_*` events keep flowing. User PCM is buffered natively (bounded, default 45 s, cap 120 s, oldest dropped first) starting with the audio of the utterance in progress. `release` decodes it through the new STT (finals with `replay: true`, `replacesUtteranceId`), then live audio follows with no gap or duplicate; `cancel` feeds the old STT. New events `stt_hold_started` / `stt_hold_ended` carry `holdMode`, `holdOutcome`, `bufferedMs`, `droppedMs` (no transcript text).
+- **speech / sdk** — `replay.maxAgeMs` config for `replayLastUtterance()` (default 10 s unchanged, cap 120 s).
+
+### Fixed
+
+- **speech** — The utterance replay ring now also keeps the SpeechStart pre-roll / onset audio, so `replayLastUtterance()` and the STT hold replay the whole phrase instead of starting a few hundred ms late.
+
 ## [0.9.19] - 2026-10-04
 
 ### Fixed

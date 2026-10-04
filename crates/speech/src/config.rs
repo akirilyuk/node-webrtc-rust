@@ -825,6 +825,9 @@ pub struct VoiceAgentConfig {
     /// Trailing outbound silence (ms) after TTS. Also accepted under `tts.postUtteranceSilenceMs` in deploy JSON.
     #[serde(default)]
     pub post_utterance_silence_ms: Option<u32>,
+    /// `replay_last_utterance` tuning (`replay.maxAgeMs`).
+    #[serde(default)]
+    pub replay: crate::stt_hold::ReplayConfig,
 }
 
 /// Session-scoped observability attributes and W3C trace propagation.
@@ -885,6 +888,7 @@ impl Default for VoiceAgentConfig {
             }),
             language_id: None,
             post_utterance_silence_ms: None,
+            replay: crate::stt_hold::ReplayConfig::default(),
         }
     }
 }

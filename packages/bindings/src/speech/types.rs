@@ -437,6 +437,12 @@ impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdCon
 
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
+pub struct JsReplayConfig {
+    pub max_age_ms: Option<u32>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
 pub struct JsVoiceAgentConfig {
     pub vad: Option<JsVadConfig>,
     pub events: Option<JsEventsConfig>,
@@ -445,6 +451,7 @@ pub struct JsVoiceAgentConfig {
     pub language_id: Option<JsLanguageIdConfig>,
     pub post_utterance_silence_ms: Option<u32>,
     pub noise_suppression: Option<JsNoiseSuppressionConfig>,
+    pub replay: Option<JsReplayConfig>,
 }
 
 impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
@@ -463,6 +470,12 @@ impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
             language_id: value.language_id.map(Into::into),
             post_utterance_silence_ms,
             noise_suppression: value.noise_suppression.map(Into::into).unwrap_or_default(),
+            replay: value
+                .replay
+                .map(|r| node_webrtc_rust_speech::stt_hold::ReplayConfig {
+                    max_age_ms: r.max_age_ms,
+                })
+                .unwrap_or_default(),
         }
     }
 }
@@ -504,6 +517,10 @@ pub enum JsSpeechEventType {
     SttConfigUpdated,
     #[napi(value = "tts_config_updated")]
     TtsConfigUpdated,
+    #[napi(value = "stt_hold_started")]
+    SttHoldStarted,
+    #[napi(value = "stt_hold_ended")]
+    SttHoldEnded,
 }
 
 #[napi(object)]
@@ -520,6 +537,32 @@ pub struct JsSpeechEvent {
     pub voice: Option<String>,
     pub model_path: Option<String>,
     pub endpoint: Option<String>,
+    pub hold_mode: Option<String>,
+    pub hold_outcome: Option<String>,
+    pub buffered_ms: Option<u32>,
+    pub dropped_ms: Option<u32>,
+}
+
+#[napi(string_enum)]
+#[derive(Debug)]
+pub enum JsSttHoldMode {
+    #[napi(value = "buffer_replay")]
+    BufferReplay,
+    #[napi(value = "first_utterance")]
+    FirstUtterance,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct JsBeginSttHoldOptions {
+    pub mode: JsSttHoldMode,
+    pub max_buffer_ms: Option<u32>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsReleaseSttHoldOptions {
+    pub replay: bool,
 }
 
 #[napi(object)]

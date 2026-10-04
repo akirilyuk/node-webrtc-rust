@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { VoiceAgent } from '../src/voice'
+import { SPEECH_EVENT_TYPE, VoiceAgent, type SpeechEvent } from '../src/voice'
 import { createVoiceLoopback, mockVoiceConfig } from './voice-helpers'
 
 describe('VoiceAgent', () => {
@@ -53,5 +53,41 @@ describe('VoiceAgent', () => {
 
     await agent.setSttEnabled(true)
     expect(await agent.sttEnabled()).toBe(true)
+  })
+
+  test('STT hold: begin/release/cancel lifecycle and events', async () => {
+    const { agentOut, userInbound, cleanup } = await createVoiceLoopback()
+    const agent = new VoiceAgent({
+      ...mockVoiceConfig,
+      events: { mode: 'callback' },
+      replay: { maxAgeMs: 30_000 },
+    })
+    const events: SpeechEvent[] = []
+    agent.on('speech', (event) => events.push(event))
+
+    await expect(agent.releaseSttHold({ replay: true })).rejects.toThrow(/no STT hold/)
+    await expect(agent.beginSttHold({ mode: 'buffer_replay' })).rejects.toThrow(/not running/)
+
+    await agent.attach({ inboundTrack: userInbound, outboundTrack: agentOut })
+    await agent.start()
+
+    await agent.beginSttHold({ mode: 'first_utterance', maxBufferMs: 5000 })
+    await expect(agent.beginSttHold({ mode: 'buffer_replay' })).rejects.toThrow(/already active/)
+    await expect(agent.replayLastUtterance()).rejects.toThrow(/STT hold/)
+    await agent.cancelSttHold()
+
+    await agent.beginSttHold({ mode: 'buffer_replay' })
+    await agent.releaseSttHold({ replay: false })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const started = events.filter((e) => e.type === SPEECH_EVENT_TYPE.sttHoldStarted)
+    const ended = events.filter((e) => e.type === SPEECH_EVENT_TYPE.sttHoldEnded)
+    expect(started.map((e) => e.holdMode)).toEqual(['first_utterance', 'buffer_replay'])
+    expect(ended.map((e) => e.holdOutcome)).toEqual(['cancelled', 'released_drop'])
+    expect(ended[1]?.bufferedMs).toBe(0)
+    expect(ended[1]?.droppedMs).toBe(0)
+
+    await agent.stop()
+    await cleanup()
   })
 })

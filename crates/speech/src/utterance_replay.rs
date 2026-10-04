@@ -64,6 +64,18 @@ impl UtteranceReplayBuffer {
         self.pcm.extend_from_slice(chunk);
     }
 
+    /// True between `begin_utterance` and `end_utterance`.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Marks the buffer unusable (replay unavailable until the next `begin_utterance`).
+    pub fn invalidate(&mut self) {
+        self.pcm.clear();
+        self.overflow = true;
+        self.active = false;
+    }
+
     pub fn overflowed(&self) -> bool {
         self.overflow
     }
@@ -92,7 +104,11 @@ impl UtteranceReplaySnapshot {
     }
 
     pub fn replayable(&self) -> bool {
-        !self.overflow && !self.pcm.is_empty() && self.age_ms() <= SPEECH_REPLAY_MAX_AGE_MS
+        self.replayable_within(SPEECH_REPLAY_MAX_AGE_MS)
+    }
+
+    pub fn replayable_within(&self, max_age_ms: u64) -> bool {
+        !self.overflow && !self.pcm.is_empty() && self.age_ms() <= max_age_ms
     }
 }
 

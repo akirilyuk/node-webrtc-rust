@@ -54,6 +54,7 @@ pub mod pcm;
 pub mod pipeline;
 pub mod registry;
 pub mod session_recorder;
+pub mod stt_hold;
 pub mod stt_pre_roll;
 pub mod tts_buffer;
 pub mod utterance_replay;

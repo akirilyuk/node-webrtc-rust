@@ -197,6 +197,8 @@ export interface VoiceAgentConfig {
   stt?: SttConfig
   tts?: TtsConfig
   languageId?: LanguageIdConfig
+  /** `replayLastUtterance()` tuning. */
+  replay?: ReplayConfig
   /** Trailing outbound silence after TTS (ms). Deploy JSON may set `tts.postUtteranceSilenceMs`. */
   postUtteranceSilenceMs?: number
   /**
@@ -251,6 +253,10 @@ export type SpeechEventType =
   | 'error'
   | 'stt_config_updated'
   | 'tts_config_updated'
+  /** {@link VoiceAgent.beginSttHold} accepted (`holdMode`, `bufferedMs`). */
+  | 'stt_hold_started'
+  /** STT hold finished (`holdOutcome`, `bufferedMs`, `droppedMs`). */
+  | 'stt_hold_ended'
   /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
   | 'voice_language_switching'
   /** Host coordinator: switch succeeded. */
@@ -280,6 +286,8 @@ export const SPEECH_EVENT_TYPE = {
   error: 'error',
   sttConfigUpdated: 'stt_config_updated',
   ttsConfigUpdated: 'tts_config_updated',
+  sttHoldStarted: 'stt_hold_started',
+  sttHoldEnded: 'stt_hold_ended',
   voiceLanguageSwitching: 'voice_language_switching',
   voiceLanguageChanged: 'voice_language_changed',
   voiceLanguageSwitchFailed: 'voice_language_switch_failed',
@@ -306,6 +314,44 @@ export interface SpeechEvent {
   voice?: string
   modelPath?: string
   endpoint?: string
+  /** `stt_hold_started`: the hold mode. */
+  holdMode?: SttHoldMode
+  /** `stt_hold_ended`: how the hold ended (`failed` also rejects the call that ended it). */
+  holdOutcome?: SttHoldOutcome
+  /** `stt_hold_started`: PCM already seeded from the open utterance; `stt_hold_ended`: PCM held at the end (ms). */
+  bufferedMs?: number
+  /** `stt_hold_ended`: PCM dropped by the buffer bound (oldest first) or by `first_utterance` (ms). */
+  droppedMs?: number
+}
+
+/** What {@link VoiceAgent.beginSttHold} keeps. */
+export type SttHoldMode = 'buffer_replay' | 'first_utterance'
+
+/** `holdOutcome` on `stt_hold_ended`. */
+export type SttHoldOutcome = 'released_replay' | 'released_drop' | 'cancelled' | 'failed'
+
+/** Options for {@link VoiceAgent.beginSttHold}. */
+export interface BeginSttHoldOptions {
+  /**
+   * `buffer_replay`: keep all user PCM that would have gone to STT, from the start of the
+   * utterance that triggered the hold until release. `first_utterance`: keep only that utterance;
+   * later speech is dropped (counted in `droppedMs`).
+   */
+  mode: SttHoldMode
+  /** Buffer bound in ms (oldest audio dropped first). Default 45000, capped at 120000. */
+  maxBufferMs?: number
+}
+
+/** Options for {@link VoiceAgent.releaseSttHold}. */
+export interface ReleaseSttHoldOptions {
+  /** Decode the held audio through the current (new) STT. `false` drops the buffer. */
+  replay: boolean
+}
+
+/** `replay` section of {@link VoiceAgentConfig}. */
+export interface ReplayConfig {
+  /** Max age (ms) of the last finalized utterance for `replayLastUtterance()`. Default 10000, capped at 120000. */
+  maxAgeMs?: number
 }
 
 /** Options for {@link VoiceAgent.updateTts}. */

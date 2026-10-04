@@ -33,7 +33,10 @@ One instance per WebRTC conversation (one inbound + one outbound audio track).
 | `speechEvents()`                          | Async iterator (`events.mode: 'stream'` or `'both'`). **Agent TTS events only on this agent’s stream** — not on the remote peer’s listener. |
 | `updateStt(config)`                     | Queue a new STT vendor config; applies at utterance boundary (or immediately when idle). See [Mid-session language / model switch](#mid-session-stttts-language-and-model-switch). |
 | `updateTts(config, options?)`           | Queue a new TTS vendor config before the next `sendTextToTTS` job; optional `cancelInflight`. Same section. |
-| `replayLastUtterance()`                 | Re-decode the last finalized utterance with the current STT after a swap. Same section. |
+| `replayLastUtterance()`                 | Re-decode the last finalized utterance with the current STT after a swap. Same section. Max age: `config.replay.maxAgeMs` (default 10 s, cap 120 s). |
+| `beginSttHold({ mode, maxBufferMs? })`  | Stop feeding/polling the current STT and buffer user audio while a slow STT swap (cold pool) completes. See [STT hold](#stt-hold-slow-stt-swap). |
+| `releaseSttHold({ replay })`            | After `updateStt`: decode the held audio through the new STT (`replay: true`) or drop it. Same section. |
+| `cancelSttHold()`                       | Switch failed: resume the old STT, feeding it the buffered audio. Same section. |
 
 ### Lifecycle
 
@@ -67,6 +70,8 @@ new VoiceAgent(config)
 | `user_language`        | LID (optional `languageId`)                  | **Detection only** — does not change STT/TTS; your app calls `updateStt` / `updateTts` if needed |
 | `stt_config_updated`   | After pending STT config is applied          | Confirm `language`, `modelPath`, `endpoint` on the active recognizer |
 | `tts_config_updated`   | After pending TTS config is applied            | Confirm `voice`, `modelPath`, `endpoint` on the active synthesizer |
+| `stt_hold_started`     | After `beginSttHold` accepted                  | `holdMode`, `bufferedMs` (audio of the open utterance already held); no transcript text |
+| `stt_hold_ended`       | After `releaseSttHold` / `cancelSttHold`       | `holdOutcome` (`released_replay` \| `released_drop` \| `cancelled` \| `failed`), `bufferedMs`, `droppedMs`; no transcript text |
 | `voice_language_switching` | Host coordinator (optional)              | UI “switching language…” — **not** emitted by `VoiceAgent` alone; typed for forwarded `speech_event` payloads |
 | `voice_language_changed`   | Host coordinator (optional)              | Switch succeeded (host metadata in `text` / `language`) |
 | `voice_language_switch_failed` | Host coordinator (optional)            | Switch rejected or vendor error (`error` may be set) |
@@ -172,6 +177,37 @@ Call **only when** no utterance is in progress (after the original final landed)
 | Buffer overflow / empty / too old | PCM was not retained — user must speak again |
 
 Full PCM + replay final behavior: Rust `cargo test -p node-webrtc-rust-speech replay_last_utterance`.
+
+**Replay window:** `replayLastUtterance()` refuses audio older than `replay.maxAgeMs` (constructor config, default 10000 ms, capped at 120000 ms; the PCM ring itself keeps at most 15 s per utterance). Raise it only when the host knows the swap can take longer; for swaps that take seconds use the STT hold below, which also covers speech that continues during the wait.
+
+### STT hold (slow STT swap)
+
+A cold STT pool can take 4–45 s to come up. During that time the old recognizer must not emit finals (they would be in the wrong language), and the user keeps talking. `beginSttHold` / `releaseSttHold` / `cancelSttHold` give the host that window.
+
+```text
+LID says "de" (or the agent asks for German)
+  → await agent.beginSttHold({ mode: 'buffer_replay' })      // stt_hold_started
+  → (host plays a wait message, starts the cold pool …)
+  → await agent.updateStt({ … German … })                     // pool ready
+  → await agent.releaseSttHold({ replay: true })              // held audio → new STT
+       → user_speech_final { replay: true, replacesUtteranceId }   then stt_hold_ended
+  // or, when the pool never came up:
+  → await agent.cancelSttHold()                               // old STT gets the audio back
+```
+
+| Behavior | Detail |
+| -------- | ------ |
+| After `beginSttHold` resolves | The current STT is not fed and not polled: **no** `user_speech_partial` / `user_speech_final` from the old model is emitted. VAD and `user_speaking_*` / `vad_triggered` / `stt_stream_*` / `user_stt_*` events keep flowing; STT-partial semantic barge-in is inactive (VAD barge-in still works). C1/C2 forced finals are suppressed. |
+| Where audio is held | In the native agent, in the same post-RNNoise mono 16 kHz stream that would have gone to STT (including the SpeechStart pre-roll). Silence between utterances is not stored. The utterance in progress is seeded from the utterance replay ring (up to 15 s). |
+| `buffer_replay` | Keeps everything until release, bounded by `maxBufferMs` (default 45000, cap 120000; values above the cap are clamped up to 120000 and values below 1 are clamped to 1 ms). When full, the oldest audio is dropped and counted in `droppedMs`. |
+| `first_utterance` | Keeps only the triggering utterance (the one open at `beginSttHold`, else the first one that starts). After it ends, later speech is dropped and counted in `droppedMs`. |
+| `releaseSttHold({ replay: true })` | Applies a still-queued `updateStt` config, then feeds the held audio to the new STT in order and finalizes it, emitting `user_speech_final` with `replay: true` (`replacesUtteranceId` = the original utterance when one existed). While the held audio is fed, live audio keeps being diverted into the same buffer; the hold is cleared atomically once the buffer is empty, so the order is held audio, then live audio, with no gap and no duplicate. If an utterance is still open at that moment, its final comes from the live path and carries `replay: true`. |
+| `releaseSttHold({ replay: false })` | Drops the buffer; the new STT only sees audio from now on. |
+| `cancelSttHold()` | Discards a queued `updateStt`, feeds the buffered audio to the old STT in order, and closes utterances that ended during the hold through the normal path (normal finals, `replay` not set). |
+| Errors | `beginSttHold` rejects if a hold is active or the agent is not running; `release`/`cancel` reject without an active hold. `replayLastUtterance()` rejects while held. A feed or finalize failure ends the hold with `holdOutcome: 'failed'` and rejects. The snapshot used by `replayLastUtterance()` is invalidated by a hold (speak again). |
+| Logging / events | `stt_hold_started` and `stt_hold_ended` carry counts only (`bufferedMs`, `droppedMs`, `holdMode`, `holdOutcome`), never transcript text. |
+
+`stop()` clears an active hold. Mock-vendor coverage: `cargo test -p node-webrtc-rust-speech --test stt_hold_test`.
 
 ### Host-level speech events (`voice_language_*`)
 

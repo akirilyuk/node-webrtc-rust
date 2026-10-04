@@ -230,6 +230,8 @@ LID says "de" (or the agent asks for German)
 
 ### `languageId.timing`
 
+`minSpeechMs` counts speech (VAD-voiced audio): pauses between words count; silence after the caller stops speaking does not. The classifier still receives the whole buffered audio.
+
 `languageId.timing` chooses when the identify runs:
 
 | `timing` | Behaviour | CPU |

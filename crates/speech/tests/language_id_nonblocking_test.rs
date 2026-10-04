@@ -1116,6 +1116,35 @@ fn agent_with_counting_lid_timing(
     allowlist: Option<Vec<String>>,
     timing: Option<LanguageIdTiming>,
 ) -> Arc<VoiceAgent> {
+    agent_with_counting_lid_timing_min(
+        stt_bytes,
+        lid_calls,
+        gate_stt,
+        continuous,
+        include_stt,
+        lid_languages,
+        allowlist,
+        timing,
+        200,
+        None,
+    )
+}
+
+/// Same as [`agent_with_counting_lid_timing`] with an explicit LID `min_speech_ms` and optional
+/// VAD `min_silence_duration_ms` override (to keep short pauses inside one utterance).
+#[allow(clippy::too_many_arguments)]
+fn agent_with_counting_lid_timing_min(
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_calls: Arc<AtomicUsize>,
+    gate_stt: bool,
+    continuous: Option<bool>,
+    include_stt: bool,
+    lid_languages: Vec<String>,
+    allowlist: Option<Vec<String>>,
+    timing: Option<LanguageIdTiming>,
+    min_speech_ms: u32,
+    min_silence_ms: Option<u32>,
+) -> Arc<VoiceAgent> {
     let factory = Arc::new(CountingLidTestFactory {
         stt_bytes: Arc::clone(&stt_bytes),
         lid_calls: Arc::clone(&lid_calls),
@@ -1135,6 +1164,9 @@ fn agent_with_counting_lid_timing(
     vad.gate_stt = gate_stt;
     if gate_stt {
         vad.stt_gate_hold_ms = 80;
+    }
+    if let Some(ms) = min_silence_ms {
+        vad.min_silence_duration_ms = ms;
     }
 
     let config = VoiceAgentConfig {
@@ -1162,7 +1194,7 @@ fn agent_with_counting_lid_timing(
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
             allowlist,
-            min_speech_ms: Some(200),
+            min_speech_ms: Some(min_speech_ms),
             continuous,
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms: None,
@@ -2854,4 +2886,152 @@ async fn one_outcome_per_utterance_in_all_timings() {
         assert_eq!(outcome.kind, expected, "timing={timing:?} frames={loud_frames}");
         agent.stop().await.unwrap();
     }
+}
+
+/// Agent with LID `min_speech_ms` = 1500 and a VAD that keeps silences shorter than
+/// `min_silence_ms` inside one utterance.
+fn voiced_min_agent(
+    timing: Option<LanguageIdTiming>,
+    lid_calls: Arc<AtomicUsize>,
+    min_silence_ms: u32,
+) -> Arc<VoiceAgent> {
+    agent_with_counting_lid_timing_min(
+        Arc::new(Mutex::new(0)),
+        lid_calls,
+        false,
+        None,
+        false,
+        vec!["en".into()],
+        None,
+        timing,
+        1500,
+        Some(min_silence_ms),
+    )
+}
+
+/// Feeds `segments` (`true` = loud speech frames, `false` = silence), then silence until the VAD
+/// closes the utterance; returns all events.
+async fn run_segments_events(
+    agent: &VoiceAgent,
+    rx: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+    segments: &[(bool, usize)],
+) -> Vec<node_webrtc_rust_speech::events::SpeechEvent> {
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    for (voiced, frames) in segments {
+        if *voiced {
+            drive_loud_frames(agent, &loud, *frames).await;
+        } else {
+            drive_silent_frames(agent, &silent, *frames).await;
+        }
+    }
+    // Close the utterance (well past the VAD silence window of every caller).
+    drive_silent_frames(agent, &silent, 90).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    drive_silent_frames(agent, &silent, 5).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drain_events(rx)
+}
+
+#[tokio::test]
+async fn early_timing_short_speech_with_long_trailing_silence_is_too_short() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = voiced_min_agent(Some(LanguageIdTiming::Early), Arc::clone(&lid_calls), 1500);
+    let mut rx = agent.subscribe_events();
+    // 800 ms speech + 1200 ms trailing silence: buffer is ~2000 ms but only ~800 ms is speech.
+    let events = run_segments_events(&agent, &mut rx, &[(true, 40), (false, 60)]).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::LanguageIdSkipped);
+    assert_eq!(outcome.reason.as_deref(), Some("too_short"));
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 0);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn end_of_utterance_timing_short_speech_with_trailing_silence_is_too_short() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = voiced_min_agent(None, Arc::clone(&lid_calls), 1500);
+    let mut rx = agent.subscribe_events();
+    let events = run_segments_events(&agent, &mut rx, &[(true, 40), (false, 60)]).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::LanguageIdSkipped);
+    assert_eq!(outcome.reason.as_deref(), Some("too_short"));
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 0);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_timing_identifies_once_voiced_reaches_min() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = voiced_min_agent(Some(LanguageIdTiming::Early), Arc::clone(&lid_calls), 600);
+    let mut rx = agent.subscribe_events();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    // 70 frames = 1400 ms of speech fed (< 1500 ms): no identify may have started.
+    drive_loud_frames(&agent, &loud, 70).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        0,
+        "identify must not start before 1500 ms of speech was fed"
+    );
+    // Feed up to 1600 ms of speech in total; the threshold is crossed within this window.
+    drive_loud_frames(&agent, &loud, 10).await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && lid_calls.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1);
+    drive_silent_frames(&agent, &silent, 50).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    drive_silent_frames(&agent, &silent, 5).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let events = drain_events(&mut rx);
+    assert_eq!(count_kind(&events, SpeechEventKind::UserLanguage), 1);
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1, "early mode identifies exactly once");
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn pauses_between_words_count_trailing_silence_does_not() {
+    // 700 ms speech + 400 ms pause + 700 ms speech: 1800 ms (gap counted) >= 1500 ms.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = voiced_min_agent(None, Arc::clone(&lid_calls), 600);
+    let mut rx = agent.subscribe_events();
+    let events =
+        run_segments_events(&agent, &mut rx, &[(true, 35), (false, 20), (true, 35)]).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::UserLanguage);
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1);
+    agent.stop().await.unwrap();
+
+    // 500 + 300 + 500: 1300 ms < 1500 ms (the long trailing silence is not counted).
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = voiced_min_agent(None, Arc::clone(&lid_calls), 600);
+    let mut rx = agent.subscribe_events();
+    let events =
+        run_segments_events(&agent, &mut rx, &[(true, 25), (false, 15), (true, 25)]).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.reason.as_deref(), Some("too_short"));
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 0);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_timing_does_not_identify_during_trailing_silence() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = voiced_min_agent(Some(LanguageIdTiming::Early), Arc::clone(&lid_calls), 1500);
+    let mut rx = agent.subscribe_events();
+    // 1000 ms speech, then trailing silence long enough to close the utterance.
+    let events = run_segments_events(&agent, &mut rx, &[(true, 50), (false, 80)]).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.reason.as_deref(), Some("too_short"));
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 0);
+    agent.stop().await.unwrap();
 }

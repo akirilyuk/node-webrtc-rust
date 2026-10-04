@@ -10,6 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **speech** — Language ID `minSpeechMs` now counts speech from the first to the last voiced frame (VAD), not the buffered audio length. Pauses between words count; silence after the caller stops speaking (endpoint tail, gate hold) no longer does, so a short utterance followed by silence no longer passes the threshold. `early` timing starts the identify only after `minSpeechMs` of actual speech.
 - **speech** — The final that follows `releaseSttHold({ replay: true })` is now flagged `replay` on every finalize path (vendor final, last-partial fallback, forced close), so hosts no longer treat it as a new utterance.
 
 ## [0.9.22] - 2026-10-04

@@ -247,6 +247,9 @@ pub struct VoiceAgent {
     tts_synthesis_wake: Arc<Notify>,
     tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_busy: Arc<AtomicBool>,
+    /// True from the moment the worker pops a job (under the queue lock) until it marks
+    /// `tts_synthesis_busy`. Closes the window in which a job is in neither the queue nor busy.
+    tts_job_dequeued: Arc<AtomicBool>,
     /// True while a non-interruptible job (`interruptible: false`) is synthesizing or playing.
     tts_protected_active: Arc<AtomicBool>,
     /// Woken when an in-flight LID identify task completes (STT close gate + TTS synthesis wait).
@@ -377,6 +380,7 @@ impl VoiceAgent {
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
             tts_generate_cancel: Arc::new(AtomicBool::new(false)),
             tts_protected_active: Arc::new(AtomicBool::new(false)),
+            tts_job_dequeued: Arc::new(AtomicBool::new(false)),
             tts_workers_shutdown: Arc::new(AtomicBool::new(false)),
             tts_workers_shutdown_wake: Arc::new(Notify::new()),
             tts_shutdown_unhealthy: Arc::new(AtomicBool::new(false)),
@@ -1131,6 +1135,7 @@ impl VoiceAgent {
             let agent_speaking = self.inner.lock().await.agent_speaking;
             let queued = self.tts_buffer.is_speaking().await;
             let synth_pending = !self.tts_synthesis_queue.lock().await.is_empty()
+                || self.tts_job_dequeued.load(Ordering::SeqCst)
                 || self.tts_synthesis_busy.load(Ordering::SeqCst);
             if !agent_speaking && !queued && !synth_pending {
                 voice_debug("wait_tts_playback_idle: playback idle");
@@ -1324,6 +1329,7 @@ impl VoiceAgent {
         let synthesis_epoch = Arc::clone(&self.tts_synthesis_epoch);
         let generate_cancel = Arc::clone(&self.tts_generate_cancel);
         let protected_active = Arc::clone(&self.tts_protected_active);
+        let job_dequeued = Arc::clone(&self.tts_job_dequeued);
         let shutdown = Arc::clone(&self.tts_workers_shutdown);
         let shutdown_wake = Arc::clone(&self.tts_workers_shutdown_wake);
         let alive = Arc::clone(&self.tts_worker_tasks_alive);
@@ -1355,7 +1361,13 @@ impl VoiceAgent {
                     }
                     let job = {
                         let mut pending = queue.lock().await;
-                        pending.pop_front()
+                        let job = pending.pop_front();
+                        // Mark while still holding the queue lock so idle checks never see the
+                        // job in neither the queue nor a busy/dequeued state.
+                        if job.is_some() {
+                            job_dequeued.store(true, Ordering::SeqCst);
+                        }
+                        job
                     };
                     let Some(job) = job else {
                         break;
@@ -1364,6 +1376,7 @@ impl VoiceAgent {
                     Self::await_in_flight_lid_before_tts(&weak_self, &inner, &lid_notify).await;
 
                     synthesis_busy.store(true, Ordering::SeqCst);
+                    job_dequeued.store(false, Ordering::SeqCst);
                     protected_active.store(!job.interruptible, Ordering::SeqCst);
                     let result = Self::run_tts_synthesis_job(
                         &job.text,
@@ -3476,6 +3489,9 @@ impl VoiceAgent {
         // Do not pad mid-utterance — that inserts silence and drops STT words.
         let mut frame_carry = tts_buffer.take_frame_carry().await;
 
+        // Popped chunks count as in flight until this pass is done writing them.
+        let drain_hold = tts_buffer.drain_hold();
+
         loop {
             let Some(chunk) = tts_buffer.pop_chunk().await else {
                 // Progressive synth may still be producing — wait for the next wake
@@ -3539,6 +3555,8 @@ impl VoiceAgent {
             }
         }
         tts_buffer.store_frame_carry(frame_carry).await;
+        // Everything this pass held has been written; agent_speaking (if any) carries idle state.
+        drop(drain_hold);
 
         if played_any && agent_start_emitted && !tts_buffer.is_producing().await {
             Self::end_agent_speaking_inner(inner, true).await;

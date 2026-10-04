@@ -285,3 +285,51 @@ async fn explicit_stop_cancels_protected_job() {
         "stop must end a protected job: played {played} of ~{expected_ms} ms"
     );
 }
+
+/// Idle must stay false from enqueue until the last frame of the last job is written: a
+/// blocking send (and `wait_tts_playback_idle`) may not return while audio is still owed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blocking_send_returns_only_after_all_audio_is_written() {
+    let (agent, written_ms) = make_agent().await;
+    let text = "hello there, this is a short mock utterance";
+    let expected_ms = mock_tts_duration_ms(text);
+
+    agent.send_text_to_tts(text).await.unwrap();
+    let played = *written_ms.lock().unwrap();
+    agent.stop().await.unwrap();
+    assert!(
+        played + 40 >= expected_ms,
+        "blocking send returned early: played {played} ms of ~{expected_ms} ms"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wait_idle_after_nonblocking_enqueues_covers_every_job() {
+    let (agent, written_ms) = make_agent().await;
+    let texts = [
+        "first short phrase",
+        "second short phrase",
+        "third short phrase",
+    ];
+    let expected_ms: u32 = texts.iter().map(|t| mock_tts_duration_ms(t)).sum();
+
+    for text in texts {
+        agent
+            .send_text_to_tts_with_options(
+                text,
+                SendTextToTtsOptions {
+                    non_blocking: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    agent.wait_tts_playback_idle().await.unwrap();
+    let played = *written_ms.lock().unwrap();
+    agent.stop().await.unwrap();
+    assert!(
+        played + 60 >= expected_ms,
+        "wait_tts_playback_idle returned early: played {played} ms of ~{expected_ms} ms"
+    );
+}

@@ -43,6 +43,7 @@ describe('language_id_skipped speech events', () => {
       event: 'language_id_skipped',
       reason: 'too_short',
       speechMs: 120,
+      utteranceId: 'utt-1',
       ts: undefined,
     })
   })
@@ -52,5 +53,46 @@ describe('language_id_skipped speech events', () => {
     expect(speechEventToControlMessage({ type: 'language_id_skipped', reason }).reason).toBe(
       'undetermined',
     )
+  })
+})
+
+describe('stt hold fields on the wire', () => {
+  test('stt_hold_started carries holdMode and bufferedMs', () => {
+    const msg = speechEventToControlMessage({
+      type: 'stt_hold_started',
+      holdMode: 'buffer_replay',
+      bufferedMs: 320,
+    })
+    expect(msg.holdMode).toBe('buffer_replay')
+    expect(msg.bufferedMs).toBe(320)
+  })
+
+  test('stt_hold_ended carries holdOutcome, bufferedMs and droppedMs', () => {
+    const msg = speechEventToControlMessage({
+      type: 'stt_hold_ended',
+      holdOutcome: 'released_replay',
+      bufferedMs: 900,
+      droppedMs: 40,
+    })
+    expect(msg.holdOutcome).toBe('released_replay')
+    expect(msg.bufferedMs).toBe(900)
+    expect(msg.droppedMs).toBe(40)
+  })
+
+  test('utterance and replay fields are forwarded', () => {
+    const msg = speechEventToControlMessage({
+      type: 'user_speech_final',
+      text: 'hi',
+      utteranceId: 'u2',
+      replay: true,
+      replacesUtteranceId: 'u1',
+      languageMismatch: true,
+    })
+    expect(msg).toMatchObject({
+      utteranceId: 'u2',
+      replay: true,
+      replacesUtteranceId: 'u1',
+      languageMismatch: true,
+    })
   })
 })

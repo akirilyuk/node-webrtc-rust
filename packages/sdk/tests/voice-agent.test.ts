@@ -84,7 +84,10 @@ describe('VoiceAgent', () => {
     const ended = events.filter((e) => e.type === SPEECH_EVENT_TYPE.sttHoldEnded)
     expect(started.map((e) => e.holdMode)).toEqual(['first_utterance', 'buffer_replay'])
     expect(ended.map((e) => e.holdOutcome)).toEqual(['cancelled', 'released_drop'])
-    expect(ended[1]?.bufferedMs).toBe(0)
+    // Live loopback PCM may land between begin and release, so the held amount is not
+    // deterministic; it must be a whole number of 20 ms frames and nothing is dropped.
+    expect(ended[1]?.bufferedMs).toBeGreaterThanOrEqual(0)
+    expect((ended[1]?.bufferedMs ?? 1) % 20).toBe(0)
     expect(ended[1]?.droppedMs).toBe(0)
 
     await agent.stop()

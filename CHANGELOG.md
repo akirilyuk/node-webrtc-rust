@@ -8,6 +8,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.26] - 2026-10-06
+
+### Fixed
+
+- **sherpa-tts** — A synthesis cancelled by barge-in, flush or a dropped client is no longer stored in the phrase cache, so the next play of the same text is not truncated.
+- **speech** — TTS audio reaches the sink in chunks of at most 1 s, and the cluster speech clients accept messages up to 16 MiB, so utterances longer than about 22 s no longer exceed the gRPC message limit.
+- **cluster-speech** — STT audio is never dropped when the speech service is slow. Queued audio is reported through `decode_backlog_ms()` and `stt_queued_ms_total()`, with warnings at 2 s and 10 s behind, and finalize waits for the backlog.
+- **speech** — The language-ID buffer is capped at twice `lidMaxClipMs` instead of growing while speech stays open.
+- **speech** — A `VoiceAgent` dropped without `stop()` is now freed with its STT session, TTS provider and buffers.
+
+### Added
+
+- `start:roundtrip-load` (full-stack Sherpa load roundtrip with a capacity mode) and `start:roundtrip-barge-replay` in the local Sherpa example.
+
 ## [0.9.25] - 2026-10-05
 
 ### Fixed

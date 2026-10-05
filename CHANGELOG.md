@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.25] - 2026-10-05
+
 ### Fixed
 
 - **speech** — fix(speech): `replayLastUtterance` and `updateStt` no longer blocked after agent TTS playback ends (stale finalize-pending state).

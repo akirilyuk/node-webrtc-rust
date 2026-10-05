@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,10 +19,17 @@ use tonic::Request;
 use crate::channel::{
     resolve_speech_token, resolve_stt_endpoint, stt_channel, MAX_GRPC_MESSAGE_BYTES,
 };
-use crate::metrics::inc_stt_reopen;
+use crate::metrics::{add_stt_queued_bytes, inc_stt_reopen, sub_stt_queued_bytes};
 
 const COALESCE_MAX_BYTES: usize = 1920;
-const AUDIO_QUEUE_CAP: usize = 256;
+/// 16 kHz mono s16le: 32 bytes per millisecond.
+const STT_BYTES_PER_MS: usize = 32;
+/// First queued-audio warning per utterance.
+const QUEUED_WARN_MS: usize = 2_000;
+/// Error-level queued-audio line per utterance.
+const QUEUED_ERROR_MS: usize = 10_000;
+/// Upper bound of the finalize wait added for audio still queued behind the pod.
+const FINALIZE_QUEUED_WAIT_CAP_MS: usize = 30_000;
 const READY_WAIT_MS: u64 = 15_000;
 const FINALIZE_WAIT_MS: u64 = 2_000;
 /// While the open is denied, print a progress line at most this often.
@@ -115,12 +123,32 @@ pub struct ClusterSherpaStt {
     token: Option<String>,
     session_ctx: Arc<Mutex<Option<VoiceSessionContext>>>,
     inner: Arc<Mutex<ClusterSherpaSttInner>>,
+    /// Bytes handed to the stream worker and not yet written to the pod (this session).
+    queued_bytes: Arc<AtomicUsize>,
+    queued_warned: AtomicBool,
+    queued_error_logged: AtomicBool,
+}
+
+/// Subtract `n` from `counter` without wrapping; returns what was actually removed.
+fn sub_queued_saturating(counter: &AtomicUsize, n: usize) -> usize {
+    let mut removed = 0;
+    let _ = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
+        removed = n.min(cur);
+        Some(cur - removed)
+    });
+    removed
+}
+
+/// Drop whatever this session still had queued (stream ended or stopped).
+fn clear_queued(counter: &AtomicUsize) {
+    let left = counter.swap(0, Ordering::SeqCst);
+    sub_stt_queued_bytes(left);
 }
 
 struct ClusterSherpaSttInner {
     running: bool,
     transcript_rx: Option<mpsc::UnboundedReceiver<SttTranscript>>,
-    cmd_tx: Option<mpsc::Sender<StreamCommand>>,
+    cmd_tx: Option<mpsc::UnboundedSender<StreamCommand>>,
     stream_task: Option<JoinHandle<()>>,
     /// `true` once the current stream received `Ready`; `false` while (re)opening or after exit.
     ready_rx: Option<watch::Receiver<bool>>,
@@ -148,6 +176,9 @@ impl ClusterSherpaStt {
                 utterance_active: false,
                 mid_utterance_failure: None,
             })),
+            queued_bytes: Arc::new(AtomicUsize::new(0)),
+            queued_warned: AtomicBool::new(false),
+            queued_error_logged: AtomicBool::new(false),
         })
     }
 
@@ -157,12 +188,13 @@ impl ClusterSherpaStt {
             return Ok(());
         }
         let (transcript_tx, transcript_rx) = mpsc::unbounded_channel();
-        let (cmd_tx, cmd_rx) = mpsc::channel(AUDIO_QUEUE_CAP);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let cfg = self.cfg.clone();
         let endpoint = self.endpoint.clone();
         let token = self.token.clone();
         let session_ctx = Arc::clone(&self.session_ctx);
         let (ready_tx, ready_rx) = watch::channel(false);
+        let queued_bytes = Arc::clone(&self.queued_bytes);
         let task = tokio::spawn(async move {
             stream_worker(
                 cfg,
@@ -172,8 +204,10 @@ impl ClusterSherpaStt {
                 cmd_rx,
                 transcript_tx,
                 &ready_tx,
+                Arc::clone(&queued_bytes),
             )
             .await;
+            clear_queued(&queued_bytes);
             ready_tx.send_replace(false);
         });
         inner.ready_rx = Some(ready_rx);
@@ -200,15 +234,30 @@ impl ClusterSherpaStt {
             let Some(cmd_tx) = inner.cmd_tx.as_ref() else {
                 return Ok(());
             };
-            match cmd_tx.try_send(StreamCommand::Audio(pcm)) {
-                Ok(()) => Ok(()),
-                Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
-                Err(mpsc::error::TrySendError::Closed(_)) => Err(SpeechError::Vendor {
+            let len = pcm.len();
+            self.queued_bytes.fetch_add(len, Ordering::SeqCst);
+            add_stt_queued_bytes(len);
+            if cmd_tx.send(StreamCommand::Audio(pcm)).is_err() {
+                let removed = sub_queued_saturating(&self.queued_bytes, len);
+                sub_stt_queued_bytes(removed);
+                return Err(SpeechError::Vendor {
                     vendor: "cluster-sherpa".into(),
                     message: "STT stream closed".into(),
-                }),
+                });
             }
         }
+        let queued_ms = self.queued_bytes.load(Ordering::SeqCst) / STT_BYTES_PER_MS;
+        if queued_ms >= QUEUED_WARN_MS && !self.queued_warned.swap(true, Ordering::SeqCst) {
+            eprintln!(
+                "[cluster-sherpa] stt audio queued {queued_ms} ms behind the speech pod; pool needs more capacity"
+            );
+        }
+        if queued_ms >= QUEUED_ERROR_MS && !self.queued_error_logged.swap(true, Ordering::SeqCst) {
+            eprintln!(
+                "[cluster-sherpa] ERROR stt audio queued {queued_ms} ms behind the speech pod"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -217,9 +266,10 @@ async fn stream_worker(
     endpoint: String,
     token: Option<String>,
     session_ctx: Arc<Mutex<Option<VoiceSessionContext>>>,
-    mut cmd_rx: mpsc::Receiver<StreamCommand>,
+    mut cmd_rx: mpsc::UnboundedReceiver<StreamCommand>,
     transcript_tx: mpsc::UnboundedSender<SttTranscript>,
     ready_tx: &watch::Sender<bool>,
+    queued_bytes: Arc<AtomicUsize>,
 ) {
     let mut pending_finalize: Option<Arc<Notify>> = None;
     let mut reopen = true;
@@ -304,7 +354,10 @@ async fn stream_worker(
                                     pcm_s16le: pcm.to_vec(),
                                 })),
                             };
-                            if req_tx.send(audio).await.is_err() {
+                            let sent = req_tx.send(audio).await;
+                            let removed = sub_queued_saturating(&queued_bytes, pcm.len());
+                            sub_stt_queued_bytes(removed);
+                            if sent.is_err() {
                                 break;
                             }
                         }
@@ -430,11 +483,12 @@ impl SttProvider for ClusterSherpaStt {
         let mut inner = self.inner.lock().await;
         inner.running = false;
         if let Some(tx) = inner.cmd_tx.take() {
-            let _ = tx.send(StreamCommand::Stop).await;
+            let _ = tx.send(StreamCommand::Stop);
         }
         if let Some(task) = inner.stream_task.take() {
             let _ = task.await;
         }
+        clear_queued(&self.queued_bytes);
         inner.transcript_rx = None;
         Ok(())
     }
@@ -479,21 +533,26 @@ impl SttProvider for ClusterSherpaStt {
         Ok(ready)
     }
 
+    fn decode_backlog_ms(&self) -> u32 {
+        (self.queued_bytes.load(Ordering::SeqCst) / STT_BYTES_PER_MS) as u32
+    }
+
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         self.flush_pending_audio(true).await?;
+        let queued_ms_at_call = self.queued_bytes.load(Ordering::SeqCst) / STT_BYTES_PER_MS;
         let notify = Arc::new(Notify::new());
         let cmd_tx = self.inner.lock().await.cmd_tx.clone();
         if let Some(tx) = cmd_tx {
-            let _ = tx
-                .send(StreamCommand::Finalize {
-                    done: Arc::clone(&notify),
-                })
-                .await;
+            let _ = tx.send(StreamCommand::Finalize {
+                done: Arc::clone(&notify),
+            });
         }
-        let wait_ms = std::env::var("SPEECH_STT_FINALIZE_WAIT_MS")
+        let base_wait_ms: u64 = std::env::var("SPEECH_STT_FINALIZE_WAIT_MS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(FINALIZE_WAIT_MS);
+        // The Finalize command sits behind any audio still queued for the pod.
+        let wait_ms = base_wait_ms + queued_ms_at_call.min(FINALIZE_QUEUED_WAIT_CAP_MS) as u64;
         let waited = tokio::time::timeout(Duration::from_millis(wait_ms), notify.notified())
             .await
             .is_ok();
@@ -504,6 +563,8 @@ impl SttProvider for ClusterSherpaStt {
             let mut inner = self.inner.lock().await;
             inner.utterance_active = false;
         }
+        self.queued_warned.store(false, Ordering::SeqCst);
+        self.queued_error_logged.store(false, Ordering::SeqCst);
         Ok(())
     }
 }

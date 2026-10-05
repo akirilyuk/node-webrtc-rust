@@ -2,6 +2,8 @@ import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import { describe, expect, it } from 'vitest'
 
 import {
+  agentSpeakingDurationMs,
+  evaluateBargeReplayDurations,
   evaluateBargeUtteranceFinal,
   evaluateSemanticBargeEventOrder,
   evaluateSttLifecycleOnBargePath,
@@ -258,5 +260,66 @@ describe('roundtrip-barge-in helpers', () => {
     const result = evaluateNoPartialWithoutFinal({ events, label: 'Phase 3' })
     expect(result.passed).toBe(false)
     expect(result.failures.some((f) => f.includes('orphan partial'))).toBe(true)
+  })
+})
+
+describe('agentSpeakingDurationMs', () => {
+  it('measures first agent_speaking_start to the following agent_speaking_end', () => {
+    expect(
+      agentSpeakingDurationMs([
+        { type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 100 },
+        { type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 4100 },
+      ]),
+    ).toBe(4000)
+  })
+
+  it('returns null without a start or without an end', () => {
+    expect(agentSpeakingDurationMs([])).toBeNull()
+    expect(
+      agentSpeakingDurationMs([{ type: SPEECH_EVENT_TYPE.agentSpeakingStart, atMs: 1 }]),
+    ).toBeNull()
+    expect(
+      agentSpeakingDurationMs([{ type: SPEECH_EVENT_TYPE.agentSpeakingEnd, atMs: 1 }]),
+    ).toBeNull()
+  })
+})
+
+describe('evaluateBargeReplayDurations', () => {
+  it('passes when barged is short and the replay matches the reference', () => {
+    const result = evaluateBargeReplayDurations({
+      dRefMs: 12_000,
+      dBargedMs: 3_000,
+      dReplayMs: 12_100,
+    })
+    expect(result.passed).toBe(true)
+  })
+
+  it('fails when the replay is truncated (cancelled synthesis was cached)', () => {
+    const result = evaluateBargeReplayDurations({
+      dRefMs: 12_000,
+      dBargedMs: 3_000,
+      dReplayMs: 6_200,
+    })
+    expect(result.passed).toBe(false)
+    expect(result.failures.some((f) => f.includes('replay after barge is truncated'))).toBe(true)
+  })
+
+  it('fails when the barge did not shorten playback', () => {
+    const result = evaluateBargeReplayDurations({
+      dRefMs: 12_000,
+      dBargedMs: 11_000,
+      dReplayMs: 12_000,
+    })
+    expect(result.passed).toBe(false)
+    expect(result.failures.some((f) => f.includes('barge did not truncate'))).toBe(true)
+  })
+
+  it('fails when a duration is missing', () => {
+    const result = evaluateBargeReplayDurations({
+      dRefMs: 12_000,
+      dBargedMs: null,
+      dReplayMs: 12_000,
+    })
+    expect(result.passed).toBe(false)
   })
 })

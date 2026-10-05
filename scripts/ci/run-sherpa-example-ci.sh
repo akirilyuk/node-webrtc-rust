@@ -63,6 +63,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-tts-stream
   start:roundtrip-load-ci
   start:roundtrip
+  start:roundtrip-barge-replay
 )
 
 ensure_ts_dist() {
@@ -127,6 +128,14 @@ run_rust_ignored() {
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust tts_stream_chunks_integration_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_stream_chunks_integration_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust tts_cancel_not_cached_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_cancel_not_cached_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust tts_sink_chunks_bounded_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_sink_chunks_bounded_test -- \
       --ignored --nocapture --test-threads=1
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust lid_stt_parallel_test --ignored" -- \

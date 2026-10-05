@@ -13,7 +13,7 @@ use node_webrtc_rust_vendor_cluster_speech::{
     inc_stt_reopen, stt_reopen_total, ClusterSherpaStt, ClusterSherpaTts,
 };
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 
 fn stt_cfg(endpoint: &str) -> SttConfig {
     SttConfig {
@@ -253,5 +253,66 @@ async fn cluster_stt_drop_without_stop_closes_streams() {
         open, 0,
         "server-side transcribe streams still open after 300 drop-without-stop cycles: {open}"
     );
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn tts_accepts_message_over_default_limit() {
+    // B3: a single 6 MB message exceeds tonic's 4 MiB default decode limit. A cached replay of
+    // a long phrase (or a long single sentence on first play) arrives as one such message.
+    assert_single_message_intact(6_000_000).await;
+}
+
+#[tokio::test]
+async fn cluster_stt_never_drops_audio_when_server_stalls() {
+    // B4: when the server stops reading, `push_audio` must neither block inbound processing nor
+    // drop audio once the client queue is full. The backlog must be visible, and every byte must
+    // reach the server after it resumes.
+    const FRAMES: usize = 2000;
+    const FRAME_BYTES: usize = 1920;
+    let state = MockSpeechState::default();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = ClusterSherpaStt::new(&stt_cfg(&url)).unwrap();
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+
+    state.pause_reading.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    for i in 0..FRAMES {
+        stt.push_audio(Bytes::from(vec![0_u8; FRAME_BYTES]))
+            .await
+            .unwrap_or_else(|e| panic!("push_audio #{i} failed: {e}"));
+    }
+    let push_elapsed = started.elapsed();
+    assert!(
+        push_elapsed < Duration::from_secs(2),
+        "pushing {FRAMES} frames took {push_elapsed:?} (>= 2 s): push_audio blocks inbound processing"
+    );
+
+    let backlog_ms = stt.decode_backlog_ms();
+    assert!(
+        backlog_ms >= 1000,
+        "decode_backlog_ms() = {backlog_ms} while the server is stalled (expected >= 1000)"
+    );
+
+    state.pause_reading.store(false, Ordering::SeqCst);
+    state.resume_reading.notify_waiters();
+    stt.finalize_utterance().await.unwrap();
+
+    let expected = FRAMES * FRAME_BYTES;
+    let mut received = state.audio_bytes_received.load(Ordering::SeqCst);
+    for _ in 0..1000 {
+        if received == expected {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+        received = state.audio_bytes_received.load(Ordering::SeqCst);
+    }
+    assert_eq!(
+        received, expected,
+        "server received {received} of {expected} audio bytes ({} bytes dropped)",
+        expected.saturating_sub(received)
+    );
+    stt.stop().await.unwrap();
     let _ = shutdown.send(());
 }

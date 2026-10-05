@@ -102,7 +102,6 @@ async fn churn_start_stop_releases_workers_and_writer() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "red: VoiceAgent still strongly referenced 2 s after last Arc dropped without stop() (cycle 0)"]
 async fn churn_drop_without_stop_releases_agent() {
     let probe = Arc::new(());
     let frame = tone_frame();

@@ -648,6 +648,24 @@ Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-i
 
 Success: `Semantic barge-in E2E OK — tone ignored, spoken phrase interrupted agent TTS.`
 
+## Barge-in replay (B2) — `start:roundtrip-barge-replay`
+
+[`src/roundtrip-barge-replay.ts`](./src/roundtrip-barge-replay.ts) — a barge-in must not poison the TTS phrase cache. A cancelled synthesis used to be stored under the full text, so the next identical phrase played truncated (and, on the cluster path, for every later session of that project).
+
+The phrase is four sentences plus ` Run <nonce>.` (`nonce = Date.now()`), so it is never cached before the run. `d(agent)` is the time from `agent_speaking_start` to `agent_speaking_end` for one `sendTextToTTS` call.
+
+| Phase | Agent / cache scope                              | Action                                                        | Measured |
+| ----- | ------------------------------------------------ | ------------------------------------------------------------- | -------- |
+| R     | user-leg agent, `projectId = ref-<nonce>`        | speaks P, no barge                                            | `dRef`   |
+| A     | main agent, `projectId = p1-<nonce>`             | speaks P; user leg says "stop now please" 1500 ms after start | `dA`     |
+| B     | main agent, `projectId = p1-<nonce>` (same as A) | speaks P again, no barge                                      | `dB`     |
+
+Pass: `dA < 0.5 x dRef` (the barge happened) and `dB >= 0.85 x dRef` (the replay is complete). All three durations are printed on one `Barge replay:` line. Duration logic: `agentSpeakingDurationMs` and `evaluateBargeReplayDurations` in [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) (Vitest in `roundtrip-barge-in.test.ts`). The crate-level counterpart is `crates/vendor-sherpa-onnx/tests/tts_cancel_not_cached_test.rs`.
+
+```bash
+npm run start:roundtrip-barge-replay --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
 ## What each roundtrip catches (confidence matrix)
 
 Passing **unit tests alone** (`npm run test:roundtrip-counting`) does **not** run Sherpa — it only checks evaluators. For release confidence, run **native build + these E2E scripts** (with models):

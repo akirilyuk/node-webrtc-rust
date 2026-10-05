@@ -33,6 +33,12 @@ pub struct MockSpeechState {
     pub synthesize_single_message_bytes: Arc<AtomicUsize>,
     /// Currently open `transcribe` calls (server side). Decremented when the call's work ends.
     pub open_transcribe_streams: Arc<AtomicIsize>,
+    /// While `true`, the `transcribe` handler stops reading inbound messages (stalled server).
+    pub pause_reading: Arc<AtomicBool>,
+    /// Wakes a handler parked on `pause_reading`. Set the flag to `false`, then `notify_waiters`.
+    pub resume_reading: Arc<tokio::sync::Notify>,
+    /// Sum of `SttAudio.pcm_s16le.len()` over every audio message the server read.
+    pub audio_bytes_received: Arc<AtomicUsize>,
 }
 
 /// Decrements `open_transcribe_streams` when dropped (end of the call's spawned task).
@@ -95,11 +101,29 @@ impl Speech for MockSpeech {
                 }))
                 .await;
             let mut utterance_open = false;
-            while let Ok(Some(req)) = inbound.message().await {
+            loop {
+                // Stalled-server mode: do not read the next inbound message while paused.
+                // `enable()` registers the waiter before the flag check, so a resume that lands
+                // in between is not lost.
+                loop {
+                    let notified = state.resume_reading.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if !state.pause_reading.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    notified.await;
+                }
+                let Ok(Some(req)) = inbound.message().await else {
+                    break;
+                };
                 match req.msg {
                     Some(transcribe_request::Msg::Audio(SttAudio { pcm_s16le })) => {
                         utterance_open = true;
                         state.audio_frames.fetch_add(1, Ordering::SeqCst);
+                        state
+                            .audio_bytes_received
+                            .fetch_add(pcm_s16le.len(), Ordering::SeqCst);
                         if state.error_on_audio.load(Ordering::SeqCst) {
                             let _ = tx
                                 .send(Ok(TranscribeResponse {

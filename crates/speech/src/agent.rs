@@ -1380,6 +1380,12 @@ impl VoiceAgent {
         self.lid_gate_bound_hits.load(Ordering::SeqCst)
     }
 
+    /// LID PCM buffer length in bytes (tests).
+    #[doc(hidden)]
+    pub async fn lid_buffer_len(&self) -> usize {
+        self.inner.lock().await.lid_pcm_buffer.len()
+    }
+
     async fn ensure_tts_synthesis_worker(&self) {
         if self.tts_workers_shutdown.load(Ordering::SeqCst) {
             return;

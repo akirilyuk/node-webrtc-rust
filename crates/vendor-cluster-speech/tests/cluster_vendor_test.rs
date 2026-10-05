@@ -2,7 +2,7 @@
 
 mod mock_server;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -187,5 +187,71 @@ async fn stt_wait_ready_resolves_once_stream_is_open() {
     stt.start().await.unwrap();
     assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
     stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+async fn assert_single_message_intact(n: usize) {
+    let state = MockSpeechState {
+        synthesize_single_message_bytes: Arc::new(AtomicUsize::new(n)),
+        ..MockSpeechState::default()
+    };
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let tts = ClusterSherpaTts::new(&tts_cfg(&url)).unwrap();
+    let chunks = tts
+        .synthesize("large single message")
+        .await
+        .unwrap_or_else(|e| panic!("synthesize with {n}-byte single message failed: {e}"));
+    let mut pcm = Vec::new();
+    for chunk in &chunks {
+        pcm.extend_from_slice(chunk.pcm.as_ref());
+    }
+    assert_eq!(pcm.len(), n, "received PCM length");
+    let expected: Vec<u8> = (0..n).map(|i| (i % 251) as u8).collect();
+    assert!(
+        pcm == expected,
+        "received PCM bytes differ from the pattern"
+    );
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn tts_receives_1mib_single_message_intact() {
+    assert_single_message_intact(1_048_576).await;
+}
+
+#[tokio::test]
+async fn tts_receives_4mb_single_message_intact() {
+    // Just under tonic's 4 MiB default decode limit.
+    assert_single_message_intact(4_000_000).await;
+}
+
+#[tokio::test]
+async fn cluster_stt_drop_without_stop_closes_streams() {
+    let state = MockSpeechState::default();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    for cycle in 0..300 {
+        let mut stt = ClusterSherpaStt::new(&stt_cfg(&url)).unwrap();
+        stt.start().await.unwrap();
+        assert!(
+            stt.wait_ready(Duration::from_secs(5)).await.unwrap(),
+            "cycle {cycle}: stream never became ready"
+        );
+        for _ in 0..10 {
+            stt.push_audio(Bytes::from(vec![0_u8; 1920])).await.unwrap();
+        }
+        drop(stt);
+    }
+    let mut open = state.open_transcribe_streams.load(Ordering::SeqCst);
+    for _ in 0..500 {
+        if open == 0 {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+        open = state.open_transcribe_streams.load(Ordering::SeqCst);
+    }
+    assert_eq!(
+        open, 0,
+        "server-side transcribe streams still open after 300 drop-without-stop cycles: {open}"
+    );
     let _ = shutdown.send(());
 }

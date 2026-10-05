@@ -139,6 +139,14 @@ run_rust_ignored() {
     "sherpa rust stt_pre_roll_onset_replay_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stt_pre_roll_onset_replay_test -- \
       --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust stt_concurrent_equals_serial_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stt_concurrent_equals_serial_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust session_churn_pool_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test session_churn_pool_test -- \
+      --ignored --nocapture --test-threads=1
 }
 
 run_e2e() {

@@ -1,6 +1,6 @@
 //! In-process tonic `Speech` mock (no ONNX) for cluster-sherpa vendor tests.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -28,6 +28,27 @@ pub struct MockSpeechState {
     /// First inbound audio emits leftover empty `is_final` (dedicated speech-service class).
     pub leftover_empty_final_on_first_audio: Arc<AtomicBool>,
     pub leftover_empty_emitted: Arc<AtomicUsize>,
+    /// `0` = default behaviour (two small chunks). `> 0` = `synthesize` sends exactly one
+    /// `SynthesizeResponse` carrying this many PCM bytes, then a terminal empty `last` message.
+    pub synthesize_single_message_bytes: Arc<AtomicUsize>,
+    /// Currently open `transcribe` calls (server side). Decremented when the call's work ends.
+    pub open_transcribe_streams: Arc<AtomicIsize>,
+}
+
+/// Decrements `open_transcribe_streams` when dropped (end of the call's spawned task).
+struct OpenStreamGuard(Arc<AtomicIsize>);
+
+impl OpenStreamGuard {
+    fn new(counter: &Arc<AtomicIsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(counter))
+    }
+}
+
+impl Drop for OpenStreamGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 pub struct MockSpeech {
@@ -63,7 +84,9 @@ impl Speech for MockSpeech {
         let mut inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(32);
         let state = self.state.clone();
+        let open_guard = OpenStreamGuard::new(&self.state.open_transcribe_streams);
         tokio::spawn(async move {
+            let _open_guard = open_guard;
             let _ = tx
                 .send(Ok(TranscribeResponse {
                     msg: Some(transcribe_response::Msg::Ready(SttReady {
@@ -171,6 +194,30 @@ impl Speech for MockSpeech {
         self.state.synthesize_calls.fetch_add(1, Ordering::SeqCst);
         let text = request.into_inner().text;
         let (tx, rx) = mpsc::channel(4);
+        let single_bytes = self
+            .state
+            .synthesize_single_message_bytes
+            .load(Ordering::SeqCst);
+        if single_bytes > 0 {
+            let n = single_bytes;
+            tokio::spawn(async move {
+                let _ = tx
+                    .send(Ok(SynthesizeResponse {
+                        pcm_s16le: (0..n).map(|i| (i % 251) as u8).collect(),
+                        duration_ms: (n / 192) as u32,
+                        last: false,
+                    }))
+                    .await;
+                let _ = tx
+                    .send(Ok(SynthesizeResponse {
+                        pcm_s16le: vec![],
+                        duration_ms: 0,
+                        last: true,
+                    }))
+                    .await;
+            });
+            return Ok(Response::new(ReceiverStream::new(rx)));
+        }
         let pcm_len = text.len().max(4) * 80;
         let _ = tx
             .send(Ok(SynthesizeResponse {

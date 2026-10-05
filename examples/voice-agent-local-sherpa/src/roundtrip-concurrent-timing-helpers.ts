@@ -28,6 +28,16 @@ export function evaluateConcurrentWindow(
   return { passed: failures.length === 0, spreadMs, failures }
 }
 
+/** Distinct phrases — keyword is a token Sherpa usually preserves (not always NATO). */
+export const LEG_CATALOG = [
+  { phrase: 'alpha one two three', keyword: 'alpha' },
+  { phrase: 'bravo four five six', keyword: 'four' },
+  { phrase: 'delta seven eight nine', keyword: 'delta' },
+  { phrase: 'echo ten eleven twelve', keyword: 'ten' },
+  { phrase: 'foxtrot thirteen fourteen fifteen', keyword: 'thirteen' },
+  { phrase: 'golf sixteen seventeen eighteen', keyword: 'sixteen' },
+] as const
+
 /**
  * Known Sherpa STT confusions for concurrent-roundtrip keywords.
  * Keys and values are matched after {@link normalizeForKeyword}.
@@ -35,6 +45,8 @@ export function evaluateConcurrentWindow(
 const KEYWORD_ALIASES: Record<string, readonly string[]> = {
   // "delta" often lands as "belta" / "belt a" under concurrent TTS crosstalk.
   delta: ['belta', 'belt a'],
+  // "four" and "for" are homophones; STT cannot tell them apart (test.wrong-oracle).
+  four: ['for'],
 }
 
 export function finalContainsKeyword(finalText: string, keyword: string): boolean {

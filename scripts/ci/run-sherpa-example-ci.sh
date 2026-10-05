@@ -34,6 +34,10 @@ sherpa_roundtrip_timeout_sec() {
     start:roundtrip-counting-echo | start:roundtrip-counting-echo-lid | start:roundtrip)
       echo "${CI_SHERPA_LONG_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
+    start:roundtrip-load-ci)
+      # 4 concurrent legs x 2 turns; 60s setup + per-turn TTS/silence/STT budget in-process.
+      echo "${CI_SHERPA_LOAD_ROUNDTRIP_TIMEOUT_SEC:-420}"
+      ;;
     *)
       echo "$DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC"
       ;;
@@ -57,6 +61,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-concurrent-multi-client
   start:roundtrip-language-id
   start:roundtrip-tts-stream
+  start:roundtrip-load-ci
   start:roundtrip
 )
 

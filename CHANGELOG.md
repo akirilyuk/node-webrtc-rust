@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — `releaseSttHold({ replay: true })` and `replayLastUtterance()` now wait (up to `SPEECH_STT_READY_WAIT_MS`, default 15 s) until the new STT stream is open before replaying, and a replay final that arrives after the release returned keeps `replay: true` (for up to 15 s). Before, a speech backend that rejects new streams for a while after it starts made the replay stall in finalize and the late final came out as a new utterance. The cluster-sherpa STT also logs a denied stream open once, then every 5 s, instead of every 200 ms.
+
 ## [0.9.23] - 2026-10-04
 
 ### Fixed

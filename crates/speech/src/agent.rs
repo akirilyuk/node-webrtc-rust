@@ -53,7 +53,16 @@ fn next_utterance_id() -> String {
 
 struct ReplayFinalContext {
     replaces_utterance_id: Option<String>,
+    /// When the context was armed. A context older than [`REPLAY_CONTEXT_MAX_AGE`] is dropped so a
+    /// lost replay cannot mislabel a much later user utterance.
+    set_at: tokio::time::Instant,
 }
+
+/// Maximum age of a pending [`ReplayFinalContext`] when the next final is emitted.
+const REPLAY_CONTEXT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Default wait for a new STT to become ready before replaying audio into it.
+const DEFAULT_STT_READY_WAIT_MS: u64 = 15_000;
 
 /// Decrements `tts_worker_tasks_alive` on task exit (including abort).
 struct TtsWorkerAliveGuard(Arc<AtomicUsize>);
@@ -246,6 +255,9 @@ pub struct VoiceAgent {
     registry: Arc<VendorRegistry>,
     inner: Arc<Mutex<AgentInner>>,
     stt: Mutex<Option<Box<dyn SttProvider>>>,
+    /// Host/test override (ms) for the STT readiness wait before a replay; 0 = use
+    /// `SPEECH_STT_READY_WAIT_MS` (default 15000).
+    stt_ready_wait_override_ms: AtomicU64,
     language_id: Mutex<Option<Arc<dyn LanguageIdProvider>>>,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
@@ -376,6 +388,7 @@ impl VoiceAgent {
                 replay_begun_at_pre_roll: false,
             })),
             stt: Mutex::new(stt),
+            stt_ready_wait_override_ms: AtomicU64::new(0),
             language_id: Mutex::new(language_id),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
@@ -457,6 +470,36 @@ impl VoiceAgent {
         Ok(())
     }
 
+    /// Override how long a replay waits for the new STT to become ready (default: env
+    /// `SPEECH_STT_READY_WAIT_MS`, else 15 s). `0` restores the default.
+    pub fn set_stt_ready_wait_ms(&self, ms: u64) {
+        self.stt_ready_wait_override_ms.store(ms, Ordering::Relaxed);
+    }
+
+    fn stt_ready_wait_ms(&self) -> u64 {
+        let over = self.stt_ready_wait_override_ms.load(Ordering::Relaxed);
+        if over > 0 {
+            return over;
+        }
+        std::env::var("SPEECH_STT_READY_WAIT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_STT_READY_WAIT_MS)
+    }
+
+    /// Wait for the (new) STT to be ready; on timeout log and continue (the replay still runs).
+    async fn wait_stt_ready(&self, stt: &mut Box<dyn SttProvider>) -> SpeechResult<()> {
+        let wait_ms = self.stt_ready_wait_ms();
+        let ready = stt
+            .wait_ready(std::time::Duration::from_millis(wait_ms))
+            .await?;
+        if !ready {
+            voice_debug(format!("stt not ready after {wait_ms} ms; replaying anyway"));
+            eprintln!("[speech] stt not ready after {wait_ms} ms; replaying anyway");
+        }
+        Ok(())
+    }
+
     /// Re-feed the last utterance's post-RNNoise PCM into the current STT stream after a config swap.
     pub async fn replay_last_utterance(&self) -> SpeechResult<()> {
         let running = self.inner.lock().await.running;
@@ -500,6 +543,7 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             inner.replay_final_context = Some(ReplayFinalContext {
                 replaces_utterance_id: Some(replaces_id.clone()),
+                set_at: tokio::time::Instant::now(),
             });
         }
 
@@ -509,6 +553,7 @@ impl VoiceAgent {
             let Some(stt) = stt.as_mut() else {
                 return Err(SpeechError::Stt("STT not configured".into()));
             };
+            self.wait_stt_ready(stt).await?;
             for chunk in pcm.chunks(640) {
                 stt.push_audio(Bytes::copy_from_slice(chunk)).await?;
             }
@@ -576,6 +621,9 @@ impl VoiceAgent {
     /// and the hold is cleared atomically once the buffer is empty (under the STT lock), so
     /// ordering is held audio first, then live, with no gap and no duplicate.
     /// `replay: false` drops the buffer.
+    ///
+    /// With `replay: true`, first waits up to `SPEECH_STT_READY_WAIT_MS` (default 15 s) for the new
+    /// STT to be ready ([`SttProvider::wait_ready`]) before feeding the held audio.
     pub async fn release_stt_hold(&self, options: ReleaseSttHoldOptions) -> SpeechResult<()> {
         if self.inner.lock().await.stt_hold.is_none() {
             return Err(SpeechError::Internal("no STT hold active".into()));
@@ -608,6 +656,9 @@ impl VoiceAgent {
         let Some(stt) = stt_guard.as_mut() else {
             return Err(SpeechError::Stt("STT not configured".into()));
         };
+        // The new STT may still be opening its stream (e.g. a speech backend that rejects new
+        // streams right after it starts): replaying into it now would stall in finalize.
+        self.wait_stt_ready(stt).await?;
         let mut fed_bytes: usize = 0;
         let mut failure: Option<SpeechError> = None;
         let (live_open, replaces, dropped_ms) = loop {
@@ -626,6 +677,7 @@ impl VoiceAgent {
                         inner.last_partial_text = None;
                         inner.replay_final_context = Some(ReplayFinalContext {
                             replaces_utterance_id: replaces.clone(),
+                            set_at: tokio::time::Instant::now(),
                         });
                     }
                     Step::Done {
@@ -666,6 +718,7 @@ impl VoiceAgent {
         };
 
         let mut result = Ok(());
+        let mut polled_final = false;
         if !live_open && fed_bytes > 0 {
             match stt.finalize_utterance().await {
                 Ok(()) => loop {
@@ -674,6 +727,7 @@ impl VoiceAgent {
                             if text.trim().is_empty() {
                                 continue;
                             }
+                            polled_final = true;
                             self.emit(SpeechEvent::user_speech_final_held_replay(
                                 text,
                                 Some(next_utterance_id()),
@@ -689,6 +743,14 @@ impl VoiceAgent {
                     }
                 },
                 Err(err) => result = Err(err),
+            }
+            if result.is_ok() && !polled_final {
+                // The final has not arrived yet: it will come out of the live path later. Keep the
+                // replay flag so hosts do not treat it as a new utterance.
+                self.inner.lock().await.replay_final_context = Some(ReplayFinalContext {
+                    replaces_utterance_id: replaces.clone(),
+                    set_at: tokio::time::Instant::now(),
+                });
             }
         }
         drop(stt_guard);
@@ -2210,10 +2272,17 @@ impl VoiceAgent {
     /// `close_utterance` clears the open utterance id after a replay final (forced close and
     /// last-partial fallback end the utterance; the vendor-final path leaves it as before).
     async fn emit_utterance_final(&self, text: String, close_utterance: bool) {
-        let replay_ctx = self.inner.lock().await.replay_final_context.take();
+        let replay_ctx = self
+            .inner
+            .lock()
+            .await
+            .replay_final_context
+            .take()
+            .filter(|ctx| ctx.set_at.elapsed() <= REPLAY_CONTEXT_MAX_AGE);
         match replay_ctx {
             Some(ReplayFinalContext {
                 replaces_utterance_id: Some(id),
+                ..
             }) => {
                 self.emit(SpeechEvent::user_speech_final_replay(
                     text,
@@ -2226,6 +2295,7 @@ impl VoiceAgent {
             }
             Some(ReplayFinalContext {
                 replaces_utterance_id: None,
+                ..
             }) => {
                 // Held release with no original final: this final closes the live utterance,
                 // so drop its id or the next utterance inherits it.

@@ -42,5 +42,5 @@ ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, fea
 node-webrtc-rust-denoise = { path = "../denoise" }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 node-webrtc-rust-vendor-mock = { path = "../vendor-mock" }

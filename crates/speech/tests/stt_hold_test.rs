@@ -116,9 +116,122 @@ impl SttProvider for NoFinalStt {
     }
 }
 
+/// Test-controlled state shared by [`GatedStt`] and [`LateStt`].
+struct Ctl {
+    ready: tokio::sync::watch::Sender<bool>,
+    log: Mutex<Vec<String>>,
+    deliver_final: std::sync::atomic::AtomicBool,
+}
+
+impl Default for Ctl {
+    fn default() -> Self {
+        Self {
+            ready: tokio::sync::watch::channel(false).0,
+            log: Mutex::new(Vec::new()),
+            deliver_final: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl Ctl {
+    fn note(&self, what: &str) {
+        self.log.lock().unwrap().push(what.to_string());
+    }
+    fn log(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+/// `wait_ready` resolves only after the test flips `ctl.ready`; records call order.
+struct GatedStt {
+    ctl: Arc<Ctl>,
+    pending_final: bool,
+}
+
+#[async_trait]
+impl SttProvider for GatedStt {
+    fn vendor_name(&self) -> &'static str {
+        "gated"
+    }
+    async fn wait_ready(
+        &mut self,
+        timeout: Duration,
+    ) -> node_webrtc_rust_speech::SpeechResult<bool> {
+        self.ctl.note("wait_ready");
+        let mut rx = self.ctl.ready.subscribe();
+        let ready = matches!(
+            tokio::time::timeout(timeout, rx.wait_for(|r| *r)).await,
+            Ok(Ok(_))
+        );
+        self.ctl.note(if ready { "ready" } else { "timeout" });
+        Ok(ready)
+    }
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+    async fn push_audio(&mut self, _pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        self.ctl.note("push");
+        Ok(())
+    }
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        if self.pending_final {
+            self.pending_final = false;
+            return Ok(Some(SttTranscript::Final("final-gated".into())));
+        }
+        Ok(None)
+    }
+    async fn finalize_utterance(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        self.pending_final = true;
+        Ok(())
+    }
+}
+
+/// `finalize_utterance` returns at once; the final shows up only after the test sets
+/// `ctl.deliver_final` (a slow backend whose final arrives after the release returned).
+struct LateStt {
+    ctl: Arc<Ctl>,
+}
+
+#[async_trait]
+impl SttProvider for LateStt {
+    fn vendor_name(&self) -> &'static str {
+        "late"
+    }
+    async fn start(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+    async fn stop(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+    async fn push_audio(&mut self, _pcm: Bytes) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+    async fn poll_transcript(
+        &mut self,
+    ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
+        if self
+            .ctl
+            .deliver_final
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(Some(SttTranscript::Final("hola".into())));
+        }
+        Ok(None)
+    }
+    async fn finalize_utterance(&mut self) -> node_webrtc_rust_speech::SpeechResult<()> {
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct RecordingFactory {
     by_tag: Mutex<HashMap<String, Pcm>>,
+    ctl: Arc<Ctl>,
 }
 
 impl RecordingFactory {
@@ -140,6 +253,17 @@ impl VendorFactory for SharedFactory {
         config: &SttConfig,
     ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
         let tag = config.model.clone().unwrap_or_else(|| "default".into());
+        if tag == "gated" {
+            return Ok(Box::new(GatedStt {
+                ctl: Arc::clone(&self.0.ctl),
+                pending_final: false,
+            }));
+        }
+        if tag == "late" {
+            return Ok(Box::new(LateStt {
+                ctl: Arc::clone(&self.0.ctl),
+            }));
+        }
         if tag == "nofinal" {
             return Ok(Box::new(NoFinalStt { sent: false }));
         }
@@ -712,4 +836,120 @@ async fn release_replay_after_original_final_keeps_replaces_id() {
         Some(utterance_id.as_str())
     );
     agent.stop().await.unwrap();
+}
+
+/// Hold over a whole utterance, then swap to the STT tagged `model` (not yet released).
+async fn held_agent_with_new_stt(
+    factory: &Arc<RecordingFactory>,
+    model: &str,
+    gate_stt: bool,
+) -> (Arc<VoiceAgent>, Receiver<SpeechEvent>) {
+    let agent = start_agent_with(factory, ReplayConfig::default(), None, gate_stt).await;
+    let mut rx = agent.subscribe_events();
+    speech(&agent, LEVEL_A, 25).await;
+    agent
+        .begin_stt_hold(BeginSttHoldOptions::default())
+        .await
+        .unwrap();
+    speech(&agent, LEVEL_B, 30).await;
+    close_utterance(&agent).await;
+    agent
+        .update_stt_config(stt_config(model, "es"))
+        .await
+        .unwrap();
+    drain(&mut rx);
+    (agent, rx)
+}
+
+#[tokio::test]
+async fn held_replay_waits_for_stt_ready() {
+    let factory = Arc::new(RecordingFactory::default());
+    let (agent, mut rx) = held_agent_with_new_stt(&factory, "gated", true).await;
+    let releasing = {
+        let agent = Arc::clone(&agent);
+        tokio::spawn(async move {
+            agent
+                .release_stt_hold(ReleaseSttHoldOptions { replay: true })
+                .await
+        })
+    };
+    sleep(Duration::from_millis(150)).await;
+    assert_eq!(factory.ctl.log(), vec!["wait_ready"], "no PCM before ready");
+    assert!(!releasing.is_finished(), "release must wait for readiness");
+
+    factory.ctl.ready.send(true).unwrap();
+    releasing.await.unwrap().unwrap();
+
+    let log = factory.ctl.log();
+    assert_eq!(&log[..3], ["wait_ready", "ready", "push"], "{log:?}");
+    let events = drain(&mut rx);
+    let all = finals(&events);
+    assert_eq!(all.len(), 1, "{events:?}");
+    assert_eq!(all[0].replay, Some(true), "{events:?}");
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn replay_ready_wait_times_out_and_continues() {
+    let factory = Arc::new(RecordingFactory::default());
+    let (agent, mut rx) = held_agent_with_new_stt(&factory, "gated", true).await;
+    agent.set_stt_ready_wait_ms(200);
+    agent
+        .release_stt_hold(ReleaseSttHoldOptions { replay: true })
+        .await
+        .unwrap();
+
+    let log = factory.ctl.log();
+    assert_eq!(&log[..3], ["wait_ready", "timeout", "push"], "{log:?}");
+    let events = drain(&mut rx);
+    let all = finals(&events);
+    assert_eq!(all.len(), 1, "{events:?}");
+    assert_eq!(all[0].replay, Some(true), "{events:?}");
+    agent.stop().await.unwrap();
+}
+
+/// Release with a backend that yields no final in time, then deliver `Final("hola")` through the
+/// live path after `delay`. Returns the events seen after the delivery.
+async fn late_final_events(delay: Duration) -> Vec<SpeechEvent> {
+    let factory = Arc::new(RecordingFactory::default());
+    let (agent, mut rx) = held_agent_with_new_stt(&factory, "late", false).await;
+    agent
+        .release_stt_hold(ReleaseSttHoldOptions { replay: true })
+        .await
+        .unwrap();
+    let released = drain(&mut rx);
+    assert!(finals(&released).is_empty(), "{released:?}");
+
+    tokio::time::advance(delay).await;
+    factory
+        .ctl
+        .deliver_final
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..5 {
+        agent
+            .process_inbound_pcm(Bytes::from(vec![0_u8; 3840]), 20)
+            .await
+            .unwrap();
+    }
+    let events = drain(&mut rx);
+    agent.stop().await.unwrap();
+    events
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_final_after_held_replay_is_flagged_replay() {
+    let events = late_final_events(Duration::from_secs(1)).await;
+    let all = finals(&events);
+    assert_eq!(all.len(), 1, "{events:?}");
+    assert_eq!(all[0].text.as_deref(), Some("hola"));
+    assert_eq!(all[0].replay, Some(true), "{events:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn stale_replay_context_does_not_flag_later_utterance() {
+    let events = late_final_events(Duration::from_secs(16)).await;
+    let all = finals(&events);
+    assert_eq!(all.len(), 1, "{events:?}");
+    assert_eq!(all[0].text.as_deref(), Some("hola"));
+    assert_eq!(all[0].replay, None, "{events:?}");
 }

@@ -520,6 +520,11 @@ export class VoiceAgent {
    * resumes live audio. Ordering: held audio first, then live audio, no gap and no duplicate
    * (live audio keeps being buffered until the held buffer is empty). `replay: false` drops the
    * buffer. Emits `stt_hold_ended` (`holdOutcome`, `bufferedMs`, `droppedMs`; no transcript text).
+   *
+   * With `replay: true` it first waits up to `SPEECH_STT_READY_WAIT_MS` (default 15 s) for the
+   * new STT to be ready (its stream open) before replaying. If the wait times out it replays
+   * anyway; a final that arrives after the release returned still carries `replay: true`
+   * (for up to 15 s).
    */
   async releaseSttHold(options: ReleaseSttHoldOptions): Promise<void> {
     await this.native.releaseSttHold({ replay: options.replay })
@@ -538,6 +543,9 @@ export class VoiceAgent {
    * Re-feed the last finalized utterance's post-RNNoise PCM into the current STT after
    * {@link updateStt}, producing a new `user_speech_final` with `replay: true` and
    * `replacesUtteranceId` set to the original turn.
+   *
+   * Waits up to `SPEECH_STT_READY_WAIT_MS` (default 15 s) for the new STT to be ready before
+   * replaying.
    *
    * Call when idle (after the original final). Rejects when no PCM snapshot exists, an
    * utterance is still open, an STT hold is active, the buffer overflowed, or the snapshot is

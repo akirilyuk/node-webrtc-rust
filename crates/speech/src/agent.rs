@@ -1025,11 +1025,14 @@ impl VoiceAgent {
         {
             return;
         }
-        let agent = Arc::clone(self);
+        // Hold only a Weak: a strong ref here would keep the agent alive after the last
+        // external owner drops it without stop(). `this` is loop-scoped and never held
+        // across the sleep.
+        let weak = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let Some(this) = agent.weak_self.upgrade() else {
+                let Some(this) = weak.upgrade() else {
                     break;
                 };
                 let running = {
@@ -1424,12 +1427,14 @@ impl VoiceAgent {
                     _ = wake.notified() => {}
                     _ = shutdown_wake.notified() => {}
                     _ = async {
-                        while !shutdown.load(Ordering::SeqCst) {
+                        // Also ends when the agent was dropped without stop(): this task
+                        // owns the TTS buffer (and the PCM writer), so it must not outlive it.
+                        while !shutdown.load(Ordering::SeqCst) && weak_self.strong_count() > 0 {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     } => {}
                 }
-                if shutdown.load(Ordering::SeqCst) {
+                if shutdown.load(Ordering::SeqCst) || weak_self.strong_count() == 0 {
                     break;
                 }
                 loop {
@@ -1828,12 +1833,14 @@ impl VoiceAgent {
                     _ = wake.notified() => {}
                     _ = shutdown_wake.notified() => {}
                     _ = async {
-                        while !shutdown.load(Ordering::SeqCst) {
+                        // Also ends when the agent was dropped without stop(): this task
+                        // owns the TTS buffer (and the PCM writer), so it must not outlive it.
+                        while !shutdown.load(Ordering::SeqCst) && weak_self.strong_count() > 0 {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     } => {}
                 }
-                if shutdown.load(Ordering::SeqCst) {
+                if shutdown.load(Ordering::SeqCst) || weak_self.strong_count() == 0 {
                     break;
                 }
                 if let Err(error) = VoiceAgent::run_tts_drain(

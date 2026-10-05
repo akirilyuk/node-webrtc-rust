@@ -11,7 +11,9 @@ use node_webrtc_rust_speech_proto::v1::{ModelRef, SessionContext, SynthesizeRequ
 use tonic::metadata::MetadataValue;
 use tonic::Request;
 
-use crate::channel::{resolve_speech_token, resolve_tts_endpoint, tts_channel};
+use crate::channel::{
+    resolve_speech_token, resolve_tts_endpoint, tts_channel, MAX_GRPC_MESSAGE_BYTES,
+};
 use crate::stt::{auth_metadata, session_context_proto};
 
 pub struct ClusterSherpaTts {
@@ -56,7 +58,8 @@ impl TtsProvider for ClusterSherpaTts {
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
         let channel = tts_channel(&self.endpoint).await?;
-        let mut client = SpeechClient::new(channel);
+        let mut client =
+            SpeechClient::new(channel).max_decoding_message_size(MAX_GRPC_MESSAGE_BYTES);
         let model_path = self
             .cfg
             .model_path
@@ -96,14 +99,10 @@ impl TtsProvider for ClusterSherpaTts {
 
         let cancel = sink.as_ref().map(|s| Arc::clone(&s.cancel));
         let mut collected = Vec::new();
-        while let Some(msg) = stream
-            .message()
-            .await
-            .map_err(|e| SpeechError::Vendor {
-                vendor: "cluster-sherpa".into(),
-                message: e.message().to_string(),
-            })?
-        {
+        while let Some(msg) = stream.message().await.map_err(|e| SpeechError::Vendor {
+            vendor: "cluster-sherpa".into(),
+            message: e.message().to_string(),
+        })? {
             if cancel
                 .as_ref()
                 .map(|c| c.load(Ordering::SeqCst))

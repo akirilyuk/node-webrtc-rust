@@ -65,4 +65,9 @@ describe('roundtrip-concurrent-timing-helpers', () => {
     })
     expect(evaluation.passed).toBe(true)
   })
+
+  it('finalContainsKeyword accepts the for homophone', () => {
+    expect(finalContainsKeyword('bravo for five six', 'four')).toBe(true)
+    expect(finalContainsKeyword('bravo five six', 'four')).toBe(false)
+  })
 })

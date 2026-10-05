@@ -34,6 +34,10 @@ sherpa_roundtrip_timeout_sec() {
     start:roundtrip-counting-echo | start:roundtrip-counting-echo-lid | start:roundtrip)
       echo "${CI_SHERPA_LONG_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
+    start:roundtrip-load-ci)
+      # 4 concurrent legs x 2 turns; 60s setup + per-turn TTS/silence/STT budget in-process.
+      echo "${CI_SHERPA_LOAD_ROUNDTRIP_TIMEOUT_SEC:-420}"
+      ;;
     *)
       echo "$DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC"
       ;;
@@ -57,7 +61,9 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-concurrent-multi-client
   start:roundtrip-language-id
   start:roundtrip-tts-stream
+  start:roundtrip-load-ci
   start:roundtrip
+  start:roundtrip-barge-replay
 )
 
 ensure_ts_dist() {
@@ -124,6 +130,14 @@ run_rust_ignored() {
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_stream_chunks_integration_test -- \
       --ignored --nocapture --test-threads=1
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust tts_cancel_not_cached_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_cancel_not_cached_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust tts_sink_chunks_bounded_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_sink_chunks_bounded_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust lid_stt_parallel_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_stt_parallel_test -- \
       --ignored --nocapture --test-threads=1
@@ -138,6 +152,14 @@ run_rust_ignored() {
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust stt_pre_roll_onset_replay_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stt_pre_roll_onset_replay_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust stt_concurrent_equals_serial_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stt_concurrent_equals_serial_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust session_churn_pool_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test session_churn_pool_test -- \
       --ignored --nocapture --test-threads=1
 }
 

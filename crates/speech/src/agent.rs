@@ -1025,11 +1025,14 @@ impl VoiceAgent {
         {
             return;
         }
-        let agent = Arc::clone(self);
+        // Hold only a Weak: a strong ref here would keep the agent alive after the last
+        // external owner drops it without stop(). `this` is loop-scoped and never held
+        // across the sleep.
+        let weak = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let Some(this) = agent.weak_self.upgrade() else {
+                let Some(this) = weak.upgrade() else {
                     break;
                 };
                 let running = {
@@ -1380,6 +1383,12 @@ impl VoiceAgent {
         self.lid_gate_bound_hits.load(Ordering::SeqCst)
     }
 
+    /// LID PCM buffer length in bytes (tests).
+    #[doc(hidden)]
+    pub async fn lid_buffer_len(&self) -> usize {
+        self.inner.lock().await.lid_pcm_buffer.len()
+    }
+
     async fn ensure_tts_synthesis_worker(&self) {
         if self.tts_workers_shutdown.load(Ordering::SeqCst) {
             return;
@@ -1418,12 +1427,14 @@ impl VoiceAgent {
                     _ = wake.notified() => {}
                     _ = shutdown_wake.notified() => {}
                     _ = async {
-                        while !shutdown.load(Ordering::SeqCst) {
+                        // Also ends when the agent was dropped without stop(): this task
+                        // owns the TTS buffer (and the PCM writer), so it must not outlive it.
+                        while !shutdown.load(Ordering::SeqCst) && weak_self.strong_count() > 0 {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     } => {}
                 }
-                if shutdown.load(Ordering::SeqCst) {
+                if shutdown.load(Ordering::SeqCst) || weak_self.strong_count() == 0 {
                     break;
                 }
                 loop {
@@ -1822,12 +1833,14 @@ impl VoiceAgent {
                     _ = wake.notified() => {}
                     _ = shutdown_wake.notified() => {}
                     _ = async {
-                        while !shutdown.load(Ordering::SeqCst) {
+                        // Also ends when the agent was dropped without stop(): this task
+                        // owns the TTS buffer (and the PCM writer), so it must not outlive it.
+                        while !shutdown.load(Ordering::SeqCst) && weak_self.strong_count() > 0 {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     } => {}
                 }
-                if shutdown.load(Ordering::SeqCst) {
+                if shutdown.load(Ordering::SeqCst) || weak_self.strong_count() == 0 {
                     break;
                 }
                 if let Err(error) = VoiceAgent::run_tts_drain(
@@ -2420,7 +2433,16 @@ impl VoiceAgent {
             if !inner.lid_buffering || !language_id_enabled(&inner.config.language_id) {
                 return;
             }
-            inner.lid_pcm_buffer.extend_from_slice(mono_bytes);
+            // Bound the buffer to 2x the clip LID will use, keeping the OLDEST audio (the
+            // clip is the head of the buffer); a long VAD-open stretch must not grow it.
+            let max_clip_ms = crate::config::resolved_lid_max_clip_ms(
+                inner.config.language_id.as_ref().expect("enabled"),
+            );
+            let cap =
+                (crate::pcm::STT_PCM_SAMPLE_RATE as usize * max_clip_ms as usize * 2 / 1000) * 2;
+            let room = cap.saturating_sub(inner.lid_pcm_buffer.len());
+            let take = room.min(mono_bytes.len());
+            inner.lid_pcm_buffer.extend_from_slice(&mono_bytes[..take]);
             if frame_active {
                 inner.lid_voiced_ms = inner
                     .lid_voiced_ms
@@ -2708,7 +2730,7 @@ impl VoiceAgent {
                 .saturating_mul(max_clip_ms as u64)
                 .saturating_mul(2)
                 / 1000;
-            let buffer = inner.lid_pcm_buffer.clone();
+            let buffer = std::mem::take(&mut inner.lid_pcm_buffer);
             let pcm = if buffer.len() > max_bytes as usize {
                 Bytes::copy_from_slice(&buffer[..max_bytes as usize])
             } else {

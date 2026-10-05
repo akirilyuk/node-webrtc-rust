@@ -23,6 +23,7 @@ import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import {
   evaluateConcurrentRoundtrip,
+  LEG_CATALOG,
   type ConcurrentLegResult,
 } from './roundtrip-concurrent-timing-helpers.js'
 import {
@@ -43,16 +44,6 @@ const DEFAULT_MAX_ENQUEUE_MS = 200
 const DEFAULT_WARMUP_S = 0.6
 const MAX_AGENT_START_SPREAD_MS = 500
 const MAX_FINAL_SPREAD_MS = 500
-
-/** Distinct phrases — keyword is a token Sherpa usually preserves (not always NATO). */
-const LEG_CATALOG = [
-  { phrase: 'alpha one two three', keyword: 'alpha' },
-  { phrase: 'bravo four five six', keyword: 'four' },
-  { phrase: 'delta seven eight nine', keyword: 'delta' },
-  { phrase: 'echo ten eleven twelve', keyword: 'ten' },
-  { phrase: 'foxtrot thirteen fourteen fifteen', keyword: 'thirteen' },
-  { phrase: 'golf sixteen seventeen eighteen', keyword: 'sixteen' },
-] as const
 
 export function resolveConcurrentLegs(
   legCount = Number(process.env.SHERPA_CONCURRENT_LEGS ?? 3),

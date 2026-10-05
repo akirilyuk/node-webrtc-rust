@@ -424,6 +424,70 @@ export function evaluateBargeUtteranceFinal(params: {
   }
 }
 
+/**
+ * Wall time from the first `agent_speaking_start` to the next `agent_speaking_end`.
+ * Returns `null` when either event is missing.
+ */
+export function agentSpeakingDurationMs(events: RecordedSpeechEvent[]): number | null {
+  const startIdx = events.findIndex((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart)
+  if (startIdx < 0) return null
+  const end = events.slice(startIdx + 1).find((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)
+  if (end == null) return null
+  return end.atMs - events[startIdx]!.atMs
+}
+
+export const DEFAULT_BARGE_REPLAY_MAX_CUT_RATIO = 0.5
+export const DEFAULT_BARGE_REPLAY_MIN_REPLAY_RATIO = 0.85
+
+export interface BargeReplayEvaluation {
+  passed: boolean
+  failures: string[]
+  summary: string
+}
+
+/**
+ * B2 oracle: a cancelled synthesis must not be replayed truncated.
+ * - `dRef`: same phrase, never barged, uncached scope.
+ * - `dBarged`: phrase barged mid-way (proves the barge happened).
+ * - `dReplay`: same phrase again, same scope as the barged run, no barge.
+ */
+export function evaluateBargeReplayDurations(params: {
+  dRefMs: number | null
+  dBargedMs: number | null
+  dReplayMs: number | null
+  maxCutRatio?: number
+  minReplayRatio?: number
+}): BargeReplayEvaluation {
+  const maxCut = params.maxCutRatio ?? DEFAULT_BARGE_REPLAY_MAX_CUT_RATIO
+  const minReplay = params.minReplayRatio ?? DEFAULT_BARGE_REPLAY_MIN_REPLAY_RATIO
+  const { dRefMs, dBargedMs, dReplayMs } = params
+  const summary = `dRef=${dRefMs ?? 'n/a'} ms dA(barged)=${dBargedMs ?? 'n/a'} ms dB(replay)=${dReplayMs ?? 'n/a'} ms`
+  const failures: string[] = []
+  if (dRefMs == null || dRefMs <= 0) {
+    failures.push(`reference phrase has no agent_speaking_start → agent_speaking_end (${summary})`)
+  }
+  if (dBargedMs == null) {
+    failures.push(`barged phrase has no agent_speaking_start → agent_speaking_end (${summary})`)
+  }
+  if (dReplayMs == null) {
+    failures.push(`replay phrase has no agent_speaking_start → agent_speaking_end (${summary})`)
+  }
+  if (failures.length > 0 || dRefMs == null || dBargedMs == null || dReplayMs == null) {
+    return { passed: false, failures, summary }
+  }
+  if (!(dBargedMs < maxCut * dRefMs)) {
+    failures.push(
+      `barge did not truncate playback: dA=${dBargedMs} ms >= ${maxCut} x dRef=${dRefMs} ms`,
+    )
+  }
+  if (!(dReplayMs >= minReplay * dRefMs)) {
+    failures.push(
+      `replay after barge is truncated: dB=${dReplayMs} ms < ${minReplay} x dRef=${dRefMs} ms`,
+    )
+  }
+  return { passed: failures.length === 0, failures, summary }
+}
+
 /** @deprecated Use evaluateTonePhaseLifecycle from roundtrip-stt-lifecycle-helpers. */
 export function evaluateToneMustNotBarge(params: {
   events: RecordedSpeechEvent[]

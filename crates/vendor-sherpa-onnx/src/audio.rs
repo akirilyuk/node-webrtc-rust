@@ -8,6 +8,17 @@ pub const STEREO_FRAME_20MS_BYTES: usize = 3840;
 
 const WEBRTC_PCM_CHANNELS: usize = 2;
 
+/// Upper bound for one progressive sink chunk: 1 s of stereo 48 kHz s16le
+/// (a multiple of [`STEREO_FRAME_20MS_BYTES`]). Keeps every gRPC message small.
+pub const SINK_SLICE_MAX_BYTES: usize = 192_000;
+
+/// Split `pcm` into zero-copy pieces of at most [`SINK_SLICE_MAX_BYTES`].
+pub fn slice_for_sink(pcm: &Bytes) -> impl Iterator<Item = Bytes> + '_ {
+    (0..pcm.len())
+        .step_by(SINK_SLICE_MAX_BYTES)
+        .map(move |start| pcm.slice(start..(start + SINK_SLICE_MAX_BYTES).min(pcm.len())))
+}
+
 /// Convert mono f32 PCM at `src_rate` Hz to stereo 48 kHz s16le for WebRTC outbound tracks.
 /// Pads the result to a 20 ms frame boundary (legacy full-utterance path).
 pub fn f32_mono_to_stereo_48k_s16le(samples: &[f32], src_rate: u32) -> (Bytes, u32) {
@@ -167,6 +178,33 @@ mod tests {
                 (t * freq_hz * 2.0 * std::f32::consts::PI).sin() * 0.5
             })
             .collect()
+    }
+
+    #[test]
+    fn slice_for_sink_splits_and_reassembles() {
+        let input = Bytes::from(
+            (0..500_000_u32)
+                .map(|i| (i % 251) as u8)
+                .collect::<Vec<u8>>(),
+        );
+        let slices: Vec<Bytes> = slice_for_sink(&input).collect();
+        let lengths: Vec<usize> = slices.iter().map(Bytes::len).collect();
+        assert_eq!(lengths, vec![192_000, 192_000, 116_000]);
+        let joined: Vec<u8> = slices.iter().flat_map(|s| s.iter().copied()).collect();
+        assert_eq!(Bytes::from(joined), input);
+    }
+
+    #[test]
+    fn slice_for_sink_empty_yields_nothing() {
+        let input = Bytes::new();
+        assert_eq!(slice_for_sink(&input).count(), 0);
+    }
+
+    #[test]
+    fn slice_for_sink_exact_multiple() {
+        let input = Bytes::from(vec![7_u8; 384_000]);
+        let lengths: Vec<usize> = slice_for_sink(&input).map(|s| s.len()).collect();
+        assert_eq!(lengths, vec![192_000, 192_000]);
     }
 
     #[test]

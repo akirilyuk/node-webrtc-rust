@@ -60,21 +60,22 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 
 ## Run modes
 
-| Mode                  | Command                                                                                                                                                                                                       |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Batch (default)**   | `npm run start:roundtrip` — 5 built-in sentences + similarity table                                                                                                                                           |
-| **Counting 1–20**     | `npm run start:roundtrip-counting` — one long utterance, single final (see below)                                                                                                                             |
-| **Counting echo**     | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                                                                                                                        |
-| **Barge recovery**    | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)                                                                                                        |
-| **Concurrent 3-leg**  | `npm run start:roundtrip-concurrent-multi-client` — 3 speakers enqueue TTS with `nonBlocking: true`, STT finals overlap (see below)                                                                           |
-| **Language ID**       | `npm run start:roundtrip-language-id` — en/de/es TTS legs → `user_language` ISO codes (needs `download-lid` + per-lang TTS; see [§ Language ID roundtrip](#language-id-roundtrip-startroundtrip-language-id)) |
-| **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths                                                                                |
-| **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                                                                                              |
-| **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                                                                                                |
-| **Session record**    | `NWR_RECORD_FORMAT=wav npm run start:record` — short counting roundtrip + stereo WAV for listen-back (see below)                                                                                              |
-| **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                                                                                                 |
-| **Single via env**    | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`                                                                                                                                               |
-| **Semantic barge-in** | `npm run start:roundtrip-barge-in` — tone must not barge; spoken phrase must (see [§ Semantic barge-in E2E](#semantic-barge-in-e2e))                                                                          |
+| Mode                  | Command                                                                                                                                                                                                                                                          |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Batch (default)**   | `npm run start:roundtrip` — 5 built-in sentences + similarity table                                                                                                                                                                                              |
+| **Counting 1–20**     | `npm run start:roundtrip-counting` — one long utterance, single final (see below)                                                                                                                                                                                |
+| **Counting echo**     | `npm run start:roundtrip-counting-echo` — Agent1↔Agent2, one…ten both legs (see below)                                                                                                                                                                           |
+| **Barge recovery**    | `npm run start:roundtrip-counting-barge-recovery` — full echo → barge → partial → recovery (see below)                                                                                                                                                           |
+| **Concurrent 3-leg**  | `npm run start:roundtrip-concurrent-multi-client` — 3 speakers enqueue TTS with `nonBlocking: true`, STT finals overlap (see below)                                                                                                                              |
+| **Load**              | `npm run start:roundtrip-load` — 8 legs x 5 turns, gated on functional pass, reports latency/CPU/lag in a `perf_probe` line; `SHERPA_LOAD_CAPACITY=1` finds max legs before final latency degrades (see [§ Load roundtrip](#load-roundtrip-startroundtrip-load)) |
+| **Language ID**       | `npm run start:roundtrip-language-id` — en/de/es TTS legs → `user_language` ISO codes (needs `download-lid` + per-lang TTS; see [§ Language ID roundtrip](#language-id-roundtrip-startroundtrip-language-id))                                                    |
+| **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths                                                                                                                                   |
+| **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                                                                                                                                                 |
+| **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                                                                                                                                                   |
+| **Session record**    | `NWR_RECORD_FORMAT=wav npm run start:record` — short counting roundtrip + stereo WAV for listen-back (see below)                                                                                                                                                 |
+| **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                                                                                                                                                    |
+| **Single via env**    | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`                                                                                                                                                                                                  |
+| **Semantic barge-in** | `npm run start:roundtrip-barge-in` — tone must not barge; spoken phrase must (see [§ Semantic barge-in E2E](#semantic-barge-in-e2e))                                                                                                                             |
 
 All modes above are exercised in CI — see [§ CI (GitHub Actions)](#ci-github-actions).
 
@@ -160,11 +161,11 @@ npm run start:roundtrip-counting-echo-lid --workspace=@node-webrtc-rust/example-
 
 Unit tests (no models): `npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa` (includes `roundtrip-counting-echo-lid.test.ts`).
 
-| Env                          | Default                            | Purpose                                  |
-| ---------------------------- | ---------------------------------- | ---------------------------------------- |
-| `SHERPA_LID_MODEL_PATH`      | `.models/sherpa-onnx-whisper-tiny` | Whisper tiny for Agent 2 LID             |
-| `SHERPA_COUNTING_PHRASE`     | one … ten                          | Agent 1 source phrase                    |
-| `SHERPA_COUNTING_TIMEOUT_MS` | `90000`                            | Wait for Agent 1 inbound echo transcript |
+| Env                          | Default                            | Purpose                                           |
+| ---------------------------- | ---------------------------------- | ------------------------------------------------- |
+| `SHERPA_LID_MODEL_PATH`      | `.models/sherpa-onnx-whisper-tiny` | Whisper tiny for Agent 2 LID                      |
+| `SHERPA_COUNTING_PHRASE`     | one … ten                          | Agent 1 source phrase                             |
+| `SHERPA_COUNTING_TIMEOUT_MS` | `90000`                            | Wait for Agent 1 inbound echo transcript          |
 | `SHERPA_LID_TTS_EXCLUSION`   | library default                    | `1`/`on` or `0`/`off` → `languageId.ttsExclusion` |
 
 CI timeout: same bucket as `start:roundtrip-counting-echo` (`sherpa_roundtrip_timeout_sec`).
@@ -173,10 +174,10 @@ CI timeout: same bucket as `start:roundtrip-counting-echo` (`sherpa_roundtrip_ti
 
 [`src/roundtrip-counting-echo-lid-multi.ts`](./src/roundtrip-counting-echo-lid-multi.ts) runs **ten** speaker↔echo pairs (default `SESSIONS=10`, ultimate tier `maxActiveConnectionsPerPod`) in a **production-shaped split**:
 
-| Process | Role | Sherpa pool |
-| ------- | ---- | ----------- |
-| **Child** (`roundtrip-counting-echo-lid-multi-echo-server.ts`) | All echo agents via **`VoiceAgentSessionHost`** | Ultimate: `SHERPA_POOL_MAX_CONCURRENT_DECODE=2`, `SHERPA_STT_NUM_THREADS=1`, `SHERPA_POOL_MAX_CONCURRENT_TTS=2`, `SHERPA_TTS_NUM_THREADS=1` |
-| **Parent** | Signaling + ten independent speaker clients (models ten client machines) | Generous: decode **10**, TTS **10**, threads **1** |
+| Process                                                        | Role                                                                     | Sherpa pool                                                                                                                                 |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Child** (`roundtrip-counting-echo-lid-multi-echo-server.ts`) | All echo agents via **`VoiceAgentSessionHost`**                          | Ultimate: `SHERPA_POOL_MAX_CONCURRENT_DECODE=2`, `SHERPA_STT_NUM_THREADS=1`, `SHERPA_POOL_MAX_CONCURRENT_TTS=2`, `SHERPA_TTS_NUM_THREADS=1` |
+| **Parent**                                                     | Signaling + ten independent speaker clients (models ten client machines) | Generous: decode **10**, TTS **10**, threads **1**                                                                                          |
 
 All sessions connect and run **concurrently** (`Promise.all`). On `user_speech_final`, the echo handler waits **100 ms** then `ctx.speak(formatEchoSmokeReply(text))` to model runner→child→`speak` IPC. LID uses cloud-default `minSpeechMs` **2500** with local-sherpa TTS (`ttsExclusion` derived — not set explicitly).
 
@@ -194,17 +195,17 @@ VOICE_DEBUG=1 SHERPA_COUNTING_VERBOSE=1 npm run start:roundtrip-counting-echo-li
 
 Unit tests (no models): `npx vitest run examples/voice-agent-local-sherpa/src/roundtrip-counting-echo-lid-multi-assert.test.ts` or `npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`.
 
-| Env                            | Default   | Purpose                                                                                 |
-| ------------------------------ | --------- | --------------------------------------------------------------------------------------- |
-| `SHERPA_MULTI_SESSIONS`        | `10`      | Concurrent speaker↔echo pairs (1–20); legacy alias `SESSIONS`                           |
-| `SHERPA_LID_TTS_EXCLUSION`     | library default | `1`/`on` or `0`/`off` → `languageId.ttsExclusion` on echo leg                    |
-| `SHERPA_MULTI_SINGLE_PROCESS`  | off       | Single-process comparison (shared ultimate pool)                                        |
-| `SHERPA_MULTI_PCM_CAPTURE`     | `1` (on)  | Per-hop PCM table: echo outbound (child IPC), speaker `readSample`, STT-fed timing      |
-| `SHERPA_MULTI_WAV_DIR`         | auto      | WAV dumps on failure under `.test-logs/multi-wav/<stamp>/`                              |
-| `SHERPA_ROUNDTRIP_WALL_MS`     | `240000`  | Process wall clock (10 sessions @ 2-thread echo pool)                                   |
-| `SHERPA_COUNTING_PHRASE`       | one … ten | Speaker source phrase                                                                   |
-| `SHERPA_COUNTING_TIMEOUT_MS`   | `90000`   | Per-session STT wait                                                                    |
-| `VOICE_DEBUG`                  | off       | Rust `[voice-debug]` in parent + echo child when `1`                                    |
+| Env                           | Default         | Purpose                                                                            |
+| ----------------------------- | --------------- | ---------------------------------------------------------------------------------- |
+| `SHERPA_MULTI_SESSIONS`       | `10`            | Concurrent speaker↔echo pairs (1–20); legacy alias `SESSIONS`                      |
+| `SHERPA_LID_TTS_EXCLUSION`    | library default | `1`/`on` or `0`/`off` → `languageId.ttsExclusion` on echo leg                      |
+| `SHERPA_MULTI_SINGLE_PROCESS` | off             | Single-process comparison (shared ultimate pool)                                   |
+| `SHERPA_MULTI_PCM_CAPTURE`    | `1` (on)        | Per-hop PCM table: echo outbound (child IPC), speaker `readSample`, STT-fed timing |
+| `SHERPA_MULTI_WAV_DIR`        | auto            | WAV dumps on failure under `.test-logs/multi-wav/<stamp>/`                         |
+| `SHERPA_ROUNDTRIP_WALL_MS`    | `240000`        | Process wall clock (10 sessions @ 2-thread echo pool)                              |
+| `SHERPA_COUNTING_PHRASE`      | one … ten       | Speaker source phrase                                                              |
+| `SHERPA_COUNTING_TIMEOUT_MS`  | `90000`         | Per-session STT wait                                                               |
+| `VOICE_DEBUG`                 | off             | Rust `[voice-debug]` in parent + echo child when `1`                               |
 
 CI: `start:roundtrip-counting-echo-lid-multi` in `SHERPA_ROUNDTRIP_E2E` (`run-sherpa-example-ci.sh`).
 
@@ -273,6 +274,38 @@ SHERPA_POOL_MAX_CONCURRENT_TTS=3 npm run start:roundtrip-concurrent-multi-client
 ```
 
 Vitest (no models): `roundtrip-concurrent-multi-client.test.ts` in `npm run test:roundtrip-counting`.
+
+## Load roundtrip (`start:roundtrip-load`)
+
+[`src/roundtrip-load.ts`](./src/roundtrip-load.ts) runs **N concurrent speaker→listener legs** in one process, each with several **sequential** turns (blocking `sendTextToTTS`, then trailing silence, then wait for the listener's `user_speech_final`). Phrases come from the same six-entry catalog as the concurrent example (leg `l`, turn `t` uses entry `(l + t) % 6`); leg `l` starts `(l * 137) % 500` ms after the others so legs are staggered, not lock-step.
+
+| What         | Behavior                                                                                                                                                                                                                                                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Gated**    | Every turn yields a `user_speech_final` containing the leg keyword; no thrown error or per-turn timeout. Exit 1 otherwise, naming `<leg> turn <n>`.                                                                                                                                                                    |
+| **Reported** | One `perf_probe {json}` line: `final_latency_ms` p50/p95 (speaker `agent_speaking_end` → listener final), `tts_start_latency_ms` p50/p95 (`sendTextToTTS` call → first `agent_speaking_start`), `turn_success_rate`, `cpu_s_per_session_min`, `event_loop_lag_ms_p99`, `rss_mb_end`, `wall_s`. Latency is never gated. |
+
+CPU, event-loop lag and wall time cover the turn phase only (after every leg is attached and warmed up).
+
+**Phrase cache:** the six catalog phrases repeat, so with the Sherpa TTS phrase cache on, most turns would be served from memory and synthesis would not be measured. `start:roundtrip-load` and `start:roundtrip-load-ci` therefore run with `SHERPA_TTS_PHRASE_CACHE=0` (a real synthesis per turn). `start:roundtrip-load-cached` is the same run with the cache on.
+
+| Env                             | Default | Meaning                                                                     |
+| ------------------------------- | ------- | --------------------------------------------------------------------------- |
+| `SHERPA_LOAD_LEGS`              | `8`     | Concurrent legs (normal mode)                                               |
+| `SHERPA_LOAD_TURNS`             | `5`     | Sequential turns per leg                                                    |
+| `SHERPA_LOAD_CAPACITY`          | unset   | `1` = capacity mode                                                         |
+| `SHERPA_LOAD_CAPACITY_MAX_LEGS` | `48`    | Capacity mode: last step to try                                             |
+| `SHERPA_LOAD_SLO_DELTA_MS`      | `1000`  | Capacity mode: a step passes while final-latency p95 ≤ the 2-leg p95 + this |
+| `SHERPA_LOAD_TURN_TIMEOUT_MS`   | `90000` | Per-turn STT wait                                                           |
+| `SHERPA_ROUNDTRIP_WALL_MS`      | derived | Overall wall-clock limit (standard roundtrip variable)                      |
+
+**Capacity mode** (`SHERPA_LOAD_CAPACITY=1`) runs 2, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40, then 48 legs (capped by `SHERPA_LOAD_CAPACITY_MAX_LEGS`), printing one `perf_probe` line per step with the top-level keys `step_legs`, `passed`, `baseline_final_p95_ms` and `slo_delta_ms`. The 2-leg step is judged only functionally and its final-latency p95 is the baseline. Later steps pass while they have no failures and p95 ≤ baseline + `SHERPA_LOAD_SLO_DELTA_MS`; an absolute SLO would not work because final latency has a fixed VAD/gate-hold floor of about 2 s at every step. The run stops at the first failing step or at the cap, then prints `roundtrip-load capacity max_legs_at_slo=<n>`. It exits 0 unless the 2-leg step itself fails functionally.
+
+```bash
+npm run start:roundtrip-load --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+SHERPA_LOAD_CAPACITY=1 SHERPA_LOAD_TURNS=2 npm run start:roundtrip-load --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+CI runs `start:roundtrip-load-ci` (4 legs x 2 turns). Vitest (no models): `roundtrip-load-helpers.test.ts` in `npm run test:roundtrip-counting`.
 
 ## Language ID roundtrip (`start:roundtrip-language-id`)
 
@@ -615,6 +648,26 @@ Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-i
 
 Success: `Semantic barge-in E2E OK — tone ignored, spoken phrase interrupted agent TTS.`
 
+## Barge-in replay (B2) — `start:roundtrip-barge-replay`
+
+[`src/roundtrip-barge-replay.ts`](./src/roundtrip-barge-replay.ts) — a regression guard for "replay after a barge-in plays the full phrase". It does not reproduce B2 on its own: Piper finishes the phrase (~0.5 s of synthesis) before the barge lands (~3.8 s into playback), so the cache already holds the full audio. The deterministic B2 reproduction is `crates/vendor-sherpa-onnx/tests/tts_cancel_not_cached_test.rs`.
+
+A barge-in must not poison the TTS phrase cache. A cancelled synthesis used to be stored under the full text, so the next identical phrase played truncated (and, on the cluster path, for every later session of that project).
+
+The phrase is four sentences plus ` Run <nonce>.` (`nonce = Date.now()`), so it is never cached before the run. `d(agent)` is the time from `agent_speaking_start` to `agent_speaking_end` for one `sendTextToTTS` call.
+
+| Phase | Agent / cache scope                              | Action                                                        | Measured |
+| ----- | ------------------------------------------------ | ------------------------------------------------------------- | -------- |
+| R     | user-leg agent, `projectId = ref-<nonce>`        | speaks P, no barge                                            | `dRef`   |
+| A     | main agent, `projectId = p1-<nonce>`             | speaks P; user leg says "stop now please" 1500 ms after start | `dA`     |
+| B     | main agent, `projectId = p1-<nonce>` (same as A) | speaks P again, no barge                                      | `dB`     |
+
+Pass: `dA < 0.5 x dRef` (the barge happened) and `dB >= 0.85 x dRef` (the replay is complete). All three durations are printed on one `Barge replay:` line. Duration logic: `agentSpeakingDurationMs` and `evaluateBargeReplayDurations` in [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) (Vitest in `roundtrip-barge-in.test.ts`). The crate-level counterpart is `crates/vendor-sherpa-onnx/tests/tts_cancel_not_cached_test.rs`.
+
+```bash
+npm run start:roundtrip-barge-replay --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
 ## What each roundtrip catches (confidence matrix)
 
 Passing **unit tests alone** (`npm run test:roundtrip-counting`) does **not** run Sherpa — it only checks evaluators. For release confidence, run **native build + these E2E scripts** (with models):
@@ -650,7 +703,7 @@ Sherpa roundtrips run on every PR and on `main` when the **Test** job executes [
 | **Quality** | [`run-pr-quality.sh`](../../scripts/ci/run-pr-quality.sh) → [`run-sherpa-example-ci.sh typecheck`](../../scripts/ci/run-sherpa-example-ci.sh) + `vitest` | Typecheck + **Vitest evaluators** (`test:roundtrip-counting`) — no model download                                               |
 | **Test**    | [`run-pr-integration.sh`](../../scripts/ci/run-pr-integration.sh) → [`run-sherpa-example-ci.sh e2e`](../../scripts/ci/run-sherpa-example-ci.sh)          | Downloads EN Kroko STT + Piper TTS, runs **TTS phrase-cache** ignored cargo tests, then **all** `start:roundtrip*` entry points |
 
-E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh)): phrase-cache rust tests → counting → utterance-timing → two-phrases → **barge-in** → counting-echo → counting-barge-recovery → concurrent-multi-client → batch roundtrip.
+E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherpa-example-ci.sh)): phrase-cache rust tests → counting → utterance-timing → two-phrases → **barge-in** → counting-echo → counting-barge-recovery → concurrent-multi-client → language-id → tts-stream → **load-ci** → batch roundtrip.
 
 Path filter: changes under `examples/**` trigger the **examples** filter and run quality + test when other filters also match — see [`scripts/ci/README.md`](../../scripts/ci/README.md#sherpa-roundtrip-e2e-integration-job).
 

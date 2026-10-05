@@ -183,7 +183,7 @@ After `updateStt`, the utterance that **triggered** the switch may already have 
 
 It waits up to `SPEECH_STT_READY_WAIT_MS` (default 15 s) for the new STT to be ready before replaying.
 
-Call **only when** no utterance is in progress (after the original final landed). Common pattern: on `user_language` or first final in the wrong locale → `updateStt` → `replayLastUtterance` → treat the replay final as the LLM turn input.
+Call **only when** no utterance is in progress (after the original final landed). Common pattern: on `user_language` or first final in the wrong locale → `updateStt` → `replayLastUtterance` → treat the replay final as the LLM turn input. Agent TTS playback ending does not count as an utterance in progress: `updateStt` applies immediately and `replayLastUtterance` works right after the agent finished speaking.
 
 **Failures** (rejected promise / `error` event depending on binding):
 

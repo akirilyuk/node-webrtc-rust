@@ -884,7 +884,9 @@ impl VoiceAgent {
     }
 
     fn utterance_in_progress(inner: &AgentInner) -> bool {
-        inner.stt_finalize_pending
+        // A pending finalize for an utterance whose final was already emitted can never complete
+        // (should_finalize_utterance needs !stt_final_emitted); it is not an utterance in progress.
+        (inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance)
             || inner.vad_triggered_this_utterance
             || inner.stt_stream_open
             || inner.stt_gate_hold_ms > 0
@@ -2320,6 +2322,14 @@ impl VoiceAgent {
         }
         let still_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
         if still_speaking {
+            return;
+        }
+        // Previous utterance is complete and nothing new started: arming would leave stt_finalize_pending set until the next SpeechStart (blocks update_stt_config / replay_last_utterance).
+        if inner.stt_final_emitted_this_utterance
+            && !inner.stt_stream_open
+            && !inner.vad_triggered_this_utterance
+            && !inner.stt_finalize_pending
+        {
             return;
         }
         inner.stt_gate_hold_ms = inner.config.vad.stt_gate_hold_ms;

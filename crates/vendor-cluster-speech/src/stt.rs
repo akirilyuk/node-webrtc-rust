@@ -15,7 +15,9 @@ use tokio::task::JoinHandle;
 use tonic::metadata::MetadataValue;
 use tonic::Request;
 
-use crate::channel::{resolve_speech_token, resolve_stt_endpoint, stt_channel};
+use crate::channel::{
+    resolve_speech_token, resolve_stt_endpoint, stt_channel, MAX_GRPC_MESSAGE_BYTES,
+};
 use crate::metrics::inc_stt_reopen;
 
 const COALESCE_MAX_BYTES: usize = 1920;
@@ -70,12 +72,9 @@ impl OpenStreak {
     /// The stream became ready: returns `(denied attempts, elapsed ms)` when the streak had
     /// at least one denial, and resets the streak.
     pub(crate) fn mark_ready(&mut self, now: Instant) -> Option<(u32, u64)> {
-        let out = self.started.map(|t| {
-            (
-                self.attempts,
-                now.duration_since(t).as_millis() as u64,
-            )
-        });
+        let out = self
+            .started
+            .map(|t| (self.attempts, now.duration_since(t).as_millis() as u64));
         *self = Self::default();
         out
     }
@@ -83,9 +82,7 @@ impl OpenStreak {
 
 enum StreamCommand {
     Audio(Bytes),
-    Finalize {
-        done: Arc<Notify>,
-    },
+    Finalize { done: Arc<Notify> },
     Stop,
 }
 
@@ -100,7 +97,9 @@ pub(crate) fn session_context_proto(ctx: &VoiceSessionContext) -> SessionContext
     }
 }
 
-pub(crate) fn auth_metadata(token: &Option<String>) -> SpeechResult<MetadataValue<tonic::metadata::Ascii>> {
+pub(crate) fn auth_metadata(
+    token: &Option<String>,
+) -> SpeechResult<MetadataValue<tonic::metadata::Ascii>> {
     let t = token
         .as_deref()
         .filter(|s| !s.is_empty())
@@ -236,7 +235,8 @@ async fn stream_worker(
                 break;
             }
         };
-        let mut client = SpeechClient::new(channel);
+        let mut client =
+            SpeechClient::new(channel).max_decoding_message_size(MAX_GRPC_MESSAGE_BYTES);
         let (mut req_tx, req_rx) = mpsc::channel(32);
         let model_path = cfg
             .model_path
@@ -250,14 +250,16 @@ async fn stream_worker(
             .map(session_context_proto)
             .unwrap_or_default();
         let start = TranscribeRequest {
-            msg: Some(transcribe_request::Msg::Start(node_webrtc_rust_speech_proto::v1::SttStart {
-                model: Some(ModelRef {
-                    model_path,
-                    catalog_id: String::new(),
-                }),
-                language,
-                ctx: Some(ctx),
-            })),
+            msg: Some(transcribe_request::Msg::Start(
+                node_webrtc_rust_speech_proto::v1::SttStart {
+                    model: Some(ModelRef {
+                        model_path,
+                        catalog_id: String::new(),
+                    }),
+                    language,
+                    ctx: Some(ctx),
+                },
+            )),
         };
         if req_tx.send(start).await.is_err() {
             break;
@@ -492,12 +494,9 @@ impl SttProvider for ClusterSherpaStt {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(FINALIZE_WAIT_MS);
-        let waited = tokio::time::timeout(
-            Duration::from_millis(wait_ms),
-            notify.notified(),
-        )
-        .await
-        .is_ok();
+        let waited = tokio::time::timeout(Duration::from_millis(wait_ms), notify.notified())
+            .await
+            .is_ok();
         if !waited {
             eprintln!("[cluster-sherpa] speech_finalize_timeout");
         }
@@ -518,13 +517,22 @@ mod tests {
         let t0 = Instant::now();
         let mut s = OpenStreak::default();
         assert_eq!(s.mark_denied(t0), DeniedLog::First);
-        assert_eq!(s.mark_denied(t0 + Duration::from_millis(200)), DeniedLog::Silent);
-        assert_eq!(s.mark_denied(t0 + Duration::from_secs(4)), DeniedLog::Silent);
+        assert_eq!(
+            s.mark_denied(t0 + Duration::from_millis(200)),
+            DeniedLog::Silent
+        );
+        assert_eq!(
+            s.mark_denied(t0 + Duration::from_secs(4)),
+            DeniedLog::Silent
+        );
         assert_eq!(
             s.mark_denied(t0 + Duration::from_secs(5)),
             DeniedLog::Still { attempts: 4 }
         );
-        assert_eq!(s.mark_denied(t0 + Duration::from_secs(6)), DeniedLog::Silent);
+        assert_eq!(
+            s.mark_denied(t0 + Duration::from_secs(6)),
+            DeniedLog::Silent
+        );
         assert_eq!(
             s.mark_denied(t0 + Duration::from_secs(10)),
             DeniedLog::Still { attempts: 6 }
@@ -537,7 +545,10 @@ mod tests {
         let mut s = OpenStreak::default();
         s.mark_denied(t0);
         s.mark_denied(t0 + Duration::from_millis(200));
-        assert_eq!(s.mark_ready(t0 + Duration::from_millis(450)), Some((2, 450)));
+        assert_eq!(
+            s.mark_ready(t0 + Duration::from_millis(450)),
+            Some((2, 450))
+        );
         assert_eq!(s.mark_ready(t0 + Duration::from_secs(1)), None);
         assert_eq!(s.mark_denied(t0 + Duration::from_secs(2)), DeniedLog::First);
     }

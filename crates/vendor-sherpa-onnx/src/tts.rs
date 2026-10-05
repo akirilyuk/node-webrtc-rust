@@ -14,7 +14,7 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
-use crate::audio::{f32_mono_to_stereo_48k_s16le, StreamingStereo48kResampler};
+use crate::audio::{f32_mono_to_stereo_48k_s16le, slice_for_sink, StreamingStereo48kResampler};
 use crate::phrase_cache::{
     build_cache_key, build_metric_attrs, lookup, normalize_phrase_text, phrase_cache_enabled, store,
 };
@@ -208,17 +208,23 @@ impl SherpaTts {
                                 if pcm.is_empty() {
                                     return true;
                                 }
-                                let duration_ms = duration_ms_from_mono_s16le(
-                                    pcm.len() / 2,
-                                    WEBRTC_PCM_SAMPLE_RATE,
-                                )
-                                .max(1);
-                                if sink_cb.send(TtsAudioChunk { pcm, duration_ms }) {
-                                    true
-                                } else {
-                                    stopped_cb.store(true, Ordering::SeqCst);
-                                    false
+                                // One Piper sentence can be many seconds of audio; cap each
+                                // sink chunk so a single gRPC message stays small.
+                                for slice in slice_for_sink(&pcm) {
+                                    let duration_ms = duration_ms_from_mono_s16le(
+                                        slice.len() / 2,
+                                        WEBRTC_PCM_SAMPLE_RATE,
+                                    )
+                                    .max(1);
+                                    if !sink_cb.send(TtsAudioChunk {
+                                        pcm: slice,
+                                        duration_ms,
+                                    }) {
+                                        stopped_cb.store(true, Ordering::SeqCst);
+                                        return false;
+                                    }
                                 }
+                                true
                             }),
                         )
                         .ok_or_else(|| SpeechError::Vendor {
@@ -227,14 +233,16 @@ impl SherpaTts {
                         })?;
 
                     let tail = resampler.borrow_mut().finish();
-                    if !tail.is_empty() {
+                    for slice in slice_for_sink(&tail) {
                         let duration_ms =
-                            duration_ms_from_mono_s16le(tail.len() / 2, WEBRTC_PCM_SAMPLE_RATE)
+                            duration_ms_from_mono_s16le(slice.len() / 2, WEBRTC_PCM_SAMPLE_RATE)
                                 .max(1);
-                        let _ = sink.send(TtsAudioChunk {
-                            pcm: tail,
+                        if !sink.send(TtsAudioChunk {
+                            pcm: slice,
                             duration_ms,
-                        });
+                        }) {
+                            break;
+                        }
                     }
                     sink_was_cancelled = sink.is_cancelled();
                     audio
@@ -360,7 +368,18 @@ impl TtsProvider for SherpaTts {
                     normalized.len()
                 ));
                 if let Some(sink) = sink {
-                    let _ = sink.send(chunk.clone());
+                    // The cached clip is the whole utterance; deliver it in bounded slices.
+                    for slice in slice_for_sink(&chunk.pcm) {
+                        let duration_ms =
+                            duration_ms_from_mono_s16le(slice.len() / 2, WEBRTC_PCM_SAMPLE_RATE)
+                                .max(1);
+                        if !sink.send(TtsAudioChunk {
+                            pcm: slice,
+                            duration_ms,
+                        }) {
+                            break;
+                        }
+                    }
                 }
                 return Ok(vec![chunk]);
             }

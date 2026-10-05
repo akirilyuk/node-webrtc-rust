@@ -8,6 +8,9 @@ use tonic::transport::Channel;
 
 const CHANNEL_IDLE_EVICT: Duration = Duration::from_secs(600);
 
+/// Max decoded gRPC message size on speech clients (tonic default is 4 MiB).
+pub(crate) const MAX_GRPC_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
 struct CachedChannel {
     channel: Channel,
     last_used: Instant,

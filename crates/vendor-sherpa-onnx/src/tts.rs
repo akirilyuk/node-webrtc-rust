@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use node_webrtc_rust_speech::config::{TtsConfig, VoiceSessionContext};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::otel::{self, SherpaTtsMetricAttrs};
@@ -132,7 +133,7 @@ impl SherpaTts {
         normalized: &str,
         attrs: &SherpaTtsMetricAttrs,
         sink: Option<TtsProgressiveSink>,
-    ) -> SpeechResult<TtsAudioChunk> {
+    ) -> SpeechResult<(TtsAudioChunk, bool)> {
         let engine_pool = self.ensure_engine_pool().await?;
         let shared = engine_pool.acquire();
         let input = normalized.to_string();
@@ -157,91 +158,120 @@ impl SherpaTts {
         let wall_start = std::time::Instant::now();
 
         let shared_for_blocking = Arc::clone(&shared);
-        let chunk = tokio::task::spawn_blocking(move || -> SpeechResult<TtsAudioChunk> {
-            let _active = shared_for_blocking.track_session();
-            let gen_config = GenerationConfig {
-                sid: speaker_id,
-                speed,
-                ..Default::default()
-            };
+        let (chunk, completed) =
+            tokio::task::spawn_blocking(move || -> SpeechResult<(TtsAudioChunk, bool)> {
+                let _active = shared_for_blocking.track_session();
+                let gen_config = GenerationConfig {
+                    sid: speaker_id,
+                    speed,
+                    ..Default::default()
+                };
 
-            let tts = shared_for_blocking
-                .tts
-                .lock()
-                .map_err(|_| SpeechError::Internal("sherpa TTS engine lock poisoned".into()))?;
+                let tts = shared_for_blocking
+                    .tts
+                    .lock()
+                    .map_err(|_| SpeechError::Internal("sherpa TTS engine lock poisoned".into()))?;
 
-            TTS_GENERATE_COUNT.fetch_add(1, Ordering::SeqCst);
-            let src_rate = tts.sample_rate().max(1) as u32;
+                TTS_GENERATE_COUNT.fetch_add(1, Ordering::SeqCst);
+                let src_rate = tts.sample_rate().max(1) as u32;
 
-            let audio = if let Some(sink) = sink {
-                let sink_cb = sink.clone();
-                let cancel = Arc::clone(&sink_cb.cancel);
-                // Rc so progress callback and post-generate flush share one resampler.
-                let resampler = Rc::new(RefCell::new(StreamingStereo48kResampler::new(src_rate)));
-                let resampler_cb = Rc::clone(&resampler);
-                let audio = tts
-                    .generate_with_config(
-                        &input,
-                        &gen_config,
-                        Some(move |samples: &[f32], _progress: f32| {
-                            if cancel.load(Ordering::SeqCst) {
-                                voice_debug("tts synthesis cancelled via progressive callback");
-                                return false;
-                            }
-                            // VITS (Piper) invokes the callback once per sentence with that
-                            // sentence's samples only — not a cumulative buffer. Feed each
-                            // chunk in full into the continuous resampler.
-                            if samples.is_empty() {
-                                return true;
-                            }
-                            let pcm = resampler_cb.borrow_mut().push_f32(samples);
-                            if pcm.is_empty() {
-                                return true;
-                            }
-                            let duration_ms =
-                                duration_ms_from_mono_s16le(pcm.len() / 2, WEBRTC_PCM_SAMPLE_RATE)
-                                    .max(1);
-                            sink_cb.send(TtsAudioChunk { pcm, duration_ms })
-                        }),
-                    )
-                    .ok_or_else(|| SpeechError::Vendor {
-                        vendor: "local-sherpa".into(),
-                        message: "OfflineTts generation returned no audio".into(),
-                    })?;
+                // Set by the progress callback right before it returns `false`; a stopped
+                // synthesis holds partial audio and must never reach the phrase cache.
+                let stopped = Arc::new(AtomicBool::new(false));
+                let mut sink_was_cancelled = false;
 
-                let tail = resampler.borrow_mut().finish();
-                if !tail.is_empty() {
-                    let duration_ms =
-                        duration_ms_from_mono_s16le(tail.len() / 2, WEBRTC_PCM_SAMPLE_RATE).max(1);
-                    let _ = sink.send(TtsAudioChunk {
-                        pcm: tail,
-                        duration_ms,
-                    });
+                let audio = if let Some(sink) = sink {
+                    let sink_cb = sink.clone();
+                    let stopped_cb = Arc::clone(&stopped);
+                    let cancel = Arc::clone(&sink_cb.cancel);
+                    // Rc so progress callback and post-generate flush share one resampler.
+                    let resampler =
+                        Rc::new(RefCell::new(StreamingStereo48kResampler::new(src_rate)));
+                    let resampler_cb = Rc::clone(&resampler);
+                    let audio = tts
+                        .generate_with_config(
+                            &input,
+                            &gen_config,
+                            Some(move |samples: &[f32], _progress: f32| {
+                                if cancel.load(Ordering::SeqCst) {
+                                    voice_debug("tts synthesis cancelled via progressive callback");
+                                    stopped_cb.store(true, Ordering::SeqCst);
+                                    return false;
+                                }
+                                // VITS (Piper) invokes the callback once per sentence with that
+                                // sentence's samples only — not a cumulative buffer. Feed each
+                                // chunk in full into the continuous resampler.
+                                if samples.is_empty() {
+                                    return true;
+                                }
+                                let pcm = resampler_cb.borrow_mut().push_f32(samples);
+                                if pcm.is_empty() {
+                                    return true;
+                                }
+                                let duration_ms = duration_ms_from_mono_s16le(
+                                    pcm.len() / 2,
+                                    WEBRTC_PCM_SAMPLE_RATE,
+                                )
+                                .max(1);
+                                if sink_cb.send(TtsAudioChunk { pcm, duration_ms }) {
+                                    true
+                                } else {
+                                    stopped_cb.store(true, Ordering::SeqCst);
+                                    false
+                                }
+                            }),
+                        )
+                        .ok_or_else(|| SpeechError::Vendor {
+                            vendor: "local-sherpa".into(),
+                            message: "OfflineTts generation returned no audio".into(),
+                        })?;
+
+                    let tail = resampler.borrow_mut().finish();
+                    if !tail.is_empty() {
+                        let duration_ms =
+                            duration_ms_from_mono_s16le(tail.len() / 2, WEBRTC_PCM_SAMPLE_RATE)
+                                .max(1);
+                        let _ = sink.send(TtsAudioChunk {
+                            pcm: tail,
+                            duration_ms,
+                        });
+                    }
+                    sink_was_cancelled = sink.is_cancelled();
+                    audio
+                } else {
+                    tts.generate_with_config(&input, &gen_config, None::<fn(&[f32], f32) -> bool>)
+                        .ok_or_else(|| SpeechError::Vendor {
+                            vendor: "local-sherpa".into(),
+                            message: "OfflineTts generation returned no audio".into(),
+                        })?
+                };
+
+                let completed = !stopped.load(Ordering::SeqCst) && !sink_was_cancelled;
+                if !completed {
+                    return Ok((
+                        TtsAudioChunk {
+                            pcm: Bytes::new(),
+                            duration_ms: 0,
+                        },
+                        false,
+                    ));
                 }
-                audio
-            } else {
-                tts.generate_with_config(&input, &gen_config, None::<fn(&[f32], f32) -> bool>)
-                    .ok_or_else(|| SpeechError::Vendor {
-                        vendor: "local-sherpa".into(),
-                        message: "OfflineTts generation returned no audio".into(),
-                    })?
-            };
 
-            let src_rate = audio.sample_rate().max(1) as u32;
-            let (pcm, duration_ms) = f32_mono_to_stereo_48k_s16le(audio.samples(), src_rate);
+                let src_rate = audio.sample_rate().max(1) as u32;
+                let (pcm, duration_ms) = f32_mono_to_stereo_48k_s16le(audio.samples(), src_rate);
 
-            Ok(TtsAudioChunk { pcm, duration_ms })
-        })
-        .await
-        .map_err(|err| SpeechError::Internal(err.to_string()))??;
+                Ok((TtsAudioChunk { pcm, duration_ms }, true))
+            })
+            .await
+            .map_err(|err| SpeechError::Internal(err.to_string()))??;
 
         otel::record_sherpa_tts_synth_wall_ms(wall_start.elapsed().as_secs_f64() * 1000.0, attrs);
         voice_debug(format!(
-            "tts synthesis done wall_ms={} audio_duration_ms={}",
+            "tts synthesis done wall_ms={} audio_duration_ms={} completed={completed}",
             wall_start.elapsed().as_millis(),
             chunk.duration_ms
         ));
-        Ok(chunk)
+        Ok((chunk, completed))
     }
 }
 
@@ -337,7 +367,11 @@ impl TtsProvider for SherpaTts {
         }
 
         otel::record_sherpa_tts_phrase_cache_miss(&attrs);
-        let chunk = self.synthesize_miss(&normalized, &attrs, sink).await?;
+        let (chunk, completed) = self.synthesize_miss(&normalized, &attrs, sink).await?;
+        if !completed {
+            // Cancelled mid-way: partial audio must not be cached or replayed.
+            return Ok(Vec::new());
+        }
         if phrase_cache_enabled() {
             store(cache_key, chunk.clone(), &attrs);
         }

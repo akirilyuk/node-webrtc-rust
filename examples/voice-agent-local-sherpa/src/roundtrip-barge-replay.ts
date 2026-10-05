@@ -1,5 +1,12 @@
 /**
- * B2 E2E: a barge-in must not poison the TTS phrase cache (Sherpa STT + TTS, full stack).
+ * Regression guard: a replay after a barge-in plays the full phrase (Sherpa STT + TTS, full stack).
+ *
+ * This script does NOT reproduce B2 on its own. Piper finishes synthesizing the phrase (~0.5 s)
+ * before the barge lands (~3.8 s into playback), so the cache already holds the full audio when
+ * the barge arrives. The deterministic B2 reproduction is
+ * `crates/vendor-sherpa-onnx/tests/tts_cancel_not_cached_test.rs`.
+ *
+ * B2 background: a barge-in must not poison the TTS phrase cache.
  *
  * A cancelled synthesis used to be stored in the phrase cache under the full text, so the next
  * identical phrase played truncated. This roundtrip speaks a multi-sentence phrase that was

@@ -650,7 +650,9 @@ Success: `Semantic barge-in E2E OK — tone ignored, spoken phrase interrupted a
 
 ## Barge-in replay (B2) — `start:roundtrip-barge-replay`
 
-[`src/roundtrip-barge-replay.ts`](./src/roundtrip-barge-replay.ts) — a barge-in must not poison the TTS phrase cache. A cancelled synthesis used to be stored under the full text, so the next identical phrase played truncated (and, on the cluster path, for every later session of that project).
+[`src/roundtrip-barge-replay.ts`](./src/roundtrip-barge-replay.ts) — a regression guard for "replay after a barge-in plays the full phrase". It does not reproduce B2 on its own: Piper finishes the phrase (~0.5 s of synthesis) before the barge lands (~3.8 s into playback), so the cache already holds the full audio. The deterministic B2 reproduction is `crates/vendor-sherpa-onnx/tests/tts_cancel_not_cached_test.rs`.
+
+A barge-in must not poison the TTS phrase cache. A cancelled synthesis used to be stored under the full text, so the next identical phrase played truncated (and, on the cluster path, for every later session of that project).
 
 The phrase is four sentences plus ` Run <nonce>.` (`nonce = Date.now()`), so it is never cached before the run. `d(agent)` is the time from `agent_speaking_start` to `agent_speaking_end` for one `sendTextToTTS` call.
 

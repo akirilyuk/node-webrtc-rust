@@ -76,6 +76,12 @@ pub trait SttProvider: Send + Sync {
     /// Poll for the next transcript update, if any.
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>>;
 
+    /// Wait until the provider can transcribe (its stream is open and ready). Returns false on timeout.
+    /// Default: always ready.
+    async fn wait_ready(&mut self, _timeout: std::time::Duration) -> SpeechResult<bool> {
+        Ok(true)
+    }
+
     /// Signal end-of-utterance to streaming STT vendors (e.g. Sherpa `input_finished`).
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         Ok(())

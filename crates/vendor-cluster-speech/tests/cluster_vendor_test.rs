@@ -176,3 +176,16 @@ fn stt_reopen_metric_increments() {
     inc_stt_reopen("relocate");
     assert_eq!(stt_reopen_total("relocate"), 1);
 }
+
+#[tokio::test]
+async fn stt_wait_ready_resolves_once_stream_is_open() {
+    let state = MockSpeechState::default();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = ClusterSherpaStt::new(&stt_cfg(&url)).unwrap();
+    // Not started: no stream, never ready.
+    assert!(!stt.wait_ready(Duration::from_millis(20)).await.unwrap());
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}

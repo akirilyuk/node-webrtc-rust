@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -10,7 +10,7 @@ use node_webrtc_rust_speech_proto::v1::speech_client::SpeechClient;
 use node_webrtc_rust_speech_proto::v1::{
     transcribe_request, ModelRef, SessionContext, SttAudio, SttFinalize, SttStop, TranscribeRequest,
 };
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tonic::metadata::MetadataValue;
 use tonic::Request;
@@ -22,6 +22,64 @@ const COALESCE_MAX_BYTES: usize = 1920;
 const AUDIO_QUEUE_CAP: usize = 256;
 const READY_WAIT_MS: u64 = 15_000;
 const FINALIZE_WAIT_MS: u64 = 2_000;
+/// While the open is denied, print a progress line at most this often.
+const DENIED_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+/// What to log for one denied stream open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeniedLog {
+    /// First denial of the streak: print the failure message.
+    First,
+    /// Periodic progress line (`still denied after {attempts} attempts`).
+    Still { attempts: u32 },
+    /// Stay quiet.
+    Silent,
+}
+
+/// Tracks a streak of denied stream opens so the log is not flooded on every 200 ms retry.
+#[derive(Debug, Default)]
+pub(crate) struct OpenStreak {
+    attempts: u32,
+    started: Option<Instant>,
+    last_log: Option<Instant>,
+}
+
+impl OpenStreak {
+    /// Record a denied open and decide what to print.
+    pub(crate) fn mark_denied(&mut self, now: Instant) -> DeniedLog {
+        self.attempts += 1;
+        if self.started.is_none() {
+            self.started = Some(now);
+            self.last_log = Some(now);
+            return DeniedLog::First;
+        }
+        let due = self
+            .last_log
+            .map(|t| now.duration_since(t) >= DENIED_LOG_INTERVAL)
+            .unwrap_or(true);
+        if due {
+            self.last_log = Some(now);
+            DeniedLog::Still {
+                attempts: self.attempts,
+            }
+        } else {
+            DeniedLog::Silent
+        }
+    }
+
+    /// The stream became ready: returns `(denied attempts, elapsed ms)` when the streak had
+    /// at least one denial, and resets the streak.
+    pub(crate) fn mark_ready(&mut self, now: Instant) -> Option<(u32, u64)> {
+        let out = self.started.map(|t| {
+            (
+                self.attempts,
+                now.duration_since(t).as_millis() as u64,
+            )
+        });
+        *self = Self::default();
+        out
+    }
+}
 
 enum StreamCommand {
     Audio(Bytes),
@@ -65,6 +123,8 @@ struct ClusterSherpaSttInner {
     transcript_rx: Option<mpsc::UnboundedReceiver<SttTranscript>>,
     cmd_tx: Option<mpsc::Sender<StreamCommand>>,
     stream_task: Option<JoinHandle<()>>,
+    /// `true` once the current stream received `Ready`; `false` while (re)opening or after exit.
+    ready_rx: Option<watch::Receiver<bool>>,
     pending_audio: Vec<u8>,
     utterance_active: bool,
     mid_utterance_failure: Option<String>,
@@ -84,6 +144,7 @@ impl ClusterSherpaStt {
                 transcript_rx: None,
                 cmd_tx: None,
                 stream_task: None,
+                ready_rx: None,
                 pending_audio: Vec::new(),
                 utterance_active: false,
                 mid_utterance_failure: None,
@@ -102,10 +163,21 @@ impl ClusterSherpaStt {
         let endpoint = self.endpoint.clone();
         let token = self.token.clone();
         let session_ctx = Arc::clone(&self.session_ctx);
+        let (ready_tx, ready_rx) = watch::channel(false);
         let task = tokio::spawn(async move {
-            stream_worker(cfg, endpoint, token, session_ctx, cmd_rx, transcript_tx)
-                .await;
+            stream_worker(
+                cfg,
+                endpoint,
+                token,
+                session_ctx,
+                cmd_rx,
+                transcript_tx,
+                &ready_tx,
+            )
+            .await;
+            ready_tx.send_replace(false);
         });
+        inner.ready_rx = Some(ready_rx);
         inner.transcript_rx = Some(transcript_rx);
         inner.cmd_tx = Some(cmd_tx);
         inner.stream_task = Some(task);
@@ -148,11 +220,14 @@ async fn stream_worker(
     session_ctx: Arc<Mutex<Option<VoiceSessionContext>>>,
     mut cmd_rx: mpsc::Receiver<StreamCommand>,
     transcript_tx: mpsc::UnboundedSender<SttTranscript>,
+    ready_tx: &watch::Sender<bool>,
 ) {
     let mut pending_finalize: Option<Arc<Notify>> = None;
     let mut reopen = true;
+    let mut streak = OpenStreak::default();
     while reopen {
         reopen = false;
+        ready_tx.send_replace(false);
         let channel = match stt_channel(&endpoint).await {
             Ok(c) => c,
             Err(e) => {
@@ -196,7 +271,15 @@ async fn stream_worker(
             Ok(resp) => resp.into_inner(),
             Err(status) => {
                 inc_stt_reopen("idle_error");
-                eprintln!("[cluster-sherpa] transcribe open: {}", status.message());
+                match streak.mark_denied(Instant::now()) {
+                    DeniedLog::First => {
+                        eprintln!("[cluster-sherpa] transcribe open: {}", status.message());
+                    }
+                    DeniedLog::Still { attempts } => {
+                        eprintln!("[cluster-sherpa] transcribe open still denied after {attempts} attempts");
+                    }
+                    DeniedLog::Silent => {}
+                }
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 reopen = true;
                 continue;
@@ -249,7 +332,13 @@ async fn stream_worker(
                         Ok(Some(resp)) => {
                             use node_webrtc_rust_speech_proto::v1::transcribe_response::Msg as RMsg;
                             match resp.msg {
-                                Some(RMsg::Ready(_)) => ready = true,
+                                Some(RMsg::Ready(_)) => {
+                                    ready = true;
+                                    if let Some((n, ms)) = streak.mark_ready(Instant::now()) {
+                                        eprintln!("[cluster-sherpa] transcribe open ok after {n} denied attempts ({ms} ms)");
+                                    }
+                                    ready_tx.send_replace(true);
+                                }
                                 Some(RMsg::Transcript(t)) => {
                                     let tr = if t.is_final {
                                         SttTranscript::Final(t.text)
@@ -375,6 +464,19 @@ impl SttProvider for ClusterSherpaStt {
         Ok(None)
     }
 
+    async fn wait_ready(&mut self, timeout: Duration) -> SpeechResult<bool> {
+        let rx = self.inner.lock().await.ready_rx.clone();
+        let Some(mut rx) = rx else {
+            return Ok(false);
+        };
+        let ready = matches!(
+            tokio::time::timeout(timeout, rx.wait_for(|r| *r)).await,
+            Ok(Ok(_))
+        );
+        // Timed out, or the stream task exited (sender dropped) => not ready.
+        Ok(ready)
+    }
+
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         self.flush_pending_audio(true).await?;
         let notify = Arc::new(Notify::new());
@@ -404,5 +506,45 @@ impl SttProvider for ClusterSherpaStt {
             inner.utterance_active = false;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn denied_streak_logs_first_then_every_five_seconds() {
+        let t0 = Instant::now();
+        let mut s = OpenStreak::default();
+        assert_eq!(s.mark_denied(t0), DeniedLog::First);
+        assert_eq!(s.mark_denied(t0 + Duration::from_millis(200)), DeniedLog::Silent);
+        assert_eq!(s.mark_denied(t0 + Duration::from_secs(4)), DeniedLog::Silent);
+        assert_eq!(
+            s.mark_denied(t0 + Duration::from_secs(5)),
+            DeniedLog::Still { attempts: 4 }
+        );
+        assert_eq!(s.mark_denied(t0 + Duration::from_secs(6)), DeniedLog::Silent);
+        assert_eq!(
+            s.mark_denied(t0 + Duration::from_secs(10)),
+            DeniedLog::Still { attempts: 6 }
+        );
+    }
+
+    #[test]
+    fn ready_after_denials_reports_attempts_and_resets() {
+        let t0 = Instant::now();
+        let mut s = OpenStreak::default();
+        s.mark_denied(t0);
+        s.mark_denied(t0 + Duration::from_millis(200));
+        assert_eq!(s.mark_ready(t0 + Duration::from_millis(450)), Some((2, 450)));
+        assert_eq!(s.mark_ready(t0 + Duration::from_secs(1)), None);
+        assert_eq!(s.mark_denied(t0 + Duration::from_secs(2)), DeniedLog::First);
+    }
+
+    #[test]
+    fn ready_without_denials_is_silent() {
+        let mut s = OpenStreak::default();
+        assert_eq!(s.mark_ready(Instant::now()), None);
     }
 }

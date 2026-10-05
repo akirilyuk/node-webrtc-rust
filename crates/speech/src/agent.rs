@@ -2426,7 +2426,16 @@ impl VoiceAgent {
             if !inner.lid_buffering || !language_id_enabled(&inner.config.language_id) {
                 return;
             }
-            inner.lid_pcm_buffer.extend_from_slice(mono_bytes);
+            // Bound the buffer to 2x the clip LID will use, keeping the OLDEST audio (the
+            // clip is the head of the buffer); a long VAD-open stretch must not grow it.
+            let max_clip_ms = crate::config::resolved_lid_max_clip_ms(
+                inner.config.language_id.as_ref().expect("enabled"),
+            );
+            let cap =
+                (crate::pcm::STT_PCM_SAMPLE_RATE as usize * max_clip_ms as usize * 2 / 1000) * 2;
+            let room = cap.saturating_sub(inner.lid_pcm_buffer.len());
+            let take = room.min(mono_bytes.len());
+            inner.lid_pcm_buffer.extend_from_slice(&mono_bytes[..take]);
             if frame_active {
                 inner.lid_voiced_ms = inner
                     .lid_voiced_ms
@@ -2714,7 +2723,7 @@ impl VoiceAgent {
                 .saturating_mul(max_clip_ms as u64)
                 .saturating_mul(2)
                 / 1000;
-            let buffer = inner.lid_pcm_buffer.clone();
+            let buffer = std::mem::take(&mut inner.lid_pcm_buffer);
             let pcm = if buffer.len() > max_bytes as usize {
                 Bytes::copy_from_slice(&buffer[..max_bytes as usize])
             } else {

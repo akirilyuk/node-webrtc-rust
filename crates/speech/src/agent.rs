@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -80,11 +80,15 @@ impl Drop for TtsWorkerAliveGuard {
     }
 }
 
+/// `VOICE_DEBUG=1|true|yes`, read once per process.
 fn voice_debug_enabled() -> bool {
-    matches!(
-        std::env::var("VOICE_DEBUG").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    )
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("VOICE_DEBUG").ok().as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    })
 }
 
 fn voice_debug(message: impl AsRef<str>) {
@@ -209,6 +213,17 @@ struct AgentInner {
     stt_hold: Option<SttHold>,
     /// The replay ring was started at the SpeechStart pre-roll flush (keeps the onset audio).
     replay_begun_at_pre_roll: bool,
+    /// Transcripts returned by `SttProvider::push_and_poll`, handled by the next
+    /// `poll_stt_transcripts` (before it polls the provider). Cleared wherever STT state resets.
+    pending_transcripts: VecDeque<SttTranscript>,
+}
+
+/// Result of handling one STT transcript.
+enum HandleOutcome {
+    /// Emitted its events (or had nothing more to do); keep draining.
+    Continue,
+    /// Ignored (empty leftover final while the VAD is still speaking); keep draining.
+    Skip,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -386,6 +401,7 @@ impl VoiceAgent {
                 replay_final_context: None,
                 stt_hold: None,
                 replay_begun_at_pre_roll: false,
+                pending_transcripts: VecDeque::new(),
             })),
             stt: Mutex::new(stt),
             stt_ready_wait_override_ms: AtomicU64::new(0),
@@ -604,6 +620,7 @@ impl VoiceAgent {
             inner.last_partial_text = None;
             inner.last_replay_snapshot = None;
             inner.utterance_replay_buffer.invalidate();
+            inner.pending_transcripts.clear();
             buffered_ms
         };
         self.emit(SpeechEvent::stt_hold_started(
@@ -861,6 +878,8 @@ impl VoiceAgent {
         {
             let mut inner = self.inner.lock().await;
             inner.config.stt = Some(config.clone());
+            // Transcripts of the swapped-out STT must not surface after the swap.
+            inner.pending_transcripts.clear();
         }
         self.emit(SpeechEvent::stt_config_updated(&config));
         Ok(())
@@ -914,6 +933,7 @@ impl VoiceAgent {
         inner.partials_emitted_this_utterance = false;
         inner.barge_awaiting_stt_partial = false;
         inner.defer_utterance_finalize_until_hold = false;
+        inner.pending_transcripts.clear();
     }
 
     fn clear_stt_listen_timer(inner: &mut AgentInner) {
@@ -3459,7 +3479,18 @@ impl VoiceAgent {
         }
         let mut stt = self.stt.lock().await;
         if let Some(stt) = stt.as_mut() {
-            stt.push_audio(mono_bytes).await?;
+            let mut buf = Vec::new();
+            stt.push_and_poll(mono_bytes, &mut buf).await?;
+            if !buf.is_empty() {
+                // Queued, not handled: `poll_stt_transcripts` handles them outside the STT lock.
+                // Done while the STT lock is held so a config swap cannot slip in between.
+                let mut inner = self.inner.lock().await;
+                if inner.stt_enabled && inner.stt_hold.is_none() {
+                    for transcript in buf {
+                        enqueue_transcript(&mut inner.pending_transcripts, transcript);
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -3536,6 +3567,15 @@ impl VoiceAgent {
                 return Ok(());
             }
         }
+        // Transcripts queued by `push_and_poll`, in order, one at a time so a config swap or
+        // hold that happens while handling one drops the rest.
+        loop {
+            let queued = self.inner.lock().await.pending_transcripts.pop_front();
+            let Some(transcript) = queued else {
+                break;
+            };
+            self.handle_stt_transcript(transcript).await?;
+        }
         loop {
             let transcript = {
                 let mut stt = self.stt.lock().await;
@@ -3547,80 +3587,86 @@ impl VoiceAgent {
             let Some(transcript) = transcript else {
                 break;
             };
-            match transcript {
-                SttTranscript::Partial(text) => {
-                    voice_debug(format!("STT partial: {text}"));
-                    {
-                        let mut inner = self.inner.lock().await;
-                        inner.partials_emitted_this_utterance = true;
-                        inner.last_partial_text = Some(text.clone());
-                        Self::clear_stt_listen_timer(&mut inner);
-                        Self::refresh_utterance_finalize_after_partial(&mut inner);
-                    }
-                    self.emit_user_speaking_start_if_needed().await;
-                    // Partial must precede barge_in in the event stream (semantic roundtrip E2E).
-                    let utterance_id = self.inner.lock().await.current_utterance_id.clone();
-                    self.emit(SpeechEvent::user_speech_partial(text.clone(), utterance_id));
-                    self.try_stt_gated_barge_in(&text).await?;
-                }
-                SttTranscript::Final(text) => {
-                    if text.trim().is_empty() {
-                        let still_speaking = {
-                            let inner = self.inner.lock().await;
-                            Self::vad_is_speaking(&inner)
-                        };
-                        if still_speaking {
-                            voice_debug(
-                                "ignore empty leftover user_speech_final while VAD still speaking",
-                            );
-                            continue;
-                        }
-                    }
-                    voice_debug(format!("STT final: {text}"));
-                    self.emit_user_speaking_start_if_needed().await;
-                    self.try_stt_gated_barge_in(&text).await?;
-                    let (emit_speaking_end, close_stream) = {
-                        let mut inner = self.inner.lock().await;
-                        inner.stt_final_emitted_this_utterance = true;
-                        inner.stt_finalize_pending = false;
-                        inner.stt_endpoint_closing_started = false;
-                        Self::clear_stt_listen_timer(&mut inner);
-                        Self::clear_utterance_finalize_timer(&mut inner);
-                        inner.vad_triggered_this_utterance = false;
-                        let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
-                        if emit_end {
-                            inner.stt_speaking_end_emitted_this_utterance = true;
-                        }
-                        let close_stream = inner.stt_stream_open || inner.user_stt_session_open;
-                        if inner.stt_stream_open {
-                            inner.stt_stream_open = false;
-                        }
-                        if inner.user_stt_session_open {
-                            inner.user_stt_session_open = false;
-                        }
-                        (emit_end, close_stream)
-                    };
-                    if close_stream {
-                        self.emit(SpeechEvent::stt_stream_end());
-                        self.emit(SpeechEvent::user_stt_end());
-                    }
-                    if emit_speaking_end {
-                        voice_debug("emit user_speaking_end (paired with STT final)");
-                        self.emit_user_speaking_end_after_lid_gate().await;
-                    }
-                    voice_debug(format!(
-                        "emit user_speech_final: {}",
-                        if text.len() > 80 {
-                            format!("{}…", &text[..80])
-                        } else {
-                            text.clone()
-                        }
-                    ));
-                    self.emit_utterance_final(text, false).await;
-                }
-            }
+            self.handle_stt_transcript(transcript).await?;
         }
         Ok(())
+    }
+
+    /// Emit the events for one STT transcript (shared by queued and freshly polled transcripts).
+    async fn handle_stt_transcript(&self, transcript: SttTranscript) -> SpeechResult<HandleOutcome> {
+        match transcript {
+            SttTranscript::Partial(text) => {
+                voice_debug(format!("STT partial: {text}"));
+                {
+                    let mut inner = self.inner.lock().await;
+                    inner.partials_emitted_this_utterance = true;
+                    inner.last_partial_text = Some(text.clone());
+                    Self::clear_stt_listen_timer(&mut inner);
+                    Self::refresh_utterance_finalize_after_partial(&mut inner);
+                }
+                self.emit_user_speaking_start_if_needed().await;
+                // Partial must precede barge_in in the event stream (semantic roundtrip E2E).
+                let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+                self.emit(SpeechEvent::user_speech_partial(text.clone(), utterance_id));
+                self.try_stt_gated_barge_in(&text).await?;
+            }
+            SttTranscript::Final(text) => {
+                if text.trim().is_empty() {
+                    let still_speaking = {
+                        let inner = self.inner.lock().await;
+                        Self::vad_is_speaking(&inner)
+                    };
+                    if still_speaking {
+                        voice_debug(
+                            "ignore empty leftover user_speech_final while VAD still speaking",
+                        );
+                        return Ok(HandleOutcome::Skip);
+                    }
+                }
+                voice_debug(format!("STT final: {text}"));
+                self.emit_user_speaking_start_if_needed().await;
+                self.try_stt_gated_barge_in(&text).await?;
+                let (emit_speaking_end, close_stream) = {
+                    let mut inner = self.inner.lock().await;
+                    inner.stt_final_emitted_this_utterance = true;
+                    inner.stt_finalize_pending = false;
+                    inner.stt_endpoint_closing_started = false;
+                    Self::clear_stt_listen_timer(&mut inner);
+                    Self::clear_utterance_finalize_timer(&mut inner);
+                    inner.vad_triggered_this_utterance = false;
+                    let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
+                    if emit_end {
+                        inner.stt_speaking_end_emitted_this_utterance = true;
+                    }
+                    let close_stream = inner.stt_stream_open || inner.user_stt_session_open;
+                    if inner.stt_stream_open {
+                        inner.stt_stream_open = false;
+                    }
+                    if inner.user_stt_session_open {
+                        inner.user_stt_session_open = false;
+                    }
+                    (emit_end, close_stream)
+                };
+                if close_stream {
+                    self.emit(SpeechEvent::stt_stream_end());
+                    self.emit(SpeechEvent::user_stt_end());
+                }
+                if emit_speaking_end {
+                    voice_debug("emit user_speaking_end (paired with STT final)");
+                    self.emit_user_speaking_end_after_lid_gate().await;
+                }
+                voice_debug(format!(
+                    "emit user_speech_final: {}",
+                    if text.len() > 80 {
+                        format!("{}…", &text[..80])
+                    } else {
+                        text.clone()
+                    }
+                ));
+                self.emit_utterance_final(text, false).await;
+            }
+        }
+        Ok(HandleOutcome::Continue)
     }
 
     pub(crate) fn emit(&self, event: SpeechEvent) {
@@ -4004,6 +4050,16 @@ fn split_stereo_pcm_frames(pcm: &Bytes, _total_duration_ms: u32) -> Vec<(Bytes, 
     frames
 }
 
+/// Append a transcript to the queue of `push_and_poll` results. A queued trailing `Partial` is
+/// superseded by any newer transcript (the old push-then-poll flow read the result once per poll,
+/// so only the latest text was ever emitted). A `Final` is never dropped.
+fn enqueue_transcript(queue: &mut VecDeque<SttTranscript>, transcript: SttTranscript) {
+    if matches!(queue.back(), Some(SttTranscript::Partial(_))) {
+        queue.pop_back();
+    }
+    queue.push_back(transcript);
+}
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -4024,6 +4080,42 @@ mod tests {
         fn create_tts(&self, _config: &TtsConfig) -> SpeechResult<Box<dyn TtsProvider>> {
             Err(SpeechError::Config("noop".into()))
         }
+    }
+
+    fn queue_after(items: Vec<SttTranscript>) -> Vec<SttTranscript> {
+        let mut q = VecDeque::new();
+        for t in items {
+            enqueue_transcript(&mut q, t);
+        }
+        q.into_iter().collect()
+    }
+
+    fn p(s: &str) -> SttTranscript {
+        SttTranscript::Partial(s.into())
+    }
+
+    fn f(s: &str) -> SttTranscript {
+        SttTranscript::Final(s.into())
+    }
+
+    #[test]
+    fn partial_then_partial_keeps_the_newest() {
+        assert_eq!(queue_after(vec![p("a"), p("ab")]), vec![p("ab")]);
+    }
+
+    #[test]
+    fn partial_then_final_keeps_only_the_final() {
+        assert_eq!(queue_after(vec![p("a"), f("a b")]), vec![f("a b")]);
+    }
+
+    #[test]
+    fn final_then_partial_keeps_both() {
+        assert_eq!(queue_after(vec![f("x"), p("y")]), vec![f("x"), p("y")]);
+    }
+
+    #[test]
+    fn final_then_final_keeps_both() {
+        assert_eq!(queue_after(vec![f("x"), f("y")]), vec![f("x"), f("y")]);
     }
 
     #[test]

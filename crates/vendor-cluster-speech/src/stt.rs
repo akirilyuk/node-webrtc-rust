@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use node_webrtc_rust_speech::config::{SttConfig, VoiceSessionContext};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
@@ -152,7 +152,7 @@ struct ClusterSherpaSttInner {
     stream_task: Option<JoinHandle<()>>,
     /// `true` once the current stream received `Ready`; `false` while (re)opening or after exit.
     ready_rx: Option<watch::Receiver<bool>>,
-    pending_audio: Vec<u8>,
+    pending_audio: BytesMut,
     utterance_active: bool,
     mid_utterance_failure: Option<String>,
 }
@@ -172,7 +172,7 @@ impl ClusterSherpaStt {
                 cmd_tx: None,
                 stream_task: None,
                 ready_rx: None,
-                pending_audio: Vec::new(),
+                pending_audio: BytesMut::new(),
                 utterance_active: false,
                 mid_utterance_failure: None,
             })),
@@ -226,11 +226,10 @@ impl ClusterSherpaStt {
             if !force && inner.pending_audio.len() < COALESCE_MAX_BYTES {
                 return Ok(());
             }
-            Bytes::copy_from_slice(&inner.pending_audio)
+            inner.pending_audio.split().freeze()
         };
         {
-            let mut inner = self.inner.lock().await;
-            inner.pending_audio.clear();
+            let inner = self.inner.lock().await;
             let Some(cmd_tx) = inner.cmd_tx.as_ref() else {
                 return Ok(());
             };
@@ -349,13 +348,14 @@ async fn stream_worker(
                     match cmd {
                         Some(StreamCommand::Audio(pcm)) => {
                             utterance_open = true;
+                            let pcm_len = pcm.len();
                             let audio = TranscribeRequest {
                                 msg: Some(transcribe_request::Msg::Audio(SttAudio {
-                                    pcm_s16le: pcm.to_vec(),
+                                    pcm_s16le: pcm,
                                 })),
                             };
                             let sent = req_tx.send(audio).await;
-                            let removed = sub_queued_saturating(&queued_bytes, pcm.len());
+                            let removed = sub_queued_saturating(&queued_bytes, pcm_len);
                             sub_stt_queued_bytes(removed);
                             if sent.is_err() {
                                 break;

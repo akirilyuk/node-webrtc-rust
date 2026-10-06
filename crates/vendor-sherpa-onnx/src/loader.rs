@@ -1,6 +1,7 @@
 //! Sherpa ONNX model construction (shared by pool and tests).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
@@ -61,12 +62,20 @@ static STT_RECOGNIZER_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static TTS_ENGINE_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static LID_MODEL_CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// `VOICE_DEBUG=1|true|yes`, read once per process.
+pub(crate) fn voice_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("VOICE_DEBUG").ok().as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    })
+}
+
 /// `[voice-debug]` line on stderr when `VOICE_DEBUG=1|true|yes` (never logs transcript text).
 pub(crate) fn voice_debug(message: impl AsRef<str>) {
-    if matches!(
-        std::env::var("VOICE_DEBUG").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    ) {
+    if voice_debug_enabled() {
         eprintln!("[voice-debug] {}", message.as_ref());
     }
 }

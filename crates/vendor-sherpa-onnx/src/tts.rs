@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -14,11 +12,12 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
-use crate::audio::{f32_mono_to_stereo_48k_s16le, slice_for_sink, StreamingStereo48kResampler};
+use crate::audio::{align_stereo_pcm_to_20ms, slice_for_sink, StreamingStereo48kResampler};
 use crate::phrase_cache::{
     build_cache_key, build_metric_attrs, lookup, normalize_phrase_text, phrase_cache_enabled, store,
 };
 use crate::pool::{SherpaModelPool, TtsEnginePool};
+use crate::sentences::split_sentences;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
 
 static TTS_GENERATE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -128,6 +127,15 @@ impl SherpaTts {
             .unwrap_or_else(|| "en".to_string())
     }
 
+    /// Synthesize `normalized` one sentence at a time.
+    ///
+    /// Every sentence takes the TTS permit and an engine on its own and releases both
+    /// before the next one. The permit queue is FIFO, so a short request that arrives
+    /// while a long one is mid-text waits for one sentence, not the whole text.
+    ///
+    /// One resampler spans all sentences so the 48 kHz phase stays continuous. The
+    /// returned clip is the byte-for-byte concatenation of what was produced (padded to
+    /// 20 ms), so it matches the progressive stream and needs no second resample.
     async fn synthesize_miss(
         &self,
         normalized: &str,
@@ -135,152 +143,270 @@ impl SherpaTts {
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<(TtsAudioChunk, bool)> {
         let engine_pool = self.ensure_engine_pool().await?;
-        let shared = engine_pool.acquire();
-        let input = normalized.to_string();
         let speaker_id = self.speaker_id;
         let speed = self.speed;
-        let text_len = normalized.len();
         let tts_semaphore = self.pool.tts_semaphore();
 
-        let queue_wait_start = std::time::Instant::now();
-        let _permit = tts_semaphore
-            .acquire()
-            .await
-            .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
-        let queue_wait_ms = queue_wait_start.elapsed().as_secs_f64() * 1000.0;
-        otel::record_sherpa_pool_wait_ms(queue_wait_ms, Some(attrs));
-        otel::record_sherpa_tts_queue_wait_ms(queue_wait_ms, attrs);
-
+        let mut sentences = split_sentences(normalized);
+        if sentences.is_empty() {
+            // No letters or digits: keep the old behaviour and hand the text to the engine.
+            sentences.push(normalized.to_string());
+        }
         voice_debug(format!(
-            "tts synthesis start text_len={text_len} stream={}",
+            "tts synthesis start text_len={} sentences={} stream={}",
+            normalized.len(),
+            sentences.len(),
             sink.is_some()
         ));
-        let wall_start = std::time::Instant::now();
 
-        let shared_for_blocking = Arc::clone(&shared);
-        let (chunk, completed) =
-            tokio::task::spawn_blocking(move || -> SpeechResult<(TtsAudioChunk, bool)> {
-                let _active = shared_for_blocking.track_session();
-                let gen_config = GenerationConfig {
-                    sid: speaker_id,
-                    speed,
-                    ..Default::default()
-                };
+        let resampler: SharedResampler = Arc::new(StdMutex::new(None));
+        let mut all_pcm: Vec<u8> = Vec::new();
+        let mut completed = true;
+        let mut synth_wall_ms = 0.0_f64;
+        let mut counted = false;
 
-                let tts = shared_for_blocking
-                    .tts
-                    .lock()
-                    .map_err(|_| SpeechError::Internal("sherpa TTS engine lock poisoned".into()))?;
+        for sentence in sentences {
+            if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
+                completed = false;
+                break;
+            }
 
+            let queue_wait_start = std::time::Instant::now();
+            let permit = tts_semaphore
+                .acquire()
+                .await
+                .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
+            let queue_wait_ms = queue_wait_start.elapsed().as_secs_f64() * 1000.0;
+            otel::record_sherpa_pool_wait_ms(queue_wait_ms, Some(attrs));
+            otel::record_sherpa_tts_queue_wait_ms(queue_wait_ms, attrs);
+
+            if !counted {
+                // One per synthesize_miss call, not per sentence.
                 TTS_GENERATE_COUNT.fetch_add(1, Ordering::SeqCst);
-                let src_rate = tts.sample_rate().max(1) as u32;
+                counted = true;
+            }
 
-                // Set by the progress callback right before it returns `false`; a stopped
-                // synthesis holds partial audio and must never reach the phrase cache.
-                let stopped = Arc::new(AtomicBool::new(false));
-                let mut sink_was_cancelled = false;
-
-                let audio = if let Some(sink) = sink {
-                    let sink_cb = sink.clone();
-                    let stopped_cb = Arc::clone(&stopped);
-                    let cancel = Arc::clone(&sink_cb.cancel);
-                    // Rc so progress callback and post-generate flush share one resampler.
-                    let resampler =
-                        Rc::new(RefCell::new(StreamingStereo48kResampler::new(src_rate)));
-                    let resampler_cb = Rc::clone(&resampler);
-                    let audio = tts
-                        .generate_with_config(
-                            &input,
-                            &gen_config,
-                            Some(move |samples: &[f32], _progress: f32| {
-                                if cancel.load(Ordering::SeqCst) {
-                                    voice_debug("tts synthesis cancelled via progressive callback");
-                                    stopped_cb.store(true, Ordering::SeqCst);
-                                    return false;
-                                }
-                                // VITS (Piper) invokes the callback once per sentence with that
-                                // sentence's samples only — not a cumulative buffer. Feed each
-                                // chunk in full into the continuous resampler.
-                                if samples.is_empty() {
-                                    return true;
-                                }
-                                let pcm = resampler_cb.borrow_mut().push_f32(samples);
-                                if pcm.is_empty() {
-                                    return true;
-                                }
-                                // One Piper sentence can be many seconds of audio; cap each
-                                // sink chunk so a single gRPC message stays small.
-                                for slice in slice_for_sink(&pcm) {
-                                    let duration_ms = duration_ms_from_mono_s16le(
-                                        slice.len() / 2,
-                                        WEBRTC_PCM_SAMPLE_RATE,
-                                    )
-                                    .max(1);
-                                    if !sink_cb.send(TtsAudioChunk {
-                                        pcm: slice,
-                                        duration_ms,
-                                    }) {
-                                        stopped_cb.store(true, Ordering::SeqCst);
-                                        return false;
-                                    }
-                                }
-                                true
-                            }),
-                        )
-                        .ok_or_else(|| SpeechError::Vendor {
-                            vendor: "local-sherpa".into(),
-                            message: "OfflineTts generation returned no audio".into(),
-                        })?;
-
-                    let tail = resampler.borrow_mut().finish();
-                    for slice in slice_for_sink(&tail) {
-                        let duration_ms =
-                            duration_ms_from_mono_s16le(slice.len() / 2, WEBRTC_PCM_SAMPLE_RATE)
-                                .max(1);
-                        if !sink.send(TtsAudioChunk {
-                            pcm: slice,
-                            duration_ms,
-                        }) {
-                            break;
-                        }
-                    }
-                    sink_was_cancelled = sink.is_cancelled();
-                    audio
-                } else {
-                    tts.generate_with_config(&input, &gen_config, None::<fn(&[f32], f32) -> bool>)
-                        .ok_or_else(|| SpeechError::Vendor {
-                            vendor: "local-sherpa".into(),
-                            message: "OfflineTts generation returned no audio".into(),
-                        })?
-                };
-
-                let completed = !stopped.load(Ordering::SeqCst) && !sink_was_cancelled;
-                if !completed {
-                    return Ok((
-                        TtsAudioChunk {
-                            pcm: Bytes::new(),
-                            duration_ms: 0,
-                        },
-                        false,
-                    ));
-                }
-
-                let src_rate = audio.sample_rate().max(1) as u32;
-                let (pcm, duration_ms) = f32_mono_to_stereo_48k_s16le(audio.samples(), src_rate);
-
-                Ok((TtsAudioChunk { pcm, duration_ms }, true))
+            let sentence_start = std::time::Instant::now();
+            let engine_pool = Arc::clone(&engine_pool);
+            let sink_for_blocking = sink.clone();
+            let resampler_for_blocking = Arc::clone(&resampler);
+            let outcome = tokio::task::spawn_blocking(move || {
+                synthesize_sentence(
+                    &engine_pool,
+                    &sentence,
+                    speaker_id,
+                    speed,
+                    sink_for_blocking,
+                    resampler_for_blocking,
+                )
             })
             .await
             .map_err(|err| SpeechError::Internal(err.to_string()))??;
+            drop(permit);
+            synth_wall_ms += sentence_start.elapsed().as_secs_f64() * 1000.0;
 
-        otel::record_sherpa_tts_synth_wall_ms(wall_start.elapsed().as_secs_f64() * 1000.0, attrs);
+            for pcm in &outcome.pcm {
+                all_pcm.extend_from_slice(pcm);
+            }
+            if outcome.stopped || sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
+                completed = false;
+                break;
+            }
+        }
+
+        if !completed {
+            otel::record_sherpa_tts_synth_wall_ms(synth_wall_ms, attrs);
+            voice_debug(format!(
+                "tts synthesis done wall_ms={synth_wall_ms:.0} audio_duration_ms=0 completed=false"
+            ));
+            return Ok((
+                TtsAudioChunk {
+                    pcm: Bytes::new(),
+                    duration_ms: 0,
+                },
+                false,
+            ));
+        }
+
+        let tail = resampler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+            .map(StreamingStereo48kResampler::finish)
+            .unwrap_or_default();
+        if !tail.is_empty() {
+            all_pcm.extend_from_slice(&tail);
+            if let Some(sink) = sink.as_ref() {
+                for slice in slice_for_sink(&tail) {
+                    let duration_ms =
+                        duration_ms_from_mono_s16le(slice.len() / 2, WEBRTC_PCM_SAMPLE_RATE).max(1);
+                    if !sink.send(TtsAudioChunk {
+                        pcm: slice,
+                        duration_ms,
+                    }) {
+                        break;
+                    }
+                }
+            }
+        }
+        // The tail send can lose a race with barge-in; that is still a cancelled synthesis.
+        if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
+            otel::record_sherpa_tts_synth_wall_ms(synth_wall_ms, attrs);
+            return Ok((
+                TtsAudioChunk {
+                    pcm: Bytes::new(),
+                    duration_ms: 0,
+                },
+                false,
+            ));
+        }
+
+        let (pcm, duration_ms) = align_stereo_pcm_to_20ms(Bytes::from(all_pcm));
+        otel::record_sherpa_tts_synth_wall_ms(synth_wall_ms, attrs);
         voice_debug(format!(
-            "tts synthesis done wall_ms={} audio_duration_ms={} completed={completed}",
-            wall_start.elapsed().as_millis(),
-            chunk.duration_ms
+            "tts synthesis done wall_ms={synth_wall_ms:.0} audio_duration_ms={duration_ms} completed=true"
         ));
-        Ok((chunk, completed))
+        Ok((TtsAudioChunk { pcm, duration_ms }, true))
     }
+}
+
+/// One resampler shared by every sentence of a synthesis. Created on the first
+/// sentence, once the engine's sample rate is known.
+type SharedResampler = Arc<StdMutex<Option<StreamingStereo48kResampler>>>;
+
+struct SentenceOutcome {
+    /// Stereo 48 kHz PCM produced for this sentence (already sent to the sink, if any).
+    pcm: Vec<Bytes>,
+    /// Generation was stopped (cancel or sink gone); the audio is partial.
+    stopped: bool,
+}
+
+/// Synthesize one sentence on a blocking thread. Takes an engine from the pool, holds
+/// its lock for this sentence only.
+fn synthesize_sentence(
+    engine_pool: &TtsEnginePool,
+    sentence: &str,
+    speaker_id: i32,
+    speed: f32,
+    sink: Option<TtsProgressiveSink>,
+    resampler: SharedResampler,
+) -> SpeechResult<SentenceOutcome> {
+    if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
+        return Ok(SentenceOutcome {
+            pcm: Vec::new(),
+            stopped: true,
+        });
+    }
+
+    let shared = engine_pool.acquire();
+    let _active = shared.track_session();
+    let gen_config = GenerationConfig {
+        sid: speaker_id,
+        speed,
+        ..Default::default()
+    };
+    let tts = shared
+        .tts
+        .lock()
+        .map_err(|_| SpeechError::Internal("sherpa TTS engine lock poisoned".into()))?;
+    let src_rate = tts.sample_rate().max(1) as u32;
+
+    // Set by the progress callback right before it returns `false`; a stopped
+    // synthesis holds partial audio and must never reach the phrase cache.
+    let stopped = Arc::new(AtomicBool::new(false));
+    let produced: Arc<StdMutex<Vec<Bytes>>> = Arc::new(StdMutex::new(Vec::new()));
+
+    let push_pcm = {
+        let resampler = Arc::clone(&resampler);
+        move |samples: &[f32]| -> Bytes {
+            resampler
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get_or_insert_with(|| StreamingStereo48kResampler::new(src_rate))
+                .push_f32(samples)
+        }
+    };
+
+    if let Some(sink) = sink {
+        let stopped_cb = Arc::clone(&stopped);
+        let produced_cb = Arc::clone(&produced);
+        let sink_cb = sink.clone();
+        generate(
+            &tts,
+            sentence,
+            &gen_config,
+            Some(move |samples: &[f32], _progress: f32| {
+                if sink_cb.is_cancelled() {
+                    voice_debug("tts synthesis cancelled via progressive callback");
+                    stopped_cb.store(true, Ordering::SeqCst);
+                    return false;
+                }
+                // VITS (Piper) invokes the callback once per sentence with that
+                // sentence's samples only, not a cumulative buffer. Feed each chunk
+                // in full into the continuous resampler.
+                if samples.is_empty() {
+                    return true;
+                }
+                let pcm = push_pcm(samples);
+                if pcm.is_empty() {
+                    return true;
+                }
+                // One Piper sentence can be many seconds of audio; cap each sink chunk
+                // so a single gRPC message stays small.
+                for slice in slice_for_sink(&pcm) {
+                    let duration_ms =
+                        duration_ms_from_mono_s16le(slice.len() / 2, WEBRTC_PCM_SAMPLE_RATE).max(1);
+                    if !sink_cb.send(TtsAudioChunk {
+                        pcm: slice,
+                        duration_ms,
+                    }) {
+                        stopped_cb.store(true, Ordering::SeqCst);
+                        return false;
+                    }
+                }
+                produced_cb
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(pcm);
+                true
+            }),
+        )?;
+    } else {
+        let audio = generate(&tts, sentence, &gen_config, None::<fn(&[f32], f32) -> bool>)?;
+        let pcm = push_pcm(audio.samples());
+        if !pcm.is_empty() {
+            produced
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(pcm);
+        }
+    }
+
+    let pcm = std::mem::take(
+        &mut *produced
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    Ok(SentenceOutcome {
+        pcm,
+        stopped: stopped.load(Ordering::SeqCst),
+    })
+}
+
+fn generate<F>(
+    tts: &sherpa_onnx::OfflineTts,
+    sentence: &str,
+    gen_config: &GenerationConfig,
+    callback: Option<F>,
+) -> SpeechResult<sherpa_onnx::GeneratedAudio>
+where
+    F: FnMut(&[f32], f32) -> bool + 'static,
+{
+    tts.generate_with_config(sentence, gen_config, callback)
+        .ok_or_else(|| SpeechError::Vendor {
+            vendor: "local-sherpa".into(),
+            message: "OfflineTts generation returned no audio".into(),
+        })
 }
 
 pub(crate) fn parse_speaker_id(config: &TtsConfig) -> i32 {

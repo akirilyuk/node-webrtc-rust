@@ -138,6 +138,10 @@ run_rust_ignored() {
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_sink_chunks_bounded_test -- \
       --ignored --nocapture --test-threads=1
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust tts_sentence_scheduling_test --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_sentence_scheduling_test -- \
+      --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust lid_stt_parallel_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_stt_parallel_test -- \
       --ignored --nocapture --test-threads=1

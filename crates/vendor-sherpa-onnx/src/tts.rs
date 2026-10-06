@@ -12,7 +12,7 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
-use crate::audio::{align_stereo_pcm_to_20ms, slice_for_sink, StreamingStereo48kResampler};
+use crate::audio::{pad_stereo_pcm_to_20ms, slice_for_sink, StreamingStereo48kResampler};
 use crate::loader::voice_debug;
 use crate::phrase_cache::{
     build_cache_key, build_metric_attrs, lookup, normalize_phrase_text, phrase_cache_enabled, store,
@@ -249,7 +249,8 @@ impl SherpaTts {
             ));
         }
 
-        let (pcm, duration_ms) = align_stereo_pcm_to_20ms(Bytes::from(all_pcm));
+        let duration_ms = pad_stereo_pcm_to_20ms(&mut all_pcm);
+        let pcm = Bytes::from(all_pcm);
         otel::record_sherpa_tts_synth_wall_ms(synth_wall_ms, attrs);
         voice_debug(format!(
             "tts synthesis done wall_ms={synth_wall_ms:.0} audio_duration_ms={duration_ms} completed=true"

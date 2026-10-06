@@ -1438,7 +1438,7 @@ impl VoiceAgent {
                     break;
                 }
                 loop {
-                    if shutdown.load(Ordering::SeqCst) {
+                    if shutdown.load(Ordering::SeqCst) || weak_self.strong_count() == 0 {
                         break;
                     }
                     let job = {
@@ -1650,7 +1650,14 @@ impl VoiceAgent {
         )
         .await;
         tts_drain_wake.notify_one();
-        Self::wait_job_playback_idle(tts_buffer, inner, event_bus, failure_gen_at_start).await
+        Self::wait_job_playback_idle(
+            tts_buffer,
+            inner,
+            event_bus,
+            weak_self,
+            failure_gen_at_start,
+        )
+        .await
     }
 
     /// Default path: stream PCM chunks into the buffer while synthesis runs so
@@ -1766,8 +1773,14 @@ impl VoiceAgent {
                 {
                     return Ok(());
                 }
-                Self::wait_job_playback_idle(tts_buffer, inner, event_bus, failure_gen_at_start)
-                    .await
+                Self::wait_job_playback_idle(
+                    tts_buffer,
+                    inner,
+                    event_bus,
+                    weak_self,
+                    failure_gen_at_start,
+                )
+                .await
             }
             Err(error) => {
                 tts_buffer.set_producing(false).await;
@@ -1905,10 +1918,16 @@ impl VoiceAgent {
         tts_buffer: &TtsBuffer,
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
+        weak_self: &Weak<VoiceAgent>,
         failure_gen_at_start: u64,
     ) -> SpeechResult<()> {
         let deadline = Instant::now() + std::time::Duration::from_secs(45);
         loop {
+            // Dropped without stop(): the drain ended silently, so nothing will ever clear
+            // `agent_speaking`; do not hold the synthesis worker (and the writer) for 45 s.
+            if weak_self.strong_count() == 0 {
+                return Ok(());
+            }
             {
                 let guard = inner.lock().await;
                 // stop() clears running before joining workers — do not block shutdown.
@@ -3667,6 +3686,7 @@ impl VoiceAgent {
                 tts_buffer,
                 inner,
                 event_bus,
+                weak_self,
                 drain_generation,
                 &mut agent_start_emitted,
                 &mut played_any,
@@ -3692,6 +3712,7 @@ impl VoiceAgent {
                 tts_buffer,
                 inner,
                 event_bus,
+                weak_self,
                 drain_generation,
                 &mut agent_start_emitted,
                 &mut played_any,
@@ -3726,6 +3747,7 @@ impl VoiceAgent {
                     &writer,
                     tts_buffer,
                     inner,
+                    weak_self,
                     drain_generation,
                     silence_ms,
                     &mut pace,
@@ -3742,6 +3764,7 @@ impl VoiceAgent {
         tts_buffer: &TtsBuffer,
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
+        weak_self: &Weak<VoiceAgent>,
         drain_generation: u64,
         agent_start_emitted: &mut bool,
         played_any: &mut bool,
@@ -3749,6 +3772,11 @@ impl VoiceAgent {
         frames: Vec<(Bytes, u32)>,
     ) -> SpeechResult<TtsDrainWrite> {
         for (frame, duration_ms) in frames {
+            if weak_self.strong_count() == 0 {
+                // Dropped without stop(): no owner and no listener remain, so end silently.
+                voice_debug("TTS drain stopped (agent dropped)");
+                return Ok(TtsDrainWrite::Stopped);
+            }
             *played_any = true;
             if !*agent_start_emitted {
                 {
@@ -3781,12 +3809,17 @@ impl VoiceAgent {
             if !Self::pace_tts_drain_frame_while_running(
                 tts_buffer,
                 inner,
+                weak_self,
                 drain_generation,
                 duration_ms,
                 pace,
             )
             .await
             {
+                if weak_self.strong_count() == 0 {
+                    voice_debug("TTS drain stopped during frame pacing (agent dropped)");
+                    return Ok(TtsDrainWrite::Stopped);
+                }
                 voice_debug("TTS drain stopped during frame pacing (barge-in flush / stop)");
                 let still_speaking = {
                     let guard = inner.lock().await;
@@ -3806,6 +3839,7 @@ impl VoiceAgent {
         writer: &PcmWriter,
         tts_buffer: &TtsBuffer,
         inner: &Arc<Mutex<AgentInner>>,
+        weak_self: &Weak<VoiceAgent>,
         drain_generation: u64,
         silence_ms: u32,
         pace: &mut TtsDrainPaceState,
@@ -3816,6 +3850,10 @@ impl VoiceAgent {
             "post-TTS outbound silence: {silence_ms} ms ({frame_count} frames)"
         ));
         for _ in 0..frame_count {
+            if weak_self.strong_count() == 0 {
+                voice_debug("post-TTS silence stopped (agent dropped)");
+                return Ok(());
+            }
             if !inner.lock().await.running {
                 voice_debug("post-TTS silence stopped (agent stop)");
                 return Ok(());
@@ -3828,6 +3866,7 @@ impl VoiceAgent {
             if !Self::pace_tts_drain_frame_while_running(
                 tts_buffer,
                 inner,
+                weak_self,
                 drain_generation,
                 20,
                 pace,
@@ -3859,13 +3898,14 @@ impl VoiceAgent {
     async fn pace_tts_drain_frame_while_running(
         tts_buffer: &TtsBuffer,
         inner: &Arc<Mutex<AgentInner>>,
+        weak_self: &Weak<VoiceAgent>,
         drain_generation: u64,
         duration_ms: u32,
         pace: &mut TtsDrainPaceState,
     ) -> bool {
         let mut remaining = duration_ms;
         while remaining > 0 {
-            if !inner.lock().await.running {
+            if weak_self.strong_count() == 0 || !inner.lock().await.running {
                 return false;
             }
             if tts_buffer.current_generation().await != drain_generation {
@@ -3875,7 +3915,9 @@ impl VoiceAgent {
             if !pace.sleep_until_next_slice(slice_ms).await {
                 return false;
             }
-            if tts_buffer.current_generation().await != drain_generation {
+            if weak_self.strong_count() == 0
+                || tts_buffer.current_generation().await != drain_generation
+            {
                 return false;
             }
             remaining = remaining.saturating_sub(slice_ms);

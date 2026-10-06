@@ -1,13 +1,17 @@
 //! Session churn: repeated agent create/start/stop (or drop) must release workers, the PCM
 //! writer closure and the agent itself. Uses the mock vendor (no models).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    SendTextToTtsOptions, SttVendor, TtsVendor, VadConfig, VoiceAgentConfig,
+    SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig,
 };
+use node_webrtc_rust_speech::error::SpeechResult;
+use node_webrtc_rust_speech::pipeline::{SttProvider, TtsAudioChunk, TtsProvider, VendorFactory};
 use node_webrtc_rust_speech::{PcmReader, PcmWriter, VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
 
@@ -120,4 +124,95 @@ async fn churn_drop_without_stop_releases_agent() {
         "writer closures leaked after 100 drop-without-stop cycles: strong_count={}",
         Arc::strong_count(&probe)
     );
+}
+
+/// 10 s of stereo s16le 48 kHz silence.
+const LONG_CHUNK_BYTES: usize = 1_920_000;
+
+struct LongTts {
+    pcm: Bytes,
+}
+
+#[async_trait]
+impl TtsProvider for LongTts {
+    fn vendor_name(&self) -> &'static str {
+        "churn-long"
+    }
+
+    async fn synthesize(&self, _text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+        Ok(vec![TtsAudioChunk {
+            pcm: self.pcm.clone(),
+            duration_ms: 10_000,
+        }])
+    }
+}
+
+struct LongTtsFactory {
+    pcm: Bytes,
+}
+
+impl VendorFactory for LongTtsFactory {
+    fn create_stt(&self, config: &SttConfig) -> SpeechResult<Box<dyn SttProvider>> {
+        MockFactory.create_stt(config)
+    }
+
+    fn create_tts(&self, _config: &TtsConfig) -> SpeechResult<Box<dyn TtsProvider>> {
+        Ok(Box::new(LongTts {
+            pcm: self.pcm.clone(),
+        }))
+    }
+}
+
+/// Dropping the last owner while a long utterance is mid-playback must stop the drain at once
+/// and release the writer (class `rt.task-holds-strong-self`). The mock TTS in the tests above
+/// only plays ~550 ms, which hid this on fast machines.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn churn_drop_without_stop_mid_playback_releases_writer() {
+    let probe = Arc::new(());
+    let pcm = Bytes::from(vec![0u8; LONG_CHUNK_BYTES]);
+    for cycle in 0..20 {
+        let mut registry = VendorRegistry::new();
+        registry.register_stt(SttVendor::Mock, Arc::new(MockFactory));
+        registry.register_tts(
+            TtsVendor::Mock,
+            Arc::new(LongTtsFactory { pcm: pcm.clone() }),
+        );
+        let agent = VoiceAgent::new(VoiceAgentConfig::default(), Arc::new(registry)).unwrap();
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let probe_for_writer = Arc::clone(&probe);
+        let frames_for_writer = Arc::clone(&frames);
+        let writer: PcmWriter = Arc::new(move |_pcm, _ms| {
+            let _keep = &probe_for_writer;
+            frames_for_writer.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        let reader: PcmReader = Arc::new(|| Ok(None));
+        agent.attach(reader, writer).await.unwrap();
+        agent.start(None).await.unwrap();
+        agent
+            .send_text_to_tts_with_options(
+                "long",
+                SendTextToTtsOptions {
+                    non_blocking: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            wait_until(
+                || frames.load(Ordering::SeqCst) >= 3,
+                Duration::from_secs(2)
+            )
+            .await,
+            "cycle {cycle}: playback never started"
+        );
+        drop(agent);
+        assert!(
+            wait_until(|| Arc::strong_count(&probe) == 1, Duration::from_millis(500)).await,
+            "cycle {cycle}: writer still held 500 ms after drop without stop() mid-playback: strong_count={}",
+            Arc::strong_count(&probe)
+        );
+    }
 }

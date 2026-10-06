@@ -1,12 +1,12 @@
 //! Process-wide pool for Sherpa ONNX STT recognizers and TTS engines.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
-use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::error::SpeechResult;
 use node_webrtc_rust_speech::otel;
 use sherpa_onnx::{OfflineTts, OnlineRecognizer, SpokenLanguageIdentification};
 use tokio::sync::Semaphore;
@@ -17,6 +17,7 @@ use crate::loader::{
     voice_debug,
 };
 use crate::model_paths::resolve_stt_model_dir;
+use crate::once_map::OnceMap;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
 
 static GLOBAL_POOL: OnceLock<Arc<SherpaModelPool>> = OnceLock::new();
@@ -229,8 +230,9 @@ pub struct LidPoolKey(PathBuf);
 /// `compute` on one instance, so the model sits behind a [`Mutex`]. Each inference locks it,
 /// creates a fresh per-call stream, computes, and drops the stream; concurrent sessions
 /// therefore serialise on inference (tiny Whisper, a few hundred ms) but never reload the
-/// 250 MB+ weights. The pool map lock is held while a model loads, so concurrent first callers
-/// for the same directory wait for one load instead of loading twice (single flight).
+/// 250 MB+ weights. Loads are per-key single flight (see [`OnceMap`]): concurrent first callers
+/// for the same directory wait for one load instead of loading twice, and a load never blocks
+/// lookups of other, already-loaded models.
 pub struct SharedLidRecognizer {
     pub(crate) identifier: Mutex<SpokenLanguageIdentification>,
     pub(crate) active_sessions: Arc<AtomicUsize>,
@@ -238,14 +240,9 @@ pub struct SharedLidRecognizer {
 
 /// Process-wide Sherpa model pool.
 pub struct SherpaModelPool {
-    stt: Mutex<HashMap<SttPoolKey, Arc<SharedSttRecognizer>>>,
-    tts: Mutex<HashMap<TtsPoolKey, Arc<TtsEnginePool>>>,
-    lid: Mutex<HashMap<LidPoolKey, Arc<SharedLidRecognizer>>>,
-    /// Model directories whose LID model is resident. Written (briefly) right after the model is
-    /// inserted into `lid`, and never held across a load, so callers on a session's setup path
-    /// can ask "is it loaded?" without queueing behind the `lid` map lock a loading thread holds.
-    /// Lock order: `lid` then `lid_loaded` (nothing takes them the other way round).
-    lid_loaded: Mutex<HashSet<LidPoolKey>>,
+    stt: OnceMap<SttPoolKey, SharedSttRecognizer>,
+    tts: OnceMap<TtsPoolKey, TtsEnginePool>,
+    lid: OnceMap<LidPoolKey, SharedLidRecognizer>,
     /// Model directories with a background LID preload thread currently running.
     lid_preloading: Mutex<HashSet<LidPoolKey>>,
     lid_preload_handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
@@ -256,10 +253,9 @@ pub struct SherpaModelPool {
 impl SherpaModelPool {
     pub fn new() -> Self {
         Self {
-            stt: Mutex::new(HashMap::new()),
-            tts: Mutex::new(HashMap::new()),
-            lid: Mutex::new(HashMap::new()),
-            lid_loaded: Mutex::new(HashSet::new()),
+            stt: OnceMap::new("STT"),
+            tts: OnceMap::new("TTS"),
+            lid: OnceMap::new("LID"),
             lid_preloading: Mutex::new(HashSet::new()),
             lid_preload_handles: Mutex::new(Vec::new()),
             decode_semaphore: Arc::new(Semaphore::new(max_concurrent_decode())),
@@ -277,23 +273,21 @@ impl SherpaModelPool {
 
     /// Join every TTS preload thread. Safe to call more than once.
     fn join_tts_preloads(&self) {
-        let Ok(map) = self.tts.lock() else {
-            return;
-        };
-        for pool in map.values() {
+        // Snapshot first: no map or slot lock is held while joining.
+        for pool in self.tts.loaded_values() {
             pool.join_preload();
         }
     }
 
     /// Publish the total pooled-model gauge.
     ///
-    /// Takes each map lock on its own, never while another map lock (or a model load) is held.
-    /// Nesting them (stt -> lid in one path, lid -> stt in another) deadlocked an STT load
-    /// against a concurrent LID load: callers must drop their own map guard first.
+    /// Never call while a map or slot lock (or a model load) is held; callers invoke it after
+    /// `get_or_load` returned. Nesting locks (stt -> lid in one path, lid -> stt in another)
+    /// deadlocked an STT load against a concurrent LID load.
     fn publish_entry_gauge(&self) {
-        let stt = self.stt.lock().map(|m| m.len()).unwrap_or(0);
-        let tts = self.tts.lock().map(|m| m.len()).unwrap_or(0);
-        let lid = self.lid.lock().map(|m| m.len()).unwrap_or(0);
+        let stt = self.stt.loaded_count();
+        let tts = self.tts.loaded_count();
+        let lid = self.lid.loaded_count();
         otel::set_sherpa_pool_entries((stt + tts + lid) as i64);
     }
 
@@ -317,18 +311,12 @@ impl SherpaModelPool {
     /// Acquire or create a shared STT recognizer for `config` (call from blocking context).
     pub fn get_or_create_stt(&self, config: &SttConfig) -> SpeechResult<Arc<SharedSttRecognizer>> {
         let key = stt_pool_key(config)?;
-        let mut map = self
-            .stt
-            .lock()
-            .map_err(|_| SpeechError::Internal("sherpa STT pool lock poisoned".into()))?;
-        if let Some(existing) = map.get(&key) {
-            return Ok(Arc::clone(existing));
+        let (shared, created_now) = self.stt.get_or_load(key, || {
+            create_online_recognizer(config).map(SharedSttRecognizer::new)
+        })?;
+        if created_now {
+            self.publish_entry_gauge();
         }
-        let recognizer = create_online_recognizer(config)?;
-        let shared = Arc::new(SharedSttRecognizer::new(recognizer));
-        map.insert(key, Arc::clone(&shared));
-        drop(map);
-        self.publish_entry_gauge();
         Ok(shared)
     }
 
@@ -338,21 +326,12 @@ impl SherpaModelPool {
         config: &LanguageIdConfig,
     ) -> SpeechResult<Arc<SharedLidRecognizer>> {
         let key = LidPoolKey(lid_pool_key(config)?);
-        let mut map = self
-            .lid
-            .lock()
-            .map_err(|_| SpeechError::Internal("sherpa LID pool lock poisoned".into()))?;
-        if let Some(existing) = map.get(&key) {
-            return Ok(Arc::clone(existing));
+        let (shared, created_now) = self.lid.get_or_load(key, || {
+            create_spoken_language_identification(config).map(SharedLidRecognizer::new)
+        })?;
+        if created_now {
+            self.publish_entry_gauge();
         }
-        let identifier = create_spoken_language_identification(config)?;
-        let shared = Arc::new(SharedLidRecognizer::new(identifier));
-        map.insert(key.clone(), Arc::clone(&shared));
-        if let Ok(mut loaded) = self.lid_loaded.lock() {
-            loaded.insert(key);
-        }
-        drop(map);
-        self.publish_entry_gauge();
         Ok(shared)
     }
 
@@ -367,21 +346,15 @@ impl SherpaModelPool {
     /// Start loading the shared LID model on a background thread and return immediately.
     ///
     /// No-op when the model is already loaded or a preload for the same directory is running.
-    /// Never blocks on a model load in progress (see `lid_loaded`). Errors are only logged (`VOICE_DEBUG`): the first identify retries and reports them.
+    /// Never blocks on a model load in progress (`OnceMap::get_loaded` uses `try_lock`). Errors are only logged (`VOICE_DEBUG`): the first identify retries and reports them.
     pub fn spawn_lid_preload(self: &Arc<Self>, config: &LanguageIdConfig) {
         let Ok(key) = lid_pool_key(config).map(LidPoolKey) else {
             return;
         };
         // Runs on the caller's thread (a session being set up: Node main thread or a tokio
-        // worker). Never touch the `lid` map lock here: a loading model holds it for the whole
-        // load (hundreds of ms warm, seconds cold), which would stall every session this thread
-        // serves. `lid_loaded` is only ever held for a set insert/lookup.
-        if self
-            .lid_loaded
-            .lock()
-            .map(|loaded| loaded.contains(&key))
-            .unwrap_or(true)
-        {
+        // worker). Must never wait for a load (hundreds of ms warm, seconds cold), which would
+        // stall every session this thread serves: `get_loaded` only `try_lock`s the slot.
+        if self.lid.get_loaded(&key).is_some() {
             return;
         }
         {
@@ -422,52 +395,43 @@ impl SherpaModelPool {
     pub fn shared_lid_ptr(&self, config: &LanguageIdConfig) -> Option<usize> {
         let key = LidPoolKey(lid_pool_key(config).ok()?);
         self.lid
-            .lock()
-            .ok()?
-            .get(&key)
-            .map(|entry| Arc::as_ptr(entry) as usize)
+            .get_loaded(&key)
+            .map(|entry| Arc::as_ptr(&entry) as usize)
     }
 
     /// Number of distinct LID model directories loaded in the pool.
     pub fn lid_entry_count(&self) -> usize {
-        self.lid.lock().expect("lock").len()
+        self.lid.loaded_count()
     }
 
     /// Acquire or create a shared TTS engine pool for `config` (call from blocking context).
     pub fn get_or_create_tts(&self, config: &TtsConfig) -> SpeechResult<Arc<TtsEnginePool>> {
         let key = tts_pool_key(config)?;
-        let mut map = self
-            .tts
-            .lock()
-            .map_err(|_| SpeechError::Internal("sherpa TTS pool lock poisoned".into()))?;
-        if let Some(existing) = map.get(&key) {
-            return Ok(Arc::clone(existing));
+        let (pool, created_now) = self.tts.get_or_load(key, || {
+            TtsEnginePool::new(config, Arc::clone(&self.tts_semaphore))
+        })?;
+        if created_now {
+            self.publish_entry_gauge();
         }
-        let pool = Arc::new(TtsEnginePool::new(config, Arc::clone(&self.tts_semaphore))?);
-        map.insert(key, Arc::clone(&pool));
-        drop(map);
-        self.publish_entry_gauge();
         Ok(pool)
     }
 
     /// Number of distinct STT model directories loaded in the pool.
     pub fn stt_entry_count(&self) -> usize {
-        self.stt.lock().expect("lock").len()
+        self.stt.loaded_count()
     }
 
     /// Number of distinct TTS model directories loaded in the pool.
     pub fn tts_entry_count(&self) -> usize {
-        self.tts.lock().expect("lock").len()
+        self.tts.loaded_count()
     }
 
     /// Pointer identity of the shared STT entry for `config`, if loaded.
     pub fn shared_stt_ptr(&self, config: &SttConfig) -> Option<usize> {
         let key = stt_pool_key(config).ok()?;
         self.stt
-            .lock()
-            .ok()?
-            .get(&key)
-            .map(|entry| Arc::as_ptr(entry) as usize)
+            .get_loaded(&key)
+            .map(|entry| Arc::as_ptr(&entry) as usize)
     }
 }
 
@@ -631,6 +595,7 @@ fn parse_pool_limit_env(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use node_webrtc_rust_speech::error::SpeechError;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
@@ -659,10 +624,23 @@ mod tests {
             tts_exclusion: None,
         };
 
-        // `get_or_create_lid` holds the `lid` map lock for the whole model load. Hold it here to
-        // park a "load in progress" deterministically, then construct a second session's
-        // provider: it must return without waiting for that load.
-        let loading = pool.lid.lock().expect("lid map lock");
+        // Park a "load in progress" deterministically: a loader for the same key blocks inside
+        // `get_or_load` until released. Then set up a second session's provider: it must return
+        // without waiting for that load.
+        let key = LidPoolKey(lid_pool_key(&config).expect("lid key"));
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let loader_pool = Arc::clone(&pool);
+        let loader = std::thread::spawn(move || {
+            let _ = loader_pool.lid.get_or_load(key, || {
+                let _ = entered_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(30));
+                Err(SpeechError::Internal("parked load".into()))
+            });
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("loader entered");
         let (done_tx, done_rx) = mpsc::channel();
         let setup_pool = Arc::clone(&pool);
         let setup_config = config.clone();
@@ -671,7 +649,8 @@ mod tests {
             let _ = done_tx.send(());
         });
         let returned = done_rx.recv_timeout(Duration::from_secs(5)).is_ok();
-        drop(loading);
+        release_tx.send(()).expect("release loader");
+        loader.join().expect("loader thread");
         setup.join().expect("setup thread");
         pool.join_lid_preloads();
         assert!(

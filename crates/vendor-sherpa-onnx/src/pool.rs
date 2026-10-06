@@ -19,6 +19,7 @@ use crate::loader::{
 use crate::model_paths::resolve_stt_model_dir;
 use crate::once_map::OnceMap;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
+use crate::tts_slots::TtsSlots;
 
 static GLOBAL_POOL: OnceLock<Arc<SherpaModelPool>> = OnceLock::new();
 
@@ -124,7 +125,7 @@ pub struct SharedSttRecognizer {
 pub struct SharedTtsEngine {
     pub(crate) tts: Mutex<OfflineTts>,
     pub(crate) active_sessions: Arc<AtomicUsize>,
-    tts_semaphore: Arc<Semaphore>,
+    tts_slots: Arc<TtsSlots>,
 }
 
 /// Pool of offline TTS engines for one model directory (parallel synthesis up to pool size).
@@ -144,18 +145,18 @@ pub struct TtsEnginePool {
 }
 
 impl TtsEnginePool {
-    fn new(config: &TtsConfig, tts_semaphore: Arc<Semaphore>) -> SpeechResult<Self> {
+    fn new(config: &TtsConfig, tts_slots: Arc<TtsSlots>) -> SpeechResult<Self> {
         let slots = max_concurrent_tts().max(1);
         let first = create_offline_tts(config)?;
         let engines = Arc::new(Mutex::new(vec![Arc::new(SharedTtsEngine::new(
             first,
-            Arc::clone(&tts_semaphore),
+            Arc::clone(&tts_slots),
         ))]));
         let preload = if slots > 1 {
             register_tts_preload_exit_join();
             let config = config.clone();
             let pending = Arc::clone(&engines);
-            let semaphore = Arc::clone(&tts_semaphore);
+            let slots_for_preload = Arc::clone(&tts_slots);
             std::thread::Builder::new()
                 .name("sherpa-tts-preload".into())
                 .spawn(move || {
@@ -167,7 +168,7 @@ impl TtsEnginePool {
                                 };
                                 guard.push(Arc::new(SharedTtsEngine::new(
                                     engine,
-                                    Arc::clone(&semaphore),
+                                    Arc::clone(&slots_for_preload),
                                 )));
                             }
                             Err(error) => {
@@ -247,7 +248,7 @@ pub struct SherpaModelPool {
     lid_preloading: Mutex<HashSet<LidPoolKey>>,
     lid_preload_handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
     decode_semaphore: Arc<Semaphore>,
-    tts_semaphore: Arc<Semaphore>,
+    tts_slots: Arc<TtsSlots>,
 }
 
 impl SherpaModelPool {
@@ -259,7 +260,7 @@ impl SherpaModelPool {
             lid_preloading: Mutex::new(HashSet::new()),
             lid_preload_handles: Mutex::new(Vec::new()),
             decode_semaphore: Arc::new(Semaphore::new(max_concurrent_decode())),
-            tts_semaphore: Arc::new(Semaphore::new(max_concurrent_tts())),
+            tts_slots: TtsSlots::new(max_concurrent_tts()),
         }
     }
 
@@ -267,8 +268,9 @@ impl SherpaModelPool {
         Arc::clone(&self.decode_semaphore)
     }
 
-    pub fn tts_semaphore(&self) -> Arc<Semaphore> {
-        Arc::clone(&self.tts_semaphore)
+    /// Process-wide TTS synthesis slots (first sentences are served before continuations).
+    pub(crate) fn tts_slots(&self) -> Arc<TtsSlots> {
+        Arc::clone(&self.tts_slots)
     }
 
     /// Join every TTS preload thread. Safe to call more than once.
@@ -408,7 +410,7 @@ impl SherpaModelPool {
     pub fn get_or_create_tts(&self, config: &TtsConfig) -> SpeechResult<Arc<TtsEnginePool>> {
         let key = tts_pool_key(config)?;
         let (pool, created_now) = self.tts.get_or_load(key, || {
-            TtsEnginePool::new(config, Arc::clone(&self.tts_semaphore))
+            TtsEnginePool::new(config, Arc::clone(&self.tts_slots))
         })?;
         if created_now {
             self.publish_entry_gauge();
@@ -505,16 +507,17 @@ impl SharedLidRecognizer {
 }
 
 impl SharedTtsEngine {
-    fn new(tts: OfflineTts, tts_semaphore: Arc<Semaphore>) -> Self {
+    fn new(tts: OfflineTts, tts_slots: Arc<TtsSlots>) -> Self {
         Self {
             tts: Mutex::new(tts),
             active_sessions: Arc::new(AtomicUsize::new(0)),
-            tts_semaphore,
+            tts_slots,
         }
     }
 
-    pub fn tts_semaphore(&self) -> Arc<Semaphore> {
-        Arc::clone(&self.tts_semaphore)
+    #[allow(dead_code)]
+    pub(crate) fn tts_slots(&self) -> Arc<TtsSlots> {
+        Arc::clone(&self.tts_slots)
     }
 
     /// Increment active sessions; pair with drop of the returned guard (RAII).

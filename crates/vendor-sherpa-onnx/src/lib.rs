@@ -10,6 +10,7 @@ mod sentences;
 mod stt;
 mod tts;
 mod tts_model_paths;
+mod tts_slots;
 
 pub use factory::SherpaFactory;
 pub use lid::{preload_language_id, preload_language_id_async, SherpaLanguageId};

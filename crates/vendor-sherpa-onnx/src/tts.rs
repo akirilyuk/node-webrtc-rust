@@ -18,8 +18,9 @@ use tokio::sync::Mutex;
 use crate::audio::{pad_stereo_pcm_to_20ms, slice_for_sink, StreamingStereo48kResampler};
 use crate::loader::voice_debug;
 use crate::pool::{SherpaModelPool, TtsEnginePool};
-use crate::sentences::split_sentences;
+use crate::sentences::split_for_first_audio;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
+use crate::tts_slots::TtsPriority;
 
 static TTS_GENERATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -160,9 +161,10 @@ impl SherpaTts {
 
     /// Synthesize `normalized` one sentence at a time.
     ///
-    /// Every sentence takes the TTS permit and an engine on its own and releases both
-    /// before the next one. The permit queue is FIFO, so a short request that arrives
-    /// while a long one is mid-text waits for one sentence, not the whole text.
+    /// Every sentence takes a TTS slot and an engine on its own and releases both
+    /// before the next one. First sentences are served before continuation sentences
+    /// (FIFO within each), so a new reply that arrives while a long one is mid-text waits
+    /// for about one first-sentence synthesis, not the whole text.
     ///
     /// One resampler spans all sentences so the 48 kHz phase stays continuous. The
     /// returned clip is the byte-for-byte concatenation of what was produced (padded to
@@ -176,9 +178,9 @@ impl SherpaTts {
         let engine_pool = self.ensure_engine_pool().await?;
         let speaker_id = self.speaker_id;
         let speed = self.speed;
-        let tts_semaphore = self.pool.tts_semaphore();
+        let tts_slots = self.pool.tts_slots();
 
-        let mut sentences = split_sentences(normalized);
+        let mut sentences = split_for_first_audio(normalized);
         if sentences.is_empty() {
             // No letters or digits: keep the old behaviour and hand the text to the engine.
             sentences.push(normalized.to_string());
@@ -196,17 +198,21 @@ impl SherpaTts {
         let mut synth_wall_ms = 0.0_f64;
         let mut counted = false;
 
-        for sentence in sentences {
+        for (index, sentence) in sentences.into_iter().enumerate() {
             if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
                 completed = false;
                 break;
             }
 
             let queue_wait_start = std::time::Instant::now();
-            let permit = tts_semaphore
-                .acquire()
-                .await
-                .map_err(|_| SpeechError::Internal("sherpa TTS semaphore closed".into()))?;
+            // A reply's first sentence is what a caller waits on; later sentences have
+            // earlier audio still buffered, so they yield to other replies' first sentences.
+            let priority = if index == 0 {
+                TtsPriority::First
+            } else {
+                TtsPriority::Continuation
+            };
+            let permit = tts_slots.acquire(priority).await;
             let queue_wait_ms = queue_wait_start.elapsed().as_secs_f64() * 1000.0;
             otel::record_sherpa_pool_wait_ms(queue_wait_ms, Some(attrs));
             otel::record_sherpa_tts_queue_wait_ms(queue_wait_ms, attrs);

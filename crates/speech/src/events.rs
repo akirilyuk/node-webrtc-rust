@@ -13,7 +13,7 @@
 //! | `UserSpeechFinal` | STT `finalize_utterance` — primary turn boundary for LLM |
 //! | `UserLanguage` | Offline spoken-language ID on buffered user PCM |
 //! | `LanguageIdSkipped` | Utterance closed (or LID deferred for TTS) without an identify running; no `user_language` will follow unless a deferred identify later runs |
-//! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound |
+//! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound; carries `first_chunk_ms` / `first_audio_ms` when timed |
 //! | `AgentSpeakingEnd` | TTS queue drained — **only on the agent that plays TTS** |
 //! | `VadTriggered` | VAD `SpeechStart` when `vad.enabled` — opens STT listen for this utterance |
 //! | `SttStreamStart` / `SttStreamEnd` | STT vendor PCM feed opened / closed for an utterance |
@@ -86,6 +86,10 @@ pub struct SpeechEvent {
     pub reason: Option<String>,
     /// `language_id_skipped`: buffered user speech (ms) at the decision point.
     pub speech_ms: Option<u32>,
+    /// `agent_speaking_start`: ms from the speak request to the first PCM chunk from the TTS vendor.
+    pub first_chunk_ms: Option<u32>,
+    /// `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply.
+    pub first_audio_ms: Option<u32>,
 }
 
 impl SpeechEvent {
@@ -108,6 +112,8 @@ impl SpeechEvent {
             dropped_ms: None,
             reason: None,
             speech_ms: None,
+            first_chunk_ms: None,
+            first_audio_ms: None,
         }
     }
 
@@ -189,6 +195,17 @@ impl SpeechEvent {
 
     pub fn agent_speaking_start() -> Self {
         Self::base(SpeechEventKind::AgentSpeakingStart)
+    }
+
+    /// `agent_speaking_start` carrying time-to-first-audio timing for the reply that started playback.
+    pub fn agent_speaking_start_with_timing(
+        first_audio_ms: Option<u32>,
+        first_chunk_ms: Option<u32>,
+    ) -> Self {
+        let mut ev = Self::base(SpeechEventKind::AgentSpeakingStart);
+        ev.first_audio_ms = first_audio_ms;
+        ev.first_chunk_ms = first_chunk_ms;
+        ev
     }
 
     pub fn agent_speaking_end() -> Self {
@@ -332,5 +349,18 @@ mod user_language_event_tests {
         assert_eq!(event.speech_ms, Some(120));
         assert_eq!(event.utterance_id.as_deref(), Some("utt-1"));
         assert!(event.text.is_none());
+    }
+
+    #[test]
+    fn agent_speaking_start_timing_defaults_to_none() {
+        let plain = SpeechEvent::agent_speaking_start();
+        assert_eq!(plain.kind, SpeechEventKind::AgentSpeakingStart);
+        assert_eq!(plain.first_audio_ms, None);
+        assert_eq!(plain.first_chunk_ms, None);
+
+        let timed = SpeechEvent::agent_speaking_start_with_timing(Some(240), Some(180));
+        assert_eq!(timed.kind, SpeechEventKind::AgentSpeakingStart);
+        assert_eq!(timed.first_audio_ms, Some(240));
+        assert_eq!(timed.first_chunk_ms, Some(180));
     }
 }

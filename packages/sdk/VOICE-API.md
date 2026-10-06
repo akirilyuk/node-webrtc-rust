@@ -71,7 +71,7 @@ With **`interruptible: false`** the utterance is protected while it synthesizes 
 | `user_speaking_end`    | End of user turn — see **gateStt** below     | End-of-utterance hint (not always first silence gap)               |
 | `user_speech_partial`  | STT streaming                                | Live captions, semantic barge-in                                   |
 | `user_speech_final`    | STT utterance closed                         | **Primary LLM turn trigger**                                       |
-| `agent_speaking_start` | First TTS PCM written                        | UI “agent talking”                                                 |
+| `agent_speaking_start` | First TTS PCM written                        | UI “agent talking”; `firstAudioMs` (speak request to first outbound frame) and `firstChunkMs` (to first vendor PCM chunk), unset when the reply queued behind playing audio |
 | `agent_speaking_end`   | TTS queue drained                            | Harness playback boundary; do not assume remote peer receives this |
 | `vad_triggered`        | VAD `SpeechStart` when `vad.enabled`         | STT listen opens; logging / `[speech]` traces                      |
 | `stt_stream_start`     | STT vendor PCM feed opened for an utterance  | Pairs with `stt_stream_end`                                        |

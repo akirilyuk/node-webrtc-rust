@@ -39,6 +39,8 @@ static TTS_PHRASE_CACHE_HITS: OnceLock<Counter<u64>> = OnceLock::new();
 static TTS_PHRASE_CACHE_MISSES: OnceLock<Counter<u64>> = OnceLock::new();
 static TTS_QUEUE_WAIT: OnceLock<Histogram<f64>> = OnceLock::new();
 static TTS_SYNTH_WALL: OnceLock<Histogram<f64>> = OnceLock::new();
+static TTS_FIRST_CHUNK: OnceLock<Histogram<f64>> = OnceLock::new();
+static TTS_FIRST_AUDIO: OnceLock<Histogram<f64>> = OnceLock::new();
 static VOICE_BARGE_IN: OnceLock<Counter<u64>> = OnceLock::new();
 static VOICE_VAD_TRANSITIONS: OnceLock<Counter<u64>> = OnceLock::new();
 
@@ -158,6 +160,28 @@ fn tts_synth_wall_histogram() -> &'static Histogram<f64> {
             .f64_histogram("sherpa_tts_synth_wall_ms")
             .with_description(
                 "Sherpa TTS ONNX synthesis wall time in milliseconds (cache miss path)",
+            )
+            .build()
+    })
+}
+
+fn tts_first_chunk_histogram() -> &'static Histogram<f64> {
+    TTS_FIRST_CHUNK.get_or_init(|| {
+        ensure_meter()
+            .f64_histogram("voice_tts_first_chunk_ms")
+            .with_description(
+                "Milliseconds from the speak request to the first PCM chunk from the TTS vendor",
+            )
+            .build()
+    })
+}
+
+fn tts_first_audio_histogram() -> &'static Histogram<f64> {
+    TTS_FIRST_AUDIO.get_or_init(|| {
+        ensure_meter()
+            .f64_histogram("voice_tts_first_audio_ms")
+            .with_description(
+                "Milliseconds from the speak request to the first outbound PCM frame of the reply",
             )
             .build()
     })
@@ -573,6 +597,20 @@ pub fn record_sherpa_tts_synth_wall_ms(ms: f64, attrs: &SherpaTtsMetricAttrs) {
     if is_enabled() {
         let kv = sherpa_tts_metric_attrs(attrs);
         tts_synth_wall_histogram().record(ms, &kv);
+    }
+}
+
+pub fn record_voice_tts_first_chunk_ms(ms: f64, vendor: &str) {
+    if is_enabled() {
+        let kv = [KeyValue::new("tts.vendor", otel_label(vendor, "unknown"))];
+        tts_first_chunk_histogram().record(ms, &kv);
+    }
+}
+
+pub fn record_voice_tts_first_audio_ms(ms: f64, vendor: &str) {
+    if is_enabled() {
+        let kv = [KeyValue::new("tts.vendor", otel_label(vendor, "unknown"))];
+        tts_first_audio_histogram().record(ms, &kv);
     }
 }
 

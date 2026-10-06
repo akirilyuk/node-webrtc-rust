@@ -58,6 +58,10 @@ export interface VoiceControlSpeechEventMessage {
   bufferedMs?: number
   /** `stt_hold_ended`: PCM dropped by the buffer bound or `first_utterance` (ms). */
   droppedMs?: number
+  /** `agent_speaking_start`: speak request to first PCM chunk from the TTS vendor (ms). */
+  firstChunkMs?: number
+  /** `agent_speaking_start`: speak request to first outbound PCM frame (ms). */
+  firstAudioMs?: number
 }
 
 /** Server → client: text queued for agent TTS (`ctx.speak` / `sendTextToTTS`). */
@@ -106,6 +110,8 @@ export function speechEventToControlMessage(
     holdOutcome: event.holdOutcome,
     bufferedMs: event.bufferedMs,
     droppedMs: event.droppedMs,
+    firstChunkMs: event.firstChunkMs,
+    firstAudioMs: event.firstAudioMs,
   }
 }
 

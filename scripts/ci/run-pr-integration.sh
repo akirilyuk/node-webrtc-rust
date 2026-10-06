@@ -60,8 +60,10 @@ bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" --
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
   cargo test -p node-webrtc-rust-speech
 # Perf benches only compile here; timing thresholds are not a PR gate (scripts/perf/).
-bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo bench build" -- \
-  cargo bench --no-run -p node-webrtc-rust-speech -p node-webrtc-rust-vendor-sherpa-onnx -p node-webrtc-rust-core
+# Type-check benches only: `cargo bench --no-run` compiles in the release profile, which CI
+# does not cache, and exceeded the 180 s step timeout on a cold cache (#311, #313).
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo bench check" -- \
+  cargo check --benches -p node-webrtc-rust-speech -p node-webrtc-rust-vendor-sherpa-onnx -p node-webrtc-rust-core
 
 bash "$ROOT/scripts/ci/ensure-ts-dist.sh"
 

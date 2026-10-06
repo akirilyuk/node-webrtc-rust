@@ -4,6 +4,7 @@ mod lid;
 mod lid_model_paths;
 mod loader;
 mod model_paths;
+mod once_map;
 mod pool;
 mod sentences;
 mod stt;

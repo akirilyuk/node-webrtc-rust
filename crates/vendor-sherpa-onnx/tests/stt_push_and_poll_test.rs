@@ -12,7 +12,8 @@ use node_webrtc_rust_speech::pcm::{
 };
 use node_webrtc_rust_speech::pipeline::{SttTranscript, VendorFactory};
 use node_webrtc_rust_vendor_sherpa_onnx::{
-    reset_sherpa_get_result_count, sherpa_get_result_count, SherpaFactory,
+    reset_sherpa_get_result_count, reset_sherpa_poll_blocking_hops, sherpa_get_result_count,
+    sherpa_poll_blocking_hops, SherpaFactory,
 };
 
 const PHRASES: [&str; 4] = [
@@ -113,11 +114,25 @@ async fn transcribe_push_and_poll(cfg: &SttConfig, pcm: &[u8]) -> Vec<SttTranscr
     let mut stt = SherpaFactory.create_stt(cfg).expect("create_stt");
     stt.start().await.expect("stt start");
     let mut seen = Vec::new();
+    reset_sherpa_poll_blocking_hops();
     for chunk in pcm.chunks(CHUNK_BYTES) {
         stt.push_and_poll(Bytes::copy_from_slice(chunk), &mut seen)
             .await
             .expect("push_and_poll");
+        // push_and_poll drained everything: a poll right after must be answered without a hop.
+        assert!(
+            stt.poll_transcript().await.expect("poll").is_none(),
+            "poll_transcript returned a transcript after push_and_poll drained"
+        );
     }
+    for _ in 0..10 {
+        assert!(stt.poll_transcript().await.expect("poll").is_none());
+    }
+    assert_eq!(
+        sherpa_poll_blocking_hops(),
+        0,
+        "poll_transcript took a blocking hop although nothing was unread"
+    );
     stt.finalize_utterance().await.expect("finalize_utterance");
     while let Some(t) = stt.poll_transcript().await.expect("poll") {
         seen.push(t);
@@ -134,8 +149,15 @@ async fn push_and_poll_matches_push_then_poll() {
     let pcm = build_pcm().await;
 
     reset_sherpa_get_result_count();
+    reset_sherpa_poll_blocking_hops();
     let (old, old_poll_calls) = transcribe_push_then_poll(&cfg, &pcm).await;
     let skip_reads = sherpa_get_result_count();
+    // The hop counter must be live: the push-then-poll loop polls after every push, and each
+    // decoding chunk leaves something unread, so it takes hops.
+    assert!(
+        sherpa_poll_blocking_hops() > 0,
+        "poll hop counter never moved in the push+poll run (vacuous)"
+    );
 
     reset_sherpa_get_result_count();
     let new = transcribe_push_and_poll(&cfg, &pcm).await;

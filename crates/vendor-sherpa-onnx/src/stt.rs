@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -19,6 +19,17 @@ pub(crate) const SAMPLE_RATE: i32 = 16_000;
 
 static SHERPA_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
 static SHERPA_GET_RESULT_COUNT: AtomicU64 = AtomicU64::new(0);
+static SHERPA_POLL_BLOCKING_HOPS: AtomicU64 = AtomicU64::new(0);
+
+/// Number of `poll_transcript` calls that took a decode permit and a `spawn_blocking` hop
+/// (perf probe / tests). Calls answered by the `unread` fast path do not count.
+pub fn sherpa_poll_blocking_hops() -> u64 {
+    SHERPA_POLL_BLOCKING_HOPS.load(Ordering::SeqCst)
+}
+
+pub fn reset_sherpa_poll_blocking_hops() {
+    SHERPA_POLL_BLOCKING_HOPS.store(0, Ordering::SeqCst);
+}
 
 /// Number of `get_result` reads this process has made on STT streams (perf probe / tests).
 pub fn sherpa_get_result_count() -> u64 {
@@ -39,6 +50,10 @@ struct SttSessionState {
     /// True when at least one decode step ran since the result was last read. `get_result` and
     /// `is_endpoint` only change after a decode, so the read is skipped while this is false.
     decoded_since_result: bool,
+    /// Fast-path mirror of "something is unread" (`decoded_since_result` or `pending` not empty),
+    /// shared with `SherpaStt` so `poll_transcript` can skip the blocking hop. Only written under
+    /// the session lock; `decoded_since_result` stays the authority.
+    unread: Arc<AtomicBool>,
 }
 
 impl SttSessionState {
@@ -58,6 +73,7 @@ impl SttSessionState {
         });
         if steps > 0 {
             self.decoded_since_result = true;
+            self.unread.store(true, Ordering::Release);
         }
     }
 
@@ -65,6 +81,8 @@ impl SttSessionState {
     /// `decoded_since_result`.
     fn read_transcript(&mut self) -> Option<SttTranscript> {
         self.decoded_since_result = false;
+        self.unread
+            .store(!self.pending.is_empty(), Ordering::Release);
         SHERPA_GET_RESULT_COUNT.fetch_add(1, Ordering::SeqCst);
         let (text, endpoint) = self.shared.with_recognizer(|recognizer| {
             let result = recognizer.get_result(&self.stream);
@@ -107,6 +125,9 @@ pub struct SherpaStt {
     config: SttConfig,
     pool: Arc<crate::pool::SherpaModelPool>,
     state: Arc<Mutex<SherpaSttState>>,
+    /// Something to read (a decode ran since the last read, or `pending` is not empty). When false,
+    /// `poll_transcript` returns `None` without a decode permit or a blocking hop.
+    unread: Arc<AtomicBool>,
     /// Audio accepted by `push_audio` not yet cleared by `poll_transcript` decode (sync read for C1).
     accepted_ms: Arc<AtomicU32>,
 }
@@ -120,6 +141,7 @@ impl SherpaStt {
                 running: false,
                 session: None,
             })),
+            unread: Arc::new(AtomicBool::new(false)),
             accepted_ms: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -127,6 +149,7 @@ impl SherpaStt {
     fn open_session(
         config: &SttConfig,
         pool: &crate::pool::SherpaModelPool,
+        unread: Arc<AtomicBool>,
     ) -> SpeechResult<SttSessionState> {
         let shared = pool.get_or_create_stt(config)?;
         // Acquire before create_stream so a panic/error during stream init still decrements.
@@ -140,6 +163,7 @@ impl SherpaStt {
             last_emitted_text: String::new(),
             pending: VecDeque::new(),
             decoded_since_result: false,
+            unread,
         })
     }
 }
@@ -154,9 +178,10 @@ impl SttProvider for SherpaStt {
         let config = self.config.clone();
         let pool = Arc::clone(&self.pool);
         let state = Arc::clone(&self.state);
+        let unread = Arc::clone(&self.unread);
 
         tokio::task::spawn_blocking(move || -> SpeechResult<()> {
-            let session = SherpaStt::open_session(&config, &pool)?;
+            let session = SherpaStt::open_session(&config, &pool, unread)?;
             let mut guard = state.blocking_lock();
             guard.running = true;
             guard.session = Some(session);
@@ -170,11 +195,13 @@ impl SttProvider for SherpaStt {
 
     async fn stop(&mut self) -> SpeechResult<()> {
         let state = Arc::clone(&self.state);
+        let unread = Arc::clone(&self.unread);
         self.accepted_ms.store(0, Ordering::Relaxed);
 
         tokio::task::spawn_blocking(move || {
             let mut guard = state.blocking_lock();
             guard.running = false;
+            unread.store(false, Ordering::Release);
             if let Some(session) = guard.session.as_mut() {
                 session.shared.with_recognizer(|recognizer| {
                     recognizer.reset(&session.stream);
@@ -237,6 +264,11 @@ impl SttProvider for SherpaStt {
     }
 
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
+        if !self.unread.load(Ordering::Acquire) {
+            // Nothing decoded since the last read and nothing queued: no permit, no blocking hop.
+            self.accepted_ms.store(0, Ordering::Relaxed);
+            return Ok(None);
+        }
         let state = Arc::clone(&self.state);
         let accepted_ms = Arc::clone(&self.accepted_ms);
         let decode_semaphore = self.pool.decode_semaphore();
@@ -245,6 +277,7 @@ impl SttProvider for SherpaStt {
             .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
 
         tokio::task::spawn_blocking(move || -> SpeechResult<Option<SttTranscript>> {
+            SHERPA_POLL_BLOCKING_HOPS.fetch_add(1, Ordering::SeqCst);
             let mut guard = state.blocking_lock();
             if !guard.running {
                 return Ok(None);
@@ -255,6 +288,9 @@ impl SttProvider for SherpaStt {
 
             if let Some(pending) = session.pending.pop_front() {
                 accepted_ms.store(0, Ordering::Relaxed);
+                if session.pending.is_empty() && !session.decoded_since_result {
+                    session.unread.store(false, Ordering::Release);
+                }
                 return Ok(Some(pending));
             }
 
@@ -265,6 +301,8 @@ impl SttProvider for SherpaStt {
 
             if !session.decoded_since_result {
                 // No decode since the last read: result and endpoint cannot have changed.
+                // (A false positive of the `unread` fast path ends here.)
+                session.unread.store(false, Ordering::Release);
                 return Ok(None);
             }
             Ok(session.read_transcript())
@@ -318,6 +356,9 @@ impl SttProvider for SherpaStt {
             });
             session.last_emitted_text.clear();
             session.decoded_since_result = false;
+            session
+                .unread
+                .store(!session.pending.is_empty(), Ordering::Release);
             Ok(())
         })
         .await
@@ -370,6 +411,8 @@ impl SttProvider for SherpaStt {
                     ready.push(transcript);
                 }
             }
+            // `pending` is drained and the result read (or nothing was decoded): nothing unread.
+            session.unread.store(false, Ordering::Release);
             Ok(ready)
         })
         .await

@@ -3486,7 +3486,9 @@ impl VoiceAgent {
                 // Done while the STT lock is held so a config swap cannot slip in between.
                 let mut inner = self.inner.lock().await;
                 if inner.stt_enabled && inner.stt_hold.is_none() {
-                    inner.pending_transcripts.extend(buf);
+                    for transcript in buf {
+                        enqueue_transcript(&mut inner.pending_transcripts, transcript);
+                    }
                 }
             }
         }
@@ -4048,6 +4050,16 @@ fn split_stereo_pcm_frames(pcm: &Bytes, _total_duration_ms: u32) -> Vec<(Bytes, 
     frames
 }
 
+/// Append a transcript to the queue of `push_and_poll` results. A queued trailing `Partial` is
+/// superseded by any newer transcript (the old push-then-poll flow read the result once per poll,
+/// so only the latest text was ever emitted). A `Final` is never dropped.
+fn enqueue_transcript(queue: &mut VecDeque<SttTranscript>, transcript: SttTranscript) {
+    if matches!(queue.back(), Some(SttTranscript::Partial(_))) {
+        queue.pop_back();
+    }
+    queue.push_back(transcript);
+}
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -4068,6 +4080,42 @@ mod tests {
         fn create_tts(&self, _config: &TtsConfig) -> SpeechResult<Box<dyn TtsProvider>> {
             Err(SpeechError::Config("noop".into()))
         }
+    }
+
+    fn queue_after(items: Vec<SttTranscript>) -> Vec<SttTranscript> {
+        let mut q = VecDeque::new();
+        for t in items {
+            enqueue_transcript(&mut q, t);
+        }
+        q.into_iter().collect()
+    }
+
+    fn p(s: &str) -> SttTranscript {
+        SttTranscript::Partial(s.into())
+    }
+
+    fn f(s: &str) -> SttTranscript {
+        SttTranscript::Final(s.into())
+    }
+
+    #[test]
+    fn partial_then_partial_keeps_the_newest() {
+        assert_eq!(queue_after(vec![p("a"), p("ab")]), vec![p("ab")]);
+    }
+
+    #[test]
+    fn partial_then_final_keeps_only_the_final() {
+        assert_eq!(queue_after(vec![p("a"), f("a b")]), vec![f("a b")]);
+    }
+
+    #[test]
+    fn final_then_partial_keeps_both() {
+        assert_eq!(queue_after(vec![f("x"), p("y")]), vec![f("x"), p("y")]);
+    }
+
+    #[test]
+    fn final_then_final_keeps_both() {
+        assert_eq!(queue_after(vec![f("x"), f("y")]), vec![f("x"), f("y")]);
     }
 
     #[test]

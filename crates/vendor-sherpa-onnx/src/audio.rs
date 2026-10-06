@@ -21,6 +21,10 @@ pub fn slice_for_sink(pcm: &Bytes) -> impl Iterator<Item = Bytes> + '_ {
 
 /// Convert mono f32 PCM at `src_rate` Hz to stereo 48 kHz s16le for WebRTC outbound tracks.
 /// Pads the result to a 20 ms frame boundary (legacy full-utterance path).
+///
+/// TTS now streams through [`StreamingStereo48kResampler`]; this one-shot form stays for the
+/// resample bench (`benches/resample.rs`) and the equivalence tests below.
+#[allow(dead_code)]
 pub fn f32_mono_to_stereo_48k_s16le(samples: &[f32], src_rate: u32) -> (Bytes, u32) {
     let stereo = f32_mono_to_stereo_48k_s16le_raw(samples, src_rate);
     if stereo.is_empty() {
@@ -30,6 +34,7 @@ pub fn f32_mono_to_stereo_48k_s16le(samples: &[f32], src_rate: u32) -> (Bytes, u
 }
 
 /// Convert without 20 ms padding — used for progressive TTS deltas (drain pads frames).
+#[allow(dead_code)]
 pub fn f32_mono_to_stereo_48k_s16le_raw(samples: &[f32], src_rate: u32) -> Bytes {
     let mut stream = StreamingStereo48kResampler::new(src_rate);
     let mut out = stream.push_f32(samples).to_vec();

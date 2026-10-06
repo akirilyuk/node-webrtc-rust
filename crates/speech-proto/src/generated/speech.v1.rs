@@ -51,8 +51,8 @@ pub struct SttStart {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SttAudio {
-    #[prost(bytes = "vec", tag = "1")]
-    pub pcm_s16le: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "1")]
+    pub pcm_s16le: ::prost::bytes::Bytes,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SttFinalize {}
@@ -141,8 +141,8 @@ pub struct SynthesizeRequest {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SynthesizeResponse {
-    #[prost(bytes = "vec", tag = "1")]
-    pub pcm_s16le: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "1")]
+    pub pcm_s16le: ::prost::bytes::Bytes,
     #[prost(uint32, tag = "2")]
     pub duration_ms: u32,
     #[prost(bool, tag = "3")]

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use node_webrtc_rust_speech_proto::v1::speech_server::{Speech, SpeechServer};
 use node_webrtc_rust_speech_proto::v1::{
     transcribe_request, transcribe_response, PrepareRequest, PrepareResponse, SttAudio, SttError,
@@ -227,14 +228,14 @@ impl Speech for MockSpeech {
             tokio::spawn(async move {
                 let _ = tx
                     .send(Ok(SynthesizeResponse {
-                        pcm_s16le: (0..n).map(|i| (i % 251) as u8).collect(),
+                        pcm_s16le: (0..n).map(|i| (i % 251) as u8).collect::<Vec<u8>>().into(),
                         duration_ms: (n / 192) as u32,
                         last: false,
                     }))
                     .await;
                 let _ = tx
                     .send(Ok(SynthesizeResponse {
-                        pcm_s16le: vec![],
+                        pcm_s16le: Bytes::new(),
                         duration_ms: 0,
                         last: true,
                     }))
@@ -245,14 +246,14 @@ impl Speech for MockSpeech {
         let pcm_len = text.len().max(4) * 80;
         let _ = tx
             .send(Ok(SynthesizeResponse {
-                pcm_s16le: vec![0_i8 as u8; pcm_len],
+                pcm_s16le: Bytes::from(vec![0_u8; pcm_len]),
                 duration_ms: 20,
                 last: false,
             }))
             .await;
         let _ = tx
             .send(Ok(SynthesizeResponse {
-                pcm_s16le: vec![0_u8; pcm_len],
+                pcm_s16le: Bytes::from(vec![0_u8; pcm_len]),
                 duration_ms: 20,
                 last: true,
             }))

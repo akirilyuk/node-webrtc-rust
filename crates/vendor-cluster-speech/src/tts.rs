@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use node_webrtc_rust_speech::config::{TtsConfig, VoiceSessionContext};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
@@ -111,7 +110,7 @@ impl TtsProvider for ClusterSherpaTts {
                 break;
             }
             let chunk = TtsAudioChunk {
-                pcm: Bytes::from(msg.pcm_s16le),
+                pcm: msg.pcm_s16le,
                 duration_ms: msg.duration_ms,
             };
             if let Some(s) = sink.as_ref() {

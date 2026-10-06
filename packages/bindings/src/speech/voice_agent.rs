@@ -1,6 +1,6 @@
 //! VoiceAgent NAPI bindings.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -20,11 +20,15 @@ use crate::speech::types::{
     JsSttHoldMode, JsTtsConfig, JsUpdateTtsOptions, JsVoiceAgentConfig, JsVoiceSessionContext,
 };
 
+/// `VOICE_DEBUG=1|true|yes`, read once per process.
 fn voice_debug_enabled() -> bool {
-    matches!(
-        std::env::var("VOICE_DEBUG").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    )
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("VOICE_DEBUG").ok().as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    })
 }
 
 struct VoiceAgentState {

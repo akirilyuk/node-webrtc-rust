@@ -13,6 +13,7 @@ use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
 use crate::audio::{align_stereo_pcm_to_20ms, slice_for_sink, StreamingStereo48kResampler};
+use crate::loader::voice_debug;
 use crate::phrase_cache::{
     build_cache_key, build_metric_attrs, lookup, normalize_phrase_text, phrase_cache_enabled, store,
 };
@@ -21,19 +22,6 @@ use crate::sentences::split_sentences;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
 
 static TTS_GENERATE_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-fn voice_debug_enabled() -> bool {
-    matches!(
-        std::env::var("VOICE_DEBUG").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    )
-}
-
-fn voice_debug(message: impl AsRef<str>) {
-    if voice_debug_enabled() {
-        eprintln!("[voice-debug] {}", message.as_ref());
-    }
-}
 
 pub struct SherpaTts {
     config: TtsConfig,

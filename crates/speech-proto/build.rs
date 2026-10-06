@@ -23,6 +23,8 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(true)
         .server_mod_attribute("speech.v1", "#[cfg(feature = \"server\")]")
         .client_mod_attribute("speech.v1", "#[cfg(feature = \"client\")]")
+        // `bytes` fields become `bytes::Bytes` (no Vec<u8> copy per audio message).
+        .bytes(["."])
         .out_dir(&out)
         .compile(&[proto], &[includes])?;
     Ok(())

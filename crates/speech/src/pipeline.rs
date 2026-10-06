@@ -76,6 +76,20 @@ pub trait SttProvider: Send + Sync {
     /// Poll for the next transcript update, if any.
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>>;
 
+    /// Push audio and collect every transcript that is ready, in order. Default: push_audio, then
+    /// poll_transcript until None. Vendors that can do both in one blocking hop override it.
+    async fn push_and_poll(
+        &mut self,
+        pcm: Bytes,
+        out: &mut Vec<SttTranscript>,
+    ) -> SpeechResult<()> {
+        self.push_audio(pcm).await?;
+        while let Some(t) = self.poll_transcript().await? {
+            out.push(t);
+        }
+        Ok(())
+    }
+
     /// Wait until the provider can transcribe (its stream is open and ready). Returns false on timeout.
     /// Default: always ready.
     async fn wait_ready(&mut self, _timeout: std::time::Duration) -> SpeechResult<bool> {

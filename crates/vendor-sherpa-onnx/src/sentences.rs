@@ -13,6 +13,9 @@ pub const MAX_SENTENCE_CHARS: usize = 300;
 /// letter, so tiny pieces must not be synthesised on their own.
 const MIN_SENTENCE_WORDS: usize = 4;
 
+/// A first piece with more words than this is cut at a comma so the first audio starts sooner.
+const FIRST_PIECE_MAX_WORDS: usize = 12;
+
 const ASCII_TERMINATORS: [char; 4] = ['.', '!', '?', ';'];
 const CJK_TERMINATORS: [char; 4] = ['。', '！', '？', '；'];
 
@@ -54,6 +57,42 @@ pub fn split_sentences(text: &str) -> Vec<String> {
         split_long(&sentence, &mut out);
     }
     out
+}
+
+/// Like [`split_sentences`], but keeps the FIRST piece short so first audio starts sooner.
+///
+/// When the first piece has more than [`FIRST_PIECE_MAX_WORDS`] words and a `,` ends a word
+/// after at least [`MIN_SENTENCE_WORDS`] words, the piece is cut at the first such comma (the
+/// comma stays with the first part). The cut is skipped when the rest would be shorter than
+/// [`MIN_SENTENCE_WORDS`] words, since a tiny piece must not be synthesised on its own.
+/// Pieces after the first are unchanged.
+pub fn split_for_first_audio(text: &str) -> Vec<String> {
+    let mut pieces = split_sentences(text);
+    let Some(first) = pieces.first() else {
+        return pieces;
+    };
+    if first.split_whitespace().count() <= FIRST_PIECE_MAX_WORDS {
+        return pieces;
+    }
+    let mut cut: Option<usize> = None;
+    for (index, word) in first.split_whitespace().enumerate() {
+        if index + 1 >= MIN_SENTENCE_WORDS && word.ends_with(',') {
+            // `word` is a subslice of `first`: its end offset is the cut position.
+            cut = Some(word.as_ptr() as usize - first.as_ptr() as usize + word.len());
+            break;
+        }
+    }
+    let Some(cut) = cut else {
+        return pieces;
+    };
+    let head = first[..cut].trim_end().to_string();
+    let rest = first[cut..].trim().to_string();
+    if rest.split_whitespace().count() < MIN_SENTENCE_WORDS {
+        return pieces;
+    }
+    pieces[0] = rest;
+    pieces.insert(0, head);
+    pieces
 }
 
 fn push_trimmed(out: &mut Vec<String>, current: &mut String) {
@@ -330,5 +369,54 @@ mod tests {
     #[test]
     fn text_without_terminator_is_one_sentence() {
         assert_eq!(split_sentences("no terminator"), vec!["no terminator"]);
+    }
+
+    const LONG_FIRST: &str =
+        "Well, I checked the calendar for next week, and Tuesday at ten works for everyone on the team.";
+
+    #[test]
+    fn first_piece_cut_at_comma_when_long() {
+        // "Well," follows only one word, so the first usable comma is after "week," (8 words).
+        assert_eq!(
+            split_for_first_audio(LONG_FIRST),
+            vec![
+                "Well, I checked the calendar for next week,",
+                "and Tuesday at ten works for everyone on the team."
+            ]
+        );
+    }
+
+    #[test]
+    fn first_piece_short_unchanged() {
+        let text = "Sure, I can do that for you. Then we will go home now.";
+        assert_eq!(split_for_first_audio(text), split_sentences(text));
+    }
+
+    #[test]
+    fn later_pieces_unchanged() {
+        let text =
+            format!("{LONG_FIRST} Then, we will all go out for lunch together, if that suits you.");
+        let pieces = split_for_first_audio(&text);
+        assert_eq!(pieces.len(), 3);
+        assert_eq!(pieces[2], split_sentences(&text)[1]);
+    }
+
+    #[test]
+    fn no_comma_unchanged() {
+        let text = "I checked the calendar for next week and Tuesday at ten works for everyone.";
+        assert!(text.split_whitespace().count() > FIRST_PIECE_MAX_WORDS);
+        assert_eq!(split_for_first_audio(text), split_sentences(text));
+    }
+
+    #[test]
+    fn cut_skipped_when_rest_would_be_tiny() {
+        let text =
+            "One two three four five six seven eight nine ten eleven twelve thirteen, yes ok.";
+        assert_eq!(split_for_first_audio(text), split_sentences(text));
+    }
+
+    #[test]
+    fn empty_text_yields_nothing() {
+        assert!(split_for_first_audio("  ").is_empty());
     }
 }

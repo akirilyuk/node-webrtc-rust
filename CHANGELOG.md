@@ -8,6 +8,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.27] - 2026-10-06
+
+### Changed
+
+- **sherpa-tts** — Synthesis runs sentence by sentence and frees the synthesis slot between sentences, so a short reply in another session waits at most one sentence instead of a whole long reply. Sentences with fewer than 4 words are merged with a neighbour, and pieces over 300 characters are cut at a comma or space, which also bounds peak memory. Each utterance is resampled once instead of twice.
+
+### Fixed
+
+- **speech** — A `VoiceAgent` dropped without `stop()` stops playing out its current TTS utterance within one frame and releases its PCM writer, instead of finishing the utterance first.
+
+### Added
+
+- Micro benchmarks (inbound frame, TTS drain, resample, Opus encode, idle agents), an allocation guard for inbound frames, and `scripts/perf/run-perf-baseline.sh` / `compare-perf.mjs`.
+
 ## [0.9.26] - 2026-10-06
 
 ### Fixed

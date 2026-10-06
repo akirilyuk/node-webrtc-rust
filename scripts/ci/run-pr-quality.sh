@@ -36,4 +36,7 @@ bash scripts/ci/run-sherpa-example-ci.sh typecheck
 echo "==> Sherpa roundtrip Vitest evaluators"
 bash scripts/ci/run-sherpa-example-ci.sh vitest
 
+echo "==> perf benches compile (no run; thresholds are not a PR gate)"
+cargo bench --no-run -p node-webrtc-rust-speech -p node-webrtc-rust-vendor-sherpa-onnx -p node-webrtc-rust-core
+
 echo "==> Quality checks OK"

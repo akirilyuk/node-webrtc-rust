@@ -49,7 +49,6 @@ fn configure_env() {
     // Set before the first `SherpaModelPool::global()` use in this process.
     unsafe {
         std::env::set_var("SHERPA_POOL_MAX_CONCURRENT_TTS", "1");
-        std::env::set_var("SHERPA_TTS_PHRASE_CACHE", "0");
     }
 }
 

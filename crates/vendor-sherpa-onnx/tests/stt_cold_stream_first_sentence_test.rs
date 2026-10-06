@@ -71,28 +71,6 @@ fn tts_config(model_path: String) -> TtsConfig {
     }
 }
 
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let previous = std::env::var(key).ok();
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct Transcript {
     partials: Vec<String>,
@@ -203,8 +181,8 @@ async fn cold_inbound_stream_hears_first_tts_sentence() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(6);
     let experiment_only = std::env::var("STT_COLD_EXPERIMENT").ok().as_deref() == Some("1");
-    // Every render must be a fresh Piper pass — cache would collapse them into one sample.
-    let _cache = EnvGuard::set("SHERPA_TTS_PHRASE_CACHE", "0");
+    // Every render is a fresh Piper pass: this test uses the Sherpa provider directly, which
+    // has no phrase cache.
 
     let tts = SherpaFactory
         .create_tts(&tts_config(tts_model_path))

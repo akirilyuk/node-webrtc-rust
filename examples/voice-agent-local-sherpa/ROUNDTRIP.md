@@ -247,7 +247,7 @@ Unit tests include `roundtrip-counting-barge-recovery.test.ts` in `npm run test:
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | First audio | Streaming `agent_speaking_start` beats buffered by ≥ `SHERPA_TTS_STREAM_MIN_IMPROVEMENT_MS` (default **40**), allowing `SHERPA_TTS_STREAM_MAX_REGRESSION_MS` jitter (default **80**) |
 | STT         | Both modes recognize the phrase (word list + similarity ≥ 0.9)                                                                                                                       |
-| Cache       | Forces `SHERPA_TTS_PHRASE_CACHE=0` so the second mode is not served from cache                                                                                                       |
+| Cache       | Forces `VOICE_TTS_PHRASE_CACHE=0` so the second mode is not served from cache                                                                                                        |
 
 Also covered by ignored Rust tests (`tts_stream_chunks_integration_test`) in `run-sherpa-example-ci.sh rust|e2e`.
 
@@ -286,7 +286,7 @@ Vitest (no models): `roundtrip-concurrent-multi-client.test.ts` in `npm run test
 
 CPU, event-loop lag and wall time cover the turn phase only (after every leg is attached and warmed up).
 
-**Phrase cache:** the six catalog phrases repeat, so with the Sherpa TTS phrase cache on, most turns would be served from memory and synthesis would not be measured. `start:roundtrip-load` and `start:roundtrip-load-ci` therefore run with `SHERPA_TTS_PHRASE_CACHE=0` (a real synthesis per turn). `start:roundtrip-load-cached` is the same run with the cache on.
+**Phrase cache:** the six catalog phrases repeat, so with the runner TTS phrase cache (`VOICE_TTS_PHRASE_CACHE`) on, most turns would be served from memory and synthesis would not be measured. `start:roundtrip-load` and `start:roundtrip-load-ci` therefore run with `VOICE_TTS_PHRASE_CACHE=0` (a real synthesis per turn). `start:roundtrip-load-cached` is the same run with the cache on.
 
 | Env                             | Default | Meaning                                                                     |
 | ------------------------------- | ------- | --------------------------------------------------------------------------- |

@@ -59,6 +59,9 @@ bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" --
   cargo test -p node-webrtc-rust-conference
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
   cargo test -p node-webrtc-rust-speech
+# Perf benches only compile here; timing thresholds are not a PR gate (scripts/perf/).
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo bench build" -- \
+  cargo bench --no-run -p node-webrtc-rust-speech -p node-webrtc-rust-vendor-sherpa-onnx -p node-webrtc-rust-core
 
 bash "$ROOT/scripts/ci/ensure-ts-dist.sh"
 

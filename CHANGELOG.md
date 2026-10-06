@@ -8,6 +8,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.28] - 2026-10-06
+
+### Added
+
+- **speech** — Phrase cache for repeated TTS lines in `VoiceAgent` (`CachingTtsProvider`), for every TTS vendor. It is on by default for `local-sherpa` and `cluster-sherpa`; cloud vendors are opt-in via `VOICE_TTS_PHRASE_CACHE_VENDORS`. A byte budget bounds it (`VOICE_TTS_PHRASE_CACHE_MAX_BYTES`, default 16 MiB; `VOICE_TTS_PHRASE_CACHE_MAX_ENTRY_BYTES`, default 2 MiB), and `VOICE_TTS_PHRASE_CACHE=0` turns it off. Only syntheses that ran to the end are stored; cancelled, errored or cut-short ones never are. New trait method `TtsProvider::synthesize_progressive_with_status` reports completeness. New gauge `sherpa_tts_phrase_cache_bytes`.
+
+### Changed
+
+- **sherpa-tts** — `SherpaTts` no longer caches phrases itself; the cache now lives in `VoiceAgent`. `SHERPA_TTS_PHRASE_CACHE` and `SHERPA_TTS_PHRASE_CACHE_MAX_ENTRIES` are no longer read. Servers that build Sherpa providers directly (not through `VoiceAgent`) hold no phrase cache.
+- **sherpa-tts** — The streaming resampler keeps at most two source samples instead of the whole utterance, and writes stereo output in one pass. Streaming peak memory for 10 s of audio drops from about 0.9 MB to 0.14 MB, and resampling is about 25 % faster. Output is byte-identical.
+- **speech** — One blocking hop per STT audio frame (`SttProvider::push_and_poll`); Sherpa skips reading the result when no decode step ran. PCM fields in the speech gRPC proto are `bytes::Bytes` (no copy).
+
 ## [0.9.27] - 2026-10-06
 
 ### Changed

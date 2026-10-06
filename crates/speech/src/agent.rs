@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -80,11 +80,15 @@ impl Drop for TtsWorkerAliveGuard {
     }
 }
 
+/// `VOICE_DEBUG=1|true|yes`, read once per process.
 fn voice_debug_enabled() -> bool {
-    matches!(
-        std::env::var("VOICE_DEBUG").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    )
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("VOICE_DEBUG").ok().as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    })
 }
 
 fn voice_debug(message: impl AsRef<str>) {

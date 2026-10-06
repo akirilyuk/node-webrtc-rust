@@ -12,6 +12,7 @@ use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 use sherpa_onnx::OnlineStream;
 use tokio::sync::Mutex;
 
+use crate::loader::voice_debug;
 use crate::pool::{ActiveSessionGuard, SharedSttRecognizer, SherpaModelPool};
 
 pub(crate) const SAMPLE_RATE: i32 = 16_000;
@@ -26,19 +27,6 @@ pub fn sherpa_get_result_count() -> u64 {
 
 pub fn reset_sherpa_get_result_count() {
     SHERPA_GET_RESULT_COUNT.store(0, Ordering::SeqCst);
-}
-
-fn voice_debug_enabled() -> bool {
-    matches!(
-        std::env::var("VOICE_DEBUG").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    )
-}
-
-fn voice_debug(message: impl AsRef<str>) {
-    if voice_debug_enabled() {
-        eprintln!("[voice-debug] {}", message.as_ref());
-    }
 }
 
 struct SttSessionState {

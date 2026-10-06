@@ -116,6 +116,16 @@ fn gate_hold_long_pause_elapsed(hold_total: u32, hold_elapsed: u32) -> bool {
     hold_total > 0 && hold_elapsed.saturating_mul(10) > hold_total.saturating_mul(9)
 }
 
+/// Time-to-first-audio bookkeeping for the reply whose first outbound frame will emit
+/// `agent_speaking_start`.
+#[derive(Debug, Clone, Copy)]
+struct FirstAudioTiming {
+    /// Moment `send_text_to_tts_with_options` accepted the text.
+    requested_at: Instant,
+    /// Speak request to first PCM chunk from the TTS vendor, once that chunk arrived.
+    first_chunk_ms: Option<u32>,
+}
+
 struct AgentInner {
     config: VoiceAgentConfig,
     attached: bool,
@@ -138,6 +148,8 @@ struct AgentInner {
     /// True while agent TTS is synthesizing or playing outbound audio.
     agent_speaking: bool,
     agent_speaking_since: Option<Instant>,
+    /// Timing for the reply that will start playback; taken when `agent_speaking_start` is emitted.
+    pending_first_audio: Option<FirstAudioTiming>,
     /// STT vendor PCM feed open for the current VAD-triggered utterance.
     stt_stream_open: bool,
     /// User STT session open (`user_stt_start` … `user_stt_end` / `user_stt_not_found`).
@@ -258,6 +270,8 @@ struct TtsSynthesisJob {
     /// When false, VAD / STT-partial barge-in must not flush or cancel this job (explicit
     /// `flush_tts` / `stop` still do).
     interruptible: bool,
+    /// When the text was accepted by `send_text_to_tts_with_options` (time-to-first-audio anchor).
+    requested_at: Instant,
 }
 
 /// One voice agent session bound to a single peer connection.
@@ -364,6 +378,7 @@ impl VoiceAgent {
                 stt_speaking_start_emitted_this_utterance: false,
                 agent_speaking: false,
                 agent_speaking_since: None,
+                pending_first_audio: None,
                 stt_stream_open: false,
                 user_stt_session_open: false,
                 vad_triggered_this_utterance: false,
@@ -1384,6 +1399,7 @@ impl VoiceAgent {
                 text: trimmed.to_string(),
                 done: done_tx,
                 interruptible: options.interruptible,
+                requested_at: Instant::now(),
             });
         }
 
@@ -1483,6 +1499,7 @@ impl VoiceAgent {
                     protected_active.store(!job.interruptible, Ordering::SeqCst);
                     let result = Self::run_tts_synthesis_job(
                         &job.text,
+                        job.requested_at,
                         &tts,
                         &tts_buffer,
                         &tts_drain_wake,
@@ -1526,6 +1543,7 @@ impl VoiceAgent {
 
     async fn run_tts_synthesis_job(
         text: &str,
+        requested_at: Instant,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -1545,9 +1563,11 @@ impl VoiceAgent {
         if let Some(agent) = weak_self.upgrade() {
             agent.apply_pending_tts_config_if_any().await?;
         }
+        Self::begin_first_audio_timing(inner, requested_at).await;
         if tts_stream_chunks_enabled() {
             Self::run_tts_synthesis_job_streaming(
                 text,
+                requested_at,
                 tts,
                 tts_buffer,
                 tts_drain_wake,
@@ -1568,6 +1588,7 @@ impl VoiceAgent {
         } else {
             Self::run_tts_synthesis_job_buffered(
                 text,
+                requested_at,
                 tts,
                 tts_buffer,
                 tts_drain_wake,
@@ -1591,6 +1612,7 @@ impl VoiceAgent {
     /// Enabled with `VOICE_TTS_STREAM_CHUNKS=0`.
     async fn run_tts_synthesis_job_buffered(
         text: &str,
+        requested_at: Instant,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -1634,6 +1656,9 @@ impl VoiceAgent {
             synthesize_result?
         };
         Self::record_tts_job_latency(inner, tts_started).await;
+        if chunks.iter().any(|chunk| !chunk.pcm.is_empty()) {
+            Self::record_first_chunk(inner, requested_at).await;
+        }
 
         if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
             voice_debug("TTS synthesis discarded (invalidated during synthesize)");
@@ -1685,6 +1710,7 @@ impl VoiceAgent {
     /// drain can start before the full utterance is ready (`VOICE_TTS_STREAM_CHUNKS`).
     async fn run_tts_synthesis_job_streaming(
         text: &str,
+        requested_at: Instant,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -1736,8 +1762,14 @@ impl VoiceAgent {
 
         let enqueue_buffer = tts_buffer.clone();
         let enqueue_wake = Arc::clone(tts_drain_wake);
+        let enqueue_inner = Arc::clone(inner);
         let enqueue_task = tokio::spawn(async move {
+            let mut first_chunk_seen = false;
             while let Some(chunk) = rx.recv().await {
+                if !first_chunk_seen && !chunk.pcm.is_empty() {
+                    first_chunk_seen = true;
+                    Self::record_first_chunk(&enqueue_inner, requested_at).await;
+                }
                 if !enqueue_buffer
                     .enqueue_if_generation(vec![chunk], Some(generation_at_start))
                     .await
@@ -1809,6 +1841,54 @@ impl VoiceAgent {
                 Err(error)
             }
         }
+    }
+
+    fn elapsed_ms_u32(since: Instant) -> u32 {
+        u32::try_from(since.elapsed().as_millis()).unwrap_or(u32::MAX)
+    }
+
+    fn active_tts_vendor_label(inner: &AgentInner) -> &'static str {
+        inner
+            .config
+            .tts
+            .as_ref()
+            .map(|cfg| cfg.provider.as_str())
+            .unwrap_or("unknown")
+    }
+
+    /// A reply queued while the agent is already speaking produces no new `agent_speaking_start`,
+    /// so only a job that starts on an idle agent gets pending timing. Overwrites a stale entry
+    /// left by an earlier job that never reached playback.
+    async fn begin_first_audio_timing(inner: &Arc<Mutex<AgentInner>>, requested_at: Instant) {
+        let mut guard = inner.lock().await;
+        if !guard.agent_speaking {
+            guard.pending_first_audio = Some(FirstAudioTiming {
+                requested_at,
+                first_chunk_ms: None,
+            });
+        }
+    }
+
+    /// Records speak request to first vendor PCM chunk (OTel + pending timing for this job).
+    async fn record_first_chunk(inner: &Arc<Mutex<AgentInner>>, requested_at: Instant) {
+        let ms = Self::elapsed_ms_u32(requested_at);
+        let mut guard = inner.lock().await;
+        otel::record_voice_tts_first_chunk_ms(f64::from(ms), Self::active_tts_vendor_label(&guard));
+        if let Some(timing) = guard.pending_first_audio.as_mut() {
+            if timing.requested_at == requested_at && timing.first_chunk_ms.is_none() {
+                timing.first_chunk_ms = Some(ms);
+            }
+        }
+    }
+
+    fn clear_pending_first_audio(inner: &mut AgentInner) {
+        inner.pending_first_audio = None;
+    }
+
+    /// Pending time-to-first-audio timing is set (tests).
+    #[doc(hidden)]
+    pub async fn has_pending_first_audio(&self) -> bool {
+        self.inner.lock().await.pending_first_audio.is_some()
     }
 
     async fn record_tts_job_latency(inner: &Arc<Mutex<AgentInner>>, started: Instant) {
@@ -1919,6 +1999,7 @@ impl VoiceAgent {
             guard.tts_playback_failure_gen = guard.tts_playback_failure_gen.wrapping_add(1);
             guard.tts_playback_last_error = Some(message.clone());
             let was_speaking = guard.agent_speaking;
+            Self::clear_pending_first_audio(&mut guard);
             guard.agent_speaking = false;
             guard.agent_speaking_since = None;
             guard.barge_awaiting_stt_partial = false;
@@ -1980,6 +2061,7 @@ impl VoiceAgent {
 
     async fn cancel_pending_tts_synthesis(&self) {
         self.invalidate_inflight_tts_synthesis();
+        Self::clear_pending_first_audio(&mut *self.inner.lock().await);
         let mut queue = self.tts_synthesis_queue.lock().await;
         for job in queue.drain(..) {
             if let Some(done) = job.done {
@@ -3826,16 +3908,28 @@ impl VoiceAgent {
             }
             *played_any = true;
             if !*agent_start_emitted {
-                {
+                let (first_audio_ms, first_chunk_ms) = {
                     let mut guard = inner.lock().await;
+                    let timing = guard.pending_first_audio.take();
+                    let first_audio_ms = timing.map(|t| Self::elapsed_ms_u32(t.requested_at));
+                    if let Some(ms) = first_audio_ms {
+                        otel::record_voice_tts_first_audio_ms(
+                            f64::from(ms),
+                            Self::active_tts_vendor_label(&guard),
+                        );
+                    }
                     guard.agent_speaking = true;
                     guard.agent_speaking_since = Some(Instant::now());
                     guard.stt_barge_fired_this_agent_playback = false;
                     guard.barge_awaiting_stt_partial = false;
                     // Drop any user-turn pre-roll so agent echo does not reach STT on barge.
                     guard.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
-                }
-                event_bus.emit(SpeechEvent::agent_speaking_start());
+                    (first_audio_ms, timing.and_then(|t| t.first_chunk_ms))
+                };
+                event_bus.emit(SpeechEvent::agent_speaking_start_with_timing(
+                    first_audio_ms,
+                    first_chunk_ms,
+                ));
                 voice_debug("agent_speaking_start (first outbound PCM frame)");
                 *agent_start_emitted = true;
             }
@@ -3932,6 +4026,7 @@ impl VoiceAgent {
         arm_stt_hold_after_playback: bool,
     ) {
         let mut guard = inner.lock().await;
+        Self::clear_pending_first_audio(&mut guard);
         guard.agent_speaking = false;
         guard.agent_speaking_since = None;
         guard.barge_awaiting_stt_partial = false;

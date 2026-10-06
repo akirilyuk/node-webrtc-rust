@@ -82,6 +82,8 @@ fn metrics_record_without_panic() {
     otel::set_sherpa_tts_phrase_cache_bytes(4096, &tts_attrs);
     otel::record_sherpa_tts_queue_wait_ms(1.5, &tts_attrs);
     otel::record_sherpa_tts_synth_wall_ms(42.0, &tts_attrs);
+    otel::record_voice_tts_first_chunk_ms(180.0, "mock");
+    otel::record_voice_tts_first_audio_ms(210.0, "mock");
 
     let ctx = VoiceSessionContext {
         session_id: Some("sess-1".into()),

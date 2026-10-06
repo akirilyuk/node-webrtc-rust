@@ -96,3 +96,22 @@ describe('stt hold fields on the wire', () => {
     })
   })
 })
+
+describe('agent_speaking_start timing on the wire', () => {
+  test('forwards firstChunkMs and firstAudioMs when set', () => {
+    const msg = speechEventToControlMessage({
+      type: 'agent_speaking_start',
+      firstChunkMs: 180,
+      firstAudioMs: 240,
+    })
+    expect(msg.firstChunkMs).toBe(180)
+    expect(msg.firstAudioMs).toBe(240)
+  })
+
+  test('leaves them unset when the event carries no timing', () => {
+    const msg = speechEventToControlMessage({ type: 'agent_speaking_start' })
+    expect(msg.firstChunkMs).toBeUndefined()
+    expect(msg.firstAudioMs).toBeUndefined()
+    expect(JSON.parse(JSON.stringify(msg))).not.toHaveProperty('firstAudioMs')
+  })
+})

@@ -357,6 +357,10 @@ export interface JsSpeechEvent {
   droppedMs?: number
   reason?: string
   speechMs?: number
+  /** `agent_speaking_start`: ms from the speak request to the first PCM chunk from the TTS vendor. */
+  firstChunkMs?: number
+  /** `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply. */
+  firstAudioMs?: number
 }
 export const enum JsSttHoldMode {
   BufferReplay = 'buffer_replay',

@@ -486,7 +486,7 @@ impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
 }
 
 #[napi(string_enum)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum JsSpeechEventType {
     #[napi(value = "user_speaking_start")]
     UserSpeakingStart,
@@ -550,6 +550,10 @@ pub struct JsSpeechEvent {
     pub dropped_ms: Option<u32>,
     pub reason: Option<String>,
     pub speech_ms: Option<u32>,
+    /// `agent_speaking_start`: ms from the speak request to the first PCM chunk from the TTS vendor.
+    pub first_chunk_ms: Option<u32>,
+    /// `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply.
+    pub first_audio_ms: Option<u32>,
 }
 
 #[napi(string_enum)]

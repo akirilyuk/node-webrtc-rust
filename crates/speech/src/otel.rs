@@ -124,8 +124,9 @@ pub use enabled::{
     record_gate_hold_end, record_gate_hold_start, record_sherpa_pool_wait_ms,
     record_sherpa_tts_phrase_cache_hit, record_sherpa_tts_phrase_cache_miss,
     record_sherpa_tts_queue_wait_ms, record_sherpa_tts_synth_wall_ms, record_stt_latency_ms,
-    record_tts_latency_ms, record_vad_transition, set_sherpa_pool_entries,
-    set_sherpa_tts_phrase_cache_bytes, set_sherpa_tts_phrase_cache_entries, voice_span,
+    record_tts_latency_ms, record_vad_transition, record_voice_tts_first_audio_ms,
+    record_voice_tts_first_chunk_ms, set_sherpa_pool_entries, set_sherpa_tts_phrase_cache_bytes,
+    set_sherpa_tts_phrase_cache_entries, voice_span,
 };
 
 #[cfg(not(feature = "otel"))]
@@ -205,6 +206,12 @@ pub fn record_sherpa_tts_queue_wait_ms(_ms: f64, _attrs: &SherpaTtsMetricAttrs) 
 
 #[cfg(not(feature = "otel"))]
 pub fn record_sherpa_tts_synth_wall_ms(_ms: f64, _attrs: &SherpaTtsMetricAttrs) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_voice_tts_first_chunk_ms(_ms: f64, _vendor: &str) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_voice_tts_first_audio_ms(_ms: f64, _vendor: &str) {}
 
 #[cfg(not(feature = "otel"))]
 pub async fn acquire_sherpa_permit(

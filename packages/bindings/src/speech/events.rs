@@ -48,6 +48,8 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         dropped_ms: event.dropped_ms,
         reason: event.reason,
         speech_ms: event.speech_ms,
+        first_chunk_ms: event.first_chunk_ms,
+        first_audio_ms: event.first_audio_ms,
     }
 }
 
@@ -76,6 +78,21 @@ mod speech_event_to_js_tests {
         assert_eq!(js.reason.as_deref(), Some("deferred_tts"));
         assert_eq!(js.speech_ms, Some(80));
         assert!(js.text.is_none());
+    }
+
+    #[test]
+    fn agent_speaking_start_maps_first_audio_timing() {
+        let js = speech_event_to_js(SpeechEvent::agent_speaking_start_with_timing(
+            Some(240),
+            Some(180),
+        ));
+        assert_eq!(js.event_type, JsSpeechEventType::AgentSpeakingStart);
+        assert_eq!(js.first_audio_ms, Some(240));
+        assert_eq!(js.first_chunk_ms, Some(180));
+
+        let plain = speech_event_to_js(SpeechEvent::agent_speaking_start());
+        assert_eq!(plain.first_audio_ms, None);
+        assert_eq!(plain.first_chunk_ms, None);
     }
 }
 

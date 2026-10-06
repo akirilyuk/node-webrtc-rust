@@ -350,6 +350,18 @@ export interface SpeechEvent {
   reason?: LanguageIdSkipReason
   /** `language_id_skipped`: buffered user speech (ms) at the decision point. */
   speechMs?: number
+  /**
+   * `agent_speaking_start`: ms from the speak request (`sendTextToTTS` accepting the text) to the
+   * first PCM chunk from the TTS vendor. Unset when the reply was queued behind audio that was
+   * already playing.
+   */
+  firstChunkMs?: number
+  /**
+   * `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that
+   * reply (time to first audio). Unset when the reply was queued behind audio that was already
+   * playing.
+   */
+  firstAudioMs?: number
 }
 
 /** `languageId.timing` values. */

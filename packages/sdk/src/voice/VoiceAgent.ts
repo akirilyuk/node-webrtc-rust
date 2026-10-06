@@ -275,6 +275,8 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     buffered_ms?: number
     dropped_ms?: number
     speech_ms?: number
+    first_chunk_ms?: number
+    first_audio_ms?: number
   }
   return {
     type: jsEventTypeToString(rawType ?? JsSpeechEventType.Error),
@@ -296,6 +298,8 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     droppedMs: event.droppedMs ?? extended.dropped_ms ?? undefined,
     reason: (event.reason ?? undefined) as LanguageIdSkipReason | undefined,
     speechMs: event.speechMs ?? extended.speech_ms ?? undefined,
+    firstChunkMs: event.firstChunkMs ?? extended.first_chunk_ms ?? undefined,
+    firstAudioMs: event.firstAudioMs ?? extended.first_audio_ms ?? undefined,
   }
 }
 

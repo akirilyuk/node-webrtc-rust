@@ -209,6 +209,17 @@ struct AgentInner {
     stt_hold: Option<SttHold>,
     /// The replay ring was started at the SpeechStart pre-roll flush (keeps the onset audio).
     replay_begun_at_pre_roll: bool,
+    /// Transcripts returned by `SttProvider::push_and_poll`, handled by the next
+    /// `poll_stt_transcripts` (before it polls the provider). Cleared wherever STT state resets.
+    pending_transcripts: VecDeque<SttTranscript>,
+}
+
+/// Result of handling one STT transcript.
+enum HandleOutcome {
+    /// Emitted its events (or had nothing more to do); keep draining.
+    Continue,
+    /// Ignored (empty leftover final while the VAD is still speaking); keep draining.
+    Skip,
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
@@ -386,6 +397,7 @@ impl VoiceAgent {
                 replay_final_context: None,
                 stt_hold: None,
                 replay_begun_at_pre_roll: false,
+                pending_transcripts: VecDeque::new(),
             })),
             stt: Mutex::new(stt),
             stt_ready_wait_override_ms: AtomicU64::new(0),
@@ -604,6 +616,7 @@ impl VoiceAgent {
             inner.last_partial_text = None;
             inner.last_replay_snapshot = None;
             inner.utterance_replay_buffer.invalidate();
+            inner.pending_transcripts.clear();
             buffered_ms
         };
         self.emit(SpeechEvent::stt_hold_started(
@@ -861,6 +874,8 @@ impl VoiceAgent {
         {
             let mut inner = self.inner.lock().await;
             inner.config.stt = Some(config.clone());
+            // Transcripts of the swapped-out STT must not surface after the swap.
+            inner.pending_transcripts.clear();
         }
         self.emit(SpeechEvent::stt_config_updated(&config));
         Ok(())
@@ -914,6 +929,7 @@ impl VoiceAgent {
         inner.partials_emitted_this_utterance = false;
         inner.barge_awaiting_stt_partial = false;
         inner.defer_utterance_finalize_until_hold = false;
+        inner.pending_transcripts.clear();
     }
 
     fn clear_stt_listen_timer(inner: &mut AgentInner) {
@@ -3459,7 +3475,16 @@ impl VoiceAgent {
         }
         let mut stt = self.stt.lock().await;
         if let Some(stt) = stt.as_mut() {
-            stt.push_audio(mono_bytes).await?;
+            let mut buf = Vec::new();
+            stt.push_and_poll(mono_bytes, &mut buf).await?;
+            if !buf.is_empty() {
+                // Queued, not handled: `poll_stt_transcripts` handles them outside the STT lock.
+                // Done while the STT lock is held so a config swap cannot slip in between.
+                let mut inner = self.inner.lock().await;
+                if inner.stt_enabled && inner.stt_hold.is_none() {
+                    inner.pending_transcripts.extend(buf);
+                }
+            }
         }
         Ok(())
     }
@@ -3536,6 +3561,15 @@ impl VoiceAgent {
                 return Ok(());
             }
         }
+        // Transcripts queued by `push_and_poll`, in order, one at a time so a config swap or
+        // hold that happens while handling one drops the rest.
+        loop {
+            let queued = self.inner.lock().await.pending_transcripts.pop_front();
+            let Some(transcript) = queued else {
+                break;
+            };
+            self.handle_stt_transcript(transcript).await?;
+        }
         loop {
             let transcript = {
                 let mut stt = self.stt.lock().await;
@@ -3547,80 +3581,86 @@ impl VoiceAgent {
             let Some(transcript) = transcript else {
                 break;
             };
-            match transcript {
-                SttTranscript::Partial(text) => {
-                    voice_debug(format!("STT partial: {text}"));
-                    {
-                        let mut inner = self.inner.lock().await;
-                        inner.partials_emitted_this_utterance = true;
-                        inner.last_partial_text = Some(text.clone());
-                        Self::clear_stt_listen_timer(&mut inner);
-                        Self::refresh_utterance_finalize_after_partial(&mut inner);
-                    }
-                    self.emit_user_speaking_start_if_needed().await;
-                    // Partial must precede barge_in in the event stream (semantic roundtrip E2E).
-                    let utterance_id = self.inner.lock().await.current_utterance_id.clone();
-                    self.emit(SpeechEvent::user_speech_partial(text.clone(), utterance_id));
-                    self.try_stt_gated_barge_in(&text).await?;
-                }
-                SttTranscript::Final(text) => {
-                    if text.trim().is_empty() {
-                        let still_speaking = {
-                            let inner = self.inner.lock().await;
-                            Self::vad_is_speaking(&inner)
-                        };
-                        if still_speaking {
-                            voice_debug(
-                                "ignore empty leftover user_speech_final while VAD still speaking",
-                            );
-                            continue;
-                        }
-                    }
-                    voice_debug(format!("STT final: {text}"));
-                    self.emit_user_speaking_start_if_needed().await;
-                    self.try_stt_gated_barge_in(&text).await?;
-                    let (emit_speaking_end, close_stream) = {
-                        let mut inner = self.inner.lock().await;
-                        inner.stt_final_emitted_this_utterance = true;
-                        inner.stt_finalize_pending = false;
-                        inner.stt_endpoint_closing_started = false;
-                        Self::clear_stt_listen_timer(&mut inner);
-                        Self::clear_utterance_finalize_timer(&mut inner);
-                        inner.vad_triggered_this_utterance = false;
-                        let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
-                        if emit_end {
-                            inner.stt_speaking_end_emitted_this_utterance = true;
-                        }
-                        let close_stream = inner.stt_stream_open || inner.user_stt_session_open;
-                        if inner.stt_stream_open {
-                            inner.stt_stream_open = false;
-                        }
-                        if inner.user_stt_session_open {
-                            inner.user_stt_session_open = false;
-                        }
-                        (emit_end, close_stream)
-                    };
-                    if close_stream {
-                        self.emit(SpeechEvent::stt_stream_end());
-                        self.emit(SpeechEvent::user_stt_end());
-                    }
-                    if emit_speaking_end {
-                        voice_debug("emit user_speaking_end (paired with STT final)");
-                        self.emit_user_speaking_end_after_lid_gate().await;
-                    }
-                    voice_debug(format!(
-                        "emit user_speech_final: {}",
-                        if text.len() > 80 {
-                            format!("{}…", &text[..80])
-                        } else {
-                            text.clone()
-                        }
-                    ));
-                    self.emit_utterance_final(text, false).await;
-                }
-            }
+            self.handle_stt_transcript(transcript).await?;
         }
         Ok(())
+    }
+
+    /// Emit the events for one STT transcript (shared by queued and freshly polled transcripts).
+    async fn handle_stt_transcript(&self, transcript: SttTranscript) -> SpeechResult<HandleOutcome> {
+        match transcript {
+            SttTranscript::Partial(text) => {
+                voice_debug(format!("STT partial: {text}"));
+                {
+                    let mut inner = self.inner.lock().await;
+                    inner.partials_emitted_this_utterance = true;
+                    inner.last_partial_text = Some(text.clone());
+                    Self::clear_stt_listen_timer(&mut inner);
+                    Self::refresh_utterance_finalize_after_partial(&mut inner);
+                }
+                self.emit_user_speaking_start_if_needed().await;
+                // Partial must precede barge_in in the event stream (semantic roundtrip E2E).
+                let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+                self.emit(SpeechEvent::user_speech_partial(text.clone(), utterance_id));
+                self.try_stt_gated_barge_in(&text).await?;
+            }
+            SttTranscript::Final(text) => {
+                if text.trim().is_empty() {
+                    let still_speaking = {
+                        let inner = self.inner.lock().await;
+                        Self::vad_is_speaking(&inner)
+                    };
+                    if still_speaking {
+                        voice_debug(
+                            "ignore empty leftover user_speech_final while VAD still speaking",
+                        );
+                        return Ok(HandleOutcome::Skip);
+                    }
+                }
+                voice_debug(format!("STT final: {text}"));
+                self.emit_user_speaking_start_if_needed().await;
+                self.try_stt_gated_barge_in(&text).await?;
+                let (emit_speaking_end, close_stream) = {
+                    let mut inner = self.inner.lock().await;
+                    inner.stt_final_emitted_this_utterance = true;
+                    inner.stt_finalize_pending = false;
+                    inner.stt_endpoint_closing_started = false;
+                    Self::clear_stt_listen_timer(&mut inner);
+                    Self::clear_utterance_finalize_timer(&mut inner);
+                    inner.vad_triggered_this_utterance = false;
+                    let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
+                    if emit_end {
+                        inner.stt_speaking_end_emitted_this_utterance = true;
+                    }
+                    let close_stream = inner.stt_stream_open || inner.user_stt_session_open;
+                    if inner.stt_stream_open {
+                        inner.stt_stream_open = false;
+                    }
+                    if inner.user_stt_session_open {
+                        inner.user_stt_session_open = false;
+                    }
+                    (emit_end, close_stream)
+                };
+                if close_stream {
+                    self.emit(SpeechEvent::stt_stream_end());
+                    self.emit(SpeechEvent::user_stt_end());
+                }
+                if emit_speaking_end {
+                    voice_debug("emit user_speaking_end (paired with STT final)");
+                    self.emit_user_speaking_end_after_lid_gate().await;
+                }
+                voice_debug(format!(
+                    "emit user_speech_final: {}",
+                    if text.len() > 80 {
+                        format!("{}…", &text[..80])
+                    } else {
+                        text.clone()
+                    }
+                ));
+                self.emit_utterance_final(text, false).await;
+            }
+        }
+        Ok(HandleOutcome::Continue)
     }
 
     pub(crate) fn emit(&self, event: SpeechEvent) {

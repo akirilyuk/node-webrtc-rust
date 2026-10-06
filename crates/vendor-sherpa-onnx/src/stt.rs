@@ -17,6 +17,16 @@ use crate::pool::{ActiveSessionGuard, SharedSttRecognizer, SherpaModelPool};
 pub(crate) const SAMPLE_RATE: i32 = 16_000;
 
 static SHERPA_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+static SHERPA_GET_RESULT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Number of `get_result` reads this process has made on STT streams (perf probe / tests).
+pub fn sherpa_get_result_count() -> u64 {
+    SHERPA_GET_RESULT_COUNT.load(Ordering::SeqCst)
+}
+
+pub fn reset_sherpa_get_result_count() {
+    SHERPA_GET_RESULT_COUNT.store(0, Ordering::SeqCst);
+}
 
 fn voice_debug_enabled() -> bool {
     matches!(
@@ -38,6 +48,66 @@ struct SttSessionState {
     stream: OnlineStream,
     last_emitted_text: String,
     pending: VecDeque<SttTranscript>,
+    /// True when at least one decode step ran since the result was last read. `get_result` and
+    /// `is_endpoint` only change after a decode, so the read is skipped while this is false.
+    decoded_since_result: bool,
+}
+
+impl SttSessionState {
+    /// Decode every ready chunk (capped at 64 steps). Sets `decoded_since_result` when one ran.
+    fn decode_ready(&mut self, cap_message: &'static str) {
+        let steps = self.shared.with_recognizer(|recognizer| {
+            let mut decode_steps = 0u32;
+            while recognizer.is_ready(&self.stream) {
+                recognizer.decode(&self.stream);
+                decode_steps = decode_steps.saturating_add(1);
+                if decode_steps >= 64 {
+                    voice_debug(cap_message);
+                    break;
+                }
+            }
+            decode_steps
+        });
+        if steps > 0 {
+            self.decoded_since_result = true;
+        }
+    }
+
+    /// Read the current result and apply the partial / final / endpoint rules. Resets
+    /// `decoded_since_result`.
+    fn read_transcript(&mut self) -> Option<SttTranscript> {
+        self.decoded_since_result = false;
+        SHERPA_GET_RESULT_COUNT.fetch_add(1, Ordering::SeqCst);
+        let (text, endpoint) = self.shared.with_recognizer(|recognizer| {
+            let result = recognizer.get_result(&self.stream);
+            let text = result
+                .as_ref()
+                .map(|value| value.text.trim())
+                .unwrap_or("")
+                .to_string();
+            let endpoint = recognizer.is_endpoint(&self.stream);
+            (text, endpoint)
+        });
+
+        if text.is_empty() {
+            return None;
+        }
+
+        if endpoint {
+            self.shared.with_recognizer(|recognizer| {
+                recognizer.reset(&self.stream);
+            });
+            self.last_emitted_text.clear();
+            return Some(SttTranscript::Final(text));
+        }
+
+        if text == self.last_emitted_text {
+            return None;
+        }
+
+        self.last_emitted_text = text.clone();
+        Some(SttTranscript::Partial(text))
+    }
 }
 
 struct SherpaSttState {
@@ -81,6 +151,7 @@ impl SherpaStt {
             stream,
             last_emitted_text: String::new(),
             pending: VecDeque::new(),
+            decoded_since_result: false,
         })
     }
 }
@@ -122,6 +193,7 @@ impl SttProvider for SherpaStt {
                 });
                 session.last_emitted_text.clear();
                 session.pending.clear();
+                session.decoded_since_result = false;
             }
             // Dropping SttSessionState runs ActiveSessionGuard::drop (exactly once).
             guard.session = None;
@@ -161,19 +233,7 @@ impl SttProvider for SherpaStt {
 
             accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
             session.stream.accept_waveform(SAMPLE_RATE, &samples);
-            session.shared.with_recognizer(|recognizer| {
-                let mut decode_steps = 0u32;
-                while recognizer.is_ready(&session.stream) {
-                    recognizer.decode(&session.stream);
-                    decode_steps = decode_steps.saturating_add(1);
-                    if decode_steps >= 64 {
-                        voice_debug(
-                            "sherpa decode loop capped at 64 steps (possible is_ready stuck)",
-                        );
-                        break;
-                    }
-                }
-            });
+            session.decode_ready("sherpa decode loop capped at 64 steps (possible is_ready stuck)");
 
             let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             if push == 1 || push % 50 == 0 {
@@ -210,50 +270,16 @@ impl SttProvider for SherpaStt {
                 return Ok(Some(pending));
             }
 
-            session.shared.with_recognizer(|recognizer| {
-                let mut decode_steps = 0u32;
-                while recognizer.is_ready(&session.stream) {
-                    recognizer.decode(&session.stream);
-                    decode_steps = decode_steps.saturating_add(1);
-                    if decode_steps >= 64 {
-                        voice_debug(
-                            "sherpa poll decode loop capped at 64 steps (possible is_ready stuck)",
-                        );
-                        break;
-                    }
-                }
-            });
+            session.decode_ready(
+                "sherpa poll decode loop capped at 64 steps (possible is_ready stuck)",
+            );
             accepted_ms.store(0, Ordering::Relaxed);
 
-            let (text, endpoint) = session.shared.with_recognizer(|recognizer| {
-                let result = recognizer.get_result(&session.stream);
-                let text = result
-                    .as_ref()
-                    .map(|value| value.text.trim())
-                    .unwrap_or("")
-                    .to_string();
-                let endpoint = recognizer.is_endpoint(&session.stream);
-                (text, endpoint)
-            });
-
-            if text.is_empty() {
+            if !session.decoded_since_result {
+                // No decode since the last read: result and endpoint cannot have changed.
                 return Ok(None);
             }
-
-            if endpoint {
-                session.shared.with_recognizer(|recognizer| {
-                    recognizer.reset(&session.stream);
-                });
-                session.last_emitted_text.clear();
-                return Ok(Some(SttTranscript::Final(text)));
-            }
-
-            if text == session.last_emitted_text {
-                return Ok(None);
-            }
-
-            session.last_emitted_text = text.clone();
-            Ok(Some(SttTranscript::Partial(text)))
+            Ok(session.read_transcript())
         })
         .await
         .map_err(|err| SpeechError::Internal(err.to_string()))?
@@ -287,6 +313,7 @@ impl SttProvider for SherpaStt {
                     }
                 }
 
+                SHERPA_GET_RESULT_COUNT.fetch_add(1, Ordering::SeqCst);
                 let result = recognizer.get_result(&session.stream);
                 let text = result
                     .as_ref()
@@ -302,11 +329,65 @@ impl SttProvider for SherpaStt {
                 recognizer.reset(&session.stream);
             });
             session.last_emitted_text.clear();
+            session.decoded_since_result = false;
             Ok(())
         })
         .await
         .map_err(|err| SpeechError::Internal(err.to_string()))??;
 
+        Ok(())
+    }
+
+    async fn push_and_poll(
+        &mut self,
+        pcm: Bytes,
+        out: &mut Vec<SttTranscript>,
+    ) -> SpeechResult<()> {
+        let samples = mono_s16le_bytes_to_f32(pcm.as_ref());
+
+        let state = Arc::clone(&self.state);
+        let accepted_ms = Arc::clone(&self.accepted_ms);
+        let sample_ms = (samples.len() as u32 * 1000) / SAMPLE_RATE as u32;
+        let decode_semaphore = self.pool.decode_semaphore();
+        let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
+            .await
+            .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
+
+        let ready = tokio::task::spawn_blocking(move || -> SpeechResult<Vec<SttTranscript>> {
+            let mut ready = Vec::new();
+            let mut guard = state.blocking_lock();
+            if !guard.running {
+                return Ok(ready);
+            }
+            let Some(session) = guard.session.as_mut() else {
+                return Ok(ready);
+            };
+
+            if !samples.is_empty() {
+                accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
+                session.stream.accept_waveform(SAMPLE_RATE, &samples);
+                let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                if push == 1 || push % 50 == 0 {
+                    voice_debug(format!("sherpa push_audio samples={}", samples.len()));
+                }
+            }
+            session.decode_ready("sherpa decode loop capped at 64 steps (possible is_ready stuck)");
+            accepted_ms.store(0, Ordering::Relaxed);
+
+            while let Some(pending) = session.pending.pop_front() {
+                ready.push(pending);
+            }
+            if session.decoded_since_result {
+                if let Some(transcript) = session.read_transcript() {
+                    ready.push(transcript);
+                }
+            }
+            Ok(ready)
+        })
+        .await
+        .map_err(|err| SpeechError::Internal(err.to_string()))??;
+
+        out.extend(ready);
         Ok(())
     }
 }

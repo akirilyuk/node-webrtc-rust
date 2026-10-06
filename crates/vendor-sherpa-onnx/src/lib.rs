@@ -18,4 +18,5 @@ pub use loader::{
     tts_engine_create_count,
 };
 pub use pool::SherpaModelPool;
+pub use stt::{reset_sherpa_get_result_count, sherpa_get_result_count};
 pub use tts::{reset_tts_generate_count, tts_generate_count};

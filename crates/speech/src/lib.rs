@@ -42,6 +42,7 @@
 //! | [`pipeline`] | `SttProvider` / `TtsProvider` traits and vendor factory |
 //! | [`pcm`] | Resample and duration helpers |
 //! | [`tts_buffer`] | Outbound TTS PCM queue |
+//! | [`tts_cache`] | Runner-side TTS phrase cache (`CachingTtsProvider`) |
 //!
 //! Debug: set env `VOICE_DEBUG=1` for stderr `[voice-debug]` lines.
 
@@ -57,6 +58,7 @@ pub mod session_recorder;
 pub mod stt_hold;
 pub mod stt_pre_roll;
 pub mod tts_buffer;
+pub mod tts_cache;
 pub mod utterance_replay;
 pub mod vad;
 
@@ -77,7 +79,7 @@ pub use node_webrtc_rust_denoise::Stereo48kRnnoise;
 pub use pcm::{pcm_rms_i16, stereo_48k_to_mono_16k};
 pub use pipeline::{
     tts_stream_chunks_enabled, LanguageIdProvider, LanguageIdResult, SttProvider, SttTranscript,
-    TtsAudioChunk, TtsProgressiveSink, TtsProvider, VendorFactory,
+    TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
 };
 pub use registry::VendorRegistry;
 pub use session_recorder::{

@@ -120,11 +120,7 @@ run_rust_ignored() {
     exit 1
   fi
   export SHERPA_LID_MODEL_PATH="$lid_dir"
-  echo "==> cargo ignored TTS phrase cache + stream-chunks tests (SHERPA_TTS_MODEL_PATH=$SHERPA_TTS_MODEL_PATH)"
-  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
-    "sherpa rust tts_phrase_cache_test --ignored" -- \
-    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_phrase_cache_test -- \
-      --ignored --nocapture --test-threads=1
+  echo "==> cargo ignored TTS stream-chunks + cancel-not-cached tests (SHERPA_TTS_MODEL_PATH=$SHERPA_TTS_MODEL_PATH)"
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust tts_stream_chunks_integration_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_stream_chunks_integration_test -- \

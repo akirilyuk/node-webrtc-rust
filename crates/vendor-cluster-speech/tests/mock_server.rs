@@ -32,6 +32,8 @@ pub struct MockSpeechState {
     /// `0` = default behaviour (two small chunks). `> 0` = `synthesize` sends exactly one
     /// `SynthesizeResponse` carrying this many PCM bytes, then a terminal empty `last` message.
     pub synthesize_single_message_bytes: Arc<AtomicUsize>,
+    /// While `true`, the default `synthesize` stream ends without a terminal `last` message.
+    pub synthesize_omit_last: Arc<AtomicBool>,
     /// Currently open `transcribe` calls (server side). Decremented when the call's work ends.
     pub open_transcribe_streams: Arc<AtomicIsize>,
     /// While `true`, the `transcribe` handler stops reading inbound messages (stalled server).
@@ -243,6 +245,7 @@ impl Speech for MockSpeech {
             });
             return Ok(Response::new(ReceiverStream::new(rx)));
         }
+        let last = !self.state.synthesize_omit_last.load(Ordering::SeqCst);
         let pcm_len = text.len().max(4) * 80;
         let _ = tx
             .send(Ok(SynthesizeResponse {
@@ -255,7 +258,7 @@ impl Speech for MockSpeech {
             .send(Ok(SynthesizeResponse {
                 pcm_s16le: Bytes::from(vec![0_u8; pcm_len]),
                 duration_ms: 20,
-                last: true,
+                last,
             }))
             .await;
         Ok(Response::new(ReceiverStream::new(rx)))

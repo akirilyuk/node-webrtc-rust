@@ -1,7 +1,7 @@
 //! B3: every chunk delivered to a progressive sink must stay small enough for one gRPC message.
 //!
 //! One long sentence without punctuation is a single Piper progress callback on first play, and a
-//! phrase-cache hit delivers the whole utterance at once. Both exceed tonic's 4 MiB default once
+//! phrase-cache hit (`CachingTtsProvider` in the speech crate) delivers the whole utterance at once. Both exceed tonic's 4 MiB default once
 //! the audio is longer than ~21.8 s of stereo 48 kHz s16le. Each sink chunk must stay at or under
 //! one second of audio.
 //!
@@ -13,7 +13,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor, VoiceSessionContext};
-use node_webrtc_rust_speech::pipeline::{TtsProgressiveSink, VendorFactory};
+use node_webrtc_rust_speech::pipeline::{TtsProgressiveSink, TtsProvider, VendorFactory};
+use node_webrtc_rust_speech::tts_cache::{CachingTtsProvider, PhraseCache};
 use node_webrtc_rust_vendor_sherpa_onnx::SherpaFactory;
 use tokio::sync::mpsc;
 
@@ -92,12 +93,15 @@ fn drain_lengths(
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn sink_chunks_never_exceed_one_second() {
     let model_path = std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
-    let _cache_on = EnvGuard::set("SHERPA_TTS_PHRASE_CACHE", "1");
     let _stream_on = EnvGuard::set("VOICE_TTS_STREAM_CHUNKS", "1");
 
-    let tts = SherpaFactory
-        .create_tts(&tts_config(model_path))
-        .expect("create TTS");
+    let config = tts_config(model_path);
+    let inner = SherpaFactory.create_tts(&config).expect("create TTS");
+    let tts = CachingTtsProvider::new(
+        inner,
+        config,
+        Arc::new(PhraseCache::new(64 * 1024 * 1024, 32 * 1024 * 1024)),
+    );
     tts.bind_session_context(&VoiceSessionContext {
         project_id: Some("p-b3-sink".into()),
         ..Default::default()

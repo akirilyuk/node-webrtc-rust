@@ -145,6 +145,35 @@ async fn tts_progressive_emits_chunks_and_honors_cancel() {
 }
 
 #[tokio::test]
+async fn stream_with_last_is_complete() {
+    let state = MockSpeechState::default();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let tts = ClusterSherpaTts::new(&tts_cfg(&url)).unwrap();
+    let out = tts
+        .synthesize_progressive_with_status("hello", None)
+        .await
+        .unwrap();
+    assert!(out.complete, "stream ended with `last`");
+    assert_eq!(out.chunks.len(), 2);
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn stream_without_last_is_incomplete() {
+    let state = MockSpeechState::default();
+    state.synthesize_omit_last.store(true, Ordering::SeqCst);
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let tts = ClusterSherpaTts::new(&tts_cfg(&url)).unwrap();
+    let out = tts
+        .synthesize_progressive_with_status("hello", None)
+        .await
+        .unwrap();
+    assert!(!out.complete, "stream closed before `last`");
+    assert_eq!(out.chunks.len(), 2);
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
 async fn endpoint_precedence_env_fallback() {
     let state = MockSpeechState::default();
     let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();

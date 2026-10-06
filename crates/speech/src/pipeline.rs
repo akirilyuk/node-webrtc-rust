@@ -112,6 +112,13 @@ pub trait SttProvider: Send + Sync {
     }
 }
 
+/// A synthesis plus whether it ran to the end (not cancelled, not cut short).
+#[derive(Debug, Clone, Default)]
+pub struct TtsSynthesis {
+    pub chunks: Vec<TtsAudioChunk>,
+    pub complete: bool,
+}
+
 /// Text-to-speech provider trait.
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
@@ -142,6 +149,21 @@ pub trait TtsProvider: Send + Sync {
             }
         }
         Ok(chunks)
+    }
+
+    /// Like [`Self::synthesize_progressive`] and reports completeness. Only complete
+    /// syntheses may be cached. Default: complete unless the sink was cancelled.
+    async fn synthesize_progressive_with_status(
+        &self,
+        text: &str,
+        sink: Option<TtsProgressiveSink>,
+    ) -> SpeechResult<TtsSynthesis> {
+        let cancelled = sink.clone();
+        let chunks = self.synthesize_progressive(text, sink).await?;
+        let complete = !cancelled
+            .as_ref()
+            .is_some_and(TtsProgressiveSink::is_cancelled);
+        Ok(TtsSynthesis { chunks, complete })
     }
 }
 

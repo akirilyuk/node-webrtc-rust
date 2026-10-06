@@ -4,7 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::{TtsConfig, VoiceSessionContext};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
+use node_webrtc_rust_speech::pipeline::{
+    TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis,
+};
 use node_webrtc_rust_speech_proto::v1::speech_client::SpeechClient;
 use node_webrtc_rust_speech_proto::v1::{ModelRef, SessionContext, SynthesizeRequest};
 use tonic::metadata::MetadataValue;
@@ -33,29 +35,15 @@ impl ClusterSherpaTts {
             session_ctx: Arc::new(tokio::sync::Mutex::new(None)),
         })
     }
-}
 
-#[async_trait]
-impl TtsProvider for ClusterSherpaTts {
-    fn vendor_name(&self) -> &'static str {
-        "cluster-sherpa"
-    }
-
-    fn bind_session_context(&self, ctx: &VoiceSessionContext) {
-        if let Ok(mut guard) = self.session_ctx.try_lock() {
-            *guard = Some(ctx.clone());
-        }
-    }
-
-    async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
-        self.synthesize_progressive(text, None).await
-    }
-
-    async fn synthesize_progressive(
+    /// Run one `Synthesize` stream. `complete` is true only when the server sent its
+    /// terminal `last` message and the sink was not cancelled; a stream that ends
+    /// early or is cut by the sink yields partial audio.
+    async fn stream_synthesis(
         &self,
         text: &str,
         sink: Option<TtsProgressiveSink>,
-    ) -> SpeechResult<Vec<TtsAudioChunk>> {
+    ) -> SpeechResult<TtsSynthesis> {
         let channel = tts_channel(&self.endpoint).await?;
         let mut client =
             SpeechClient::new(channel).max_decoding_message_size(MAX_GRPC_MESSAGE_BYTES);
@@ -98,6 +86,7 @@ impl TtsProvider for ClusterSherpaTts {
 
         let cancel = sink.as_ref().map(|s| Arc::clone(&s.cancel));
         let mut collected = Vec::new();
+        let mut saw_last = false;
         while let Some(msg) = stream.message().await.map_err(|e| SpeechError::Vendor {
             vendor: "cluster-sherpa".into(),
             message: e.message().to_string(),
@@ -120,9 +109,50 @@ impl TtsProvider for ClusterSherpaTts {
             }
             collected.push(chunk);
             if msg.last {
+                saw_last = true;
                 break;
             }
         }
-        Ok(collected)
+        let cancelled = cancel
+            .as_ref()
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(false);
+        Ok(TtsSynthesis {
+            chunks: collected,
+            complete: saw_last && !cancelled,
+        })
+    }
+}
+
+#[async_trait]
+impl TtsProvider for ClusterSherpaTts {
+    fn vendor_name(&self) -> &'static str {
+        "cluster-sherpa"
+    }
+
+    fn bind_session_context(&self, ctx: &VoiceSessionContext) {
+        if let Ok(mut guard) = self.session_ctx.try_lock() {
+            *guard = Some(ctx.clone());
+        }
+    }
+
+    async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+        self.synthesize_progressive(text, None).await
+    }
+
+    async fn synthesize_progressive(
+        &self,
+        text: &str,
+        sink: Option<TtsProgressiveSink>,
+    ) -> SpeechResult<Vec<TtsAudioChunk>> {
+        Ok(self.stream_synthesis(text, sink).await?.chunks)
+    }
+
+    async fn synthesize_progressive_with_status(
+        &self,
+        text: &str,
+        sink: Option<TtsProgressiveSink>,
+    ) -> SpeechResult<TtsSynthesis> {
+        self.stream_synthesis(text, sink).await
     }
 }

@@ -34,6 +34,7 @@ static TTS_LATENCY: OnceLock<Histogram<f64>> = OnceLock::new();
 static POOL_WAIT: OnceLock<Histogram<f64>> = OnceLock::new();
 static POOL_ENTRIES: OnceLock<Gauge<i64>> = OnceLock::new();
 static TTS_PHRASE_CACHE_ENTRIES: OnceLock<Gauge<i64>> = OnceLock::new();
+static TTS_PHRASE_CACHE_BYTES: OnceLock<Gauge<i64>> = OnceLock::new();
 static TTS_PHRASE_CACHE_HITS: OnceLock<Counter<u64>> = OnceLock::new();
 static TTS_PHRASE_CACHE_MISSES: OnceLock<Counter<u64>> = OnceLock::new();
 static TTS_QUEUE_WAIT: OnceLock<Histogram<f64>> = OnceLock::new();
@@ -111,6 +112,15 @@ fn tts_phrase_cache_entries_gauge() -> &'static Gauge<i64> {
         ensure_meter()
             .i64_gauge("sherpa_tts_phrase_cache_entries")
             .with_description("Sherpa TTS in-memory phrase cache entry count")
+            .build()
+    })
+}
+
+fn tts_phrase_cache_bytes_gauge() -> &'static Gauge<i64> {
+    TTS_PHRASE_CACHE_BYTES.get_or_init(|| {
+        ensure_meter()
+            .i64_gauge("sherpa_tts_phrase_cache_bytes")
+            .with_description("TTS in-memory phrase cache size in PCM bytes")
             .build()
     })
 }
@@ -542,6 +552,13 @@ pub fn set_sherpa_tts_phrase_cache_entries(count: i64, attrs: &SherpaTtsMetricAt
     if is_enabled() {
         let kv = sherpa_tts_metric_attrs(attrs);
         tts_phrase_cache_entries_gauge().record(count, &kv);
+    }
+}
+
+pub fn set_sherpa_tts_phrase_cache_bytes(bytes: i64, attrs: &SherpaTtsMetricAttrs) {
+    if is_enabled() {
+        let kv = sherpa_tts_metric_attrs(attrs);
+        tts_phrase_cache_bytes_gauge().record(bytes, &kv);
     }
 }
 

@@ -7,7 +7,7 @@
 # `.test-logs/perf/<label>-<git sha>.json` (compare two of them with scripts/perf/compare-perf.mjs).
 #
 #   criterion benches  inbound_frame, resample, opus_encode   (run once, criterion samples itself)
-#   probe benches      tts_drain, idle_agents                 (PERF_PROBE_RUNS times, default 5;
+#   probe benches      tts_drain, idle_agents                 (PERF_PROBE_RUNS times, default 7;
 #                                                              median + spread recorded)
 #
 # Not a PR gate: timings on shared runners are noisy. Run on a quiet machine, same machine for
@@ -20,7 +20,7 @@ cd "$ROOT"
 
 SHA="$(git rev-parse --short HEAD)"
 export PERF_SHA="$SHA"
-RUNS="${PERF_PROBE_RUNS:-5}"
+RUNS="${PERF_PROBE_RUNS:-7}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 mkdir -p .test-logs/perf
 LOG=".test-logs/${STAMP}-perf-bench.log"

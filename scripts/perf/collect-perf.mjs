@@ -5,7 +5,8 @@
 //
 // Sources:
 //   - `perf_probe {json}` lines in <bench-log>. A probe that ran several times contributes the
-//     median of each metric; its spread_pct is (max - min) / median * 100.
+//     median of each metric; its spread_pct is the robust 100 * 1.4826 * MAD / median
+//     (MAD = median of |x - median|), so one outlier run does not inflate the noise band.
 //   - criterion `<criterion-dir>/<metric>/new/estimates.json` (bench id == metric name): the
 //     median point estimate in ns; spread_pct is the width of its 95 % confidence interval
 //     relative to the median.
@@ -14,6 +15,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 export const EXPECTED_METRICS = [
   "inbound_frame_silence_ns",
@@ -33,6 +35,14 @@ function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Robust spread in percent of the median: 100 * 1.4826 * MAD / |median|. */
+export function robustSpreadPct(values) {
+  const mid = median(values);
+  if (mid === 0) return 0;
+  const mad = median(values.map((v) => Math.abs(v - mid)));
+  return (100 * 1.4826 * mad) / Math.abs(mid);
 }
 
 function main(argv) {
@@ -59,7 +69,7 @@ function main(argv) {
   for (const [name, values] of Object.entries(samples)) {
     const mid = median(values);
     metrics[name] = mid;
-    spreadPct[name] = mid === 0 ? 0 : ((Math.max(...values) - Math.min(...values)) / Math.abs(mid)) * 100;
+    spreadPct[name] = robustSpreadPct(values);
   }
 
   if (existsSync(criterionDir)) {
@@ -85,4 +95,6 @@ function main(argv) {
   return 0;
 }
 
-process.exit(main(process.argv.slice(2)));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exit(main(process.argv.slice(2)));
+}

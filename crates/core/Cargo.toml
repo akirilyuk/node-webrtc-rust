@@ -21,3 +21,8 @@ node-webrtc-rust-mixer = { path = "../mixer" }
 
 [dev-dependencies]
 env_logger = "0.11"
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "opus_encode"
+harness = false

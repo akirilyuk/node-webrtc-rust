@@ -44,3 +44,17 @@ node-webrtc-rust-denoise = { path = "../denoise" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 node-webrtc-rust-vendor-mock = { path = "../vendor-mock" }
+criterion = { version = "0.5", default-features = false }
+libc = "0.2"
+
+[[bench]]
+name = "inbound_frame"
+harness = false
+
+[[bench]]
+name = "tts_drain"
+harness = false
+
+[[bench]]
+name = "idle_agents"
+harness = false

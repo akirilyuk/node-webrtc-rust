@@ -125,7 +125,7 @@ pub use enabled::{
     record_sherpa_tts_phrase_cache_hit, record_sherpa_tts_phrase_cache_miss,
     record_sherpa_tts_queue_wait_ms, record_sherpa_tts_synth_wall_ms, record_stt_latency_ms,
     record_tts_latency_ms, record_vad_transition, set_sherpa_pool_entries,
-    set_sherpa_tts_phrase_cache_entries, voice_span,
+    set_sherpa_tts_phrase_cache_bytes, set_sherpa_tts_phrase_cache_entries, voice_span,
 };
 
 #[cfg(not(feature = "otel"))]
@@ -196,6 +196,9 @@ pub fn record_sherpa_tts_phrase_cache_miss(_attrs: &SherpaTtsMetricAttrs) {}
 
 #[cfg(not(feature = "otel"))]
 pub fn set_sherpa_tts_phrase_cache_entries(_count: i64, _attrs: &SherpaTtsMetricAttrs) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn set_sherpa_tts_phrase_cache_bytes(_bytes: i64, _attrs: &SherpaTtsMetricAttrs) {}
 
 #[cfg(not(feature = "otel"))]
 pub fn record_sherpa_tts_queue_wait_ms(_ms: f64, _attrs: &SherpaTtsMetricAttrs) {}

@@ -79,6 +79,7 @@ fn metrics_record_without_panic() {
     otel::record_sherpa_tts_phrase_cache_hit(&tts_attrs);
     otel::record_sherpa_tts_phrase_cache_miss(&tts_attrs);
     otel::set_sherpa_tts_phrase_cache_entries(4, &tts_attrs);
+    otel::set_sherpa_tts_phrase_cache_bytes(4096, &tts_attrs);
     otel::record_sherpa_tts_queue_wait_ms(1.5, &tts_attrs);
     otel::record_sherpa_tts_synth_wall_ms(42.0, &tts_attrs);
 

@@ -53,8 +53,6 @@ type StreamMode = 'streaming' | 'buffered'
 function applyStreamMode(mode: StreamMode): void {
   // Read per TTS job in Rust — safe to toggle between utterances on a live agent.
   process.env.VOICE_TTS_STREAM_CHUNKS = mode === 'streaming' ? '1' : '0'
-  // Fair latency compare: do not serve the second mode from phrase cache.
-  process.env.SHERPA_TTS_PHRASE_CACHE = '0'
 }
 
 async function runLeg(params: {
@@ -106,7 +104,9 @@ async function main(): Promise<void> {
   // Longer DEFAULT_PHRASE usually yields a clear first-audio win; override if flaky.
   const minImprovementMs = Number(process.env.SHERPA_TTS_STREAM_MIN_IMPROVEMENT_MS ?? 40)
   const maxRegressionMs = Number(process.env.SHERPA_TTS_STREAM_MAX_REGRESSION_MS ?? 80)
-  const minSimilarity = Number(process.env.SHERPA_TTS_STREAM_MIN_SIMILARITY ?? DEFAULT_MIN_SIMILARITY)
+  const minSimilarity = Number(
+    process.env.SHERPA_TTS_STREAM_MIN_SIMILARITY ?? DEFAULT_MIN_SIMILARITY,
+  )
 
   const { config, label, sttModelPath, ttsModelPath } = resolveRoundtripVoiceConfig()
   // Two long TTS→STT legs + warmup — use the long profile wall budget.
@@ -127,8 +127,9 @@ async function main(): Promise<void> {
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log('')
 
-  // Disable cache for the whole process before agents start.
-  process.env.SHERPA_TTS_PHRASE_CACHE = '0'
+  // Fair latency compare: no phrase cache for the whole process. The Rust side reads this
+  // once, at the first VoiceAgent, so it must be set before any agent is created.
+  process.env.VOICE_TTS_PHRASE_CACHE = '0'
 
   const { agentOut, userInbound, userOut, agentInbound, cleanup } =
     await createBidirectionalLoopback()

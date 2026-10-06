@@ -107,7 +107,6 @@ async fn measure_buffered_full_ms(tts: &dyn TtsProvider, phrase: &str) -> u128 {
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn progressive_emits_chunks_before_full_utterance() {
     let model_path = std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
-    let _cache_off = EnvGuard::set("SHERPA_TTS_PHRASE_CACHE", "0");
     let _stream_on = EnvGuard::set("VOICE_TTS_STREAM_CHUNKS", "1");
 
     let tts = SherpaFactory
@@ -132,7 +131,6 @@ async fn progressive_emits_chunks_before_full_utterance() {
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn progressive_first_chunk_faster_or_equal_vs_buffered_full() {
     let model_path = std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
-    let _cache_off = EnvGuard::set("SHERPA_TTS_PHRASE_CACHE", "0");
 
     let tts = SherpaFactory
         .create_tts(&tts_config(model_path))
@@ -168,7 +166,6 @@ async fn progressive_first_chunk_faster_or_equal_vs_buffered_full() {
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn parallel_progressive_synth_completes_both_jobs() {
     let model_path = std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
-    let _cache_off = EnvGuard::set("SHERPA_TTS_PHRASE_CACHE", "0");
     // Default pool allows 2 concurrent TTS — both should finish.
     let _pool = EnvGuard::set("SHERPA_POOL_MAX_CONCURRENT_TTS", "2");
 
@@ -210,7 +207,6 @@ async fn parallel_progressive_synth_completes_both_jobs() {
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn progressive_pcm_matches_final_oneshot() {
     let model_path = std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
-    let _cache_off = EnvGuard::set("SHERPA_TTS_PHRASE_CACHE", "0");
 
     let tts = SherpaFactory
         .create_tts(&tts_config(model_path))

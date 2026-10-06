@@ -6,7 +6,7 @@
  * exercises the full stack (TTS pool, STT decode, VAD, WebRTC) under concurrent load.
  *
  * Phrase cache: the npm scripts `start:roundtrip-load` and `start:roundtrip-load-ci` set
- * `SHERPA_TTS_PHRASE_CACHE=0`, so every turn runs a real synthesis (six phrases repeat, so with the
+ * `VOICE_TTS_PHRASE_CACHE=0`, so every turn runs a real synthesis (six phrases repeat, so with the
  * cache on, TTS would be served from memory and synthesis load would not be measured).
  * `start:roundtrip-load-cached` keeps the cache on.
  *

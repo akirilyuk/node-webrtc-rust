@@ -8,15 +8,15 @@ use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::otel::{self, SherpaTtsMetricAttrs};
 use node_webrtc_rust_speech::pcm::duration_ms_from_mono_s16le;
 use node_webrtc_rust_speech::pcm::WEBRTC_PCM_SAMPLE_RATE;
-use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
+use node_webrtc_rust_speech::pipeline::{
+    TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis,
+};
+use node_webrtc_rust_speech::tts_cache::normalize_phrase_text;
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
 use crate::audio::{pad_stereo_pcm_to_20ms, slice_for_sink, StreamingStereo48kResampler};
 use crate::loader::voice_debug;
-use crate::phrase_cache::{
-    build_cache_key, build_metric_attrs, lookup, normalize_phrase_text, phrase_cache_enabled, store,
-};
 use crate::pool::{SherpaModelPool, TtsEnginePool};
 use crate::sentences::split_sentences;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
@@ -113,6 +113,49 @@ impl SherpaTts {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "en".to_string())
+    }
+
+    /// Normalise `text`, synthesize it and report whether it ran to the end. A cancelled
+    /// synthesis returns no chunks and `complete: false`. Phrase caching is the caller's
+    /// concern (`CachingTtsProvider` in the speech crate), not this provider's.
+    async fn synthesize_text(
+        &self,
+        text: &str,
+        sink: Option<TtsProgressiveSink>,
+    ) -> SpeechResult<TtsSynthesis> {
+        let normalized = normalize_phrase_text(text);
+        if normalized.is_empty() {
+            return Ok(TtsSynthesis {
+                chunks: Vec::new(),
+                complete: true,
+            });
+        }
+
+        let model_dir = self.resolved_model_dir().await?;
+        let project_id = self.session_project_id();
+        let language = self.language_label();
+        let voice = self.voice_label();
+        let model_id = self
+            .config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
+        let attrs = build_metric_attrs(&project_id, model_id, &model_dir, &language, &voice);
+
+        let (chunk, completed) = self.synthesize_miss(&normalized, &attrs, sink).await?;
+        if !completed {
+            // Cancelled mid-way: the audio is partial and must not be replayed.
+            return Ok(TtsSynthesis {
+                chunks: Vec::new(),
+                complete: false,
+            });
+        }
+        Ok(TtsSynthesis {
+            chunks: vec![chunk],
+            complete: true,
+        })
     }
 
     /// Synthesize `normalized` one sentence at a time.
@@ -398,6 +441,31 @@ where
         })
 }
 
+/// Metric attributes for one synthesis: catalog model id (or dir basename), dir basename,
+/// language, voice and project.
+fn build_metric_attrs(
+    project_id: &str,
+    model_id: &str,
+    model_dir: &str,
+    language: &str,
+    voice: &str,
+) -> SherpaTtsMetricAttrs {
+    let model_dir_basename = otel::path_basename(model_dir);
+    let catalog_id = model_id.trim();
+    SherpaTtsMetricAttrs {
+        tts_vendor: "local-sherpa".to_string(),
+        tts_model: if catalog_id.is_empty() {
+            model_dir_basename.clone()
+        } else {
+            catalog_id.to_string()
+        },
+        tts_model_dir: model_dir_basename,
+        tts_language: language.to_string(),
+        tts_voice: voice.to_string(),
+        project_id: project_id.to_string(),
+    }
+}
+
 pub(crate) fn parse_speaker_id(config: &TtsConfig) -> i32 {
     config
         .voice
@@ -457,58 +525,41 @@ impl TtsProvider for SherpaTts {
         text: &str,
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
-        let normalized = normalize_phrase_text(text);
-        if normalized.is_empty() {
-            return Ok(Vec::new());
-        }
+        Ok(self.synthesize_text(text, sink).await?.chunks)
+    }
 
-        let model_dir = self.resolved_model_dir().await?;
-        let project_id = self.session_project_id();
-        let language = self.language_label();
-        let voice = self.voice_label();
-        let model_id = self
-            .config
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("");
-        let cache_key = build_cache_key(&project_id, &model_dir, &language, &voice, &normalized);
-        let attrs = build_metric_attrs(&project_id, model_id, &model_dir, &language, &voice);
+    async fn synthesize_progressive_with_status(
+        &self,
+        text: &str,
+        sink: Option<TtsProgressiveSink>,
+    ) -> SpeechResult<TtsSynthesis> {
+        self.synthesize_text(text, sink).await
+    }
+}
 
-        if phrase_cache_enabled() {
-            if let Some(chunk) = lookup(&cache_key, &attrs) {
-                voice_debug(format!(
-                    "tts phrase cache hit text_len={} project_id={project_id}",
-                    normalized.len()
-                ));
-                if let Some(sink) = sink {
-                    // The cached clip is the whole utterance; deliver it in bounded slices.
-                    for slice in slice_for_sink(&chunk.pcm) {
-                        let duration_ms =
-                            duration_ms_from_mono_s16le(slice.len() / 2, WEBRTC_PCM_SAMPLE_RATE)
-                                .max(1);
-                        if !sink.send(TtsAudioChunk {
-                            pcm: slice,
-                            duration_ms,
-                        }) {
-                            break;
-                        }
-                    }
-                }
-                return Ok(vec![chunk]);
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        otel::record_sherpa_tts_phrase_cache_miss(&attrs);
-        let (chunk, completed) = self.synthesize_miss(&normalized, &attrs, sink).await?;
-        if !completed {
-            // Cancelled mid-way: partial audio must not be cached or replayed.
-            return Ok(Vec::new());
-        }
-        if phrase_cache_enabled() {
-            store(cache_key, chunk.clone(), &attrs);
-        }
-        Ok(vec![chunk])
+    #[test]
+    fn build_metric_attrs_prefers_catalog_model_id() {
+        let attrs = build_metric_attrs(
+            "proj-a",
+            "en-amy-medium",
+            "/models/vits-piper-en_US-amy-medium",
+            "",
+            "0",
+        );
+        assert_eq!(attrs.tts_model, "en-amy-medium");
+        assert_eq!(attrs.tts_model_dir, "vits-piper-en_US-amy-medium");
+        assert_eq!(attrs.tts_vendor, "local-sherpa");
+    }
+
+    #[test]
+    fn build_metric_attrs_falls_back_to_dir_basename() {
+        let attrs =
+            build_metric_attrs("proj-a", "", "/models/vits-piper-en_US-amy-medium", "", "0");
+        assert_eq!(attrs.tts_model, "vits-piper-en_US-amy-medium");
+        assert_eq!(attrs.tts_model_dir, "vits-piper-en_US-amy-medium");
     }
 }

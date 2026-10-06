@@ -34,6 +34,7 @@ use crate::pipeline::{
 use crate::registry::VendorRegistry;
 use crate::stt_pre_roll::SttPreRollBuffer;
 use crate::tts_buffer::TtsBuffer;
+use crate::tts_cache::wrap_tts_for_agent;
 use crate::vad::{handle_barge_in, VadEngine, VadTransition};
 use node_webrtc_rust_denoise::Stereo48kRnnoise;
 
@@ -318,7 +319,7 @@ impl VoiceAgent {
             stt = Some(registry.create_stt(stt_cfg)?);
         }
         if let Some(tts_cfg) = &config.tts {
-            tts = Some(registry.create_tts(tts_cfg)?);
+            tts = Some(wrap_tts_for_agent(registry.create_tts(tts_cfg)?, tts_cfg));
         }
         let language_id = if language_id_enabled(&config.language_id) {
             registry
@@ -891,7 +892,7 @@ impl VoiceAgent {
             return Ok(());
         };
         let session_ctx = self.inner.lock().await.otel.session_context.clone();
-        let new_tts = self.registry.create_tts(&config)?;
+        let new_tts = wrap_tts_for_agent(self.registry.create_tts(&config)?, &config);
         new_tts.bind_session_context(&session_ctx);
         *self.tts.lock().await = Some(new_tts);
         {

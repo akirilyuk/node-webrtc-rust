@@ -1,5 +1,9 @@
 //! B2: a cancelled progressive synthesis must not be stored in the phrase cache.
 //!
+//! The cache lives in the speech crate (`CachingTtsProvider`); this test wraps the real
+//! Sherpa provider with it, the way `VoiceAgent` does, and checks end to end that a
+//! cancelled synthesis is followed by a fresh ONNX generate for the same text.
+//!
 //! Kept `#[ignore]` for default `cargo test` (needs Piper/VITS weights). CI runs it via
 //! `bash scripts/ci/run-sherpa-example-ci.sh rust|e2e` after model download.
 //! Shares process-wide `tts_generate_count` — run with `--test-threads=1`.
@@ -8,30 +12,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor, VoiceSessionContext};
-use node_webrtc_rust_speech::pipeline::{TtsProgressiveSink, VendorFactory};
+use node_webrtc_rust_speech::pipeline::{TtsProgressiveSink, TtsProvider, VendorFactory};
+use node_webrtc_rust_speech::tts_cache::{CachingTtsProvider, PhraseCache};
 use node_webrtc_rust_vendor_sherpa_onnx::{tts_generate_count, SherpaFactory};
 use tokio::sync::mpsc;
 
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let previous = std::env::var(key).ok();
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
+/// The real Sherpa provider behind a private phrase cache.
+fn cached_tts(model_path: &str, project_id: &str) -> CachingTtsProvider {
+    let config = tts_config(model_path.to_string());
+    let inner = SherpaFactory.create_tts(&config).expect("create TTS");
+    let cache = Arc::new(PhraseCache::new(64 * 1024 * 1024, 32 * 1024 * 1024));
+    let tts = CachingTtsProvider::new(inner, config, cache);
+    tts.bind_session_context(&VoiceSessionContext {
+        project_id: Some(project_id.into()),
+        ..Default::default()
+    });
+    tts
 }
 
 fn tts_config(model_path: String) -> TtsConfig {
@@ -58,17 +54,9 @@ fn total_pcm_bytes(chunks: &[node_webrtc_rust_speech::pipeline::TtsAudioChunk]) 
 #[ignore = "requires SHERPA_TTS_MODEL_PATH with valid Piper/VITS bundle"]
 async fn cancelled_synthesis_is_not_cached() {
     let model_path = std::env::var("SHERPA_TTS_MODEL_PATH").expect("set SHERPA_TTS_MODEL_PATH");
-    let _cache_on = EnvGuard::set("SHERPA_TTS_PHRASE_CACHE", "1");
-    let factory = SherpaFactory;
 
-    // (a) Reference: full uncancelled synthesis in its own cache scope.
-    let ref_tts = factory
-        .create_tts(&tts_config(model_path.clone()))
-        .expect("create reference TTS");
-    ref_tts.bind_session_context(&VoiceSessionContext {
-        project_id: Some("ref-b2".into()),
-        ..Default::default()
-    });
+    // (a) Reference: full uncancelled synthesis in its own cache.
+    let ref_tts = cached_tts(&model_path, "ref-b2");
     let ref_chunks = ref_tts
         .synthesize(FOUR_SENTENCES)
         .await
@@ -77,13 +65,7 @@ async fn cancelled_synthesis_is_not_cached() {
     assert!(ref_bytes > 0, "reference synthesis produced no audio");
 
     // (b) Cancelled: the receiver flips `cancel` on the first non-empty chunk.
-    let tts = factory
-        .create_tts(&tts_config(model_path))
-        .expect("create TTS");
-    tts.bind_session_context(&VoiceSessionContext {
-        project_id: Some("p1-b2".into()),
-        ..Default::default()
-    });
+    let tts = cached_tts(&model_path, "p1-b2");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let sink = TtsProgressiveSink {
@@ -113,6 +95,11 @@ async fn cancelled_synthesis_is_not_cached() {
     let replay_bytes = total_pcm_bytes(&replay_chunks);
     let cache_hit = gen_after == gen_before;
 
+    assert!(
+        gen_after > gen_before,
+        "replay after a cancelled synthesis was served from the cache \
+         (generate count {gen_before} -> {gen_after})"
+    );
     assert!(
         replay_bytes as f64 >= 0.85 * ref_bytes as f64,
         "replay after a cancelled synthesis is truncated: replay_bytes={replay_bytes} \

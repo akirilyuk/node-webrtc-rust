@@ -6,16 +6,9 @@ pub const STEREO_FRAME_20MS_BYTES: usize = 3840;
 
 const WEBRTC_PCM_CHANNELS: usize = 2;
 
-/// Upper bound for one progressive sink chunk: 1 s of stereo 48 kHz s16le
-/// (a multiple of [`STEREO_FRAME_20MS_BYTES`]). Keeps every gRPC message small.
-pub const SINK_SLICE_MAX_BYTES: usize = 192_000;
-
-/// Split `pcm` into zero-copy pieces of at most [`SINK_SLICE_MAX_BYTES`].
-pub fn slice_for_sink(pcm: &Bytes) -> impl Iterator<Item = Bytes> + '_ {
-    (0..pcm.len())
-        .step_by(SINK_SLICE_MAX_BYTES)
-        .map(move |start| pcm.slice(start..(start + SINK_SLICE_MAX_BYTES).min(pcm.len())))
-}
+// Moved to the speech crate; kept here so existing callers and tests compile unchanged.
+#[allow(unused_imports)]
+pub use node_webrtc_rust_speech::tts_cache::{slice_for_sink, SINK_SLICE_MAX_BYTES};
 
 /// Convert mono f32 PCM at `src_rate` Hz to stereo 48 kHz s16le for WebRTC outbound tracks.
 /// Pads the result to a 20 ms frame boundary (legacy full-utterance path).

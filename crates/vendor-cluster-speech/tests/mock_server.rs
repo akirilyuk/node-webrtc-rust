@@ -1,7 +1,8 @@
 //! In-process tonic `Speech` mock (no ONNX) for cluster-sherpa vendor tests.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -16,6 +17,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
+
+/// `(1-based stream index, audio bytes)` per audio message the server read.
+pub type AudioLog = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
 
 #[derive(Clone, Default)]
 pub struct MockSpeechState {
@@ -42,6 +46,17 @@ pub struct MockSpeechState {
     pub resume_reading: Arc<tokio::sync::Notify>,
     /// Sum of `SttAudio.pcm_s16le.len()` over every audio message the server read.
     pub audio_bytes_received: Arc<AtomicUsize>,
+    /// The next N `transcribe` opens fail with `RESOURCE_EXHAUSTED` (pod admission cap full).
+    /// Rejected opens do not count in `transcribe_streams`.
+    pub reject_first_opens: Arc<AtomicUsize>,
+    /// How many opens were rejected by `reject_first_opens`.
+    pub rejected_opens: Arc<AtomicUsize>,
+    /// Milliseconds the mock waits between the final transcript and `Finalized` (0 = none).
+    pub finalized_delay_ms: Arc<AtomicUsize>,
+    /// When `true`, final transcripts read `final-{n}` with `n` = the finalize count.
+    pub numbered_finals: Arc<AtomicBool>,
+    /// Every audio message the server read: `(1-based stream index, bytes)` in arrival order.
+    pub audio_log: AudioLog,
 }
 
 /// Decrements `open_transcribe_streams` when dropped (end of the call's spawned task).
@@ -89,7 +104,16 @@ impl Speech for MockSpeech {
         &self,
         request: Request<Streaming<TranscribeRequest>>,
     ) -> Result<Response<Self::TranscribeStream>, Status> {
-        self.state.transcribe_streams.fetch_add(1, Ordering::SeqCst);
+        let rejected = self
+            .state
+            .reject_first_opens
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if rejected {
+            self.state.rejected_opens.fetch_add(1, Ordering::SeqCst);
+            return Err(Status::resource_exhausted("mock: speech pod full"));
+        }
+        let stream_idx = self.state.transcribe_streams.fetch_add(1, Ordering::SeqCst) + 1;
         let mut inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(32);
         let state = self.state.clone();
@@ -127,6 +151,11 @@ impl Speech for MockSpeech {
                         state
                             .audio_bytes_received
                             .fetch_add(pcm_s16le.len(), Ordering::SeqCst);
+                        state
+                            .audio_log
+                            .lock()
+                            .expect("audio log")
+                            .push((stream_idx, pcm_s16le.to_vec()));
                         if state.error_on_audio.load(Ordering::SeqCst) {
                             let _ = tx
                                 .send(Ok(TranscribeResponse {
@@ -170,11 +199,13 @@ impl Speech for MockSpeech {
                         }
                     }
                     Some(transcribe_request::Msg::Finalize(SttFinalize {})) => {
-                        state.finalize_count.fetch_add(1, Ordering::SeqCst);
+                        let finalize_n = state.finalize_count.fetch_add(1, Ordering::SeqCst) + 1;
                         let _ = tx
                             .send(Ok(TranscribeResponse {
                                 msg: Some(transcribe_response::Msg::Transcript(SttTranscript {
-                                    text: if state
+                                    text: if state.numbered_finals.load(Ordering::SeqCst) {
+                                        format!("final-{finalize_n}")
+                                    } else if state
                                         .leftover_empty_final_on_first_audio
                                         .load(Ordering::SeqCst)
                                     {
@@ -186,6 +217,10 @@ impl Speech for MockSpeech {
                                 })),
                             }))
                             .await;
+                        let delay_ms = state.finalized_delay_ms.load(Ordering::SeqCst);
+                        if delay_ms > 0 {
+                            tokio::time::sleep(Duration::from_millis(delay_ms as u64)).await;
+                        }
                         let _ = tx
                             .send(Ok(TranscribeResponse {
                                 msg: Some(transcribe_response::Msg::Finalized(SttFinalized {})),

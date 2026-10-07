@@ -1,10 +1,17 @@
 import type { RTCDataChannel, RTCPeerConnection } from '../src'
 import type { MessageEvent } from '../src/types'
 
-const STUN_SERVER = { urls: 'stun:stun.l.google.com:19302' }
-
+/**
+ * ICE configuration for loopback tests (both peers in this process).
+ *
+ * Deliberately has no STUN/TURN servers: host candidates are enough for loopback, and a
+ * STUN url makes `gatheringComplete()` wait for DNS resolution of the STUN host. webrtc-ice
+ * resolves it with an unbounded `lookup_host`, so a stalled resolver on a CI runner holds
+ * gathering (once per peer) past the 60 s test timeout. Tests that need a relay or reflexive
+ * candidate (`turn.test.ts`) configure their own servers.
+ */
 export const defaultIceConfig = {
-  iceServers: [STUN_SERVER],
+  iceServers: [],
 }
 
 export function waitForOpen(channel: RTCDataChannel, timeoutMs = 15_000): Promise<void> {

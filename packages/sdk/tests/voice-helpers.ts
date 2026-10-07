@@ -1,8 +1,7 @@
 import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-rust/signaling'
 
 import { LocalAudioTrack, RTCPeerConnection, type RemoteAudioTrack } from '../src'
-
-const STUN = { urls: 'stun:stun.l.google.com:19302' }
+import { defaultIceConfig } from './helpers'
 
 export async function createVoiceLoopback(): Promise<{
   cleanup: () => Promise<void>
@@ -12,8 +11,8 @@ export async function createVoiceLoopback(): Promise<{
   const server = new SignalingServer({ port: 0 })
   await server.listen(0, '127.0.0.1')
 
-  const agentPc = new RTCPeerConnection({ iceServers: [STUN] })
-  const userPc = new RTCPeerConnection({ iceServers: [STUN] })
+  const agentPc = new RTCPeerConnection(defaultIceConfig)
+  const userPc = new RTCPeerConnection(defaultIceConfig)
   const agentOut = new LocalAudioTrack('agent-out', 'voice-test')
   await agentPc.addTrack(agentOut)
 

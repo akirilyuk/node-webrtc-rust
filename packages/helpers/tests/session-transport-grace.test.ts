@@ -28,6 +28,7 @@ type FakeSession = {
   pendingIce: never[]
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
   transportDownSince?: number
+  clientHangup?: boolean
 }
 
 type HostAccess = VoiceAgentSessionHost & {
@@ -39,6 +40,11 @@ type HostAccess = VoiceAgentSessionHost & {
     via: 'ice-restart' | 'rejoin',
   ) => void
   connectClientInner: (peerId: string) => Promise<void>
+  installClientHangupInterceptor: (
+    peerId: string,
+    session: FakeSession,
+    channel: { onmessage: ((event: { data: unknown }) => void) | null },
+  ) => void
 }
 
 function createFakeSession(state = 'disconnected'): FakeSession {
@@ -72,6 +78,8 @@ function createHost(
     on: vi.fn((event: string, cb: (...args: never[]) => void) => {
       handlers.set(event, cb)
     }),
+    sendOffer: vi.fn(),
+    sendIceCandidate: vi.fn(),
   }
   const host = new VoiceAgentSessionHost(signaling as never, [], {
     voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
@@ -201,5 +209,101 @@ describe('transport disconnect grace', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(host.sessions.has('client-1')).toBe(false)
     expect(logs).toContain('[data client-1] transport still down after 2000ms — closing peer')
+  })
+  /** Connects a real (never-negotiated) data-only peer and lets the test force its states. */
+  async function connectRealPeer(host: HostAccess, peerId: string) {
+    await host.connectClientInner(peerId)
+    const session = host.sessions.get(peerId)!
+    const state = { ice: 'connected', conn: 'connected' }
+    Object.defineProperty(session.pc, 'iceConnectionState', { get: () => state.ice })
+    Object.defineProperty(session.pc, 'connectionState', { get: () => state.conn })
+    const pc = session.pc as unknown as {
+      oniceconnectionstatechange: () => void
+      onconnectionstatechange: () => void
+      close: () => void
+    }
+    return { session, state, pc }
+  }
+
+  it('ICE failed keeps the peer until the transport grace', async () => {
+    vi.useFakeTimers()
+    const host = createHost()
+    const { session, state, pc } = await connectRealPeer(host, 'client-1')
+
+    state.ice = 'disconnected'
+    pc.oniceconnectionstatechange()
+    await vi.advanceTimersByTimeAsync(10_000)
+    state.ice = 'failed'
+    pc.oniceconnectionstatechange()
+
+    await vi.advanceTimersByTimeAsync(19_999)
+    expect(host.sessions.get('client-1')).toBe(session)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(host.sessions.has('client-1')).toBe(false)
+  })
+
+  it('connectionState closed closes the peer immediately', async () => {
+    vi.useFakeTimers()
+    const host = createHost()
+    const { state, pc } = await connectRealPeer(host, 'client-1')
+
+    state.conn = 'closed'
+    pc.onconnectionstatechange()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(host.sessions.has('client-1')).toBe(false)
+  })
+
+  it('peer-left with transport connected keeps the peer', async () => {
+    vi.useFakeTimers()
+    const logs: string[] = []
+    const handlers = new Map<string, (...args: never[]) => void>()
+    const host = createHost({ logs, handlers })
+    const session = createFakeSession('connected')
+    host.sessions.set('client-1', session)
+    ;(handlers.get('peer-left') as (peerId: string) => void)('client-1')
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(host.sessions.get('client-1')).toBe(session)
+    expect(session.pc.close).not.toHaveBeenCalled()
+    expect(logs).toContain('[voice client-1] signaling left but transport is up — keeping peer')
+  })
+
+  it('peer-left with transport disconnected closes the peer after the grace, not before', async () => {
+    vi.useFakeTimers()
+    const handlers = new Map<string, (...args: never[]) => void>()
+    const host = createHost({ handlers })
+    const session = createFakeSession('disconnected')
+    host.sessions.set('client-1', session)
+    ;(handlers.get('peer-left') as (peerId: string) => void)('client-1')
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(host.sessions.get('client-1')).toBe(session)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(host.sessions.has('client-1')).toBe(false)
+    expect(session.pc.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('client_hangup on the control channel closes the peer immediately', async () => {
+    vi.useFakeTimers()
+    const host = createHost()
+    const session = createFakeSession('connected')
+    host.sessions.set('client-1', session)
+    const passthrough = vi.fn()
+    const channel = { onmessage: passthrough as ((event: { data: unknown }) => void) | null }
+    host.installClientHangupInterceptor('client-1', session, channel)
+
+    channel.onmessage!({ data: JSON.stringify({ type: 'other' }) })
+    expect(passthrough).toHaveBeenCalledTimes(1)
+    expect(host.sessions.has('client-1')).toBe(true)
+
+    channel.onmessage!({ data: JSON.stringify({ type: 'client_hangup' }) })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(session.clientHangup).toBe(true)
+    expect(host.sessions.has('client-1')).toBe(false)
+    expect(session.pc.close).toHaveBeenCalledTimes(1)
+    expect(passthrough).toHaveBeenCalledTimes(1)
   })
 })

@@ -66,6 +66,9 @@ import type {
  * window resumes the conversation. 2026-10-07: 5 s ended every session on a short media blackout.
  */
 export const DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS = 30_000
+
+/** Control data-channel message type (`{ "type": "client_hangup" }`) a client sends to end its session at once. */
+export const CLIENT_HANGUP_MESSAGE_TYPE = 'client_hangup'
 /** Bound native peer cleanup so session budget release cannot hang forever. */
 const PEER_NATIVE_CLOSE_TIMEOUT_MS = 5_000
 
@@ -208,6 +211,16 @@ async function awaitAgentStopped(
   return { status: 'ok' }
 }
 
+function isClientHangupMessage(data: unknown): boolean {
+  if (typeof data !== 'string' || !data.includes(CLIENT_HANGUP_MESSAGE_TYPE)) return false
+  try {
+    const parsed = JSON.parse(data) as { type?: unknown }
+    return parsed.type === CLIENT_HANGUP_MESSAGE_TYPE
+  } catch {
+    return false
+  }
+}
+
 function componentOk(status: TeardownComponentStatus): boolean {
   return status === 'ok' || status === 'absent'
 }
@@ -275,6 +288,8 @@ interface ClientSession {
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
   /** Wall-clock ms when the transport last went down; cleared on restore or close. */
   transportDownSince?: number
+  /** Set when the client sent {@link CLIENT_HANGUP_MESSAGE_TYPE} on the control channel. */
+  clientHangup?: boolean
   resolveMicTrack?: (track: RemoteAudioTrack) => void
   rejectMicTrack?: (error: Error) => void
   /** Held until PC connected + control DC open; consumed by {@link maybeStartAgentWhenTransportReady}. */
@@ -463,11 +478,31 @@ export class VoiceAgentSessionHost {
     })
 
     this.signaling.on('peer-left', (peerId) => {
-      void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch(
-        (error: unknown) => {
-          console.error(`Failed to close client ${peerId} after peer-left:`, error)
-        },
-      )
+      const closeNow = (): void => {
+        void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch(
+          (error: unknown) => {
+            console.error(`Failed to close client ${peerId} after peer-left:`, error)
+          },
+        )
+      }
+      const session = this.sessions.get(peerId)
+      if (session?.clientHangup) {
+        closeNow()
+        return
+      }
+      if (session && session.pc.connectionState === 'connected') {
+        this.log(`[voice ${peerId}] signaling left but transport is up — keeping peer`)
+        return
+      }
+      if (session) {
+        this.log(
+          `[voice ${peerId}] signaling left with transport ${session.pc.connectionState} — keeping session for ${this.transportDisconnectGraceMs}ms`,
+        )
+        this.scheduleTransportDisconnect(peerId, session)
+        return
+      }
+      // Not in sessions (connecting/closing): close as before.
+      closeNow()
     })
   }
 
@@ -801,7 +836,12 @@ export class VoiceAgentSessionHost {
         this.noteTransportRestored(peerId, session, 'ice-restart')
       } else if (iceState === 'disconnected') {
         this.scheduleTransportDisconnect(peerId, session)
-      } else if (iceState === 'failed' || iceState === 'closed') {
+      } else if (iceState === 'failed') {
+        this.log(
+          `[${tag} ${peerId}] ice failed — keeping session for ${this.transportDisconnectGraceMs}ms`,
+        )
+        this.scheduleTransportDisconnect(peerId, session)
+      } else if (iceState === 'closed') {
         this.clearTransportDisconnectTimer(session)
         this.voidCloseClient(peerId)
       }
@@ -823,7 +863,12 @@ export class VoiceAgentSessionHost {
         }
       } else if (pc.connectionState === 'disconnected') {
         this.scheduleTransportDisconnect(peerId, session)
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      } else if (pc.connectionState === 'failed') {
+        this.log(
+          `[${tag} ${peerId}] connection failed — keeping session for ${this.transportDisconnectGraceMs}ms`,
+        )
+        this.scheduleTransportDisconnect(peerId, session)
+      } else if (pc.connectionState === 'closed') {
         this.clearTransportDisconnectTimer(session)
         this.log(`[${tag} ${peerId}] connection ${pc.connectionState} — closing peer`)
         this.voidCloseClient(peerId)
@@ -867,6 +912,7 @@ export class VoiceAgentSessionHost {
         session.unwireControl = () => {
           controlChannel.onmessage = previousOnMessage
         }
+        this.installClientHangupInterceptor(peerId, session, controlChannel)
         this.maybeNotifyPeerLifecycle(peerId, session)
         return
       }
@@ -892,6 +938,7 @@ export class VoiceAgentSessionHost {
             }
           : undefined,
       })
+      this.installClientHangupInterceptor(peerId, session, controlChannel)
       // Transport or agent start may complete before the control DC opens; retry here.
       this.maybeNotifyPeerLifecycle(peerId, session)
       this.maybeStartAgentWhenTransportReady(peerId, session)
@@ -1283,6 +1330,28 @@ export class VoiceAgentSessionHost {
     await session.pc.addIceCandidate(new RTCIceCandidate(candidate))
   }
 
+  /** Wraps the control channel `onmessage` so a `client_hangup` message closes the peer at once. */
+  private installClientHangupInterceptor(
+    peerId: string,
+    session: ClientSession,
+    channel: RTCDataChannel,
+  ): void {
+    const wired = channel.onmessage
+    channel.onmessage = (event) => {
+      if (isClientHangupMessage(event.data)) {
+        session.clientHangup = true
+        this.log(`[voice ${peerId}] client hung up — closing peer`)
+        void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch(
+          (error: unknown) => {
+            console.error(`[voice ${peerId}] closeClient after client_hangup failed:`, error)
+          },
+        )
+        return
+      }
+      wired?.call(channel, event)
+    }
+  }
+
   private clearTransportDisconnectTimer(session: ClientSession): void {
     if (session.transportDisconnectTimer) {
       clearTimeout(session.transportDisconnectTimer)
@@ -1450,7 +1519,9 @@ export class VoiceAgentSessionHost {
     const wait = {
       peerId,
       pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
-        'ok' | 'failed' | 'pending',
+        | 'ok'
+        | 'failed'
+        | 'pending',
       agent: (agentStatus === 'timed_out'
         ? 'pending'
         : componentOk(agentStatus)

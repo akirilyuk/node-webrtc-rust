@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **helpers** — a voice peer whose transport drops is kept for 30 s (`transportDisconnectGraceMs`, was 5 s) and an empty session for 15 s (`rejoinGraceMs` default, was 5 s), so short network outages no longer end the conversation.
+- **helpers** — a voice peer whose transport drops is kept for 30 s (`transportDisconnectGraceMs`, was 5 s) and an empty session for 15 s (`rejoinGraceMs` default, was 5 s), so short network outages no longer end the conversation. ICE/connection `failed` and a dropped signaling socket also wait for the grace; a client sends `client_hangup` to end at once.
 
 ## [0.9.32] - 2026-10-07
 

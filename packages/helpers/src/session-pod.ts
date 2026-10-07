@@ -82,6 +82,8 @@ export interface SessionPodOptions {
   wrapAudioTracks?: VoiceAgentSessionHostOptions['wrapAudioTracks']
   /** Passed to each room's {@link VoiceAgentSessionHost}. */
   resolveVoiceAgentSessionContext?: VoiceAgentSessionHostOptions['resolveVoiceAgentSessionContext']
+  /** Passed to each room's {@link VoiceAgentSessionHost}. */
+  transportDisconnectGraceMs?: VoiceAgentSessionHostOptions['transportDisconnectGraceMs']
   log?: (message: string) => void
 }
 
@@ -98,8 +100,12 @@ export interface SessionPodSessionInfo {
   connections: number
 }
 
-/** Default grace before tearing down an empty slot — same-session reconnect window. */
-export const DEFAULT_SESSION_REJOIN_GRACE_MS = 5_000
+/**
+ * Default grace before tearing down an empty slot — same-session reconnect window.
+ * Total outage budget is about the host transport grace (30 s, see
+ * `DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS`) plus this rejoin grace (15 s), roughly 45 s.
+ */
+export const DEFAULT_SESSION_REJOIN_GRACE_MS = 15_000
 
 /** Grace when the last peer left before WebRTC transport was ready (pre-DTLS reconnect). */
 export const DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS = 60_000
@@ -339,6 +345,7 @@ export class SessionPod {
       iceTransportPolicy: this.options.iceTransportPolicy,
       wrapAudioTracks: this.options.wrapAudioTracks,
       resolveVoiceAgentSessionContext: this.options.resolveVoiceAgentSessionContext,
+      transportDisconnectGraceMs: this.options.transportDisconnectGraceMs,
       resolveParticipantId: (clientId) => this.resolveParticipantId(clientId),
       log: this.options.log,
     })

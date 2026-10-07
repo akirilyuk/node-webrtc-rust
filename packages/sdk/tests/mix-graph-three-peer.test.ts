@@ -155,8 +155,8 @@ async function runThreePeerPositionalMix(
   expect440OnRight: boolean,
 ): Promise<void> {
   const server = new SignalingServer({ port: 0 })
-  await server.listen(0)
-  const wsUrl = `ws://localhost:${server.port}`
+  await server.listen(0, '127.0.0.1')
+  const wsUrl = `ws://127.0.0.1:${server.port}`
 
   const c1 = await connectPeerPair(wsUrl, `mix-three-${runId}-c1`, 'c1', 'client-sends')
   const c2 = await connectPeerPair(wsUrl, `mix-three-${runId}-c2`, 'c2', 'host-sends')

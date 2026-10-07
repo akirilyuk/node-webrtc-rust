@@ -10,7 +10,7 @@ describe('End-to-end peer connection', () => {
 
   beforeAll(async () => {
     server = new SignalingServer({ port: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
   })
 
   afterAll(async () => {
@@ -24,12 +24,12 @@ describe('End-to-end peer connection', () => {
     const dc1 = pc1.createDataChannel('test')
 
     const sig1 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-dc',
       peerId: 'pc1',
     })
     const sig2 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-dc',
       peerId: 'pc2',
     })
@@ -68,12 +68,12 @@ describe('End-to-end peer connection', () => {
     const dc1 = pc1.createDataChannel('binary-test')
 
     const sig1 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-binary',
       peerId: 'pc1',
     })
     const sig2 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-binary',
       peerId: 'pc2',
     })
@@ -122,12 +122,12 @@ describe('End-to-end peer connection', () => {
     await pc1.addTrack(localTrack)
 
     const sig1 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-audio',
       peerId: 'pc1',
     })
     const sig2 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-audio',
       peerId: 'pc2',
     })
@@ -168,12 +168,12 @@ describe('End-to-end peer connection', () => {
     const sender = await pc1.addTrack(trackA)
 
     const sig1 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-replace',
       peerId: 'pc1',
     })
     const sig2 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-replace',
       peerId: 'pc2',
     })
@@ -214,12 +214,12 @@ describe('End-to-end peer connection', () => {
     await pc1.addTrack(localTrack)
 
     const sig1 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-read-sample',
       peerId: 'pc1',
     })
     const sig2 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'e2e-read-sample',
       peerId: 'pc2',
     })

@@ -195,8 +195,8 @@ async function runThreeClientPositionalMix(
   const peerIds = peerIdsForRun(runId)
 
   const server = new SignalingServer({ port: 0 })
-  await server.listen(0)
-  const wsUrl = `ws://localhost:${server.port}`
+  await server.listen(0, '127.0.0.1')
+  const wsUrl = `ws://127.0.0.1:${server.port}`
   const sessionBudget = new VoiceSessionBudget(8)
 
   const pod = new SessionPod(server, {

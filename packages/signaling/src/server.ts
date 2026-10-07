@@ -45,9 +45,12 @@ export class SignalingServer extends EventEmitter {
   /**
    * Starts the HTTP server and WebSocket upgrade handler.
    * @param port - Port to bind; use `0` for an ephemeral port.
+   * @param host - Optional interface to bind (for example `'127.0.0.1'`). When omitted the server
+   *   binds the wildcard address. Loopback-only callers (tests) should pass `'127.0.0.1'` so another
+   *   server bound to the same port on `127.0.0.1` cannot take over their connections.
    */
-  listen(port = 8080): Promise<void> {
-    debugFn('signaling::SignalingServer', 'listen', `port=${port}`)
+  listen(port = 8080, host?: string): Promise<void> {
+    debugFn('signaling::SignalingServer', 'listen', `port=${port} host=${host ?? '*'}`)
     if (this.httpServer) {
       return Promise.resolve()
     }
@@ -70,7 +73,11 @@ export class SignalingServer extends EventEmitter {
           return
         }
 
-        httpServer.listen(port, onListening)
+        if (host === undefined) {
+          httpServer.listen(port, onListening)
+        } else {
+          httpServer.listen(port, host, onListening)
+        }
         httpServer.on('error', reject)
       })
     }
@@ -82,13 +89,18 @@ export class SignalingServer extends EventEmitter {
           this.wss.emit('connection', ws, request)
         })
       })
-      this.httpServer.listen(port, () => {
+      const onListening = () => {
         const address = this.httpServer?.address()
         this.listeningPort = typeof address === 'object' && address ? address.port : port
         this.wss.on('connection', (socket) => this.handleConnection(socket))
         this.startPingTimer()
         resolve()
-      })
+      }
+      if (host === undefined) {
+        this.httpServer.listen(port, onListening)
+      } else {
+        this.httpServer.listen(port, host, onListening)
+      }
       this.httpServer.on('error', reject)
     })
   }

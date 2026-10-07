@@ -128,7 +128,7 @@ describe('SessionPod prepare never-connected teardown', () => {
 
   it('arms never-connected teardown after prepareSessionSlot', async () => {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const pod = new SessionPod(server, {
@@ -154,7 +154,7 @@ describe('SessionPod prepare never-connected teardown', () => {
   it('tears down prepared slot after never-connected grace with no joins', async () => {
     vi.useFakeTimers()
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const destroyedEvents: SessionPodChangeEvent[] = []
@@ -184,7 +184,7 @@ describe('SessionPod prepare never-connected teardown', () => {
   it('cancels prepare never-connected teardown on onPeerConnected', async () => {
     vi.useFakeTimers()
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const handler: VoiceSessionHandler = {
@@ -213,7 +213,7 @@ describe('SessionPod prepare never-connected teardown', () => {
   it('cancels prepare never-connected teardown on peer-joined client', async () => {
     vi.useFakeTimers()
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const pod = new SessionPod(server, {
@@ -238,7 +238,7 @@ describe('SessionPod prepare never-connected teardown', () => {
 
   it('sets pendingEndReason never_connected after prepareSessionSlot', async () => {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const pod = new SessionPod(server, {
@@ -259,7 +259,7 @@ describe('SessionPod prepare never-connected teardown', () => {
   it('clears pending never_connected on onPeerConnected', async () => {
     vi.useFakeTimers()
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const handler: VoiceSessionHandler = {
@@ -287,7 +287,7 @@ describe('SessionPod prepare never-connected teardown', () => {
   it('clears pending never_connected on onPeerTransportReady', async () => {
     vi.useFakeTimers()
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const handler: VoiceSessionHandler = {
@@ -315,7 +315,7 @@ describe('SessionPod prepare never-connected teardown', () => {
   it('post-connect idle teardown does not use never_connected endReason', async () => {
     vi.useFakeTimers()
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const destroyedEvents: SessionPodChangeEvent[] = []

@@ -8,9 +8,11 @@ use std::sync::Arc;
 use bytes::Bytes;
 use mock_server::{spawn_mock_speech, MockSpeechState};
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
-use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider, TtsProgressiveSink};
+use node_webrtc_rust_speech::pipeline::{
+    SttProvider, SttTranscript, TtsProgressiveSink, TtsProvider,
+};
 use node_webrtc_rust_vendor_cluster_speech::{
-    inc_stt_reopen, stt_reopen_total, ClusterSherpaStt, ClusterSherpaTts,
+    inc_stt_reopen, stt_reopen_total, ClusterSherpaStt, ClusterSherpaTts, ClusterSttOptions,
 };
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Instant};
@@ -338,10 +340,256 @@ async fn cluster_stt_never_drops_audio_when_server_stalls() {
         received = state.audio_bytes_received.load(Ordering::SeqCst);
     }
     assert_eq!(
-        received, expected,
+        received,
+        expected,
         "server received {received} of {expected} audio bytes ({} bytes dropped)",
         expected.saturating_sub(received)
     );
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+// ---- per-utterance Transcribe streams (CLUSTER_STT_STREAM_PER_UTTERANCE) ----
+
+fn stt_with(endpoint: &str, stream_per_utterance: bool) -> ClusterSherpaStt {
+    ClusterSherpaStt::new_with_options(
+        &stt_cfg(endpoint),
+        ClusterSttOptions {
+            stream_per_utterance,
+        },
+    )
+    .unwrap()
+}
+
+fn numbered_state() -> MockSpeechState {
+    MockSpeechState {
+        numbered_finals: Arc::new(AtomicBool::new(true)),
+        ..MockSpeechState::default()
+    }
+}
+
+/// Poll `cond` every 5 ms for up to 5 s.
+async fn wait_until(what: &str, cond: impl Fn() -> bool) {
+    for _ in 0..1000 {
+        if cond() {
+            return;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    panic!("timed out waiting for: {what}");
+}
+
+/// Final transcripts currently queued (partials are skipped).
+async fn drain_finals(stt: &mut ClusterSherpaStt) -> Vec<String> {
+    let mut finals = Vec::new();
+    while let Some(t) = stt.poll_transcript().await.unwrap() {
+        if let SttTranscript::Final(text) = t {
+            finals.push(text);
+        }
+    }
+    finals
+}
+
+/// One utterance: 3200 bytes of `fill`, then finalize. Returns the finals delivered.
+async fn run_utterance(stt: &mut ClusterSherpaStt, fill: u8) -> Vec<String> {
+    stt.push_audio(Bytes::from(vec![fill; 3200])).await.unwrap();
+    stt.finalize_utterance().await.unwrap();
+    drain_finals(stt).await
+}
+
+#[tokio::test]
+async fn per_utterance_off_keeps_one_stream() {
+    let state = numbered_state();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = stt_with(&url, false);
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    assert_eq!(run_utterance(&mut stt, 1).await, vec!["final-1"]);
+    assert_eq!(run_utterance(&mut stt, 2).await, vec!["final-2"]);
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 1);
+    assert_eq!(state.open_transcribe_streams.load(Ordering::SeqCst), 1);
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn per_utterance_on_opens_a_stream_per_utterance() {
+    let state = numbered_state();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = stt_with(&url, true);
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    assert_eq!(run_utterance(&mut stt, 1).await, vec!["final-1"]);
+    wait_until("first stream closed", || {
+        state.open_transcribe_streams.load(Ordering::SeqCst) == 0
+    })
+    .await;
+    // The session stays ready while no stream is open.
+    assert!(stt.wait_ready(Duration::from_millis(50)).await.unwrap());
+    assert_eq!(run_utterance(&mut stt, 2).await, vec!["final-2"]);
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 2);
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn per_utterance_audio_while_idle_is_delivered_in_order() {
+    let state = numbered_state();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = stt_with(&url, true);
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    assert_eq!(run_utterance(&mut stt, 9).await, vec!["final-1"]);
+    wait_until("first stream closed", || {
+        state.open_transcribe_streams.load(Ordering::SeqCst) == 0
+    })
+    .await;
+
+    // Three chunks of exactly COALESCE_MAX_BYTES (1920), each with distinct bytes.
+    for fill in [1_u8, 2, 3] {
+        stt.push_audio(Bytes::from(vec![fill; 1920])).await.unwrap();
+    }
+    stt.finalize_utterance().await.unwrap();
+    assert_eq!(drain_finals(&mut stt).await, vec!["final-2"]);
+
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 2);
+    let second: Vec<Vec<u8>> = state
+        .audio_log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(idx, _)| *idx == 2)
+        .map(|(_, bytes)| bytes.clone())
+        .collect();
+    let expected: Vec<u8> = [1_u8, 2, 3].iter().flat_map(|f| vec![*f; 1920]).collect();
+    assert_eq!(
+        second.concat(),
+        expected,
+        "second stream must carry exactly the idle audio, in order"
+    );
+    assert_eq!(
+        state.audio_bytes_received.load(Ordering::SeqCst),
+        3200 + 3 * 1920,
+        "no audio lost"
+    );
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn per_utterance_audio_after_finalize_before_finalized_stays_on_stream() {
+    let state = MockSpeechState {
+        numbered_finals: Arc::new(AtomicBool::new(true)),
+        finalized_delay_ms: Arc::new(AtomicUsize::new(500)),
+        ..MockSpeechState::default()
+    };
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = stt_with(&url, true);
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+
+    // Send audio + Finalize, then stop waiting: the mock holds `Finalized` for 500 ms.
+    stt.push_audio(Bytes::from(vec![1_u8; 3200])).await.unwrap();
+    tokio::select! {
+        _ = stt.finalize_utterance() => panic!("Finalized arrived before the mock delay"),
+        () = sleep(Duration::from_millis(50)) => {}
+    }
+    // Audio for the next utterance, after Finalize and before Finalized.
+    stt.push_audio(Bytes::from(vec![2_u8; 3200])).await.unwrap();
+    wait_until("worker took the late audio", || {
+        stt.decode_backlog_ms() == 0
+    })
+    .await;
+    // Finalized (500 ms) arrives, then the late audio reaches the server on the same stream.
+    wait_until("late audio delivered", || {
+        state.audio_bytes_received.load(Ordering::SeqCst) == 6400
+    })
+    .await;
+    sleep(Duration::from_millis(100)).await;
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state.open_transcribe_streams.load(Ordering::SeqCst),
+        1,
+        "stream must not close while audio followed the Finalize"
+    );
+
+    // Second finalize on the same stream; now nothing followed it, so the stream is released.
+    state.finalized_delay_ms.store(0, Ordering::SeqCst);
+    stt.finalize_utterance().await.unwrap();
+    assert!(drain_finals(&mut stt)
+        .await
+        .contains(&"final-2".to_string()));
+    wait_until("stream released after the quiet finalize", || {
+        state.open_transcribe_streams.load(Ordering::SeqCst) == 0
+    })
+    .await;
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 1);
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn per_utterance_rejected_open_retries_and_delivers() {
+    let state = numbered_state();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = stt_with(&url, true);
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    assert_eq!(run_utterance(&mut stt, 1).await, vec!["final-1"]);
+    wait_until("first stream closed", || {
+        state.open_transcribe_streams.load(Ordering::SeqCst) == 0
+    })
+    .await;
+
+    // The pod cap is full for the next two opens (client retries every 200 ms).
+    state.reject_first_opens.store(2, Ordering::SeqCst);
+    assert_eq!(run_utterance(&mut stt, 7).await, vec!["final-2"]);
+    assert_eq!(state.rejected_opens.load(Ordering::SeqCst), 2);
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        state.audio_bytes_received.load(Ordering::SeqCst),
+        6400,
+        "no audio lost across rejected opens"
+    );
+    let second: Vec<u8> = state
+        .audio_log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(idx, _)| *idx == 2)
+        .flat_map(|(_, bytes)| bytes.clone())
+        .collect();
+    assert_eq!(second, vec![7_u8; 3200]);
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn per_utterance_finalize_while_idle_returns() {
+    let state = numbered_state();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = stt_with(&url, true);
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    assert_eq!(run_utterance(&mut stt, 1).await, vec!["final-1"]);
+    wait_until("stream closed", || {
+        state.open_transcribe_streams.load(Ordering::SeqCst) == 0
+    })
+    .await;
+
+    // Without the idle shortcut this waits the whole finalize timeout (2 s).
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_millis(1000), stt.finalize_utterance())
+        .await
+        .expect("finalize while idle must return immediately")
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_millis(1000));
+    assert_eq!(
+        state.finalize_count.load(Ordering::SeqCst),
+        1,
+        "nothing to finalize: no Finalize reaches the server"
+    );
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 1);
     stt.stop().await.unwrap();
     let _ = shutdown.send(());
 }

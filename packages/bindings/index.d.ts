@@ -231,6 +231,8 @@ export interface JsVadConfig {
   sttListenTimeoutMs?: number
   sttListenBacklogSlackMs?: number
   sttListenHardTimeoutMs?: number
+  /** Max time a turn keeps waiting while the cluster STT stream open is refused and retried (default 120000 ms; 0 = no extra wait). */
+  sttOpenWaitMaxMs?: number
   utteranceFinalizeTimeoutMs?: number
 }
 export const enum JsSttVendor {

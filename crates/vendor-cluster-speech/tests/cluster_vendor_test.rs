@@ -593,3 +593,80 @@ async fn per_utterance_finalize_while_idle_returns() {
     stt.stop().await.unwrap();
     let _ = shutdown.send(());
 }
+
+// ---- refused stream open: the turn waits instead of failing ----
+
+#[tokio::test]
+async fn stt_open_pending_true_while_refused_then_false() {
+    let state = MockSpeechState::default();
+    // Each refusal is one 200 ms retry: the open is refused for about 2 s.
+    state.reject_first_opens.store(10, Ordering::SeqCst);
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = ClusterSherpaStt::new(&stt_cfg(&url)).unwrap();
+    assert!(!stt.stream_open_pending(), "nothing refused before start");
+    stt.start().await.unwrap();
+    stt.push_audio(Bytes::from(vec![1_u8; 3200])).await.unwrap();
+
+    wait_until("stream_open_pending() while the open is refused", || {
+        stt.stream_open_pending()
+    })
+    .await;
+    assert!(stt.wait_ready(Duration::from_secs(10)).await.unwrap());
+    assert!(
+        !stt.stream_open_pending(),
+        "pending flag must clear once the stream is Ready"
+    );
+    assert!(state.rejected_opens.load(Ordering::SeqCst) >= 10);
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn stt_finalize_waits_for_refused_open() {
+    const PUSHED_BYTES: usize = 3200;
+    let state = MockSpeechState::default();
+    // About 3 s of refused opens, longer than FINALIZE_WAIT_MS (2 s).
+    state.reject_first_opens.store(15, Ordering::SeqCst);
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = ClusterSherpaStt::new(&stt_cfg(&url)).unwrap();
+    stt.start().await.unwrap();
+    // The worker has to have seen the first refusal, or `finalize_utterance` would not know the
+    // open is pending yet (in a call this gap is far longer than one retry).
+    wait_until("first open refused", || stt.stream_open_pending()).await;
+    stt.push_audio(Bytes::from(vec![1_u8; PUSHED_BYTES]))
+        .await
+        .unwrap();
+
+    stt.finalize_utterance().await.unwrap();
+    assert_eq!(
+        state.finalize_count.load(Ordering::SeqCst),
+        1,
+        "the Finalize reached the server after the open succeeded"
+    );
+    assert!(!stt.stream_open_pending());
+
+    let mut saw_final = false;
+    for _ in 0..100 {
+        if let Some(SttTranscript::Final(_)) = stt.poll_transcript().await.unwrap() {
+            saw_final = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(saw_final, "a final transcript follows the Finalize");
+
+    let mut received = state.audio_bytes_received.load(Ordering::SeqCst);
+    for _ in 0..1000 {
+        if received == PUSHED_BYTES {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+        received = state.audio_bytes_received.load(Ordering::SeqCst);
+    }
+    assert_eq!(
+        received, PUSHED_BYTES,
+        "server received {received} of {PUSHED_BYTES} audio bytes"
+    );
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}

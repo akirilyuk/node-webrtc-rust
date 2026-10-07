@@ -1,6 +1,6 @@
 //! VoiceAgent integration: barge-in during TTS drain.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -86,6 +86,7 @@ impl SttProvider for CountingStt {
 
 struct BacklogStt {
     backlog_ms: Arc<AtomicU32>,
+    open_pending: Arc<AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -115,10 +116,15 @@ impl SttProvider for BacklogStt {
     fn decode_backlog_ms(&self) -> u32 {
         self.backlog_ms.load(Ordering::Relaxed)
     }
+
+    fn stream_open_pending(&self) -> bool {
+        self.open_pending.load(Ordering::Relaxed)
+    }
 }
 
 struct BacklogFactory {
     backlog_ms: Arc<AtomicU32>,
+    open_pending: Arc<AtomicBool>,
 }
 
 impl VendorFactory for BacklogFactory {
@@ -128,6 +134,7 @@ impl VendorFactory for BacklogFactory {
     ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
         Ok(Box::new(BacklogStt {
             backlog_ms: Arc::clone(&self.backlog_ms),
+            open_pending: Arc::clone(&self.open_pending),
         }))
     }
 
@@ -830,11 +837,23 @@ async fn run_c1_backlog_scenario(
     Arc<VoiceAgent>,
     tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::SpeechEvent>,
 ) {
+    run_c1_open_scenario(backlog_ms, Arc::new(AtomicBool::new(false)), vad).await
+}
+
+async fn run_c1_open_scenario(
+    backlog_ms: Arc<AtomicU32>,
+    open_pending: Arc<AtomicBool>,
+    vad: VadConfig,
+) -> (
+    Arc<VoiceAgent>,
+    tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::SpeechEvent>,
+) {
     let mut registry = VendorRegistry::new();
     registry.register_stt(
         SttVendor::Mock,
         Arc::new(BacklogFactory {
             backlog_ms: Arc::clone(&backlog_ms),
+            open_pending,
         }),
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
@@ -955,6 +974,98 @@ async fn c1_hard_timeout_fires_despite_backlog() {
     assert!(
         saw_not_found,
         "C1 hard timeout must fire despite decode backlog"
+    );
+}
+
+fn open_wait_vad(stt_open_wait_max_ms: u32) -> VadConfig {
+    let mut vad = VadConfig::default();
+    vad.enabled = true;
+    vad.threshold = 0.05;
+    vad.min_speech_duration_ms = 40;
+    vad.min_silence_duration_ms = 40;
+    vad.gate_stt = true;
+    vad.stt_listen_timeout_ms = 100;
+    vad.stt_listen_hard_timeout_ms = 300;
+    vad.stt_open_wait_max_ms = stt_open_wait_max_ms;
+    vad.barge_in.enabled = false;
+    vad
+}
+
+/// Poll the event stream until `user_stt_not_found` arrives or `limit_ms` elapse; returns the
+/// milliseconds since `t0` when it arrived.
+async fn wait_user_stt_not_found(
+    events: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::SpeechEvent>,
+    t0: std::time::Instant,
+    limit_ms: u64,
+) -> Option<u128> {
+    while t0.elapsed() < Duration::from_millis(limit_ms) {
+        if drain_user_stt_not_found(events) {
+            return Some(t0.elapsed().as_millis());
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    None
+}
+
+#[tokio::test]
+async fn c1_waits_while_stt_open_pending() {
+    let open_pending = Arc::new(AtomicBool::new(true));
+    let (agent, mut events) = run_c1_open_scenario(
+        Arc::new(AtomicU32::new(0)),
+        Arc::clone(&open_pending),
+        open_wait_vad(5000),
+    )
+    .await;
+
+    // Well past the 300 ms hard timeout: the open is still refused, so the turn must wait.
+    let early = wait_user_stt_not_found(&mut events, std::time::Instant::now(), 1500).await;
+    assert!(
+        early.is_none(),
+        "C1 must not fire while the STT stream open is pending"
+    );
+
+    open_pending.store(false, Ordering::Relaxed);
+    let release = std::time::Instant::now();
+    let fired = wait_user_stt_not_found(&mut events, release, 1500).await;
+    agent.stop().await.unwrap();
+    let ms = fired.expect("expected user_stt_not_found after the open stopped being refused");
+    // The listen clock restarted while holding, so the normal 100 ms timeout counts again.
+    assert!(ms <= 1500, "user_stt_not_found arrived too late: {ms} ms");
+}
+
+#[tokio::test]
+async fn c1_open_wait_cap_fires_not_found() {
+    let open_pending = Arc::new(AtomicBool::new(true));
+    let (agent, mut events) = run_c1_open_scenario(
+        Arc::new(AtomicU32::new(0)),
+        open_pending,
+        open_wait_vad(600),
+    )
+    .await;
+
+    let t0 = std::time::Instant::now();
+    let fired = wait_user_stt_not_found(&mut events, t0, 3000).await;
+    agent.stop().await.unwrap();
+    let ms = fired.expect("expected user_stt_not_found once the open wait cap was reached");
+    // The cap counts from the first C1 tick after listen start; t0 is taken a few ms after
+    // listen start, so allow that slack on the lower bound.
+    assert!(
+        ms >= 550,
+        "user_stt_not_found fired before the open wait cap: {ms} ms"
+    );
+}
+
+#[tokio::test]
+async fn c1_open_wait_zero_keeps_old_behaviour() {
+    let open_pending = Arc::new(AtomicBool::new(true));
+    let (agent, mut events) =
+        run_c1_open_scenario(Arc::new(AtomicU32::new(0)), open_pending, open_wait_vad(0)).await;
+
+    let fired = wait_user_stt_not_found(&mut events, std::time::Instant::now(), 1000).await;
+    agent.stop().await.unwrap();
+    assert!(
+        fired.is_some(),
+        "stt_open_wait_max_ms = 0 must keep the old C1 timeout"
     );
 }
 

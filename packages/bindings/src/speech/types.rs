@@ -150,6 +150,8 @@ pub struct JsVadConfig {
     pub stt_listen_timeout_ms: Option<u32>,
     pub stt_listen_backlog_slack_ms: Option<u32>,
     pub stt_listen_hard_timeout_ms: Option<u32>,
+    /// Max time a turn keeps waiting while the cluster STT stream open is refused and retried (default 120000 ms; 0 = no extra wait).
+    pub stt_open_wait_max_ms: Option<u32>,
     pub utterance_finalize_timeout_ms: Option<u32>,
 }
 
@@ -173,6 +175,7 @@ impl From<JsVadConfig> for VadConfig {
             stt_listen_timeout_ms: value.stt_listen_timeout_ms.unwrap_or(4000),
             stt_listen_backlog_slack_ms: value.stt_listen_backlog_slack_ms.unwrap_or(200),
             stt_listen_hard_timeout_ms: value.stt_listen_hard_timeout_ms.unwrap_or(0),
+            stt_open_wait_max_ms: value.stt_open_wait_max_ms.unwrap_or(120_000),
             utterance_finalize_timeout_ms: value.utterance_finalize_timeout_ms.unwrap_or(1500),
         }
     }

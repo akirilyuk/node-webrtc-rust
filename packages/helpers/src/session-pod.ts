@@ -102,10 +102,12 @@ export interface SessionPodSessionInfo {
 
 /**
  * Default grace before tearing down an empty slot — same-session reconnect window.
- * Total outage budget is about the host transport grace (30 s, see
- * `DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS`) plus this rejoin grace (15 s), roughly 45 s.
+ * Total network-outage budget is about 15 s: the host transport grace (10 s, see
+ * `DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS`) plus this rejoin grace (5 s). Intentional closes
+ * (client_hangup, remote close of the control data channel, connection `closed`) release the
+ * slot at once.
  */
-export const DEFAULT_SESSION_REJOIN_GRACE_MS = 15_000
+export const DEFAULT_SESSION_REJOIN_GRACE_MS = 5_000
 
 /** Grace when the last peer left before WebRTC transport was ready (pre-DTLS reconnect). */
 export const DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS = 60_000
@@ -522,9 +524,10 @@ export class SessionPod {
         }
         return handler?.onPeerConnected?.(ctx)
       },
-      onPeerDisconnected: (ctx) => {
-        this.maybeScheduleIdleTeardownAfterLastPeer(sessionId)
-        return handler?.onPeerDisconnected?.(ctx)
+      onPeerDisconnected: (ctx, reason) => {
+        // A client hangup frees the slot at once (no rejoin grace).
+        this.maybeScheduleIdleTeardownAfterLastPeer(sessionId, reason === 'hangup' ? 0 : undefined)
+        return handler?.onPeerDisconnected?.(ctx, reason)
       },
       onPeerSignalingLost: (ctx) => {
         this.maybeScheduleIdleTeardownAfterLastPeer(sessionId, this.neverConnectedRejoinGraceMs)

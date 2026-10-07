@@ -126,7 +126,7 @@ describe('transport disconnect grace', () => {
     expect(logs).toContain('[data client-1] transport restored after 6000ms (ice-restart)')
   })
 
-  it('closes the peer after the transport grace (30 s) and reaps after the rejoin grace (15 s)', async () => {
+  it('closes the peer after the transport grace (10 s) and reaps after the rejoin grace (5 s)', async () => {
     vi.useFakeTimers()
     const logs: string[] = []
     const pod = new SessionPod({} as never, {
@@ -147,22 +147,22 @@ describe('transport disconnect grace', () => {
     host.sessions.set('client-1', session)
     host.scheduleTransportDisconnect('client-1', session)
 
-    expect(DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS).toBe(30_000)
-    expect(DEFAULT_SESSION_REJOIN_GRACE_MS).toBe(15_000)
+    expect(DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS).toBe(10_000)
+    expect(DEFAULT_SESSION_REJOIN_GRACE_MS).toBe(5_000)
 
-    await vi.advanceTimersByTimeAsync(29_999)
+    await vi.advanceTimersByTimeAsync(9_999)
     expect(host.sessions.has('client-1')).toBe(true)
     expect(session.pc.close).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(1)
     expect(host.sessions.has('client-1')).toBe(false)
     expect(session.pc.close).toHaveBeenCalledTimes(1)
-    expect(logs).toContain('[data client-1] transport still down after 30000ms — closing peer')
+    expect(logs).toContain('[data client-1] transport still down after 10000ms — closing peer')
     expect(teardown).not.toHaveBeenCalled()
 
     // The pod's idle poll (`setTimeout(poll, 0)`, 1 ms in Node) arms the rejoin grace right
-    // after the close, so the reap lands at 30_001 + 15_000.
-    await vi.advanceTimersByTimeAsync(15_000)
+    // after the close, so the reap lands at 10_001 + 5_000.
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(teardown).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(1)
@@ -232,11 +232,11 @@ describe('transport disconnect grace', () => {
 
     state.ice = 'disconnected'
     pc.oniceconnectionstatechange()
-    await vi.advanceTimersByTimeAsync(10_000)
+    await vi.advanceTimersByTimeAsync(4_000)
     state.ice = 'failed'
     pc.oniceconnectionstatechange()
 
-    await vi.advanceTimersByTimeAsync(19_999)
+    await vi.advanceTimersByTimeAsync(5_999)
     expect(host.sessions.get('client-1')).toBe(session)
 
     await vi.advanceTimersByTimeAsync(1)
@@ -277,7 +277,7 @@ describe('transport disconnect grace', () => {
     const session = createFakeSession('disconnected')
     host.sessions.set('client-1', session)
     ;(handlers.get('peer-left') as (peerId: string) => void)('client-1')
-    await vi.advanceTimersByTimeAsync(29_999)
+    await vi.advanceTimersByTimeAsync(9_999)
     expect(host.sessions.get('client-1')).toBe(session)
 
     await vi.advanceTimersByTimeAsync(1)
@@ -305,5 +305,66 @@ describe('transport disconnect grace', () => {
     expect(host.sessions.has('client-1')).toBe(false)
     expect(session.pc.close).toHaveBeenCalledTimes(1)
     expect(passthrough).toHaveBeenCalledTimes(1)
+  })
+  it('remote close of the control channel closes the peer immediately', async () => {
+    vi.useFakeTimers()
+    const logs: string[] = []
+    const host = createHost({ logs })
+    const { session } = await connectRealPeer(host, 'client-1')
+    const channel = session.controlChannel as unknown as { onclose: (() => void) | null }
+
+    channel.onclose?.()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(session.clientHangup).toBe(true)
+    expect(host.sessions.has('client-1')).toBe(false)
+    expect(logs).toContain('[data client-1] control channel closed by client — closing peer')
+  })
+
+  it('local closeClientInner does not count as a client hangup', async () => {
+    vi.useFakeTimers()
+    const logs: string[] = []
+    const host = createHost({ logs })
+    const { session } = await connectRealPeer(host, 'client-1')
+    const channel = session.controlChannel as unknown as { onclose: (() => void) | null }
+
+    await host.disconnectPeer('client-1')
+    // The native close may report the channel closing after we removed the session.
+    channel.onclose?.()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(session.clientHangup).toBeUndefined()
+    expect(logs.some((m) => m.includes('closed by client'))).toBe(false)
+    expect(host.sessions.has('client-1')).toBe(false)
+  })
+
+  it('a hangup tears the pod session down without the rejoin grace', async () => {
+    vi.useFakeTimers()
+    const pod = new SessionPod({} as never, {
+      signalingUrl: 'ws://127.0.0.1/ws',
+      iceServers: [],
+      voiceConfig: {} as never,
+      teardownIdleSessions: true,
+    }) as unknown as {
+      wrapVoiceHandler: (id: string, h?: VoiceSessionHandler) => VoiceSessionHandler | undefined
+      slots: Map<string, unknown>
+      scheduleIdleTeardown: (id: string, reason?: string, graceMs?: number) => void
+      teardownSession: (id: string, reason?: string) => Promise<void>
+    }
+    pod.slots.set('session-1', { sessionId: 'session-1', host: { activeClientCount: 0 } })
+    const schedule = vi.spyOn(pod, 'scheduleIdleTeardown')
+    const teardown = vi.spyOn(pod, 'teardownSession').mockResolvedValue(undefined)
+    const wrapped = pod.wrapVoiceHandler('session-1')
+
+    wrapped?.onPeerDisconnected?.({ peerId: 'client-1' } as never, 'hangup')
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(schedule).toHaveBeenCalledWith('session-1', undefined, 0)
+    expect(teardown).toHaveBeenCalledTimes(1)
+
+    schedule.mockClear()
+    wrapped?.onPeerDisconnected?.({ peerId: 'client-1' } as never, 'transport')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(schedule).toHaveBeenCalledWith('session-1', undefined, DEFAULT_SESSION_REJOIN_GRACE_MS)
   })
 })

@@ -58,14 +58,18 @@ import type {
   VoiceSessionContext,
   VoiceSessionHandler,
   DataChannelKind,
+  PeerDisconnectReason,
 } from './voice-session-handler.js'
 
 /**
  * How long a peer whose ICE transport is disconnected/failed is kept (agent, data channels,
  * reconnect token) before it is closed. A client ICE restart or same-session rejoin inside this
  * window resumes the conversation. 2026-10-07: 5 s ended every session on a short media blackout.
+ * Total network-outage budget is about 15 s: this grace (10 s) plus the pod rejoin grace (5 s).
+ * Intentional closes (`client_hangup`, remote close of the control data channel, connection
+ * `closed`) release the slot at once.
  */
-export const DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS = 30_000
+export const DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS = 10_000
 
 /** Control data-channel message type (`{ "type": "client_hangup" }`) a client sends to end its session at once. */
 export const CLIENT_HANGUP_MESSAGE_TYPE = 'client_hangup'
@@ -290,6 +294,10 @@ interface ClientSession {
   transportDownSince?: number
   /** Set when the client sent {@link CLIENT_HANGUP_MESSAGE_TYPE} on the control channel. */
   clientHangup?: boolean
+  /** Set at the start of {@link VoiceAgentSessionHost.closeClientTeardown}; marks a host-initiated close. */
+  closingLocally?: boolean
+  /** Set when the transport grace expired and the host closed the peer. */
+  transportExpired?: boolean
   resolveMicTrack?: (track: RemoteAudioTrack) => void
   rejectMicTrack?: (error: Error) => void
   /** Held until PC connected + control DC open; consumed by {@link maybeStartAgentWhenTransportReady}. */
@@ -875,10 +883,16 @@ export class VoiceAgentSessionHost {
       }
     }
 
-    controlChannel.onclose = () => {
-      if (!this.sessions.has(peerId)) return
+    const previousControlOnClose = controlChannel.onclose
+    controlChannel.onclose = (event) => {
+      previousControlOnClose?.call(controlChannel, event)
+      // Ignore stale channels (replaced peer), host shutdown and closes we started ourselves.
+      if (this.hostClosing || this.sessions.get(peerId) !== session || session.closingLocally) {
+        return
+      }
       const tag = dataOnly ? 'data' : 'voice'
-      this.log(`[${tag} ${peerId}] control channel closed`)
+      session.clientHangup = true
+      this.log(`[${tag} ${peerId}] control channel closed by client — closing peer`)
       this.voidCloseClient(peerId)
     }
 
@@ -1388,6 +1402,7 @@ export class VoiceAgentSessionHost {
     session.transportDisconnectTimer = setTimeout(() => {
       session.transportDisconnectTimer = undefined
       session.transportDownSince = undefined
+      session.transportExpired = true
       const current = this.sessions.get(peerId)
       if (!current || current !== session) return
       const pc = session.pc
@@ -1588,6 +1603,7 @@ export class VoiceAgentSessionHost {
       return { status: 'absent' }
     }
     const budgetLease = session.budgetLease
+    session.closingLocally = true
 
     // Remove from the live map before teardown so reconnect can replace;
     // peer stays counted via closingPeers until this flight finishes.
@@ -1601,8 +1617,13 @@ export class VoiceAgentSessionHost {
         session.controlChannel,
         session.syncChannel,
       )
+      const reason: PeerDisconnectReason = session.clientHangup
+        ? 'hangup'
+        : session.transportExpired
+          ? 'transport'
+          : 'other'
       void Promise.resolve()
-        .then(() => this.options.voiceHandler?.onPeerDisconnected?.(ctx))
+        .then(() => this.options.voiceHandler?.onPeerDisconnected?.(ctx, reason))
         .catch((error: unknown) => {
           console.error(`[session ${peerId}] voiceHandler.onPeerDisconnected failed:`, error)
         })

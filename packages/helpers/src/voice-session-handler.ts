@@ -33,6 +33,9 @@ export interface VoiceSessionContext {
 /**
  * Implement this in your app (see `examples/voice-agent-local-sherpa-multi-client/src/voice-handler.ts`).
  */
+/** Why a peer went away; see {@link VoiceSessionHandler.onPeerDisconnected}. */
+export type PeerDisconnectReason = 'hangup' | 'transport' | 'other'
+
 export interface VoiceSessionHandler {
   /**
    * Peer connection is `connected` and the voice-control DataChannel is open.
@@ -50,8 +53,15 @@ export interface VoiceSessionHandler {
    */
   onPeerConnected?: (ctx: VoiceSessionContext) => void | Promise<void>
 
-  /** Called when a browser peer disconnects (before teardown). */
-  onPeerDisconnected?: (ctx: VoiceSessionContext) => void | Promise<void>
+  /**
+   * Called when a browser peer disconnects (before teardown).
+   * `reason` is `'hangup'` for an intentional client end (`client_hangup` or the client closing
+   * its control data channel), `'transport'` when the transport grace expired, else `'other'`.
+   */
+  onPeerDisconnected?: (
+    ctx: VoiceSessionContext,
+    reason?: PeerDisconnectReason,
+  ) => void | Promise<void>
 
   /**
    * Called when signaling/WebRTC setup started but transport readiness never completed

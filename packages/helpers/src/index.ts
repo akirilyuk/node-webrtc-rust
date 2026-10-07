@@ -64,6 +64,7 @@ export {
 export {
   type VoiceSessionContext,
   type VoiceSessionHandler,
+  type PeerDisconnectReason,
   type DataChannelKind,
 } from './voice-session-handler.js'
 

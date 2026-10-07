@@ -731,3 +731,73 @@ async fn discard_queued_transcripts_drains_channel() {
     stt.stop().await.unwrap();
     let _ = shutdown.send(());
 }
+
+#[tokio::test]
+async fn tts_start_waits_for_unavailable_then_succeeds() {
+    let state = MockSpeechState::default();
+    state.tts_unavailable_for_ms.store(1500, Ordering::SeqCst);
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let tts = ClusterSherpaTts::new(&tts_cfg(&url)).unwrap();
+    let started = Instant::now();
+    let out = tts
+        .synthesize_progressive_with_status("hello", None)
+        .await
+        .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(1500));
+    assert!(out.complete);
+    assert_eq!(out.chunks.len(), 2);
+    let wait = tts
+        .take_open_wait()
+        .expect("a waited start records a TtsOpenWait");
+    assert!(wait.attempts >= 1, "attempts={}", wait.attempts);
+    assert!(wait.wait_ms >= 1500, "wait_ms={}", wait.wait_ms);
+    assert!(wait.reason.contains("Unavailable"), "{}", wait.reason);
+    assert!(tts.take_open_wait().is_none(), "record is taken once");
+    assert_eq!(
+        state.tts_refused_calls.load(Ordering::SeqCst) as u32,
+        wait.attempts
+    );
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn tts_start_gives_up_after_wait_max() {
+    let state = MockSpeechState::default();
+    state.tts_unavailable_always.store(true, Ordering::SeqCst);
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let tts = ClusterSherpaTts::new(&tts_cfg(&url))
+        .unwrap()
+        .with_open_wait_max_ms(1000);
+    let started = Instant::now();
+    let err = tts
+        .synthesize_progressive_with_status("hello", None)
+        .await
+        .expect_err("UNAVAILABLE forever must fail");
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_millis(1000), "{elapsed:?}");
+    assert!(elapsed < Duration::from_millis(3000), "{elapsed:?}");
+    assert!(err.to_string().contains("still loading"), "{err}");
+    let wait = tts
+        .take_open_wait()
+        .expect("a give-up after retries is recorded");
+    assert!(wait.attempts >= 1);
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn tts_other_codes_not_retried() {
+    let state = MockSpeechState::default();
+    state.tts_invalid_argument.store(true, Ordering::SeqCst);
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let tts = ClusterSherpaTts::new(&tts_cfg(&url)).unwrap();
+    let started = Instant::now();
+    let err = tts
+        .synthesize_progressive_with_status("hello", None)
+        .await
+        .expect_err("INVALID_ARGUMENT fails at once");
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(err.to_string().contains("bad synth request"), "{err}");
+    assert_eq!(state.synthesize_calls.load(Ordering::SeqCst), 1);
+    assert!(tts.take_open_wait().is_none());
+    let _ = shutdown.send(());
+}

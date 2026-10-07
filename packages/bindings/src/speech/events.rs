@@ -31,6 +31,8 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::TtsConfigUpdated => JsSpeechEventType::TtsConfigUpdated,
             SpeechEventKind::SttHoldStarted => JsSpeechEventType::SttHoldStarted,
             SpeechEventKind::SttHoldEnded => JsSpeechEventType::SttHoldEnded,
+            SpeechEventKind::TtsWait => JsSpeechEventType::TtsWait,
+            SpeechEventKind::AgentSpeakFailed => JsSpeechEventType::AgentSpeakFailed,
         },
         text: event.text,
         language: event.language,
@@ -50,6 +52,8 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         speech_ms: event.speech_ms,
         first_chunk_ms: event.first_chunk_ms,
         first_audio_ms: event.first_audio_ms,
+        wait_ms: event.wait_ms,
+        attempts: event.attempts,
     }
 }
 
@@ -78,6 +82,19 @@ mod speech_event_to_js_tests {
         assert_eq!(js.reason.as_deref(), Some("deferred_tts"));
         assert_eq!(js.speech_ms, Some(80));
         assert!(js.text.is_none());
+    }
+
+    #[test]
+    fn tts_wait_and_speak_failed_map_fields() {
+        let js = speech_event_to_js(SpeechEvent::tts_wait(1500, 7, "Unavailable loading"));
+        assert_eq!(js.event_type, JsSpeechEventType::TtsWait);
+        assert_eq!(js.wait_ms, Some(1500));
+        assert_eq!(js.attempts, Some(7));
+        assert_eq!(js.reason.as_deref(), Some("Unavailable loading"));
+
+        let js = speech_event_to_js(SpeechEvent::agent_speak_failed("boom"));
+        assert_eq!(js.event_type, JsSpeechEventType::AgentSpeakFailed);
+        assert_eq!(js.reason.as_deref(), Some("boom"));
     }
 
     #[test]

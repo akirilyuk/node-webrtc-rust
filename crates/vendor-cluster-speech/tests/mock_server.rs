@@ -57,6 +57,16 @@ pub struct MockSpeechState {
     pub numbered_finals: Arc<AtomicBool>,
     /// Every audio message the server read: `(1-based stream index, bytes)` in arrival order.
     pub audio_log: AudioLog,
+    /// `synthesize` answers `UNAVAILABLE` for this many ms after the first call, then serves.
+    pub tts_unavailable_for_ms: Arc<AtomicUsize>,
+    /// While `true`, `synthesize` always answers `UNAVAILABLE`.
+    pub tts_unavailable_always: Arc<AtomicBool>,
+    /// While `true`, `synthesize` always answers `INVALID_ARGUMENT`.
+    pub tts_invalid_argument: Arc<AtomicBool>,
+    /// First `synthesize` call time (starts the `tts_unavailable_for_ms` window).
+    pub tts_first_call_at: Arc<Mutex<Option<std::time::Instant>>>,
+    /// `synthesize` calls answered with an error status.
+    pub tts_refused_calls: Arc<AtomicUsize>,
 }
 
 /// Decrements `open_transcribe_streams` when dropped (end of the call's spawned task).
@@ -254,6 +264,23 @@ impl Speech for MockSpeech {
         request: Request<SynthesizeRequest>,
     ) -> Result<Response<Self::SynthesizeStream>, Status> {
         self.state.synthesize_calls.fetch_add(1, Ordering::SeqCst);
+        if self.state.tts_invalid_argument.load(Ordering::SeqCst) {
+            self.state.tts_refused_calls.fetch_add(1, Ordering::SeqCst);
+            return Err(Status::invalid_argument("mock: bad synth request"));
+        }
+        let first_call_at = *self
+            .state
+            .tts_first_call_at
+            .lock()
+            .unwrap()
+            .get_or_insert_with(std::time::Instant::now);
+        let window_ms = self.state.tts_unavailable_for_ms.load(Ordering::SeqCst) as u128;
+        if self.state.tts_unavailable_always.load(Ordering::SeqCst)
+            || first_call_at.elapsed().as_millis() < window_ms
+        {
+            self.state.tts_refused_calls.fetch_add(1, Ordering::SeqCst);
+            return Err(Status::unavailable("mock: speech models are still loading"));
+        }
         let text = request.into_inner().text;
         let (tx, rx) = mpsc::channel(4);
         let single_bytes = self

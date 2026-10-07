@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.32] - 2026-10-07
+
 ### Fixed
 
 - **speech** — A late STT final of the previous utterance is dropped when the next utterance starts, instead of being emitted as the new turn's `user_speech_final` (`SttProvider::discard_queued_transcripts`).

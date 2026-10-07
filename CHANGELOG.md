@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.33] - 2026-10-08
+
 ### Fixed
 
 - **cluster-tts** — a synthesis start refused with `UNAVAILABLE`/`RESOURCE_EXHAUSTED` (speech pod loading, full, or restarting) waits up to `SPEECH_TTS_OPEN_WAIT_MAX_MS` (30 s) instead of failing; new `tts_wait` speech event and `cluster_tts_open_*` metrics.

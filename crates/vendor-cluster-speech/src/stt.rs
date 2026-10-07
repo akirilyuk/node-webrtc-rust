@@ -173,7 +173,8 @@ pub struct ClusterSherpaStt {
     queued_warned: AtomicBool,
     queued_error_logged: AtomicBool,
     stream_per_utterance: bool,
-    /// `true` while the stream worker retries a stream open the server refused.
+    /// `true` from the start of a stream open until the server answers Ready, including while a
+    /// refused open is retried (e.g. a speech pod at its stream cap).
     open_pending: Arc<AtomicBool>,
 }
 
@@ -252,6 +253,9 @@ impl ClusterSherpaStt {
         let queued_bytes = Arc::clone(&self.queued_bytes);
         let per_utterance = self.stream_per_utterance;
         let open_pending = Arc::clone(&self.open_pending);
+        // Pending from the moment the worker is spawned, so a finalize that runs before the
+        // worker's first open attempt still waits for the open.
+        open_pending.store(true, Ordering::SeqCst);
         let task = tokio::spawn(async move {
             stream_worker(
                 WorkerParams {
@@ -328,7 +332,8 @@ struct WorkerParams {
     token: Option<String>,
     /// One Transcribe stream per utterance (see [`ClusterSttOptions::stream_per_utterance`]).
     per_utterance: bool,
-    /// Set while a refused stream open is being retried (see `SttProvider::stream_open_pending`).
+    /// `true` from the start of a stream open until the server answers Ready, including while a
+    /// refused open is retried (see `SttProvider::stream_open_pending`).
     open_pending: Arc<AtomicBool>,
 }
 
@@ -421,6 +426,7 @@ async fn stream_worker(
         if let Ok(auth) = auth_metadata(&token) {
             request.metadata_mut().insert("authorization", auth);
         }
+        open_pending.store(true, Ordering::SeqCst);
         let open_started = Instant::now();
         let mut grpc = match client.transcribe(request).await {
             Ok(resp) => resp.into_inner(),

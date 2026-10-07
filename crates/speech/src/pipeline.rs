@@ -111,8 +111,9 @@ pub trait SttProvider: Send + Sync {
         0
     }
 
-    /// `true` while the provider is retrying a stream open the server refused (e.g. a speech pod
-    /// at its stream cap). Audio stays queued; VoiceAgent waits instead of ending the turn (C1).
+    /// `true` from the start of a stream open until the server answers Ready, including while a
+    /// refused open is retried (e.g. a speech pod at its stream cap). Audio stays queued;
+    /// VoiceAgent waits instead of ending the turn (C1).
     fn stream_open_pending(&self) -> bool {
         false
     }

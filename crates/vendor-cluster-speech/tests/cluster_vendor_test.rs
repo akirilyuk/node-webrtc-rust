@@ -630,9 +630,6 @@ async fn stt_finalize_waits_for_refused_open() {
     let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
     let mut stt = ClusterSherpaStt::new(&stt_cfg(&url)).unwrap();
     stt.start().await.unwrap();
-    // The worker has to have seen the first refusal, or `finalize_utterance` would not know the
-    // open is pending yet (in a call this gap is far longer than one retry).
-    wait_until("first open refused", || stt.stream_open_pending()).await;
     stt.push_audio(Bytes::from(vec![1_u8; PUSHED_BYTES]))
         .await
         .unwrap();
@@ -667,6 +664,22 @@ async fn stt_finalize_waits_for_refused_open() {
         received, PUSHED_BYTES,
         "server received {received} of {PUSHED_BYTES} audio bytes"
     );
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn stt_open_pending_clears_after_normal_open() {
+    let state = MockSpeechState::default();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = ClusterSherpaStt::new(&stt_cfg(&url)).unwrap();
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    assert!(
+        !stt.stream_open_pending(),
+        "no refusals: pending must be false once Ready"
+    );
+    assert_eq!(state.rejected_opens.load(Ordering::SeqCst), 0);
     stt.stop().await.unwrap();
     let _ = shutdown.send(());
 }

@@ -34,7 +34,11 @@ const QUEUED_ERROR_MS: usize = 10_000;
 /// Upper bound of the finalize wait added for audio still queued behind the pod.
 const FINALIZE_QUEUED_WAIT_CAP_MS: usize = 30_000;
 const READY_WAIT_MS: u64 = 15_000;
-const FINALIZE_WAIT_MS: u64 = 2_000;
+/// How long finalize waits for the server's Finalized beyond the queued audio. Finalized normally
+/// arrives within a few hundred ms. The wait only runs this long when the speech pod lags, and a
+/// fallback final from the last partial is worse than the extra latency (2026-10-07 load test:
+/// the server final arrived 50 ms after a 2 s wait gave up).
+const FINALIZE_WAIT_MS: u64 = 8_000;
 /// Longest `finalize_utterance` waits for a refused stream open (a speech pod at its stream
 /// cap) to succeed before sending the Finalize anyway. Override with `SPEECH_STT_OPEN_WAIT_MAX_MS`.
 const OPEN_WAIT_MAX_MS: u64 = 120_000;
@@ -710,6 +714,20 @@ impl SttProvider for ClusterSherpaStt {
 
     fn stream_open_pending(&self) -> bool {
         self.open_pending.load(Ordering::SeqCst)
+    }
+
+    fn discard_queued_transcripts(&mut self) -> usize {
+        let Ok(mut inner) = self.inner.try_lock() else {
+            return 0;
+        };
+        inner.mid_utterance_failure = None;
+        let mut dropped = 0;
+        if let Some(rx) = inner.transcript_rx.as_mut() {
+            while rx.try_recv().is_ok() {
+                dropped += 1;
+            }
+        }
+        dropped
     }
 
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {

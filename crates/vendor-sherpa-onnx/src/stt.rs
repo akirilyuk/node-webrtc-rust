@@ -223,6 +223,21 @@ impl SttProvider for SherpaStt {
         self.accepted_ms.load(Ordering::Relaxed)
     }
 
+    fn discard_queued_transcripts(&mut self) -> usize {
+        let Ok(mut guard) = self.state.try_lock() else {
+            return 0;
+        };
+        let Some(session) = guard.session.as_mut() else {
+            return 0;
+        };
+        let dropped = session.pending.len();
+        session.pending.clear();
+        if !session.decoded_since_result {
+            session.unread.store(false, Ordering::Release);
+        }
+        dropped
+    }
+
     async fn push_audio(&mut self, pcm: Bytes) -> SpeechResult<()> {
         let samples = mono_s16le_bytes_to_f32(pcm.as_ref());
         if samples.is_empty() {

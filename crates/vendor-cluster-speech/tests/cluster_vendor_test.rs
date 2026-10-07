@@ -683,3 +683,51 @@ async fn stt_open_pending_clears_after_normal_open() {
     stt.stop().await.unwrap();
     let _ = shutdown.send(());
 }
+
+#[tokio::test]
+async fn finalize_waits_for_lagging_finalized() {
+    // The server sends the Final at once but holds `Finalized` for 3.5 s (a lagging pod). The old
+    // 2 s wait gave up here and the caller fell back to the last partial.
+    let state = MockSpeechState {
+        numbered_finals: Arc::new(AtomicBool::new(true)),
+        finalized_delay_ms: Arc::new(AtomicUsize::new(3500)),
+        ..MockSpeechState::default()
+    };
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = stt_with(&url, false);
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    stt.push_audio(Bytes::from(vec![1_u8; 3200])).await.unwrap();
+
+    let started = Instant::now();
+    stt.finalize_utterance().await.unwrap();
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_millis(3400),
+        "finalize returned after {waited:?}, before the server's Finalized (3500 ms): it gave up"
+    );
+    assert_eq!(drain_finals(&mut stt).await, vec!["final-1".to_string()]);
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn discard_queued_transcripts_drains_channel() {
+    let state = numbered_state();
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = stt_with(&url, false);
+    stt.start().await.unwrap();
+    assert!(stt.wait_ready(Duration::from_secs(5)).await.unwrap());
+    stt.push_audio(Bytes::from(vec![1_u8; 3200])).await.unwrap();
+    // The Final is queued in the client's channel; nothing polls it.
+    stt.finalize_utterance().await.unwrap();
+
+    assert!(
+        stt.discard_queued_transcripts() >= 1,
+        "the queued Final must be dropped"
+    );
+    assert!(stt.poll_transcript().await.unwrap().is_none());
+    assert_eq!(stt.discard_queued_transcripts(), 0);
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}

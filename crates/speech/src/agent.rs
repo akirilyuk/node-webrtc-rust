@@ -979,8 +979,7 @@ impl VoiceAgent {
             .stt_open_wait_started_at
             .get_or_insert_with(Instant::now);
         if first {
-            voice_debug("C1 deferred: STT stream open pending (server refused, retrying)");
-            eprintln!("[voice] stt stream open refused; holding turn until a slot frees up");
+            voice_debug("C1 deferred: STT stream open pending");
         }
         if since.elapsed() < std::time::Duration::from_millis(max_ms as u64) {
             inner.stt_listen_started_at = Some(Instant::now());
@@ -3298,6 +3297,8 @@ impl VoiceAgent {
                 self.complete_pending_utterance_if_any().await?;
             }
             let mut pre_roll_after_start = None;
+            let mut dropped_pending = 0_usize;
+            let mut started_new_utterance = false;
             {
                 let mut inner = self.inner.lock().await;
                 if long_pause_new_phrase || inner.stt_final_emitted_this_utterance {
@@ -3305,6 +3306,11 @@ impl VoiceAgent {
                     // for mid-phrase pauses (e.g. counting). Leaving `stt_final_emitted` set blocks
                     // C2 arming and `should_finalize_utterance` on turn 2+ (local multi-turn E2E).
                     Self::reset_utterance_state_for_new_speech(&mut inner);
+                    // Results of the previous utterance that are still queued must never be read
+                    // as this utterance's transcript.
+                    dropped_pending = inner.pending_transcripts.len();
+                    inner.pending_transcripts.clear();
+                    started_new_utterance = true;
                 } else {
                     // Brief gap (e.g. counting): same utterance — clear hold only.
                     inner.stt_gate_hold_ms = 0;
@@ -3313,6 +3319,24 @@ impl VoiceAgent {
                     inner.defer_utterance_finalize_until_hold = false;
                     Self::disarm_utterance_finalize_timer(&mut inner);
                 }
+            }
+            if started_new_utterance {
+                // `inner` is released first: the STT lock is never taken while holding it here.
+                let dropped_in_provider = {
+                    let mut stt = self.stt.lock().await;
+                    stt.as_mut()
+                        .map_or(0, |stt| stt.discard_queued_transcripts())
+                };
+                let dropped = dropped_pending + dropped_in_provider;
+                if dropped > 0 {
+                    let msg =
+                        format!("[voice] dropped {dropped} late STT result(s) of the previous utterance");
+                    eprintln!("{msg}");
+                    voice_debug(msg);
+                }
+            }
+            {
+                let mut inner = self.inner.lock().await;
                 if gate_stt {
                     // Cold inbound (no frames before the talker) leaves a short ring at
                     // SpeechStart; streaming recognizers need left context before onset.

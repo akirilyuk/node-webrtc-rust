@@ -102,6 +102,12 @@ impl OpenHistogram {
     }
 }
 
+/// Refused TTS synthesis starts that were retried (`cluster_tts_open_retries_total`).
+static TTS_OPEN_RETRIES: AtomicU64 = AtomicU64::new(0);
+/// Histogram `cluster_tts_open_wait_ms`: time a synthesis start waited on refusals, one sample
+/// per synthesis that needed at least one retry (including ones that gave up).
+static TTS_OPEN_WAIT_MS: OpenHistogram = OpenHistogram::new();
+
 static OPEN_MS_SESSION_START: OpenHistogram = OpenHistogram::new();
 static OPEN_MS_UTTERANCE: OpenHistogram = OpenHistogram::new();
 static OPEN_MS_REOPEN: OpenHistogram = OpenHistogram::new();
@@ -147,6 +153,43 @@ pub fn stt_stream_open_ms_buckets(reason: &str) -> Vec<u64> {
         .unwrap_or_default()
 }
 
+/// Count `n` refused TTS synthesis starts that were retried (`cluster_tts_open_retries_total`).
+pub fn inc_tts_open_retries(n: u64) {
+    TTS_OPEN_RETRIES.fetch_add(n, Ordering::Relaxed);
+}
+
+pub fn tts_open_retries_total() -> u64 {
+    TTS_OPEN_RETRIES.load(Ordering::Relaxed)
+}
+
+/// Record how long one synthesis start waited on refusals (`cluster_tts_open_wait_ms`).
+pub fn record_tts_open_wait_ms(ms: u64) {
+    TTS_OPEN_WAIT_MS.record(ms);
+}
+
+/// `(count, sum_ms)` of `cluster_tts_open_wait_ms`.
+pub fn tts_open_wait_ms_stats() -> (u64, u64) {
+    (
+        TTS_OPEN_WAIT_MS.count.load(Ordering::Relaxed),
+        TTS_OPEN_WAIT_MS.sum_ms.load(Ordering::Relaxed),
+    )
+}
+
+/// Non-cumulative bucket counts of `cluster_tts_open_wait_ms` (bounds in [`STREAM_OPEN_BUCKETS_MS`],
+/// last entry is the overflow bucket).
+pub fn tts_open_wait_ms_buckets() -> Vec<u64> {
+    TTS_OPEN_WAIT_MS
+        .buckets
+        .iter()
+        .map(|b| b.load(Ordering::Relaxed))
+        .collect()
+}
+
+pub fn reset_tts_open_metrics() {
+    TTS_OPEN_RETRIES.store(0, Ordering::Relaxed);
+    TTS_OPEN_WAIT_MS.reset();
+}
+
 pub fn reset_stt_reopen_metrics() {
     REOPEN_IDLE_ERROR.store(0, Ordering::Relaxed);
     REOPEN_RELOCATE.store(0, Ordering::Relaxed);
@@ -169,6 +212,21 @@ mod tests {
         assert_eq!(stt_queued_ms_total(), 1000);
         sub_stt_queued_bytes(1_000_000);
         assert_eq!(stt_queued_ms_total(), 0);
+    }
+
+    #[test]
+    fn tts_open_wait_records_retries_and_histogram() {
+        reset_tts_open_metrics();
+        inc_tts_open_retries(3);
+        record_tts_open_wait_ms(1500);
+        assert_eq!(tts_open_retries_total(), 3);
+        assert_eq!(tts_open_wait_ms_stats(), (1, 1500));
+        assert_eq!(
+            tts_open_wait_ms_buckets().len(),
+            STREAM_OPEN_BUCKETS_MS.len() + 1
+        );
+        reset_tts_open_metrics();
+        assert_eq!(tts_open_retries_total(), 0);
     }
 
     #[test]

@@ -20,6 +20,8 @@
 //! | `UserSttStart` / `UserSttEnd` | STT recognition session for one user utterance |
 //! | `UserSttNotFound` | VAD fired but no STT partial within `sttListenTimeoutMs` |
 //! | `BargeIn` | Barge-in path (semantic STT partial and/or VAD during agent TTS) |
+//! | `TtsWait` | A TTS synthesis start was refused and retried (`wait_ms`, `attempts`, `reason`) |
+//! | `AgentSpeakFailed` | One reply could not be synthesized (`reason`); the session keeps running |
 //! | `Error` | Vendor or internal failure |
 
 use crate::config::{SttConfig, TtsConfig};
@@ -52,6 +54,10 @@ pub enum SpeechEventKind {
     SttHoldStarted,
     /// Hold finished (`hold_outcome`, `buffered_ms`, `dropped_ms`). No transcript text.
     SttHoldEnded,
+    /// TTS synthesis start waited on a transient refusal (`wait_ms`, `attempts`, `reason`).
+    TtsWait,
+    /// One reply failed to synthesize (`reason`); the agent keeps listening.
+    AgentSpeakFailed,
 }
 
 /// A speech event with optional payload text.
@@ -90,6 +96,10 @@ pub struct SpeechEvent {
     pub first_chunk_ms: Option<u32>,
     /// `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply.
     pub first_audio_ms: Option<u32>,
+    /// `tts_wait`: ms the synthesis start waited on refusals.
+    pub wait_ms: Option<u32>,
+    /// `tts_wait`: refused attempts that were retried.
+    pub attempts: Option<u32>,
 }
 
 impl SpeechEvent {
@@ -114,7 +124,25 @@ impl SpeechEvent {
             speech_ms: None,
             first_chunk_ms: None,
             first_audio_ms: None,
+            wait_ms: None,
+            attempts: None,
         }
+    }
+
+    /// A TTS synthesis start was refused and retried (`reason`: gRPC code + message).
+    pub fn tts_wait(wait_ms: u32, attempts: u32, reason: impl Into<String>) -> Self {
+        let mut ev = Self::base(SpeechEventKind::TtsWait);
+        ev.wait_ms = Some(wait_ms);
+        ev.attempts = Some(attempts);
+        ev.reason = Some(reason.into());
+        ev
+    }
+
+    /// One reply failed to synthesize; the session stays up.
+    pub fn agent_speak_failed(reason: impl Into<String>) -> Self {
+        let mut ev = Self::base(SpeechEventKind::AgentSpeakFailed);
+        ev.reason = Some(reason.into());
+        ev
     }
 
     pub fn stt_hold_started(mode: &str, buffered_ms: u32) -> Self {

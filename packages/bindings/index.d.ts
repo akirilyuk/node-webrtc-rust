@@ -339,7 +339,9 @@ export const enum JsSpeechEventType {
   SttConfigUpdated = 'stt_config_updated',
   TtsConfigUpdated = 'tts_config_updated',
   SttHoldStarted = 'stt_hold_started',
-  SttHoldEnded = 'stt_hold_ended'
+  SttHoldEnded = 'stt_hold_ended',
+  TtsWait = 'tts_wait',
+  AgentSpeakFailed = 'agent_speak_failed'
 }
 export interface JsSpeechEvent {
   eventType: JsSpeechEventType
@@ -363,6 +365,10 @@ export interface JsSpeechEvent {
   firstChunkMs?: number
   /** `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply. */
   firstAudioMs?: number
+  /** `tts_wait`: ms the synthesis start waited on refusals. */
+  waitMs?: number
+  /** `tts_wait`: refused attempts that were retried. */
+  attempts?: number
 }
 export const enum JsSttHoldMode {
   BufferReplay = 'buffer_replay',

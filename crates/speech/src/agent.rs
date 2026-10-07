@@ -1693,9 +1693,18 @@ impl VoiceAgent {
             tts_vendor_calls_inflight.fetch_add(1, Ordering::SeqCst);
             let synthesize_result = provider.synthesize(text).await;
             tts_vendor_calls_inflight.fetch_sub(1, Ordering::SeqCst);
-            synthesize_result?
+            (synthesize_result, provider.take_open_wait())
         };
+        let (chunks, open_wait) = chunks;
+        Self::emit_tts_wait(event_bus, open_wait);
         Self::record_tts_job_latency(inner, tts_started).await;
+        let chunks = match chunks {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                Self::fail_reply_keep_session(inner, event_bus, &error).await;
+                return Ok(());
+            }
+        };
         if chunks.iter().any(|chunk| !chunk.pcm.is_empty()) {
             Self::record_first_chunk(inner, requested_at).await;
         }
@@ -1844,8 +1853,10 @@ impl VoiceAgent {
             tts_vendor_calls_inflight.fetch_add(1, Ordering::SeqCst);
             let result = provider.synthesize_progressive(text, Some(sink)).await;
             tts_vendor_calls_inflight.fetch_sub(1, Ordering::SeqCst);
-            result
+            (result, provider.take_open_wait())
         };
+        let (synth_result, open_wait) = synth_result;
+        Self::emit_tts_wait(event_bus, open_wait);
         Self::record_tts_job_latency(inner, tts_started).await;
 
         // Dropping the last sender happens when synthesize_progressive returns
@@ -1878,9 +1889,36 @@ impl VoiceAgent {
             Err(error) => {
                 tts_buffer.set_producing(false).await;
                 tts_drain_wake.notify_one();
-                Err(error)
+                Self::fail_reply_keep_session(inner, event_bus, &error).await;
+                Ok(())
             }
         }
+    }
+
+    fn emit_tts_wait(event_bus: &SpeechEventBus, open_wait: Option<crate::pipeline::TtsOpenWait>) {
+        if let Some(wait) = open_wait {
+            event_bus.emit(SpeechEvent::tts_wait(
+                wait.wait_ms,
+                wait.attempts,
+                wait.reason,
+            ));
+        }
+    }
+
+    /// A reply failed to synthesize. Only this reply ends: emit `agent_speak_failed` and leave
+    /// the agent listening. The caller of `send_text_to_tts` gets `Ok`, so a host does not treat
+    /// the failure as session-fatal.
+    async fn fail_reply_keep_session(
+        inner: &Arc<Mutex<AgentInner>>,
+        event_bus: &SpeechEventBus,
+        error: &SpeechError,
+    ) {
+        {
+            let mut guard = inner.lock().await;
+            Self::clear_pending_first_audio(&mut guard);
+        }
+        voice_debug(format!("TTS reply failed, session kept: {error}"));
+        event_bus.emit(SpeechEvent::agent_speak_failed(error.to_string()));
     }
 
     fn elapsed_ms_u32(since: Instant) -> u32 {

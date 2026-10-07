@@ -24,7 +24,6 @@ import type {
   BeginSttHoldOptions,
   ReleaseSttHoldOptions,
   SttHoldMode,
-  LanguageIdSkipReason,
   SttHoldOutcome,
   EventDeliveryMode,
   SpeechEvent,
@@ -277,6 +276,7 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     speech_ms?: number
     first_chunk_ms?: number
     first_audio_ms?: number
+    wait_ms?: number
   }
   return {
     type: jsEventTypeToString(rawType ?? JsSpeechEventType.Error),
@@ -296,10 +296,12 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
       | undefined,
     bufferedMs: event.bufferedMs ?? extended.buffered_ms ?? undefined,
     droppedMs: event.droppedMs ?? extended.dropped_ms ?? undefined,
-    reason: (event.reason ?? undefined) as LanguageIdSkipReason | undefined,
+    reason: (event.reason ?? undefined) as SpeechEvent['reason'],
     speechMs: event.speechMs ?? extended.speech_ms ?? undefined,
     firstChunkMs: event.firstChunkMs ?? extended.first_chunk_ms ?? undefined,
     firstAudioMs: event.firstAudioMs ?? extended.first_audio_ms ?? undefined,
+    waitMs: event.waitMs ?? extended.wait_ms ?? undefined,
+    attempts: event.attempts ?? undefined,
   }
 }
 
@@ -343,6 +345,10 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'stt_hold_started'
     case JsSpeechEventType.SttHoldEnded:
       return 'stt_hold_ended'
+    case JsSpeechEventType.TtsWait:
+      return 'tts_wait'
+    case JsSpeechEventType.AgentSpeakFailed:
+      return 'agent_speak_failed'
     default:
       return 'error'
   }

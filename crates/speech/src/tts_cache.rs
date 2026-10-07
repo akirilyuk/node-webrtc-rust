@@ -315,6 +315,10 @@ impl TtsProvider for CachingTtsProvider {
         self.inner.bind_session_context(ctx);
     }
 
+    fn take_open_wait(&self) -> Option<crate::pipeline::TtsOpenWait> {
+        self.inner.take_open_wait()
+    }
+
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         self.synthesize_progressive(text, None).await
     }

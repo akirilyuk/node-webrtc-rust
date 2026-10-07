@@ -79,7 +79,7 @@ pub use node_webrtc_rust_denoise::Stereo48kRnnoise;
 pub use pcm::{pcm_rms_i16, stereo_48k_to_mono_16k};
 pub use pipeline::{
     tts_stream_chunks_enabled, LanguageIdProvider, LanguageIdResult, SttProvider, SttTranscript,
-    TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
+    TtsAudioChunk, TtsOpenWait, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
 };
 pub use registry::VendorRegistry;
 pub use session_recorder::{

@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.29] - 2026-10-06
+
+### Added
+
+- **speech** — Time to first audio on every agent reply, measured from the speak request: `firstChunkMs` (first PCM chunk from the TTS vendor) and `firstAudioMs` (first outbound frame queued for the caller) on the `agent_speaking_start` event, and OTel histograms `voice_tts_first_chunk_ms` / `voice_tts_first_audio_ms` (attribute `tts.vendor`). Barge-in, flush, `stop()` and playback failures clear a pending timing, so the next reply is timed from its own request.
+
+### Changed
+
+- **sherpa-tts** — A reply's first sentence is synthesised before later sentences of replies that are already playing (`TtsSlots`, two priorities, FIFO within each; a waiting continuation is never starved). When the first sentence is longer than 12 words it is cut at the first comma after at least 4 words, so the first audio arrives sooner.
+- **sherpa** — Models load outside the pool map lock (per-key single flight): a cold load of one model no longer blocks lookups of models that are already loaded, and a failed load is retried by the next caller.
+
 ## [0.9.28] - 2026-10-06
 
 ### Added

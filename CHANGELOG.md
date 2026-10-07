@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.30] - 2026-10-07
+
+### Added
+
+- **cluster-stt** — Optional Transcribe stream per user utterance: `CLUSTER_STT_STREAM_PER_UTTERANCE=1` (default off, read once per process) closes the stream after each utterance is finalised and opens a fresh one on the next speech, so every turn is placed on the least-loaded speech server instead of staying on the server the call first reached. Audio that arrives while a stream opens is held and sent in order, including across refused opens. Per-client override `ClusterSttOptions { stream_per_utterance }`. New metrics `cluster_stt_utterance_streams_total` and `cluster_stt_stream_open_ms{reason}`.
+- **signaling** — `SignalingServer.listen(port, host?)` (shipped in 0.9.29): bind to a specific address; without `host` the behaviour is unchanged.
+
+### Changed
+
+- **cluster-stt** — The STT client keeps one gRPC channel per session and reuses it for every stream it opens.
+
 ## [0.9.29] - 2026-10-06
 
 ### Added

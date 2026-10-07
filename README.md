@@ -162,12 +162,12 @@ sendTextToTTS(text) ──► TTS vendor adapter ──► TtsPlaybackBuffer
                               LocalAudioTrack.writeSample() ──► Outbound RTP (agent)
 ```
 
-| Layer         | Location                      | Role                                                             |
-| ------------- | ----------------------------- | ---------------------------------------------------------------- |
-| Orchestration | `crates/speech`               | Config, event bus, VAD, barge-in, TTS queue                      |
+| Layer         | Location                      | Role                                                                                                            |
+| ------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Orchestration | `crates/speech`               | Config, event bus, VAD, barge-in, TTS queue                                                                     |
 | Vendors       | `crates/vendor-*`             | OpenAI ([STT matrix](crates/vendor-openai/README.md)), Deepgram, ElevenLabs, Google, Cartesia, AssemblyAI, mock |
-| Node API      | `@node-webrtc-rust/sdk/voice` | `VoiceAgent`, typed config, callbacks + `speechEvents()`         |
-| Transport     | `@node-webrtc-rust/sdk`       | `RTCPeerConnection`, `LocalAudioTrack`, `RemoteAudioTrack`       |
+| Node API      | `@node-webrtc-rust/sdk/voice` | `VoiceAgent`, typed config, callbacks + `speechEvents()`                                                        |
+| Transport     | `@node-webrtc-rust/sdk`       | `RTCPeerConnection`, `LocalAudioTrack`, `RemoteAudioTrack`                                                      |
 
 **Frame format:** 48 kHz stereo, 16-bit PCM, 20 ms frames (3 840 bytes) on the WebRTC track path. VAD resamples to mono 16 kHz internally.
 
@@ -210,17 +210,17 @@ Live HTTP/WebSocket calls live in Rust `vendor-*` crates (SDK-first). Default CI
 
 ## Speech events and barge-in
 
-| Event                          | Source       | When to use in your agent                                                 |
-| ------------------------------ | ------------ | ------------------------------------------------------------------------- |
-| `user_speaking_start`          | VAD          | Fast interrupt signal; pairs with barge-in                                |
-| `user_speaking_end`            | VAD + hold   | End-of-utterance hint (`gateStt`: after `sttGateHoldMs`, not first pause) |
-| `user_speech_partial`          | STT          | Live captions, early LLM prefetch                                         |
-| `user_speech_final`            | STT          | **Primary turn trigger** for LLM                                          |
-| `user_language`                | LID (Sherpa) | ISO 639-1 hint — **does not** change STT/TTS; call `updateStt` / `updateTts` in your app if needed |
-| `stt_config_updated` / `tts_config_updated` | Pipeline | Fired when mid-session vendor configs apply — see SDK [VOICE-API.md](packages/sdk/VOICE-API.md#mid-session-stttts-language-and-model-switch) |
-| `agent_speaking_start` / `end` | TTS playback | UI/state machine                                                          |
-| `barge_in`                     | VAD + config | User interrupted agent — cancel LLM/TTS                                   |
-| `error`                        | Any          | Vendor or pipeline failure                                                |
+| Event                                       | Source       | When to use in your agent                                                                                                                    |
+| ------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `user_speaking_start`                       | VAD          | Fast interrupt signal; pairs with barge-in                                                                                                   |
+| `user_speaking_end`                         | VAD + hold   | End-of-utterance hint (`gateStt`: after `sttGateHoldMs`, not first pause)                                                                    |
+| `user_speech_partial`                       | STT          | Live captions, early LLM prefetch                                                                                                            |
+| `user_speech_final`                         | STT          | **Primary turn trigger** for LLM                                                                                                             |
+| `user_language`                             | LID (Sherpa) | ISO 639-1 hint — **does not** change STT/TTS; call `updateStt` / `updateTts` in your app if needed                                           |
+| `stt_config_updated` / `tts_config_updated` | Pipeline     | Fired when mid-session vendor configs apply — see SDK [VOICE-API.md](packages/sdk/VOICE-API.md#mid-session-stttts-language-and-model-switch) |
+| `agent_speaking_start` / `end`              | TTS playback | UI/state machine                                                                                                                             |
+| `barge_in`                                  | VAD + config | User interrupted agent — cancel LLM/TTS                                                                                                      |
+| `error`                                     | Any          | Vendor or pipeline failure                                                                                                                   |
 
 **Barge-in** is two independent toggles under `vad.bargeIn`:
 
@@ -627,7 +627,18 @@ When enabled, `VoiceAgent::start` accepts optional session attributes (`session_
 | `stt.vendor` | `voice.session`, `voice.stt`, `voice_stt_latency_ms` | `openai`, `deepgram`, `google`, `assemblyai`, `local-sherpa`, `mock` |
 | `tts.vendor` | `voice.session`, `voice.tts`, `voice_tts_latency_ms` | `openai`, `elevenlabs`, `google`, `cartesia`, `local-sherpa`, `mock` |
 
-**Metrics:** `voice_stt_latency_ms`, `voice_tts_latency_ms`, `sherpa_pool_wait_ms`, `sherpa_pool_entries` (histograms/gauge)
+**Metrics:** `voice_stt_latency_ms`, `voice_tts_latency_ms`, `sherpa_pool_wait_ms`, `sherpa_pool_entries` (histograms/gauge), plus the per-project turn latency series below.
+
+**Turn latency metrics** (all labelled `project_id`; the histograms also carry `stt.vendor` and `tts.vendor`):
+
+| Metric                          | Type      | Measures                                                                                    |
+| ------------------------------- | --------- | ------------------------------------------------------------------------------------------- |
+| `voice_stt_finalize_ms`         | histogram | VAD `speech_end` to the first STT final of that utterance                                   |
+| `voice_final_to_audio_ms`       | histogram | Latest STT final to the first outbound PCM frame of the reply                               |
+| `voice_turn_response_ms`        | histogram | VAD `speech_end` to the first outbound PCM frame of the reply (what the caller waits)       |
+| `voice_turn_response_abandoned` | counter   | Turns that got an STT final but the caller spoke again or barged in before any reply audio  |
+| `voice_tts_first_chunk_ms`      | histogram | Speak request to first vendor PCM chunk (labels: `project_id`, `tts.vendor`)                |
+| `voice_tts_first_audio_ms`      | histogram | Speak request to first outbound PCM frame of the reply (labels: `project_id`, `tts.vendor`) |
 
 Rust tests with OTel: `cargo test -p node-webrtc-rust-speech --features otel`
 

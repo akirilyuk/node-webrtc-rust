@@ -124,9 +124,10 @@ pub use enabled::{
     record_gate_hold_end, record_gate_hold_start, record_sherpa_pool_wait_ms,
     record_sherpa_tts_phrase_cache_hit, record_sherpa_tts_phrase_cache_miss,
     record_sherpa_tts_queue_wait_ms, record_sherpa_tts_synth_wall_ms, record_stt_latency_ms,
-    record_tts_latency_ms, record_vad_transition, record_voice_tts_first_audio_ms,
-    record_voice_tts_first_chunk_ms, set_sherpa_pool_entries, set_sherpa_tts_phrase_cache_bytes,
-    set_sherpa_tts_phrase_cache_entries, voice_span,
+    record_tts_latency_ms, record_vad_transition, record_voice_final_to_audio_ms,
+    record_voice_stt_finalize_ms, record_voice_tts_first_audio_ms, record_voice_tts_first_chunk_ms,
+    record_voice_turn_response_abandoned, record_voice_turn_response_ms, set_sherpa_pool_entries,
+    set_sherpa_tts_phrase_cache_bytes, set_sherpa_tts_phrase_cache_entries, voice_span,
 };
 
 #[cfg(not(feature = "otel"))]
@@ -208,10 +209,40 @@ pub fn record_sherpa_tts_queue_wait_ms(_ms: f64, _attrs: &SherpaTtsMetricAttrs) 
 pub fn record_sherpa_tts_synth_wall_ms(_ms: f64, _attrs: &SherpaTtsMetricAttrs) {}
 
 #[cfg(not(feature = "otel"))]
-pub fn record_voice_tts_first_chunk_ms(_ms: f64, _vendor: &str) {}
+pub fn record_voice_tts_first_chunk_ms(_ms: f64, _vendor: &str, _project_id: &str) {}
 
 #[cfg(not(feature = "otel"))]
-pub fn record_voice_tts_first_audio_ms(_ms: f64, _vendor: &str) {}
+pub fn record_voice_tts_first_audio_ms(_ms: f64, _vendor: &str, _project_id: &str) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_voice_stt_finalize_ms(
+    _ms: f64,
+    _project_id: &str,
+    _stt_vendor: &str,
+    _tts_vendor: &str,
+) {
+}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_voice_final_to_audio_ms(
+    _ms: f64,
+    _project_id: &str,
+    _stt_vendor: &str,
+    _tts_vendor: &str,
+) {
+}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_voice_turn_response_ms(
+    _ms: f64,
+    _project_id: &str,
+    _stt_vendor: &str,
+    _tts_vendor: &str,
+) {
+}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_voice_turn_response_abandoned(_project_id: &str) {}
 
 #[cfg(not(feature = "otel"))]
 pub async fn acquire_sherpa_permit(

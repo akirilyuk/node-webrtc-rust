@@ -18,7 +18,7 @@ describe('SessionPod concurrent prepare capacity', () => {
 
   it('rejects a third concurrent prepare when maxPreparedSessions is 2', async () => {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     let releaseFirst!: () => void

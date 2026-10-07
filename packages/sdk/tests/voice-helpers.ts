@@ -10,7 +10,7 @@ export async function createVoiceLoopback(): Promise<{
   userInbound: RemoteAudioTrack
 }> {
   const server = new SignalingServer({ port: 0 })
-  await server.listen(0)
+  await server.listen(0, '127.0.0.1')
 
   const agentPc = new RTCPeerConnection({ iceServers: [STUN] })
   const userPc = new RTCPeerConnection({ iceServers: [STUN] })
@@ -18,12 +18,12 @@ export async function createVoiceLoopback(): Promise<{
   await agentPc.addTrack(agentOut)
 
   const sigAgent = new SignalingClient({
-    url: `ws://localhost:${server.port}`,
+    url: `ws://127.0.0.1:${server.port}`,
     room: 'voice-test',
     peerId: 'agent',
   })
   const sigUser = new SignalingClient({
-    url: `ws://localhost:${server.port}`,
+    url: `ws://127.0.0.1:${server.port}`,
     room: 'voice-test',
     peerId: 'user',
   })

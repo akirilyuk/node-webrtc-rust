@@ -18,15 +18,15 @@ const defaultIceConfig = {
 describe('SignalingServer', () => {
   test('relays join notifications between peers', async () => {
     const server = new SignalingServer({ port: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
 
     const clientA = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'test',
       peerId: 'a',
     })
     const clientB = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'test',
       peerId: 'b',
     })
@@ -49,14 +49,14 @@ describe('SignalingServer', () => {
 describe('SignalingClient', () => {
   test('bubbles connect failures to the root handler as ConnectionError', async () => {
     const server = new SignalingServer({ port: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const rootErrors: ConnectionError[] = []
     setRootConnectionErrorHandler((error) => rootErrors.push(error))
 
     const client = new SignalingClient({
-      url: `ws://localhost:${port}`,
+      url: `ws://127.0.0.1:${port}`,
       room: 'error-after-connect',
       peerId: 'a',
     })
@@ -65,7 +65,7 @@ describe('SignalingClient', () => {
     await server.close()
 
     const deadClient = new SignalingClient({
-      url: `ws://localhost:${port}`,
+      url: `ws://127.0.0.1:${port}`,
       room: 'dead',
       peerId: 'b',
     })
@@ -90,7 +90,7 @@ describe('autoNegotiate', () => {
 
   beforeAll(async () => {
     server = new SignalingServer({ port: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
   })
 
   afterAll(async () => {
@@ -104,12 +104,12 @@ describe('autoNegotiate', () => {
     const dc1 = pc1.createDataChannel('signaling-test')
 
     const sig1 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'auto-negotiate',
       peerId: 'pc1',
     })
     const sig2 = new SignalingClient({
-      url: `ws://localhost:${server.port}`,
+      url: `ws://127.0.0.1:${server.port}`,
       room: 'auto-negotiate',
       peerId: 'pc2',
     })

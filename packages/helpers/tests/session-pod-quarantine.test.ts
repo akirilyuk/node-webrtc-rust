@@ -37,7 +37,7 @@ describe('SessionPod sticky quarantine + single-flight teardown', () => {
     }) => void,
   ): Promise<PodAccess> {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
     const pod = new SessionPod(server, {
       signalingUrl: `ws://127.0.0.1:${port}/ws`,

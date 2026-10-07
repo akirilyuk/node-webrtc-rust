@@ -122,7 +122,7 @@ describe.skipIf(!sessionPodDataOnlyIntegrationNativeAvailable())(
 
     it('post-connect idle teardown endReason is not never_connected (regression)', async () => {
       server = new SignalingServer({ port: 0 })
-      await server.listen(0)
+      await server.listen(0, '127.0.0.1')
       wsUrl = `ws://127.0.0.1:${server.port}`
 
       const destroyedEvents: SessionPodChangeEvent[] = []
@@ -157,7 +157,7 @@ describe.skipIf(!sessionPodDataOnlyIntegrationNativeAvailable())(
 
     it('never-joined prepare slot still destroys with never_connected (control)', async () => {
       server = new SignalingServer({ port: 0 })
-      await server.listen(0)
+      await server.listen(0, '127.0.0.1')
       wsUrl = `ws://127.0.0.1:${server.port}`
 
       const destroyedEvents: SessionPodChangeEvent[] = []

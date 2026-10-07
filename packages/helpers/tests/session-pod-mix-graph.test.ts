@@ -62,7 +62,7 @@ describe('SessionPod shared client mix graph', () => {
     options: ConstructorParameters<typeof SessionPod>[1],
   ): Promise<SessionPod> {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     return new SessionPod(server, {
       signalingUrl: `ws://127.0.0.1:${server.port}/ws`,
       iceServers: [],

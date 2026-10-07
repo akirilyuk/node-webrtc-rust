@@ -291,8 +291,8 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
   beforeAll(async () => {
     resetProcessVoiceSessionBudget()
     server = new SignalingServer({ port: 0 })
-    await server.listen(0)
-    wsUrl = `ws://localhost:${server.port}`
+    await server.listen(0, '127.0.0.1')
+    wsUrl = `ws://127.0.0.1:${server.port}`
 
     pod = new SessionPod(server, {
       signalingUrl: wsUrl,

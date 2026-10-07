@@ -16,7 +16,7 @@ describe('SessionPod awaits destroyed onSessionChange', () => {
 
   it('keeps slot while awaiting destroyed; deletes only after success', async () => {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const order: string[] = []
@@ -65,7 +65,7 @@ describe('SessionPod awaits destroyed onSessionChange', () => {
 
   it('retains slot when destroyed callback rejects', async () => {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     const pod = new SessionPod(server, {
@@ -91,7 +91,7 @@ describe('SessionPod awaits destroyed onSessionChange', () => {
 
   it('still supports synchronous destroyed callbacks', async () => {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
     let destroyed = false
 
@@ -116,7 +116,7 @@ describe('SessionPod awaits destroyed onSessionChange', () => {
 
   it('does not double-count quarantine when destroyed hook rejects', async () => {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
 
     type PodAccess = SessionPod & {
@@ -160,7 +160,7 @@ describe('SessionPod awaits destroyed onSessionChange', () => {
 
   it('deferred publish after destroyed observes slot deleted', async () => {
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
     let publishedActive = -1
 

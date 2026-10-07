@@ -27,7 +27,7 @@ describe('SessionPod agent signaling reconnect', () => {
     const connectSpy = vi.spyOn(SignalingClient.prototype, 'connect')
 
     server = new SignalingServer({ pingIntervalMs: 0 })
-    await server.listen(0)
+    await server.listen(0, '127.0.0.1')
     const port = server.port
     const signalingUrl = `ws://127.0.0.1:${port}/ws`
 

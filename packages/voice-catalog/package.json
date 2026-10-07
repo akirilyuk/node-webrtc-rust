@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/voice-catalog",
-  "version": "0.9.29",
+  "version": "0.9.30",
   "description": "Published STT/TTS vendor allowlists and documentation links for VoiceAgent providers",
   "keywords": [
     "webrtc",

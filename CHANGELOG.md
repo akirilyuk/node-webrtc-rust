@@ -8,6 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — A late STT final of the previous utterance is dropped when the next utterance starts, instead of being emitted as the new turn's `user_speech_final` (`SttProvider::discard_queued_transcripts`).
+- **cluster-stt** — `finalize_utterance` waits up to 8 s (was 2 s) beyond queued audio for a lagging speech pod's final before the fallback from the last partial.
+
+### Removed
+
+- The `[voice] stt stream open refused…` log line (it fired on every normal open).
+
 ## [0.9.31] - 2026-10-07
 
 ### Fixed

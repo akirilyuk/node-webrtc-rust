@@ -117,6 +117,13 @@ pub trait SttProvider: Send + Sync {
     fn stream_open_pending(&self) -> bool {
         false
     }
+
+    /// Drop transcripts already queued inside the provider (results of audio pushed before this
+    /// call). VoiceAgent calls it when a new utterance starts, so a late result of the previous
+    /// utterance can never be emitted as the new one. Returns how many were dropped.
+    fn discard_queued_transcripts(&mut self) -> usize {
+        0
+    }
 }
 
 /// A synthesis plus whether it ran to the end (not cancelled, not cut short).

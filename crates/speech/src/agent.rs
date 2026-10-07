@@ -162,6 +162,8 @@ struct AgentInner {
     stt_listen_started_at: Option<Instant>,
     /// One `voice_debug` line per utterance when C1 is deferred due to STT decode backlog.
     c1_backlog_deferred_logged: bool,
+    /// When the STT stream open was first seen refused for this wait (`None` = not pending).
+    stt_open_wait_started_at: Option<Instant>,
     /// C2: ms remaining until forced `user_speech_final` after last partial or `SpeechEnd`.
     utterance_finalize_deadline_ms: u32,
     /// Wall-clock anchor for C2 when inbound PCM stops (see `c2_wall_clock_ticker`).
@@ -385,6 +387,7 @@ impl VoiceAgent {
                 stt_listen_deadline_ms: 0,
                 stt_listen_started_at: None,
                 c1_backlog_deferred_logged: false,
+                stt_open_wait_started_at: None,
                 utterance_finalize_deadline_ms: 0,
                 utterance_finalize_armed_at: None,
                 last_inbound_pcm_at: None,
@@ -956,6 +959,34 @@ impl VoiceAgent {
         inner.stt_listen_deadline_ms = 0;
         inner.stt_listen_started_at = None;
         inner.c1_backlog_deferred_logged = false;
+        inner.stt_open_wait_started_at = None;
+    }
+
+    /// Hold C1 while the STT stream open is refused and retried (latency instead of failure).
+    /// Returns `true` when C1 must not fire this tick. While holding, the listen clock restarts,
+    /// so once the stream opens the normal timeout and hard timeout count from that point.
+    fn c1_hold_for_stt_open(inner: &mut AgentInner, open_pending: bool) -> bool {
+        if !open_pending {
+            inner.stt_open_wait_started_at = None;
+            return false;
+        }
+        let max_ms = inner.config.vad.stt_open_wait_max_ms;
+        if max_ms == 0 {
+            return false;
+        }
+        let first = inner.stt_open_wait_started_at.is_none();
+        let since = *inner
+            .stt_open_wait_started_at
+            .get_or_insert_with(Instant::now);
+        if first {
+            voice_debug("C1 deferred: STT stream open pending (server refused, retrying)");
+            eprintln!("[voice] stt stream open refused; holding turn until a slot frees up");
+        }
+        if since.elapsed() < std::time::Duration::from_millis(max_ms as u64) {
+            inner.stt_listen_started_at = Some(Instant::now());
+            return true;
+        }
+        false
     }
 
     fn c1_listen_expired(inner: &AgentInner, backlog_ms: u32) -> bool {
@@ -1000,6 +1031,13 @@ impl VoiceAgent {
     async fn stt_decode_backlog_ms(&self) -> u32 {
         let stt = self.stt.lock().await;
         stt.as_ref().map(|s| s.decode_backlog_ms()).unwrap_or(0)
+    }
+
+    async fn stt_stream_open_pending(&self) -> bool {
+        let stt = self.stt.lock().await;
+        stt.as_ref()
+            .map(|s| s.stream_open_pending())
+            .unwrap_or(false)
     }
 
     fn clear_utterance_finalize_timer(inner: &mut AgentInner) {
@@ -1087,12 +1125,15 @@ impl VoiceAgent {
 
     async fn c2_wall_clock_tick(&self) -> SpeechResult<()> {
         let backlog_ms = self.stt_decode_backlog_ms().await;
+        let open_pending = self.stt_stream_open_pending().await;
         let c1_expired = {
             let mut inner = self.inner.lock().await;
             if !inner.running || !inner.config.vad.enabled || !Self::stt_pipeline_active(&inner) {
                 false
             } else if inner.stt_stream_open && !inner.partials_emitted_this_utterance {
-                if Self::c1_listen_expired(&inner, backlog_ms) {
+                if Self::c1_hold_for_stt_open(&mut inner, open_pending) {
+                    false
+                } else if Self::c1_listen_expired(&inner, backlog_ms) {
                     true
                 } else {
                     Self::maybe_log_c1_backlog_deferred(&mut inner, backlog_ms);
@@ -3175,6 +3216,7 @@ impl VoiceAgent {
 
         // C1 / C2 timeout ticks (only when VAD enabled and STT stream lifecycle active).
         let backlog_ms = self.stt_decode_backlog_ms().await;
+        let open_pending = self.stt_stream_open_pending().await;
         let (c1_expired, c2_expired) = {
             let mut inner = self.inner.lock().await;
             if !inner.config.vad.enabled || !Self::stt_pipeline_active(&inner) {
@@ -3187,7 +3229,9 @@ impl VoiceAgent {
                     && inner.stt_listen_started_at.is_some()
                     && inner.stt_hold.is_none()
                 {
-                    if Self::c1_listen_expired(&inner, backlog_ms) {
+                    if Self::c1_hold_for_stt_open(&mut inner, open_pending) {
+                        // Not expired: the STT stream open is still being retried.
+                    } else if Self::c1_listen_expired(&inner, backlog_ms) {
                         c1 = true;
                     } else {
                         Self::maybe_log_c1_backlog_deferred(&mut inner, backlog_ms);

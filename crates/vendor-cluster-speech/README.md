@@ -9,6 +9,8 @@ the speech service; TTS uses `Synthesize`.
 | ---------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CLUSTER_STT_STREAM_PER_UTTERANCE` | off (`1`/`true`/`yes`/`on` = on) | Open one `Transcribe` stream per utterance instead of one for the whole session. The stream closes after each `Finalized` and re-opens on the next audio (denied opens retry every 200 ms), so the load balancer and the pods' admission cap place every turn. Read once per process; `ClusterSttOptions` overrides it per client. |
 
+| `SPEECH_STT_OPEN_WAIT_MAX_MS` | `120000` | How long `finalize_utterance` waits for a refused `Transcribe` open (a speech pod at its stream cap) to succeed before it sends the Finalize anyway. Audio stays queued meanwhile and `SttProvider::stream_open_pending()` reports `true`, so VoiceAgent holds the turn instead of ending it with `user_stt_not_found` (cap `vad.sttOpenWaitMaxMs`). |
+
 Metrics (in-process counters, see `metrics.rs`): `cluster_stt_utterance_streams_total` (per-utterance
 opens) and `cluster_stt_stream_open_ms` (open-to-`Ready` latency, attribute `reason`:
 `session_start` | `utterance` | `reopen`).

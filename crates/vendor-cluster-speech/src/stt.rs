@@ -35,6 +35,9 @@ const QUEUED_ERROR_MS: usize = 10_000;
 const FINALIZE_QUEUED_WAIT_CAP_MS: usize = 30_000;
 const READY_WAIT_MS: u64 = 15_000;
 const FINALIZE_WAIT_MS: u64 = 2_000;
+/// Longest `finalize_utterance` waits for a refused stream open (a speech pod at its stream
+/// cap) to succeed before sending the Finalize anyway. Override with `SPEECH_STT_OPEN_WAIT_MAX_MS`.
+const OPEN_WAIT_MAX_MS: u64 = 120_000;
 /// Per-utterance mode: an open stream that sees no audio for this long (and has no finalize
 /// pending) is closed, which covers a finalize that never came.
 const PER_UTTERANCE_IDLE_CLOSE_MS: u64 = 30_000;
@@ -170,6 +173,9 @@ pub struct ClusterSherpaStt {
     queued_warned: AtomicBool,
     queued_error_logged: AtomicBool,
     stream_per_utterance: bool,
+    /// `true` from the start of a stream open until the server answers Ready, including while a
+    /// refused open is retried (e.g. a speech pod at its stream cap).
+    open_pending: Arc<AtomicBool>,
 }
 
 /// Subtract `n` from `counter` without wrapping; returns what was actually removed.
@@ -228,6 +234,7 @@ impl ClusterSherpaStt {
             queued_warned: AtomicBool::new(false),
             queued_error_logged: AtomicBool::new(false),
             stream_per_utterance: options.stream_per_utterance,
+            open_pending: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -245,6 +252,10 @@ impl ClusterSherpaStt {
         let (ready_tx, ready_rx) = watch::channel(false);
         let queued_bytes = Arc::clone(&self.queued_bytes);
         let per_utterance = self.stream_per_utterance;
+        let open_pending = Arc::clone(&self.open_pending);
+        // Pending from the moment the worker is spawned, so a finalize that runs before the
+        // worker's first open attempt still waits for the open.
+        open_pending.store(true, Ordering::SeqCst);
         let task = tokio::spawn(async move {
             stream_worker(
                 WorkerParams {
@@ -252,6 +263,7 @@ impl ClusterSherpaStt {
                     endpoint,
                     token,
                     per_utterance,
+                    open_pending: Arc::clone(&open_pending),
                 },
                 session_ctx,
                 cmd_rx,
@@ -261,6 +273,7 @@ impl ClusterSherpaStt {
             )
             .await;
             clear_queued(&queued_bytes);
+            open_pending.store(false, Ordering::SeqCst);
             ready_tx.send_replace(false);
         });
         inner.ready_rx = Some(ready_rx);
@@ -319,6 +332,9 @@ struct WorkerParams {
     token: Option<String>,
     /// One Transcribe stream per utterance (see [`ClusterSttOptions::stream_per_utterance`]).
     per_utterance: bool,
+    /// `true` from the start of a stream open until the server answers Ready, including while a
+    /// refused open is retried (see `SttProvider::stream_open_pending`).
+    open_pending: Arc<AtomicBool>,
 }
 
 /// Write one audio chunk to the open stream and release its queued-bytes accounting.
@@ -351,6 +367,7 @@ async fn stream_worker(
         endpoint,
         token,
         per_utterance,
+        open_pending,
     } = params;
     ready_tx.send_replace(false);
     // One channel for the whole worker: it multiplexes HTTP/2 streams (one per Transcribe call)
@@ -409,6 +426,7 @@ async fn stream_worker(
         if let Ok(auth) = auth_metadata(&token) {
             request.metadata_mut().insert("authorization", auth);
         }
+        open_pending.store(true, Ordering::SeqCst);
         let open_started = Instant::now();
         let mut grpc = match client.transcribe(request).await {
             Ok(resp) => resp.into_inner(),
@@ -423,6 +441,7 @@ async fn stream_worker(
                     }
                     DeniedLog::Silent => {}
                 }
+                open_pending.store(true, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 reopen = true;
                 continue;
@@ -498,6 +517,7 @@ async fn stream_worker(
                             match resp.msg {
                                 Some(RMsg::Ready(_)) => {
                                     ready = true;
+                                    open_pending.store(false, Ordering::SeqCst);
                                     record_stt_stream_open_ms(
                                         open_reason,
                                         open_started.elapsed().as_millis() as u64,
@@ -688,8 +708,30 @@ impl SttProvider for ClusterSherpaStt {
         (self.queued_bytes.load(Ordering::SeqCst) / STT_BYTES_PER_MS) as u32
     }
 
+    fn stream_open_pending(&self) -> bool {
+        self.open_pending.load(Ordering::SeqCst)
+    }
+
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         self.flush_pending_audio(true).await?;
+        // The stream open is being refused (pod at its stream cap): the audio stays queued, so
+        // wait for the open instead of letting the Finalize wait below expire.
+        if self.open_pending.load(Ordering::SeqCst) {
+            let open_wait_max_ms: u64 = std::env::var("SPEECH_STT_OPEN_WAIT_MAX_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(OPEN_WAIT_MAX_MS);
+            let started = Instant::now();
+            while self.open_pending.load(Ordering::SeqCst) {
+                if started.elapsed() >= Duration::from_millis(open_wait_max_ms) {
+                    eprintln!(
+                        "[cluster-sherpa] stt open still refused after {open_wait_max_ms} ms; finalizing anyway"
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
         let queued_ms_at_call = self.queued_bytes.load(Ordering::SeqCst) / STT_BYTES_PER_MS;
         let notify = Arc::new(Notify::new());
         let cmd_tx = self.inner.lock().await.cmd_tx.clone();

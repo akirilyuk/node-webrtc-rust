@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — Voice turns wait for a refused cluster STT stream open (a speech pod at its stream cap) instead of ending with `user_stt_not_found`; cap `vad.sttOpenWaitMaxMs` (default 120 s, `0` = old behaviour). `finalize_utterance` waits for the open too (`SPEECH_STT_OPEN_WAIT_MAX_MS`). New `SttProvider::stream_open_pending()`.
+
 ## [0.9.30] - 2026-10-07
 
 ### Added

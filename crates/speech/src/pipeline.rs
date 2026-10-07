@@ -110,6 +110,13 @@ pub trait SttProvider: Send + Sync {
     fn decode_backlog_ms(&self) -> u32 {
         0
     }
+
+    /// `true` from the start of a stream open until the server answers Ready, including while a
+    /// refused open is retried (e.g. a speech pod at its stream cap). Audio stays queued;
+    /// VoiceAgent waits instead of ending the turn (C1).
+    fn stream_open_pending(&self) -> bool {
+        false
+    }
 }
 
 /// A synthesis plus whether it ran to the end (not cancelled, not cut short).

@@ -257,6 +257,10 @@ pub struct VadConfig {
     /// Hard cap on C1 wait when decode backlog is high; `0` = 3 × [`Self::stt_listen_timeout_ms`].
     #[serde(default)]
     pub stt_listen_hard_timeout_ms: u32,
+    /// Max time C1 keeps waiting while the STT stream open is refused and retried
+    /// (`SttProvider::stream_open_pending`). 0 = no extra wait (old behaviour).
+    #[serde(default = "default_stt_open_wait_max_ms")]
+    pub stt_open_wait_max_ms: u32,
     /// Grace after the last partial or VAD `SpeechEnd` before forcing `user_speech_final` (default 1500 ms).
     #[serde(default = "default_utterance_finalize_timeout_ms")]
     pub utterance_finalize_timeout_ms: u32,
@@ -289,6 +293,10 @@ fn default_stt_gate_hold_ms() -> u32 {
 
 fn default_stt_listen_timeout_ms() -> u32 {
     4000
+}
+
+fn default_stt_open_wait_max_ms() -> u32 {
+    120_000
 }
 
 fn default_stt_listen_backlog_slack_ms() -> u32 {
@@ -325,6 +333,7 @@ impl Default for VadConfig {
             stt_listen_timeout_ms: default_stt_listen_timeout_ms(),
             stt_listen_backlog_slack_ms: default_stt_listen_backlog_slack_ms(),
             stt_listen_hard_timeout_ms: 0,
+            stt_open_wait_max_ms: default_stt_open_wait_max_ms(),
             utterance_finalize_timeout_ms: default_utterance_finalize_timeout_ms(),
         }
     }

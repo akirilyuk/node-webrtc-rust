@@ -8,8 +8,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **cluster-tts** — a synthesis start refused with `UNAVAILABLE`/`RESOURCE_EXHAUSTED` (speech pod loading, full, or restarting) waits up to `SPEECH_TTS_OPEN_WAIT_MAX_MS` (30 s) instead of failing; new `tts_wait` speech event and `cluster_tts_open_*` metrics.
+- **speech** — a failed reply no longer ends the voice session; the agent emits an error event (`agent_speak_failed`) for that reply and keeps listening.
+
 ### Changed
 
+- **speech** — `VoiceAgent` `send_text_to_tts` (and the SDK `speak` path) resolves instead of rejecting when the synthesis of that reply fails; listen for the `agent_speak_failed` speech event to detect it. Playback failures and "TTS not configured" still reject.
 - **helpers** — a voice peer whose transport drops is kept for 30 s (`transportDisconnectGraceMs`, was 5 s) and an empty session for 15 s (`rejoinGraceMs` default, was 5 s), so short network outages no longer end the conversation. ICE/connection `failed` and a dropped signaling socket also wait for the grace; a client sends `client_hangup` to end at once.
 
 ## [0.9.32] - 2026-10-07

@@ -531,6 +531,10 @@ pub enum JsSpeechEventType {
     SttHoldStarted,
     #[napi(value = "stt_hold_ended")]
     SttHoldEnded,
+    #[napi(value = "tts_wait")]
+    TtsWait,
+    #[napi(value = "agent_speak_failed")]
+    AgentSpeakFailed,
 }
 
 #[napi(object)]
@@ -557,6 +561,10 @@ pub struct JsSpeechEvent {
     pub first_chunk_ms: Option<u32>,
     /// `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply.
     pub first_audio_ms: Option<u32>,
+    /// `tts_wait`: ms the synthesis start waited on refusals.
+    pub wait_ms: Option<u32>,
+    /// `tts_wait`: refused attempts that were retried.
+    pub attempts: Option<u32>,
 }
 
 #[napi(string_enum)]

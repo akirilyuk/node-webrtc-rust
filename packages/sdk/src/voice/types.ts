@@ -276,6 +276,10 @@ export type SpeechEventType =
   | 'stt_hold_started'
   /** STT hold finished (`holdOutcome`, `bufferedMs`, `droppedMs`). */
   | 'stt_hold_ended'
+  /** A TTS synthesis start was refused and retried (`waitMs`, `attempts`, `reason`). */
+  | 'tts_wait'
+  /** One reply could not be synthesized (`reason`); the session keeps running. */
+  | 'agent_speak_failed'
   /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
   | 'voice_language_switching'
   /** Host coordinator: switch succeeded. */
@@ -308,6 +312,8 @@ export const SPEECH_EVENT_TYPE = {
   ttsConfigUpdated: 'tts_config_updated',
   sttHoldStarted: 'stt_hold_started',
   sttHoldEnded: 'stt_hold_ended',
+  ttsWait: 'tts_wait',
+  agentSpeakFailed: 'agent_speak_failed',
   voiceLanguageSwitching: 'voice_language_switching',
   voiceLanguageChanged: 'voice_language_changed',
   voiceLanguageSwitchFailed: 'voice_language_switch_failed',
@@ -346,8 +352,11 @@ export interface SpeechEvent {
   bufferedMs?: number
   /** `stt_hold_ended`: PCM dropped by the buffer bound (oldest first) or by `first_utterance` (ms). */
   droppedMs?: number
-  /** `language_id_skipped`: why no language decision will be made for this utterance. */
-  reason?: LanguageIdSkipReason
+  /**
+   * `language_id_skipped`: why no language decision will be made for this utterance.
+   * `tts_wait`: the last refusal (gRPC code and message). `agent_speak_failed`: why the reply failed.
+   */
+  reason?: LanguageIdSkipReason | (string & {})
   /** `language_id_skipped`: buffered user speech (ms) at the decision point. */
   speechMs?: number
   /**
@@ -362,6 +371,10 @@ export interface SpeechEvent {
    * playing.
    */
   firstAudioMs?: number
+  /** `tts_wait`: ms the synthesis start waited on refusals before it succeeded. */
+  waitMs?: number
+  /** `tts_wait`: refused attempts that were retried. */
+  attempts?: number
 }
 
 /** `languageId.timing` values. */

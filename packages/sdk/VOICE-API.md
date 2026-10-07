@@ -80,6 +80,8 @@ With **`interruptible: false`** the utterance is protected while it synthesizes 
 | `user_stt_end`         | STT recognition session closed               | Normal or forced utterance close                                   |
 | `user_stt_not_found`   | VAD fired but no partial within C1 timeout   | No `user_speech_final` — nothing to reply to                       |
 | `barge_in`             | Barge-in path fired (VAD and/or STT partial) | Cancel LLM stream; TTS may already be flushed                      |
+| `tts_wait`             | A TTS synthesis start was refused (speech pod loading, full or restarting) and retried | `waitMs`, `attempts`, `reason` (gRPC code and message); count these in load tests |
+| `agent_speak_failed`   | One reply could not be synthesized (also after the wait cap) | `reason`; the session stays up and the agent keeps listening |
 | `error`                | Vendor or pipeline failure                   | Log / recover                                                      |
 | `user_language`        | LID (optional `languageId`)                  | **Detection only** — does not change STT/TTS; your app calls `updateStt` / `updateTts` if needed |
 | `language_id_skipped`  | LID (optional `languageId`)                  | No language decision for this utterance: `reason` (`too_short` \| `deferred_tts` \| `no_audio` \| `undetermined`), `speechMs`; no transcript text. Stop holding the final for `user_language` (see below) |

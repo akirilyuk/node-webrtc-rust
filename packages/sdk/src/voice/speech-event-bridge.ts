@@ -10,7 +10,6 @@ import type { MessageEvent } from '../types'
 import type { VoiceAgent } from './VoiceAgent'
 import { isVoiceDebugEnabled, voiceDebugLog } from './debug'
 import type {
-  LanguageIdSkipReason,
   SpeechEvent,
   SpeechEventType,
   SttHoldMode,
@@ -39,7 +38,7 @@ export interface VoiceControlSpeechEventMessage {
   language?: string
   error?: string
   /** `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio` | `undetermined`. */
-  reason?: LanguageIdSkipReason
+  reason?: SpeechEvent['reason']
   /** `language_id_skipped`: buffered speech (ms). */
   speechMs?: number
   /** Shared across `user_speaking_start` … `user_speech_final` for one utterance. */
@@ -62,6 +61,10 @@ export interface VoiceControlSpeechEventMessage {
   firstChunkMs?: number
   /** `agent_speaking_start`: speak request to first outbound PCM frame (ms). */
   firstAudioMs?: number
+  /** `tts_wait`: synthesis start waited this long on refusals (ms). */
+  waitMs?: number
+  /** `tts_wait`: refused attempts that were retried. */
+  attempts?: number
 }
 
 /** Server → client: text queued for agent TTS (`ctx.speak` / `sendTextToTTS`). */
@@ -112,6 +115,8 @@ export function speechEventToControlMessage(
     droppedMs: event.droppedMs,
     firstChunkMs: event.firstChunkMs,
     firstAudioMs: event.firstAudioMs,
+    waitMs: event.waitMs,
+    attempts: event.attempts,
   }
 }
 

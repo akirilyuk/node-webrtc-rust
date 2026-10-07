@@ -133,6 +133,17 @@ pub struct TtsSynthesis {
     pub complete: bool,
 }
 
+/// A synthesis start that was refused and retried before it succeeded or gave up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TtsOpenWait {
+    /// Milliseconds spent waiting on refusals.
+    pub wait_ms: u32,
+    /// Number of refused attempts that were retried.
+    pub attempts: u32,
+    /// Last refusal, e.g. `UNAVAILABLE: speech models are still loading`.
+    pub reason: String,
+}
+
 /// Text-to-speech provider trait.
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
@@ -140,6 +151,12 @@ pub trait TtsProvider: Send + Sync {
 
     /// Optional hook when a voice session starts (e.g. Sherpa phrase-cache project scope).
     fn bind_session_context(&self, _ctx: &VoiceSessionContext) {}
+
+    /// Takes the open-wait record of the last synthesis if its start was refused and retried
+    /// (see [`TtsOpenWait`]). Default: vendors that never wait return `None`.
+    fn take_open_wait(&self) -> Option<TtsOpenWait> {
+        None
+    }
 
     /// Fully synthesize `text` and return all PCM chunks (legacy / cache-friendly path).
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>>;

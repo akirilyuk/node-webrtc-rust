@@ -58,10 +58,21 @@ import type {
   VoiceSessionContext,
   VoiceSessionHandler,
   DataChannelKind,
+  PeerDisconnectReason,
 } from './voice-session-handler.js'
 
-/** Debounce before tearing down a peer after ICE/PC disconnect (allows brief blips). */
-const PEER_TRANSPORT_DISCONNECT_GRACE_MS = 5_000
+/**
+ * How long a peer whose ICE transport is disconnected/failed is kept (agent, data channels,
+ * reconnect token) before it is closed. A client ICE restart or same-session rejoin inside this
+ * window resumes the conversation. 2026-10-07: 5 s ended every session on a short media blackout.
+ * Total network-outage budget is about 15 s: this grace (10 s) plus the pod rejoin grace (5 s).
+ * Intentional closes (`client_hangup`, remote close of the control data channel, connection
+ * `closed`) release the slot at once.
+ */
+export const DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS = 10_000
+
+/** Control data-channel message type (`{ "type": "client_hangup" }`) a client sends to end its session at once. */
+export const CLIENT_HANGUP_MESSAGE_TYPE = 'client_hangup'
 /** Bound native peer cleanup so session budget release cannot hang forever. */
 const PEER_NATIVE_CLOSE_TIMEOUT_MS = 5_000
 
@@ -204,6 +215,16 @@ async function awaitAgentStopped(
   return { status: 'ok' }
 }
 
+function isClientHangupMessage(data: unknown): boolean {
+  if (typeof data !== 'string' || !data.includes(CLIENT_HANGUP_MESSAGE_TYPE)) return false
+  try {
+    const parsed = JSON.parse(data) as { type?: unknown }
+    return parsed.type === CLIENT_HANGUP_MESSAGE_TYPE
+  } catch {
+    return false
+  }
+}
+
 function componentOk(status: TeardownComponentStatus): boolean {
   return status === 'ok' || status === 'absent'
 }
@@ -269,6 +290,14 @@ interface ClientSession {
   /** Cleared in {@link VoiceAgentSessionHost.closeClient}. */
   micTrackTimer?: ReturnType<typeof setTimeout>
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
+  /** Wall-clock ms when the transport last went down; cleared on restore or close. */
+  transportDownSince?: number
+  /** Set when the client sent {@link CLIENT_HANGUP_MESSAGE_TYPE} on the control channel. */
+  clientHangup?: boolean
+  /** Set at the start of {@link VoiceAgentSessionHost.closeClientTeardown}; marks a host-initiated close. */
+  closingLocally?: boolean
+  /** Set when the transport grace expired and the host closed the peer. */
+  transportExpired?: boolean
   resolveMicTrack?: (track: RemoteAudioTrack) => void
   rejectMicTrack?: (error: Error) => void
   /** Held until PC connected + control DC open; consumed by {@link maybeStartAgentWhenTransportReady}. */
@@ -345,6 +374,13 @@ export interface VoiceAgentSessionHostOptions {
    * {@link SessionPod} supplies cross-slot lookup; defaults to identity / `client-` passthrough.
    */
   resolveParticipantId?: (clientId: string) => string
+  /**
+   * How long a peer whose ICE transport is disconnected/failed is kept (agent, data channels,
+   * reconnect token) before it is closed. A client ICE restart or same-session rejoin inside this
+   * window resumes the conversation. Default {@link DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS}.
+   * 2026-10-07: 5 s ended every session on a short media blackout.
+   */
+  transportDisconnectGraceMs?: number
 }
 
 /**
@@ -356,6 +392,7 @@ export class VoiceAgentSessionHost {
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
   private readonly sessionMode: 'voice' | 'voice+data' | 'data-only'
+  private readonly transportDisconnectGraceMs: number
   private clientMixer: ClientAudioMixer | undefined
   /** Last explicit {@link setSttEnabled} per client (default true when agent is started). */
   private readonly explicitSttEnabled = new Map<string, boolean>()
@@ -401,6 +438,8 @@ export class VoiceAgentSessionHost {
     this.log = options.log ?? ((message) => console.log(message))
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
     this.sessionMode = options.sessionMode ?? 'voice'
+    this.transportDisconnectGraceMs =
+      options.transportDisconnectGraceMs ?? DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS
     this.clientMixer =
       this.sessionMode === 'data-only'
         ? undefined
@@ -421,7 +460,9 @@ export class VoiceAgentSessionHost {
           this.log(`[voice ${peerId}] peer-joined ignored — host is closing`)
           return
         }
-        if (this.sessions.has(peerId)) {
+        const stale = this.sessions.get(peerId)
+        if (stale) {
+          this.noteTransportRestored(peerId, stale, 'rejoin')
           this.log(`[voice ${peerId}] peer re-joined — replacing stale session`)
           await this.closeClientInner(peerId)
         }
@@ -445,11 +486,31 @@ export class VoiceAgentSessionHost {
     })
 
     this.signaling.on('peer-left', (peerId) => {
-      void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch(
-        (error: unknown) => {
-          console.error(`Failed to close client ${peerId} after peer-left:`, error)
-        },
-      )
+      const closeNow = (): void => {
+        void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch(
+          (error: unknown) => {
+            console.error(`Failed to close client ${peerId} after peer-left:`, error)
+          },
+        )
+      }
+      const session = this.sessions.get(peerId)
+      if (session?.clientHangup) {
+        closeNow()
+        return
+      }
+      if (session && session.pc.connectionState === 'connected') {
+        this.log(`[voice ${peerId}] signaling left but transport is up — keeping peer`)
+        return
+      }
+      if (session) {
+        this.log(
+          `[voice ${peerId}] signaling left with transport ${session.pc.connectionState} — keeping session for ${this.transportDisconnectGraceMs}ms`,
+        )
+        this.scheduleTransportDisconnect(peerId, session)
+        return
+      }
+      // Not in sessions (connecting/closing): close as before.
+      closeNow()
     })
   }
 
@@ -780,10 +841,15 @@ export class VoiceAgentSessionHost {
       const iceState = pc.iceConnectionState
       this.log(`[${tag} ${peerId}] iceConnectionState=${iceState}`)
       if (iceState === 'connected' || iceState === 'completed') {
-        this.clearTransportDisconnectTimer(session)
+        this.noteTransportRestored(peerId, session, 'ice-restart')
       } else if (iceState === 'disconnected') {
         this.scheduleTransportDisconnect(peerId, session)
-      } else if (iceState === 'failed' || iceState === 'closed') {
+      } else if (iceState === 'failed') {
+        this.log(
+          `[${tag} ${peerId}] ice failed — keeping session for ${this.transportDisconnectGraceMs}ms`,
+        )
+        this.scheduleTransportDisconnect(peerId, session)
+      } else if (iceState === 'closed') {
         this.clearTransportDisconnectTimer(session)
         this.voidCloseClient(peerId)
       }
@@ -793,7 +859,7 @@ export class VoiceAgentSessionHost {
       const tag = dataOnly ? 'data' : 'voice'
       this.log(`[${tag} ${peerId}] connectionState=${pc.connectionState}`)
       if (pc.connectionState === 'connected') {
-        this.clearTransportDisconnectTimer(session)
+        this.noteTransportRestored(peerId, session, 'ice-restart')
         this.reconnectAttempts.delete(peerId)
         this.maybeNotifyPeerLifecycle(peerId, session)
         if (!dataOnly) {
@@ -805,17 +871,28 @@ export class VoiceAgentSessionHost {
         }
       } else if (pc.connectionState === 'disconnected') {
         this.scheduleTransportDisconnect(peerId, session)
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      } else if (pc.connectionState === 'failed') {
+        this.log(
+          `[${tag} ${peerId}] connection failed — keeping session for ${this.transportDisconnectGraceMs}ms`,
+        )
+        this.scheduleTransportDisconnect(peerId, session)
+      } else if (pc.connectionState === 'closed') {
         this.clearTransportDisconnectTimer(session)
         this.log(`[${tag} ${peerId}] connection ${pc.connectionState} — closing peer`)
         this.voidCloseClient(peerId)
       }
     }
 
-    controlChannel.onclose = () => {
-      if (!this.sessions.has(peerId)) return
+    const previousControlOnClose = controlChannel.onclose
+    controlChannel.onclose = (event) => {
+      previousControlOnClose?.call(controlChannel, event)
+      // Ignore stale channels (replaced peer), host shutdown and closes we started ourselves.
+      if (this.hostClosing || this.sessions.get(peerId) !== session || session.closingLocally) {
+        return
+      }
       const tag = dataOnly ? 'data' : 'voice'
-      this.log(`[${tag} ${peerId}] control channel closed`)
+      session.clientHangup = true
+      this.log(`[${tag} ${peerId}] control channel closed by client — closing peer`)
       this.voidCloseClient(peerId)
     }
 
@@ -849,6 +926,7 @@ export class VoiceAgentSessionHost {
         session.unwireControl = () => {
           controlChannel.onmessage = previousOnMessage
         }
+        this.installClientHangupInterceptor(peerId, session, controlChannel)
         this.maybeNotifyPeerLifecycle(peerId, session)
         return
       }
@@ -874,6 +952,7 @@ export class VoiceAgentSessionHost {
             }
           : undefined,
       })
+      this.installClientHangupInterceptor(peerId, session, controlChannel)
       // Transport or agent start may complete before the control DC opens; retry here.
       this.maybeNotifyPeerLifecycle(peerId, session)
       this.maybeStartAgentWhenTransportReady(peerId, session)
@@ -1265,17 +1344,65 @@ export class VoiceAgentSessionHost {
     await session.pc.addIceCandidate(new RTCIceCandidate(candidate))
   }
 
+  /** Wraps the control channel `onmessage` so a `client_hangup` message closes the peer at once. */
+  private installClientHangupInterceptor(
+    peerId: string,
+    session: ClientSession,
+    channel: RTCDataChannel,
+  ): void {
+    const wired = channel.onmessage
+    channel.onmessage = (event) => {
+      if (isClientHangupMessage(event.data)) {
+        session.clientHangup = true
+        this.log(`[voice ${peerId}] client hung up — closing peer`)
+        void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch(
+          (error: unknown) => {
+            console.error(`[voice ${peerId}] closeClient after client_hangup failed:`, error)
+          },
+        )
+        return
+      }
+      wired?.call(channel, event)
+    }
+  }
+
   private clearTransportDisconnectTimer(session: ClientSession): void {
     if (session.transportDisconnectTimer) {
       clearTimeout(session.transportDisconnectTimer)
       session.transportDisconnectTimer = undefined
     }
+    session.transportDownSince = undefined
+  }
+
+  /** Clears the pending disconnect timer and logs recovery when the transport had been down. */
+  private noteTransportRestored(
+    peerId: string,
+    session: ClientSession,
+    via: 'ice-restart' | 'rejoin',
+  ): void {
+    const downSince = session.transportDownSince
+    this.clearTransportDisconnectTimer(session)
+    if (downSince === undefined) return
+    const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+    this.log(`[${tag} ${peerId}] transport restored after ${Date.now() - downSince}ms (${via})`)
   }
 
   private scheduleTransportDisconnect(peerId: string, session: ClientSession): void {
     if (session.transportDisconnectTimer) return
+    const graceMs = this.transportDisconnectGraceMs
+    session.transportDownSince = Date.now()
+    {
+      const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+      const state =
+        session.pc.connectionState !== 'connected'
+          ? session.pc.connectionState
+          : session.pc.iceConnectionState
+      this.log(`[${tag} ${peerId}] transport down (${state}) — keeping session for ${graceMs}ms`)
+    }
     session.transportDisconnectTimer = setTimeout(() => {
       session.transportDisconnectTimer = undefined
+      session.transportDownSince = undefined
+      session.transportExpired = true
       const current = this.sessions.get(peerId)
       if (!current || current !== session) return
       const pc = session.pc
@@ -1290,12 +1417,10 @@ export class VoiceAgentSessionHost {
         connState === 'closed'
       ) {
         const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
-        this.log(
-          `[${tag} ${peerId}] transport still down after ${PEER_TRANSPORT_DISCONNECT_GRACE_MS}ms — closing peer`,
-        )
+        this.log(`[${tag} ${peerId}] transport still down after ${graceMs}ms — closing peer`)
         this.voidCloseClient(peerId)
       }
-    }, PEER_TRANSPORT_DISCONNECT_GRACE_MS)
+    }, graceMs)
   }
 
   /** Fire-and-forget close queued on the per-peer serializer. */
@@ -1409,7 +1534,9 @@ export class VoiceAgentSessionHost {
     const wait = {
       peerId,
       pc: (pcStatus === 'timed_out' ? 'pending' : componentOk(pcStatus) ? 'ok' : 'failed') as
-        'ok' | 'failed' | 'pending',
+        | 'ok'
+        | 'failed'
+        | 'pending',
       agent: (agentStatus === 'timed_out'
         ? 'pending'
         : componentOk(agentStatus)
@@ -1476,6 +1603,7 @@ export class VoiceAgentSessionHost {
       return { status: 'absent' }
     }
     const budgetLease = session.budgetLease
+    session.closingLocally = true
 
     // Remove from the live map before teardown so reconnect can replace;
     // peer stays counted via closingPeers until this flight finishes.
@@ -1489,8 +1617,13 @@ export class VoiceAgentSessionHost {
         session.controlChannel,
         session.syncChannel,
       )
+      const reason: PeerDisconnectReason = session.clientHangup
+        ? 'hangup'
+        : session.transportExpired
+          ? 'transport'
+          : 'other'
       void Promise.resolve()
-        .then(() => this.options.voiceHandler?.onPeerDisconnected?.(ctx))
+        .then(() => this.options.voiceHandler?.onPeerDisconnected?.(ctx, reason))
         .catch((error: unknown) => {
           console.error(`[session ${peerId}] voiceHandler.onPeerDisconnected failed:`, error)
         })

@@ -6,6 +6,7 @@ import { VoiceSessionBudget } from '../src/voice-session-budget.js'
 import type { VoiceSessionHandler } from '../src/voice-session-handler.js'
 
 type FakeSession = {
+  clientHangup?: boolean
   pc: {
     connectionState: string
     close: ReturnType<typeof vi.fn>
@@ -825,6 +826,8 @@ describe('VoiceAgentSessionHost peer close / budget release', () => {
     host.sessions.set(
       'client-reconnect',
       createFakeSession({
+        // peer-left only closes at once after an explicit client hangup.
+        clientHangup: true,
         budgetLease: lease1,
         pc: {
           connectionState: 'connected',

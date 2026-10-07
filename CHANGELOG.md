@@ -16,6 +16,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **speech** — `VoiceAgent` `send_text_to_tts` (and the SDK `speak` path) resolves instead of rejecting when the synthesis of that reply fails; listen for the `agent_speak_failed` speech event to detect it. Playback failures and "TTS not configured" still reject.
+- **helpers** — a voice peer whose transport drops is kept for 10 s (`transportDisconnectGraceMs`, was 5 s) and an empty session for 5 s, so a short network outage no longer ends the conversation; intentional ends (`client_hangup`, the client closing its control data channel, connection `closed`) release the session at once without the rejoin grace.
 
 ## [0.9.32] - 2026-10-07
 

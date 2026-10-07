@@ -24,6 +24,8 @@ export {
   VOICE_AGENT_SERVER_PEER_ID,
   SERVER_PEER_ID,
   VoiceAgentSessionHost,
+  DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS,
+  CLIENT_HANGUP_MESSAGE_TYPE,
   MIX_REQUIRES_VOICE_PLUS_DATA,
   TTS_POSE_REQUIRES_VOICE,
   AUDIO_PLAY_REQUIRES_VOICE,
@@ -62,6 +64,7 @@ export {
 export {
   type VoiceSessionContext,
   type VoiceSessionHandler,
+  type PeerDisconnectReason,
   type DataChannelKind,
 } from './voice-session-handler.js'
 

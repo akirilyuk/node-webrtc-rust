@@ -82,6 +82,8 @@ export interface SessionPodOptions {
   wrapAudioTracks?: VoiceAgentSessionHostOptions['wrapAudioTracks']
   /** Passed to each room's {@link VoiceAgentSessionHost}. */
   resolveVoiceAgentSessionContext?: VoiceAgentSessionHostOptions['resolveVoiceAgentSessionContext']
+  /** Passed to each room's {@link VoiceAgentSessionHost}. */
+  transportDisconnectGraceMs?: VoiceAgentSessionHostOptions['transportDisconnectGraceMs']
   log?: (message: string) => void
 }
 
@@ -98,7 +100,13 @@ export interface SessionPodSessionInfo {
   connections: number
 }
 
-/** Default grace before tearing down an empty slot — same-session reconnect window. */
+/**
+ * Default grace before tearing down an empty slot — same-session reconnect window.
+ * Total network-outage budget is about 15 s: the host transport grace (10 s, see
+ * `DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS`) plus this rejoin grace (5 s). Intentional closes
+ * (client_hangup, remote close of the control data channel, connection `closed`) release the
+ * slot at once.
+ */
 export const DEFAULT_SESSION_REJOIN_GRACE_MS = 5_000
 
 /** Grace when the last peer left before WebRTC transport was ready (pre-DTLS reconnect). */
@@ -339,6 +347,7 @@ export class SessionPod {
       iceTransportPolicy: this.options.iceTransportPolicy,
       wrapAudioTracks: this.options.wrapAudioTracks,
       resolveVoiceAgentSessionContext: this.options.resolveVoiceAgentSessionContext,
+      transportDisconnectGraceMs: this.options.transportDisconnectGraceMs,
       resolveParticipantId: (clientId) => this.resolveParticipantId(clientId),
       log: this.options.log,
     })
@@ -515,9 +524,10 @@ export class SessionPod {
         }
         return handler?.onPeerConnected?.(ctx)
       },
-      onPeerDisconnected: (ctx) => {
-        this.maybeScheduleIdleTeardownAfterLastPeer(sessionId)
-        return handler?.onPeerDisconnected?.(ctx)
+      onPeerDisconnected: (ctx, reason) => {
+        // A client hangup frees the slot at once (no rejoin grace).
+        this.maybeScheduleIdleTeardownAfterLastPeer(sessionId, reason === 'hangup' ? 0 : undefined)
+        return handler?.onPeerDisconnected?.(ctx, reason)
       },
       onPeerSignalingLost: (ctx) => {
         this.maybeScheduleIdleTeardownAfterLastPeer(sessionId, this.neverConnectedRejoinGraceMs)

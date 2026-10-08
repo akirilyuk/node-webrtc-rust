@@ -7,6 +7,7 @@ pub mod data_channel;
 pub mod debug;
 pub mod error;
 pub mod events;
+pub(crate) mod ice_resolve;
 pub mod media;
 pub mod offer_answer;
 pub mod pcm_audio_track;

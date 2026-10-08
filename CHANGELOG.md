@@ -12,6 +12,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **core** — STUN/TURN hostnames are resolved with a 2 s bound (`WEBRTC_ICE_RESOLVE_TIMEOUT_MS`) before ICE gathering; a host that does not resolve in time is skipped instead of stalling gathering. `getConfiguration()` still returns the hostnames you set.
 - **helpers** — while a host waits to recycle after a stuck peer close, the same peer can still rejoin its session; new sessions stay refused.
 - **tests** — loopback tests in every package and crate use host candidates only (no STUN hostname); a guard enforces it.
 

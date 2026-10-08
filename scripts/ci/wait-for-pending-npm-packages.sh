@@ -4,15 +4,20 @@
 # The file is appended to by publish-npm-if-needed.sh when NPM_PUBLISH_DEFER_VERIFY=1 and the
 # freshly published package was not yet visible. Format: one "<pkg> <version>" per line.
 #
-# All pending packages share one budget (NPM_REGISTRY_VERIFY_TOTAL_SECONDS, default 1800 = 30 min),
+# All pending packages share one budget (NPM_REGISTRY_VERIFY_TOTAL_SECONDS, default 7200 = 2 h),
 # polled round-robin with backoff (3s doubling, cap NPM_REGISTRY_VERIFY_MAX_SLEEP default 60).
 # Exits 1 listing every package still missing when the budget is spent; exits 0 (and truncates
 # the file) when all are visible or nothing is pending. SLEEP_BIN is for tests.
+#
+# Why 2 h: registry lag is unbounded in practice. 0.9.18 took ~17 min (33 MB linux-arm64);
+# 0.9.34 (run 37715035913) took ~90 min for the 87 MB bindings-darwin-x64 tarball, which outran the
+# old 30 min budget and left bindings/sdk/helpers/signaling unpublished. Keep the release.yml
+# "Publish release" job timeout-minutes above this budget (guard: wait-for-pending-npm-packages.test.sh).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FILE="${NPM_PUBLISH_PENDING_FILE:?NPM_PUBLISH_PENDING_FILE required}"
-TOTAL="${NPM_REGISTRY_VERIFY_TOTAL_SECONDS:-1800}"
+TOTAL="${NPM_REGISTRY_VERIFY_TOTAL_SECONDS:-7200}"
 SLEEP_SECONDS="${NPM_REGISTRY_VERIFY_SLEEP_SECONDS:-3}"
 MAX_SLEEP="${NPM_REGISTRY_VERIFY_MAX_SLEEP:-60}"
 SLEEP_BIN="${NPM_REGISTRY_VERIFY_SLEEP_BIN:-sleep}"

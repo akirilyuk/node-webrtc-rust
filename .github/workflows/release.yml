@@ -400,6 +400,10 @@ jobs:
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
       (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped') &&
       (needs.reuse-bundle.result == 'success' || needs.reuse-bundle.result == 'skipped')
+    # Must exceed the deferred registry-visibility budget (NPM_REGISTRY_VERIFY_TOTAL_SECONDS, default
+    # 7200 s = 120 min in wait-for-pending-npm-packages.sh) plus publish time and the strict verifies
+    # of the dependents. Registry lag reached ~90 min in 0.9.34. Guard: wait-for-pending-npm-packages.test.sh.
+    timeout-minutes: 180
     runs-on: self-hosted
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest

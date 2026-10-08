@@ -818,7 +818,7 @@ export class VoiceAgentSessionHost {
       void inboundPromise.catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         this.log(`[voice ${peerId}] ${message}`)
-        this.voidCloseClient(peerId)
+        this.voidCloseClient(peerId, session)
       })
 
       pc.ontrack = (event) => {
@@ -851,7 +851,7 @@ export class VoiceAgentSessionHost {
         this.scheduleTransportDisconnect(peerId, session)
       } else if (iceState === 'closed') {
         this.clearTransportDisconnectTimer(session)
-        this.voidCloseClient(peerId)
+        this.voidCloseClient(peerId, session)
       }
     }
 
@@ -879,7 +879,7 @@ export class VoiceAgentSessionHost {
       } else if (pc.connectionState === 'closed') {
         this.clearTransportDisconnectTimer(session)
         this.log(`[${tag} ${peerId}] connection ${pc.connectionState} — closing peer`)
-        this.voidCloseClient(peerId)
+        this.voidCloseClient(peerId, session)
       }
     }
 
@@ -893,7 +893,7 @@ export class VoiceAgentSessionHost {
       const tag = dataOnly ? 'data' : 'voice'
       session.clientHangup = true
       this.log(`[${tag} ${peerId}] control channel closed by client — closing peer`)
-      this.voidCloseClient(peerId)
+      this.voidCloseClient(peerId, session)
     }
 
     controlChannel.onopen = () => {
@@ -1330,7 +1330,7 @@ export class VoiceAgentSessionHost {
       this.log(`[${tag} ${peerId}] answer applied, connectionState=${session.pc.connectionState}`)
     } catch (error: unknown) {
       console.error(`Failed to apply answer from ${peerId}:`, error)
-      this.voidCloseClient(peerId)
+      this.voidCloseClient(peerId, session)
     }
   }
 
@@ -1418,14 +1418,22 @@ export class VoiceAgentSessionHost {
       ) {
         const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
         this.log(`[${tag} ${peerId}] transport still down after ${graceMs}ms — closing peer`)
-        this.voidCloseClient(peerId)
+        this.voidCloseClient(peerId, session)
       }
     }, graceMs)
   }
 
-  /** Fire-and-forget close queued on the per-peer serializer. */
-  private voidCloseClient(peerId: string): void {
-    void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch((error: unknown) => {
+  /** Close `peerId` only while `expected` is still its live session (a replaced peer's late events are ignored). */
+  private voidCloseClient(peerId: string, expected: ClientSession): void {
+    void this.enqueuePeerOp(peerId, async () => {
+      if (this.sessions.get(peerId) !== expected) {
+        this.log(
+          `[${this.sessionMode === 'data-only' ? 'data' : 'voice'} ${peerId}] close ignored — session already replaced`,
+        )
+        return
+      }
+      await this.closeClientInner(peerId)
+    }).catch((error: unknown) => {
       console.error(`[voice ${peerId}] closeClient failed:`, error)
     })
   }

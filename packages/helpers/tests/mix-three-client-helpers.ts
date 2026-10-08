@@ -1,4 +1,4 @@
-import type { RTCPeerConnection } from '@node-webrtc-rust/sdk'
+import type { RTCIceServer, RTCPeerConnection } from '@node-webrtc-rust/sdk'
 
 export const SAMPLE_RATE = 48_000
 export const SAMPLES_PER_CHANNEL = 960
@@ -8,10 +8,17 @@ export const MIN_RATIO = 2
 /** Offset far from the target so a loud sine does not inflate the Goertzel noise floor. */
 const FLOOR_OFFSET_HZ = 2_003
 
-const STUN_SERVER = { urls: 'stun:stun.l.google.com:19302' }
-
+/**
+ * ICE configuration for loopback tests (both peers in this process).
+ *
+ * Deliberately has no STUN/TURN servers: host candidates are enough for loopback, and a
+ * STUN url makes `gatheringComplete()` wait for DNS resolution of the STUN host. webrtc-ice
+ * resolves it with an unbounded `lookup_host`, so a stalled resolver on a CI runner holds
+ * gathering (once per peer) past the test timeout. Tests that need a relay or reflexive
+ * candidate configure their own servers.
+ */
 export const defaultIceConfig = {
-  iceServers: [STUN_SERVER],
+  iceServers: [] as RTCIceServer[],
 }
 
 export function sineStereoFrame(freqHz: number, amplitude: number, phase: number): Buffer {

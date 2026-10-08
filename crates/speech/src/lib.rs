@@ -59,6 +59,7 @@ pub mod stt_hold;
 pub mod stt_pre_roll;
 pub mod tts_buffer;
 pub mod tts_cache;
+pub(crate) mod turn_latency;
 pub mod utterance_replay;
 pub mod vad;
 

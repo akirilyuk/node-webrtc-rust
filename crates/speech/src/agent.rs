@@ -26,6 +26,7 @@ use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::otel;
+use crate::turn_latency::TurnLatencyTracker;
 use crate::pcm::i16_samples_to_bytes;
 use crate::pipeline::{
     tts_stream_chunks_enabled, LanguageIdProvider, SttProvider, SttTranscript, TtsProgressiveSink,
@@ -150,6 +151,8 @@ struct AgentInner {
     agent_speaking_since: Option<Instant>,
     /// Timing for the reply that will start playback; taken when `agent_speaking_start` is emitted.
     pending_first_audio: Option<FirstAudioTiming>,
+    /// Turn latency (speech end to first reply audio) bookkeeping for OTel.
+    turn_latency: TurnLatencyTracker,
     /// STT vendor PCM feed open for the current VAD-triggered utterance.
     stt_stream_open: bool,
     /// User STT session open (`user_stt_start` … `user_stt_end` / `user_stt_not_found`).
@@ -381,6 +384,7 @@ impl VoiceAgent {
                 agent_speaking: false,
                 agent_speaking_since: None,
                 pending_first_audio: None,
+                turn_latency: TurnLatencyTracker::new(),
                 stt_stream_open: false,
                 user_stt_session_open: false,
                 vad_triggered_this_utterance: false,
@@ -764,6 +768,7 @@ impl VoiceAgent {
                                 continue;
                             }
                             polled_final = true;
+                            self.note_stt_final_for_turn_latency().await;
                             self.emit(SpeechEvent::user_speech_final_held_replay(
                                 text,
                                 Some(next_utterance_id()),
@@ -1925,6 +1930,24 @@ impl VoiceAgent {
         u32::try_from(since.elapsed().as_millis()).unwrap_or(u32::MAX)
     }
 
+    fn project_id_label(inner: &AgentInner) -> &str {
+        inner
+            .otel
+            .session_context
+            .project_id
+            .as_deref()
+            .unwrap_or("")
+    }
+
+    fn active_stt_vendor_label(inner: &AgentInner) -> &'static str {
+        inner
+            .config
+            .stt
+            .as_ref()
+            .map(|cfg| cfg.provider.as_str())
+            .unwrap_or("unknown")
+    }
+
     fn active_tts_vendor_label(inner: &AgentInner) -> &'static str {
         inner
             .config
@@ -1951,7 +1974,11 @@ impl VoiceAgent {
     async fn record_first_chunk(inner: &Arc<Mutex<AgentInner>>, requested_at: Instant) {
         let ms = Self::elapsed_ms_u32(requested_at);
         let mut guard = inner.lock().await;
-        otel::record_voice_tts_first_chunk_ms(f64::from(ms), Self::active_tts_vendor_label(&guard));
+        otel::record_voice_tts_first_chunk_ms(
+            f64::from(ms),
+            Self::active_tts_vendor_label(&guard),
+            Self::project_id_label(&guard),
+        );
         if let Some(timing) = guard.pending_first_audio.as_mut() {
             if timing.requested_at == requested_at && timing.first_chunk_ms.is_none() {
                 timing.first_chunk_ms = Some(ms);
@@ -2240,8 +2267,12 @@ impl VoiceAgent {
             partial_text.trim()
         ));
         {
-            let ctx = self.inner.lock().await.otel.session_context.clone();
+            let mut guard = self.inner.lock().await;
+            let ctx = guard.otel.session_context.clone();
             otel::record_barge_in(&ctx);
+            if guard.turn_latency.on_barge_in(Instant::now()).is_some() {
+                otel::record_voice_turn_response_abandoned(Self::project_id_label(&guard));
+            }
         }
         handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
         self.cancel_pending_tts_synthesis().await;
@@ -2483,10 +2514,24 @@ impl VoiceAgent {
         Ok(())
     }
 
+    /// Feeds an STT final into the turn latency tracker (finalize ms is recorded once per turn).
+    async fn note_stt_final_for_turn_latency(&self) {
+        let mut guard = self.inner.lock().await;
+        if let Some(finalize_ms) = guard.turn_latency.on_stt_final(Instant::now()) {
+            otel::record_voice_stt_finalize_ms(
+                finalize_ms,
+                Self::project_id_label(&guard),
+                Self::active_stt_vendor_label(&guard),
+                Self::active_tts_vendor_label(&guard),
+            );
+        }
+    }
+
     /// Emit the utterance final; if a held/replay context is pending, the final is the replay final.
     /// `close_utterance` clears the open utterance id after a replay final (forced close and
     /// last-partial fallback end the utterance; the vendor-final path leaves it as before).
     async fn emit_utterance_final(&self, text: String, close_utterance: bool) {
+        self.note_stt_final_for_turn_latency().await;
         let replay_ctx = self
             .inner
             .lock()
@@ -3298,9 +3343,21 @@ impl VoiceAgent {
         }
 
         {
-            let ctx = self.inner.lock().await.otel.session_context.clone();
+            let mut guard = self.inner.lock().await;
+            let ctx = guard.otel.session_context.clone();
             for transition in &transitions {
                 otel::record_vad_transition(&ctx, transition);
+                let now = Instant::now();
+                match transition {
+                    VadTransition::SpeechStart => {
+                        if guard.turn_latency.on_speech_start(now).is_some() {
+                            otel::record_voice_turn_response_abandoned(Self::project_id_label(
+                                &guard,
+                            ));
+                        }
+                    }
+                    VadTransition::SpeechEnd => guard.turn_latency.on_speech_end(now),
+                }
             }
         }
 
@@ -4022,7 +4079,24 @@ impl VoiceAgent {
                         otel::record_voice_tts_first_audio_ms(
                             f64::from(ms),
                             Self::active_tts_vendor_label(&guard),
+                            Self::project_id_label(&guard),
                         );
+                    }
+                    if let Some(reply) = guard.turn_latency.on_first_reply_audio(Instant::now()) {
+                        let project_id = Self::project_id_label(&guard);
+                        let stt_vendor = Self::active_stt_vendor_label(&guard);
+                        let tts_vendor = Self::active_tts_vendor_label(&guard);
+                        otel::record_voice_final_to_audio_ms(
+                            reply.final_to_audio_ms,
+                            project_id,
+                            stt_vendor,
+                            tts_vendor,
+                        );
+                        if let Some(turn_ms) = reply.turn_response_ms {
+                            otel::record_voice_turn_response_ms(
+                                turn_ms, project_id, stt_vendor, tts_vendor,
+                            );
+                        }
                     }
                     guard.agent_speaking = true;
                     guard.agent_speaking_since = Some(Instant::now());

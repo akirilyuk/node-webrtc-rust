@@ -627,7 +627,18 @@ When enabled, `VoiceAgent::start` accepts optional session attributes (`session_
 | `stt.vendor` | `voice.session`, `voice.stt`, `voice_stt_latency_ms` | `openai`, `deepgram`, `google`, `assemblyai`, `local-sherpa`, `mock` |
 | `tts.vendor` | `voice.session`, `voice.tts`, `voice_tts_latency_ms` | `openai`, `elevenlabs`, `google`, `cartesia`, `local-sherpa`, `mock` |
 
-**Metrics:** `voice_stt_latency_ms`, `voice_tts_latency_ms`, `sherpa_pool_wait_ms`, `sherpa_pool_entries` (histograms/gauge)
+**Metrics:** `voice_stt_latency_ms`, `voice_tts_latency_ms`, `sherpa_pool_wait_ms`, `sherpa_pool_entries` (histograms/gauge), plus the per-project turn latency series below.
+
+**Turn latency metrics** (all labelled `project_id`; the histograms also carry `stt.vendor` and `tts.vendor`):
+
+| Metric                          | Type      | Measures                                                                                    |
+| ------------------------------- | --------- | ------------------------------------------------------------------------------------------- |
+| `voice_stt_finalize_ms`         | histogram | VAD `speech_end` to the first STT final of that utterance                                   |
+| `voice_final_to_audio_ms`       | histogram | Latest STT final to the first outbound PCM frame of the reply                               |
+| `voice_turn_response_ms`        | histogram | VAD `speech_end` to the first outbound PCM frame of the reply (what the caller waits)       |
+| `voice_turn_response_abandoned` | counter   | Turns that got an STT final but the caller spoke again or barged in before any reply audio  |
+| `voice_tts_first_chunk_ms`      | histogram | Speak request to first vendor PCM chunk (labels: `project_id`, `tts.vendor`)                |
+| `voice_tts_first_audio_ms`      | histogram | Speak request to first outbound PCM frame of the reply (labels: `project_id`, `tts.vendor`) |
 
 Rust tests with OTel: `cargo test -p node-webrtc-rust-speech --features otel`
 

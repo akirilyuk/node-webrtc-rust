@@ -41,6 +41,10 @@ static TTS_QUEUE_WAIT: OnceLock<Histogram<f64>> = OnceLock::new();
 static TTS_SYNTH_WALL: OnceLock<Histogram<f64>> = OnceLock::new();
 static TTS_FIRST_CHUNK: OnceLock<Histogram<f64>> = OnceLock::new();
 static TTS_FIRST_AUDIO: OnceLock<Histogram<f64>> = OnceLock::new();
+static VOICE_STT_FINALIZE: OnceLock<Histogram<f64>> = OnceLock::new();
+static VOICE_FINAL_TO_AUDIO: OnceLock<Histogram<f64>> = OnceLock::new();
+static VOICE_TURN_RESPONSE: OnceLock<Histogram<f64>> = OnceLock::new();
+static VOICE_TURN_ABANDONED: OnceLock<Counter<u64>> = OnceLock::new();
 static VOICE_BARGE_IN: OnceLock<Counter<u64>> = OnceLock::new();
 static VOICE_VAD_TRANSITIONS: OnceLock<Counter<u64>> = OnceLock::new();
 
@@ -182,6 +186,50 @@ fn tts_first_audio_histogram() -> &'static Histogram<f64> {
             .f64_histogram("voice_tts_first_audio_ms")
             .with_description(
                 "Milliseconds from the speak request to the first outbound PCM frame of the reply",
+            )
+            .build()
+    })
+}
+
+fn voice_stt_finalize_histogram() -> &'static Histogram<f64> {
+    VOICE_STT_FINALIZE.get_or_init(|| {
+        ensure_meter()
+            .f64_histogram("voice_stt_finalize_ms")
+            .with_description(
+                "Milliseconds from VAD speech end to the first STT final of that utterance",
+            )
+            .build()
+    })
+}
+
+fn voice_final_to_audio_histogram() -> &'static Histogram<f64> {
+    VOICE_FINAL_TO_AUDIO.get_or_init(|| {
+        ensure_meter()
+            .f64_histogram("voice_final_to_audio_ms")
+            .with_description(
+                "Milliseconds from the latest STT final to the first outbound PCM frame of the reply",
+            )
+            .build()
+    })
+}
+
+fn voice_turn_response_histogram() -> &'static Histogram<f64> {
+    VOICE_TURN_RESPONSE.get_or_init(|| {
+        ensure_meter()
+            .f64_histogram("voice_turn_response_ms")
+            .with_description(
+                "Milliseconds from VAD speech end to the first outbound PCM frame of the reply",
+            )
+            .build()
+    })
+}
+
+fn voice_turn_abandoned_counter() -> &'static Counter<u64> {
+    VOICE_TURN_ABANDONED.get_or_init(|| {
+        ensure_meter()
+            .u64_counter("voice_turn_response_abandoned")
+            .with_description(
+                "Turns with an STT final where the caller spoke again or barged in before any reply audio",
             )
             .build()
     })
@@ -600,17 +648,72 @@ pub fn record_sherpa_tts_synth_wall_ms(ms: f64, attrs: &SherpaTtsMetricAttrs) {
     }
 }
 
-pub fn record_voice_tts_first_chunk_ms(ms: f64, vendor: &str) {
+pub fn record_voice_tts_first_chunk_ms(ms: f64, vendor: &str, project_id: &str) {
     if is_enabled() {
-        let kv = [KeyValue::new("tts.vendor", otel_label(vendor, "unknown"))];
+        let kv = [
+            KeyValue::new("tts.vendor", otel_label(vendor, "unknown")),
+            KeyValue::new("project_id", otel_label(project_id, "unknown")),
+        ];
         tts_first_chunk_histogram().record(ms, &kv);
     }
 }
 
-pub fn record_voice_tts_first_audio_ms(ms: f64, vendor: &str) {
+pub fn record_voice_tts_first_audio_ms(ms: f64, vendor: &str, project_id: &str) {
     if is_enabled() {
-        let kv = [KeyValue::new("tts.vendor", otel_label(vendor, "unknown"))];
+        let kv = [
+            KeyValue::new("tts.vendor", otel_label(vendor, "unknown")),
+            KeyValue::new("project_id", otel_label(project_id, "unknown")),
+        ];
         tts_first_audio_histogram().record(ms, &kv);
+    }
+}
+
+fn turn_latency_attrs(project_id: &str, stt_vendor: &str, tts_vendor: &str) -> [KeyValue; 3] {
+    [
+        KeyValue::new("project_id", otel_label(project_id, "unknown")),
+        KeyValue::new("stt.vendor", otel_label(stt_vendor, "unknown")),
+        KeyValue::new("tts.vendor", otel_label(tts_vendor, "unknown")),
+    ]
+}
+
+pub fn record_voice_stt_finalize_ms(ms: f64, project_id: &str, stt_vendor: &str, tts_vendor: &str) {
+    if is_enabled() {
+        let kv = turn_latency_attrs(project_id, stt_vendor, tts_vendor);
+        voice_stt_finalize_histogram().record(ms, &kv);
+    }
+}
+
+pub fn record_voice_final_to_audio_ms(
+    ms: f64,
+    project_id: &str,
+    stt_vendor: &str,
+    tts_vendor: &str,
+) {
+    if is_enabled() {
+        let kv = turn_latency_attrs(project_id, stt_vendor, tts_vendor);
+        voice_final_to_audio_histogram().record(ms, &kv);
+    }
+}
+
+pub fn record_voice_turn_response_ms(
+    ms: f64,
+    project_id: &str,
+    stt_vendor: &str,
+    tts_vendor: &str,
+) {
+    if is_enabled() {
+        let kv = turn_latency_attrs(project_id, stt_vendor, tts_vendor);
+        voice_turn_response_histogram().record(ms, &kv);
+    }
+}
+
+pub fn record_voice_turn_response_abandoned(project_id: &str) {
+    if is_enabled() {
+        let kv = [KeyValue::new(
+            "project_id",
+            otel_label(project_id, "unknown"),
+        )];
+        voice_turn_abandoned_counter().add(1, &kv);
     }
 }
 

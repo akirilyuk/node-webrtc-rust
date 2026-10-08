@@ -8,11 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.9.33] - 2026-10-08
+## [0.9.34] - 2026-10-08
 
 ### Added
 
 - **speech** — per-project turn latency metrics: `voice_stt_finalize_ms`, `voice_final_to_audio_ms`, `voice_turn_response_ms` histograms and the `voice_turn_response_abandoned` counter (labels `project_id`, plus `stt.vendor` / `tts.vendor` on the histograms).
+
+### Changed
+
+- **speech** — `voice_tts_first_audio_ms` and `voice_tts_first_chunk_ms` now carry a `project_id` label (the Rust record functions take a `project_id` argument).
+
+## [0.9.33] - 2026-10-08
 
 ### Fixed
 
@@ -21,7 +27,6 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **speech** — `voice_tts_first_audio_ms` and `voice_tts_first_chunk_ms` now carry a `project_id` label (the Rust record functions take a `project_id` argument).
 - **speech** — `VoiceAgent` `send_text_to_tts` (and the SDK `speak` path) resolves instead of rejecting when the synthesis of that reply fails; listen for the `agent_speak_failed` speech event to detect it. Playback failures and "TTS not configured" still reject.
 - **helpers** — a voice peer whose transport drops is kept for 10 s (`transportDisconnectGraceMs`, was 5 s) and an empty session for 5 s, so a short network outage no longer ends the conversation; intentional ends (`client_hangup`, the client closing its control data channel, connection `closed`) release the session at once without the rejoin grace.
 

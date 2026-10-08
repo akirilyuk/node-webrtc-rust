@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.35] - 2026-10-08
+
 ### Fixed
 
 - **speech (otel)** — voice metrics now carry the process resource from `OTEL_RESOURCE_ATTRIBUTES` (e.g. `service.instance.id`), so several pods no longer share one metric series.

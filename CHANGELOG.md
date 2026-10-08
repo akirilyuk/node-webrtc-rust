@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- helpers: a replaced peer connection's late `closed` event no longer tears down the session that replaced it after a client rejoin.
+
 ## [0.9.35] - 2026-10-08
 
 ### Fixed

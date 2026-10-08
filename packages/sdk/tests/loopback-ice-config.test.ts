@@ -27,14 +27,25 @@ const ICE_SERVER_ALLOWLIST: Record<string, string> = {
   'packages/sdk/tests/turn.test.ts': 'exercises a TURN relay and skips unless TURN_AVAILABLE=1',
   'packages/sdk/tests/sdk.test.ts':
     'asserts getConfiguration() echoes the config; never gathers candidates',
-  'crates/core/tests/peer_connection_test.rs':
-    'one test uses an unresolvable .invalid STUN host to prove bounded DNS resolution',
   'packages/sdk/tests/loopback-ice-config.test.ts': 'this guard',
 }
 
 const ICE_URL = /['"`](?:stuns?|turns?):[^'"`]*['"`]/
 /** Rust string literal holding a STUN/TURN url. */
 const RUST_ICE_URL = /"(?:stuns?|turns?):[^"]*"/
+
+const ICE_URL_ALL = new RegExp(ICE_URL.source, 'g')
+const RUST_ICE_URL_ALL = new RegExp(RUST_ICE_URL.source, 'g')
+
+/** `.invalid` is reserved (RFC 2606) and never resolves, so such urls cannot reintroduce DNS or STUN dependence. */
+function isReservedInvalidUrl(literal: string): boolean {
+  return /\.invalid(?::\d+)?(?:\?[^'"`]*)?['"`]$/.test(literal)
+}
+
+/** True when the source holds a STUN/TURN url literal whose host is not `.invalid`. */
+function hasRealIceUrl(source: string, re: RegExp): boolean {
+  return (source.match(re) ?? []).some((m) => !isReservedInvalidUrl(m))
+}
 
 function listTestFiles(dir: string, ext = '.ts'): string[] {
   const out: string[] = []
@@ -91,12 +102,23 @@ describe('loopback ICE configuration', () => {
     expect(rustFiles.length).toBeGreaterThan(0)
     const rel = (f: string) => relative(REPO_ROOT, f).split(sep).join('/')
     const offenders = [
-      ...files.filter((f) => ICE_URL.test(readFileSync(f, 'utf8'))),
-      ...rustFiles.filter((f) => RUST_ICE_URL.test(readFileSync(f, 'utf8'))),
+      ...files.filter((f) => hasRealIceUrl(readFileSync(f, 'utf8'), ICE_URL_ALL)),
+      ...rustFiles.filter((f) => hasRealIceUrl(readFileSync(f, 'utf8'), RUST_ICE_URL_ALL)),
     ]
       .map(rel)
       .filter((r) => !(r in ICE_SERVER_ALLOWLIST))
     expect(offenders).toEqual([])
+  })
+
+  test('guard accepts reserved .invalid hosts and flags real ones', () => {
+    expect(hasRealIceUrl('"stun:does-not-exist.invalid:19302"', RUST_ICE_URL_ALL)).toBe(false)
+    expect(hasRealIceUrl('"stun:stun.l.google.com:19302"', RUST_ICE_URL_ALL)).toBe(true)
+    expect(
+      hasRealIceUrl(
+        '"stun:does-not-exist.invalid:1" "stun:stun.l.google.com:19302"',
+        RUST_ICE_URL_ALL,
+      ),
+    ).toBe(true)
   })
 
   test('a peer built from defaultIceConfig gathers host candidates without ICE servers', async () => {

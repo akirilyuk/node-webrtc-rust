@@ -275,6 +275,23 @@ fn apply_nat_1to1_from_env(settings: &mut SettingEngine) {
     settings.set_nat_1to1_ips(ips, RTCIceCandidateType::Host);
 }
 
+/// `WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1` also gathers 127.0.0.1 host candidates. Off by default
+/// (webrtc-rs default). Loopback-only tests use it: on macOS with the application firewall on,
+/// inbound UDP on en0 to an unsigned test binary is dropped, while lo0 is exempt.
+fn apply_loopback_candidates_from_env(settings: &mut SettingEngine) {
+    if include_loopback_candidates(
+        std::env::var("WEBRTC_INCLUDE_LOOPBACK_CANDIDATES")
+            .ok()
+            .as_deref(),
+    ) {
+        settings.set_include_loopback_candidate(true);
+    }
+}
+
+fn include_loopback_candidates(raw: Option<&str>) -> bool {
+    matches!(raw.map(str::trim), Some("1") | Some("true"))
+}
+
 fn shared_api() -> Result<Arc<API>, CoreError> {
     if let Some(api) = SHARED_API.get() {
         return Ok(Arc::clone(api));
@@ -305,6 +322,7 @@ fn shared_api() -> Result<Arc<API>, CoreError> {
 
     let mut setting_engine = SettingEngine::default();
     apply_nat_1to1_from_env(&mut setting_engine);
+    apply_loopback_candidates_from_env(&mut setting_engine);
 
     let api = Arc::new(
         APIBuilder::new()
@@ -819,5 +837,19 @@ impl PeerConnection {
     /// Returns the current remote description, if set.
     pub async fn remote_description(&self) -> Option<SessionDescription> {
         self.inner.remote_description().await.map(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod loopback_env_tests {
+    use super::include_loopback_candidates;
+
+    #[test]
+    fn include_loopback_candidates_parses_flag() {
+        assert!(!include_loopback_candidates(None));
+        assert!(include_loopback_candidates(Some("1")));
+        assert!(include_loopback_candidates(Some("true")));
+        assert!(!include_loopback_candidates(Some("0")));
+        assert!(!include_loopback_candidates(Some("")));
     }
 }

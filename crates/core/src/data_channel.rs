@@ -1,6 +1,7 @@
 //! DataChannel wrapper around webrtc-rs.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -69,14 +70,94 @@ pub struct DataChannelMessage {
     pub data: Bytes,
 }
 
+/// Maximum number of messages kept while no `on_message` handler is set.
+///
+/// An app that never reads must not grow memory without bound; beyond this the
+/// oldest messages are dropped.
+const MAX_BUFFERED_MESSAGES: usize = 4096;
+
+type MessageHandler = Arc<dyn Fn(DataChannelMessage) + Send + Sync>;
+
+/// Where incoming messages go.
+enum MessageSink {
+    /// No app handler yet: keep messages in arrival order.
+    Buffering {
+        queue: VecDeque<DataChannelMessage>,
+        warned: bool,
+    },
+    Forwarding(MessageHandler),
+}
+
+impl MessageSink {
+    fn new() -> Self {
+        Self::Buffering {
+            queue: VecDeque::new(),
+            warned: false,
+        }
+    }
+
+    /// Delivers `msg` to the handler, or buffers it (newest `MAX_BUFFERED_MESSAGES` kept).
+    fn push(&mut self, label: &str, msg: DataChannelMessage) {
+        match self {
+            Self::Forwarding(h) => h(msg),
+            Self::Buffering { queue, warned } => {
+                if queue.len() >= MAX_BUFFERED_MESSAGES {
+                    queue.pop_front();
+                    if !*warned {
+                        *warned = true;
+                        log::warn!(
+                            "data channel {label}: {MAX_BUFFERED_MESSAGES} messages buffered before a handler was set; dropping oldest"
+                        );
+                    }
+                }
+                queue.push_back(msg);
+            }
+        }
+    }
+
+    /// Flushes buffered messages to `handler` in order, then forwards live ones.
+    fn set_handler(&mut self, handler: MessageHandler) {
+        if let Self::Buffering { queue, .. } = self {
+            for msg in std::mem::take(queue) {
+                handler(msg);
+            }
+        }
+        *self = Self::Forwarding(handler);
+    }
+}
+
 /// WebRTC DataChannel wrapper.
 pub struct DataChannel {
     inner: Arc<RTCDataChannel>,
+    messages: Arc<Mutex<MessageSink>>,
 }
 
 impl DataChannel {
+    /// Wraps a native channel. Must be called once per native channel: it registers
+    /// the native `on_message` hook that buffers until [`Self::on_message`] is called.
     pub(crate) fn from_inner(inner: Arc<RTCDataChannel>) -> Self {
-        Self { inner }
+        let messages = Arc::new(Mutex::new(MessageSink::new()));
+        let sink = Arc::clone(&messages);
+        let label = inner.label().to_owned();
+        inner.on_message(Box::new(move |msg| {
+            debug_evt!(
+                "core::data_channel",
+                "message",
+                "is_string={}, bytes={}",
+                msg.is_string,
+                msg.data.len()
+            );
+            let msg = DataChannelMessage {
+                is_string: msg.is_string,
+                data: msg.data,
+            };
+            // Handler runs under the lock so ordering against `on_message` is strict.
+            sink.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(&label, msg);
+            Box::pin(async {})
+        }));
+        Self { inner, messages }
     }
 
     /// Returns the channel label.
@@ -184,7 +265,7 @@ impl DataChannel {
     pub fn on_open(&self, handler: impl FnOnce() + Send + 'static) {
         let handler = std::sync::Mutex::new(Some(handler));
         self.inner.on_open(Box::new(move || {
-            if let Some(h) = handler.lock().unwrap().take() {
+            if let Some(h) = handler.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 h();
             }
             Box::pin(async {})
@@ -192,21 +273,14 @@ impl DataChannel {
     }
 
     /// Registers a handler invoked when a message is received.
+    ///
+    /// Messages that arrived before the first call are delivered first, in order.
+    /// A later call replaces the handler. The handler must not block.
     pub fn on_message(&self, handler: impl Fn(DataChannelMessage) + Send + Sync + 'static) {
-        self.inner.on_message(Box::new(move |msg| {
-            debug_evt!(
-                "core::data_channel",
-                "message",
-                "is_string={}, bytes={}",
-                msg.is_string,
-                msg.data.len()
-            );
-            handler(DataChannelMessage {
-                is_string: msg.is_string,
-                data: msg.data,
-            });
-            Box::pin(async {})
-        }));
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_handler(Arc::new(handler));
     }
 
     /// Registers a handler invoked when the channel closes.
@@ -248,5 +322,60 @@ impl DataChannel {
 
     pub(crate) fn inner(&self) -> Arc<RTCDataChannel> {
         Arc::clone(&self.inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(n: usize) -> DataChannelMessage {
+        DataChannelMessage {
+            is_string: true,
+            data: Bytes::from(format!("m{n}")),
+        }
+    }
+
+    fn collector() -> (MessageHandler, Arc<Mutex<Vec<String>>>) {
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let g = Arc::clone(&got);
+        let h: MessageHandler = Arc::new(move |m| {
+            g.lock()
+                .unwrap()
+                .push(String::from_utf8(m.data.to_vec()).unwrap());
+        });
+        (h, got)
+    }
+
+    #[test]
+    fn buffered_messages_flush_in_order_then_forward() {
+        let mut sink = MessageSink::new();
+        for i in 0..3 {
+            sink.push("t", msg(i));
+        }
+        let (h, got) = collector();
+        sink.set_handler(h);
+        sink.push("t", msg(3));
+        assert_eq!(
+            *got.lock().unwrap_or_else(|e| e.into_inner()),
+            vec!["m0", "m1", "m2", "m3"]
+        );
+    }
+
+    #[test]
+    fn overflow_keeps_newest() {
+        let mut sink = MessageSink::new();
+        for i in 0..MAX_BUFFERED_MESSAGES + 10 {
+            sink.push("t", msg(i));
+        }
+        let (h, got) = collector();
+        sink.set_handler(h);
+        let got = got.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(got.len(), MAX_BUFFERED_MESSAGES);
+        assert_eq!(got[0], "m10");
+        assert_eq!(
+            got[MAX_BUFFERED_MESSAGES - 1],
+            format!("m{}", MAX_BUFFERED_MESSAGES + 9)
+        );
     }
 }

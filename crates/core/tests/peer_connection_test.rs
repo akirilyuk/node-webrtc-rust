@@ -192,6 +192,80 @@ async fn test_data_channel_round_trip() {
 }
 
 #[tokio::test]
+async fn test_messages_before_on_message_are_buffered_in_order() {
+    let config = test_config();
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+
+    let slot: std::sync::Arc<std::sync::Mutex<Option<node_webrtc_rust_core::DataChannel>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot_in = std::sync::Arc::clone(&slot);
+    pc2.on_data_channel(move |dc| {
+        if dc.label() == "early" {
+            *slot_in.lock().unwrap() = Some(dc);
+        }
+    });
+
+    let dc1 = pc1
+        .create_data_channel("early", None)
+        .await
+        .expect("create data channel");
+    let dc1_sender = std::sync::Arc::new(dc1);
+    let sender = std::sync::Arc::clone(&dc1_sender);
+    let handle = tokio::runtime::Handle::current();
+    dc1_sender.on_open(move || {
+        let sender = sender;
+        handle.spawn(async move {
+            for i in 0..5 {
+                sender.send_text(&format!("m{i}")).await.expect("send");
+            }
+        });
+    });
+
+    signal_pair(&pc1, &pc2).await;
+    wait_for_connection(&pc1).await;
+    wait_for_connection(&pc2).await;
+
+    let dc2 = timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(dc) = slot.lock().unwrap().take() {
+                return dc;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for dc2");
+
+    // All five have arrived by now, with no handler registered.
+    sleep(Duration::from_millis(500)).await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    dc2.on_message(move |msg| {
+        let _ = tx.send(String::from_utf8(msg.data.to_vec()).unwrap());
+    });
+
+    for i in 0..5 {
+        let got = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for buffered message")
+            .expect("channel closed");
+        assert_eq!(got, format!("m{i}"));
+    }
+
+    dc1_sender.send_text("m5").await.expect("send m5");
+    let got = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out waiting for m5")
+        .expect("channel closed");
+    assert_eq!(got, "m5");
+
+    close_peer_pair(&pc1, &pc2).await;
+}
+
+#[tokio::test]
 async fn test_close_before_data_channel_established() {
     let config = test_config();
     let pc1 = PeerConnection::new(config.clone())

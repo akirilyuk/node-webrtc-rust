@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.38] - 2026-10-09
+
+### Fixed
+
+- **core** — data channel messages that arrive before `onmessage` is set (e.g. sent by the remote right at open) are buffered and delivered in order instead of being dropped.
+
 ## [0.9.37] - 2026-10-08
 
 ### Fixed

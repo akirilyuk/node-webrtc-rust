@@ -12,8 +12,16 @@ use node_webrtc_rust_core::{
 };
 use tokio::time::{sleep, timeout};
 
+/// Gather loopback candidates (see `WEBRTC_INCLUDE_LOOPBACK_CANDIDATES`); must run before the first
+/// `PeerConnection::new` in this process because the setting engine is built once.
+fn enable_loopback_candidates() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("WEBRTC_INCLUDE_LOOPBACK_CANDIDATES", "1"));
+}
+
 fn test_config() -> PeerConnectionConfig {
-    // Loopback peers use host candidates only: a STUN hostname makes gathering wait on an unbounded DNS lookup (webrtc-ice), which hung CI when the resolver stalled (2026-10-08).
+    enable_loopback_candidates();
+    // Loopback peers use host candidates only, no STUN: a STUN hostname makes gathering wait on an unbounded DNS lookup (webrtc-ice), which hung CI when the resolver stalled (2026-10-08). They also gather loopback candidates: with the macOS application firewall on, inbound UDP on en0 to an unsigned test binary is dropped, while lo0 is exempt.
     PeerConnectionConfig {
         ice_servers: vec![],
         ..Default::default()

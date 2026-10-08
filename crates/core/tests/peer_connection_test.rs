@@ -523,6 +523,7 @@ async fn test_connection_close() {
 
 #[tokio::test]
 async fn test_unresolvable_stun_host_does_not_stall_gathering() {
+    enable_loopback_candidates();
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         // Process-global; read by the first resolution, so set it before any peer in this test.

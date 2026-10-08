@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- helpers: while a host waits to recycle after a stuck peer close, the same peer can still rejoin its session; new sessions stay refused.
+
 ## [0.9.36] - 2026-10-08
 
 ### Fixed

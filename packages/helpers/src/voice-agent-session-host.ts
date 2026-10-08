@@ -651,16 +651,31 @@ export class VoiceAgentSessionHost {
     return run
   }
 
+  private hasQuarantineForPeer(peerId: string): boolean {
+    for (const lease of this.quarantinedLeases) {
+      if (this.quarantineWaits.get(lease)?.peerId === peerId) return true
+    }
+    return false
+  }
+
   private async connectClientInner(peerId: string): Promise<void> {
     if (this.hostClosing) {
       this.log(`[voice ${peerId}] connect skipped — host is closing`)
       return
     }
     if (this.recycleRequired) {
+      // Recycle stops new sessions on this host. A peer whose own stale close is the
+      // quarantine is recovering a session that already lives here; admit it (the
+      // session budget below still enforces capacity, the quarantined lease stays held).
+      if (!this.hasQuarantineForPeer(peerId)) {
+        this.log(
+          `[voice ${peerId}] connect skipped — host recycle required (quarantined=${this.quarantinedLeases.size})`,
+        )
+        return
+      }
       this.log(
-        `[voice ${peerId}] connect skipped — host recycle required (quarantined=${this.quarantinedLeases.size})`,
+        `[voice ${peerId}] connect allowed during recycle — rejoin of the peer whose close is quarantined (quarantined=${this.quarantinedLeases.size})`,
       )
-      return
     }
 
     const budgetLease = this.sessionBudget.tryAcquire(peerId)

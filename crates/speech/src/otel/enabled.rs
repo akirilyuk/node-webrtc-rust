@@ -313,19 +313,24 @@ fn voice_vad_transition_attrs(
     ]
 }
 
-pub fn init_from_env() -> SpeechResult<()> {
-    if OTEL_INIT.load(Ordering::SeqCst) || otel_disabled_by_env() {
-        return Ok(());
-    }
-
+/// Process resource: env detectors (`OTEL_RESOURCE_ATTRIBUTES`, e.g. `service.instance.id`)
+/// plus `service.name` from `OTEL_SERVICE_NAME` (fallback `node-webrtc-rust-voice`).
+/// The explicit name is merged last, so it wins over a detected one.
+pub(crate) fn build_resource() -> Resource {
     let service_name = std::env::var("OTEL_SERVICE_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "node-webrtc-rust-voice".to_string());
 
-    let resource = Resource::builder_empty()
-        .with_attribute(opentelemetry::KeyValue::new("service.name", service_name))
-        .build();
+    Resource::builder().with_service_name(service_name).build()
+}
+
+pub fn init_from_env() -> SpeechResult<()> {
+    if OTEL_INIT.load(Ordering::SeqCst) || otel_disabled_by_env() {
+        return Ok(());
+    }
+
+    let resource = build_resource();
 
     let span_exporter = SpanExporter::builder().with_http().build().map_err(|err| {
         eprintln!("[otel] init failed: span exporter: {err}");
@@ -742,6 +747,74 @@ pub fn extract_trace_id(traceparent: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opentelemetry::Key;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Sets env vars for one test (serialized) and restores the previous values on drop.
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = Vec::new();
+            for (key, value) in vars {
+                saved.push((*key, std::env::var(key).ok()));
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { saved, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn attr(resource: &Resource, key: &str) -> Option<String> {
+        resource.get(&Key::new(key.to_string())).map(|v| v.to_string())
+    }
+
+    #[test]
+    fn build_resource_reads_otel_resource_attributes_and_service_name() {
+        let _env = EnvGuard::set(&[
+            (
+                "OTEL_RESOURCE_ATTRIBUTES",
+                Some("service.instance.id=pod-a,k8s.pod.name=pod-a"),
+            ),
+            ("OTEL_SERVICE_NAME", Some("runner")),
+        ]);
+        let resource = build_resource();
+        assert_eq!(attr(&resource, "service.instance.id").as_deref(), Some("pod-a"));
+        assert_eq!(attr(&resource, "k8s.pod.name").as_deref(), Some("pod-a"));
+        assert_eq!(attr(&resource, "service.name").as_deref(), Some("runner"));
+    }
+
+    #[test]
+    fn build_resource_defaults_service_name_when_unset() {
+        let _env = EnvGuard::set(&[
+            ("OTEL_RESOURCE_ATTRIBUTES", None),
+            ("OTEL_SERVICE_NAME", None),
+        ]);
+        let resource = build_resource();
+        assert_eq!(
+            attr(&resource, "service.name").as_deref(),
+            Some("node-webrtc-rust-voice")
+        );
+    }
 
     #[test]
     fn extract_trace_id_from_valid_traceparent() {

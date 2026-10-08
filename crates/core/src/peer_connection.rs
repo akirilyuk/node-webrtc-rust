@@ -242,12 +242,15 @@ impl From<RTCSignalingState> for SignalingState {
 /// WebRTC peer connection wrapper.
 pub struct PeerConnection {
     inner: Arc<RTCPeerConnection>,
+    /// Config as the caller set it (hostnames intact); `inner` holds the DNS-resolved rewrite.
+    requested_config: Arc<std::sync::Mutex<PeerConnectionConfig>>,
 }
 
 impl Clone for PeerConnection {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            requested_config: Arc::clone(&self.requested_config),
         }
     }
 }
@@ -318,6 +321,8 @@ fn shared_api() -> Result<Arc<API>, CoreError> {
 impl PeerConnection {
     /// Creates a new peer connection with the given configuration.
     pub async fn new(config: PeerConnectionConfig) -> Result<Self, CoreError> {
+        let original = config.clone();
+        let mut config = config;
         config.apply_debug_override();
         debug_call!(
             "core::peer_connection",
@@ -326,10 +331,14 @@ impl PeerConnection {
             config.ice_servers.len()
         );
         let api = shared_api()?;
+        config.ice_servers = crate::ice_resolve::resolve_ice_servers(config.ice_servers).await;
         let rtc_config = config.into_rtc_configuration();
         let pc = Arc::new(api.new_peer_connection(rtc_config).await?);
 
-        Ok(Self { inner: pc })
+        Ok(Self {
+            inner: pc,
+            requested_config: Arc::new(std::sync::Mutex::new(original)),
+        })
     }
 
     /// Creates an SDP offer.
@@ -564,16 +573,26 @@ impl PeerConnection {
             "ice_servers={}",
             config.ice_servers.len()
         );
+        let original = config.clone();
+        let mut config = config;
         config.apply_debug_override();
+        config.ice_servers = crate::ice_resolve::resolve_ice_servers(config.ice_servers).await;
         self.inner
             .set_configuration(config.into_rtc_configuration())
             .await?;
+        *self
+            .requested_config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = original;
         Ok(())
     }
 
-    /// Returns the active configuration (copy of internal state).
+    /// Returns the configuration as last set by the caller (hostnames intact, W3C `getConfiguration`).
     pub async fn get_configuration(&self) -> PeerConnectionConfig {
-        PeerConnectionConfig::from(self.inner.get_configuration().await)
+        self.requested_config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Triggers ICE restart and negotiation-needed (W3C `restartIce`).

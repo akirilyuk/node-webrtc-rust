@@ -512,3 +512,61 @@ async fn test_connection_close() {
     assert_eq!(pc1.connection_state(), ConnectionState::Closed);
     assert_eq!(pc2.connection_state(), ConnectionState::Closed);
 }
+
+#[tokio::test]
+async fn test_unresolvable_stun_host_does_not_stall_gathering() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Process-global; read by the first resolution, so set it before any peer in this test.
+        std::env::set_var("WEBRTC_ICE_RESOLVE_TIMEOUT_MS", "300");
+    });
+    let config = PeerConnectionConfig {
+        ice_servers: vec![node_webrtc_rust_core::IceServer {
+            urls: vec!["stun:does-not-exist.invalid:19302".to_owned()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let pc1 = PeerConnection::new(config.clone())
+        .await
+        .expect("create pc1");
+    let pc2 = PeerConnection::new(config).await.expect("create pc2");
+    assert_eq!(
+        pc1.get_configuration().await.ice_servers[0].urls,
+        vec!["stun:does-not-exist.invalid:19302"]
+    );
+
+    let mut pc2_events = pc2.subscribe_events();
+    let dc1 = pc1
+        .create_data_channel("chat", None)
+        .await
+        .expect("create data channel");
+
+    let started = std::time::Instant::now();
+    signal_pair(&pc1, &pc2).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "gathering took {:?}",
+        started.elapsed()
+    );
+
+    let dc2 = timeout(Duration::from_secs(10), pc2_events.data_channels.recv())
+        .await
+        .expect("timed out waiting for dc2")
+        .expect("no data channel received");
+    let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel(4);
+    dc2.on_message(move |msg| {
+        let _ = msg_tx.try_send(msg);
+    });
+    wait_for_connection(&pc1).await;
+    wait_for_connection(&pc2).await;
+    wait_for_data_channel_open(&dc1).await;
+    dc1.send_text("hello").await.expect("send text");
+    let msg = timeout(Duration::from_secs(10), msg_rx.recv())
+        .await
+        .expect("timed out waiting for text")
+        .expect("no text message");
+    assert_eq!(msg.data.as_ref(), b"hello");
+
+    close_peer_pair(&pc1, &pc2).await;
+}

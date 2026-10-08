@@ -292,20 +292,6 @@ fn include_loopback_candidates(raw: Option<&str>) -> bool {
     matches!(raw.map(str::trim), Some("1") | Some("true"))
 }
 
-#[cfg(test)]
-mod loopback_env_tests {
-    use super::include_loopback_candidates;
-
-    #[test]
-    fn include_loopback_candidates_parses_flag() {
-        assert!(!include_loopback_candidates(None));
-        assert!(include_loopback_candidates(Some("1")));
-        assert!(include_loopback_candidates(Some("true")));
-        assert!(!include_loopback_candidates(Some("0")));
-        assert!(!include_loopback_candidates(Some("")));
-    }
-}
-
 fn shared_api() -> Result<Arc<API>, CoreError> {
     if let Some(api) = SHARED_API.get() {
         return Ok(Arc::clone(api));
@@ -851,5 +837,19 @@ impl PeerConnection {
     /// Returns the current remote description, if set.
     pub async fn remote_description(&self) -> Option<SessionDescription> {
         self.inner.remote_description().await.map(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod loopback_env_tests {
+    use super::include_loopback_candidates;
+
+    #[test]
+    fn include_loopback_candidates_parses_flag() {
+        assert!(!include_loopback_candidates(None));
+        assert!(include_loopback_candidates(Some("1")));
+        assert!(include_loopback_candidates(Some("true")));
+        assert!(!include_loopback_candidates(Some("0")));
+        assert!(!include_loopback_candidates(Some("")));
     }
 }

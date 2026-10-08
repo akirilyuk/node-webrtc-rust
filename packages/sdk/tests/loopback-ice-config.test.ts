@@ -31,14 +31,16 @@ const ICE_SERVER_ALLOWLIST: Record<string, string> = {
 }
 
 const ICE_URL = /['"`](?:stuns?|turns?):[^'"`]*['"`]/
+/** Rust string literal holding a STUN/TURN url. */
+const RUST_ICE_URL = /"(?:stuns?|turns?):[^"]*"/
 
-function listTestFiles(dir: string): string[] {
+function listTestFiles(dir: string, ext = '.ts'): string[] {
   const out: string[] = []
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === 'dist') continue
     const full = join(dir, name)
-    if (statSync(full).isDirectory()) out.push(...listTestFiles(full))
-    else if (name.endsWith('.ts')) out.push(full)
+    if (statSync(full).isDirectory()) out.push(...listTestFiles(full, ext))
+    else if (name.endsWith(ext)) out.push(full)
   }
   return out
 }
@@ -53,7 +55,21 @@ function allPackageTestFiles(): string[] {
         return false
       }
     })
-    .flatMap(listTestFiles)
+    .flatMap((dir) => listTestFiles(dir))
+}
+
+function allCrateTestFiles(): string[] {
+  const crates = join(REPO_ROOT, 'crates')
+  return readdirSync(crates)
+    .map((c) => join(crates, c, 'tests'))
+    .filter((dir) => {
+      try {
+        return statSync(dir).isDirectory()
+      } catch {
+        return false
+      }
+    })
+    .flatMap((dir) => listTestFiles(dir, '.rs'))
 }
 
 describe('loopback ICE configuration', () => {
@@ -66,13 +82,18 @@ describe('loopback ICE configuration', () => {
     expect(helpersDefaultIceConfig.iceServers).toEqual([])
   })
 
-  test('no test file in any package outside the allowlist configures a STUN/TURN url', () => {
+  test('no test file in packages/*/tests or crates/*/tests outside the allowlist configures a STUN/TURN url', () => {
     const files = allPackageTestFiles()
     expect(files.length).toBeGreaterThan(10)
-    const offenders = files
-      .map((f) => relative(REPO_ROOT, f).split(sep).join('/'))
-      .filter((rel) => !(rel in ICE_SERVER_ALLOWLIST))
-      .filter((rel) => ICE_URL.test(readFileSync(join(REPO_ROOT, rel), 'utf8')))
+    const rustFiles = allCrateTestFiles()
+    expect(rustFiles.length).toBeGreaterThan(0)
+    const rel = (f: string) => relative(REPO_ROOT, f).split(sep).join('/')
+    const offenders = [
+      ...files.filter((f) => ICE_URL.test(readFileSync(f, 'utf8'))),
+      ...rustFiles.filter((f) => RUST_ICE_URL.test(readFileSync(f, 'utf8'))),
+    ]
+      .map(rel)
+      .filter((r) => !(r in ICE_SERVER_ALLOWLIST))
     expect(offenders).toEqual([])
   })
 

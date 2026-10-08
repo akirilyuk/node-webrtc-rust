@@ -6,19 +6,16 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use node_webrtc_rust_core::{
-    ConnectionState, DataChannelState, IceServer, LocalAudioTrack, OfferOptions, PeerConnection,
+    ConnectionState, DataChannelState, LocalAudioTrack, OfferOptions, PeerConnection,
     PeerConnectionConfig, RtpTransceiverDirection, RtpTransceiverInit, TrackKind,
     TransceiverSource,
 };
 use tokio::time::{sleep, timeout};
 
 fn test_config() -> PeerConnectionConfig {
-    // STUN improves reliability on macOS and under parallel CI load (host candidates alone can flake).
+    // Loopback peers use host candidates only: a STUN hostname makes gathering wait on an unbounded DNS lookup (webrtc-ice), which hung CI when the resolver stalled (2026-10-08).
     PeerConnectionConfig {
-        ice_servers: vec![IceServer {
-            urls: vec!["stun:stun.l.google.com:19302".into()],
-            ..Default::default()
-        }],
+        ice_servers: vec![],
         ..Default::default()
     }
 }

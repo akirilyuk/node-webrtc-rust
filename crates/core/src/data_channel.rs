@@ -152,7 +152,9 @@ impl DataChannel {
                 data: msg.data,
             };
             // Handler runs under the lock so ordering against `on_message` is strict.
-            sink.lock().unwrap().push(&label, msg);
+            sink.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(&label, msg);
             Box::pin(async {})
         }));
         Self { inner, messages }
@@ -263,7 +265,7 @@ impl DataChannel {
     pub fn on_open(&self, handler: impl FnOnce() + Send + 'static) {
         let handler = std::sync::Mutex::new(Some(handler));
         self.inner.on_open(Box::new(move || {
-            if let Some(h) = handler.lock().unwrap().take() {
+            if let Some(h) = handler.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 h();
             }
             Box::pin(async {})
@@ -275,7 +277,10 @@ impl DataChannel {
     /// Messages that arrived before the first call are delivered first, in order.
     /// A later call replaces the handler. The handler must not block.
     pub fn on_message(&self, handler: impl Fn(DataChannelMessage) + Send + Sync + 'static) {
-        self.messages.lock().unwrap().set_handler(Arc::new(handler));
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_handler(Arc::new(handler));
     }
 
     /// Registers a handler invoked when the channel closes.
@@ -351,7 +356,10 @@ mod tests {
         let (h, got) = collector();
         sink.set_handler(h);
         sink.push("t", msg(3));
-        assert_eq!(*got.lock().unwrap(), vec!["m0", "m1", "m2", "m3"]);
+        assert_eq!(
+            *got.lock().unwrap_or_else(|e| e.into_inner()),
+            vec!["m0", "m1", "m2", "m3"]
+        );
     }
 
     #[test]
@@ -362,7 +370,7 @@ mod tests {
         }
         let (h, got) = collector();
         sink.set_handler(h);
-        let got = got.lock().unwrap();
+        let got = got.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(got.len(), MAX_BUFFERED_MESSAGES);
         assert_eq!(got[0], "m10");
         assert_eq!(

@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **ci** (internal) — release publish waits up to 2 h (was 30 min) for deferred platform packages to appear on the npm registry; the `Publish release` job now has `timeout-minutes: 180`. Guard test: `scripts/ci/wait-for-pending-npm-packages.test.sh`.
+
 ## [0.9.34] - 2026-10-08
 
 ### Added

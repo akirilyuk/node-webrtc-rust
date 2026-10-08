@@ -14,6 +14,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **helpers** — while a host waits to recycle after a stuck peer close, the same peer can still rejoin its session; new sessions stay refused.
 - **tests** — loopback tests in every package and crate use host candidates only (no STUN hostname); a guard enforces it.
+- **core** — `WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1` gathers 127.0.0.1 host candidates (off by default); Rust loopback tests use it so they pass on macOS with the firewall on.
 
 ## [0.9.36] - 2026-10-08
 

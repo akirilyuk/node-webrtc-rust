@@ -11,8 +11,9 @@ import {
   SignalingServer,
 } from '../src'
 
+/** Loopback peers: no STUN/TURN (hostname lookup can stall gathering on CI). */
 const defaultIceConfig = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  iceServers: [],
 }
 
 describe('SignalingServer', () => {

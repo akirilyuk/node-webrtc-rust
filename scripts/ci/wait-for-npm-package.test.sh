@@ -116,4 +116,34 @@ export FAKE_NPM_MISSES=9999
 bash scripts/ci/wait-for-npm-package.sh @node-webrtc-rust/sdk 0.8.1 >/dev/null || fail "registry GET 200 should count as visible"
 grep -q 'https://registry.npmjs.org/@node-webrtc-rust%2Fsdk/0.8.1' "$FAKE_CURL_LOG" || fail "unexpected registry URL: $(cat "$FAKE_CURL_LOG")"
 
+# Deadline: MAX_ATTEMPTS=1000 must not extend past NPM_PUBLISH_DEADLINE_EPOCH (fake clock, probe +600 s).
+mkdir -p "$TMP/ci"
+cp scripts/ci/wait-for-npm-package.sh "$TMP/ci/"
+cat >"$TMP/ci/npm-registry-visible.sh" <<'EOS'
+#!/usr/bin/env bash
+echo $(( $(cat "$FAKE_CLOCK") + 600 )) >"$FAKE_CLOCK"
+exit 1
+EOS
+cat >"$TMP/now" <<'EOS'
+#!/usr/bin/env bash
+cat "${FAKE_CLOCK:?}"
+EOS
+cat >"$TMP/sleep-clock" <<'EOS'
+#!/usr/bin/env bash
+echo "$1" >>"${FAKE_SLEEP_LOG:?}"
+echo $(( $(cat "$FAKE_CLOCK") + $1 )) >"$FAKE_CLOCK"
+EOS
+chmod +x "$TMP/now" "$TMP/sleep-clock"
+export FAKE_CLOCK="$TMP/clock"
+echo 1000 >"$FAKE_CLOCK"; : >"$FAKE_SLEEP_LOG"
+if NPM_PUBLISH_DEADLINE_EPOCH=4000 NPM_REGISTRY_VERIFY_ATTEMPTS=1000 \
+  NPM_REGISTRY_VERIFY_NOW_BIN="$TMP/now" NPM_REGISTRY_VERIFY_SLEEP_BIN="$TMP/sleep-clock" \
+  bash "$TMP/ci/wait-for-npm-package.sh" @node-webrtc-rust/sdk 0.8.1 >/dev/null 2>"$TMP/err"; then
+  fail "expected failure at deadline"
+fi
+grep -q "deadline reached" "$TMP/err" || fail "missing 'deadline reached' message"
+end="$(cat "$FAKE_CLOCK")"
+[[ "$end" -le $((4000 + 600)) ]] || fail "clock ${end} ran past deadline+600"
+awk '{s+=$1} END {exit !(s <= 3000)}' "$FAKE_SLEEP_LOG" || fail "slept more than the time to deadline"
+
 echo "wait-for-npm-package.test.sh: all checks passed"

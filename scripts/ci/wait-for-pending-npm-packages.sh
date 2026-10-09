@@ -13,6 +13,12 @@
 # 0.9.34 (run 37715035913) took ~90 min for the 87 MB bindings-darwin-x64 tarball, which outran the
 # old 30 min budget and left bindings/sdk/helpers/signaling unpublished. Keep the release.yml
 # "Publish release" job timeout-minutes above this budget (guard: wait-for-pending-npm-packages.test.sh).
+#
+# Optional wall-clock deadline: when NPM_PUBLISH_DEADLINE_EPOCH (unix seconds) is set it replaces the
+# TOTAL/elapsed check. Before each sleep remaining = deadline - now; at <= 0 polling stops ("deadline
+# reached") and each sleep is min(delay, remaining). The clock is NPM_REGISTRY_VERIFY_NOW_BIN
+# (default `date +%s`, invoked as a command; tests supply a fake). Probe time counts against the
+# deadline, so one deadline can bound every registry wait in a job. Unset: behaviour is unchanged.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -21,6 +27,8 @@ TOTAL="${NPM_REGISTRY_VERIFY_TOTAL_SECONDS:-7200}"
 SLEEP_SECONDS="${NPM_REGISTRY_VERIFY_SLEEP_SECONDS:-3}"
 MAX_SLEEP="${NPM_REGISTRY_VERIFY_MAX_SLEEP:-60}"
 SLEEP_BIN="${NPM_REGISTRY_VERIFY_SLEEP_BIN:-sleep}"
+NOW_CMD="${NPM_REGISTRY_VERIFY_NOW_BIN:-date +%s}"
+DEADLINE="${NPM_PUBLISH_DEADLINE_EPOCH:-}"
 
 if [[ ! -s "$FILE" ]]; then
   exit 0
@@ -49,12 +57,24 @@ while :; do
     exit 0
   fi
   pending=("${still[@]}")
-  if [[ "$elapsed" -ge "$TOTAL" ]]; then
-    break
+  if [[ -n "$DEADLINE" ]]; then
+    remaining=$((DEADLINE - $($NOW_CMD)))
+    if [[ "$remaining" -le 0 ]]; then
+      echo "deadline reached (NPM_PUBLISH_DEADLINE_EPOCH=${DEADLINE})" >&2
+      break
+    fi
+    nap="$delay"
+    if [[ "$remaining" -lt "$nap" ]]; then nap="$remaining"; fi
+    echo "  ${#pending[@]} still missing, sleep ${nap}s (${remaining}s to deadline)..."
+  else
+    if [[ "$elapsed" -ge "$TOTAL" ]]; then
+      break
+    fi
+    nap="$delay"
+    echo "  ${#pending[@]} still missing, sleep ${delay}s (~${elapsed}s/${TOTAL}s)..."
   fi
-  echo "  ${#pending[@]} still missing, sleep ${delay}s (~${elapsed}s/${TOTAL}s)..."
-  "$SLEEP_BIN" "$delay"
-  elapsed=$((elapsed + delay))
+  "$SLEEP_BIN" "$nap"
+  elapsed=$((elapsed + nap))
   next=$((delay * 2))
   if [[ "$next" -gt "$MAX_SLEEP" ]]; then delay="$MAX_SLEEP"; else delay="$next"; fi
 done

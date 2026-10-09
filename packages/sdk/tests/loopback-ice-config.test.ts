@@ -17,6 +17,11 @@ import { defaultIceConfig } from './helpers'
  *
  * 2nd occurrence: helpers SessionPod integration tests, main run 37801440974 (the first fix
  * only covered `packages/sdk/tests`), so the scan now covers every `packages/*\/tests`.
+ *
+ * 3rd occurrence: main run 37816046524, `examples/voice-agent/src/shared-loopback.ts` (two peers
+ * in one process on `stun:stun.l.google.com`; CI step `sherpa e2e
+ * start:roundtrip-concurrent-multi-client` timed out waiting for agent ontrack). The guard now
+ * also covers `examples/**\/*.ts`.
  */
 
 const REPO_ROOT = join(__dirname, '..', '..', '..')
@@ -28,6 +33,26 @@ const ICE_SERVER_ALLOWLIST: Record<string, string> = {
   'packages/sdk/tests/sdk.test.ts':
     'asserts getConfiguration() echoes the config; never gathers candidates',
   'packages/sdk/tests/loopback-ice-config.test.ts': 'this guard',
+}
+
+const EXAMPLES_DIR = join(REPO_ROOT, 'examples')
+
+/**
+ * Repo-relative (posix) example sources that keep a STUN/TURN url, with the reason. None of
+ * these is executed by CI with both peers local (CI runs the sherpa roundtrips, which use
+ * `examples/voice-agent/src/shared-loopback.ts` and `DEMO_ICE_SERVERS`, plus vitest).
+ */
+const EXAMPLES_ICE_SERVER_ALLOWLIST: Record<string, string> = {
+  'examples/audio-cosine/src/index.ts': 'node demo, not run by CI',
+  'examples/browser-cosine-chat/src/index.ts': 'browser demo, not run by CI',
+  'examples/conference-room-manual-signaling/src/index.ts': 'browser demo, not run by CI',
+  'examples/conference-room/src/index.ts': 'browser demo, not run by CI',
+  'examples/peer-connection/src/parity-features.ts': 'setConfiguration demo, not run by CI',
+  'examples/voice-agent-browser/src/index.ts': 'browser demo, not run by CI',
+  'examples/voice-agent-local-sherpa-multi-client/src/index.ts': 'browser demo, not run by CI',
+  'examples/voice-agent-local-sherpa-multi-client/src/mix-groups.ts': 'browser demo, not run by CI',
+  'examples/voice-agent-local-sherpa/src/index.ts': 'browser demo, not run by CI',
+  'examples/voice-agent-multi-session-pod/src/index.ts': 'browser demo, not run by CI',
 }
 
 const ICE_URL = /['"`](?:stuns?|turns?):[^'"`]*['"`]/
@@ -55,6 +80,21 @@ function listTestFiles(dir: string, ext = '.ts'): string[] {
     if (statSync(full).isDirectory()) out.push(...listTestFiles(full, ext))
     else if (name.endsWith(ext)) out.push(full)
   }
+  return out
+}
+
+function allExampleSourceFiles(): string[] {
+  const out: string[] = []
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      if (['node_modules', 'dist', '.models', 'generated'].includes(name)) continue
+      const full = join(dir, name)
+      if (statSync(full).isDirectory()) walk(full)
+      else if (name.endsWith('.ts') && !name.endsWith('.d.ts') && !name.includes('.generated.'))
+        out.push(full)
+    }
+  }
+  walk(EXAMPLES_DIR)
   return out
 }
 
@@ -108,6 +148,28 @@ describe('loopback ICE configuration', () => {
       .map(rel)
       .filter((r) => !(r in ICE_SERVER_ALLOWLIST))
     expect(offenders).toEqual([])
+  })
+
+  test('no example source outside the allowlist configures a STUN/TURN url', () => {
+    const files = allExampleSourceFiles()
+    expect(files.length).toBeGreaterThan(10)
+    const rel = (f: string) => relative(REPO_ROOT, f).split(sep).join('/')
+    const offenders = files
+      .filter((f) => hasRealIceUrl(readFileSync(f, 'utf8'), ICE_URL_ALL))
+      .map(rel)
+      .filter((r) => !(r in EXAMPLES_ICE_SERVER_ALLOWLIST))
+    expect(offenders).toEqual([])
+  })
+
+  test('every examples allowlist entry still exists and still has an ICE url', () => {
+    const stale = Object.keys(EXAMPLES_ICE_SERVER_ALLOWLIST).filter((r) => {
+      try {
+        return !hasRealIceUrl(readFileSync(join(REPO_ROOT, r), 'utf8'), ICE_URL_ALL)
+      } catch {
+        return true
+      }
+    })
+    expect(stale).toEqual([])
   })
 
   test('guard accepts reserved .invalid hosts and flags real ones', () => {

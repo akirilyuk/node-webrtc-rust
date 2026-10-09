@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **speech** — Voice latency histograms use explicit 50 ms buckets up to 1 s (then 1.1-1.5 s, 1.75 s, 2 s, 2.5 s, 3 s, 4 s, 5 s, 7.5 s, 10 s), so percentiles no longer collapse to 737.5 ms for samples between 500 and 750 ms.
+
 ## [0.9.38] - 2026-10-09
 
 ### Fixed

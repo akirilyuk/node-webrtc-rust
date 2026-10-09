@@ -73,6 +73,21 @@ fn otel_disabled_by_env() -> bool {
     )
 }
 
+/// Explicit bucket boundaries (ms) for the voice latency histograms.
+///
+/// Without explicit boundaries the OpenTelemetry SDK 0.28 defaults apply
+/// (0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, ...), which have no resolution
+/// between 500 and 750 ms: a single sample there reports p95 = 737.5 ms. These boundaries give
+/// 50 ms steps up to 1 s, where voice latency lives.
+///
+/// Changing this list changes Prometheus series cardinality: roughly 34 bucket series per
+/// label set per histogram.
+pub(crate) const VOICE_LATENCY_BOUNDARIES_MS: [f64; 33] = [
+    50.0, 100.0, 150.0, 200.0, 250.0, 300.0, 350.0, 400.0, 450.0, 500.0, 550.0, 600.0, 650.0,
+    700.0, 750.0, 800.0, 850.0, 900.0, 950.0, 1000.0, 1100.0, 1200.0, 1300.0, 1400.0, 1500.0,
+    1750.0, 2000.0, 2500.0, 3000.0, 4000.0, 5000.0, 7500.0, 10000.0,
+];
+
 fn ensure_meter() -> &'static Meter {
     METER.get_or_init(|| global::meter("node-webrtc-rust-speech"))
 }
@@ -82,6 +97,7 @@ fn stt_latency_histogram() -> &'static Histogram<f64> {
         ensure_meter()
             .f64_histogram("voice_stt_latency_ms")
             .with_description("STT utterance finalize latency in milliseconds")
+            .with_boundaries(VOICE_LATENCY_BOUNDARIES_MS.to_vec())
             .build()
     })
 }
@@ -91,6 +107,7 @@ fn tts_latency_histogram() -> &'static Histogram<f64> {
         ensure_meter()
             .f64_histogram("voice_tts_latency_ms")
             .with_description("TTS synthesis latency in milliseconds")
+            .with_boundaries(VOICE_LATENCY_BOUNDARIES_MS.to_vec())
             .build()
     })
 }
@@ -187,6 +204,7 @@ fn tts_first_audio_histogram() -> &'static Histogram<f64> {
             .with_description(
                 "Milliseconds from the speak request to the first outbound PCM frame of the reply",
             )
+            .with_boundaries(VOICE_LATENCY_BOUNDARIES_MS.to_vec())
             .build()
     })
 }
@@ -198,6 +216,7 @@ fn voice_stt_finalize_histogram() -> &'static Histogram<f64> {
             .with_description(
                 "Milliseconds from VAD speech end to the first STT final of that utterance",
             )
+            .with_boundaries(VOICE_LATENCY_BOUNDARIES_MS.to_vec())
             .build()
     })
 }
@@ -209,6 +228,7 @@ fn voice_final_to_audio_histogram() -> &'static Histogram<f64> {
             .with_description(
                 "Milliseconds from the latest STT final to the first outbound PCM frame of the reply",
             )
+            .with_boundaries(VOICE_LATENCY_BOUNDARIES_MS.to_vec())
             .build()
     })
 }
@@ -220,6 +240,7 @@ fn voice_turn_response_histogram() -> &'static Histogram<f64> {
             .with_description(
                 "Milliseconds from VAD speech end to the first outbound PCM frame of the reply",
             )
+            .with_boundaries(VOICE_LATENCY_BOUNDARIES_MS.to_vec())
             .build()
     })
 }
@@ -786,6 +807,17 @@ mod tests {
 
     fn attr(resource: &Resource, key: &str) -> Option<String> {
         resource.get(&Key::new(key.to_string())).map(|v| v.to_string())
+    }
+
+    #[test]
+    fn voice_latency_boundaries_are_well_formed() {
+        let b = VOICE_LATENCY_BOUNDARIES_MS;
+        assert_eq!(b.len(), 33);
+        assert_eq!(b[0], 50.0);
+        assert_eq!(b[b.len() - 1], 10000.0);
+        assert!(b.windows(2).all(|w| w[0] < w[1]), "strictly increasing");
+        assert!(b.contains(&750.0));
+        assert!(b.contains(&1500.0));
     }
 
     #[test]

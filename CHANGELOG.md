@@ -8,10 +8,6 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- **helpers** — a `client_hangup` that arrives on a replaced session's control channel after a rejoin no longer closes the rejoined peer; the close is scoped to the session that received it.
-
 ## [0.9.39] - 2026-10-09
 
 ### Changed
@@ -21,6 +17,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **ci** — the release publish job uses one wall-clock deadline for all npm registry waits instead of a separate timeout per wait.
+- **helpers** — a `client_hangup` that arrives on a replaced session's control channel after a rejoin no longer closes the rejoined peer; the close is scoped to the session that received it.
+- **tests** — the CI-run example loopbacks (`examples/voice-agent/src/shared-loopback.ts`, `DEMO_ICE_SERVERS`) use host candidates only instead of a public STUN host, which timed out waiting for `ontrack` when DNS stalled. The loopback ICE guard now also scans `examples/`.
 
 ## [0.9.38] - 2026-10-09
 

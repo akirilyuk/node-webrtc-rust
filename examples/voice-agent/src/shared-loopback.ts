@@ -37,9 +37,6 @@ import {
   PCM_KICK_DURATION_MS,
 } from '../../shared/pcm-streaming.js'
 
-/** Public STUN — enough for two peers on the same host to find host candidates. */
-const STUN = { urls: 'stun:stun.l.google.com:19302' }
-
 /**
  * Convenience wrapper around {@link createBidirectionalLoopback}.
  * Mock demos only need agent-side tracks; live demos call the bidirectional helper directly
@@ -85,8 +82,10 @@ export async function createBidirectionalLoopback(): Promise<{
   const server = new SignalingServer({ port: 0 })
   await server.listen(0)
 
-  const agentPc = new RTCPeerConnection({ iceServers: [STUN] })
-  const userPc = new RTCPeerConnection({ iceServers: [STUN] })
+  // Both peers run in this process; host candidates are enough, and an external STUN host makes
+  // ICE gathering wait on DNS (CI run 37816046524).
+  const agentPc = new RTCPeerConnection({ iceServers: [] })
+  const userPc = new RTCPeerConnection({ iceServers: [] })
 
   // Each side advertises one send track; the remote side receives it as ontrack → RemoteAudioTrack.
   const agentOut = new LocalAudioTrack('agent-out', 'voice-demo')

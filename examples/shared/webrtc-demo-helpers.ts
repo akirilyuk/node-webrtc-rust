@@ -9,8 +9,12 @@
 
 import type { RTCDataChannel, RTCPeerConnection } from '@node-webrtc-rust/sdk'
 
-/** Public STUN — enough for local demos; production apps should add TURN. */
-export const DEMO_ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
+/**
+ * No ICE servers: the demos using this run both peers on one host, where host candidates are
+ * enough, and an external STUN host makes ICE gathering wait on DNS (CI run 37816046524).
+ * Real apps across networks should configure STUN and TURN.
+ */
+export const DEMO_ICE_SERVERS: { urls: string }[] = []
 
 export function logSection(title: string): void {
   console.log(`\n=== ${title} ===`)

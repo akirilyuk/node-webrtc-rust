@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **helpers** — a `client_hangup` that arrives on a replaced session's control channel after a rejoin no longer closes the rejoined peer; the close is scoped to the session that received it.
+
 ## [0.9.39] - 2026-10-09
 
 ### Changed

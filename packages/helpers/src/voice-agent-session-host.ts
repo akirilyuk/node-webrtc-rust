@@ -1370,11 +1370,7 @@ export class VoiceAgentSessionHost {
       if (isClientHangupMessage(event.data)) {
         session.clientHangup = true
         this.log(`[voice ${peerId}] client hung up — closing peer`)
-        void this.enqueuePeerOp(peerId, () => this.closeClientInner(peerId)).catch(
-          (error: unknown) => {
-            console.error(`[voice ${peerId}] closeClient after client_hangup failed:`, error)
-          },
-        )
+        this.voidCloseClient(peerId, session)
         return
       }
       wired?.call(channel, event)

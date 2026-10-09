@@ -400,9 +400,10 @@ jobs:
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
       (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped') &&
       (needs.reuse-bundle.result == 'success' || needs.reuse-bundle.result == 'skipped')
-    # Must exceed the deferred registry-visibility budget (NPM_REGISTRY_VERIFY_TOTAL_SECONDS, default
-    # 7200 s = 120 min in wait-for-pending-npm-packages.sh) plus publish time and the strict verifies
-    # of the dependents. Registry lag reached ~90 min in 0.9.34. Guard: wait-for-pending-npm-packages.test.sh.
+    # Budget: 150 min shared wall-clock deadline for every registry wait in "Publish npm packages"
+    # (NPM_PUBLISH_DEADLINE_EPOCH, default NPM_PUBLISH_BUDGET_SECONDS=9000), leaving 30 min headroom
+    # for publish/build time. Registry lag reached ~90 min in 0.9.34. Guard:
+    # wait-for-pending-npm-packages.test.sh (timeout-minutes*60 >= budget + 1200).
     timeout-minutes: 180
     runs-on: self-hosted
     container:
@@ -528,6 +529,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          NPM_PUBLISH_BUDGET_SECONDS="${NPM_PUBLISH_BUDGET_SECONDS:-9000}" # 150 min for every registry wait in this step
+          export NPM_PUBLISH_DEADLINE_EPOCH=$(( $(date +%s) + NPM_PUBLISH_BUDGET_SECONDS ))
           VERSION="${{ steps.version.outputs.version }}"
           BINDINGS="packages/bindings"
           PUBLISH=(bash scripts/ci/publish-npm-if-needed.sh)
@@ -552,16 +555,19 @@ jobs:
           bash scripts/ci/wait-for-pending-npm-packages.sh
 
           echo "==> @node-webrtc-rust/bindings"
-          "${PUBLISH[@]}" "$BINDINGS/" "@node-webrtc-rust/bindings" "$VERSION" --ignore-scripts
+          NPM_PUBLISH_DEFER_VERIFY=1 "${PUBLISH[@]}" "$BINDINGS/" "@node-webrtc-rust/bindings" "$VERSION" --ignore-scripts
 
           echo "==> @node-webrtc-rust/signaling"
-          "${PUBLISH[@]}" "packages/signaling/" "@node-webrtc-rust/signaling" "$VERSION" --ignore-scripts --omit=dev
+          NPM_PUBLISH_DEFER_VERIFY=1 "${PUBLISH[@]}" "packages/signaling/" "@node-webrtc-rust/signaling" "$VERSION" --ignore-scripts --omit=dev
 
           echo "==> @node-webrtc-rust/sdk"
-          "${PUBLISH[@]}" "packages/sdk/" "@node-webrtc-rust/sdk" "$VERSION" --ignore-scripts
+          NPM_PUBLISH_DEFER_VERIFY=1 "${PUBLISH[@]}" "packages/sdk/" "@node-webrtc-rust/sdk" "$VERSION" --ignore-scripts
 
           echo "==> @node-webrtc-rust/helpers"
-          "${PUBLISH[@]}" "packages/helpers/" "@node-webrtc-rust/helpers" "$VERSION" --ignore-scripts
+          NPM_PUBLISH_DEFER_VERIFY=1 "${PUBLISH[@]}" "packages/helpers/" "@node-webrtc-rust/helpers" "$VERSION" --ignore-scripts
+
+          echo "==> Waiting for dependents to appear on registry"
+          bash scripts/ci/wait-for-pending-npm-packages.sh
 
           echo "==> Published @node-webrtc-rust/*@${VERSION} to npm"
         env:

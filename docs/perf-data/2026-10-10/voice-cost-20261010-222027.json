@@ -1,0 +1,52 @@
+{
+  "tts": [
+    {
+      "model": "vits-melo-tts-zh_en",
+      "threads": 1,
+      "runs": 3,
+      "rtf": 0.6185,
+      "cost_vs_amy_medium": null,
+      "cpu_s_per_audio_s": 0.6179,
+      "ttfa_ms": {
+        "1": {
+          "p50": 338.7,
+          "p95": 341.8
+        }
+      },
+      "rss_mb_peak": 403.8
+    },
+    {
+      "model": "vits-piper-en_US-lessac-high",
+      "threads": 1,
+      "runs": 3,
+      "rtf": 0.579,
+      "cost_vs_amy_medium": null,
+      "cpu_s_per_audio_s": 0.5739,
+      "ttfa_ms": {
+        "1": {
+          "p50": 881,
+          "p95": 956.7
+        }
+      },
+      "rss_mb_peak": 405.4
+    }
+  ],
+  "stt": [
+    {
+      "model": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
+      "threads": 1,
+      "points": [
+        {
+          "streams": 1,
+          "lag_ms_p95": 54.6,
+          "final_ms_p95": 6.3,
+          "realtime_ok": true,
+          "cpu_s_per_audio_s": 0.0425,
+          "rss_mb_peak": 173.8,
+          "runs": 3
+        }
+      ],
+      "capacity_streams": 1
+    }
+  ]
+}

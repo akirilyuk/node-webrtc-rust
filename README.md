@@ -90,11 +90,11 @@ See [`examples/voice-agent-multi-session-pod`](examples/voice-agent-multi-sessio
 
 ## Performance
 
-Measured on a CPU-limited container, per CPU. Full tables, tuning advice and the commands to reproduce them are in [`docs/performance.md`](docs/performance.md).
+Speech engine numbers were measured in a container limited to one CPU; media path and loopback numbers ran natively on an Apple M4 Pro. Full tables, tuning advice, the test machine and the commands to reproduce them are in [`docs/performance.md`](docs/performance.md).
 
-- <!-- MEASURE:headline-stt -->
-- <!-- MEASURE:headline-opus -->
-- <!-- MEASURE:headline-tts-start -->
+- Streaming speech-to-text keeps 16 concurrent streams in real time on one CPU, with a p95 decode lag of 378 ms ([details](docs/performance.md#speech-to-text-sherpa-onnx-streaming)).
+- Encoding the Opus audio of one session takes 112 µs per 20 ms stereo frame, about 0.6% of one core ([details](docs/performance.md#media-path)).
+- In the 8-session voice loopback test, synthesized speech starts playing 71 ms after the request (p50) ([details](docs/performance.md#voice-loopback-under-load)).
 
 ---
 

@@ -1,0 +1,1 @@
+{"name":"roundtrip-load","legs":8,"turns":5,"metrics":{"final_latency_ms_p50":2065.97,"final_latency_ms_p95":2195,"tts_start_latency_ms_p50":71.03,"tts_start_latency_ms_p95":504.47,"turn_success_rate":1,"cpu_s_per_session_min":4.5,"event_loop_lag_ms_p99":1.86,"rss_mb_end":756.59,"wall_s":24.21}}

@@ -22,6 +22,8 @@
 #                          (default: sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06)
 #   PROBE_TTS_SESSIONS, PROBE_LONG_REPS, PROBE_STT_STREAMS, PROBE_STT_LAG_SLO_MS
 #                          forwarded to the probes (defaults live in the probe file header)
+#   SHERPA_POOL_MAX_CONCURRENT_TTS
+#                          forwarded too; when unset the TTS probe raises it to the largest session count
 #   PROBE_CI_IMAGE         override the build/run image. Default: `nwr-voice-cost:local`, built once from
 #                          scripts/perf/voice-cost.Dockerfile (rust:1.99-bookworm, cmake, build-essential)
 #                          when it is missing; delete the image to rebuild. An override must be a Linux
@@ -45,7 +47,7 @@ while [[ $# -gt 0 ]]; do
     --cpus) CPUS="${2:?--cpus needs a value}"; shift 2 ;;
     --runs) RUNS="${2:?--runs needs a value}"; shift 2 ;;
     --threads) THREADS="${2:?--threads needs a value}"; shift 2 ;;
-    -h | --help) sed -n '2,37p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,39p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -111,7 +113,7 @@ if ! docker run --rm \
 fi
 
 PROBE_ENV=()
-for name in PROBE_TTS_SESSIONS PROBE_LONG_REPS PROBE_STT_STREAMS PROBE_STT_LAG_SLO_MS; do
+for name in PROBE_TTS_SESSIONS PROBE_LONG_REPS PROBE_STT_STREAMS PROBE_STT_LAG_SLO_MS SHERPA_POOL_MAX_CONCURRENT_TTS; do
   if [[ -n "${!name:-}" ]]; then PROBE_ENV+=(-e "$name=${!name}"); fi
 done
 

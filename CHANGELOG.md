@@ -8,6 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.40] - 2026-10-10
+
+### Fixed
+
+- **sherpa** — lexicon VITS models such as Melo TTS (`vits-melo-tts-zh_en`) load without an `espeak-ng-data` directory. When a model ships `lexicon.txt`, the loader passes the lexicon, the `dict/` directory and the bundled rule FSTs to sherpa-onnx. Piper models are unchanged.
+- **sherpa** — `model.onnx` is preferred, and `.onnx` files of 1 KiB or less (git-lfs pointer files, such as the `model.int8.onnx` in the upstream Melo tarball) are never picked as the model.
+
 ## [0.9.39] - 2026-10-09
 
 ### Changed

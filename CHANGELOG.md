@@ -8,9 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.41] - 2026-10-11
+
 ### Fixed
 
 - **dtls** — a lost final DTLS handshake packet could leave a peer stuck connecting. The side that sends the last handshake flight now resends it when the peer retransmits (RFC 6347 section 4.2.4). Ships as a vendored `dtls` 0.17.1 patch until upstream releases a fix.
+- **ci** — the 10-session LID echo step waits for every final of an echo reply the speaker's STT splits in two, and its debug re-run stays inside the CI step budget (guarded by a test).
 
 ## [0.9.40] - 2026-10-10
 

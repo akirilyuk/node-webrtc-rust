@@ -195,7 +195,7 @@ Requires downloaded **Zipformer transducer** (STT) and **Piper/VITS** (TTS) dire
 | Variable                | Required      | Purpose                                                                  |
 | ----------------------- | ------------- | ------------------------------------------------------------------------ |
 | `SHERPA_STT_MODEL_PATH` | **Yes** (STT) | Path to extracted Zipformer STT directory                                |
-| `SHERPA_TTS_MODEL_PATH` | **Yes** (TTS) | Path to Piper/VITS directory (`tokens.txt`, `*.onnx`, `espeak-ng-data/`) |
+| `SHERPA_TTS_MODEL_PATH` | **Yes** (TTS) | Path to Piper/VITS directory (`tokens.txt`, `*.onnx`, `espeak-ng-data/`; lexicon models such as Melo use `lexicon.txt` instead of `espeak-ng-data/`) |
 | `SHERPA_STT_LANGUAGE`   | No            | `stt.language` tag (inferred from path when omitted)                     |
 | `SHERPA_TTS_SPEAKER`    | No            | Piper speaker id for `tts.voice` (default `0`)                           |
 

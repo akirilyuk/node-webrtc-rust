@@ -40,6 +40,8 @@ tokens.txt
 espeak-ng-data/     (phoneme data — included in Sherpa tts-models bundles)
 ```
 
+Lexicon VITS models (Melo, e.g. `vits-melo-tts-zh_en`) are supported too: when the folder has `lexicon.txt`, `espeak-ng-data/` is optional, a `dict/` folder is passed as the dict dir, and `phone.fst`, `date.fst`, `number.fst`, `new_heteronym.fst` (plus any other `*.fst`) are loaded as rule FSTs.
+
 Optional: `SHERPA_TTS_SPEAKER` / `tts.voice` for multi-speaker Piper models (speaker id, default `0`).
 
 Download voices via [`voice-agent-local-sherpa`](../../examples/voice-agent-local-sherpa/README.md) (`download-tts:*` scripts). Catalog: [`examples/shared/sherpa-tts-model-catalog.json`](../../examples/shared/sherpa-tts-model-catalog.json).

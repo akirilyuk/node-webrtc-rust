@@ -1815,8 +1815,6 @@ dependencies = [
 [[package]]
 name = "dtls"
 version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f016db07b91e9d79cc60a152c163d3f0ce2d4c0173cb3964de3526aab6e07fa"
 dependencies = [
  "aes",
  "aes-gcm",

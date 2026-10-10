@@ -24,6 +24,10 @@ members = [
     "crates/voice-catalog",
     "packages/bindings",
 ]
+exclude = ["third_party/dtls"]
+
+[patch.crates-io]
+dtls = { path = "third_party/dtls" }
 
 [workspace.package]
 version = "0.1.0"

@@ -143,9 +143,22 @@ fn find_tokens(dir: &Path) -> SpeechResult<PathBuf> {
     )))
 }
 
+/// Files this small are git-lfs pointers (about 130 bytes), never real ONNX models.
+const MIN_ONNX_MODEL_BYTES: u64 = 1024;
+
+fn is_real_model_file(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|meta| meta.len() > MIN_ONNX_MODEL_BYTES)
+}
+
 fn find_vits_onnx(dir: &Path) -> SpeechResult<PathBuf> {
+    let preferred = dir.join("model.onnx");
+    if preferred.is_file() && is_real_model_file(&preferred) {
+        return Ok(preferred);
+    }
+
     let entries = read_dir(dir)?;
     let mut candidates = Vec::new();
+    let mut skipped_pointers = false;
 
     for entry in entries {
         let entry = entry.map_err(|err| {
@@ -169,13 +182,23 @@ fn find_vits_onnx(dir: &Path) -> SpeechResult<PathBuf> {
         {
             continue;
         }
+        // A tiny .onnx is a git-lfs pointer, not a model; loading it aborts ORT.
+        if !is_real_model_file(&path) {
+            skipped_pointers = true;
+            continue;
+        }
         candidates.push(path);
     }
 
     candidates.sort_by_key(|path| path.file_name().map(|name| name.to_owned()));
     candidates.into_iter().next().ok_or_else(|| {
+        let suffix = if skipped_pointers {
+            " (only git-lfs pointer files found)"
+        } else {
+            ""
+        };
         SpeechError::Config(format!(
-            "no VITS/Piper .onnx model found in {}",
+            "no VITS/Piper .onnx model found in {}{suffix}",
             dir.display()
         ))
     })
@@ -243,7 +266,11 @@ mod tests {
         }
 
         fn file(&self, name: &str) {
-            fs::write(self.0.join(name), b"x").unwrap();
+            self.file_sized(name, 2048);
+        }
+
+        fn file_sized(&self, name: &str, len: usize) {
+            fs::write(self.0.join(name), vec![b'x'; len]).unwrap();
         }
 
         fn dir(&self, name: &str) {
@@ -331,5 +358,28 @@ mod tests {
         .map(|name| dir.0.join(name))
         .collect();
         assert_eq!(paths.rule_fsts, expected);
+    }
+
+    #[test]
+    fn melo_dir_prefers_model_onnx_over_int8_pointer() {
+        let dir = TempDir::new();
+        dir.file("tokens.txt");
+        dir.file("lexicon.txt");
+        dir.file_sized("model.int8.onnx", 133);
+        dir.file_sized("model.onnx", 2048);
+
+        let paths = resolve_tts_model_paths(&dir.config()).unwrap();
+        assert_eq!(paths.vits_model, dir.0.join("model.onnx"));
+    }
+
+    #[test]
+    fn pointer_only_onnx_is_rejected() {
+        let dir = TempDir::new();
+        dir.file("tokens.txt");
+        dir.dir("espeak-ng-data");
+        dir.file_sized("x.onnx", 133);
+
+        let err = resolve_tts_model_paths(&dir.config()).unwrap_err();
+        assert!(err.to_string().contains("git-lfs pointer"), "{err}");
     }
 }

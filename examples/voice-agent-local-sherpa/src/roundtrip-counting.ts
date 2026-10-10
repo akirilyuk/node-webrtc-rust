@@ -80,7 +80,8 @@ export const DEFAULT_AGENT_TTS_PLAYBACK_TIMEOUT_MS = 45_000
 
 /**
  * Hard process kill for E2E scripts — overrides hung STT/native waits so CI/local runs fail fast.
- * Override with `SHERPA_ROUNDTRIP_WALL_MS` (applies to all roundtrip `start:*` scripts).
+ * Override with `SHERPA_ROUNDTRIP_WALL_MS` (applies to all roundtrip `start:*` scripts);
+ * `SHERPA_ROUNDTRIP_WALL_MAX_MS` only lowers it (CI re-run budget).
  */
 export function installRoundtripWallClockTimeout(defaultWallMs = 90_000): void {
   rememberRoundtripEntryScript()
@@ -93,6 +94,15 @@ export function installRoundtripWallClockTimeout(defaultWallMs = 90_000): void {
       `[${scriptName}] invalid SHERPA_ROUNDTRIP_WALL_MS=${String(rawWall)} — using default ${defaultWallMs} ms`,
     )
     wallMs = defaultWallMs
+  }
+  // The CI wrapper caps the VOICE_DEBUG re-run to the time left under the step cap.
+  const rawMax = process.env.SHERPA_ROUNDTRIP_WALL_MAX_MS
+  const maxWallMs = rawMax != null && rawMax !== '' ? Number(rawMax) : Number.NaN
+  if (Number.isFinite(maxWallMs) && maxWallMs > 0 && maxWallMs < wallMs) {
+    console.log(
+      `[${scriptName}] wall-clock limit lowered ${wallMs} -> ${maxWallMs} ms (SHERPA_ROUNDTRIP_WALL_MAX_MS)`,
+    )
+    wallMs = maxWallMs
   }
   console.log(`[${scriptName}] wall-clock limit ${wallMs} ms (SHERPA_ROUNDTRIP_WALL_MS)`)
   setTimeout(() => {
@@ -574,6 +584,15 @@ export function roundtripWallClockMs(
   }
 }
 
+/** Join the finals of consecutive utterances: `["Okay", ", one, two"]` -> `"Okay, one, two"`. */
+export function joinUtteranceFinals(finals: readonly string[]): string {
+  return finals
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0)
+    .join(' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+}
+
 export function normalizeForCompare(text: string): string {
   return text
     .toLowerCase()
@@ -584,15 +603,6 @@ export function normalizeForCompare(text: string): string {
 
 /** Share of `input` words (after normalize) found as whole tokens in `recognized`. */
 export function wordSimilarity(input: string, recognized: string): number {
-/** Join the finals of consecutive utterances: `["Okay", ", one, two"]` -> `"Okay, one, two"`. */
-export function joinUtteranceFinals(finals: readonly string[]): string {
-  return finals
-    .map((f) => f.trim())
-    .filter((f) => f.length > 0)
-    .join(' ')
-    .replace(/\s+([,.;:!?])/g, '$1')
-}
-
   const words = normalizeForCompare(input)
     .split(' ')
     .filter((w) => w.length > 0)
@@ -714,6 +724,9 @@ export class ListenerUtteranceCollector {
   /** First `user_speech_final` seen after such a fallback (the pipeline's real answer). */
   private lateFinalText: string | null = null
   private lateFinalWaiters: Array<(text: string) => void> = []
+  /** Every `user_speech_final` since the last `waitFor*` began, deferred ones included. */
+  private roundFinals: string[] = []
+  private roundFinalListeners: Array<() => void> = []
 
   constructor(
     private readonly listener: VoiceAgent,
@@ -724,9 +737,6 @@ export class ListenerUtteranceCollector {
   ) {}
 
   startPump(): void {
-  /** Every `user_speech_final` since the last `waitFor*` began, deferred ones included. */
-  private roundFinals: string[] = []
-  private roundFinalListeners: Array<() => void> = []
     if (this.pumpStarted.value) return
     this.pumpStarted.value = true
     void this.pump()
@@ -997,6 +1007,10 @@ export class ListenerUtteranceCollector {
       for await (const event of this.listener.speechEvents()) {
         logRoundtripSpeechEvent(this.agentLabel, event)
         this.agentEndLatch?.observe(event)
+        if (event.type === 'user_speech_final' && (event.text ?? '').trim()) {
+          this.roundFinals.push((event.text ?? '').trim())
+          for (const listener of this.roundFinalListeners.splice(0)) listener()
+        }
         if (this.eventRecordingStartMs != null) {
           this.eventRecording.push({
             type: event.type as SpeechEventType,
@@ -1007,10 +1021,6 @@ export class ListenerUtteranceCollector {
         this.recordEvent(event)
         if (this.settled) continue
 
-        if (event.type === 'user_speech_final' && (event.text ?? '').trim()) {
-          this.roundFinals.push((event.text ?? '').trim())
-          for (const listener of this.roundFinalListeners.splice(0)) listener()
-        }
         if (event.type === 'user_speech_partial' && event.text?.trim()) {
           this.lastPartial = event.text.trim()
           if (this.deferFinalUntilPlaybackDone && !this.playbackFinished) {
@@ -1073,6 +1083,7 @@ export class ListenerUtteranceCollector {
     this.resolvedViaPartialFallback = false
     this.lateFinalText = null
     this.lateFinalWaiters = []
+    this.roundFinals = []
     this.deferFinalUntilPlaybackDone = playbackPromise != null
     this.playbackFinished = playbackPromise == null
     this.finalizeWaitMs = finalizeWaitMs
@@ -1083,7 +1094,6 @@ export class ListenerUtteranceCollector {
       void playbackPromise
         .then(() => {
           this.onPlaybackFinished()
-    this.roundFinals = []
         })
         .catch((error: unknown) => {
           this.fail(error instanceof Error ? error : new Error(String(error)))
@@ -1153,16 +1163,6 @@ export class ListenerUtteranceCollector {
     })
   }
 
-  private finish(text: string, reason: string): void {
-    if (this.settled) return
-    this.settled = true
-    this.resolvedViaPartialFallback = !reason.startsWith('final')
-    if (this.overallTimer) clearTimeout(this.overallTimer)
-    if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
-    if (this.progressTimer) clearInterval(this.progressTimer)
-    const trimmed = text.trim()
-    if (!reason.startsWith('final')) {
-      this.recordAcceptedUtteranceStats(trimmed)
   /**
    * A CPU-starved host can split one reply into several utterances (the TTS gap between two
    * sentences exceeds the VAD min silence), so the first `user_speech_final` ("Okay") settles the
@@ -1201,6 +1201,16 @@ export class ListenerUtteranceCollector {
     }
   }
 
+  private finish(text: string, reason: string): void {
+    if (this.settled) return
+    this.settled = true
+    this.resolvedViaPartialFallback = !reason.startsWith('final')
+    if (this.overallTimer) clearTimeout(this.overallTimer)
+    if (this.postSpeechTimer) clearTimeout(this.postSpeechTimer)
+    if (this.progressTimer) clearInterval(this.progressTimer)
+    const trimmed = text.trim()
+    if (!reason.startsWith('final')) {
+      this.recordAcceptedUtteranceStats(trimmed)
     }
     if (reason !== 'final' && this.verbose) {
       console.log(`[listener] [STT] ${reason}: "${trimmed}"`)

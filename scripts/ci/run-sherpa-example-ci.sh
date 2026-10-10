@@ -34,6 +34,12 @@ sherpa_roundtrip_timeout_sec() {
     start:roundtrip-counting-echo | start:roundtrip-counting-echo-lid | start:roundtrip)
       echo "${CI_SHERPA_LONG_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
+    start:roundtrip-counting-echo-lid-multi)
+      # 240s in-process wall (10 concurrent sessions, local LID + TTS). A starved CI host used to
+      # leave the VOICE_DEBUG re-run running past the old 180s cap; the re-run is now clamped to the
+      # time left (see run-sherpa-roundtrip-e2e.sh). Guard: roundtrip-ci-step-budget.test.ts.
+      echo "${CI_SHERPA_LID_MULTI_ROUNDTRIP_TIMEOUT_SEC:-300}"
+      ;;
     start:roundtrip-load-ci)
       # 4 concurrent legs x 2 turns; 60s setup + per-turn TTS/silence/STT budget in-process.
       echo "${CI_SHERPA_LOAD_ROUNDTRIP_TIMEOUT_SEC:-420}"
@@ -180,7 +186,7 @@ run_e2e() {
     idx=$((idx + 1))
     local step_timeout
     step_timeout="$(sherpa_roundtrip_timeout_sec "$script")"
-    CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
+    SHERPA_ROUNDTRIP_STEP_TIMEOUT_SEC="$step_timeout" CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
       bash "$CI_STEP" --timeout "$step_timeout" \
         "sherpa e2e $script" -- bash "$ROOT/scripts/ci/run-sherpa-roundtrip-e2e.sh" "$script"
   done
@@ -193,6 +199,13 @@ run_rust() {
 
 mode="${1:-all}"
 case "$mode" in
+  step-timeouts)
+    # "<npm script> <step cap seconds>" per roundtrip E2E step (read by roundtrip-ci-step-budget.test.ts).
+    for script in "${SHERPA_ROUNDTRIP_E2E[@]}"; do
+      echo "$script $(sherpa_roundtrip_timeout_sec "$script")"
+    done
+    exit 0
+    ;;
   typecheck) run_typecheck ;;
   vitest) run_vitest ;;
   e2e) run_e2e ;;
@@ -203,7 +216,7 @@ case "$mode" in
     run_e2e
     ;;
   *)
-    echo "Usage: $0 {typecheck|vitest|e2e|rust|all}" >&2
+    echo "Usage: $0 {typecheck|vitest|e2e|rust|all|step-timeouts}" >&2
     exit 2
     ;;
 esac

@@ -122,21 +122,40 @@ pub fn create_offline_tts(config: &TtsConfig) -> SpeechResult<OfflineTts> {
     model_config.vits = OfflineTtsVitsModelConfig {
         model: Some(path_to_string(&paths.vits_model)?),
         tokens: Some(path_to_string(&paths.tokens)?),
-        data_dir: Some(path_to_string(&paths.data_dir)?),
+        data_dir: paths
+            .data_dir
+            .as_ref()
+            .map(|p| path_to_string(p))
+            .transpose()?,
+        lexicon: paths
+            .lexicon
+            .as_ref()
+            .map(|p| path_to_string(p))
+            .transpose()?,
+        dict_dir: paths
+            .dict_dir
+            .as_ref()
+            .map(|p| path_to_string(p))
+            .transpose()?,
         noise_scale: 0.667,
         noise_scale_w: 0.8,
         length_scale: 1.0,
-        ..Default::default()
     };
 
+    let rule_fsts = paths
+        .rule_fsts
+        .iter()
+        .map(|p| path_to_string(p))
+        .collect::<SpeechResult<Vec<_>>>()?;
     let tts_config = OfflineTtsConfig {
         model: model_config,
+        rule_fsts: (!rule_fsts.is_empty()).then(|| rule_fsts.join(",")),
         ..Default::default()
     };
 
     let tts = OfflineTts::create(&tts_config).ok_or_else(|| SpeechError::Vendor {
         vendor: "local-sherpa".into(),
-        message: "failed to create OfflineTts — check SHERPA_TTS_MODEL_PATH and espeak-ng-data"
+        message: "failed to create OfflineTts — check SHERPA_TTS_MODEL_PATH (Piper needs espeak-ng-data, lexicon models need lexicon.txt)"
             .into(),
     })?;
 

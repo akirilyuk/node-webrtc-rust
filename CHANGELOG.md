@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **dtls** — a lost final DTLS handshake packet could leave a peer stuck connecting. The side that sends the last handshake flight now resends it when the peer retransmits (RFC 6347 section 4.2.4). Ships as a vendored `dtls` 0.17.1 patch until upstream releases a fix.
+
 ## [0.9.40] - 2026-10-10
 
 ### Fixed

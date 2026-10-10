@@ -584,6 +584,15 @@ export function normalizeForCompare(text: string): string {
 
 /** Share of `input` words (after normalize) found as whole tokens in `recognized`. */
 export function wordSimilarity(input: string, recognized: string): number {
+/** Join the finals of consecutive utterances: `["Okay", ", one, two"]` -> `"Okay, one, two"`. */
+export function joinUtteranceFinals(finals: readonly string[]): string {
+  return finals
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0)
+    .join(' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+}
+
   const words = normalizeForCompare(input)
     .split(' ')
     .filter((w) => w.length > 0)
@@ -715,6 +724,9 @@ export class ListenerUtteranceCollector {
   ) {}
 
   startPump(): void {
+  /** Every `user_speech_final` since the last `waitFor*` began, deferred ones included. */
+  private roundFinals: string[] = []
+  private roundFinalListeners: Array<() => void> = []
     if (this.pumpStarted.value) return
     this.pumpStarted.value = true
     void this.pump()
@@ -995,6 +1007,10 @@ export class ListenerUtteranceCollector {
         this.recordEvent(event)
         if (this.settled) continue
 
+        if (event.type === 'user_speech_final' && (event.text ?? '').trim()) {
+          this.roundFinals.push((event.text ?? '').trim())
+          for (const listener of this.roundFinalListeners.splice(0)) listener()
+        }
         if (event.type === 'user_speech_partial' && event.text?.trim()) {
           this.lastPartial = event.text.trim()
           if (this.deferFinalUntilPlaybackDone && !this.playbackFinished) {
@@ -1067,6 +1083,7 @@ export class ListenerUtteranceCollector {
       void playbackPromise
         .then(() => {
           this.onPlaybackFinished()
+    this.roundFinals = []
         })
         .catch((error: unknown) => {
           this.fail(error instanceof Error ? error : new Error(String(error)))
@@ -1146,6 +1163,44 @@ export class ListenerUtteranceCollector {
     const trimmed = text.trim()
     if (!reason.startsWith('final')) {
       this.recordAcceptedUtteranceStats(trimmed)
+  /**
+   * A CPU-starved host can split one reply into several utterances (the TTS gap between two
+   * sentences exceeds the VAD min silence), so the first `user_speech_final` ("Okay") settles the
+   * wait while the rest of the reply is still queued in STT. Event-driven: return the finals of
+   * this wait joined as one transcript as soon as `isComplete(joined)`; no fixed sleep. If the
+   * pipeline never completes it within `timeoutMs` (deadlock guard), return what it has so the
+   * caller's assertions fail on the real, truncated text.
+   */
+  async finalsUntilComplete(
+    isComplete: (joined: string) => boolean,
+    timeoutMs: number,
+    fallback: string,
+  ): Promise<string> {
+    const current = (): string => {
+      const joined = joinUtteranceFinals(this.roundFinals)
+      return joined.length > fallback.trim().length ? joined : fallback
+    }
+    if (isComplete(current())) return current()
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return current()
+      const arrived = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          this.roundFinalListeners = this.roundFinalListeners.filter((l) => l !== listener)
+          resolve(false)
+        }, remaining)
+        const listener = (): void => {
+          clearTimeout(timer)
+          resolve(true)
+        }
+        this.roundFinalListeners.push(listener)
+      })
+      if (!arrived) return current()
+      if (isComplete(current())) return current()
+    }
+  }
+
     }
     if (reason !== 'final' && this.verbose) {
       console.log(`[listener] [STT] ${reason}: "${trimmed}"`)

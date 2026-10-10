@@ -1,0 +1,187 @@
+{
+  "tts": [
+    {
+      "model": "vits-melo-tts-zh_en",
+      "threads": 1,
+      "runs": 3,
+      "rtf": 0.6194,
+      "cost_vs_amy_medium": 7.3367697594501715,
+      "cpu_s_per_audio_s": 0.6405,
+      "ttfa_ms": {
+        "1": {
+          "p50": 340.3,
+          "p95": 758.9
+        },
+        "2": {
+          "p50": 729.3,
+          "p95": 783.2
+        },
+        "4": {
+          "p50": 1580.9,
+          "p95": 2297.6
+        }
+      },
+      "rss_mb_peak": 1488.3
+    },
+    {
+      "model": "vits-piper-en_US-amy-low",
+      "threads": 1,
+      "runs": 3,
+      "rtf": 0.0522,
+      "cost_vs_amy_medium": 0.8384879725085911,
+      "cpu_s_per_audio_s": 0.0732,
+      "ttfa_ms": {
+        "1": {
+          "p50": 253.7,
+          "p95": 264.2
+        },
+        "2": {
+          "p50": 206.3,
+          "p95": 266.2
+        },
+        "4": {
+          "p50": 409.1,
+          "p95": 589.7
+        }
+      },
+      "rss_mb_peak": 829.7
+    },
+    {
+      "model": "vits-piper-en_US-amy-medium",
+      "threads": 1,
+      "runs": 3,
+      "rtf": 0.0675,
+      "cost_vs_amy_medium": 1,
+      "cpu_s_per_audio_s": 0.0873,
+      "ttfa_ms": {
+        "1": {
+          "p50": 299.8,
+          "p95": 321.7
+        },
+        "2": {
+          "p50": 300.7,
+          "p95": 346.5
+        },
+        "4": {
+          "p50": 619.5,
+          "p95": 789.3
+        }
+      },
+      "rss_mb_peak": 956.3
+    },
+    {
+      "model": "vits-piper-en_US-lessac-high",
+      "threads": 1,
+      "runs": 3,
+      "rtf": 0.5727,
+      "cost_vs_amy_medium": 6.553264604810997,
+      "cpu_s_per_audio_s": 0.5721,
+      "ttfa_ms": {
+        "1": {
+          "p50": 886.3,
+          "p95": 1278.5
+        },
+        "2": {
+          "p50": 1931.8,
+          "p95": 2103.8
+        },
+        "4": {
+          "p50": 3877.5,
+          "p95": 4798.4
+        }
+      },
+      "rss_mb_peak": 1090.2
+    },
+    {
+      "model": "vits-piper-en_US-lessac-low",
+      "threads": 1,
+      "runs": 3,
+      "rtf": 0.0545,
+      "cost_vs_amy_medium": 0.7835051546391752,
+      "cpu_s_per_audio_s": 0.0684,
+      "ttfa_ms": {
+        "1": {
+          "p50": 200.3,
+          "p95": 216.5
+        },
+        "2": {
+          "p50": 193.3,
+          "p95": 218
+        },
+        "4": {
+          "p50": 396.7,
+          "p95": 503.9
+        }
+      },
+      "rss_mb_peak": 716.9
+    },
+    {
+      "model": "vits-piper-en_US-lessac-medium",
+      "threads": 1,
+      "runs": 3,
+      "rtf": 0.0723,
+      "cost_vs_amy_medium": 0.9873997709049255,
+      "cpu_s_per_audio_s": 0.0862,
+      "ttfa_ms": {
+        "1": {
+          "p50": 233.6,
+          "p95": 287.3
+        },
+        "2": {
+          "p50": 220.8,
+          "p95": 284.5
+        },
+        "4": {
+          "p50": 489.3,
+          "p95": 615.9
+        }
+      },
+      "rss_mb_peak": 947.5
+    }
+  ],
+  "stt": [
+    {
+      "model": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
+      "threads": 1,
+      "points": [
+        {
+          "streams": 1,
+          "lag_ms_p95": 53.5,
+          "final_ms_p95": 6.9,
+          "realtime_ok": true,
+          "cpu_s_per_audio_s": 0.042,
+          "rss_mb_peak": 178.3,
+          "runs": 3
+        },
+        {
+          "streams": 8,
+          "lag_ms_p95": 219.6,
+          "final_ms_p95": 8.1,
+          "realtime_ok": true,
+          "cpu_s_per_audio_s": 0.0225,
+          "rss_mb_peak": 218.1,
+          "runs": 3
+        },
+        {
+          "streams": 16,
+          "lag_ms_p95": 377.8,
+          "final_ms_p95": 13.3,
+          "realtime_ok": true,
+          "cpu_s_per_audio_s": 0.0203,
+          "rss_mb_peak": 274.3,
+          "runs": 3
+        },
+        {
+          "streams": 24,
+          "lag_ms_p95": 536.5,
+          "final_ms_p95": 19.5,
+          "realtime_ok": false,
+          "cpu_s_per_audio_s": 0.019,
+          "rss_mb_peak": 316.3,
+          "runs": 3
+        }
+      ],
+      "capacity_streams": 16
+    }
+  ]
+}

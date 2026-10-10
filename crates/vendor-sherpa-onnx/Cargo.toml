@@ -25,6 +25,9 @@ sherpa-onnx = { version = "1.13.2", default-features = false, features = ["share
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 criterion = { version = "0.5", default-features = false }
 
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 [[bench]]
 name = "resample"
 harness = false

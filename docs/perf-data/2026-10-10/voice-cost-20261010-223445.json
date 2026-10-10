@@ -1,0 +1,37 @@
+{
+  "tts": [
+    {
+      "model": "vits-piper-en_US-lessac-medium",
+      "threads": 1,
+      "runs": 3,
+      "rtf": null,
+      "cost_vs_amy_medium": null,
+      "cpu_s_per_audio_s": null,
+      "ttfa_ms": {
+        "4": {
+          "p50": 492.7,
+          "p95": 704.2
+        }
+      },
+      "rss_mb_peak": 575
+    }
+  ],
+  "stt": [
+    {
+      "model": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
+      "threads": 1,
+      "points": [
+        {
+          "streams": 1,
+          "lag_ms_p95": 52.7,
+          "final_ms_p95": 2.5,
+          "realtime_ok": true,
+          "cpu_s_per_audio_s": 0.0419,
+          "rss_mb_peak": 177.2,
+          "runs": 3
+        }
+      ],
+      "capacity_streams": 1
+    }
+  ]
+}

@@ -114,9 +114,11 @@ Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_D
 | ----------------------------------- | ----------------- | --------------------------------------------------- |
 | `SHERPA_POOL_MAX_CONCURRENT_DECODE` | CPU count (min 1) | Cap parallel STT decode work                        |
 | `SHERPA_POOL_MAX_CONCURRENT_TTS`    | `2`               | Cap parallel TTS generations                        |
-| `SHERPA_STT_NUM_THREADS`            | ORT default       | `OnlineRecognizer` intra-op threads (`0` = default) |
+| `SHERPA_STT_NUM_THREADS`            | `1`               | `OnlineRecognizer` intra-op threads                 |
 | `SHERPA_TTS_NUM_THREADS`            | `2`               | `OfflineTts` intra-op threads                       |
 | `VOICE_TTS_STREAM_CHUNKS`           | `1` (on)          | Stream PCM into the drain buffer during ONNX generate (lower time-to-first-audio). Set `0` / `false` / `off` for the legacy fully-buffered path (synthesize all, then play). |
+
+Measured throughput, voice costs and tuning advice for these settings: [`docs/performance.md`](../../docs/performance.md).
 
 **Phrase cache:** not part of this crate. The runner-side `CachingTtsProvider` in `crates/speech` (`VOICE_TTS_PHRASE_CACHE*` env vars) caches completed utterances; shared speech pods never hold it.
 

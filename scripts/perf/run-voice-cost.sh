@@ -22,17 +22,19 @@
 #                          (default: sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06)
 #   PROBE_TTS_SESSIONS, PROBE_LONG_REPS, PROBE_STT_STREAMS, PROBE_STT_LAG_SLO_MS
 #                          forwarded to the probes (defaults live in the probe file header)
-#   PROBE_CI_IMAGE         build/run image (default ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest,
-#                          the image CI builds from docker/ci). Any Linux image with a Rust toolchain,
-#                          cmake and build-essential works, e.g. rust:1-bookworm plus cmake.
-#                          It runs at the host architecture; do not emulate another one, the timings
-#                          would be meaningless.
+#   PROBE_CI_IMAGE         override the build/run image. Default: `nwr-voice-cost:local`, built once from
+#                          scripts/perf/voice-cost.Dockerfile (rust:1.99-bookworm, cmake, build-essential)
+#                          when it is missing; delete the image to rebuild. An override must be a Linux
+#                          image with a Rust toolchain, cmake and build-essential, pullable or local.
+#                          The image runs at the host architecture; do not emulate another one, the
+#                          timings would be meaningless.
 #
 # The container is pinned with `--cpus` only: run on a quiet machine and keep the host's other
 # containers idle. Docker Desktop shares its VM's cores, so give the VM at least N + 1.
 # Files the build writes go to the docker volumes `nwr-voice-cost-target` and `nwr-voice-cost-cargo`.
 #
-# Exit codes: 0 ok, 1 a probe run failed, 2 usage, 3 models missing, 4 build failed, 5 image unavailable.
+# Exit codes: 0 ok, 1 a probe run failed, 2 usage, 3 models missing, 4 image or probe build failed,
+# 5 PROBE_CI_IMAGE override cannot be pulled.
 set -euo pipefail
 
 CPUS=1
@@ -43,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     --cpus) CPUS="${2:?--cpus needs a value}"; shift 2 ;;
     --runs) RUNS="${2:?--runs needs a value}"; shift 2 ;;
     --threads) THREADS="${2:?--threads needs a value}"; shift 2 ;;
-    -h | --help) sed -n '2,36p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -56,7 +58,7 @@ MODELS_DIR="$(cd "$PROBE_MODELS_DIR" 2>/dev/null && pwd)" || {
   echo "PROBE_MODELS_DIR is not a directory: $PROBE_MODELS_DIR" >&2
   exit 3
 }
-IMAGE="${PROBE_CI_IMAGE:-ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest}"
+IMAGE="${PROBE_CI_IMAGE:-nwr-voice-cost:local}"
 read -r -a VOICES <<<"${VOICE_COST_VOICES:-vits-piper-en_US-amy-low vits-piper-en_US-amy-medium vits-piper-en_US-lessac-low vits-piper-en_US-lessac-medium vits-piper-en_US-lessac-high vits-melo-tts-zh_en}"
 STT_MODEL="${VOICE_COST_STT:-sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06}"
 
@@ -70,11 +72,19 @@ done
 [[ $missing -eq 0 ]] || exit 3
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "==> pulling $IMAGE"
-  docker pull "$IMAGE" >/dev/null 2>&1 || {
-    echo "cannot pull $IMAGE; set PROBE_CI_IMAGE to a Linux image with Rust, cmake and build-essential" >&2
-    exit 5
-  }
+  if [[ -z "${PROBE_CI_IMAGE:-}" ]]; then
+    echo "==> building $IMAGE from scripts/perf/voice-cost.Dockerfile"
+    docker build -q -f scripts/perf/voice-cost.Dockerfile -t "$IMAGE" scripts/perf >/dev/null || {
+      echo "cannot build $IMAGE from scripts/perf/voice-cost.Dockerfile" >&2
+      exit 4
+    }
+  else
+    echo "==> pulling $IMAGE"
+    docker pull "$IMAGE" >/dev/null 2>&1 || {
+      echo "cannot pull $IMAGE; PROBE_CI_IMAGE must be a Linux image with Rust, cmake and build-essential" >&2
+      exit 5
+    }
+  fi
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"

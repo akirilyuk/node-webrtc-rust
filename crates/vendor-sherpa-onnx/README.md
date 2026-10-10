@@ -118,6 +118,8 @@ Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_D
 | `SHERPA_TTS_NUM_THREADS`            | `2`               | `OfflineTts` intra-op threads                       |
 | `VOICE_TTS_STREAM_CHUNKS`           | `1` (on)          | Stream PCM into the drain buffer during ONNX generate (lower time-to-first-audio). Set `0` / `false` / `off` for the legacy fully-buffered path (synthesize all, then play). |
 
+Measured throughput, voice costs and tuning advice for these settings: [`docs/performance.md`](../../docs/performance.md).
+
 **Phrase cache:** not part of this crate. The runner-side `CachingTtsProvider` in `crates/speech` (`VOICE_TTS_PHRASE_CACHE*` env vars) caches completed utterances; shared speech pods never hold it.
 
 **TTS streaming:** With `VOICE_TTS_STREAM_CHUNKS` on (default), Sherpa uses the `generate_with_config` progress callback to enqueue PCM while synthesis runs; playback can start before the full utterance is ready. VITS/Piper callbacks are **per-sentence sample chunks** (not a cumulative buffer). Chunks share a **continuous** linear resampler to 48 kHz, and the drain carries partial 20 ms frames (pad only at utterance end) so streaming STT quality matches buffered. The TTS semaphore / engine lock is still held for the whole generate. Disable streaming to restore the previous synthesize-then-drain behavior.

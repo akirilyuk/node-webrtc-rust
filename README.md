@@ -16,6 +16,7 @@ Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate SFU
 ## Table of contents
 
 - [Why build voice agents here?](#why-build-voice-agents-here)
+- [Performance](#performance)
 - [Agentic voice quick start](#agentic-voice-quick-start)
 - [Voice pipeline architecture](#voice-pipeline-architecture)
 - [STT/TTS vendors and config](#stttts-vendors-and-config)
@@ -84,6 +85,16 @@ npm run start --workspace=@node-webrtc-rust/example-voice-agent-multi-session-po
 ```
 
 See [`examples/voice-agent-multi-session-pod`](examples/voice-agent-multi-session-pod/README.md) and [`@node-webrtc-rust/helpers`](packages/helpers/README.md).
+
+---
+
+## Performance
+
+Measured on a CPU-limited container, per CPU. Full tables, tuning advice and the commands to reproduce them are in [`docs/performance.md`](docs/performance.md).
+
+- <!-- MEASURE:headline-stt -->
+- <!-- MEASURE:headline-opus -->
+- <!-- MEASURE:headline-tts-start -->
 
 ---
 

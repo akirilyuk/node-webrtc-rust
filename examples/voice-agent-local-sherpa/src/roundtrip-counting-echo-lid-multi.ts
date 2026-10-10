@@ -535,7 +535,13 @@ async function runSpeakerRound(params: {
   await playbackAndEchoDone
   // A starved host delays the STT final past the wall-clock partial fallback; the partial is a
   // truncated prefix. Take the pipeline's real final instead (event-driven).
-  const recognized = await session.collector.finalAfterPartialFallback(waited, timeoutMs)
+  const afterFallback = await session.collector.finalAfterPartialFallback(waited, timeoutMs)
+  // The echo reply can arrive as several utterances on a starved host; wait for the rest.
+  const recognized = await session.collector.finalsUntilComplete(
+    (joined) => assertFullCountingEcho(joined).ok,
+    timeoutMs,
+    afterFallback,
+  )
 
   session.pcmCapture?.stopRxCapture()
 
@@ -602,7 +608,13 @@ async function runFullSessionRound(params: {
   await playbackAndEchoDone
   // A starved host delays the STT final past the wall-clock partial fallback; the partial is a
   // truncated prefix. Take the pipeline's real final instead (event-driven).
-  const recognized = await session.collector.finalAfterPartialFallback(waited, timeoutMs)
+  const afterFallback = await session.collector.finalAfterPartialFallback(waited, timeoutMs)
+  // The echo reply can arrive as several utterances on a starved host; wait for the rest.
+  const recognized = await session.collector.finalsUntilComplete(
+    (joined) => assertFullCountingEcho(joined).ok,
+    timeoutMs,
+    afterFallback,
+  )
 
   session.pcmCapture?.stopRxCapture()
   session.pcmCapture?.stopEchoOutboundCapture()

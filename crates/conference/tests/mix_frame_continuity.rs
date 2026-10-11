@@ -283,7 +283,6 @@ async fn jittered_input_loses_no_frames_beyond_counted_compression() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails until multi-frame Opus packets decode"]
 async fn sixty_ms_packets_reach_the_listener_without_loss() {
     assert_continuity(&run_pattern(Pattern::Packet60).await);
 }

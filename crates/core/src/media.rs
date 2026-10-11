@@ -225,52 +225,71 @@ impl RemoteTrack {
         }
     }
 
-    /// Reads the next RTP packet, decodes Opus to PCM, and returns one sample buffer.
+    /// Reads the next RTP packet, decodes Opus to PCM, and returns its audio.
+    ///
+    /// A packet longer than 20 ms (e.g. 60 ms Opus) returns all of its audio in one sample
+    /// (`pcm` is a multiple of 3 840 bytes, `duration` the matching multiple of 20 ms).
+    /// A packet shorter than 20 ms returns one zero-padded frame. An
+    /// undecodable packet yields one 20 ms silence sample.
     pub async fn read_sample(&self) -> Result<PcmSample, CoreError> {
-        let packet = self.read_rtp().await?;
-        let decoded = self
-            .decoder
-            .lock()
-            .expect("remote track decoder lock")
-            .try_decode_payload(&packet.payload);
-        let frame = match decoded {
-            Ok(frame) => {
-                if crate::debug::is_debug_enabled() {
-                    let peak = frame
-                        .pcm
-                        .chunks_exact(2)
-                        .map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs())
-                        .max()
-                        .unwrap_or(0);
+        loop {
+            let packet = self.read_rtp().await?;
+            let decoded = self
+                .decoder
+                .lock()
+                .expect("remote track decoder lock")
+                .try_decode_payload(&packet.payload);
+            let frames = match decoded {
+                Ok(frames) => frames,
+                Err(reason) => {
                     debug_call!(
                         "core::media",
-                        "read_sample:decoded",
-                        "id={}, seq={}, payload_bytes={}, peak={}",
+                        "read_sample:decode_failed",
+                        "id={}, seq={}, payload_bytes={}, reason={}",
                         self.track_id,
                         packet.sequence_number,
                         packet.payload.len(),
-                        peak
+                        reason
                     );
+                    vec![node_webrtc_rust_mixer::silence_frame()]
                 }
-                frame
+            };
+            if frames.is_empty() {
+                continue;
             }
-            Err(reason) => {
+            if crate::debug::is_debug_enabled() {
+                let peak = frames
+                    .iter()
+                    .flat_map(|f| f.pcm.chunks_exact(2))
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs())
+                    .max()
+                    .unwrap_or(0);
                 debug_call!(
                     "core::media",
-                    "read_sample:decode_failed",
-                    "id={}, seq={}, payload_bytes={}, reason={}",
+                    "read_sample:decoded",
+                    "id={}, seq={}, payload_bytes={}, frames={}, peak={}",
                     self.track_id,
                     packet.sequence_number,
                     packet.payload.len(),
-                    reason
+                    frames.len(),
+                    peak
                 );
-                node_webrtc_rust_mixer::silence_frame()
             }
-        };
-        Ok(PcmSample {
-            pcm: frame.pcm,
-            duration: Duration::from_millis(node_webrtc_rust_mixer::FRAME_MS as u64),
-        })
+            let duration = Duration::from_millis(
+                node_webrtc_rust_mixer::FRAME_MS as u64 * frames.len() as u64,
+            );
+            let pcm = if frames.len() == 1 {
+                frames[0].pcm.clone()
+            } else {
+                let mut all =
+                    Vec::with_capacity(frames.len() * node_webrtc_rust_mixer::FRAME_BYTES);
+                for f in &frames {
+                    all.extend_from_slice(&f.pcm);
+                }
+                Bytes::from(all)
+            };
+            return Ok(PcmSample { pcm, duration });
+        }
     }
 
     /// Reads the next RTP packet from the track.

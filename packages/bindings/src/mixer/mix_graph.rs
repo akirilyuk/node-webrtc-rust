@@ -1,6 +1,7 @@
 //! MixGraph NAPI bindings (control plane + PCM push/render for helpers mixer).
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use napi::bindgen_prelude::*;
@@ -15,6 +16,24 @@ use crate::mixer::types::{
 #[napi]
 pub struct JsMixGraph {
     inner: Mutex<MixGraph>,
+    /// Mapping from the caller's monotonic millisecond clock to `Instant`, fixed by the
+    /// first `renderOutput(listenerId, atMs)` call: `(origin_instant, origin_ms)`.
+    render_origin: Mutex<Option<(Instant, f64)>>,
+}
+
+/// Maps a caller timestamp (`at_ms`, e.g. `performance.now()`) to an `Instant` through the
+/// origin set by the first call. Earlier, non-finite or unrepresentable values map to the
+/// origin itself.
+fn instant_for_at_ms(origin: &mut Option<(Instant, f64)>, at_ms: f64) -> Instant {
+    let (origin_instant, origin_ms) = *origin.get_or_insert_with(|| (Instant::now(), at_ms));
+    let delta_ms = at_ms - origin_ms;
+    if !delta_ms.is_finite() || delta_ms <= 0.0 {
+        return origin_instant;
+    }
+    Duration::try_from_secs_f64(delta_ms / 1000.0)
+        .ok()
+        .and_then(|d| origin_instant.checked_add(d))
+        .unwrap_or(origin_instant)
 }
 
 #[napi]
@@ -23,6 +42,7 @@ impl JsMixGraph {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(MixGraph::new()),
+            render_origin: Mutex::new(None),
         }
     }
 
@@ -337,13 +357,28 @@ impl JsMixGraph {
     }
 
     /// Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off).
+    ///
+    /// `at_ms` is the scheduled render time on the caller's monotonic millisecond clock
+    /// (`performance.now()`): listeners rendered with the same value in one slot hear the same
+    /// tick, and a catch-up render at `at_ms + 20` plays the next frame instead of repeating
+    /// the previous one. Without it the render time is the moment of the call.
     #[napi]
-    pub fn render_output(&self, listener_id: String) -> Result<Buffer> {
+    pub fn render_output(&self, listener_id: String, at_ms: Option<f64>) -> Result<Buffer> {
+        let now = match at_ms {
+            Some(at_ms) => {
+                let mut origin = self
+                    .render_origin
+                    .lock()
+                    .map_err(|_| Error::from_reason("mix graph lock poisoned"))?;
+                instant_for_at_ms(&mut origin, at_ms)
+            }
+            None => Instant::now(),
+        };
         let frame = self
             .inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
-            .render_output(&listener_id, std::time::Instant::now());
+            .render_output(&listener_id, now);
         Ok(Buffer::from(frame.pcm.as_ref()))
     }
 

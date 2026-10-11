@@ -534,8 +534,15 @@ export declare class JsMixGraph {
    * played one per 20 ms render tick; bunched pushes are buffered, not overwritten.
    */
   pushFrame(participantId: string, pcm: Buffer): void
-  /** Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off). */
-  renderOutput(listenerId: string): Buffer
+  /**
+   * Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off).
+   *
+   * `at_ms` is the scheduled render time on the caller's monotonic millisecond clock
+   * (`performance.now()`): listeners rendered with the same value in one slot hear the same
+   * tick, and a catch-up render at `at_ms + 20` plays the next frame instead of repeating
+   * the previous one. Without it the render time is the moment of the call.
+   */
+  renderOutput(listenerId: string, atMs?: number | undefined | null): Buffer
   /** Queue counters and depth/target for one source, or `null` when it is not registered. */
   mixStats(participantId: string): JsMixStats | null
   /** Pans a TTS frame for `listener_id` using the graph's TTS pose or placement. */

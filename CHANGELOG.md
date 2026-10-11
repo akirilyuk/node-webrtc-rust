@@ -13,11 +13,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **mixer** — sources are buffered in an adaptive per-source FIFO instead of a single latest-frame slot, so bunched or jittered audio is no longer overwritten; backlog is time-compressed and gaps concealed, both counted (`mixStats`).
 - **mixer** — Opus packets longer than 20 ms (40 and 60 ms) decode to all of their audio instead of being replaced by silence; the conference inbound loop queues every frame and counts undecodable packets (`decodeErrors`).
 - **conference** — the per-listener render loop advances the mix clock by its scheduled tick time, so a late task no longer skips one source frame and repeats another.
+- **mixer** — after an idle gap the first render processes one tick instead of eight, so frames that arrive bunched after a pause play in order rather than being skipped for a listener that joined the render loop late.
 
 ### Added
 
 - **sdk** — `AudioMixGraph.mixStats(participantId)` returns the per-source queue counters (`pushed`, `played`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`).
 - **helpers** — `ClientAudioMixer.mixStats(peerId)` passes the counters through, and the mix pump logs one warning per source (at most one per 10 s) when compression, concealment, overflow merging or decode errors increase, with the peer id, the counter deltas, queue depth and target.
+- **bindings / sdk** — `renderOutput(listenerId, atMs?)` renders at a scheduled time on the caller's monotonic millisecond clock (`performance.now()`): the same `atMs` returns the same tick for every listener, and `atMs + 20` the next frame.
 
 ## [0.9.41] - 2026-10-11
 

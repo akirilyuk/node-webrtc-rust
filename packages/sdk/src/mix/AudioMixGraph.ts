@@ -195,9 +195,16 @@ export class AudioMixGraph {
     this.native.pushFrame(participantId, pcm)
   }
 
-  /** Renders mixed stereo PCM for `listenerId` (3840 bytes); call once per 20 ms tick. */
-  renderOutput(listenerId: string): Buffer {
-    return this.native.renderOutput(listenerId)
+  /**
+   * Renders mixed stereo PCM for `listenerId` (3840 bytes); call once per 20 ms tick.
+   *
+   * `atMs` is the scheduled render time on a monotonic millisecond clock
+   * (`performance.now()`). Renders with the same value hear the same tick; `atMs + 20`
+   * plays the next frame, so a late timer that fires twice back-to-back never repeats a
+   * frame. Omit it to render at the moment of the call.
+   */
+  renderOutput(listenerId: string, atMs?: number): Buffer {
+    return this.native.renderOutput(listenerId, atMs)
   }
 
   /** Queue counters and depth/target for a source, or `null` when it is not registered. */

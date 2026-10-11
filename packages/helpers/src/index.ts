@@ -69,6 +69,13 @@ export {
 } from './voice-session-handler.js'
 
 export {
+  readInboundAudioStats,
+  INBOUND_AUDIO_STATS_TIMEOUT_MS,
+  type InboundAudioStats,
+  type InboundAudioStatsOptions,
+} from './inbound-audio-stats.js'
+
+export {
   flushVoiceControlChannel,
   VOICE_CONTROL_FLUSH_POLL_MS,
   VOICE_CONTROL_FLUSH_TIMEOUT_MS,

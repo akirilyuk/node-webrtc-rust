@@ -33,9 +33,26 @@ npm run ci:pre-push
 | `speechEventFilter` (host option)      | `(event) => boolean`; return `false` to keep a speech event off the client's voice-control channel (`voiceHandler.onSpeechEvent` still sees it) |
 | `VoiceAgentSessionHost.broadcastSpeak` | TTS `text` on every connected client in the room                      |
 | `VoiceSessionHandler`                  | Per-tab hooks: transport/agent lifecycle, STT/VAD, speak requests     |
+| `VoiceSessionContext.getInboundAudioStats` | Packets and bytes of audio received from a tab so far; `null` when unavailable |
 | `VoiceSessionBudget`                   | Process-wide cap (`VOICE_MAX_CONCURRENT_SESSIONS`)                    |
 | `VOICE_AGENT_SERVER_PEER_ID`           | Stable server peer id for signaling joins                             |
 | `createKickFrame`, PCM constants       | RTP prime / 20 ms frame conventions                                   |
+
+## Inbound audio stats
+
+Every `VoiceSessionContext` passed to a `VoiceSessionHandler` hook can report how much audio the
+tab's peer connection has received, which tells "the browser sent audio but speech was never
+detected" apart from "no audio arrived":
+
+```ts
+const stats = await ctx.getInboundAudioStats({ timeoutMs: 500 })
+// { packetsReceived: 1480, bytesReceived: 118400 } or null
+```
+
+The counts are summed over the connection's inbound audio streams. The call works until the peer
+connection closes, including from `onPeerDisconnected`, and never rejects: it resolves `null` when
+the connection is closed, no audio stream exists yet, the stats call fails, or `timeoutMs`
+(default 500) passes. The `InboundAudioStats` type is exported from the package entry point.
 
 ## Multi-session pod (recommended server pattern)
 

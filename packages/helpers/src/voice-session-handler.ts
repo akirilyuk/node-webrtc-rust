@@ -5,6 +5,7 @@
  */
 
 import type { VoiceAgent, SendTextToTtsOptions, SpeechEvent } from '@node-webrtc-rust/sdk/voice'
+import type { InboundAudioStats, InboundAudioStatsOptions } from './inbound-audio-stats.js'
 
 /** Which WebRTC data channel carried a binary payload. */
 export type DataChannelKind = 'control' | 'sync'
@@ -28,6 +29,15 @@ export interface VoiceSessionContext {
   flushToClient?: () => Promise<boolean>
   /** Send raw bytes — prefers the sync channel when negotiated and open. */
   sendBinaryToClient: (data: Buffer | Uint8Array, channel?: DataChannelKind) => void
+  /**
+   * Audio this tab's peer connection has received so far (`packetsReceived`, `bytesReceived`,
+   * summed over its inbound audio streams). Callable until the peer connection closes, including
+   * from {@link VoiceSessionHandler.onPeerDisconnected}.
+   *
+   * Resolves `null` when the connection is closed, has no inbound audio stream yet, the stats
+   * call fails, or it takes longer than `timeoutMs` (default 500 ms). Never rejects.
+   */
+  getInboundAudioStats: (options?: InboundAudioStatsOptions) => Promise<InboundAudioStats | null>
 }
 
 /**

@@ -54,6 +54,7 @@ import {
   type VoiceSessionLease,
 } from './voice-session-budget.js'
 import { flushVoiceControlChannel } from './control-channel-flush.js'
+import { readInboundAudioStats } from './inbound-audio-stats.js'
 import type {
   VoiceSessionContext,
   VoiceSessionHandler,
@@ -577,6 +578,7 @@ export class VoiceAgentSessionHost {
           session.agent,
           session.controlChannel,
           session.syncChannel,
+          session.pc,
         ),
       )
     }
@@ -915,7 +917,13 @@ export class VoiceAgentSessionHost {
       const tag = dataOnly ? 'data' : 'voice'
       this.log(`[${tag} ${peerId}] control channel open`)
       session.unwireControl?.()
-      const ctx = this.createSessionContext(peerId, session.agent, controlChannel, syncChannel)
+      const ctx = this.createSessionContext(
+        peerId,
+        session.agent,
+        controlChannel,
+        syncChannel,
+        session.pc,
+      )
       const voiceHandler = this.options.voiceHandler
       if (dataOnly) {
         const onDataChannelMessage = voiceHandler?.onDataChannelMessage
@@ -1019,6 +1027,7 @@ export class VoiceAgentSessionHost {
       session.agent,
       session.controlChannel,
       session.syncChannel,
+      session.pc,
     )
     const voiceHandler = this.options.voiceHandler
 
@@ -1181,7 +1190,8 @@ export class VoiceAgentSessionHost {
     peerId: string,
     agent: VoiceAgent | undefined,
     controlChannel: RTCDataChannel,
-    syncChannel?: RTCDataChannel,
+    syncChannel: RTCDataChannel | undefined,
+    pc: RTCPeerConnection,
   ): VoiceSessionContext {
     const sendBinary = (data: Buffer | Uint8Array, channel: DataChannelKind = 'sync') => {
       const target =
@@ -1213,6 +1223,9 @@ export class VoiceAgentSessionHost {
       },
       flushToClient: () => flushVoiceControlChannel(controlChannel),
       sendBinaryToClient: (data, channel) => sendBinary(data, channel),
+      // Captures this session's pc (not a peerId lookup) so a replacement session never leaks in
+      // and the context still works from the disconnect hook after the session leaves the map.
+      getInboundAudioStats: (options) => readInboundAudioStats(pc, options),
     }
   }
 
@@ -1230,6 +1243,7 @@ export class VoiceAgentSessionHost {
       session.agent,
       session.controlChannel,
       syncChannel,
+      session.pc,
     )
     const previousOnMessage = syncChannel.onmessage
     syncChannel.onmessage = (event) => {
@@ -1272,6 +1286,7 @@ export class VoiceAgentSessionHost {
       agent,
       session.controlChannel,
       session.syncChannel,
+      session.pc,
     )
     let active = true
 
@@ -1635,6 +1650,7 @@ export class VoiceAgentSessionHost {
         session.agent,
         session.controlChannel,
         session.syncChannel,
+        session.pc,
       )
       const reason: PeerDisconnectReason = session.clientHangup
         ? 'hangup'
@@ -1652,6 +1668,7 @@ export class VoiceAgentSessionHost {
         session.agent,
         session.controlChannel,
         session.syncChannel,
+        session.pc,
       )
       void Promise.resolve()
         .then(() => this.options.voiceHandler?.onPeerSignalingLost?.(ctx))

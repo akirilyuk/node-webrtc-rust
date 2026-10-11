@@ -438,7 +438,11 @@ impl MixGraph {
 
     /// Advances the media clock to `now`: pops one frame per elapsed 20 ms tick from every
     /// source into its current snapshot (catching up when late, capped at
-    /// `MAX_CATCHUP_TICKS`; a longer gap resyncs the clock).
+    /// `MAX_CATCHUP_TICKS`).
+    ///
+    /// A longer gap (an idle period) resyncs the clock to `now` and processes exactly one
+    /// tick: frames queued meanwhile play in order on the following ticks, and any backlog
+    /// is slimmed by the queue's shrink rule (counted as compressed, never skipped).
     pub fn advance_to(&mut self, now: Instant) {
         let Some(clock) = self.clock else {
             self.clock = Some(now);
@@ -449,12 +453,13 @@ impl MixGraph {
         if ticks == 0 {
             return;
         }
-        let run = ticks.min(MAX_CATCHUP_TICKS);
-        self.clock = Some(if ticks > MAX_CATCHUP_TICKS {
-            now
+        let run = if ticks > MAX_CATCHUP_TICKS {
+            self.clock = Some(now);
+            1
         } else {
-            clock + tick * ticks as u32
-        });
+            self.clock = Some(clock + tick * ticks as u32);
+            ticks
+        };
         for slot in self.inputs.values_mut() {
             for _ in 0..run {
                 let frame = slot.queue.pop();
@@ -1328,5 +1333,76 @@ mod tests {
         assert!(s.played + s.concealed <= MAX_CATCHUP_TICKS);
         graph.remove_input("talker");
         assert!(graph.source_stats("talker").is_none());
+    }
+
+    /// Idle for 500 ms after warm-up renders, then 5 frames arrive bunched and
+    /// `renderer` listens paced; returns what it heard and the source stats delta.
+    fn idle_then_bunched_burst(
+        renderer: &str,
+        warm_listener: Option<&str>,
+    ) -> (Vec<i16>, SourceStats) {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources(renderer, &["talker".to_string()]);
+        // The clock runs (warm-up renders over an empty source), then the pod goes idle.
+        let warm = warm_listener.unwrap_or("warmup");
+        graph.set_listener_sources(warm, &["talker".to_string()]);
+        graph.render_output(warm, t0());
+        graph.render_output(warm, t0() + ms(20));
+        let before = graph.source_stats("talker").unwrap();
+        let t1 = t0() + ms(20 + 500);
+        for i in 0..5 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t1);
+        }
+        let mut heard = Vec::new();
+        for k in 0..5u64 {
+            let out = graph.render_output(renderer, t1 + ms(20 * k));
+            heard.push(first_sample(&out));
+        }
+        let after = graph.source_stats("talker").unwrap();
+        let delta = SourceStats {
+            pushed: after.pushed - before.pushed,
+            played: after.played - before.played,
+            compressed: after.compressed - before.compressed,
+            concealed: after.concealed - before.concealed,
+            overflow_compressed: after.overflow_compressed - before.overflow_compressed,
+            ..after
+        };
+        (heard, delta)
+    }
+
+    #[test]
+    fn idle_gap_then_bunched_burst_new_listener_hears_every_frame() {
+        let (heard, delta) = idle_then_bunched_burst("fresh", None);
+        let expected: Vec<i16> = (0..5)
+            .map(|i| first_sample(&graph_pan(1_000 + 100 * i)))
+            .collect();
+        assert_eq!(heard, expected, "all 5 frames audible, in order");
+        assert_eq!(delta.played, 5, "played counts exactly the frames rendered");
+        assert_eq!((delta.compressed, delta.concealed, delta.depth), (0, 0, 0));
+    }
+
+    #[test]
+    fn idle_gap_then_bunched_burst_existing_listener_hears_every_frame() {
+        let (heard, delta) = idle_then_bunched_burst("listener", Some("listener"));
+        let expected: Vec<i16> = (0..5)
+            .map(|i| first_sample(&graph_pan(1_000 + 100 * i)))
+            .collect();
+        assert_eq!(heard, expected, "all 5 frames audible, in order");
+        assert_eq!(delta.played, 5, "played counts exactly the frames rendered");
+        assert_eq!((delta.compressed, delta.concealed, delta.depth), (0, 0, 0));
+    }
+
+    #[test]
+    fn idle_gap_resync_pops_one_tick_not_eight() {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        for i in 0..12 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t0());
+        }
+        graph.render_output("listener", t0() + ms(2_000));
+        let s = graph.source_stats("talker").unwrap();
+        assert_eq!(s.played + s.concealed, 1, "resync processes one tick");
+        assert_eq!(s.depth, 11);
     }
 }

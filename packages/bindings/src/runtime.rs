@@ -18,6 +18,11 @@ fn install_rustls_crypto_provider() {
 #[napi::module_init]
 fn init() {
     install_rustls_crypto_provider();
+    if let Ok(p) = std::env::var("WNR_LOG_FILE") {
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = env_logger::Builder::from_default_env().target(env_logger::Target::Pipe(Box::new(f))).format_timestamp_micros().try_init();
+        }
+    }
     let rt = Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()

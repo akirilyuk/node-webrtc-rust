@@ -40,42 +40,33 @@ fi
 echo "==> sync workspace bindings for npm test (registry copy under packages/sdk)"
 bash "$ROOT/scripts/ci/sync-workspace-bindings.sh"
 
-echo "==> cargo test (core, mixer, conference, speech)"
-echo "    (compiles Rust test deps on cold cache — separate from the .node binding above)"
-# opus_sdp_fmtp_omits_maxaveragebitrate_when_env_unset uses OnceLock. A developer
-# shell with WEBRTC_OPUS_BITRATE_BPS=192000 (common locally) fails those tests even
-# though GitHub CI is unset. Unset here so release-tag local CI is hermetic.
-# Lesson: development/node-webrtc-rust/features/2026-07-30-opus-sdp-omit-unset.md
-unset WEBRTC_OPUS_BITRATE_BPS
-unset WEBRTC_OPUS_APPLICATION
-# WebRTC peer integration tests flake when run in parallel (shared ICE/ports).
-bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo core --lib" -- \
-  cargo test -p node-webrtc-rust-core --lib
-bash "$CI_STEP" --timeout "$DEFAULT_CARGO_PEER_TEST_TIMEOUT_SEC" "cargo peer_connection_test" -- \
-  cargo test -p node-webrtc-rust-core --test peer_connection_test -- --test-threads=1
-bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo mixer" -- \
-  cargo test -p node-webrtc-rust-mixer
-bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" -- \
-  cargo test -p node-webrtc-rust-conference
-bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
-  cargo test -p node-webrtc-rust-speech
-# Perf benches only compile here; timing thresholds are not a PR gate (scripts/perf/).
-# Type-check benches only: `cargo bench --no-run` compiles in the release profile, which CI
-# does not cache, and exceeded the 180 s step timeout on a cold cache (#311, #313).
-bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo bench check" -- \
-  cargo check --benches -p node-webrtc-rust-speech -p node-webrtc-rust-vendor-sherpa-onnx -p node-webrtc-rust-core
-
+# TEMP (do not merge): trace loop for the mix-three-client DTLS stall.
+# Skipped on this branch: cargo test (core/mixer/conference/speech/bench), npm test, Sherpa roundtrip E2E.
 bash "$ROOT/scripts/ci/ensure-ts-dist.sh"
-
-echo "==> npm test"
-bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "npm test" -- npm test
-
-# Helpers default `npm test` excludes *.integration.test.ts (quality job / leftover .node).
-echo "==> helpers native integration tests"
-bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "helpers integration" -- \
-  npm run test:integration --workspace=@node-webrtc-rust/helpers
-
-echo "==> Sherpa roundtrip E2E (all start:roundtrip-*)"
-bash scripts/ci/run-sherpa-example-ci.sh e2e
+ART="$ROOT/trace-artifacts"
+mkdir -p "$ART"
+export RUST_LOG="dtls=trace,webrtc_ice=debug,webrtc=debug"
+TRACE_LOOP_N="${TRACE_LOOP_N:-40}"
+fails=0
+for i in $(seq 1 "$TRACE_LOOP_N"); do
+  nlog="$ART/native-$i.log"
+  jslog="$ART/js-$i.log"
+  export WNR_LOG_FILE="$nlog"
+  rm -f "$nlog"
+  echo "==> trace iteration $i/$TRACE_LOOP_N"
+  if timeout 300 npm run test:integration --workspace=@node-webrtc-rust/helpers >"$jslog" 2>&1; then
+    echo "    iteration $i ok"
+    rm -f "$nlog" "$jslog"
+  else
+    echo "    iteration $i FAILED (logs kept)"
+    fails=$((fails + 1))
+  fi
+done
+unset WNR_LOG_FILE
+echo "TRACE_LOOP_SUMMARY iterations=$TRACE_LOOP_N failures=$fails"
+echo "iterations=$TRACE_LOOP_N failures=$fails" > "$ART/summary.txt"
+if [[ "$fails" -gt 0 ]]; then
+  exit 1
+fi
 
 echo "==> Integration tests OK"

@@ -189,6 +189,15 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ts_dist_cache_hit: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
 
+      - name: Upload trace artifacts (TEMP)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: trace-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
       # The download happens inside ci-build, where npm is available. Save only
       # after successful integration so partial/corrupt model dirs never persist.
       - name: Save repaired/downloaded Sherpa model dirs

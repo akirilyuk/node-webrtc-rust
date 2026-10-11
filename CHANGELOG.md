@@ -8,6 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **mixer** — sources are buffered in an adaptive per-source FIFO instead of a single latest-frame slot, so bunched or jittered audio is no longer overwritten; backlog is time-compressed and gaps concealed, both counted (`mixStats`).
+- **mixer** — Opus packets longer than 20 ms (40 and 60 ms) decode to all of their audio instead of being replaced by silence; the conference inbound loop queues every frame and counts undecodable packets (`decodeErrors`).
+- **conference** — the per-listener render loop advances the mix clock by its scheduled tick time, so a late task no longer skips one source frame and repeats another.
+
+### Added
+
+- **sdk** — `AudioMixGraph.mixStats(participantId)` returns the per-source queue counters (`pushed`, `played`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`).
+
 ## [0.9.41] - 2026-10-11
 
 ### Fixed

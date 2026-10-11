@@ -57,9 +57,9 @@ function nativeAvailable(): boolean {
 
 // Client ids are unique per case so `waitForVoiceClientActive` can only be satisfied by the NEW
 // connection's voice session, never by the previous case's one that is still being torn down.
-const clientIds = (pattern: SendPattern) => ({
-  speaker: `client-fc-speaker-${pattern}`,
-  listener: `client-fc-listener-${pattern}`,
+const clientIds = (caseKey: string) => ({
+  speaker: `client-fc-speaker-${caseKey}`,
+  listener: `client-fc-listener-${caseKey}`,
 })
 const SPEAKER_SESSION = 'session-fc-speaker'
 const LISTENER_SESSION = 'session-fc-listener'
@@ -126,37 +126,6 @@ async function waitForVoiceClientActive(
     await delay(50)
   }
   throw new Error(`timed out waiting for active voice client ${clientId}`)
-}
-
-/**
- * Resolves once each listed client's mix pump has rendered `renders` times through `graph`.
- *
- * The pump's first render after an idle gap resyncs the graph's media clock, and that resync
- * pops (up to 8) frames that are already queued before any listener cursor exists. Streaming
- * must start after the pumps are in steady state, as it does in a real session where the
- * client has been connected for seconds. See the followup on the idle-gap resync.
- */
-async function waitForMixPumpsRendering(
-  graph: AudioMixGraph,
-  listenerIds: string[],
-  renders = 3,
-): Promise<void> {
-  const counts = new Map(listenerIds.map((id) => [id, 0]))
-  const original = graph.renderOutput.bind(graph)
-  graph.renderOutput = (listenerId: string) => {
-    const n = counts.get(listenerId)
-    if (n !== undefined) counts.set(listenerId, n + 1)
-    return original(listenerId)
-  }
-  try {
-    const deadline = Date.now() + 10_000
-    while ([...counts.values()].some((n) => n < renders)) {
-      if (Date.now() > deadline) throw new Error('timed out waiting for the mix pumps to render')
-      await delay(10)
-    }
-  } finally {
-    graph.renderOutput = original
-  }
 }
 
 /** Deterministic PRNG (mulberry32) so jitter patterns are identical on every run. */
@@ -357,16 +326,14 @@ async function runDirectControl(pattern: SendPattern): Promise<SequenceAnalysis>
  *   through two Opus hops without any mixer, so they are a codec artefact of this marker set,
  *   and an ambiguous frame stands in for its missing index (see `analyseSequence`).
  * - ambiguous <= 5: those three, plus one concealment frame at the stream edges.
- * - duplicates <= 3: the graph pops one frame per 20 ms of its own clock, the listener pump
- *   renders on its own timer. When a render finds no new tick, the listener hears the previous
- *   frame again (observed 0 or 1 per 150 frames; never a loss, never counted in `mixStats`).
- *   Passing the pump's scheduled time to the graph would make this 0.
+ * - duplicates 0: the pump renders at its scheduled slot time (`renderOutput(id, atMs)`), so a
+ *   late timer or a catch-up double render plays the next frame and never repeats the previous.
  */
 function expectContinuous({ seq, stats }: { seq: SequenceAnalysis; stats: MixStats | null }): void {
   const detail = JSON.stringify({ seq, stats })
   expect(seq.gaps, detail).toBe(0)
   expect(seq.reordered, detail).toBe(0)
-  expect(seq.duplicates, detail).toBeLessThanOrEqual(3)
+  expect(seq.duplicates, detail).toBe(0)
   expect(seq.played, detail).toBeGreaterThanOrEqual(145)
   expect(seq.ambiguous, detail).toBeLessThanOrEqual(5)
   expect(stats, detail).not.toBeNull()
@@ -406,10 +373,12 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
     resetProcessVoiceSessionBudget()
   })
 
+  /** `caseKey` names the clients and the mix group; it must be unique per case in this file. */
   async function runCase(
     pattern: SendPattern,
+    caseKey: string = pattern,
   ): Promise<{ seq: SequenceAnalysis; stats: MixStats | null }> {
-    const ids = clientIds(pattern)
+    const ids = clientIds(caseKey)
     const [speaker, listener] = await Promise.all([
       connectClientToSession(wsUrl, SPEAKER_SESSION, ids.speaker),
       connectClientToSession(wsUrl, LISTENER_SESSION, ids.listener),
@@ -420,14 +389,10 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       // speaker (the listener's own mic is silent).
       const host = getVoiceHostForSession(pod, LISTENER_SESSION)
       expect(host).toBeDefined()
-      host!.createMixGroup({ id: `fc-${pattern}`, clientIds: [ids.speaker, ids.listener] })
+      host!.createMixGroup({ id: `fc-${caseKey}`, clientIds: [ids.speaker, ids.listener] })
       await listener.mic.writeSample(Buffer.alloc(960), 5)
       await waitForVoiceClientActive(pod, ids.speaker)
       await waitForVoiceClientActive(pod, ids.listener)
-      await waitForMixPumpsRendering(host!.getClientMixer()!.getMixGraph() as AudioMixGraph, [
-        host!.resolveParticipantId(ids.speaker),
-        host!.resolveParticipantId(ids.listener),
-      ])
 
       const recorder = startListenerRecorder(listener.agentAudio)
       try {
@@ -491,4 +456,17 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
   it('seeded send jitter of +/-30 ms', { timeout: 90_000 }, async () => {
     expectContinuous(await runCase('jitter-30ms'))
   })
+
+  it(
+    'after an idle gap a new speaker is heard without gaps or duplicates',
+    { timeout: 120_000 },
+    async () => {
+      // The first case leaves the shared graph's media clock stale; after 1 s idle the pump
+      // of the next case's clients resyncs it on its first render, while the new speaker's
+      // frames are already queued.
+      expectContinuous(await runCase('paced', 'idle-warmup'))
+      await delay(1_000)
+      expectContinuous(await runCase('paced', 'after-idle'))
+    },
+  )
 })

@@ -117,35 +117,63 @@ export function detectIndex(frame: Buffer): DetectedIndex {
 export interface SequenceAnalysis {
   /** Frames that advanced the unwrapped sequence (first frame included). */
   played: number
-  /** Missing indices between consecutive detected frames. */
+  /** Marker indices missing between heard frames and not explained by an unknown frame. */
   gaps: number
-  /** Frames that repeat the previous index or step backwards (delta > half the period). */
+  /** An index repeated back-to-back (replayed or concealed frame) before a later marker. */
   duplicates: number
+  /** Repeats after the last advancing marker (the end-of-stream concealment tail). */
+  trailingDuplicates: number
+  /** Indices that went backwards (delta > half the period). */
+  reordered: number
+  /** Ambiguous frames between the first and the last marker. */
   ambiguous: number
-  /** Silent frames after the first detected index. */
+  /** Silent frames after the first detected index (interior and trailing). */
   silent: number
+  /** Silent frames between the first and the last marker. */
+  interiorSilence: number
   /** Position in the input of the first numeric index, or -1. */
   firstIndexAt: number
 }
 
-/** Analyse detected indices, unwrapping mod 40. Leading silence is ignored. */
+/**
+ * Analyse detected indices, unwrapping mod 40. Leading silence is ignored. An ambiguous or
+ * interior-silent frame stands in for one unknown frame, so it explains one missing index
+ * (the Rust twin `analyze` in `crates/conference/tests/support/frame_marker.rs` does the same).
+ */
 export function analyseSequence(indices: readonly DetectedIndex[]): SequenceAnalysis {
   const out: SequenceAnalysis = {
     played: 0,
     gaps: 0,
     duplicates: 0,
+    trailingDuplicates: 0,
+    reordered: 0,
     ambiguous: 0,
     silent: 0,
+    interiorSilence: 0,
     firstIndexAt: -1,
   }
-  let prev = -1
+  let lastMarker = -1
   indices.forEach((idx, pos) => {
+    if (typeof idx === 'number') lastMarker = pos
+  })
+  let prev = -1
+  let unknown = 0
+  let pendingDups = 0
+  indices.forEach((idx, pos) => {
+    if (idx === 'silence' && out.firstIndexAt >= 0) out.silent++
+    if (pos > lastMarker) return
     if (idx === 'ambiguous') {
-      if (out.firstIndexAt >= 0) out.ambiguous++
+      if (prev >= 0) {
+        out.ambiguous++
+        unknown++
+      }
       return
     }
     if (idx === 'silence') {
-      if (out.firstIndexAt >= 0) out.silent++
+      if (prev >= 0) {
+        out.interiorSilence++
+        unknown++
+      }
       return
     }
     if (prev < 0) {
@@ -155,13 +183,21 @@ export function analyseSequence(indices: readonly DetectedIndex[]): SequenceAnal
       return
     }
     const delta = (((idx - prev) % MARKER_PERIOD) + MARKER_PERIOD) % MARKER_PERIOD
-    if (delta === 0 || delta > MARKER_PERIOD / 2) {
-      out.duplicates++
+    if (delta === 0) {
+      pendingDups++
       return
     }
-    out.gaps += delta - 1
-    out.played++
-    prev = idx
+    if (delta > MARKER_PERIOD / 2) {
+      out.reordered++
+    } else {
+      out.gaps += Math.max(0, delta - 1 - unknown)
+      out.played++
+      prev = idx
+      out.duplicates += pendingDups
+      pendingDups = 0
+    }
+    unknown = 0
   })
+  out.trailingDuplicates = pendingDups
   return out
 }

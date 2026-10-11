@@ -64,6 +64,42 @@ describe('frame-marker helper', () => {
     expect(r).toMatchObject({ gaps: 0, duplicates: 1, played: 40 })
   })
 
+  it('an ambiguous frame stands in for one missing index (no gap)', () => {
+    const idx = detectRun(seq(0, 10)) as DetectedIndex[]
+    idx[4] = 'ambiguous'
+    expect(analyseSequence(idx)).toMatchObject({ played: 9, gaps: 0, duplicates: 0, ambiguous: 1 })
+  })
+
+  it('an ambiguous frame explains only one of two missing indices', () => {
+    const idx: DetectedIndex[] = [...detectRun(seq(0, 4)), 'ambiguous', ...detectRun([6])]
+    expect(analyseSequence(idx)).toMatchObject({ gaps: 1, ambiguous: 1 })
+  })
+
+  it('interior silence stands in for one missing index; trailing silence is not interior', () => {
+    const idx: DetectedIndex[] = [...detectRun(seq(0, 4)), 'silence', ...detectRun(seq(5, 3))]
+    idx.push('silence', 'silence')
+    expect(analyseSequence(idx)).toMatchObject({
+      gaps: 0,
+      interiorSilence: 1,
+      silent: 3,
+      played: 7,
+    })
+  })
+
+  it('repeats after the last marker are trailing duplicates, not duplicates', () => {
+    const idx = [...seq(0, 10), 9, 9]
+    expect(analyseSequence(detectRun(idx))).toMatchObject({
+      played: 10,
+      duplicates: 0,
+      trailingDuplicates: 2,
+    })
+  })
+
+  it('an index stepping backwards is reordered, not a duplicate', () => {
+    const idx = [...seq(0, 10), 5, ...seq(10, 5)]
+    expect(analyseSequence(detectRun(idx))).toMatchObject({ reordered: 1, duplicates: 0, gaps: 0 })
+  })
+
   it('a cross-faded merge of frames i and i+1 is ambiguous', () => {
     const gen = new FrameMarkerGenerator()
     const a = gen.next(10)

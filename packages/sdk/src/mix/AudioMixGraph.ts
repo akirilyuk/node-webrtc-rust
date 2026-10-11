@@ -7,7 +7,7 @@ import {
   type JsMixPlacement,
 } from '@node-webrtc-rust/bindings'
 
-import type { ClientPose, DistanceParams, MixPlacement, Quat, Vec3 } from './types.js'
+import type { ClientPose, DistanceParams, MixPlacement, MixStats, Quat, Vec3 } from './types.js'
 
 function toJsPlacement(placement: MixPlacement): JsMixPlacement {
   return placement as JsMixPlacement
@@ -183,14 +183,33 @@ export class AudioMixGraph {
     this.native.removeFromGroup(participantId)
   }
 
-  /** Stores the latest 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz). */
+  /**
+   * Queues a 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz).
+   *
+   * Frames go into an adaptive per-source FIFO and play one per 20 ms render tick, so
+   * bunched or jittered pushes are buffered rather than overwritten. The queue starts
+   * playing after a 40 to 160 ms prefill; a backlog is time-compressed and gaps are
+   * concealed, both counted in {@link AudioMixGraph.mixStats}.
+   */
   pushFrame(participantId: string, pcm: Buffer): void {
     this.native.pushFrame(participantId, pcm)
   }
 
-  /** Renders mixed stereo PCM for `listenerId` (3840 bytes). */
-  renderOutput(listenerId: string): Buffer {
-    return this.native.renderOutput(listenerId)
+  /**
+   * Renders mixed stereo PCM for `listenerId` (3840 bytes); call once per 20 ms tick.
+   *
+   * `atMs` is the scheduled render time on a monotonic millisecond clock
+   * (`performance.now()`). Renders with the same value hear the same tick; `atMs + 20`
+   * plays the next frame, so a late timer that fires twice back-to-back never repeats a
+   * frame. Omit it to render at the moment of the call.
+   */
+  renderOutput(listenerId: string, atMs?: number): Buffer {
+    return this.native.renderOutput(listenerId, atMs)
+  }
+
+  /** Queue counters and depth/target for a source, or `null` when it is not registered. */
+  mixStats(participantId: string): MixStats | null {
+    return this.native.mixStats(participantId) ?? null
   }
 
   /** Pans a TTS frame for `listenerId` using the graph's TTS pose or placement. */
@@ -209,5 +228,5 @@ export function quatIdentity(): Quat {
   return jsQuatIdentity()
 }
 
-export type { ClientPose, DistanceParams, MixPlacement, Quat, Vec3 } from './types.js'
+export type { ClientPose, DistanceParams, MixPlacement, MixStats, Quat, Vec3 } from './types.js'
 export { MIX_PLACEMENT } from './types.js'

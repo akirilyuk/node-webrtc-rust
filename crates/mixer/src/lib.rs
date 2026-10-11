@@ -10,15 +10,17 @@
 
 mod bus;
 mod decode;
+mod elastic;
 mod frame;
 mod graph;
 mod spatial;
 
 pub use bus::MixBus;
 pub use decode::{DecodeError, OpusDecoder};
+pub use elastic::{ElasticFrameQueue, SourceStats};
 pub use frame::{
-    silence_frame, Frame, FrameBuffer, CHANNELS, FRAME_BYTES, FRAME_HOLD_MS, FRAME_MS, SAMPLES_PER_CHANNEL,
-    SAMPLES_PER_FRAME, SAMPLE_RATE,
+    silence_frame, Frame, FrameBuffer, CHANNELS, FRAME_BYTES, FRAME_HOLD_MS, FRAME_MS,
+    SAMPLES_PER_CHANNEL, SAMPLES_PER_FRAME, SAMPLE_RATE,
 };
 pub use graph::{MixGraph, ParticipantId};
 pub use spatial::{

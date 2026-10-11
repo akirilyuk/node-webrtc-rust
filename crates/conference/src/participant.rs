@@ -150,10 +150,24 @@ async fn run_inbound_loop(
             Ok(packet) => {
                 let mixing_enabled = mix_graph.lock().await.mixing_enabled();
                 if mixing_enabled {
-                    let frame = decoder.decode_payload(&packet.payload);
-                    let frame = apply_noise_suppression(denoiser.as_mut(), frame);
+                    // One RTP packet may carry several 20 ms frames (e.g. 60 ms Opus).
+                    let frames = match decoder.try_decode_payload(&packet.payload) {
+                        Ok(frames) => frames,
+                        Err(err) => {
+                            let mut graph = mix_graph.lock().await;
+                            graph.note_decode_error(
+                                &participant_id,
+                                &err.to_string(),
+                                std::time::Instant::now(),
+                            );
+                            continue;
+                        }
+                    };
                     let mut graph = mix_graph.lock().await;
-                    graph.push_frame(&participant_id, frame);
+                    for frame in frames {
+                        let frame = apply_noise_suppression(denoiser.as_mut(), frame);
+                        graph.push_frame(&participant_id, frame);
+                    }
                 }
             }
             Err(_) => {
@@ -208,15 +222,19 @@ fn spawn_outbound_task(
 
         let mut interval = time::interval(Duration::from_millis(FRAME_MS as u64));
         loop {
-            interval.tick().await;
+            // Render at the tick's *scheduled* time, not at wall-clock time: when this task
+            // is late and tokio fires the missed ticks back-to-back, each render still
+            // advances the mix media clock by exactly one 20 ms tick (no skipped source
+            // frame followed by a repeated one).
+            let tick_at = interval.tick().await.into_std();
 
             if pc.connection_state() != ConnectionState::Connected {
                 break;
             }
 
             let frame = {
-                let graph = mix_graph.lock().await;
-                graph.render_output(&participant_id)
+                let mut graph = mix_graph.lock().await;
+                graph.render_output(&participant_id, tick_at)
             };
 
             if outbound_track

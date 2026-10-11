@@ -11,7 +11,12 @@
  */
 
 import { LocalAudioTrack } from '@node-webrtc-rust/sdk'
-import { AudioMixGraph, type ClientPose, type MixPlacement } from '@node-webrtc-rust/sdk/mix'
+import {
+  AudioMixGraph,
+  type ClientPose,
+  type MixPlacement,
+  type MixStats,
+} from '@node-webrtc-rust/sdk/mix'
 import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 
 import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from './pcm.js'
@@ -33,6 +38,10 @@ const PUMP_MAX_FRAMES_PER_TICK = 4
 const TTS_ACTIVE_WINDOW_MS = 60
 /** After this many consecutive active-window skips (~60 ms), treat TTS as ended and write silence. */
 const TTS_MAX_CONSECUTIVE_SKIPS = 3
+/** How often the pump compares each source's queue counters with the previous snapshot. */
+const QUEUE_STATS_CHECK_INTERVAL_MS = 1_000
+/** Minimum spacing between queue-pressure warnings for one source. */
+const QUEUE_WARN_MIN_INTERVAL_MS = 10_000
 
 /** Sidecar track VoiceAgent drains; must support {@link LocalAudioTrack.setWriteSampleTee}. */
 export type TtsSidecarTrack = {
@@ -64,7 +73,11 @@ export interface ClientMixGraph {
   addInput(participantId: string): void
   removeInput(participantId: string): void
   pushFrame(participantId: string, pcm: Buffer): void
-  renderOutput(listenerId: string): Buffer
+  /**
+   * Renders one 20 ms mixed frame. `atMs` is the scheduled render time on the
+   * `performance.now()` clock; renders 20 ms apart play consecutive frames.
+   */
+  renderOutput(listenerId: string, atMs?: number): Buffer
   panTtsFrame(pcm: Buffer, listenerId: string): Buffer
   setPose(participantId: string, pose: ClientPose): void
   setPositionalEnabled(enabled: boolean): void
@@ -86,6 +99,8 @@ export interface ClientMixGraph {
   listenerSources?(listener: string): string[] | null
   setListenerSources?(listener: string, sources: string[]): void
   clearListenerRoutes?(listener: string): void
+  /** Per-source queue counters; `null` when the source is unknown. */
+  mixStats?(participantId: string): MixStats | null | undefined
 }
 
 type GraphGroupState = {
@@ -178,6 +193,27 @@ export function clientsShareMixGroup(
 export type ClientAudioMixerOptions = {
   /** Inject a mock graph in unit tests; defaults to a new {@link AudioMixGraph}. */
   graph?: ClientMixGraph
+  /** Sink for rate-limited queue-pressure warnings (default: `console.warn`). */
+  warn?: (message: string) => void
+}
+
+/** Counters whose increase means audio was compressed, concealed or failed to decode. */
+type QueuePressureCounters = Pick<
+  MixStats,
+  'compressed' | 'concealed' | 'overflowCompressed' | 'decodeErrors'
+>
+
+type QueueStatsWatch = {
+  /** Counters at the last warning (or zero before the first one). */
+  baseline: QueuePressureCounters
+  lastWarnAt: number | null
+}
+
+const ZERO_QUEUE_PRESSURE: QueuePressureCounters = {
+  compressed: 0,
+  concealed: 0,
+  overflowCompressed: 0,
+  decodeErrors: 0,
 }
 
 type PeerMixState = {
@@ -227,9 +263,18 @@ export class ClientAudioMixer {
   private readonly silenceFrame = Buffer.alloc(PCM_FULL_FRAME_BYTES)
   /** Serializes mix pump writes per peer (interval + mute flush share one chain). */
   private readonly pumpWrites = new Map<string, Promise<void>>()
+  private readonly warn: (message: string) => void
+  private readonly queueWatch = new Map<string, QueueStatsWatch>()
+  private lastQueueCheckAt: number | null = null
 
   constructor(options?: ClientAudioMixerOptions) {
     this.graph = options?.graph ?? new AudioMixGraph()
+    this.warn = options?.warn ?? ((message) => console.warn(message))
+  }
+
+  /** Per-source mix queue counters (`null` when the graph has no stats or the source is unknown). */
+  mixStats(peerId: string): MixStats | null {
+    return this.graph.mixStats?.(peerId) ?? null
   }
 
   /** @internal Test access to the underlying graph. */
@@ -283,6 +328,7 @@ export class ClientAudioMixer {
     if (!this.registered.has(peerId)) return
     this.stopMixPump(peerId)
     this.graph.removeInput(peerId)
+    this.queueWatch.delete(peerId)
     this.graph.removeFromGroup(peerId)
     removeClientFromGroupTracking(getGraphGroupState(this.graph), peerId)
     getGraphGroupState(this.graph).knownClientIds.delete(peerId)
@@ -604,8 +650,9 @@ export class ClientAudioMixer {
     peerId: string,
     out: MixPumpOutboundTrack,
     tts: Buffer,
+    slotMs?: number,
   ): Promise<void> {
-    const mixed = this.graph.renderOutput(peerId)
+    const mixed = this.graph.renderOutput(peerId, slotMs)
     const panned = this.graph.panTtsFrame(tts, peerId)
     const frame = sumStereoPcm(panned, mixed)
     await out.writeSample(frame, PCM_FRAME_DURATION_MS)
@@ -627,6 +674,7 @@ export class ClientAudioMixer {
     if (!out) return
 
     const now = performance.now()
+    this.checkQueueStats(now)
     let due = Math.floor((now - state.pumpT0) / PCM_FRAME_DURATION_MS) - state.pumpWritten
     if (due <= 0) return
 
@@ -636,8 +684,11 @@ export class ClientAudioMixer {
 
     while (slotsAttempted < slotBudget && due > 0) {
       const tts = this.tryDequeueTts(state)
+      // Scheduled time of this slot: a catch-up render in the same tick gets the next
+      // slot's time, so the graph plays the next frame instead of repeating the last.
+      const slotMs = state.pumpT0 + (state.pumpWritten + 1) * PCM_FRAME_DURATION_MS
       if (tts != null) {
-        await this.writeMixTick(peerId, out, tts)
+        await this.writeMixTick(peerId, out, tts, slotMs)
         state.pumpWritten += 1
         state.consecutiveTtsSkips = 0
         due -= 1
@@ -656,7 +707,7 @@ export class ClientAudioMixer {
         continue
       }
 
-      await this.writeMixTick(peerId, out, this.silenceFrame)
+      await this.writeMixTick(peerId, out, this.silenceFrame, slotMs)
       state.pumpWritten += 1
       state.consecutiveTtsSkips = 0
       due -= 1
@@ -667,6 +718,66 @@ export class ClientAudioMixer {
 
     if (originalDue > PUMP_MAX_FRAMES_PER_TICK) {
       this.rebasePumpClock(state, now)
+    }
+  }
+
+  /**
+   * At most once per {@link QUEUE_STATS_CHECK_INTERVAL_MS}, compares every registered source's
+   * counters with the last warned snapshot and logs one line per source when compression,
+   * concealment, overflow merging or decode errors increased (at most one line per
+   * {@link QUEUE_WARN_MIN_INTERVAL_MS} per source; increases in between are folded into the
+   * next line).
+   */
+  private checkQueueStats(now: number): void {
+    if (!this.graph.mixStats) return
+    if (
+      this.lastQueueCheckAt != null &&
+      now - this.lastQueueCheckAt < QUEUE_STATS_CHECK_INTERVAL_MS
+    ) {
+      return
+    }
+    this.lastQueueCheckAt = now
+    for (const peerId of this.registered) {
+      const stats = this.graph.mixStats(peerId)
+      if (!stats) continue
+      let watch = this.queueWatch.get(peerId)
+      if (!watch) {
+        watch = { baseline: ZERO_QUEUE_PRESSURE, lastWarnAt: null }
+        this.queueWatch.set(peerId, watch)
+      }
+      if (stats.played === 0) {
+        // Start-up: concealment before the source's first frame is expected, not pressure.
+        watch.baseline = { ...watch.baseline, concealed: stats.concealed }
+      }
+      const delta = {
+        compressed: stats.compressed - watch.baseline.compressed,
+        concealed: stats.concealed - watch.baseline.concealed,
+        overflowCompressed: stats.overflowCompressed - watch.baseline.overflowCompressed,
+        decodeErrors: stats.decodeErrors - watch.baseline.decodeErrors,
+      }
+      if (
+        delta.compressed <= 0 &&
+        delta.concealed <= 0 &&
+        delta.overflowCompressed <= 0 &&
+        delta.decodeErrors <= 0
+      ) {
+        continue
+      }
+      if (watch.lastWarnAt != null && now - watch.lastWarnAt < QUEUE_WARN_MIN_INTERVAL_MS) {
+        continue
+      }
+      watch.lastWarnAt = now
+      watch.baseline = {
+        compressed: stats.compressed,
+        concealed: stats.concealed,
+        overflowCompressed: stats.overflowCompressed,
+        decodeErrors: stats.decodeErrors,
+      }
+      this.warn(
+        `[mix] queue pressure peerId=${peerId} compressed=+${delta.compressed} ` +
+          `concealed=+${delta.concealed} overflowCompressed=+${delta.overflowCompressed} ` +
+          `decodeErrors=+${delta.decodeErrors} depth=${stats.depth} target=${stats.target}`,
+      )
     }
   }
 }

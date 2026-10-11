@@ -31,18 +31,19 @@ pub use mixer::{
     js_quat_identity, js_vec3_zero, JsClientPose, JsDistanceParams, JsMixGraph, JsMixPlacement,
     JsQuat, JsVec3,
 };
+pub use peer_connection::JsPeerConnection;
 pub use player::{
     get_clip_status, play_clip_from_bytes, play_clip_from_path, play_clip_progressive, stop_clip,
     take_clip_frame, JsClipPlayerStatus, JsClipStatus, JsGrowingClipWriter,
 };
-pub use peer_connection::JsPeerConnection;
 pub use rtp_receiver::JsRtpReceiver;
 pub use rtp_sender::JsRtpSender;
 pub use rtp_transceiver::{JsRTCRtpTransceiverInit, JsRtpTransceiver};
 pub use speech::{
-    JsBargeInConfig, JsEventDeliveryMode, JsSessionAudioFormat, JsSessionFinalizeResult,
-    preload_language_id, JsSessionRecorder, JsSpeechEvent, JsSpeechEventType, JsSttConfig, JsSttVendor, JsTtsConfig,
-    JsTtsVendor, JsVadConfig, JsVadSampleRate, JsVoiceAgent, JsVoiceAgentConfig,
+    preload_language_id, JsBargeInConfig, JsEventDeliveryMode, JsSessionAudioFormat,
+    JsSessionFinalizeResult, JsSessionRecorder, JsSpeechEvent, JsSpeechEventType, JsSttConfig,
+    JsSttVendor, JsTtsConfig, JsTtsVendor, JsVadConfig, JsVadSampleRate, JsVoiceAgent,
+    JsVoiceAgentConfig,
 };
 
 #[napi]

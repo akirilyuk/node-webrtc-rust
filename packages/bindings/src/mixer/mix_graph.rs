@@ -1,18 +1,39 @@
 //! MixGraph NAPI bindings (control plane + PCM push/render for helpers mixer).
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_mixer::{Frame, MixGraph, Quat, Vec3, FRAME_BYTES};
 
-use crate::mixer::types::{JsClientPose, JsDistanceParams, JsMixPlacement, JsQuat, JsVec3};
+use crate::mixer::types::{
+    JsClientPose, JsDistanceParams, JsMixPlacement, JsMixStats, JsQuat, JsVec3,
+};
 
 /// Conference mix graph control handle (poses, groups, mutes, placements).
 #[napi]
 pub struct JsMixGraph {
     inner: Mutex<MixGraph>,
+    /// Mapping from the caller's monotonic millisecond clock to `Instant`, fixed by the
+    /// first `renderOutput(listenerId, atMs)` call: `(origin_instant, origin_ms)`.
+    render_origin: Mutex<Option<(Instant, f64)>>,
+}
+
+/// Maps a caller timestamp (`at_ms`, e.g. `performance.now()`) to an `Instant` through the
+/// origin set by the first call. Earlier, non-finite or unrepresentable values map to the
+/// origin itself. The offset is rounded to whole microseconds so that timestamps spaced
+/// exactly 20 ms apart in the caller's float domain stay exactly one media tick apart.
+fn instant_for_at_ms(origin: &mut Option<(Instant, f64)>, at_ms: f64) -> Instant {
+    let (origin_instant, origin_ms) = *origin.get_or_insert_with(|| (Instant::now(), at_ms));
+    let delta_us = ((at_ms - origin_ms) * 1000.0).round();
+    if !delta_us.is_finite() || delta_us <= 0.0 || delta_us >= u64::MAX as f64 {
+        return origin_instant;
+    }
+    origin_instant
+        .checked_add(Duration::from_micros(delta_us as u64))
+        .unwrap_or(origin_instant)
 }
 
 #[napi]
@@ -21,6 +42,7 @@ impl JsMixGraph {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(MixGraph::new()),
+            render_origin: Mutex::new(None),
         }
     }
 
@@ -237,9 +259,7 @@ impl JsMixGraph {
             .inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?;
-        Ok(graph
-            .source_mix_placement(&participant_id)
-            .map(Into::into))
+        Ok(graph.source_mix_placement(&participant_id).map(Into::into))
     }
 
     #[napi]
@@ -316,7 +336,8 @@ impl JsMixGraph {
         Ok(())
     }
 
-    /// Stores the latest 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz).
+    /// Queues a 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz). Frames are
+    /// played one per 20 ms render tick; bunched pushes are buffered, not overwritten.
     #[napi]
     pub fn push_frame(&self, participant_id: String, pcm: Buffer) -> Result<()> {
         if pcm.len() != FRAME_BYTES {
@@ -334,14 +355,40 @@ impl JsMixGraph {
     }
 
     /// Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off).
+    ///
+    /// `at_ms` is the scheduled render time on the caller's monotonic millisecond clock
+    /// (`performance.now()`): listeners rendered with the same value in one slot hear the same
+    /// tick, and a catch-up render at `at_ms + 20` plays the next frame instead of repeating
+    /// the previous one. Without it the render time is the moment of the call.
     #[napi]
-    pub fn render_output(&self, listener_id: String) -> Result<Buffer> {
+    pub fn render_output(&self, listener_id: String, at_ms: Option<f64>) -> Result<Buffer> {
+        let now = match at_ms {
+            Some(at_ms) => {
+                let mut origin = self
+                    .render_origin
+                    .lock()
+                    .map_err(|_| Error::from_reason("mix graph lock poisoned"))?;
+                instant_for_at_ms(&mut origin, at_ms)
+            }
+            None => Instant::now(),
+        };
         let frame = self
             .inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
-            .render_output(&listener_id);
+            .render_output(&listener_id, now);
         Ok(Buffer::from(frame.pcm.as_ref()))
+    }
+
+    /// Queue counters and depth/target for one source, or `null` when it is not registered.
+    #[napi]
+    pub fn mix_stats(&self, participant_id: String) -> Result<Option<JsMixStats>> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .source_stats(&participant_id)
+            .map(Into::into))
     }
 
     /// Pans a TTS frame for `listener_id` using the graph's TTS pose or placement.
@@ -373,4 +420,46 @@ pub fn js_quat_identity() -> JsQuat {
 #[napi]
 pub fn js_vec3_zero() -> JsVec3 {
     Vec3::ZERO.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn at_ms_maps_to_origin_plus_offset() {
+        let mut origin = None;
+        let t0 = instant_for_at_ms(&mut origin, 5_000.25);
+        assert_eq!(
+            instant_for_at_ms(&mut origin, 5_000.25),
+            t0,
+            "same timestamp, same instant"
+        );
+        assert_eq!(
+            instant_for_at_ms(&mut origin, 5_020.25),
+            t0 + Duration::from_millis(20)
+        );
+    }
+
+    #[test]
+    fn at_ms_slots_stay_exactly_one_tick_apart_despite_float_noise() {
+        let mut origin = None;
+        let base = 123_456.789_012_345_f64;
+        let t0 = instant_for_at_ms(&mut origin, base);
+        for n in 1..2_000u64 {
+            let at = instant_for_at_ms(&mut origin, base + n as f64 * 20.0);
+            assert_eq!(at - t0, Duration::from_millis(20 * n), "slot {n}");
+        }
+    }
+
+    #[test]
+    fn at_ms_earlier_or_non_finite_maps_to_origin() {
+        let mut origin = None;
+        let t0 = instant_for_at_ms(&mut origin, 1_000.0);
+        assert_eq!(instant_for_at_ms(&mut origin, 10.0), t0);
+        assert_eq!(instant_for_at_ms(&mut origin, f64::NAN), t0);
+        assert_eq!(instant_for_at_ms(&mut origin, f64::INFINITY), t0);
+        assert_eq!(instant_for_at_ms(&mut origin, f64::NEG_INFINITY), t0);
+        assert_eq!(instant_for_at_ms(&mut origin, 1e300), t0);
+    }
 }

@@ -21,6 +21,10 @@ function mixGraphNativeAvailable(): boolean {
   }
 }
 
+/** A lone queued frame plays after the two-tick (40 ms) prefill; render once it is due. */
+const PREFILL_WAIT_MS = 50
+const prefill = () => new Promise<void>((resolve) => setTimeout(resolve, PREFILL_WAIT_MS))
+
 function poseAtX(x: number) {
   return {
     position: { ...vec3Zero(), x },
@@ -29,7 +33,7 @@ function poseAtX(x: number) {
 }
 
 describe.skipIf(!mixGraphNativeAvailable())('AudioMixGraph mute energy (native graph only)', () => {
-  it('global mute excludes muted source from renderOutput', () => {
+  it('global mute excludes muted source from renderOutput', async () => {
     const graph = new AudioMixGraph()
     for (const id of ['client-mix-1', 'client-mix-2', 'client-mix-3']) {
       graph.addInput(id)
@@ -47,6 +51,7 @@ describe.skipIf(!mixGraphNativeAvailable())('AudioMixGraph mute energy (native g
     graph.pushFrame('client-mix-1', sineStereoFrame(440, 10_000, phaseRef.value))
     phaseRef.value += SAMPLES_PER_CHANNEL
 
+    await prefill()
     const pcm = graph.renderOutput('client-mix-2')
     expect(pcm.length).toBe(FRAME_BYTES)
 
@@ -64,7 +69,7 @@ describe.skipIf(!mixGraphNativeAvailable())('AudioMixGraph mute energy (native g
     )
   })
 
-  it('listener mute excludes target only for that listener', () => {
+  it('listener mute excludes target only for that listener', async () => {
     const graph = new AudioMixGraph()
     for (const id of ['client-mix-1', 'client-mix-2', 'client-mix-3']) {
       graph.addInput(id)
@@ -78,6 +83,7 @@ describe.skipIf(!mixGraphNativeAvailable())('AudioMixGraph mute energy (native g
     graph.pushFrame('client-mix-1', sineStereoFrame(440, 10_000, phaseRef.value))
     phaseRef.value += SAMPLES_PER_CHANNEL
 
+    await prefill()
     const mutedListener = graph.renderOutput('client-mix-2')
     const otherListener = graph.renderOutput('client-mix-3')
 

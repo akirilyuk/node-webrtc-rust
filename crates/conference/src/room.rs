@@ -2,11 +2,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use node_webrtc_rust_core::{
     debug_call, debug_evt, IceServer, PeerConnection, PeerConnectionConfig,
 };
-use node_webrtc_rust_mixer::{Frame, MixGraph};
+use node_webrtc_rust_mixer::{Frame, MixGraph, SourceStats};
 use tokio::sync::Mutex;
 
 use crate::error::ConferenceError;
@@ -354,22 +355,50 @@ impl Room {
     }
 
     /// Injects a PCM frame into a participant input (testing and simulation).
+    ///
+    /// The frame is queued in the participant's elastic source queue (see
+    /// [`MixGraph::push_frame`]), not stored as a single latest slot.
     pub async fn inject_frame(
         &self,
         participant_id: &str,
         frame: Frame,
     ) -> Result<(), ConferenceError> {
+        self.inject_frame_at(participant_id, frame, Instant::now())
+            .await
+    }
+
+    /// [`Self::inject_frame`] with an explicit arrival time (deterministic tests).
+    pub async fn inject_frame_at(
+        &self,
+        participant_id: &str,
+        frame: Frame,
+        now: Instant,
+    ) -> Result<(), ConferenceError> {
         self.ensure_participant_exists(participant_id)?;
         let mut graph = self.mix_graph.lock().await;
-        graph.push_frame(participant_id, frame);
+        graph.push_frame_at(participant_id, frame, now);
         Ok(())
     }
 
-    /// Renders the personalized mix for a participant.
+    /// Renders the personalized mix for a participant at the current time.
     pub async fn render_output(&self, listener_id: &str) -> Result<Frame, ConferenceError> {
+        self.render_output_at(listener_id, Instant::now()).await
+    }
+
+    /// [`Self::render_output`] at an explicit media time (deterministic tests).
+    pub async fn render_output_at(
+        &self,
+        listener_id: &str,
+        now: Instant,
+    ) -> Result<Frame, ConferenceError> {
         self.ensure_participant_exists(listener_id)?;
-        let graph = self.mix_graph.lock().await;
-        Ok(graph.render_output(listener_id))
+        let mut graph = self.mix_graph.lock().await;
+        Ok(graph.render_output(listener_id, now))
+    }
+
+    /// Counters and queue depth/target for one participant's source queue.
+    pub async fn source_stats(&self, participant_id: &str) -> Option<SourceStats> {
+        self.mix_graph.lock().await.source_stats(participant_id)
     }
 
     /// Closes all participants and clears room state.

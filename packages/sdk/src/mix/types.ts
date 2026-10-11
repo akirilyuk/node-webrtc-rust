@@ -29,6 +29,30 @@ export interface DistanceParams {
   rolloff: number
 }
 
+/**
+ * Per-source mix queue counters from `AudioMixGraph.mixStats`.
+ *
+ * Invariant: `pushed = played + compressed + overflowCompressed + depth`.
+ */
+export interface MixStats {
+  /** Frames pushed into the source queue. */
+  pushed: number
+  /** Source frames played into the mix. */
+  played: number
+  /** Source frames absorbed by time-compression while the backlog was above target. */
+  compressed: number
+  /** Faded concealment frames played on underrun. */
+  concealed: number
+  /** Source frames absorbed by merging at the 1 s queue capacity (capacity signal). */
+  overflowCompressed: number
+  /** Inbound packets that failed to decode. */
+  decodeErrors: number
+  /** Frames currently queued. */
+  depth: number
+  /** Current adaptive target depth in frames (2 to 8, i.e. 40 to 160 ms). */
+  target: number
+}
+
 export const MIX_PLACEMENT = {
   Center: 'center',
   Left: 'left',

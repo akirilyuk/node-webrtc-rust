@@ -175,13 +175,23 @@ mod tests {
         let graph = Arc::new(Mutex::new(MixGraph::new()));
         graph.lock().await.add_input("alice");
         graph.lock().await.add_input("bob");
-        graph.lock().await.push_frame("alice", tone_frame(1, 5_000));
-        graph.lock().await.push_frame("bob", tone_frame(2, 5_000));
+        let t0 = std::time::Instant::now();
+        graph
+            .lock()
+            .await
+            .push_frame_at("alice", tone_frame(1, 5_000), t0);
+        graph
+            .lock()
+            .await
+            .push_frame_at("bob", tone_frame(2, 5_000), t0);
 
         let matrix = MuteMatrix::new(Arc::clone(&graph));
         matrix.mute("alice", MuteScope::Global, None).await.unwrap();
 
-        let out = graph.lock().await.render_output("bob");
+        let out = graph
+            .lock()
+            .await
+            .render_output("bob", t0 + std::time::Duration::from_millis(40));
         let sample = i16::from_le_bytes([out.pcm[0], out.pcm[1]]);
         assert_eq!(sample, 0);
     }

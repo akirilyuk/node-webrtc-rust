@@ -1,9 +1,11 @@
 //! Per-listener mix graph with mute matrix, exclude-self routing, and positional pan.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use crate::bus::MixBus;
-use crate::frame::{self, Frame, FrameBuffer};
+use crate::elastic::{ElasticFrameQueue, SourceStats};
+use crate::frame::{self, Frame, FRAME_MS};
 use crate::spatial::{
     apply_pan_gains, pan_frame_with_placement, pan_gains_placement, pan_gains_positional,
     ClientPose, DistanceParams, MixPlacement,
@@ -12,11 +14,53 @@ use crate::spatial::{
 /// Participant or listener identifier.
 pub type ParticipantId = String;
 
-/// Conference mix graph: one input buffer per participant, per-listener mute masks,
-/// optional poses, and exclusive mix groups.
+/// Longest catch-up after a late render (in 20 ms ticks); beyond it the media clock resyncs.
+const MAX_CATCHUP_TICKS: u64 = 8;
+
+/// Ticks of per-source output kept so a listener that renders late can still hear every
+/// frame in order (it advances one tick per render until it has caught up).
+const HISTORY_TICKS: usize = MAX_CATCHUP_TICKS as usize + 1;
+
+/// One mix source: an elastic queue plus the frames chosen for the latest media ticks.
+#[derive(Debug)]
+struct SourceSlot {
+    queue: ElasticFrameQueue,
+    /// Output of the most recent ticks, newest last; every listener rendering in a tick
+    /// mixes the same entry.
+    history: VecDeque<Frame>,
+}
+
+impl SourceSlot {
+    fn new() -> Self {
+        Self {
+            queue: ElasticFrameQueue::new(),
+            history: VecDeque::with_capacity(HISTORY_TICKS),
+        }
+    }
+
+    /// Frame played `lag` ticks ago (0 = the latest tick); silence when not recorded.
+    fn frame_at_lag(&self, lag: u64) -> Frame {
+        usize::try_from(lag)
+            .ok()
+            .and_then(|lag| self.history.len().checked_sub(1 + lag))
+            .and_then(|idx| self.history.get(idx))
+            .cloned()
+            .unwrap_or_else(frame::silence_frame)
+    }
+}
+
+/// Conference mix graph: one elastic input queue per participant (advanced by a shared
+/// 20 ms media clock), per-listener mute masks, optional poses, and exclusive mix groups.
 #[derive(Debug)]
 pub struct MixGraph {
-    inputs: HashMap<ParticipantId, FrameBuffer>,
+    inputs: HashMap<ParticipantId, SourceSlot>,
+    /// Time of the most recent processed media tick (set by the first push or render).
+    clock: Option<Instant>,
+    /// Number of media ticks processed so far.
+    tick_count: u64,
+    /// Per-listener position (tick number) of the next output; trails `tick_count` by at
+    /// most `MAX_CATCHUP_TICKS` for a listener whose renders run late.
+    listener_ticks: HashMap<ParticipantId, u64>,
     mixing_enabled: bool,
     global_mute: HashSet<ParticipantId>,
     listener_mute: HashMap<(ParticipantId, ParticipantId), bool>,
@@ -40,6 +84,9 @@ impl Default for MixGraph {
     fn default() -> Self {
         Self {
             inputs: HashMap::new(),
+            clock: None,
+            tick_count: 0,
+            listener_ticks: HashMap::new(),
             mixing_enabled: true,
             global_mute: HashSet::new(),
             listener_mute: HashMap::new(),
@@ -66,12 +113,13 @@ impl MixGraph {
     /// Registers a participant input slot.
     pub fn add_input(&mut self, participant_id: impl Into<ParticipantId>) {
         let id = participant_id.into();
-        self.inputs.entry(id).or_insert_with(FrameBuffer::new);
+        self.inputs.entry(id).or_insert_with(SourceSlot::new);
     }
 
     /// Removes a participant input slot and related mute / pose / group state.
     pub fn remove_input(&mut self, participant_id: &str) {
         self.inputs.remove(participant_id);
+        self.listener_ticks.remove(participant_id);
         self.global_mute.remove(participant_id);
         self.poses.remove(participant_id);
         self.source_mix_placements.remove(participant_id);
@@ -222,7 +270,8 @@ impl MixGraph {
         participant_id: impl Into<ParticipantId>,
         placement: MixPlacement,
     ) {
-        self.source_mix_placements.insert(participant_id.into(), placement);
+        self.source_mix_placements
+            .insert(participant_id.into(), placement);
     }
 
     /// Clears per-source named placement; default / positional rules apply again.
@@ -347,13 +396,80 @@ impl MixGraph {
             .retain(|listener, _| self.member_group.contains_key(listener));
     }
 
-    /// Stores the latest PCM frame for a participant.
+    /// Queues a PCM frame for a participant (arrival time = now).
+    ///
+    /// Frames are appended to the source's elastic queue and played one per 20 ms media
+    /// tick; bunched arrivals are buffered, not overwritten. See [`crate::elastic`].
     pub fn push_frame(&mut self, participant_id: impl Into<ParticipantId>, frame: Frame) {
+        self.push_frame_at(participant_id, frame, Instant::now());
+    }
+
+    /// Like [`Self::push_frame`] with an explicit arrival time (tests and simulation).
+    pub fn push_frame_at(
+        &mut self,
+        participant_id: impl Into<ParticipantId>,
+        frame: Frame,
+        now: Instant,
+    ) {
+        if self.clock.is_none() {
+            self.clock = Some(now);
+        }
         let id = participant_id.into();
         self.inputs
             .entry(id)
-            .or_insert_with(FrameBuffer::new)
-            .push(frame);
+            .or_insert_with(SourceSlot::new)
+            .queue
+            .push(frame, now);
+    }
+
+    /// Records an undecodable inbound packet for `participant_id` (`decode_errors` stat).
+    pub fn note_decode_error(&mut self, participant_id: &str, reason: &str, now: Instant) {
+        if let Some(slot) = self.inputs.get_mut(participant_id) {
+            slot.queue.note_decode_error(reason, now);
+        }
+    }
+
+    /// Counters and queue depth/target for one source, if registered.
+    pub fn source_stats(&self, participant_id: &str) -> Option<SourceStats> {
+        self.inputs
+            .get(participant_id)
+            .map(|slot| slot.queue.stats())
+    }
+
+    /// Advances the media clock to `now`: pops one frame per elapsed 20 ms tick from every
+    /// source into its current snapshot (catching up when late, capped at
+    /// `MAX_CATCHUP_TICKS`).
+    ///
+    /// A longer gap (an idle period) resyncs the clock to `now` and processes exactly one
+    /// tick: frames queued meanwhile play in order on the following ticks, and any backlog
+    /// is slimmed by the queue's shrink rule (counted as compressed, never skipped).
+    pub fn advance_to(&mut self, now: Instant) {
+        let Some(clock) = self.clock else {
+            self.clock = Some(now);
+            return;
+        };
+        let tick = Duration::from_millis(u64::from(FRAME_MS));
+        let ticks = (now.saturating_duration_since(clock).as_micros() / tick.as_micros()) as u64;
+        if ticks == 0 {
+            return;
+        }
+        let run = if ticks > MAX_CATCHUP_TICKS {
+            self.clock = Some(now);
+            1
+        } else {
+            self.clock = Some(clock + tick * ticks as u32);
+            ticks
+        };
+        for slot in self.inputs.values_mut() {
+            for _ in 0..run {
+                let frame = slot.queue.pop();
+                if slot.history.len() == HISTORY_TICKS {
+                    slot.history.pop_front();
+                }
+                slot.history.push_back(frame);
+            }
+        }
+        self.tick_count += run;
     }
 
     /// Pans a TTS frame for `listener_id`.
@@ -382,7 +498,11 @@ impl MixGraph {
                 .get(listener_id)
                 .copied()
                 .unwrap_or_else(ClientPose::center);
-            let source_pose = self.poses.get(source_id).copied().unwrap_or_else(ClientPose::center);
+            let source_pose = self
+                .poses
+                .get(source_id)
+                .copied()
+                .unwrap_or_else(ClientPose::center);
             pan_gains_positional(listener_pose, source_pose, self.distance_params)
         } else if let Some(placement) = self.source_mix_placements.get(source_id) {
             pan_gains_placement(*placement, self.distance_params)
@@ -399,18 +519,57 @@ impl MixGraph {
         apply_pan_gains(frame, gains)
     }
 
-    /// Renders the mixed output for `listener_id`.
+    /// Moves `listener_id` to its next tick and returns how many ticks it trails the clock.
     ///
-    /// Excludes the listener's own input, applies global and per-listener mute masks,
-    /// pans each source (positional or named placement), and returns silence when mixing
-    /// is disabled.
-    pub fn render_output(&self, listener_id: &str) -> Frame {
+    /// A listener rendering on time stays at lag 0. One whose render ran late steps one
+    /// tick per call (hearing each frame in order) until it has caught up; beyond
+    /// `MAX_CATCHUP_TICKS` behind, it jumps to the present.
+    ///
+    /// Listeners render on their own timers, so a render at `now` can lie *before* the
+    /// clock (another listener's later slot already advanced it). Such a render is
+    /// `behind` whole ticks early: it may only hear ticks up to `tick_count - behind`,
+    /// otherwise it would consume a tick whose time has not come and then, finding no new
+    /// tick at its next slot, repeat the frame it just played.
+    fn next_listener_lag(&mut self, listener_id: &str, now: Instant) -> u64 {
+        let tick = Duration::from_millis(u64::from(FRAME_MS));
+        let behind = match self.clock {
+            Some(clock) if now < clock => {
+                let early = clock.duration_since(now).as_micros();
+                u64::try_from(early.div_ceil(tick.as_micros())).unwrap_or(MAX_CATCHUP_TICKS)
+            }
+            _ => 0,
+        }
+        .min(MAX_CATCHUP_TICKS);
+        let newest = self.tick_count.saturating_sub(behind);
+        let cursor = self
+            .listener_ticks
+            .entry(listener_id.to_string())
+            .or_insert(newest);
+        if *cursor < newest {
+            *cursor = if newest - *cursor > MAX_CATCHUP_TICKS {
+                newest
+            } else {
+                *cursor + 1
+            };
+        }
+        self.tick_count - *cursor
+    }
+
+    /// Renders the mixed output for `listener_id` at media time `now`.
+    ///
+    /// Advances the media clock first (see [`Self::advance_to`]), so every listener
+    /// rendering in the same 20 ms tick mixes the same per-source frame. Excludes the
+    /// listener's own input, applies global and per-listener mute masks, pans each source
+    /// (positional or named placement), and returns silence when mixing is disabled.
+    pub fn render_output(&mut self, listener_id: &str, now: Instant) -> Frame {
+        self.advance_to(now);
+        let lag = self.next_listener_lag(listener_id, now);
         if !self.mixing_enabled {
             return frame::silence_frame();
         }
 
         let mut sources = Vec::new();
-        for (participant_id, buffer) in &self.inputs {
+        for (participant_id, slot) in &self.inputs {
             if participant_id == listener_id {
                 continue;
             }
@@ -430,7 +589,7 @@ impl MixGraph {
             {
                 continue;
             }
-            let raw = buffer.current();
+            let raw = slot.frame_at_lag(lag);
             sources.push(self.pan_source_for_listener(listener_id, participant_id, &raw));
         }
 
@@ -443,6 +602,18 @@ mod tests {
     use super::*;
     use crate::spatial::{Quat, Vec3};
     use bytes::Bytes;
+    use std::sync::OnceLock;
+
+    /// Shared injected clock origin: sources push at `t0()`.
+    fn t0() -> Instant {
+        static T0: OnceLock<Instant> = OnceLock::new();
+        *T0.get_or_init(Instant::now)
+    }
+
+    /// Two media ticks after `t0()`: a lone frame has waited out its prefill and plays.
+    fn ready() -> Instant {
+        t0() + Duration::from_millis(2 * u64::from(frame::FRAME_MS))
+    }
 
     fn tone_frame(participant: u8, amplitude: i16) -> Frame {
         let mut pcm = vec![0u8; frame::FRAME_BYTES];
@@ -477,11 +648,11 @@ mod tests {
         graph.add_input("bob");
         graph.add_input("carol");
 
-        graph.push_frame("alice", tone_frame(1, 1_000));
-        graph.push_frame("bob", tone_frame(2, 1_000));
-        graph.push_frame("carol", tone_frame(3, 1_000));
+        graph.push_frame_at("alice", tone_frame(1, 1_000), t0());
+        graph.push_frame_at("bob", tone_frame(2, 1_000), t0());
+        graph.push_frame_at("carol", tone_frame(3, 1_000), t0());
 
-        let out = graph.render_output("bob");
+        let out = graph.render_output("bob", ready());
         let sample = i16::from_le_bytes([out.pcm[0], out.pcm[1]]);
         // alice(1000) + carol(3000), bob excluded
         assert_eq!(sample, 4_000);
@@ -493,25 +664,25 @@ mod tests {
         graph.add_input("alice");
         graph.add_input("bob");
         graph.add_input("carol");
-        graph.push_frame("alice", tone_frame(1, 5_000));
-        graph.push_frame("bob", tone_frame(2, 5_000));
-        graph.push_frame("carol", tone_frame(3, 5_000));
+        graph.push_frame_at("alice", tone_frame(1, 5_000), t0());
+        graph.push_frame_at("bob", tone_frame(2, 5_000), t0());
+        graph.push_frame_at("carol", tone_frame(3, 5_000), t0());
 
         let before = i16::from_le_bytes([
-            graph.render_output("bob").pcm[0],
-            graph.render_output("bob").pcm[1],
+            graph.render_output("bob", ready()).pcm[0],
+            graph.render_output("bob", ready()).pcm[1],
         ]);
         assert_eq!(before, 20_000);
 
         graph.set_global_mute("alice", true);
 
         let bob_out = i16::from_le_bytes([
-            graph.render_output("bob").pcm[0],
-            graph.render_output("bob").pcm[1],
+            graph.render_output("bob", ready()).pcm[0],
+            graph.render_output("bob", ready()).pcm[1],
         ]);
         let carol_out = i16::from_le_bytes([
-            graph.render_output("carol").pcm[0],
-            graph.render_output("carol").pcm[1],
+            graph.render_output("carol", ready()).pcm[0],
+            graph.render_output("carol", ready()).pcm[1],
         ]);
 
         assert_eq!(bob_out, 15_000);
@@ -524,14 +695,14 @@ mod tests {
         graph.add_input("alice");
         graph.add_input("bob");
         graph.add_input("carol");
-        graph.push_frame("alice", tone_frame(1, 2_000));
-        graph.push_frame("bob", tone_frame(2, 2_000));
-        graph.push_frame("carol", tone_frame(3, 2_000));
+        graph.push_frame_at("alice", tone_frame(1, 2_000), t0());
+        graph.push_frame_at("bob", tone_frame(2, 2_000), t0());
+        graph.push_frame_at("carol", tone_frame(3, 2_000), t0());
 
         graph.set_listener_mute("bob", "alice", true);
 
-        let bob_out = graph.render_output("bob");
-        let carol_out = graph.render_output("carol");
+        let bob_out = graph.render_output("bob", ready());
+        let carol_out = graph.render_output("carol", ready());
 
         let bob_sample = i16::from_le_bytes([bob_out.pcm[0], bob_out.pcm[1]]);
         let carol_sample = i16::from_le_bytes([carol_out.pcm[0], carol_out.pcm[1]]);
@@ -545,13 +716,16 @@ mod tests {
         let mut graph = MixGraph::new();
         graph.add_input("alice");
         graph.add_input("bob");
-        graph.push_frame("alice", tone_frame(1, 10_000));
-        graph.push_frame("bob", tone_frame(2, 10_000));
+        graph.push_frame_at("alice", tone_frame(1, 10_000), t0());
+        graph.push_frame_at("bob", tone_frame(2, 10_000), t0());
 
         graph.set_mixing_enabled(false);
 
-        assert_eq!(graph.render_output("alice"), frame::silence_frame());
-        assert_eq!(graph.render_output("bob"), frame::silence_frame());
+        assert_eq!(
+            graph.render_output("alice", ready()),
+            frame::silence_frame()
+        );
+        assert_eq!(graph.render_output("bob", ready()), frame::silence_frame());
     }
 
     #[test]
@@ -560,22 +734,22 @@ mod tests {
         graph.add_input("alice");
         graph.add_input("bob");
         graph.add_input("carol");
-        graph.push_frame("alice", tone_frame(1, 1_000));
-        graph.push_frame("bob", tone_frame(2, 1_000));
-        graph.push_frame("carol", tone_frame(3, 1_000));
+        graph.push_frame_at("alice", tone_frame(1, 1_000), t0());
+        graph.push_frame_at("bob", tone_frame(2, 1_000), t0());
+        graph.push_frame_at("carol", tone_frame(3, 1_000), t0());
 
         graph.set_listener_sources("bob", &["alice".to_string()]);
 
         let bob_sample = i16::from_le_bytes([
-            graph.render_output("bob").pcm[0],
-            graph.render_output("bob").pcm[1],
+            graph.render_output("bob", ready()).pcm[0],
+            graph.render_output("bob", ready()).pcm[1],
         ]);
         assert_eq!(bob_sample, 1_000);
 
         graph.clear_listener_routes("bob");
         let bob_all = i16::from_le_bytes([
-            graph.render_output("bob").pcm[0],
-            graph.render_output("bob").pcm[1],
+            graph.render_output("bob", ready()).pcm[0],
+            graph.render_output("bob", ready()).pcm[1],
         ]);
         assert_eq!(bob_all, 4_000);
     }
@@ -585,14 +759,14 @@ mod tests {
         let mut graph = MixGraph::new();
         for id in ["A", "B", "C", "D", "F"] {
             graph.add_input(id);
-            graph.push_frame(id, mono_stereo(5_000));
+            graph.push_frame_at(id, mono_stereo(5_000), t0());
         }
 
         graph.set_group_members("g1", &["A".into(), "B".into(), "C".into()]);
         graph.set_group_members("g2", &["D".into(), "F".into()]);
 
-        let a_out = graph.render_output("A");
-        let d_out = graph.render_output("D");
+        let a_out = graph.render_output("A", ready());
+        let d_out = graph.render_output("D", ready());
         let (a_l, _) = first_lr(&a_out);
         let (d_l, _) = first_lr(&d_out);
 
@@ -606,33 +780,33 @@ mod tests {
         let mut graph = MixGraph::new();
         for id in ["A", "B", "C", "D", "F"] {
             graph.add_input(id);
-            graph.push_frame(id, mono_stereo(8_000));
+            graph.push_frame_at(id, mono_stereo(8_000), t0());
         }
 
         graph.set_group_members("g1", &["A".into(), "B".into(), "C".into()]);
         graph.set_group_members("g2", &["D".into(), "F".into()]);
 
         // A hears B and C before move
-        let before = graph.render_output("A");
+        let before = graph.render_output("A", ready());
         let (before_l, _) = first_lr(&before);
         assert!(before_l > 0);
 
         graph.move_to_group("A", "g2");
 
         // A no longer hears B (not in g2 allow-list)
-        graph.push_frame("B", mono_stereo(20_000));
-        let a_after = graph.render_output("A");
+        graph.push_frame_at("B", mono_stereo(20_000), t0());
+        let a_after = graph.render_output("A", ready());
         let (a_l, _) = first_lr(&a_after);
         // A hears D and F only
         assert!(a_l > 0);
 
         // D now hears A
-        let d_out = graph.render_output("D");
+        let d_out = graph.render_output("D", ready());
         let (d_l, _) = first_lr(&d_out);
         assert!(d_l > 0);
 
         // B no longer hears A — only C remains in g1 for B
-        let b_out = graph.render_output("B");
+        let b_out = graph.render_output("B", ready());
         let (b_l, _) = first_lr(&b_out);
         assert!(b_l > 0);
         assert!(b_l < before_l);
@@ -660,10 +834,10 @@ mod tests {
             },
         );
 
-        graph.push_frame("source", mono_stereo(10_000));
+        graph.push_frame_at("source", mono_stereo(10_000), t0());
         graph.set_listener_sources("listener", &["source".to_string()]);
 
-        let out = graph.render_output("listener");
+        let out = graph.render_output("listener", ready());
         let (l, r) = first_lr(&out);
         assert!(r > l);
     }
@@ -683,19 +857,19 @@ mod tests {
         );
 
         graph.set_positional_enabled(true);
-        graph.push_frame("source", mono_stereo(10_000));
+        graph.push_frame_at("source", mono_stereo(10_000), t0());
         graph.set_listener_sources("listener", &["source".to_string()]);
-        let on = graph.render_output("listener");
+        let on = graph.render_output("listener", ready());
         let (_, r_on) = first_lr(&on);
 
         graph.set_positional_enabled(false);
         graph.set_default_mix_placement(MixPlacement::Left);
-        let off_left = graph.render_output("listener");
+        let off_left = graph.render_output("listener", ready());
         let (l_off, r_off) = first_lr(&off_left);
         assert!(l_off > r_off);
 
         graph.set_positional_enabled(true);
-        let on_again = graph.render_output("listener");
+        let on_again = graph.render_output("listener", ready());
         let (l_again, r_again) = first_lr(&on_again);
         assert!(r_again > l_again);
         assert!((r_again - r_on).abs() < 500);
@@ -707,9 +881,9 @@ mod tests {
         graph.add_input("listener");
         graph.add_input("source");
         graph.set_source_mix_placement("source", MixPlacement::Left);
-        graph.push_frame("source", mono_stereo(10_000));
+        graph.push_frame_at("source", mono_stereo(10_000), t0());
         graph.set_listener_sources("listener", &["source".to_string()]);
-        let out = graph.render_output("listener");
+        let out = graph.render_output("listener", ready());
         let (l, r) = first_lr(&out);
         assert!(l > r);
     }
@@ -808,22 +982,24 @@ mod tests {
 
     #[test]
     fn expired_leftover_mic_does_not_mask_tts_pan_right() {
-        use std::{thread::sleep, time::Duration};
-
         let mut graph = MixGraph::new();
         graph.add_input("listener");
         graph.add_input("talker");
         graph.set_positional_enabled(true);
         graph.set_listener_sources("listener", &["talker".to_string()]);
         graph.set_source_mix_placement("talker", MixPlacement::Left);
-        graph.push_frame("talker", mono_stereo(10_000));
+        graph.push_frame_at("talker", mono_stereo(10_000), t0());
 
-        let (l_now, r_now) = first_lr(&graph.render_output("listener"));
+        let (l_now, r_now) = first_lr(&graph.render_output("listener", ready()));
         assert!(l_now > r_now);
 
-        sleep(Duration::from_millis(frame::FRAME_HOLD_MS as u64 + 5));
-
-        let (l_after, r_after) = first_lr(&graph.render_output("listener"));
+        // Four ticks later the lone frame is long gone: one faded concealment, then silence.
+        let mut last = frame::silence_frame();
+        for k in 1..=4u64 {
+            let at = ready() + Duration::from_millis(k * u64::from(frame::FRAME_MS));
+            last = graph.render_output("listener", at);
+        }
+        let (l_after, r_after) = first_lr(&last);
         assert_eq!(l_after, 0);
         assert_eq!(r_after, 0);
 
@@ -841,24 +1017,24 @@ mod tests {
 
     #[test]
     fn frame_buffer_two_listeners_hear_same_frame_within_hold() {
-        use std::{thread::sleep, time::Duration};
-
         let mut graph = MixGraph::new();
         graph.add_input("listener_a");
         graph.add_input("listener_b");
         graph.add_input("talker");
         graph.set_listener_sources("listener_a", &["talker".to_string()]);
         graph.set_listener_sources("listener_b", &["talker".to_string()]);
-        graph.push_frame("talker", mono_stereo(8_000));
+        graph.push_frame_at("talker", mono_stereo(8_000), t0());
 
-        let a1 = graph.render_output("listener_a");
-        let b1 = graph.render_output("listener_b");
+        let a1 = graph.render_output("listener_a", ready());
+        let b1 = graph.render_output("listener_b", ready());
         assert_eq!(a1, b1);
 
-        sleep(Duration::from_millis(frame::FRAME_HOLD_MS as u64 + 5));
-
-        let a2 = graph.render_output("listener_a");
-        let b2 = graph.render_output("listener_b");
+        let (mut a2, mut b2) = (frame::silence_frame(), frame::silence_frame());
+        for k in 1..=4u64 {
+            let at = ready() + Duration::from_millis(k * u64::from(frame::FRAME_MS));
+            a2 = graph.render_output("listener_a", at);
+            b2 = graph.render_output("listener_b", at);
+        }
         assert_eq!(a2, frame::silence_frame());
         assert_eq!(b2, frame::silence_frame());
     }
@@ -889,8 +1065,8 @@ mod tests {
         assert!(l_left > r_left * 3 / 2);
     }
 
-  #[test]
-  fn tts_pose_per_listener_independent() {
+    #[test]
+    fn tts_pose_per_listener_independent() {
         let mut graph = MixGraph::new();
         graph.set_positional_enabled(true);
         graph.set_tts_pose(
@@ -1000,10 +1176,11 @@ mod tests {
         let mut phase_c3 = 0.0;
         let mut left = Vec::with_capacity(frame_count * frame::SAMPLES_PER_CHANNEL);
         let mut right = Vec::with_capacity(frame_count * frame::SAMPLES_PER_CHANNEL);
-        for _ in 0..frame_count {
-            graph.push_frame("c1", sine_stereo_frame(440.0, 10_000, &mut phase_c1));
-            graph.push_frame("c3", sine_stereo_frame(880.0, 10_000, &mut phase_c3));
-            let out = graph.render_output("c2");
+        for i in 0..frame_count {
+            let now = t0() + Duration::from_millis(i as u64 * u64::from(frame::FRAME_MS));
+            graph.push_frame_at("c1", sine_stereo_frame(440.0, 10_000, &mut phase_c1), now);
+            graph.push_frame_at("c3", sine_stereo_frame(880.0, 10_000, &mut phase_c3), now);
+            let out = graph.render_output("c2", now);
             left.extend(extract_channel_i16(&out.pcm, 0));
             right.extend(extract_channel_i16(&out.pcm, 1));
         }
@@ -1064,5 +1241,212 @@ mod tests {
         let mut swapped = setup_three_client_positional_graph(-3.0, 3.0);
         let (left_swapped, right_swapped) = render_listener_accumulated(&mut swapped, 15);
         assert_two_sine_pan_sides(&left_swapped, &right_swapped, false);
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    fn first_sample(f: &Frame) -> i16 {
+        i16::from_le_bytes([f.pcm[0], f.pcm[1]])
+    }
+
+    #[test]
+    fn bunched_push_reaches_listener_in_order_one_per_tick() {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        // 10 frames in one instant: values 1000..=1900 (constant per frame, centre pan).
+        for i in 0..10 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t0());
+        }
+        let mut heard = Vec::new();
+        for k in 1..=10u64 {
+            let out = graph.render_output("listener", t0() + ms(20 * k));
+            heard.push(first_sample(&out));
+        }
+        let expected: Vec<i16> = (0..10)
+            .map(|i| first_sample(&graph_pan(1_000 + 100 * i)))
+            .collect();
+        assert_eq!(heard, expected);
+        let s = graph.source_stats("talker").unwrap();
+        assert_eq!((s.pushed, s.played, s.compressed, s.depth), (10, 10, 0, 0));
+    }
+
+    /// First sample after the graph's default (centre) pan of a constant frame.
+    fn graph_pan(amplitude: i16) -> Frame {
+        let graph = MixGraph::new();
+        graph.pan_source_for_listener("listener", "talker", &tone_frame(1, amplitude))
+    }
+
+    #[test]
+    fn three_listeners_in_one_tick_hear_the_same_frame() {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        for l in ["a", "b", "c"] {
+            graph.set_listener_sources(l, &["talker".to_string()]);
+        }
+        for i in 0..6 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t0());
+        }
+        for k in 1..=4u64 {
+            let now = t0() + ms(20 * k);
+            let a = graph.render_output("a", now);
+            let b = graph.render_output("b", now + ms(3));
+            let c = graph.render_output("c", now + ms(9));
+            assert_eq!(a, b);
+            assert_eq!(b, c);
+        }
+        // Rendering three listeners per tick did not triple the consumption.
+        assert_eq!(graph.source_stats("talker").unwrap().played, 4);
+    }
+
+    #[test]
+    fn late_render_catches_up_one_tick_per_elapsed_20ms() {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        for i in 0..8 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t0());
+        }
+        graph.render_output("listener", t0() + ms(20));
+        assert_eq!(graph.source_stats("talker").unwrap().played, 1);
+        // 100 ms late: five ticks elapsed since the last tick.
+        graph.render_output("listener", t0() + ms(120));
+        assert_eq!(graph.source_stats("talker").unwrap().played, 6);
+    }
+
+    #[test]
+    fn late_listener_hears_every_frame_in_order_then_catches_up() {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        for i in 0..8 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t0());
+        }
+        let mut heard = Vec::new();
+        // First render on time, then the listener's timer stalls for 80 ms and fires twice
+        // back-to-back (the way a delayed JS timer does), then runs on time again.
+        for ms_after in [20u64, 100, 100, 120, 140] {
+            let out = graph.render_output("listener", t0() + ms(ms_after));
+            heard.push(first_sample(&out));
+        }
+        let expected: Vec<i16> = (0..5)
+            .map(|i| first_sample(&graph_pan(1_000 + 100 * i)))
+            .collect();
+        assert_eq!(heard, expected, "no frame skipped by the late render");
+    }
+
+    #[test]
+    fn remove_input_forgets_stats_and_idle_gap_resyncs_clock() {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.push_frame_at("talker", tone_frame(1, 1_000), t0());
+        graph.render_output("listener", t0() + ms(2_000));
+        // Capped catch-up: not 100 pops for a 2 s idle gap.
+        let s = graph.source_stats("talker").unwrap();
+        assert!(s.played + s.concealed <= MAX_CATCHUP_TICKS);
+        graph.remove_input("talker");
+        assert!(graph.source_stats("talker").is_none());
+    }
+
+    /// Idle for 500 ms after warm-up renders, then 5 frames arrive bunched and
+    /// `renderer` listens paced; returns what it heard and the source stats delta.
+    fn idle_then_bunched_burst(
+        renderer: &str,
+        warm_listener: Option<&str>,
+    ) -> (Vec<i16>, SourceStats) {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources(renderer, &["talker".to_string()]);
+        // The clock runs (warm-up renders over an empty source), then the pod goes idle.
+        let warm = warm_listener.unwrap_or("warmup");
+        graph.set_listener_sources(warm, &["talker".to_string()]);
+        graph.render_output(warm, t0());
+        graph.render_output(warm, t0() + ms(20));
+        let before = graph.source_stats("talker").unwrap();
+        let t1 = t0() + ms(20 + 500);
+        for i in 0..5 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t1);
+        }
+        let mut heard = Vec::new();
+        for k in 0..5u64 {
+            let out = graph.render_output(renderer, t1 + ms(20 * k));
+            heard.push(first_sample(&out));
+        }
+        let after = graph.source_stats("talker").unwrap();
+        let delta = SourceStats {
+            pushed: after.pushed - before.pushed,
+            played: after.played - before.played,
+            compressed: after.compressed - before.compressed,
+            concealed: after.concealed - before.concealed,
+            overflow_compressed: after.overflow_compressed - before.overflow_compressed,
+            ..after
+        };
+        (heard, delta)
+    }
+
+    #[test]
+    fn idle_gap_then_bunched_burst_new_listener_hears_every_frame() {
+        let (heard, delta) = idle_then_bunched_burst("fresh", None);
+        let expected: Vec<i16> = (0..5)
+            .map(|i| first_sample(&graph_pan(1_000 + 100 * i)))
+            .collect();
+        assert_eq!(heard, expected, "all 5 frames audible, in order");
+        assert_eq!(delta.played, 5, "played counts exactly the frames rendered");
+        assert_eq!((delta.compressed, delta.concealed, delta.depth), (0, 0, 0));
+    }
+
+    #[test]
+    fn idle_gap_then_bunched_burst_existing_listener_hears_every_frame() {
+        let (heard, delta) = idle_then_bunched_burst("listener", Some("listener"));
+        let expected: Vec<i16> = (0..5)
+            .map(|i| first_sample(&graph_pan(1_000 + 100 * i)))
+            .collect();
+        assert_eq!(heard, expected, "all 5 frames audible, in order");
+        assert_eq!(delta.played, 5, "played counts exactly the frames rendered");
+        assert_eq!((delta.compressed, delta.concealed, delta.depth), (0, 0, 0));
+    }
+
+    #[test]
+    fn idle_gap_resync_pops_one_tick_not_eight() {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        for i in 0..12 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t0());
+        }
+        graph.render_output("listener", t0() + ms(2_000));
+        let s = graph.source_stats("talker").unwrap();
+        assert_eq!(s.played + s.concealed, 1, "resync processes one tick");
+        assert_eq!(s.depth, 11);
+    }
+
+    #[test]
+    fn listeners_with_different_render_phases_never_repeat_a_frame() {
+        // Two listeners render 14 ms apart on their own timers. After an idle gap the
+        // later-phase one ("s") resyncs the clock first; the earlier-phase one ("l") then
+        // renders a slot that lies before the clock and must not play ahead of its time.
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        for l in ["s", "l"] {
+            graph.set_listener_sources(l, &["talker".to_string()]);
+        }
+        graph.render_output("s", t0());
+        graph.render_output("s", t0() + ms(20));
+        let t1 = t0() + ms(20 + 500);
+        for i in 0..8 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t1);
+        }
+        graph.render_output("s", t1 + ms(14));
+        let mut heard = Vec::new();
+        for k in 0..6u64 {
+            heard.push(first_sample(&graph.render_output("l", t1 + ms(20 * k))));
+            // "s" is due 14 ms after each "l" slot, but "l" fires first in the next slot.
+            graph.render_output("s", t1 + ms(14 + 20 * k));
+        }
+        let expected: Vec<i16> = std::iter::once(0)
+            .chain((0..5).map(|i| first_sample(&graph_pan(1_000 + 100 * i))))
+            .collect();
+        assert_eq!(heard, expected, "one frame per slot, none repeated");
     }
 }

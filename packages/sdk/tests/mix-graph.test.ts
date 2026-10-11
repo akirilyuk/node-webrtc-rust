@@ -76,7 +76,7 @@ describe('AudioMixGraph', () => {
     expect(panned).toHaveLength(3840)
   })
 
-  test('setSourceMixPlacement pans source left when positional off', () => {
+  test('setSourceMixPlacement pans source left when positional off', async () => {
     const graph = new AudioMixGraph()
     graph.addInput('listener')
     graph.addInput('source')
@@ -88,6 +88,8 @@ describe('AudioMixGraph', () => {
     }
     graph.pushFrame('source', mono)
     graph.setListenerSources('listener', ['source'])
+    // A lone frame plays once it has waited out the two-tick prefill.
+    await new Promise((resolve) => setTimeout(resolve, 50))
     const out = graph.renderOutput('listener')
     const l = out.readInt16LE(0)
     const r = out.readInt16LE(2)
@@ -162,5 +164,121 @@ describe('AudioMixGraph', () => {
     const r = panned.readInt16LE(2)
     expect(r).toBeGreaterThan(l * 1.5)
     expect(r).toBeGreaterThan(0)
+  })
+
+  test('mixStats reports queue counters for a source and null for an unknown one', () => {
+    const graph = new AudioMixGraph()
+    expect(graph.mixStats('nobody')).toBeNull()
+
+    graph.addInput('alice')
+    expect(graph.mixStats('alice')).toEqual({
+      pushed: 0,
+      played: 0,
+      compressed: 0,
+      concealed: 0,
+      overflowCompressed: 0,
+      decodeErrors: 0,
+      depth: 0,
+      target: 2,
+    })
+
+    const frame = Buffer.alloc(3840)
+    for (let i = 0; i < 5; i++) {
+      graph.pushFrame('alice', frame)
+    }
+    const stats = graph.mixStats('alice')
+    expect(stats).toMatchObject({ pushed: 5, played: 0, depth: 5 })
+    expect(stats!.pushed).toBe(
+      stats!.played + stats!.compressed + stats!.overflowCompressed + stats!.depth,
+    )
+  })
+
+  test('bunched pushFrame calls are queued, not overwritten', async () => {
+    const graph = new AudioMixGraph()
+    graph.addInput('talker')
+    graph.setListenerSources('listener', ['talker'])
+    // Ten frames in one instant, value = 1000 * (i + 1).
+    for (let i = 0; i < 10; i++) {
+      const frame = Buffer.alloc(3840)
+      for (let n = 0; n < 3840; n += 2) {
+        frame.writeInt16LE(1000 * (i + 1), n)
+      }
+      graph.pushFrame('talker', frame)
+    }
+    const heard: number[] = []
+    const deadline = Date.now() + 2_000
+    while (heard.length < 10 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const out = graph.renderOutput('listener')
+      const sample = out.readInt16LE(0)
+      if (sample !== 0 && heard[heard.length - 1] !== sample) {
+        heard.push(sample)
+      }
+    }
+    // Centre pan scales every frame equally, so the heard values keep their order.
+    expect(heard).toHaveLength(10)
+    expect([...heard].sort((a, b) => a - b)).toEqual(heard)
+    expect(graph.mixStats('talker')).toMatchObject({ pushed: 10, compressed: 0 })
+  })
+
+  describe('renderOutput at a scheduled time', () => {
+    const constantFrame = (value: number): Buffer => {
+      const frame = Buffer.alloc(3840)
+      for (let n = 0; n < 3840; n += 2) {
+        frame.writeInt16LE(value, n)
+      }
+      return frame
+    }
+
+    /** Graph with the clock started by a warm-up render at `atMs = 1000` and 10 queued frames. */
+    const graphWithTenFrames = (): AudioMixGraph => {
+      const graph = new AudioMixGraph()
+      graph.addInput('talker')
+      graph.setListenerSources('listener', ['talker'])
+      graph.renderOutput('listener', 1000)
+      for (let i = 0; i < 10; i++) {
+        graph.pushFrame('talker', constantFrame(1000 * (i + 1)))
+      }
+      return graph
+    }
+
+    test('the same atMs twice returns the identical frame and plays one source frame', () => {
+      const graph = graphWithTenFrames()
+      const first = graph.renderOutput('listener', 1020)
+      const again = graph.renderOutput('listener', 1020)
+      expect(again.equals(first)).toBe(true)
+      expect(first.readInt16LE(0)).not.toBe(0)
+      expect(graph.mixStats('talker')).toMatchObject({ played: 1 })
+    })
+
+    test('atMs and atMs + 20 return consecutive frames', () => {
+      const graph = graphWithTenFrames()
+      const heard = [1020, 1040, 1060, 1080].map((atMs) =>
+        graph.renderOutput('listener', atMs).readInt16LE(0),
+      )
+      expect(new Set(heard).size).toBe(4)
+      expect([...heard].sort((a, b) => a - b)).toEqual(heard)
+    })
+
+    test('a catch-up double render never repeats a frame', () => {
+      const graph = graphWithTenFrames()
+      const heard = [1020, 1040, 1060, 1060 + 20, 1100].map((atMs) =>
+        graph.renderOutput('listener', atMs).readInt16LE(0),
+      )
+      expect(new Set(heard).size).toBe(heard.length)
+    })
+
+    test('an atMs earlier than the first one does not advance the clock', () => {
+      const graph = graphWithTenFrames()
+      const first = graph.renderOutput('listener', 1020)
+      const earlier = graph.renderOutput('listener', 10)
+      expect(earlier.equals(first)).toBe(true)
+    })
+
+    test('non-finite atMs is ignored rather than throwing', () => {
+      const graph = graphWithTenFrames()
+      expect(graph.renderOutput('listener', Number.NaN)).toHaveLength(3840)
+      expect(graph.renderOutput('listener', Number.POSITIVE_INFINITY)).toHaveLength(3840)
+    })
   })
 })

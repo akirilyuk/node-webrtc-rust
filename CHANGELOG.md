@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.43] - 2026-10-11
+
 ### Added
 
 - **helpers** — `VoiceSessionContext.getInboundAudioStats()` returns `{ packetsReceived, bytesReceived }` for the tab's inbound audio (summed over its `inbound-rtp` audio stats) or `null` when the connection is closed, has no inbound audio, the stats call fails, or `timeoutMs` (default 500) passes. It is callable until the peer connection closes, including from `onPeerDisconnected`. The `InboundAudioStats` type and `readInboundAudioStats()` are exported.

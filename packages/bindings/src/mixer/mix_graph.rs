@@ -7,7 +7,9 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_mixer::{Frame, MixGraph, Quat, Vec3, FRAME_BYTES};
 
-use crate::mixer::types::{JsClientPose, JsDistanceParams, JsMixPlacement, JsQuat, JsVec3};
+use crate::mixer::types::{
+    JsClientPose, JsDistanceParams, JsMixPlacement, JsMixStats, JsQuat, JsVec3,
+};
 
 /// Conference mix graph control handle (poses, groups, mutes, placements).
 #[napi]
@@ -316,7 +318,8 @@ impl JsMixGraph {
         Ok(())
     }
 
-    /// Stores the latest 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz).
+    /// Queues a 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz). Frames are
+    /// played one per 20 ms render tick; bunched pushes are buffered, not overwritten.
     #[napi]
     pub fn push_frame(&self, participant_id: String, pcm: Buffer) -> Result<()> {
         if pcm.len() != FRAME_BYTES {
@@ -340,8 +343,19 @@ impl JsMixGraph {
             .inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
-            .render_output(&listener_id);
+            .render_output(&listener_id, std::time::Instant::now());
         Ok(Buffer::from(frame.pcm.as_ref()))
+    }
+
+    /// Queue counters and depth/target for one source, or `null` when it is not registered.
+    #[napi]
+    pub fn mix_stats(&self, participant_id: String) -> Result<Option<JsMixStats>> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
+            .source_stats(&participant_id)
+            .map(Into::into))
     }
 
     /// Pans a TTS frame for `listener_id` using the graph's TTS pose or placement.

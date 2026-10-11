@@ -147,6 +147,25 @@ export interface JsDistanceParams {
   maxDistance: number
   rolloff: number
 }
+/** Per-source mix queue counters (see `AudioMixGraph.mixStats`). */
+export interface JsMixStats {
+  /** Frames pushed into the source queue. */
+  pushed: number
+  /** Source frames played into the mix. */
+  played: number
+  /** Source frames absorbed by time-compression while the backlog was above target. */
+  compressed: number
+  /** Faded concealment frames played on underrun. */
+  concealed: number
+  /** Source frames absorbed by merging at the 1 s capacity (capacity signal). */
+  overflowCompressed: number
+  /** Inbound packets that failed to decode. */
+  decodeErrors: number
+  /** Frames currently queued. */
+  depth: number
+  /** Current adaptive target depth in frames (2 to 8). */
+  target: number
+}
 export const enum JsClipStatus {
   Buffering = 'Buffering',
   Playing = 'Playing',
@@ -510,10 +529,15 @@ export declare class JsMixGraph {
   setGroupMembers(groupId: string, members: Array<string>): void
   moveToGroup(participantId: string, groupId: string): void
   removeFromGroup(participantId: string): void
-  /** Stores the latest 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz). */
+  /**
+   * Queues a 20 ms stereo PCM frame for a participant (3840 bytes @ 48 kHz). Frames are
+   * played one per 20 ms render tick; bunched pushes are buffered, not overwritten.
+   */
   pushFrame(participantId: string, pcm: Buffer): void
   /** Renders mixed stereo PCM for `listener_id` (3840 bytes; silence when ungrouped or mixing off). */
   renderOutput(listenerId: string): Buffer
+  /** Queue counters and depth/target for one source, or `null` when it is not registered. */
+  mixStats(participantId: string): JsMixStats | null
   /** Pans a TTS frame for `listener_id` using the graph's TTS pose or placement. */
   panTtsFrame(pcm: Buffer, listenerId: string): Buffer
 }

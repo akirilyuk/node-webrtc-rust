@@ -2,7 +2,9 @@
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use node_webrtc_rust_mixer::{ClientPose, DistanceParams, MixPlacement, Quat, SpatialError, Vec3};
+use node_webrtc_rust_mixer::{
+    ClientPose, DistanceParams, MixPlacement, Quat, SourceStats, SpatialError, Vec3,
+};
 
 fn spatial_err(err: SpatialError) -> Error {
     match err {
@@ -173,6 +175,43 @@ impl From<DistanceParams> for JsDistanceParams {
             reference_distance: value.reference_distance as f64,
             max_distance: value.max_distance as f64,
             rolloff: value.rolloff as f64,
+        }
+    }
+}
+
+/// Per-source mix queue counters (see `AudioMixGraph.mixStats`).
+#[napi(object)]
+#[derive(Debug, Clone, Copy)]
+pub struct JsMixStats {
+    /// Frames pushed into the source queue.
+    pub pushed: f64,
+    /// Source frames played into the mix.
+    pub played: f64,
+    /// Source frames absorbed by time-compression while the backlog was above target.
+    pub compressed: f64,
+    /// Faded concealment frames played on underrun.
+    pub concealed: f64,
+    /// Source frames absorbed by merging at the 1 s capacity (capacity signal).
+    pub overflow_compressed: f64,
+    /// Inbound packets that failed to decode.
+    pub decode_errors: f64,
+    /// Frames currently queued.
+    pub depth: u32,
+    /// Current adaptive target depth in frames (2 to 8).
+    pub target: u32,
+}
+
+impl From<SourceStats> for JsMixStats {
+    fn from(s: SourceStats) -> Self {
+        Self {
+            pushed: s.pushed as f64,
+            played: s.played as f64,
+            compressed: s.compressed as f64,
+            concealed: s.concealed as f64,
+            overflow_compressed: s.overflow_compressed as f64,
+            decode_errors: s.decode_errors as f64,
+            depth: s.depth as u32,
+            target: s.target as u32,
         }
     }
 }

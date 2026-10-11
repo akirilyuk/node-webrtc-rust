@@ -17,6 +17,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **sdk** — `AudioMixGraph.mixStats(participantId)` returns the per-source queue counters (`pushed`, `played`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`).
+- **helpers** — `ClientAudioMixer.mixStats(peerId)` passes the counters through, and the mix pump logs one warning per source (at most one per 10 s) when compression, concealment, overflow merging or decode errors increase, with the peer id, the counter deltas, queue depth and target.
 
 ## [0.9.41] - 2026-10-11
 

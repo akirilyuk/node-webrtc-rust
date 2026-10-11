@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.42] - 2026-10-11
+
 ### Fixed
 
 - **mixer** — sources are buffered in an adaptive per-source FIFO instead of a single latest-frame slot, so bunched or jittered audio is no longer overwritten; backlog is time-compressed and gaps concealed, both counted (`mixStats`).

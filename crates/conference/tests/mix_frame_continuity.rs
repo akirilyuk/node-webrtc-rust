@@ -24,6 +24,7 @@ use node_webrtc_rust_core::{
     ConnectionState, LocalAudioTrack, OfferOptions, PeerConnection, PeerConnectionConfig, SdpType,
     SessionDescription,
 };
+use node_webrtc_rust_mixer::SourceStats;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, sleep_until, timeout, Instant};
 
@@ -155,6 +156,7 @@ fn send_schedule(pattern: Pattern) -> Vec<u64> {
 
 struct Outcome {
     report: SequenceReport,
+    stats: Option<SourceStats>,
 }
 
 async fn run_pattern(pattern: Pattern) -> Outcome {
@@ -227,6 +229,7 @@ async fn run_pattern(pattern: Pattern) -> Outcome {
     // Drain: target depth is at most 160 ms; leave generous slack for the receive side.
     sleep(Duration::from_millis(1_500)).await;
 
+    let stats = room.lock().await.source_stats("speaker").await;
     reader.abort();
     let frames = received.lock().await.clone();
     let report = analyze(&frames);
@@ -241,14 +244,14 @@ async fn run_pattern(pattern: Pattern) -> Outcome {
             .collect();
         eprintln!("[continuity {pattern:?} trace] {}", line.join(" "));
     }
-    eprintln!("[continuity {pattern:?}] {report:?}");
+    eprintln!("[continuity {pattern:?}] {report:?} stats={stats:?}");
 
     let _ = speaker.close().await;
     let _ = listener.close().await;
     let _ = room.lock().await.close().await;
     server.destroy_room("continuity").await.ok();
     sleep(Duration::from_millis(500)).await;
-    Outcome { report }
+    Outcome { report, stats }
 }
 
 /// Distinct markers that may go unheard in a clean run: Opus start-up and a few frames it
@@ -256,7 +259,6 @@ async fn run_pattern(pattern: Pattern) -> Outcome {
 const CODEC_SLACK: u64 = 6;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails until the elastic per-source queue lands"]
 async fn paced_input_has_no_gaps_or_duplicates() {
     let o = run_pattern(Pattern::Paced).await;
     let r = &o.report;
@@ -267,33 +269,63 @@ async fn paced_input_has_no_gaps_or_duplicates() {
         r.played >= FRAMES - CODEC_SLACK,
         "heard too few markers: {r:?}"
     );
+    assert_accounting(&o);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails until the elastic per-source queue lands"]
 async fn bunched_input_loses_no_frames_beyond_counted_compression() {
     assert_continuity(&run_pattern(Pattern::Bunched).await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails until the elastic per-source queue lands"]
 async fn jittered_input_loses_no_frames_beyond_counted_compression() {
     assert_continuity(&run_pattern(Pattern::Jittered).await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails until the elastic per-source queue lands"]
+#[ignore = "fails until multi-frame Opus packets decode"]
 async fn sixty_ms_packets_reach_the_listener_without_loss() {
     assert_continuity(&run_pattern(Pattern::Packet60).await);
 }
 
-/// Every sent marker must be heard once, in order. (The mixer exposes no counters yet, so no
-/// loss is excused.)
+/// The queue's books balance: every pushed frame is played, absorbed by a counted
+/// compression, or still queued; nothing failed to decode.
+fn assert_accounting(o: &Outcome) {
+    let s = o.stats.expect("source stats");
+    assert_eq!(s.decode_errors, 0, "{s:?}");
+    assert!(s.pushed >= FRAMES, "{s:?}");
+    assert_eq!(
+        s.pushed,
+        s.played + s.compressed + s.overflow_compressed + s.depth as u64,
+        "queue accounting broken: {s:?}"
+    );
+}
+
+/// Gaps are allowed only as counted compression, duplicates only as counted concealment,
+/// ambiguous (merged) frames only where a merge happened, and no marker may vanish.
 fn assert_continuity(o: &Outcome) {
     let r = &o.report;
+    let s = o.stats.expect("source stats");
+    let merged = s.compressed + s.overflow_compressed;
     assert_eq!(r.reordered, 0, "{r:?}");
-    assert_eq!(r.gaps, 0, "{r:?}");
-    assert_eq!(r.duplicates, 0, "{r:?}");
-    assert!(r.ambiguous <= CODEC_SLACK, "{r:?}");
-    assert!(r.played >= FRAMES - CODEC_SLACK, "heard too few markers: {r:?}");
+    assert!(
+        r.gaps <= merged,
+        "gaps {} exceed counted compressions {s:?}",
+        r.gaps
+    );
+    assert!(
+        r.duplicates <= s.concealed,
+        "duplicates {} exceed concealed {s:?}",
+        r.duplicates
+    );
+    assert!(
+        r.ambiguous <= merged + CODEC_SLACK,
+        "unexplained ambiguous frames: {r:?} {s:?}"
+    );
+    assert!(
+        r.played + merged + CODEC_SLACK >= FRAMES,
+        "frames vanished: heard {} of {FRAMES}, {s:?}",
+        r.played
+    );
+    assert_accounting(o);
 }

@@ -208,15 +208,19 @@ fn spawn_outbound_task(
 
         let mut interval = time::interval(Duration::from_millis(FRAME_MS as u64));
         loop {
-            interval.tick().await;
+            // Render at the tick's *scheduled* time, not at wall-clock time: when this task
+            // is late and tokio fires the missed ticks back-to-back, each render still
+            // advances the mix media clock by exactly one 20 ms tick (no skipped source
+            // frame followed by a repeated one).
+            let tick_at = interval.tick().await.into_std();
 
             if pc.connection_state() != ConnectionState::Connected {
                 break;
             }
 
             let frame = {
-                let graph = mix_graph.lock().await;
-                graph.render_output(&participant_id)
+                let mut graph = mix_graph.lock().await;
+                graph.render_output(&participant_id, tick_at)
             };
 
             if outbound_track

@@ -74,6 +74,9 @@ struct StoredFrame {
 }
 
 /// Latest-frame slot for one participant; empty slots render as silence.
+///
+/// Not used by [`crate::MixGraph`], whose sources are buffered in an elastic FIFO
+/// ([`crate::ElasticFrameQueue`]); kept for callers that need a single-slot hold.
 #[derive(Debug, Clone, Default)]
 pub struct FrameBuffer {
     latest: Option<StoredFrame>,
@@ -97,7 +100,9 @@ impl FrameBuffer {
     /// empty or expired. Does not consume the slot (safe for multiple mix listeners).
     pub fn current(&self) -> Frame {
         match &self.latest {
-            Some(stored) if stored.pushed_at.elapsed() <= Duration::from_millis(FRAME_HOLD_MS as u64) => {
+            Some(stored)
+                if stored.pushed_at.elapsed() <= Duration::from_millis(FRAME_HOLD_MS as u64) =>
+            {
                 stored.frame.clone()
             }
             _ => silence_frame(),

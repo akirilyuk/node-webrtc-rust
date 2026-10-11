@@ -524,20 +524,35 @@ impl MixGraph {
     /// A listener rendering on time stays at lag 0. One whose render ran late steps one
     /// tick per call (hearing each frame in order) until it has caught up; beyond
     /// `MAX_CATCHUP_TICKS` behind, it jumps to the present.
-    fn next_listener_lag(&mut self, listener_id: &str) -> u64 {
-        let now_tick = self.tick_count;
+    ///
+    /// Listeners render on their own timers, so a render at `now` can lie *before* the
+    /// clock (another listener's later slot already advanced it). Such a render is
+    /// `behind` whole ticks early: it may only hear ticks up to `tick_count - behind`,
+    /// otherwise it would consume a tick whose time has not come and then, finding no new
+    /// tick at its next slot, repeat the frame it just played.
+    fn next_listener_lag(&mut self, listener_id: &str, now: Instant) -> u64 {
+        let tick = Duration::from_millis(u64::from(FRAME_MS));
+        let behind = match self.clock {
+            Some(clock) if now < clock => {
+                let early = clock.duration_since(now).as_micros();
+                u64::try_from(early.div_ceil(tick.as_micros())).unwrap_or(MAX_CATCHUP_TICKS)
+            }
+            _ => 0,
+        }
+        .min(MAX_CATCHUP_TICKS);
+        let newest = self.tick_count.saturating_sub(behind);
         let cursor = self
             .listener_ticks
             .entry(listener_id.to_string())
-            .or_insert(now_tick);
-        if *cursor < now_tick {
-            *cursor = if now_tick - *cursor > MAX_CATCHUP_TICKS {
-                now_tick
+            .or_insert(newest);
+        if *cursor < newest {
+            *cursor = if newest - *cursor > MAX_CATCHUP_TICKS {
+                newest
             } else {
                 *cursor + 1
             };
         }
-        now_tick - *cursor
+        self.tick_count - *cursor
     }
 
     /// Renders the mixed output for `listener_id` at media time `now`.
@@ -548,7 +563,7 @@ impl MixGraph {
     /// (positional or named placement), and returns silence when mixing is disabled.
     pub fn render_output(&mut self, listener_id: &str, now: Instant) -> Frame {
         self.advance_to(now);
-        let lag = self.next_listener_lag(listener_id);
+        let lag = self.next_listener_lag(listener_id, now);
         if !self.mixing_enabled {
             return frame::silence_frame();
         }
@@ -1404,5 +1419,34 @@ mod tests {
         let s = graph.source_stats("talker").unwrap();
         assert_eq!(s.played + s.concealed, 1, "resync processes one tick");
         assert_eq!(s.depth, 11);
+    }
+
+    #[test]
+    fn listeners_with_different_render_phases_never_repeat_a_frame() {
+        // Two listeners render 14 ms apart on their own timers. After an idle gap the
+        // later-phase one ("s") resyncs the clock first; the earlier-phase one ("l") then
+        // renders a slot that lies before the clock and must not play ahead of its time.
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        for l in ["s", "l"] {
+            graph.set_listener_sources(l, &["talker".to_string()]);
+        }
+        graph.render_output("s", t0());
+        graph.render_output("s", t0() + ms(20));
+        let t1 = t0() + ms(20 + 500);
+        for i in 0..8 {
+            graph.push_frame_at("talker", tone_frame(1, 1_000 + 100 * i as i16), t1);
+        }
+        graph.render_output("s", t1 + ms(14));
+        let mut heard = Vec::new();
+        for k in 0..6u64 {
+            heard.push(first_sample(&graph.render_output("l", t1 + ms(20 * k))));
+            // "s" is due 14 ms after each "l" slot, but "l" fires first in the next slot.
+            graph.render_output("s", t1 + ms(14 + 20 * k));
+        }
+        let expected: Vec<i16> = std::iter::once(0)
+            .chain((0..5).map(|i| first_sample(&graph_pan(1_000 + 100 * i))))
+            .collect();
+        assert_eq!(heard, expected, "one frame per slot, none repeated");
     }
 }

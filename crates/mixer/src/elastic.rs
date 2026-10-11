@@ -7,7 +7,8 @@
 //! - **Prefill:** at start-up (and after a long underrun) nothing plays until the queue
 //!   holds `target` frames, or the oldest frame has waited `target` ticks.
 //! - **Target depth:** `clamp(ceil(jitter / 20 ms) + 1, 2, 8)` frames, where `jitter` is an
-//!   EWMA of `|inter-arrival time - 20 ms|` (fast attack, slow decay).
+//!   EWMA of `|inter-arrival time - 20 ms|` (fast attack, slow decay). Gaps longer than
+//!   [`TALKSPURT_GAP`] are pauses: they are left out of the estimate and re-enter prefill.
 //! - **Slim (shrink):** when the depth stays above `target + 2` for 10 consecutive ticks,
 //!   each tick takes two frames and emits one: a frame below -50 dBFS is dropped,
 //!   otherwise the pair is merged with a 10 ms Hann cross-fade (no pitch change).
@@ -44,6 +45,9 @@ pub const REPREFILL_AFTER_EMPTY_TICKS: u32 = 3;
 pub const SILENCE_THRESHOLD_DBFS: f64 = -50.0;
 /// Cross-fade length in samples per channel (10 ms).
 const CROSSFADE_SAMPLES: usize = SAMPLES_PER_CHANNEL / 2;
+/// An inter-arrival gap longer than this is a pause (DTX, mute, a turn break), not jitter: it
+/// is not fed to the jitter estimate, and the next frame starts a new talk-spurt (prefill).
+pub const TALKSPURT_GAP: Duration = Duration::from_millis(200);
 /// Minimum spacing between warnings from one queue.
 const WARN_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -246,7 +250,16 @@ impl ElasticFrameQueue {
 
     fn update_jitter(&mut self, now: Instant) {
         if let Some(prev) = self.last_arrival {
-            let delta_ms = now.saturating_duration_since(prev).as_secs_f64() * 1000.0;
+            let gap = now.saturating_duration_since(prev);
+            if gap > TALKSPURT_GAP {
+                // A pause, not jitter: keep the estimate and the target, and let the first
+                // frame of the new talk-spurt wait for the usual prefill.
+                self.prefilling = true;
+                self.prefill_waited = 0;
+                self.last_arrival = Some(now);
+                return;
+            }
+            let delta_ms = gap.as_secs_f64() * 1000.0;
             let dev = (delta_ms - f64::from(FRAME_MS)).abs();
             let alpha = if dev > self.jitter_ms {
                 0.25
@@ -589,9 +602,93 @@ mod tests {
         assert_eq!(q.target(), MIN_TARGET_FRAMES);
         let mut t = 2_000u64;
         for i in 0..100u64 {
-            t += if i % 2 == 0 { 0 } else { 400 };
+            // Gaps stay below TALKSPURT_GAP (a longer gap is a pause, not jitter).
+            t += if i % 2 == 0 { 0 } else { 180 };
             q.push(id_frame(0), t0 + Duration::from_millis(t));
         }
         assert_eq!(q.target(), MAX_TARGET_FRAMES);
+    }
+
+    /// Pushes `n` frames at 20 ms spacing from `start_ms`, each popped on its tick.
+    fn steady(q: &mut ElasticFrameQueue, t0: Instant, start_ms: u64, n: u64, jitter: i64) {
+        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+        for i in 0..n {
+            let at =
+                (start_ms + i * 20) as i64 + if jitter > 0 { rng.jitter_ms(jitter) } else { 0 };
+            q.push(
+                id_frame(i as u32),
+                t0 + Duration::from_millis(at.max(0) as u64),
+            );
+            q.pop();
+        }
+    }
+
+    #[test]
+    fn a_pause_does_not_count_as_jitter() {
+        let t0 = Instant::now();
+        let mut q = ElasticFrameQueue::new();
+        steady(&mut q, t0, 0, 100, 5);
+        assert_eq!(q.target(), MIN_TARGET_FRAMES);
+
+        // 1 s pause: the queue runs dry and re-enters prefill; no frames arrive.
+        for _ in 0..50 {
+            q.pop();
+        }
+        // The first frame after the pause plays within `target` ticks.
+        let resume = 3_000u64;
+        q.push(id_frame(500), t0 + Duration::from_millis(resume));
+        let mut ticks_to_first = 0u64;
+        let mut next_id = 501u32;
+        loop {
+            ticks_to_first += 1;
+            let f = q.pop();
+            if id_of(last_sample(&f)) == Some(500) {
+                break;
+            }
+            assert!(ticks_to_first <= 10, "first frame never played");
+            q.push(
+                id_frame(next_id),
+                t0 + Duration::from_millis(resume + 20 * ticks_to_first),
+            );
+            next_id += 1;
+        }
+        assert!(
+            ticks_to_first <= MIN_TARGET_FRAMES as u64,
+            "first frame after the pause played after {ticks_to_first} ticks"
+        );
+        assert_eq!(
+            q.target(),
+            MIN_TARGET_FRAMES,
+            "the pause did not raise the target"
+        );
+        steady(&mut q, t0, resume + 200, 100, 5);
+        assert_eq!(q.target(), MIN_TARGET_FRAMES);
+    }
+
+    #[test]
+    fn real_jitter_still_raises_the_target() {
+        let t0 = Instant::now();
+        let mut q = ElasticFrameQueue::new();
+        steady(&mut q, t0, 0, 200, 30);
+        assert!(
+            q.target() > MIN_TARGET_FRAMES,
+            "+/-30 ms jitter should raise the target, got {}",
+            q.target()
+        );
+    }
+
+    #[test]
+    fn a_pause_re_enters_prefill_even_with_a_stale_frame_queued() {
+        let t0 = Instant::now();
+        let mut q = ElasticFrameQueue::new();
+        q.push(id_frame(1), t0);
+        q.push(id_frame(2), t0 + TICK);
+        assert_eq!(id_of(last_sample(&q.pop())), Some(1));
+        // The talker pauses for 1 s with a frame still queued, then a new spurt starts.
+        q.push(id_frame(3), t0 + Duration::from_secs(1));
+        assert_eq!(q.target(), MIN_TARGET_FRAMES);
+        // Two frames queued (2 stale, 3 new): prefill is satisfied at once and order holds.
+        assert_eq!(id_of(last_sample(&q.pop())), Some(2));
+        assert_eq!(id_of(last_sample(&q.pop())), Some(3));
     }
 }

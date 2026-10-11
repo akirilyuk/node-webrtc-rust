@@ -200,11 +200,11 @@ function startListenerRecorder(track: RemoteAudioTrack) {
   let stopped = false
   let lastFrameAt = Date.now()
   let resolveEnded!: () => void
-  const ended = new Promise<void>((resolve) => {
+  let ended = new Promise<void>((resolve) => {
     resolveEnded = resolve
   })
   let resolveFirst!: () => void
-  const firstMarker = new Promise<void>((resolve) => {
+  let firstMarker = new Promise<void>((resolve) => {
     resolveFirst = resolve
   })
 
@@ -231,8 +231,27 @@ function startListenerRecorder(track: RemoteAudioTrack) {
 
   return {
     detected,
-    firstMarker,
-    ended,
+    get firstMarker() {
+      return firstMarker
+    },
+    get ended() {
+      return ended
+    },
+    /**
+     * Starts watching for another marked stream on the same track (after a pause). Returns
+     * the index in `detected` where the new stream's slice begins.
+     */
+    nextStream(): number {
+      seenMarker = false
+      trailingSilent = 0
+      ended = new Promise<void>((resolve) => {
+        resolveEnded = resolve
+      })
+      firstMarker = new Promise<void>((resolve) => {
+        resolveFirst = resolve
+      })
+      return detected.length
+    },
     /** Resolves once no frame has arrived for `ms` (a stream with no idle frames has ended). */
     async quiet(ms: number): Promise<void> {
       while (Date.now() - lastFrameAt < ms) await delay(25)
@@ -434,6 +453,74 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
     }
   }
 
+  /**
+   * One speaker connection that streams a marked burst, stays silent for `pauseMs`, then
+   * streams again under the SAME speaker (mix source) id. Returns one result per burst plus
+   * the time from the first write of that burst to the first marker frame heard.
+   */
+  async function runPausedCase(
+    pattern: SendPattern,
+    caseKey: string,
+    pauseMs: number,
+  ): Promise<Array<{ seq: SequenceAnalysis; stats: MixStats | null; firstFrameMs: number }>> {
+    const ids = clientIds(caseKey)
+    const [speaker, listener] = await Promise.all([
+      connectClientToSession(wsUrl, SPEAKER_SESSION, ids.speaker),
+      connectClientToSession(wsUrl, LISTENER_SESSION, ids.listener),
+    ])
+    try {
+      const host = getVoiceHostForSession(pod, LISTENER_SESSION)
+      expect(host).toBeDefined()
+      host!.createMixGroup({ id: `fc-${caseKey}`, clientIds: [ids.speaker, ids.listener] })
+      await listener.mic.writeSample(Buffer.alloc(960), 5)
+      await waitForVoiceClientActive(pod, ids.speaker)
+      await waitForVoiceClientActive(pod, ids.listener)
+
+      const recorder = startListenerRecorder(listener.agentAudio)
+      const results: Array<{
+        seq: SequenceAnalysis
+        stats: MixStats | null
+        firstFrameMs: number
+      }> = []
+      try {
+        let from = 0
+        for (let burst = 0; burst < 2; burst++) {
+          if (burst > 0) {
+            await delay(pauseMs)
+            from = recorder.nextStream()
+          }
+          const startedAt = Date.now()
+          const sending = sendMarkedFrames(speaker.mic, pattern)
+          const sendFailed = sending.then(() => new Promise<never>(() => undefined))
+          await withDeadline(
+            Promise.race([recorder.firstMarker, sendFailed]),
+            `${pattern}: burst ${burst} first marker frame`,
+          )
+          const firstFrameMs = Date.now() - startedAt
+          await sending
+          await withDeadline(
+            Promise.race([recorder.ended, recorder.quiet(500)]),
+            `${pattern}: burst ${burst} end of marked stream`,
+          )
+          const seq = analyseSequence(recorder.detected.slice(from))
+          const stats =
+            host!.getClientMixer()?.mixStats(host!.resolveParticipantId(ids.speaker)) ?? null
+          console.log(
+            `MIXSTATS ${JSON.stringify({ pattern: `${caseKey}-burst${burst}`, ...seq, firstFrameMs, stats })}`,
+          )
+          results.push({ seq, stats, firstFrameMs })
+        }
+      } finally {
+        await recorder.stop()
+      }
+      return results
+    } finally {
+      closeClient(speaker)
+      closeClient(listener)
+      await delay(200)
+    }
+  }
+
   it('control (no mixer): direct paced path is intact', { timeout: 90_000 }, async () => {
     const r = await runDirectControl('paced')
     expect(r.gaps, JSON.stringify(r)).toBe(0)
@@ -467,6 +554,22 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       expectContinuous(await runCase('paced', 'idle-warmup'))
       await delay(1_000)
       expectContinuous(await runCase('paced', 'after-idle'))
+    },
+  )
+
+  it(
+    'after a 1 s pause the same speaker is heard without gaps or duplicates',
+    { timeout: 120_000 },
+    async () => {
+      const [before, after] = await runPausedCase('paced', 'same-speaker-pause', 1_000)
+      expectContinuous(before!)
+      expectContinuous(after!)
+      // A pause is not jitter: the first frame after it waits for the normal prefill (2 frames
+      // at 20 ms) plus transport, not the 160 ms an inflated target would add. Both bursts
+      // include the same two Opus hops, so compare against the first burst.
+      const detail = JSON.stringify({ before: before!.firstFrameMs, after: after!.firstFrameMs })
+      expect(after!.stats!.target, detail).toBeLessThanOrEqual(3)
+      expect(after!.firstFrameMs, detail).toBeLessThanOrEqual(before!.firstFrameMs + 60)
     },
   )
 })

@@ -59,6 +59,10 @@ bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" --
   cargo test -p node-webrtc-rust-conference
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
   cargo test -p node-webrtc-rust-speech
+# Vendored dtls (third_party/dtls) is not a workspace member, so `-p` cannot reach it. Guards
+# net.final-flight-not-resent (seeded loss/reorder handshake test).
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendored dtls" -- \
+  cargo test --manifest-path third_party/dtls/Cargo.toml
 # Perf benches only compile here; timing thresholds are not a PR gate (scripts/perf/).
 # Type-check benches only: `cargo bench --no-run` compiles in the release profile, which CI
 # does not cache, and exceeded the 180 s step timeout on a cold cache (#311, #313).

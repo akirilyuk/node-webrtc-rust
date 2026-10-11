@@ -2647,3 +2647,169 @@ async fn test_server_final_flight_resend_is_bounded() -> Result<()> {
     client_task.abort();
     Ok(())
 }
+
+/// Per-datagram fate, derived only from (seed, pair, side, datagram index) so a
+/// run does not depend on scheduling or wall-clock timing.
+fn seeded_datagram_fate(seed: u64, pair: u64, side: u64, index: u64) -> (bool, u64) {
+    use rand::{Rng, SeedableRng};
+    let mixed = seed
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(pair.wrapping_mul(0xBF58_476D_1CE4_E5B9))
+        .wrapping_add(side.wrapping_mul(0x94D0_49BB_1331_11EB))
+        .wrapping_add(index);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(mixed);
+    let drop_it = rng.random_range(0..100u32) < 20;
+    let delay_ms = rng.random_range(0..50u64);
+    (drop_it, delay_ms)
+}
+
+/// Drops 20 % of outgoing datagrams and delays the rest by up to 50 ms (which
+/// reorders them), until `lossy` is switched off after the handshake.
+struct SeededLossyConn {
+    inner: Arc<dyn util::Conn + Send + Sync>,
+    seed: u64,
+    pair: u64,
+    side: u64,
+    counter: std::sync::atomic::AtomicU64,
+    lossy: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait]
+impl util::Conn for SeededLossyConn {
+    async fn connect(&self, addr: SocketAddr) -> UtilResult<()> {
+        self.inner.connect(addr).await
+    }
+    async fn recv(&self, buf: &mut [u8]) -> UtilResult<usize> {
+        self.inner.recv(buf).await
+    }
+    async fn recv_from(&self, buf: &mut [u8]) -> UtilResult<(usize, SocketAddr)> {
+        self.inner.recv_from(buf).await
+    }
+    async fn send(&self, buf: &[u8]) -> UtilResult<usize> {
+        if !self.lossy.load(std::sync::atomic::Ordering::SeqCst) {
+            return self.inner.send(buf).await;
+        }
+        let index = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (drop_it, delay_ms) = seeded_datagram_fate(self.seed, self.pair, self.side, index);
+        if drop_it {
+            return Ok(buf.len());
+        }
+        let inner = Arc::clone(&self.inner);
+        let data = buf.to_vec();
+        let n = buf.len();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(delay_ms)).await;
+            let _ = inner.send(&data).await;
+        });
+        Ok(n)
+    }
+    async fn send_to(&self, buf: &[u8], target: SocketAddr) -> UtilResult<usize> {
+        self.inner.send_to(buf, target).await
+    }
+    fn local_addr(&self) -> UtilResult<SocketAddr> {
+        self.inner.local_addr()
+    }
+    fn remote_addr(&self) -> Option<SocketAddr> {
+        self.inner.remote_addr()
+    }
+    async fn close(&self) -> UtilResult<()> {
+        self.inner.close().await
+    }
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
+    }
+}
+
+/// Regression guard for the final-flight resend (RFC 6347 4.2.4): with the
+/// original behaviour a lost final flight leaves the peer connecting forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_handshakes_complete_under_seeded_loss_and_reorder() -> Result<()> {
+    const SEEDS: [u64; 4] = [1, 2, 3, 4];
+    const PAIRS_PER_SEED: u64 = 50;
+    const SIDE_TIMEOUT: Duration = Duration::from_secs(10);
+
+    for seed in SEEDS {
+        let mut tasks = vec![];
+        for pair in 0..PAIRS_PER_SEED {
+            tasks.push(tokio::spawn(async move {
+                let (ua, ub) = pipe();
+                let lossy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                let wrap = |c: Arc<dyn util::Conn + Send + Sync>, side: u64| {
+                    let w: Arc<dyn util::Conn + Send + Sync> = Arc::new(SeededLossyConn {
+                        inner: c,
+                        seed,
+                        pair,
+                        side,
+                        counter: std::sync::atomic::AtomicU64::new(0),
+                        lossy: Arc::clone(&lossy),
+                    });
+                    w
+                };
+                let ca = wrap(Arc::new(ua), 0);
+                let cb = wrap(Arc::new(ub), 1);
+                let client_task = tokio::spawn(async move {
+                    create_test_client(ca, final_flight_test_config(), true).await
+                });
+                let server_task = tokio::spawn(async move {
+                    create_test_server(cb, final_flight_test_config(), true).await
+                });
+                let c = tokio::time::timeout(SIDE_TIMEOUT, client_task).await;
+                let s = tokio::time::timeout(SIDE_TIMEOUT, server_task).await;
+                lossy.store(false, std::sync::atomic::Ordering::SeqCst);
+                let (client, server) = match (c, s) {
+                    (Ok(Ok(Ok(c))), Ok(Ok(Ok(s)))) => (c, s),
+                    (c, s) => {
+                        let desc = |r: &std::result::Result<_, _>, ok: bool| {
+                            if ok {
+                                "ok"
+                            } else if r.is_err() {
+                                "TIMEOUT"
+                            } else {
+                                "error"
+                            }
+                        };
+                        let c_ok = matches!(c, Ok(Ok(Ok(_))));
+                        let s_ok = matches!(s, Ok(Ok(Ok(_))));
+                        return Err(format!(
+                            "seed {seed} pair {pair}: client={} server={}",
+                            desc(&c, c_ok),
+                            desc(&s, s_ok)
+                        ));
+                    }
+                };
+                let rt = async {
+                    client.write(b"ping", Some(Duration::from_secs(5))).await?;
+                    let mut buf = vec![0u8; 64];
+                    let n = server.read(&mut buf, Some(Duration::from_secs(5))).await?;
+                    if &buf[..n] != b"ping" {
+                        return Err(Error::Other("bad ping".to_owned()));
+                    }
+                    server.write(b"pong", Some(Duration::from_secs(5))).await?;
+                    let n = client.read(&mut buf, Some(Duration::from_secs(5))).await?;
+                    if &buf[..n] != b"pong" {
+                        return Err(Error::Other("bad pong".to_owned()));
+                    }
+                    Ok::<(), Error>(())
+                };
+                let rt_res = rt.await;
+                let _ = client.close().await;
+                let _ = server.close().await;
+                rt_res.map_err(|e| format!("seed {seed} pair {pair}: payload round trip: {e}"))
+            }));
+        }
+        let mut failures = vec![];
+        for t in tasks {
+            if let Err(e) = t.await.expect("pair task panicked") {
+                failures.push(e);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "seed {seed}: {}/{PAIRS_PER_SEED} handshakes failed: {failures:?}",
+            failures.len()
+        );
+    }
+    Ok(())
+}

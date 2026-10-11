@@ -73,7 +73,11 @@ export interface ClientMixGraph {
   addInput(participantId: string): void
   removeInput(participantId: string): void
   pushFrame(participantId: string, pcm: Buffer): void
-  renderOutput(listenerId: string): Buffer
+  /**
+   * Renders one 20 ms mixed frame. `atMs` is the scheduled render time on the
+   * `performance.now()` clock; renders 20 ms apart play consecutive frames.
+   */
+  renderOutput(listenerId: string, atMs?: number): Buffer
   panTtsFrame(pcm: Buffer, listenerId: string): Buffer
   setPose(participantId: string, pose: ClientPose): void
   setPositionalEnabled(enabled: boolean): void
@@ -646,8 +650,9 @@ export class ClientAudioMixer {
     peerId: string,
     out: MixPumpOutboundTrack,
     tts: Buffer,
+    slotMs?: number,
   ): Promise<void> {
-    const mixed = this.graph.renderOutput(peerId)
+    const mixed = this.graph.renderOutput(peerId, slotMs)
     const panned = this.graph.panTtsFrame(tts, peerId)
     const frame = sumStereoPcm(panned, mixed)
     await out.writeSample(frame, PCM_FRAME_DURATION_MS)
@@ -679,8 +684,11 @@ export class ClientAudioMixer {
 
     while (slotsAttempted < slotBudget && due > 0) {
       const tts = this.tryDequeueTts(state)
+      // Scheduled time of this slot: a catch-up render in the same tick gets the next
+      // slot's time, so the graph plays the next frame instead of repeating the last.
+      const slotMs = state.pumpT0 + (state.pumpWritten + 1) * PCM_FRAME_DURATION_MS
       if (tts != null) {
-        await this.writeMixTick(peerId, out, tts)
+        await this.writeMixTick(peerId, out, tts, slotMs)
         state.pumpWritten += 1
         state.consecutiveTtsSkips = 0
         due -= 1
@@ -699,7 +707,7 @@ export class ClientAudioMixer {
         continue
       }
 
-      await this.writeMixTick(peerId, out, this.silenceFrame)
+      await this.writeMixTick(peerId, out, this.silenceFrame, slotMs)
       state.pumpWritten += 1
       state.consecutiveTtsSkips = 0
       due -= 1
@@ -736,6 +744,10 @@ export class ClientAudioMixer {
       if (!watch) {
         watch = { baseline: ZERO_QUEUE_PRESSURE, lastWarnAt: null }
         this.queueWatch.set(peerId, watch)
+      }
+      if (stats.played === 0) {
+        // Start-up: concealment before the source's first frame is expected, not pressure.
+        watch.baseline = { ...watch.baseline, concealed: stats.concealed }
       }
       const delta = {
         compressed: stats.compressed - watch.baseline.compressed,

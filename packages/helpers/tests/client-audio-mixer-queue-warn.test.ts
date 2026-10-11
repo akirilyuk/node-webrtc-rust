@@ -79,6 +79,7 @@ describe('ClientAudioMixer mix queue warnings', () => {
     expect(warn).not.toHaveBeenCalled()
 
     const s = stats.get('speaker')!
+    s.played = 40
     s.compressed = 3
     s.concealed = 1
     s.depth = 7
@@ -94,6 +95,28 @@ describe('ClientAudioMixer mix queue warnings', () => {
     expect(line).toContain('decodeErrors=+0')
     expect(line).toContain('depth=7')
     expect(line).toContain('target=4')
+  })
+
+  it('does not warn about start-up concealment before the source played its first frame', async () => {
+    const s = stats.get('speaker')!
+    s.concealed = 6
+    await tick(1000)
+    await tick(1000)
+    expect(warn).not.toHaveBeenCalled()
+
+    // Once audio has played, the start-up concealment stays forgiven but new concealment warns.
+    s.played = 25
+    await tick(1000)
+    expect(warn).not.toHaveBeenCalled()
+    s.concealed = 8
+    await tick(1000)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]![0]).toContain('concealed=+2')
+  })
+
+  it('stays silent for a fresh silent peer that never played a frame', async () => {
+    for (let sec = 0; sec < 15; sec++) await tick(1000)
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('is silent while the counters are steady', async () => {

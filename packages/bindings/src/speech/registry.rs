@@ -9,13 +9,13 @@ use node_webrtc_rust_vendor_assemblyai::AssemblyAiFactory;
 use node_webrtc_rust_vendor_aws::AwsFactory;
 use node_webrtc_rust_vendor_azure::AzureFactory;
 use node_webrtc_rust_vendor_cartesia::CartesiaFactory;
+use node_webrtc_rust_vendor_cluster_speech::ClusterSherpaFactory;
 use node_webrtc_rust_vendor_deepgram::DeepgramFactory;
 use node_webrtc_rust_vendor_elevenlabs::ElevenLabsFactory;
 use node_webrtc_rust_vendor_google::GoogleFactory;
 use node_webrtc_rust_vendor_groq::GroqFactory;
 use node_webrtc_rust_vendor_mock::MockFactory;
 use node_webrtc_rust_vendor_openai::OpenAiFactory;
-use node_webrtc_rust_vendor_cluster_speech::ClusterSherpaFactory;
 use node_webrtc_rust_vendor_sherpa_onnx::SherpaFactory;
 
 fn arc_factory<F: VendorFactory + 'static>(factory: F) -> Arc<dyn VendorFactory> {

@@ -23,16 +23,16 @@ pub struct JsMixGraph {
 
 /// Maps a caller timestamp (`at_ms`, e.g. `performance.now()`) to an `Instant` through the
 /// origin set by the first call. Earlier, non-finite or unrepresentable values map to the
-/// origin itself.
+/// origin itself. The offset is rounded to whole microseconds so that timestamps spaced
+/// exactly 20 ms apart in the caller's float domain stay exactly one media tick apart.
 fn instant_for_at_ms(origin: &mut Option<(Instant, f64)>, at_ms: f64) -> Instant {
     let (origin_instant, origin_ms) = *origin.get_or_insert_with(|| (Instant::now(), at_ms));
-    let delta_ms = at_ms - origin_ms;
-    if !delta_ms.is_finite() || delta_ms <= 0.0 {
+    let delta_us = ((at_ms - origin_ms) * 1000.0).round();
+    if !delta_us.is_finite() || delta_us <= 0.0 || delta_us >= u64::MAX as f64 {
         return origin_instant;
     }
-    Duration::try_from_secs_f64(delta_ms / 1000.0)
-        .ok()
-        .and_then(|d| origin_instant.checked_add(d))
+    origin_instant
+        .checked_add(Duration::from_micros(delta_us as u64))
         .unwrap_or(origin_instant)
 }
 
@@ -259,9 +259,7 @@ impl JsMixGraph {
             .inner
             .lock()
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?;
-        Ok(graph
-            .source_mix_placement(&participant_id)
-            .map(Into::into))
+        Ok(graph.source_mix_placement(&participant_id).map(Into::into))
     }
 
     #[napi]
@@ -422,4 +420,46 @@ pub fn js_quat_identity() -> JsQuat {
 #[napi]
 pub fn js_vec3_zero() -> JsVec3 {
     Vec3::ZERO.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn at_ms_maps_to_origin_plus_offset() {
+        let mut origin = None;
+        let t0 = instant_for_at_ms(&mut origin, 5_000.25);
+        assert_eq!(
+            instant_for_at_ms(&mut origin, 5_000.25),
+            t0,
+            "same timestamp, same instant"
+        );
+        assert_eq!(
+            instant_for_at_ms(&mut origin, 5_020.25),
+            t0 + Duration::from_millis(20)
+        );
+    }
+
+    #[test]
+    fn at_ms_slots_stay_exactly_one_tick_apart_despite_float_noise() {
+        let mut origin = None;
+        let base = 123_456.789_012_345_f64;
+        let t0 = instant_for_at_ms(&mut origin, base);
+        for n in 1..2_000u64 {
+            let at = instant_for_at_ms(&mut origin, base + n as f64 * 20.0);
+            assert_eq!(at - t0, Duration::from_millis(20 * n), "slot {n}");
+        }
+    }
+
+    #[test]
+    fn at_ms_earlier_or_non_finite_maps_to_origin() {
+        let mut origin = None;
+        let t0 = instant_for_at_ms(&mut origin, 1_000.0);
+        assert_eq!(instant_for_at_ms(&mut origin, 10.0), t0);
+        assert_eq!(instant_for_at_ms(&mut origin, f64::NAN), t0);
+        assert_eq!(instant_for_at_ms(&mut origin, f64::INFINITY), t0);
+        assert_eq!(instant_for_at_ms(&mut origin, f64::NEG_INFINITY), t0);
+        assert_eq!(instant_for_at_ms(&mut origin, 1e300), t0);
+    }
 }

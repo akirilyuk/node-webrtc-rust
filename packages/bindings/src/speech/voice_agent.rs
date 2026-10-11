@@ -202,7 +202,11 @@ impl JsVoiceAgent {
 
     /// Apply a new TTS config before the next synthesis job.
     #[napi]
-    pub async fn update_tts(&self, config: JsTtsConfig, options: Option<JsUpdateTtsOptions>) -> Result<()> {
+    pub async fn update_tts(
+        &self,
+        config: JsTtsConfig,
+        options: Option<JsUpdateTtsOptions>,
+    ) -> Result<()> {
         let opts = options.unwrap_or_default();
         self.inner
             .update_tts_config(
@@ -252,9 +256,6 @@ impl JsVoiceAgent {
     /// Re-transcribe the last utterance PCM on the current STT provider (after `update_stt`).
     #[napi]
     pub async fn replay_last_utterance(&self) -> Result<()> {
-        self.inner
-            .replay_last_utterance()
-            .await
-            .map_err(speech_err)
+        self.inner.replay_last_utterance().await.map_err(speech_err)
     }
 }

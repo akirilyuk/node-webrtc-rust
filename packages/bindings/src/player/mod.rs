@@ -39,9 +39,7 @@ impl From<ClipPlayerStatus> for JsClipPlayerStatus {
             play_id: value.play_id,
             status: JsClipStatus::from(value.status),
             position_ms: value.position_ms.min(u32::MAX as u64) as u32,
-            duration_ms: value
-                .duration_ms
-                .map(|ms| ms.min(u32::MAX as u64) as u32),
+            duration_ms: value.duration_ms.map(|ms| ms.min(u32::MAX as u64) as u32),
             buffered_ms: value.buffered_ms.min(u32::MAX as u64) as u32,
             error: value.error,
         }
@@ -108,6 +106,5 @@ pub fn stop_clip(play_id: String) -> bool {
 
 #[napi]
 pub fn take_clip_frame(play_id: String) -> Option<Buffer> {
-    node_webrtc_rust_player::take_clip_frame(&play_id)
-        .map(|frame| Buffer::from(frame.pcm.as_ref()))
+    node_webrtc_rust_player::take_clip_frame(&play_id).map(|frame| Buffer::from(frame.pcm.as_ref()))
 }

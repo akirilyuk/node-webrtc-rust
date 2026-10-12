@@ -348,7 +348,8 @@ async function runDirectControl(pattern: SendPattern): Promise<SequenceAnalysis>
  *   stream edges; each concealed frame (faded) and each cross-faded merge is ambiguous too.
  * - reordered 0, decodeErrors 0, pushed == played + compressed + overflowCompressed + depth:
  *   conservation, nothing silently overwritten.
- * - played >= 145 - compressed - overflowCompressed: merged frames are not advancing markers.
+ * - played >= 145 - 2 * merged: a merge costs two advancing markers (the absorbed index and the
+ *   cross-faded frame itself, which is ambiguous).
  * - The pump renders at its scheduled slot time (`renderOutput(id, atMs)`), so a late timer
  *   or a catch-up double render plays the next frame and never repeats the previous.
  */
@@ -360,7 +361,7 @@ function expectContinuous({ seq, stats }: { seq: SequenceAnalysis; stats: MixSta
   expect(seq.gaps, detail).toBeLessThanOrEqual(merged)
   expect(seq.reordered, detail).toBe(0)
   expect(seq.duplicates, detail).toBeLessThanOrEqual(s.concealed)
-  expect(seq.played, detail).toBeGreaterThanOrEqual(145 - merged)
+  expect(seq.played, detail).toBeGreaterThanOrEqual(145 - 2 * merged)
   expect(seq.ambiguous, detail).toBeLessThanOrEqual(5 + s.concealed + s.compressed)
   expect(s.decodeErrors, detail).toBe(0)
   expect(s.overflowCompressed, detail).toBe(0)

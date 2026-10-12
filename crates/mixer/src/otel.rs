@@ -15,6 +15,8 @@ pub(crate) enum MixFrameOutcome {
     Concealed,
     OverflowCompressed,
     DecodeError,
+    ListenerCatchupCompressed,
+    ListenerSkipped,
 }
 
 #[cfg(feature = "otel")]
@@ -25,7 +27,7 @@ mod enabled {
 
     struct Instruments {
         counter: Counter<u64>,
-        attrs: [[KeyValue; 1]; 5],
+        attrs: [[KeyValue; 1]; 7],
     }
 
     static INSTRUMENTS: OnceLock<Instruments> = OnceLock::new();
@@ -44,6 +46,8 @@ mod enabled {
                 [KeyValue::new("outcome", "concealed")],
                 [KeyValue::new("outcome", "overflow_compressed")],
                 [KeyValue::new("outcome", "decode_error")],
+                [KeyValue::new("outcome", "listener_catchup_compressed")],
+                [KeyValue::new("outcome", "listener_skipped")],
             ],
         })
     }

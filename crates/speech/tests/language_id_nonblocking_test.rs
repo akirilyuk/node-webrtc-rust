@@ -236,6 +236,18 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
     VoiceAgent::new(config, Arc::new(registry)).unwrap()
 }
 
+/// Distinct utterance per call. The phrase cache (`PhraseCache::global()`) is process-wide and
+/// keyed by project, vendor, model, voice, endpoint and text, so two tests in one binary that
+/// speak the same text with the same fake vendor would share entries and see a cache hit (fewer
+/// vendor calls, an extra `TtsPhraseCacheHit` event) depending on test order.
+fn unique_text(base: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    format!(
+        "{base} #{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
 #[tokio::test]
 async fn language_id_does_not_block_inbound_pcm_or_stt() {
     let stt_bytes = Arc::new(Mutex::new(0_usize));
@@ -410,7 +422,7 @@ async fn language_id_does_not_block_tts_playback() {
     *send_start.lock().unwrap() = Some(Instant::now());
     agent
         .send_text_to_tts_with_options(
-            "one two three",
+            &unique_text("one two three"),
             SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
@@ -659,7 +671,7 @@ async fn language_id_does_not_overlap_tts_synthesis() {
 
     agent
         .send_text_to_tts_with_options(
-            "one two three",
+            &unique_text("one two three"),
             SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
@@ -1561,7 +1573,7 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     // TTS starts — speaking_end identify must defer, not overlap or double-spawn.
     agent
         .send_text_to_tts_with_options(
-            "one two three",
+            &unique_text("one two three"),
             SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await
@@ -1642,7 +1654,7 @@ async fn short_utterance_still_gets_user_language_after_tts_idle() {
 
     agent
         .send_text_to_tts_with_options(
-            "one two three",
+            &unique_text("one two three"),
             SendTextToTtsOptions { non_blocking: true, ..Default::default() },
         )
         .await

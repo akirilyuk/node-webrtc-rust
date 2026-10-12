@@ -28,6 +28,39 @@ export function evaluateConcurrentWindow(
   return { passed: failures.length === 0, spreadMs, failures }
 }
 
+/**
+ * Default `maxRatio` for {@link evaluateRelativeSpread}: the spread between legs may be at most
+ * the fastest leg's own latency. n legs run one after another spread by (n - 1) latencies, which
+ * is about 2x the fastest one for 3 legs, so serialized work fails; concurrent legs on a slow or
+ * loaded host stay together because every leg slows down with the host.
+ */
+export const DEFAULT_RELATIVE_SPREAD_RATIO = 1
+
+/**
+ * Concurrency oracle that does not depend on host speed. Latency of a leg is its timestamp minus
+ * `startedAtMs` (the common request time). Passes when `max - min <= maxRatio * min(latency)`.
+ */
+export function evaluateRelativeSpread(
+  timestampsMs: number[],
+  startedAtMs: number,
+  maxRatio: number = DEFAULT_RELATIVE_SPREAD_RATIO,
+): ConcurrentWindowEvaluation {
+  if (timestampsMs.length === 0) {
+    return { passed: false, spreadMs: 0, failures: ['no timestamps recorded'] }
+  }
+  const latencies = timestampsMs.map((t) => t - startedAtMs)
+  const minLatency = Math.min(...latencies)
+  const spreadMs = Math.max(...latencies) - minLatency
+  const budget = maxRatio * Math.max(minLatency, 0)
+  const failures: string[] = []
+  if (spreadMs > budget) {
+    failures.push(
+      `legs finished ${spreadMs.toFixed(0)}ms apart, more than ${maxRatio}x the fastest leg's own latency (${minLatency.toFixed(0)}ms): work looks serialized instead of concurrent`,
+    )
+  }
+  return { passed: failures.length === 0, spreadMs, failures }
+}
+
 /** Distinct phrases — keyword is a token Sherpa usually preserves (not always NATO). */
 export const LEG_CATALOG = [
   { phrase: 'alpha one two three', keyword: 'alpha' },
@@ -86,9 +119,25 @@ export function evaluateConcurrentRoundtrip(params: {
   legs: ConcurrentLegResult[]
   enqueueMs: number
   maxEnqueueMs: number
-  maxAgentStartSpreadMs: number
-  maxFinalSpreadMs: number
+  /** Absolute override (ms). Omit to use the relative oracle with `startedAtMs`. */
+  maxAgentStartSpreadMs?: number
+  /** Absolute override (ms). Omit to use the relative oracle with `startedAtMs`. */
+  maxFinalSpreadMs?: number
+  /** Common request time (same clock as the leg timestamps), for the relative oracle. */
+  startedAtMs?: number
+  /** Ratio for the relative oracle; defaults to {@link DEFAULT_RELATIVE_SPREAD_RATIO}. */
+  maxSpreadRatio?: number
 }): ConcurrentRoundtripEvaluation {
+  const spreadWindow = (
+    timestamps: number[],
+    absoluteMaxMs: number | undefined,
+  ): ConcurrentWindowEvaluation => {
+    if (absoluteMaxMs != null) return evaluateConcurrentWindow(timestamps, absoluteMaxMs)
+    if (params.startedAtMs == null) {
+      throw new Error('evaluateConcurrentRoundtrip needs startedAtMs or an absolute spread limit')
+    }
+    return evaluateRelativeSpread(timestamps, params.startedAtMs, params.maxSpreadRatio)
+  }
   const failures: string[] = []
   if (params.enqueueMs > params.maxEnqueueMs) {
     failures.push(
@@ -99,11 +148,11 @@ export function evaluateConcurrentRoundtrip(params: {
   const agentStarts = params.legs
     .map((leg) => leg.agentSpeakingStartMs)
     .filter((t): t is number => t != null)
-  const agentStartWindow = evaluateConcurrentWindow(agentStarts, params.maxAgentStartSpreadMs)
+  const agentStartWindow = spreadWindow(agentStarts, params.maxAgentStartSpreadMs)
   failures.push(...agentStartWindow.failures)
 
   const finals = params.legs.map((leg) => leg.finalMs).filter((t): t is number => t != null)
-  const finalWindow = evaluateConcurrentWindow(finals, params.maxFinalSpreadMs)
+  const finalWindow = spreadWindow(finals, params.maxFinalSpreadMs)
   failures.push(...finalWindow.failures)
 
   for (const leg of params.legs) {

@@ -339,8 +339,13 @@ async function runDirectControl(pattern: SendPattern): Promise<SequenceAnalysis>
  * minus explicit, counted time-compression, and underruns are concealed and counted". When the
  * test process is starved of CPU the sender bunches or stalls, which legitimately triggers
  * both, so the bounds are derived from `mixStats` and not fixed constants:
- * - gaps <= compressed + overflowCompressed: a merged pair of frames absorbs one marker index,
- *   which `analyseSequence` reports as one gap. Anything beyond that is a frame that vanished.
+ * - gaps <= compressed + overflowCompressed + listenerCatchupCompressed + listenerSkipped: a
+ *   merged pair of frames absorbs one marker index, which `analyseSequence` reports as one gap;
+ *   a listener that rendered late merges two popped ticks (`listenerCatchupCompressed`) or, far
+ *   behind, jumps over some (`listenerSkipped`). This is the hole detector: the heard marker
+ *   sequence is complete apart from frames the mixer accounts for. Anything beyond that is a
+ *   frame that vanished silently (before the listener catch-up fix, a 100 ms stall of the
+ *   pump left holes of 8 to 9 frames with every counter clean).
  * - duplicates <= concealed: a concealment frame is a faded repeat of the previous frame.
  * - ambiguous <= 5 + concealed + compressed: three marker indices (index 39, 2350 Hz) are
  *   always unrecognisable (also through two Opus hops without any mixer; an ambiguous frame
@@ -357,12 +362,15 @@ function expectContinuous({ seq, stats }: { seq: SequenceAnalysis; stats: MixSta
   const detail = JSON.stringify({ seq, stats })
   expect(stats, detail).not.toBeNull()
   const s = stats!
-  const merged = s.compressed + s.overflowCompressed
+  const merged =
+    s.compressed + s.overflowCompressed + s.listenerCatchupCompressed + s.listenerSkipped
   expect(seq.gaps, detail).toBeLessThanOrEqual(merged)
   expect(seq.reordered, detail).toBe(0)
   expect(seq.duplicates, detail).toBeLessThanOrEqual(s.concealed)
   expect(seq.played, detail).toBeGreaterThanOrEqual(145 - 2 * merged)
-  expect(seq.ambiguous, detail).toBeLessThanOrEqual(5 + s.concealed + s.compressed)
+  expect(seq.ambiguous, detail).toBeLessThanOrEqual(
+    5 + s.concealed + s.compressed + s.listenerCatchupCompressed,
+  )
   expect(s.decodeErrors, detail).toBe(0)
   expect(s.overflowCompressed, detail).toBe(0)
   expect(s.pushed, detail).toBeGreaterThanOrEqual(MARKED_FRAMES)

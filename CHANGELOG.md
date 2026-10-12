@@ -10,6 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **mixer** — A listener whose render ran late no longer loses audio silently. It used to step one tick per render, so each skipped pump slot added permanent lag, and past 8 ticks the listener jumped to the present and skipped up to 9 popped frames while `mixStats` stayed clean. A late listener now catches up by one tick per render, receiving two ticks merged with the queue's cross-fade (`listenerCatchupCompressed`); only beyond 8 ticks behind does it jump, and every skipped frame is counted in `listenerSkipped`. Both are in `mixStats`, the helpers queue-pressure warning (`listenerCatchupCompressed`, `listenerSkipped` fields) and `voice_mix_frames_total{outcome=listener_catchup_compressed|listener_skipped}`.
 - **speech** — The C1 listen timeout (`sttListenTimeoutMs`, no STT partial) now runs on media time: it fires only when that much audio reached the agent and the same time passed on the wall clock, so audio that arrives late or slowly is no longer closed as "not found" mid-speech. Wall time alone still closes it when inbound PCM has stopped completely. The wall-clock C1/C2 ticker also skips ticks while an inbound call is running, so a slow finalize is no longer force-closed a second time (duplicate empty `user_speech_final`).
 
 ### Added

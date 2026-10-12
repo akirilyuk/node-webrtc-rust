@@ -161,6 +161,10 @@ export interface JsMixStats {
   overflowCompressed: number
   /** Inbound packets that failed to decode. */
   decodeErrors: number
+  /** Popped frames merged into one output frame for a listener that rendered late. */
+  listenerCatchupCompressed: number
+  /** Popped frames a listener jumped over after a render more than 8 ticks late. */
+  listenerSkipped: number
   /** Frames currently queued. */
   depth: number
   /** Current adaptive target depth in frames (2 to 8). */

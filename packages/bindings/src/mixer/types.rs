@@ -195,6 +195,10 @@ pub struct JsMixStats {
     pub overflow_compressed: f64,
     /// Inbound packets that failed to decode.
     pub decode_errors: f64,
+    /// Popped frames merged into one output frame for a listener that rendered late.
+    pub listener_catchup_compressed: f64,
+    /// Popped frames a listener jumped over after a render more than 8 ticks late.
+    pub listener_skipped: f64,
     /// Frames currently queued.
     pub depth: u32,
     /// Current adaptive target depth in frames (2 to 8).
@@ -210,6 +214,8 @@ impl From<SourceStats> for JsMixStats {
             concealed: s.concealed as f64,
             overflow_compressed: s.overflow_compressed as f64,
             decode_errors: s.decode_errors as f64,
+            listener_catchup_compressed: s.listener_catchup_compressed as f64,
+            listener_skipped: s.listener_skipped as f64,
             depth: s.depth as u32,
             target: s.target as u32,
         }

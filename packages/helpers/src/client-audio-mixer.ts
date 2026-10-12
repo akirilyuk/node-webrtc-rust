@@ -194,7 +194,8 @@ export function clientsShareMixGroup(
  * Sink for mixer warnings. `message` is the full single-line text (legacy format, so a
  * one-argument sink keeps every counter); `fields` carries the same values structured.
  * Queue-pressure fields: `{ peerId, compressed, concealed, overflowCompressed, decodeErrors,
- * depth, target }` (counter deltas since the last warning, as numbers).
+ * listenerCatchupCompressed, listenerSkipped, depth, target }` (counter deltas since the last
+ * warning, as numbers; depth and target are current values).
  */
 export type ClientMixerWarn = (message: string, fields?: Record<string, unknown>) => void
 
@@ -203,7 +204,9 @@ export function formatQueuePressureLine(message: string, fields: Record<string, 
   return (
     `${message} peerId=${String(fields.peerId)} compressed=+${String(fields.compressed)} ` +
     `concealed=+${String(fields.concealed)} overflowCompressed=+${String(fields.overflowCompressed)} ` +
-    `decodeErrors=+${String(fields.decodeErrors)} depth=${String(fields.depth)} target=${String(fields.target)}`
+    `decodeErrors=+${String(fields.decodeErrors)} depth=${String(fields.depth)} target=${String(fields.target)} ` +
+    `listenerCatchupCompressed=+${String(fields.listenerCatchupCompressed)} ` +
+    `listenerSkipped=+${String(fields.listenerSkipped)}`
   )
 }
 
@@ -213,7 +216,8 @@ export type ClientAudioMixerOptions = {
   /**
    * Sink for rate-limited queue-pressure warnings. `message` is the full single-line text
    * (legacy format); `fields` is the same values structured:
-   * `{ peerId, compressed, concealed, overflowCompressed, decodeErrors, depth, target }`.
+   * `{ peerId, compressed, concealed, overflowCompressed, decodeErrors, listenerCatchupCompressed,
+   * listenerSkipped, depth, target }`.
    * Default prints the message to `console.warn`.
    */
   warn?: ClientMixerWarn
@@ -222,7 +226,12 @@ export type ClientAudioMixerOptions = {
 /** Counters whose increase means audio was compressed, concealed or failed to decode. */
 type QueuePressureCounters = Pick<
   MixStats,
-  'compressed' | 'concealed' | 'overflowCompressed' | 'decodeErrors'
+  | 'compressed'
+  | 'concealed'
+  | 'overflowCompressed'
+  | 'decodeErrors'
+  | 'listenerCatchupCompressed'
+  | 'listenerSkipped'
 >
 
 type QueueStatsWatch = {
@@ -236,6 +245,8 @@ const ZERO_QUEUE_PRESSURE: QueuePressureCounters = {
   concealed: 0,
   overflowCompressed: 0,
   decodeErrors: 0,
+  listenerCatchupCompressed: 0,
+  listenerSkipped: 0,
 }
 
 type PeerMixState = {
@@ -776,12 +787,17 @@ export class ClientAudioMixer {
         concealed: stats.concealed - watch.baseline.concealed,
         overflowCompressed: stats.overflowCompressed - watch.baseline.overflowCompressed,
         decodeErrors: stats.decodeErrors - watch.baseline.decodeErrors,
+        listenerCatchupCompressed:
+          stats.listenerCatchupCompressed - watch.baseline.listenerCatchupCompressed,
+        listenerSkipped: stats.listenerSkipped - watch.baseline.listenerSkipped,
       }
       if (
         delta.compressed <= 0 &&
         delta.concealed <= 0 &&
         delta.overflowCompressed <= 0 &&
-        delta.decodeErrors <= 0
+        delta.decodeErrors <= 0 &&
+        delta.listenerCatchupCompressed <= 0 &&
+        delta.listenerSkipped <= 0
       ) {
         continue
       }
@@ -794,6 +810,8 @@ export class ClientAudioMixer {
         concealed: stats.concealed,
         overflowCompressed: stats.overflowCompressed,
         decodeErrors: stats.decodeErrors,
+        listenerCatchupCompressed: stats.listenerCatchupCompressed,
+        listenerSkipped: stats.listenerSkipped,
       }
       const fields = {
         peerId,
@@ -801,6 +819,8 @@ export class ClientAudioMixer {
         concealed: delta.concealed,
         overflowCompressed: delta.overflowCompressed,
         decodeErrors: delta.decodeErrors,
+        listenerCatchupCompressed: delta.listenerCatchupCompressed,
+        listenerSkipped: delta.listenerSkipped,
         depth: stats.depth,
         target: stats.target,
       }

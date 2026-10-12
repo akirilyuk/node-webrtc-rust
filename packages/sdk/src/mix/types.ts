@@ -33,6 +33,13 @@ export interface DistanceParams {
  * Per-source mix queue counters from `AudioMixGraph.mixStats`.
  *
  * Invariant: `pushed = played + compressed + overflowCompressed + depth`.
+ *
+ * `played` counts frames popped by the media clock, not frames a listener received. A listener
+ * whose renders run late receives those frames merged (`listenerCatchupCompressed`) or, beyond
+ * 8 ticks behind, jumps over them (`listenerSkipped`). Both are summed over listeners, so a
+ * source heard by two late listeners counts twice. Listener-level losses are visible here and
+ * never silent: frames heard = `played - listenerSkipped - listenerCatchupCompressed` for a
+ * single listener.
  */
 export interface MixStats {
   /** Frames pushed into the source queue. */
@@ -47,6 +54,10 @@ export interface MixStats {
   overflowCompressed: number
   /** Inbound packets that failed to decode. */
   decodeErrors: number
+  /** Popped frames merged into one output frame for a listener that rendered late. */
+  listenerCatchupCompressed: number
+  /** Popped frames a listener jumped over after a render more than 8 ticks (160 ms) late. */
+  listenerSkipped: number
   /** Frames currently queued. */
   depth: number
   /** Current adaptive target depth in frames (2 to 8, i.e. 40 to 160 ms). */

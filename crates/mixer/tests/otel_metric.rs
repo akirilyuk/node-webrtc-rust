@@ -5,10 +5,10 @@
 #![cfg(feature = "otel")]
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use node_webrtc_rust_mixer::{ElasticFrameQueue, Frame, FRAME_BYTES};
+use node_webrtc_rust_mixer::{ElasticFrameQueue, Frame, MixGraph, FRAME_BYTES};
 use opentelemetry::global;
 use opentelemetry_sdk::metrics::data::Sum;
 use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
@@ -51,14 +51,31 @@ fn mix_frames_counter_matches_source_stats_by_outcome() {
     b.note_decode_error("test", t0);
     b.note_decode_error("test", t0);
 
-    let (sa, sb) = (a.stats(), b.stats());
+    // Source C inside a graph: a listener whose renders run 8 ticks late, again and again, so it
+    // catches up by merging frames and then has to jump to the present.
+    let mut graph = MixGraph::new();
+    graph.add_input("c");
+    graph.set_listener_sources("l", &["c".to_string()]);
+    for id in 0..40 {
+        graph.push_frame_at("c", tone(id), t0);
+    }
+    for k in 0..4u64 {
+        graph.render_output("l", t0 + Duration::from_millis(20 + 160 * k));
+    }
+
+    let (sa, sb, sc) = (a.stats(), b.stats(), graph.source_stats("c").expect("c"));
     let expected: HashMap<&str, u64> = HashMap::from([
-        ("played", sa.played + sb.played),
-        ("compressed", sa.compressed + sb.compressed),
-        ("concealed", sa.concealed + sb.concealed),
+        ("played", sa.played + sb.played + sc.played),
+        ("compressed", sa.compressed + sb.compressed + sc.compressed),
+        ("concealed", sa.concealed + sb.concealed + sc.concealed),
+        (
+            "listener_catchup_compressed",
+            sc.listener_catchup_compressed,
+        ),
+        ("listener_skipped", sc.listener_skipped),
         (
             "overflow_compressed",
-            sa.overflow_compressed + sb.overflow_compressed,
+            sa.overflow_compressed + sb.overflow_compressed + sc.overflow_compressed,
         ),
         ("decode_error", sa.decode_errors + sb.decode_errors),
     ]);
@@ -68,6 +85,8 @@ fn mix_frames_counter_matches_source_stats_by_outcome() {
         expected["overflow_compressed"] > 0,
         "scenario must overflow"
     );
+    assert!(expected["listener_catchup_compressed"] > 0);
+    assert!(expected["listener_skipped"] > 0);
     assert_eq!(expected["decode_error"], 2);
 
     provider.force_flush().expect("flush");
@@ -98,5 +117,5 @@ fn mix_frames_counter_matches_source_stats_by_outcome() {
     for (outcome, want) in expected {
         assert_eq!(got.get(outcome).copied(), Some(want), "outcome {outcome}");
     }
-    assert_eq!(got.len(), 5);
+    assert_eq!(got.len(), 7);
 }

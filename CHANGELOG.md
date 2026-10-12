@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **mixer** — A listener whose render ran late no longer loses audio silently. It used to step one tick per render, so each skipped pump slot added permanent lag, and past 8 ticks the listener jumped to the present and skipped up to 9 popped frames while `mixStats` stayed clean. A late listener now catches up by one tick per render, receiving two ticks merged with the queue's cross-fade (`listenerCatchupCompressed`); only beyond 8 ticks behind does it jump, and every skipped frame is counted in `listenerSkipped`. Both are in `mixStats`, the helpers queue-pressure warning (`listenerCatchupCompressed`, `listenerSkipped` fields) and `voice_mix_frames_total{outcome=listener_catchup_compressed|listener_skipped}`.
+
 ### Added
 
 - **helpers** — `clientMixerWarn` option on `SessionPod` and `VoiceAgentSessionHost`; mixer queue-pressure warnings also pass structured fields (`peerId`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`) as a second argument (message unchanged). The `ClientMixerWarn` type is exported.

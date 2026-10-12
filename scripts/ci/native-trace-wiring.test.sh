@@ -29,6 +29,7 @@ rust_log="$(grep -E '^NATIVE_TRACE_RUST_LOG=' "$SCRIPT" | sed -E 's/^[^"]*"([^"]
 for target in dtls webrtc_dtls webrtc::dtls_transport webrtc_ice webrtc_sctp; do
   [[ ",$rust_log," == *",$target=trace,"* ]] || fail "RUST_LOG lacks $target=trace"
 done
+[[ ",$rust_log," == *",webrtc::mux=debug,"* ]] || fail "RUST_LOG lacks webrtc::mux=debug (no endpoint for packet warnings)"
 [[ "$rust_log" != trace* && "$rust_log" != debug* ]] || fail "RUST_LOG must not start with a global level"
 
 # Delete on success, keep (and exit non-zero) on failure.

@@ -85,7 +85,7 @@ echo "==> helpers native integration tests"
 # (.github/actions/ci-run-integration-tests) and are deleted when it passes.
 # Guard: packages/helpers/tests/native-trace-ci-wiring.test.ts (net.connect-stall-no-timeout).
 NATIVE_TRACE_DIR="$ROOT/.test-logs/native-trace"
-NATIVE_TRACE_RUST_LOG="dtls=trace,webrtc_dtls=trace,webrtc::dtls_transport=trace,webrtc::peer_connection=trace,webrtc_ice=trace,webrtc_sctp=trace,webrtc::sctp_transport=trace"
+NATIVE_TRACE_RUST_LOG="dtls=trace,webrtc_dtls=trace,webrtc::dtls_transport=trace,webrtc::peer_connection=trace,webrtc::mux=debug,webrtc_ice=trace,webrtc_sctp=trace,webrtc::sctp_transport=trace"
 rm -rf "$NATIVE_TRACE_DIR"
 mkdir -p "$NATIVE_TRACE_DIR"
 if WNR_LOG_FILE="$NATIVE_TRACE_DIR/native-{pid}.log" RUST_LOG="$NATIVE_TRACE_RUST_LOG" \

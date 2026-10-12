@@ -169,6 +169,7 @@ mod tests {
         assert!(target_allowed("dtls"));
         assert!(target_allowed("dtls::conn"));
         assert!(target_allowed("webrtc::peer_connection"));
+        assert!(target_allowed("webrtc::mux"));
         assert!(target_allowed("webrtc_ice::agent::agent_internal"));
         assert!(!target_allowed("dtlsx"));
         assert!(!target_allowed("node_webrtc_rust_speech::stt"));

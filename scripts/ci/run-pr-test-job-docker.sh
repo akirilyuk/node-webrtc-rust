@@ -88,7 +88,8 @@ run_in_ci_container() {
 
   echo "==> Starting coturn sidecar ($COTURN_NAME) — same as GitHub Actions Test job"
   docker rm -f "$COTURN_NAME" 2>/dev/null || true
-  docker run -d --name "$COTURN_NAME" coturn/coturn:latest \
+  # pinned: coturn :latest (4.18+) rejects --no-dtls / -L host:port; upgrade the args before unpinning
+  docker run -d --name "$COTURN_NAME" coturn/coturn:4.17.2@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e \
     turnserver -n -L 0.0.0.0:3478 -a \
     -u testuser:testpass -r test.local \
     --min-port 49152 --max-port 65535 \

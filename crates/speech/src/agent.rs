@@ -99,6 +99,44 @@ fn voice_debug(message: impl AsRef<str>) {
     }
 }
 
+/// `VOICE_DEBUG=1` or `VOICE_FINALIZE_TRACE=1`: the finalize timing line only, without the
+/// per-frame `[voice-debug]` noise that shifts timing on a starved host.
+fn finalize_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        voice_debug_enabled()
+            || matches!(
+                std::env::var("VOICE_FINALIZE_TRACE").ok().as_deref(),
+                Some("1") | Some("true") | Some("yes")
+            )
+    })
+}
+
+/// One timing line per finalize decision (no transcript text). `path` is `media_c2`,
+/// `wallclock_c2`, `c1`, `gate_finalize`, `complete_pending` (finalize before new speech) or
+/// `vendor_final` (a final the STT vendor produced; `closing=false` means no finalize was asked); `wall_ms` is the age of the C2 arm (C1: the listen
+/// start), `since_last_pcm_ms` the time since the last inbound frame entered
+/// `process_inbound_pcm`.
+fn finalize_trace(path: &str, inner: &AgentInner) {
+    if !finalize_trace_enabled() {
+        return;
+    }
+    let wall_ms = inner
+        .utterance_finalize_armed_at
+        .or(inner.stt_listen_started_at)
+        .map_or(-1, |t| t.elapsed().as_millis() as i64);
+    let since_last_pcm_ms = inner
+        .last_inbound_pcm_at
+        .map_or(-1, |t| t.elapsed().as_millis() as i64);
+    eprintln!(
+        "[voice-debug] finalize path={path} media_ms={} wall_ms={wall_ms} since_last_pcm_ms={since_last_pcm_ms} hold_ms={} closing={} vad_speaking={}",
+        inner.utterance_media_ms,
+        inner.stt_gate_hold_ms,
+        inner.stt_endpoint_closing_started,
+        VoiceAgent::vad_is_speaking(inner),
+    );
+}
+
 /// Prefer the inner `Internal` payload so callers see the original drain/writer text once.
 fn playback_failure_message(error: &SpeechError) -> String {
     match error {
@@ -173,6 +211,8 @@ struct AgentInner {
     utterance_finalize_armed_at: Option<Instant>,
     /// Last inbound frame wall time (real PCM received, including gate-closed skips).
     last_inbound_pcm_at: Option<Instant>,
+    /// Inbound media ms seen since the utterance started (finalize trace only).
+    utterance_media_ms: u64,
     /// Start C2 only after gate hold drains when `SpeechEnd` preceded partials.
     defer_utterance_finalize_until_hold: bool,
     /// Last partial text for C2 forced final fallback.
@@ -395,6 +435,7 @@ impl VoiceAgent {
                 utterance_finalize_deadline_ms: 0,
                 utterance_finalize_armed_at: None,
                 last_inbound_pcm_at: None,
+                utterance_media_ms: 0,
                 defer_utterance_finalize_until_hold: false,
                 last_partial_text: None,
                 partials_emitted_this_utterance: false,
@@ -1045,6 +1086,7 @@ impl VoiceAgent {
     }
 
     fn clear_utterance_finalize_timer(inner: &mut AgentInner) {
+        inner.utterance_media_ms = 0;
         inner.utterance_finalize_deadline_ms = 0;
         inner.utterance_finalize_armed_at = None;
         inner.defer_utterance_finalize_until_hold = false;
@@ -1149,6 +1191,7 @@ impl VoiceAgent {
         };
         if c1_expired {
             voice_debug("C1 wall-clock timeout (no STT partial)");
+            finalize_trace("c1", &*self.inner.lock().await);
             self.close_stt_stream_not_found().await?;
         }
 
@@ -1179,6 +1222,7 @@ impl VoiceAgent {
         };
         if should_force {
             voice_debug("C2 wall-clock timeout (inbound PCM stalled after end-of-turn grace)");
+            finalize_trace("wallclock_c2", &*self.inner.lock().await);
             self.force_close_utterance().await?;
         }
         Ok(())
@@ -2616,6 +2660,7 @@ impl VoiceAgent {
             return Ok(());
         }
         voice_debug("STT: completing previous utterance (pending finalize before new speech)");
+        finalize_trace("complete_pending", &*self.inner.lock().await);
         if !closing_started {
             {
                 let mut inner = self.inner.lock().await;
@@ -2640,6 +2685,7 @@ impl VoiceAgent {
         Self::clear_utterance_finalize_timer(inner);
         inner.last_partial_text = None;
         inner.partials_emitted_this_utterance = false;
+        inner.utterance_media_ms = 0;
         inner.lid_pcm_buffer.clear();
         inner.lid_voiced_ms = 0;
         inner.lid_pending_silence_ms = 0;
@@ -3156,6 +3202,7 @@ impl VoiceAgent {
         {
             let mut inner = self.inner.lock().await;
             inner.last_inbound_pcm_at = Some(Instant::now());
+            inner.utterance_media_ms = inner.utterance_media_ms.saturating_add(duration_ms as u64);
         }
 
         let pcm = {
@@ -3336,9 +3383,11 @@ impl VoiceAgent {
         };
 
         if c1_expired {
+            finalize_trace("c1", &*self.inner.lock().await);
             self.close_stt_stream_not_found().await?;
         }
         if c2_expired {
+            finalize_trace("media_c2", &*self.inner.lock().await);
             self.force_close_utterance().await?;
         }
 
@@ -3618,6 +3667,7 @@ impl VoiceAgent {
             voice_debug(
                 "STT should_finalize_utterance=true (gate hold done, agent idle, VAD not speaking)",
             );
+            finalize_trace("gate_finalize", &*self.inner.lock().await);
             {
                 let mut inner = self.inner.lock().await;
                 inner.stt_endpoint_closing_started = true;
@@ -3870,6 +3920,7 @@ impl VoiceAgent {
                     }
                 }
                 voice_debug(format!("STT final: {text}"));
+                finalize_trace("vendor_final", &*self.inner.lock().await);
                 self.emit_user_speaking_start_if_needed().await;
                 self.try_stt_gated_barge_in(&text).await?;
                 let (emit_speaking_end, close_stream) = {

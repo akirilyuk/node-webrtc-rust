@@ -243,6 +243,36 @@ describe('transport disconnect grace', () => {
     expect(host.sessions.has('client-1')).toBe(false)
   })
 
+  it('an ICE state change logs one ice_pair line', async () => {
+    vi.useFakeTimers()
+    const logs: string[] = []
+    const host = createHost({ logs })
+    const { session, pc } = await connectRealPeer(host, 'client-1')
+    const getStats = vi.fn(async () => new Map<string, Record<string, unknown>>())
+    Object.defineProperty(session.pc, 'getStats', { value: getStats })
+
+    pc.oniceconnectionstatechange()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(logs.filter((l) => l.includes('ice=connected ice_pair'))).toEqual([
+      '[data client-1] ice=connected ice_pair none pairs=0 states=',
+    ])
+  })
+
+  it('state changes while an ICE pair read is pending start only one read', async () => {
+    vi.useFakeTimers()
+    const host = createHost()
+    const { session, pc } = await connectRealPeer(host, 'client-1')
+    const getStats = vi.fn(() => new Promise<never>(() => {}))
+    Object.defineProperty(session.pc, 'getStats', { value: getStats })
+
+    pc.oniceconnectionstatechange()
+    pc.oniceconnectionstatechange()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(getStats).toHaveBeenCalledTimes(1)
+  })
+
   it('connectionState closed closes the peer immediately', async () => {
     vi.useFakeTimers()
     const host = createHost()

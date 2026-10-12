@@ -17,7 +17,9 @@
 //! - **Overflow:** at capacity (50 frames, 1 s) the two oldest frames are merged instead
 //!   of discarding one, and a rate-limited warning is logged (capacity signal).
 //!
-//! Accounting invariant: `pushed = played + compressed + overflow_compressed + depth`.
+//! Accounting invariant: `pushed = played + compressed + overflow_compressed + depth`. `played`
+//! counts frames popped by the media clock; what a listener actually receives is
+//! `played` minus its `listener_skipped` frames, with `listener_catchup_compressed` pairs merged.
 //! Concealment frames are not source frames and are counted separately.
 //!
 //! The queue never reads the clock: callers pass `now` to [`ElasticFrameQueue::push`].
@@ -67,6 +69,13 @@ pub struct SourceStats {
     pub overflow_compressed: u64,
     /// Inbound packets for this source that failed to decode (no audio was produced).
     pub decode_errors: u64,
+    /// Popped frames a late listener received merged into one output frame while catching
+    /// up (listener-level, summed over listeners; set by the graph, `0` on a bare queue).
+    pub listener_catchup_compressed: u64,
+    /// Popped frames a listener never received because its render ran more than
+    /// `MAX_CATCHUP_TICKS` late and it jumped to the present (listener-level, summed over
+    /// listeners; set by the graph, `0` on a bare queue).
+    pub listener_skipped: u64,
     /// Frames currently queued.
     pub depth: usize,
     /// Current adaptive target depth in frames.
@@ -213,6 +222,8 @@ impl ElasticFrameQueue {
             concealed: self.concealed,
             overflow_compressed: self.overflow_compressed,
             decode_errors: self.decode_errors,
+            listener_catchup_compressed: 0,
+            listener_skipped: 0,
             depth: self.frames.len(),
             target: self.target,
         }

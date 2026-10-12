@@ -56,6 +56,11 @@ import {
 } from './voice-session-budget.js'
 import { flushVoiceControlChannel } from './control-channel-flush.js'
 import { readInboundAudioStats, type InboundAudioStats } from './inbound-audio-stats.js'
+import {
+  ICE_PAIR_STATS_TIMEOUT_MS,
+  formatIcePairLine,
+  readSelectedIcePair,
+} from './ice-pair-stats.js'
 
 import type {
   VoiceSessionContext,
@@ -327,6 +332,8 @@ interface ClientSession {
   transportDownSince?: number
   /** Set when the client sent {@link CLIENT_HANGUP_MESSAGE_TYPE} on the control channel. */
   clientHangup?: boolean
+  /** True while an ICE candidate-pair stats read is in flight; further reads are dropped. */
+  icePairReadPending?: boolean
   /** Set at the start of {@link VoiceAgentSessionHost.closeClientTeardown}; marks a host-initiated close. */
   closingLocally?: boolean
   /** Set when the transport grace expired and the host closed the peer. */
@@ -894,6 +901,17 @@ export class VoiceAgentSessionHost {
       const tag = dataOnly ? 'data' : 'voice'
       const iceState = pc.iceConnectionState
       this.log(`[${tag} ${peerId}] iceConnectionState=${iceState}`)
+      if (iceState !== 'closed' && !this.hostClosing && !session.icePairReadPending) {
+        session.icePairReadPending = true
+        void readSelectedIcePair(pc, { timeoutMs: ICE_PAIR_STATS_TIMEOUT_MS })
+          .then((pair) => {
+            if (pair) this.log(`[${tag} ${peerId}] ice=${iceState} ${formatIcePairLine(pair)}`)
+          })
+          .catch(() => {})
+          .finally(() => {
+            session.icePairReadPending = false
+          })
+      }
       if (iceState === 'connected' || iceState === 'completed') {
         this.noteTransportRestored(peerId, session, 'ice-restart')
       } else if (iceState === 'disconnected') {

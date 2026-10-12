@@ -123,6 +123,8 @@ describe('VoiceAgentSessionHost mix APIs', () => {
         concealed: 0,
         overflowCompressed: 0,
         decodeErrors: 0,
+        listenerCatchupCompressed: 0,
+        listenerSkipped: 0,
         depth: 2,
         target: 3,
       }
@@ -139,13 +141,15 @@ describe('VoiceAgentSessionHost mix APIs', () => {
       await mixer.pumpMixFrame('listener', out)
       mixer.stopMixPump('listener')
       expect(warn).toHaveBeenCalledWith(
-        '[mix] queue pressure peerId=speaker compressed=+2 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3',
+        '[mix] queue pressure peerId=speaker compressed=+2 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3 listenerCatchupCompressed=+0 listenerSkipped=+0',
         {
           peerId: 'speaker',
           compressed: 2,
           concealed: 0,
           overflowCompressed: 0,
           decodeErrors: 0,
+          listenerCatchupCompressed: 0,
+          listenerSkipped: 0,
           depth: 2,
           target: 3,
         },

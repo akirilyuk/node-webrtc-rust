@@ -131,12 +131,27 @@ async fn next_speaking_start(events: &mut Receiver<SpeechEvent>) -> SpeechEvent 
     .expect("timed out waiting for agent_speaking_start")
 }
 
+/// Distinct utterance per call. The phrase cache (`PhraseCache::global()`) is process-wide and
+/// keyed by project, vendor, model, voice, endpoint and text, so two tests in one binary that
+/// speak the same text with the same fake vendor would share entries and see a cache hit (fewer
+/// vendor calls, an extra `TtsPhraseCacheHit` event) depending on test order.
+fn unique_text(base: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    format!(
+        "{base} #{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_speaking_start_reports_first_chunk_and_first_audio() {
     let (agent, _) = make_agent(Duration::from_millis(80)).await;
     let mut events = agent.subscribe_events();
 
-    agent.send_text_to_tts("hello there").await.unwrap();
+    agent
+        .send_text_to_tts(&unique_text("hello there"))
+        .await
+        .unwrap();
     let start = next_speaking_start(&mut events).await;
 
     let first_chunk_ms = start.first_chunk_ms.expect("first_chunk_ms set");
@@ -166,11 +181,11 @@ async fn queued_reply_while_speaking_is_timed_from_its_own_request() {
     };
 
     agent
-        .send_text_to_tts_with_options("first reply", non_blocking)
+        .send_text_to_tts_with_options(&unique_text("first reply"), non_blocking)
         .await
         .unwrap();
     agent
-        .send_text_to_tts_with_options("second reply", non_blocking)
+        .send_text_to_tts_with_options(&unique_text("second reply"), non_blocking)
         .await
         .unwrap();
 
@@ -202,7 +217,7 @@ async fn barge_in_clears_pending_first_audio() {
 
     let first_requested_at = Instant::now();
     agent
-        .send_text_to_tts_with_options("first reply", non_blocking)
+        .send_text_to_tts_with_options(&unique_text("first reply"), non_blocking)
         .await
         .unwrap();
     // The vendor call is running, so the first reply has pending timing but no audio yet.
@@ -224,7 +239,7 @@ async fn barge_in_clears_pending_first_audio() {
     // Make the second request provably later than the first.
     tokio::time::sleep(Duration::from_millis(30)).await;
     agent
-        .send_text_to_tts_with_options("second reply", non_blocking)
+        .send_text_to_tts_with_options(&unique_text("second reply"), non_blocking)
         .await
         .unwrap();
 

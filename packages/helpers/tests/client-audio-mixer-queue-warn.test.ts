@@ -17,6 +17,8 @@ function zeroStats(): MixStats {
     concealed: 0,
     overflowCompressed: 0,
     decodeErrors: 0,
+    listenerCatchupCompressed: 0,
+    listenerSkipped: 0,
     depth: 2,
     target: 3,
   }
@@ -112,13 +114,15 @@ describe('ClientAudioMixer mix queue warnings', () => {
     await tick(1000)
     expect(warn).toHaveBeenCalledTimes(1)
     expect(warn).toHaveBeenCalledWith(
-      '[mix] queue pressure peerId=speaker compressed=+3 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=7 target=4',
+      '[mix] queue pressure peerId=speaker compressed=+3 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=7 target=4 listenerCatchupCompressed=+0 listenerSkipped=+0',
       {
         peerId: 'speaker',
         compressed: 3,
         concealed: 0,
         overflowCompressed: 0,
         decodeErrors: 0,
+        listenerCatchupCompressed: 0,
+        listenerSkipped: 0,
         depth: 7,
         target: 4,
       },
@@ -140,7 +144,7 @@ describe('ClientAudioMixer mix queue warnings', () => {
     await legacy.pumpMixFrame('listener', out)
     legacy.stopMixPump('listener')
     expect(lines[0]).toBe(
-      '[mix] queue pressure peerId=speaker compressed=+3 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3',
+      '[mix] queue pressure peerId=speaker compressed=+3 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3 listenerCatchupCompressed=+0 listenerSkipped=+0',
     )
   })
 
@@ -159,7 +163,7 @@ describe('ClientAudioMixer mix queue warnings', () => {
       def.stopMixPump('listener')
       expect(spy).toHaveBeenCalledTimes(1)
       expect(spy).toHaveBeenCalledWith(
-        '[mix] queue pressure peerId=speaker compressed=+2 concealed=+1 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3',
+        '[mix] queue pressure peerId=speaker compressed=+2 concealed=+1 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3 listenerCatchupCompressed=+0 listenerSkipped=+0',
       )
     } finally {
       spy.mockRestore()
@@ -174,12 +178,28 @@ describe('ClientAudioMixer mix queue warnings', () => {
         concealed: 2,
         overflowCompressed: 3,
         decodeErrors: 4,
+        listenerCatchupCompressed: 7,
+        listenerSkipped: 8,
         depth: 5,
         target: 6,
       }),
     ).toBe(
-      '[mix] queue pressure peerId=p compressed=+1 concealed=+2 overflowCompressed=+3 decodeErrors=+4 depth=5 target=6',
+      '[mix] queue pressure peerId=p compressed=+1 concealed=+2 overflowCompressed=+3 decodeErrors=+4 depth=5 target=6 listenerCatchupCompressed=+7 listenerSkipped=+8',
     )
+  })
+
+  it('warns when a late listener skipped or merged popped frames', async () => {
+    const s = stats.get('speaker')!
+    s.played = 40
+    s.listenerCatchupCompressed = 2
+    s.listenerSkipped = 5
+    await tick(1000)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]![0]).toContain('listenerCatchupCompressed=+2 listenerSkipped=+5')
+    expect(warn.mock.calls[0]![1]).toMatchObject({
+      listenerCatchupCompressed: 2,
+      listenerSkipped: 5,
+    })
   })
 
   it('does not warn about start-up concealment before the source played its first frame', async () => {

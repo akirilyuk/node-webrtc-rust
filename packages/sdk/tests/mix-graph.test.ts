@@ -178,6 +178,8 @@ describe('AudioMixGraph', () => {
       concealed: 0,
       overflowCompressed: 0,
       decodeErrors: 0,
+      listenerCatchupCompressed: 0,
+      listenerSkipped: 0,
       depth: 0,
       target: 2,
     })

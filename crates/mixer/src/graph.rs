@@ -4,8 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::bus::MixBus;
-use crate::elastic::{ElasticFrameQueue, SourceStats};
+use crate::elastic::{merge_pair, ElasticFrameQueue, SourceStats};
 use crate::frame::{self, Frame, FRAME_MS};
+use crate::otel::{record_mix_frames, MixFrameOutcome};
 use crate::spatial::{
     apply_pan_gains, pan_frame_with_placement, pan_gains_placement, pan_gains_positional,
     ClientPose, DistanceParams, MixPlacement,
@@ -19,7 +20,21 @@ const MAX_CATCHUP_TICKS: u64 = 8;
 
 /// Ticks of per-source output kept so a listener that renders late can still hear every
 /// frame in order (it advances one tick per render until it has caught up).
-const HISTORY_TICKS: usize = MAX_CATCHUP_TICKS as usize + 1;
+///
+/// A listener trails the clock by up to `MAX_CATCHUP_TICKS` plus the ticks it renders early
+/// (`behind`, also capped), and merging reads one tick further back.
+const HISTORY_TICKS: usize = 2 * MAX_CATCHUP_TICKS as usize + 2;
+
+/// Which history ticks one listener render hears (see `MixGraph::next_listener_step`).
+#[derive(Debug, Clone, Copy)]
+enum ListenerStep {
+    /// One tick, `lag` ticks behind the newest.
+    Single { lag: u64 },
+    /// Two consecutive ticks merged into one frame, catching up by one tick.
+    Merged { older_lag: u64, newer_lag: u64 },
+    /// Jumped to the newest tick; `skipped` popped ticks were not heard.
+    Skipped { lag: u64, skipped: u64 },
+}
 
 /// One mix source: an elastic queue plus the frames chosen for the latest media ticks.
 #[derive(Debug)]
@@ -28,6 +43,10 @@ struct SourceSlot {
     /// Output of the most recent ticks, newest last; every listener rendering in a tick
     /// mixes the same entry.
     history: VecDeque<Frame>,
+    /// Popped frames merged into one output frame for a late listener (summed over listeners).
+    listener_catchup_compressed: u64,
+    /// Popped frames a listener jumped over (summed over listeners).
+    listener_skipped: u64,
 }
 
 impl SourceSlot {
@@ -35,6 +54,8 @@ impl SourceSlot {
         Self {
             queue: ElasticFrameQueue::new(),
             history: VecDeque::with_capacity(HISTORY_TICKS),
+            listener_catchup_compressed: 0,
+            listener_skipped: 0,
         }
     }
 
@@ -431,9 +452,11 @@ impl MixGraph {
 
     /// Counters and queue depth/target for one source, if registered.
     pub fn source_stats(&self, participant_id: &str) -> Option<SourceStats> {
-        self.inputs
-            .get(participant_id)
-            .map(|slot| slot.queue.stats())
+        self.inputs.get(participant_id).map(|slot| SourceStats {
+            listener_catchup_compressed: slot.listener_catchup_compressed,
+            listener_skipped: slot.listener_skipped,
+            ..slot.queue.stats()
+        })
     }
 
     /// Advances the media clock to `now`: pops one frame per elapsed 20 ms tick from every
@@ -519,18 +542,22 @@ impl MixGraph {
         apply_pan_gains(frame, gains)
     }
 
-    /// Moves `listener_id` to its next tick and returns how many ticks it trails the clock.
+    /// Moves `listener_id` to its next output and says which history ticks it hears.
     ///
-    /// A listener rendering on time stays at lag 0. One whose render ran late steps one
-    /// tick per call (hearing each frame in order) until it has caught up; beyond
-    /// `MAX_CATCHUP_TICKS` behind, it jumps to the present.
+    /// A listener rendering on time trails the newest tick by exactly one and hears it
+    /// ([`ListenerStep::Single`] at lag 0). One whose render ran late trails by more, and
+    /// would stay that far behind forever if it stepped one tick per render, because renders
+    /// come at the tick rate. So it catches up by one tick per render: the next two ticks
+    /// are merged into one output frame ([`ListenerStep::Merged`], the queue's cross-fade,
+    /// counted as `listener_catchup_compressed`). Only beyond `MAX_CATCHUP_TICKS` behind does
+    /// it jump to the present ([`ListenerStep::Skipped`], counted as `listener_skipped`).
     ///
     /// Listeners render on their own timers, so a render at `now` can lie *before* the
     /// clock (another listener's later slot already advanced it). Such a render is
     /// `behind` whole ticks early: it may only hear ticks up to `tick_count - behind`,
     /// otherwise it would consume a tick whose time has not come and then, finding no new
     /// tick at its next slot, repeat the frame it just played.
-    fn next_listener_lag(&mut self, listener_id: &str, now: Instant) -> u64 {
+    fn next_listener_step(&mut self, listener_id: &str, now: Instant) -> ListenerStep {
         let tick = Duration::from_millis(u64::from(FRAME_MS));
         let behind = match self.clock {
             Some(clock) if now < clock => {
@@ -541,18 +568,34 @@ impl MixGraph {
         }
         .min(MAX_CATCHUP_TICKS);
         let newest = self.tick_count.saturating_sub(behind);
+        let tick_count = self.tick_count;
         let cursor = self
             .listener_ticks
             .entry(listener_id.to_string())
             .or_insert(newest);
-        if *cursor < newest {
-            *cursor = if newest - *cursor > MAX_CATCHUP_TICKS {
-                newest
-            } else {
-                *cursor + 1
+        let trailing = newest.saturating_sub(*cursor);
+        if trailing <= 1 {
+            // On time (or early): hear the next tick if there is one, else repeat the last.
+            if trailing == 1 {
+                *cursor += 1;
+            }
+            return ListenerStep::Single {
+                lag: tick_count - *cursor,
             };
         }
-        self.tick_count - *cursor
+        if trailing > MAX_CATCHUP_TICKS {
+            let skipped = trailing - 1;
+            *cursor = newest;
+            return ListenerStep::Skipped {
+                lag: tick_count - newest,
+                skipped,
+            };
+        }
+        *cursor += 2;
+        ListenerStep::Merged {
+            older_lag: tick_count - (*cursor - 1),
+            newer_lag: tick_count - *cursor,
+        }
     }
 
     /// Renders the mixed output for `listener_id` at media time `now`.
@@ -563,12 +606,13 @@ impl MixGraph {
     /// (positional or named placement), and returns silence when mixing is disabled.
     pub fn render_output(&mut self, listener_id: &str, now: Instant) -> Frame {
         self.advance_to(now);
-        let lag = self.next_listener_lag(listener_id, now);
+        let step = self.next_listener_step(listener_id, now);
         if !self.mixing_enabled {
             return frame::silence_frame();
         }
 
         let mut sources = Vec::new();
+        let mut heard: Vec<ParticipantId> = Vec::new();
         for (participant_id, slot) in &self.inputs {
             if participant_id == listener_id {
                 continue;
@@ -589,8 +633,39 @@ impl MixGraph {
             {
                 continue;
             }
-            let raw = slot.frame_at_lag(lag);
+            let raw = match step {
+                ListenerStep::Single { lag } | ListenerStep::Skipped { lag, .. } => {
+                    slot.frame_at_lag(lag)
+                }
+                ListenerStep::Merged {
+                    older_lag,
+                    newer_lag,
+                } => merge_pair(&slot.frame_at_lag(older_lag), &slot.frame_at_lag(newer_lag)),
+            };
             sources.push(self.pan_source_for_listener(listener_id, participant_id, &raw));
+            heard.push(participant_id.clone());
+        }
+
+        // Listener-level accounting: a frame is never merged or skipped uncounted.
+        let (merged, skipped) = match step {
+            ListenerStep::Single { .. } => (0, 0),
+            ListenerStep::Merged { .. } => (1, 0),
+            ListenerStep::Skipped { skipped, .. } => (0, skipped),
+        };
+        if merged + skipped > 0 {
+            for id in &heard {
+                if let Some(slot) = self.inputs.get_mut(id) {
+                    slot.listener_catchup_compressed += merged;
+                    slot.listener_skipped += skipped;
+                }
+            }
+            let n = heard.len() as u64;
+            if merged > 0 {
+                record_mix_frames(MixFrameOutcome::ListenerCatchupCompressed, merged * n);
+            }
+            if skipped > 0 {
+                record_mix_frames(MixFrameOutcome::ListenerSkipped, skipped * n);
+            }
         }
 
         MixBus::mix(&sources)
@@ -1316,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    fn late_listener_hears_every_frame_in_order_then_catches_up() {
+    fn late_listener_catches_up_by_merging_never_by_skipping() {
         let mut graph = MixGraph::new();
         graph.add_input("talker");
         graph.set_listener_sources("listener", &["talker".to_string()]);
@@ -1330,10 +1405,113 @@ mod tests {
             let out = graph.render_output("listener", t0() + ms(ms_after));
             heard.push(first_sample(&out));
         }
-        let expected: Vec<i16> = (0..5)
-            .map(|i| first_sample(&graph_pan(1_000 + 100 * i)))
+        let amp = |i: i16| first_sample(&graph_pan(1_000 + 100 * i));
+        // Frames 1+2 and 3+4 each come out as one merged frame (it starts with the older
+        // frame); the listener is back on the live tick afterwards.
+        assert_eq!(heard, vec![amp(0), amp(1), amp(3), amp(5), amp(6)]);
+        let s = graph.source_stats("talker").unwrap();
+        assert_eq!(s.listener_catchup_compressed, 2);
+        assert_eq!(s.listener_skipped, 0);
+    }
+
+    /// Distinct, loud-enough (above the merge silence threshold) amplitude per frame index.
+    fn marker_amp(k: u64) -> i16 {
+        1_000 + 10 * k as i16
+    }
+
+    /// Frame indices a rendered output carries: a merged frame starts with the older frame and
+    /// ends with the newer one, a single frame carries one.
+    fn indices_in(out: &Frame, table: &HashMap<i16, u64>) -> Vec<u64> {
+        let first = first_sample(out);
+        let last = i16::from_le_bytes([out.pcm[out.pcm.len() - 2], out.pcm[out.pcm.len() - 1]]);
+        let mut v: Vec<u64> = [first, last]
+            .iter()
+            .filter_map(|s| table.get(s).copied())
             .collect();
-        assert_eq!(heard, expected, "no frame skipped by the late render");
+        v.dedup();
+        v
+    }
+
+    /// Renders a paced source (frame k arrives at 20 k ms) at 20 ms slots in which the given
+    /// slots are never rendered (as a JS pump that drops due slots does). Returns the indices
+    /// each render carried and the final source stats.
+    fn run_with_skipped_slots(
+        total: u64,
+        skipped_after: impl Fn(u64) -> u64,
+    ) -> (Vec<Vec<u64>>, SourceStats, u64) {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        let table: HashMap<i16, u64> = (0..total)
+            .map(|k| (first_sample(&graph_pan(marker_amp(k))), k))
+            .collect();
+        let mut carried = Vec::new();
+        let (mut slot, mut pushed) = (0u64, 0u64);
+        while slot < total + 5 {
+            slot += 1;
+            slot += skipped_after(slot);
+            while pushed < total && pushed <= slot {
+                graph.push_frame_at(
+                    "talker",
+                    tone_frame(1, marker_amp(pushed)),
+                    t0() + ms(20 * pushed),
+                );
+                pushed += 1;
+            }
+            let out = graph.render_output("listener", t0() + ms(20 * slot + 3));
+            carried.push(indices_in(&out, &table));
+        }
+        let stats = graph.source_stats("talker").unwrap();
+        let silent_ticks = graph.tick_count - stats.played;
+        (carried, stats, silent_ticks)
+    }
+
+    #[test]
+    fn skipped_pump_slots_are_merged_not_lost() {
+        // Five stalls that each leave two slots unrendered (the scratch case that used to jump
+        // 157 -> 166 with every counter clean).
+        let (carried, stats, _) = run_with_skipped_slots(120, |slot| {
+            if [20, 35, 50, 65, 80].contains(&slot) {
+                2
+            } else {
+                0
+            }
+        });
+        let touched: HashSet<u64> = carried.iter().flatten().copied().collect();
+        let first = *touched.iter().min().unwrap();
+        let last = *touched.iter().max().unwrap();
+        let unheard: Vec<u64> = (first..=last).filter(|k| !touched.contains(k)).collect();
+        assert!(unheard.is_empty(), "frames never heard: {unheard:?}");
+        assert_eq!(stats.listener_skipped, 0);
+        assert!(stats.listener_catchup_compressed >= 5, "{stats:?}");
+        // Heard indices never go backwards.
+        let flat: Vec<u64> = carried.iter().flatten().copied().collect();
+        assert!(flat.windows(2).all(|w| w[0] <= w[1]), "{flat:?}");
+    }
+
+    #[test]
+    fn pathological_stall_skips_are_counted_exactly() {
+        // Six unrendered slots after every third render: the listener falls further behind
+        // than a merge per render can recover, so it has to jump to the present.
+        let (carried, stats, silent_ticks) =
+            run_with_skipped_slots(120, |slot| if slot % 3 == 0 { 6 } else { 0 });
+        assert!(
+            stats.listener_skipped > 0,
+            "scenario must overrun: {stats:?}"
+        );
+        let touched: HashSet<u64> = carried.iter().flatten().copied().collect();
+        let first = *touched.iter().min().unwrap();
+        let unheard = (first..120).filter(|k| !touched.contains(k)).count() as u64;
+        // Every frame that was not heard is counted. The counter may exceed the unheard source
+        // frames only by ticks that carried none (prefill and concealment silence, stream end).
+        assert!(
+            unheard <= stats.listener_skipped,
+            "uncounted loss: {stats:?}"
+        );
+        assert!(
+            stats.listener_skipped - unheard <= silent_ticks,
+            "{stats:?} silent ticks {silent_ticks}"
+        );
     }
 
     #[test]

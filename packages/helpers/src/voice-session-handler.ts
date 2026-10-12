@@ -31,8 +31,9 @@ export interface VoiceSessionContext {
   sendBinaryToClient: (data: Buffer | Uint8Array, channel?: DataChannelKind) => void
   /**
    * Audio this tab's peer connection has received so far (`packetsReceived`, `bytesReceived`,
-   * summed over its inbound audio streams). Callable until the peer connection closes, including
-   * from {@link VoiceSessionHandler.onPeerDisconnected}.
+   * summed over its inbound audio streams). Reads live stats while the peer connection is open. In
+   * {@link VoiceSessionHandler.onPeerDisconnected} it returns a snapshot taken just before close
+   * (bounded at 500 ms; `null` if unavailable).
    *
    * Resolves `null` when the connection is closed, has no inbound audio stream yet, the stats
    * call fails, or it takes longer than `timeoutMs` (default 500 ms). Never rejects.

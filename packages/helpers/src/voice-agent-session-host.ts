@@ -55,7 +55,8 @@ import {
   type VoiceSessionLease,
 } from './voice-session-budget.js'
 import { flushVoiceControlChannel } from './control-channel-flush.js'
-import { readInboundAudioStats } from './inbound-audio-stats.js'
+import { readInboundAudioStats, type InboundAudioStats } from './inbound-audio-stats.js'
+
 import type {
   VoiceSessionContext,
   VoiceSessionHandler,
@@ -123,6 +124,9 @@ type NativeCloseRaceResult = {
    */
   pending?: Promise<'ok' | 'failed'>
 }
+
+/** Max time teardown waits for the pre-close inbound audio stats snapshot. */
+const PRE_CLOSE_INBOUND_STATS_TIMEOUT_MS = 500
 
 type AgentStopRaceResult = {
   status: 'ok' | 'timed_out' | 'failed' | 'absent'
@@ -1650,14 +1654,24 @@ export class VoiceAgentSessionHost {
     this.sessions.delete(peerId)
     this.reconnectAttempts.delete(peerId)
 
+    let preCloseStats: Promise<InboundAudioStats | null> | undefined
     if (session.peerTransportReadyNotified) {
-      const ctx = this.createSessionContext(
-        peerId,
-        session.agent,
-        session.controlChannel,
-        session.syncChannel,
-        session.pc,
-      )
+      // The handler runs after the pc starts closing, so read the counters first (bounded) and
+      // hand the handler that same promise.
+      const snapshot = readInboundAudioStats(session.pc, {
+        timeoutMs: PRE_CLOSE_INBOUND_STATS_TIMEOUT_MS,
+      })
+      preCloseStats = snapshot
+      const ctx: VoiceSessionContext = {
+        ...this.createSessionContext(
+          peerId,
+          session.agent,
+          session.controlChannel,
+          session.syncChannel,
+          session.pc,
+        ),
+        getInboundAudioStats: () => snapshot,
+      }
       const reason: PeerDisconnectReason = session.clientHangup
         ? 'hangup'
         : session.transportExpired
@@ -1714,6 +1728,19 @@ export class VoiceAgentSessionHost {
     const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
     const agent = session.agent
     session.agent = undefined
+
+    if (preCloseStats) {
+      // Let the pre-close stats read settle (at most PRE_CLOSE_INBOUND_STATS_TIMEOUT_MS) so the
+      // disconnect handler sees a live connection's counters.
+      let statsTimer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        preCloseStats,
+        new Promise<void>((resolve) => {
+          statsTimer = setTimeout(resolve, PRE_CLOSE_INBOUND_STATS_TIMEOUT_MS)
+        }),
+      ])
+      if (statsTimer) clearTimeout(statsTimer)
+    }
 
     // Bound PC close and agent stop independently; release only when both confirm.
     const [closeResult, agentResult] = await Promise.all([

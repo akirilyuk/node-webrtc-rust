@@ -12,7 +12,12 @@ import { SignalingClient } from '@node-webrtc-rust/signaling'
 import { AudioMixGraph } from '@node-webrtc-rust/sdk/mix'
 import type { VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
 
-import type { ClientAudioMixer, ClientMixGraph, ClientMixStatus } from './client-audio-mixer.js'
+import type {
+  ClientAudioMixer,
+  ClientMixGraph,
+  ClientMixStatus,
+  ClientMixerWarn,
+} from './client-audio-mixer.js'
 import { PCM_FULL_FRAME_BYTES } from './pcm.js'
 
 import {
@@ -76,6 +81,8 @@ export interface SessionPodOptions {
    * and passes it to each {@link VoiceAgentSessionHost} so cross-session mix is coherent.
    */
   clientMixGraph?: ClientMixGraph
+  /** Structured sink for mixer queue-pressure warnings; passed to each slot's host. */
+  clientMixerWarn?: ClientMixerWarn
   /** Passed to each room's {@link VoiceAgentSessionHost} (or `WEBRTC_ICE_TRANSPORT_POLICY`). */
   iceTransportPolicy?: VoiceAgentSessionHostOptions['iceTransportPolicy']
   /** Passed to each room's {@link VoiceAgentSessionHost}. */
@@ -344,6 +351,7 @@ export class SessionPod {
       voiceHandler,
       syncChannel: this.options.syncChannel,
       clientMixGraph,
+      clientMixerWarn: this.options.clientMixerWarn,
       iceTransportPolicy: this.options.iceTransportPolicy,
       wrapAudioTracks: this.options.wrapAudioTracks,
       resolveVoiceAgentSessionContext: this.options.resolveVoiceAgentSessionContext,

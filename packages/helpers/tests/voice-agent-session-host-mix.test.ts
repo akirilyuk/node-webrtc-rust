@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ClientAudioMixer, ClientMixGraph } from '../src/client-audio-mixer.js'
+import type {
+  ClientAudioMixer,
+  ClientMixGraph,
+  ClientMixerWarn,
+} from '../src/client-audio-mixer.js'
 import { PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 import {
   MIX_REQUIRES_VOICE_PLUS_DATA,
@@ -66,11 +70,13 @@ type HostTestAccess = VoiceAgentSessionHost & {
 function createHost(
   sessionMode: 'voice' | 'voice+data' | 'data-only',
   clientMixGraph?: ClientMixGraph,
+  clientMixerWarn?: ClientMixerWarn,
 ): HostTestAccess {
   const host = new VoiceAgentSessionHost(createStubSignaling() as never, [], {
     voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
     sessionMode,
     clientMixGraph,
+    clientMixerWarn,
     sessionBudget: {
       tryAcquire: () => 'lease-test',
       release: () => undefined,
@@ -104,6 +110,46 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     expect(() => host.createMixGroup({ id: 'g1', clientIds: ['a'] })).toThrow(
       MIX_REQUIRES_VOICE_PLUS_DATA,
     )
+  })
+
+  it('host passes clientMixerWarn to its client mixer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'Date', 'performance'] })
+    try {
+      const graph = createMockMixGraph()
+      const stats = {
+        pushed: 0,
+        played: 0,
+        compressed: 0,
+        concealed: 0,
+        overflowCompressed: 0,
+        decodeErrors: 0,
+        depth: 2,
+        target: 3,
+      }
+      graph.mixStats = () => stats
+      const warn = vi.fn()
+      const host = createHost('voice+data', graph, warn)
+      const mixer = host.getClientMixer()!
+      mixer.registerPeer('speaker')
+      mixer.registerPeer('listener')
+      const out = { writeSample: vi.fn(async () => undefined) }
+      mixer.startMixPump('listener', out)
+      stats.compressed = 2
+      vi.advanceTimersByTime(1000)
+      await mixer.pumpMixFrame('listener', out)
+      mixer.stopMixPump('listener')
+      expect(warn).toHaveBeenCalledWith('[mix] queue pressure', {
+        peerId: 'speaker',
+        compressed: 2,
+        concealed: 0,
+        overflowCompressed: 0,
+        decodeErrors: 0,
+        depth: 2,
+        target: 3,
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('lazy ensureClientMixer reuses injected clientMixGraph', () => {

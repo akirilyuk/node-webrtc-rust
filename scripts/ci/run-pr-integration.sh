@@ -75,6 +75,9 @@ echo "==> npm test"
 bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "npm test" -- npm test
 
 # Helpers default `npm test` excludes *.integration.test.ts (quality job / leftover .node).
+echo "==> native binding exports match index.d.ts"
+node scripts/ci/check-native-exports.mjs
+
 echo "==> helpers native integration tests"
 bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "helpers integration" -- \
   npm run test:integration --workspace=@node-webrtc-rust/helpers

@@ -8,6 +8,12 @@
 # Does not require ci:verify:release-ts. That script may fail with ETARGET for
 # @node-webrtc-rust/bindings@X.Y.Z before the first npm publish — expected.
 # Do not skip this script because of that failure.
+#
+# Order: build:native first, then the export check, then quality and tests, so
+# local tests never load a stale .node. The Release workflow quality job
+# deliberately uses the previous published binding and its unit tests stay
+# native-free (guard: packages/helpers/tests/unit-tests-native-free.test.ts).
+# Never hand-run build:native to "fix" a Release quality failure: that hides it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -68,12 +74,14 @@ fi
 mkdir -p .test-logs
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
-QLOG=".test-logs/${STAMP}-pr-quality.log"
 NLOG=".test-logs/${STAMP}-build-native.log"
+ELOG=".test-logs/${STAMP}-check-native-exports.log"
+QLOG=".test-logs/${STAMP}-pr-quality.log"
 TLOG=".test-logs/${STAMP}-pr-tests-full.log"
 
-run_step "run-pr-quality.sh" "$QLOG" bash scripts/ci/run-pr-quality.sh
 run_step "build:native" "$NLOG" npm run build:native
+run_step "check-native-exports" "$ELOG" node scripts/ci/check-native-exports.mjs
+run_step "run-pr-quality.sh" "$QLOG" bash scripts/ci/run-pr-quality.sh
 run_step "run-pr-tests-full.sh" "$TLOG" bash scripts/ci/run-pr-tests-full.sh
 
 bash scripts/ci/write-release-tag-gate.sh 0 0 0

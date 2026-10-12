@@ -707,6 +707,16 @@ E2E order in CI (same as [`run-sherpa-example-ci.sh`](../../scripts/ci/run-sherp
 
 Path filter: changes under `examples/**` trigger the **examples** filter and run quality + test when other filters also match — see [`scripts/ci/README.md`](../../scripts/ci/README.md#sherpa-roundtrip-e2e-integration-job).
 
+## Host suspended (`[host-suspended]`)
+
+Every roundtrip script watches its own event loop. If the process did not run for more than two seconds (a closed laptop lid, macOS maintenance sleep, `SIGSTOP`, or a blocked event loop), the failure report starts and ends with a `[host-suspended] host process did not run for N s ...` line. The wall-clock timeouts in that run expired while nothing executed, so the failure is not a test result. A local `ci:verify:checks` run that sleeps part-way through is invalid; run it again with the machine awake (for example under `caffeinate -i`).
+
+To confirm on macOS, look for sleep entries around the failure time:
+
+```bash
+pmset -g log | grep -E "Sleep|DarkWake"
+```
+
 ## Debug logging (E2E failures)
 
 Every `start:roundtrip*` script calls `installRoundtripWallClockTimeout()` at startup.

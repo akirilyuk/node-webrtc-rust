@@ -48,6 +48,16 @@ export class RTCDataChannel extends EventEmitter {
   onbufferedamountlow: ((event: Event) => void) | null = null
 
   private readonly pendingSends: SendPayload[] = []
+  private _nativeReady: Promise<void> = Promise.resolve()
+
+  /**
+   * Resolves once the native channel exists. Await before createOffer so the offer
+   * includes the data channel (m=application). Rejects with the native error when
+   * creation fails; already resolved for channels received via `ondatachannel`.
+   */
+  get nativeReady(): Promise<void> {
+    return this._nativeReady
+  }
 
   constructor(native: NativeDataChannel, init?: RTCDataChannelInit) {
     super()
@@ -68,6 +78,10 @@ export class RTCDataChannel extends EventEmitter {
   ): RTCDataChannel {
     const channel = new RTCDataChannel(createDeferredNative(label, init), init)
     channel.native = null
+    const ready = nativePromise.then(() => undefined)
+    // Awaiters still see the rejection; this only keeps it from being an unhandled rejection.
+    ready.catch(() => undefined)
+    channel._nativeReady = ready
     void nativePromise
       .then((native) => {
         channel.native = native

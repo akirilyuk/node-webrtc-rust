@@ -9,6 +9,7 @@ import { basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { UtteranceEventStats } from './roundtrip-counting.js'
+import { hostSuspendSummary } from './host-suspend-watch.js'
 import { enableRoundtripSpeechEventLog } from './roundtrip-speech-events.js'
 
 const VOICE_DEBUG_TRUTHY = new Set(['1', 'true', 'yes'])
@@ -98,6 +99,8 @@ function formatStatsLine(label: string, stats: UtteranceEventStats): string {
 /** Print structured failure context without exiting (tests may call this directly). */
 export function reportSherpaRoundtripFailure(ctx: SherpaRoundtripFailureContext): void {
   const script = roundtripScriptFromStack()
+  const suspended = hostSuspendSummary()
+  if (suspended) console.error(`[host-suspended] ${suspended}`)
   console.error(`\n=== [${script}] roundtrip failure: ${ctx.reason} ===`)
 
   if (ctx.failures?.length) {
@@ -151,6 +154,7 @@ export function reportSherpaRoundtripFailure(ctx: SherpaRoundtripFailureContext)
   console.error(
     'Prior write-ups: development/node-webrtc-rust/features/ (see dev-logs-retrospective rule).',
   )
+  if (suspended) console.error(`[host-suspended] ${suspended}`)
 }
 
 /** Print diagnostics and exit with code 1. */

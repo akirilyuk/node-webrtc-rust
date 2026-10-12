@@ -102,6 +102,7 @@ jobs:
       run_compile: ${{ steps.pr_gates.outputs.run_compile }}
       run_build_ts: ${{ steps.pr_gates.outputs.run_build_ts }}
       run_test: ${{ steps.pr_gates.outputs.run_test }}
+      run_quality: ${{ steps.pr_gates.outputs.run_quality }}
       run_compile_native: ${{ steps.job_gates.outputs.run_compile_native }}
       run_integration_test: ${{ steps.job_gates.outputs.run_integration_test }}
       needs_native_for_test: ${{ steps.pr_gates.outputs.needs_native }}

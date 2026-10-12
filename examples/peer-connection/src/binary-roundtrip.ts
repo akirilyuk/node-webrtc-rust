@@ -13,7 +13,11 @@ import {
   encodePlayerState,
   PLAYER_STATE_FRAME_BYTES,
 } from '../../shared/game-state-sync.js'
-import { DEMO_ICE_SERVERS, waitForConnection, waitForDataChannelOpen } from '../../shared/webrtc-demo-helpers.js'
+import {
+  DEMO_ICE_SERVERS,
+  waitForConnection,
+  waitForDataChannelOpen,
+} from '../../shared/webrtc-demo-helpers.js'
 
 const MESSAGE_TIMEOUT_MS = 30_000
 const STRESS_KB = Number(process.env.BINARY_STRESS_KB ?? 0)
@@ -38,8 +42,16 @@ async function main(): Promise<void> {
 
   const pc1 = new RTCPeerConnection({ iceServers: DEMO_ICE_SERVERS })
   const pc2 = new RTCPeerConnection({ iceServers: DEMO_ICE_SERVERS })
-  const sig1 = new SignalingClient({ url: `ws://localhost:${server.port}`, room: 'binary', peerId: 'pc1' })
-  const sig2 = new SignalingClient({ url: `ws://localhost:${server.port}`, room: 'binary', peerId: 'pc2' })
+  const sig1 = new SignalingClient({
+    url: `ws://localhost:${server.port}`,
+    room: 'binary',
+    peerId: 'pc1',
+  })
+  const sig2 = new SignalingClient({
+    url: `ws://localhost:${server.port}`,
+    room: 'binary',
+    peerId: 'pc2',
+  })
 
   const cleanup = async (): Promise<void> => {
     pc1.close()
@@ -51,6 +63,7 @@ async function main(): Promise<void> {
 
   try {
     const dc1 = pc1.createDataChannel('game-sync')
+    await dc1.nativeReady // offer must include the data channel
     const dc2Promise = new Promise<RTCDataChannel>((resolve) => {
       pc2.ondatachannel = (event) => resolve(event.channel)
     })

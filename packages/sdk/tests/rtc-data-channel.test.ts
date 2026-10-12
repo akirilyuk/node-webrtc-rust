@@ -67,3 +67,49 @@ describe('RTCDataChannel error handling', () => {
     )
   })
 })
+
+describe('RTCDataChannel.nativeReady', () => {
+  test('is already resolved for a channel built from an existing native object', async () => {
+    const channel = new RTCDataChannel(createMockNative())
+    await expect(channel.nativeReady).resolves.toBeUndefined()
+  })
+
+  test('resolves only after the native create resolves, with the native channel attached', async () => {
+    let resolveNative!: (native: NativeDataChannel) => void
+    const pending = new Promise<NativeDataChannel>((resolve) => {
+      resolveNative = resolve
+    })
+    const channel = RTCDataChannel.fromNativePromise(pending, 'voice-control')
+    const order: string[] = []
+    const ready = channel.nativeReady.then(() => {
+      order.push('ready')
+      expect((channel as unknown as { native: unknown }).native).not.toBeNull()
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(order).toEqual([])
+    order.push('native-resolved')
+    resolveNative(createMockNative())
+    await ready
+    expect(order).toEqual(['native-resolved', 'ready'])
+  })
+
+  test('rejects with the native error when the create fails', async () => {
+    const channel = RTCDataChannel.fromNativePromise(
+      Promise.reject(new Error('create failed')),
+      'voice-control',
+    )
+    await expect(channel.nativeReady).rejects.toThrow('create failed')
+  })
+
+  test('an unobserved failed create is not an unhandled rejection', async () => {
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      RTCDataChannel.fromNativePromise(Promise.reject(new Error('create failed')), 'x')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+  })
+})

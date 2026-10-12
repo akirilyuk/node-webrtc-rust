@@ -47,11 +47,7 @@ function writeSpeechLine(agentLabel: string, atMs: number, kind: string, text?: 
 }
 
 /** Log text queued for TTS (`ctx.speak` / `sendTextToTTS`). */
-export function logSpeakText(
-  agentLabel: string,
-  text: string,
-  enabled?: () => boolean,
-): void {
+export function logSpeakText(agentLabel: string, text: string, enabled?: () => boolean): void {
   if (!isEnabled(enabled)) return
   writeSpeechLine(agentLabel, formatAtMs(), 'speak', text)
 }
@@ -82,8 +78,7 @@ export function logSpeechEvent(
     return
   }
   if (event.error != null) {
-    const err =
-      typeof event.error === 'string' ? event.error : String(event.error)
+    const err = typeof event.error === 'string' ? event.error : String(event.error)
     writeSpeechLine(agentLabel, atMs, event.type, err)
     return
   }

@@ -261,7 +261,7 @@ function eventModeToJs(mode: EventDeliveryMode): JsEventDeliveryMode {
   }
 }
 
-function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
+export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
   const rawType =
     event.eventType ?? (event as JsSpeechEvent & { event_type?: JsSpeechEventType }).event_type
   const extended = event as JsSpeechEvent & {
@@ -302,6 +302,7 @@ function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     firstAudioMs: event.firstAudioMs ?? extended.first_audio_ms ?? undefined,
     waitMs: event.waitMs ?? extended.wait_ms ?? undefined,
     attempts: event.attempts ?? undefined,
+    chars: event.chars ?? undefined,
   }
 }
 
@@ -347,6 +348,8 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'stt_hold_ended'
     case JsSpeechEventType.TtsWait:
       return 'tts_wait'
+    case JsSpeechEventType.TtsPhraseCacheHit:
+      return 'tts_phrase_cache_hit'
     case JsSpeechEventType.AgentSpeakFailed:
       return 'agent_speak_failed'
     default:

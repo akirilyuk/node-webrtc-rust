@@ -44,6 +44,8 @@ run "bash scripts/ci/wait-for-npm-package.test.sh"
 run "bash scripts/ci/publish-npm-if-needed.test.sh"
 run "bash scripts/ci/wait-for-pending-npm-packages.test.sh"
 run "bash scripts/ci/run-release-tag-local-ci.test.sh"
+run "bash scripts/ci/run-pr-quality.test.sh"
+run "bash scripts/ci/workflow-job-outputs.test.sh"
 run "bash scripts/ci/check-native-exports.test.sh"
 
 echo "==> npm ci"

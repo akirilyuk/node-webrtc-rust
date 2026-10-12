@@ -55,7 +55,8 @@ import {
   type VoiceSessionLease,
 } from './voice-session-budget.js'
 import { flushVoiceControlChannel } from './control-channel-flush.js'
-import { readInboundAudioStats } from './inbound-audio-stats.js'
+import { readInboundAudioStats, type InboundAudioStats } from './inbound-audio-stats.js'
+
 import type {
   VoiceSessionContext,
   VoiceSessionHandler,
@@ -77,6 +78,8 @@ export const DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS = 10_000
 export const CLIENT_HANGUP_MESSAGE_TYPE = 'client_hangup'
 /** Bound native peer cleanup so session budget release cannot hang forever. */
 const PEER_NATIVE_CLOSE_TIMEOUT_MS = 5_000
+/** Bound on the native data channel create finishing before the offer is built. */
+const DATA_CHANNEL_CREATE_TIMEOUT_MS = 5_000
 
 type AwaitablePeerConnection = RTCPeerConnection & {
   closeAsync?: () => Promise<void>
@@ -123,6 +126,9 @@ type NativeCloseRaceResult = {
    */
   pending?: Promise<'ok' | 'failed'>
 }
+
+/** Max time teardown waits for the pre-close inbound audio stats snapshot. */
+const PRE_CLOSE_INBOUND_STATS_TIMEOUT_MS = 500
 
 type AgentStopRaceResult = {
   status: 'ok' | 'timed_out' | 'failed' | 'absent'
@@ -215,6 +221,31 @@ async function awaitAgentStopped(
   if (timedOut) return { status: 'timed_out', pending }
   if (error !== undefined) return { status: 'failed', error }
   return { status: 'ok' }
+}
+
+/**
+ * Waits for outgoing data channels to exist natively. `createDataChannel` is fire-and-forget;
+ * an offer built before the native create ran has no `m=application` section and the control
+ * channel never opens. Rejects on a native error or after `timeoutMs`.
+ */
+export async function awaitDataChannelsReady(
+  channels: Array<{ nativeReady: Promise<void> } | undefined>,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      Promise.all(channels.map((channel) => channel?.nativeReady)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`data channel create timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        )
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 function isClientHangupMessage(data: unknown): boolean {
@@ -997,6 +1028,14 @@ export class VoiceAgentSessionHost {
     }
 
     const tag = dataOnly ? 'data' : 'voice'
+    try {
+      await awaitDataChannelsReady([controlChannel, syncChannel], DATA_CHANNEL_CREATE_TIMEOUT_MS)
+    } catch (error: unknown) {
+      this.log(
+        `[${tag} ${peerId}] data channel create failed before offer: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      throw error
+    }
     await createOfferGatherWithIceCredentials(pc, {
       onRetry: (attempt, sdpLen) => {
         this.log(
@@ -1650,14 +1689,24 @@ export class VoiceAgentSessionHost {
     this.sessions.delete(peerId)
     this.reconnectAttempts.delete(peerId)
 
+    let preCloseStats: Promise<InboundAudioStats | null> | undefined
     if (session.peerTransportReadyNotified) {
-      const ctx = this.createSessionContext(
-        peerId,
-        session.agent,
-        session.controlChannel,
-        session.syncChannel,
-        session.pc,
-      )
+      // The handler runs after the pc starts closing, so read the counters first (bounded) and
+      // hand the handler that same promise.
+      const snapshot = readInboundAudioStats(session.pc, {
+        timeoutMs: PRE_CLOSE_INBOUND_STATS_TIMEOUT_MS,
+      })
+      preCloseStats = snapshot
+      const ctx: VoiceSessionContext = {
+        ...this.createSessionContext(
+          peerId,
+          session.agent,
+          session.controlChannel,
+          session.syncChannel,
+          session.pc,
+        ),
+        getInboundAudioStats: () => snapshot,
+      }
       const reason: PeerDisconnectReason = session.clientHangup
         ? 'hangup'
         : session.transportExpired
@@ -1714,6 +1763,19 @@ export class VoiceAgentSessionHost {
     const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
     const agent = session.agent
     session.agent = undefined
+
+    if (preCloseStats) {
+      // Let the pre-close stats read settle (at most PRE_CLOSE_INBOUND_STATS_TIMEOUT_MS) so the
+      // disconnect handler sees a live connection's counters.
+      let statsTimer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        preCloseStats,
+        new Promise<void>((resolve) => {
+          statsTimer = setTimeout(resolve, PRE_CLOSE_INBOUND_STATS_TIMEOUT_MS)
+        }),
+      ])
+      if (statsTimer) clearTimeout(statsTimer)
+    }
 
     // Bound PC close and agent stop independently; release only when both confirm.
     const [closeResult, agentResult] = await Promise.all([

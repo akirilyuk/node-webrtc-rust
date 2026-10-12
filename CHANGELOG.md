@@ -16,7 +16,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **speech** — `VOICE_FINALIZE_TRACE=1` prints one `[voice-debug] finalize path=…` timing line per finalize decision (no transcript text).
 - **helpers** — `clientMixerWarn` option on `SessionPod` and `VoiceAgentSessionHost`; mixer queue-pressure warnings also pass structured fields (`peerId`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`) as a second argument (message unchanged). The `ClientMixerWarn` type is exported.
+- **mixer** — `voice_mix_frames_total{outcome}` OTel counter (`played|compressed|concealed|overflow_compressed|decode_error`, no per-session labels); equals the sum of `mixStats` across sources. Release builds with `otel`.
 - **Core / Opus** — The encode bitrate is capped per packet duration so a payload stays at or below 1000 bytes (inside the 1200-byte RTP MTU). 20 ms packets keep the configured bitrate (default 400 kbps); 40 ms and 60 ms packets are capped at 200 kbps and about 133 kbps. Before, a 60 ms packet at the default was about 3 kB and receivers dropped it.
+
+### Fixed
+
+- **sdk** — `createOffer` waits (≤ 5 s) for data channels whose native create is still in flight, so an offer right after `createDataChannel` always includes `m=application` (fixes channels that never opened under CPU load, e.g. with `autoNegotiate`).
+- **sdk, helpers** — An offer could miss the data channel (`m=application`) when the native `createDataChannel` ran late (a starved host). ICE and DTLS connected, but the control channel never opened. New `RTCDataChannel.nativeReady` resolves once the native channel exists; the session host awaits it (bounded at 5 s) before creating the offer.
+- **helpers** — `getInboundAudioStats()` returned `null` from `onPeerDisconnected` because the peer connection was already closing. The host now reads the stats just before closing and the disconnect context returns that snapshot (bounded at 500 ms; `null` if unavailable). Teardown waits at most 500 ms for it. Live sessions still read live.
 
 ## [0.9.43] - 2026-10-11
 

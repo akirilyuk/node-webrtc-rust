@@ -9,12 +9,7 @@ import type { RTCDataChannel } from '../RTCDataChannel'
 import type { MessageEvent } from '../types'
 import type { VoiceAgent } from './VoiceAgent'
 import { isVoiceDebugEnabled, voiceDebugLog } from './debug'
-import type {
-  SpeechEvent,
-  SpeechEventType,
-  SttHoldMode,
-  SttHoldOutcome,
-} from './types'
+import type { SpeechEvent, SpeechEventType, SttHoldMode, SttHoldOutcome } from './types'
 
 /** Data channel label used by `examples/voice-agent-browser` and recommended for apps. */
 export const VOICE_CONTROL_CHANNEL_LABEL = 'voice-control'
@@ -65,6 +60,8 @@ export interface VoiceControlSpeechEventMessage {
   waitMs?: number
   /** `tts_wait`: refused attempts that were retried. */
   attempts?: number
+  /** `tts_phrase_cache_hit`: chars (Unicode scalars) of the text served from the phrase cache. */
+  chars?: number
 }
 
 /** Server → client: text queued for agent TTS (`ctx.speak` / `sendTextToTTS`). */
@@ -77,7 +74,8 @@ export interface VoiceControlAgentSpeakMessage {
 export type VoiceControlClientMessage = VoiceControlSpeakMessage
 
 export type VoiceControlServerMessage =
-  VoiceControlSpeechEventMessage | VoiceControlAgentSpeakMessage
+  | VoiceControlSpeechEventMessage
+  | VoiceControlAgentSpeakMessage
 
 /** Maps agent TTS text to the wire format sent before playback starts. */
 export function agentSpeakToControlMessage(
@@ -117,6 +115,7 @@ export function speechEventToControlMessage(
     firstAudioMs: event.firstAudioMs,
     waitMs: event.waitMs,
     attempts: event.attempts,
+    chars: event.chars,
   }
 }
 

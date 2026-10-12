@@ -18,15 +18,15 @@ This document describes why, what would need to change in `node-webrtc-rust`, an
 
 ### Architecture
 
-| Layer | Implementation |
-| ----- | -------------- |
-| Sherpa API | `OnlineRecognizer` + per-session `OnlineStream` |
-| Model layout | `encoder.onnx`, `decoder.onnx`, `joiner.onnx`, `tokens.txt` |
-| Loader | [`crates/vendor-sherpa-onnx/src/loader.rs`](../crates/vendor-sherpa-onnx/src/loader.rs) — hard-coded transducer config |
-| Path resolver | [`crates/vendor-sherpa-onnx/src/model_paths.rs`](../crates/vendor-sherpa-onnx/src/model_paths.rs) — requires `joiner` |
-| STT adapter | [`crates/vendor-sherpa-onnx/src/stt.rs`](../crates/vendor-sherpa-onnx/src/stt.rs) — `accept_waveform` + decode loop + partials |
-| Pool | [`crates/vendor-sherpa-onnx/src/pool.rs`](../crates/vendor-sherpa-onnx/src/pool.rs) — shared `OnlineRecognizer` per `model_path` |
-| VoiceAgent contract | Continuous PCM → `user_stt_partial` while speaking → `user_speech_final` on utterance end |
+| Layer               | Implementation                                                                                                                   |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Sherpa API          | `OnlineRecognizer` + per-session `OnlineStream`                                                                                  |
+| Model layout        | `encoder.onnx`, `decoder.onnx`, `joiner.onnx`, `tokens.txt`                                                                      |
+| Loader              | [`crates/vendor-sherpa-onnx/src/loader.rs`](../crates/vendor-sherpa-onnx/src/loader.rs) — hard-coded transducer config           |
+| Path resolver       | [`crates/vendor-sherpa-onnx/src/model_paths.rs`](../crates/vendor-sherpa-onnx/src/model_paths.rs) — requires `joiner`            |
+| STT adapter         | [`crates/vendor-sherpa-onnx/src/stt.rs`](../crates/vendor-sherpa-onnx/src/stt.rs) — `accept_waveform` + decode loop + partials   |
+| Pool                | [`crates/vendor-sherpa-onnx/src/pool.rs`](../crates/vendor-sherpa-onnx/src/pool.rs) — shared `OnlineRecognizer` per `model_path` |
+| VoiceAgent contract | Continuous PCM → `user_stt_partial` while speaking → `user_speech_final` on utterance end                                        |
 
 ### Recommended English model
 
@@ -44,15 +44,15 @@ Sherpa publishes ASR models that are **not** streaming transducers. The primary 
 
 ### Cohere Transcribe (example bundle)
 
-| Property | Streaming Zipformer (today) | Cohere Transcribe (offline) |
-| -------- | --------------------------- | --------------------------- |
-| Sherpa class | `OnlineRecognizer` | `OfflineRecognizer` |
-| Streaming | Native token-by-token partials | **Offline / non-streaming** |
-| ONNX files | encoder + decoder + **joiner** | encoder + decoder (no joiner) |
-| Example bundle | `…-en-kroko-2025-08-06` | `sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01` |
-| Languages | Per-language Kroko bundles | **One model, 14 languages** (en, de, es, fr, it, pt, pl, nl, el, ar, zh, ja, ko, vi) |
-| Extra options | — | `language`, punctuation, inverse text normalization (ITN) |
-| Sherpa docs | [Streaming Zipformer](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/index.html) | [Cohere Transcribe](https://k2-fsa.github.io/sherpa/onnx/cohere_transcribe/index.html) |
+| Property       | Streaming Zipformer (today)                                                                                | Cohere Transcribe (offline)                                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Sherpa class   | `OnlineRecognizer`                                                                                         | `OfflineRecognizer`                                                                    |
+| Streaming      | Native token-by-token partials                                                                             | **Offline / non-streaming**                                                            |
+| ONNX files     | encoder + decoder + **joiner**                                                                             | encoder + decoder (no joiner)                                                          |
+| Example bundle | `…-en-kroko-2025-08-06`                                                                                    | `sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01`                                |
+| Languages      | Per-language Kroko bundles                                                                                 | **One model, 14 languages** (en, de, es, fr, it, pt, pl, nl, el, ar, zh, ja, ko, vi)   |
+| Extra options  | —                                                                                                          | `language`, punctuation, inverse text normalization (ITN)                              |
+| Sherpa docs    | [Streaming Zipformer](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/index.html) | [Cohere Transcribe](https://k2-fsa.github.io/sherpa/onnx/cohere_transcribe/index.html) |
 
 **Important:** Sherpa describes Cohere Transcribe as an **offline non-streaming** model. Decoding requires specifying the spoken language (e.g. `en`). It is wired in Sherpa via `OfflineRecognizerConfig.model_config.cohere_transcribe`, not `model_config.transducer`.
 
@@ -80,11 +80,11 @@ Whisper/Moonshine remain separate follow-ups (see [`development/node-webrtc-rust
 
 **Not automatically.** For **English-only, real-time** voice agents:
 
-| Option | Trade-off |
-| ------ | --------- |
-| **Kroko streaming Zipformer** (current) | Best fit for live mic, partials, barge-in; already the top English local model we support |
-| **Cohere offline** | May improve full-utterance accuracy on some clips; **no true streaming partials**; higher end-of-phrase latency |
-| **Cloud STT** (Deepgram, OpenAI, …) | Often highest accuracy; API keys, network latency, audio leaves your worker |
+| Option                                  | Trade-off                                                                                                       |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **Kroko streaming Zipformer** (current) | Best fit for live mic, partials, barge-in; already the top English local model we support                       |
+| **Cohere offline**                      | May improve full-utterance accuracy on some clips; **no true streaming partials**; higher end-of-phrase latency |
+| **Cloud STT** (Deepgram, OpenAI, …)     | Often highest accuracy; API keys, network latency, audio leaves your worker                                     |
 
 Cohere’s main win in our stack is **language coverage** and **batch/offline transcription**, not a free upgrade over Kroko for live English conversation.
 
@@ -99,13 +99,13 @@ Cohere’s main win in our stack is **language coverage** and **batch/offline tr
 
 Offline Sherpa fits **utterance-at-a-time** STT:
 
-| Behavior | Streaming Zipformer | Offline (Cohere) |
-| -------- | ------------------- | ---------------- |
-| Partials during speech | Yes | No (unless we fake with chunked offline decode) |
-| Final transcript timing | Continuous + endpoint | After VAD utterance boundary (or chunk boundary) |
-| Barge-in (`requireSttPartial`) | Works with live partials | Needs redesign or relaxed barge-in rules |
-| Latency profile | Low, steady | Spikes at utterance end (decode whole buffer) |
-| CPU | Steady decode per frame | Bursts per utterance |
+| Behavior                       | Streaming Zipformer      | Offline (Cohere)                                 |
+| ------------------------------ | ------------------------ | ------------------------------------------------ |
+| Partials during speech         | Yes                      | No (unless we fake with chunked offline decode)  |
+| Final transcript timing        | Continuous + endpoint    | After VAD utterance boundary (or chunk boundary) |
+| Barge-in (`requireSttPartial`) | Works with live partials | Needs redesign or relaxed barge-in rules         |
+| Latency profile                | Low, steady              | Spikes at utterance end (decode whole buffer)    |
+| CPU                            | Steady decode per frame  | Bursts per utterance                             |
 
 ### Integration strategies
 
@@ -198,11 +198,11 @@ Offline Sherpa fits **utterance-at-a-time** STT:
 
 ## Alternatives (no new Sherpa architecture)
 
-| Need | Approach |
-| ---- | -------- |
-| Best English, stay local, live partials | Keep **Kroko 2025-08-06** |
-| Best accuracy, cloud OK | [`voice-agent-browser`](../examples/voice-agent-browser/README.md) + Deepgram / OpenAI / AssemblyAI |
-| Portuguese / Italian / Hindi local | Cohere offline (this plan) or cloud until shipped |
+| Need                                    | Approach                                                                                            |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Best English, stay local, live partials | Keep **Kroko 2025-08-06**                                                                           |
+| Best accuracy, cloud OK                 | [`voice-agent-browser`](../examples/voice-agent-browser/README.md) + Deepgram / OpenAI / AssemblyAI |
+| Portuguese / Italian / Hindi local      | Cohere offline (this plan) or cloud until shipped                                                   |
 
 ---
 

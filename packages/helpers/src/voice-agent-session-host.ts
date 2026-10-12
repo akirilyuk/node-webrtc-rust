@@ -39,6 +39,7 @@ import { resolveIceTransportPolicy, type IceTransportPolicy } from './ice-transp
 import { createKickFrame, PCM_KICK_DURATION_MS } from './pcm.js'
 import {
   ClientAudioMixer,
+  type ClientMixerWarn,
   type ClientMixGraph,
   type ClientMixStatus,
   type MixPumpOutboundTrack,
@@ -371,6 +372,11 @@ export interface VoiceAgentSessionHostOptions {
    */
   clientMixGraph?: ClientMixGraph
   /**
+   * Structured sink for mixer queue-pressure warnings (e.g. the host's logger).
+   * Default: one line to `console.warn`.
+   */
+  clientMixerWarn?: ClientMixerWarn
+  /**
    * Map orchestrator session ids (or other client aliases) to WebRTC mix peer ids.
    * {@link SessionPod} supplies cross-slot lookup; defaults to identity / `client-` passthrough.
    */
@@ -445,7 +451,7 @@ export class VoiceAgentSessionHost {
       this.sessionMode === 'data-only'
         ? undefined
         : options.clientMixGraph
-          ? new ClientAudioMixer({ graph: options.clientMixGraph })
+          ? new ClientAudioMixer({ graph: options.clientMixGraph, warn: options.clientMixerWarn })
           : undefined
     this.audioClips.bindMixer(() => this.clientMixer)
 
@@ -1740,8 +1746,11 @@ export class VoiceAgentSessionHost {
     if (this.clientMixer) return this.clientMixer
     try {
       this.clientMixer = this.options.clientMixGraph
-        ? new ClientAudioMixer({ graph: this.options.clientMixGraph })
-        : new ClientAudioMixer()
+        ? new ClientAudioMixer({
+            graph: this.options.clientMixGraph,
+            warn: this.options.clientMixerWarn,
+          })
+        : new ClientAudioMixer({ warn: this.options.clientMixerWarn })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (/not a constructor|JsMixGraph/i.test(message)) {

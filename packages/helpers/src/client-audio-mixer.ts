@@ -190,11 +190,33 @@ export function clientsShareMixGroup(
   return listenerGroup != null && listenerGroup === targetGroup
 }
 
+/**
+ * Sink for mixer warnings. `message` is the full single-line text (legacy format, so a
+ * one-argument sink keeps every counter); `fields` carries the same values structured.
+ * Queue-pressure fields: `{ peerId, compressed, concealed, overflowCompressed, decodeErrors,
+ * depth, target }` (counter deltas since the last warning, as numbers).
+ */
+export type ClientMixerWarn = (message: string, fields?: Record<string, unknown>) => void
+
+/** Single-line text for the default `console.warn` sink (keeps stdout greps working). */
+export function formatQueuePressureLine(message: string, fields: Record<string, unknown>): string {
+  return (
+    `${message} peerId=${String(fields.peerId)} compressed=+${String(fields.compressed)} ` +
+    `concealed=+${String(fields.concealed)} overflowCompressed=+${String(fields.overflowCompressed)} ` +
+    `decodeErrors=+${String(fields.decodeErrors)} depth=${String(fields.depth)} target=${String(fields.target)}`
+  )
+}
+
 export type ClientAudioMixerOptions = {
   /** Inject a mock graph in unit tests; defaults to a new {@link AudioMixGraph}. */
   graph?: ClientMixGraph
-  /** Sink for rate-limited queue-pressure warnings (default: `console.warn`). */
-  warn?: (message: string) => void
+  /**
+   * Sink for rate-limited queue-pressure warnings. `message` is the full single-line text
+   * (legacy format); `fields` is the same values structured:
+   * `{ peerId, compressed, concealed, overflowCompressed, decodeErrors, depth, target }`.
+   * Default prints the message to `console.warn`.
+   */
+  warn?: ClientMixerWarn
 }
 
 /** Counters whose increase means audio was compressed, concealed or failed to decode. */
@@ -263,7 +285,7 @@ export class ClientAudioMixer {
   private readonly silenceFrame = Buffer.alloc(PCM_FULL_FRAME_BYTES)
   /** Serializes mix pump writes per peer (interval + mute flush share one chain). */
   private readonly pumpWrites = new Map<string, Promise<void>>()
-  private readonly warn: (message: string) => void
+  private readonly warn: ClientMixerWarn
   private readonly queueWatch = new Map<string, QueueStatsWatch>()
   private lastQueueCheckAt: number | null = null
 
@@ -773,11 +795,16 @@ export class ClientAudioMixer {
         overflowCompressed: stats.overflowCompressed,
         decodeErrors: stats.decodeErrors,
       }
-      this.warn(
-        `[mix] queue pressure peerId=${peerId} compressed=+${delta.compressed} ` +
-          `concealed=+${delta.concealed} overflowCompressed=+${delta.overflowCompressed} ` +
-          `decodeErrors=+${delta.decodeErrors} depth=${stats.depth} target=${stats.target}`,
-      )
+      const fields = {
+        peerId,
+        compressed: delta.compressed,
+        concealed: delta.concealed,
+        overflowCompressed: delta.overflowCompressed,
+        decodeErrors: delta.decodeErrors,
+        depth: stats.depth,
+        target: stats.target,
+      }
+      this.warn(formatQueuePressureLine('[mix] queue pressure', fields), fields)
     }
   }
 }

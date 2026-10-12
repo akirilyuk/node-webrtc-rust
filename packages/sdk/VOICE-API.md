@@ -19,24 +19,24 @@ import {
 
 One instance per WebRTC conversation (one inbound + one outbound audio track).
 
-| Method                                    | Description                                                                                                                                 |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `constructor(config?)`                    | Builds native agent; optional `VoiceAgentConfig`.                                                                                           |
-| `attach({ inboundTrack, outboundTrack })` | Binds `RemoteAudioTrack` (user mic) and `LocalAudioTrack` (agent TTS out).                                                                  |
-| `start()`                                 | Starts STT vendor, TTS drain worker, and inbound `readSample` → `processInboundPcm` loop.                                                   |
-| `stop()`                                  | Stops STT and inbound loop.                                                                                                                 |
-| `sendTextToTTS(text, options?)`           | Synthesizes and enqueues PCM on outbound track (20 ms frames). Options: `nonBlocking`, `interruptible` ([below](#sendtexttotts-options-and-non-interruptible-speech)). |
-| `flushTts()`                              | Clears pending TTS (manual barge / cancel).                                                                                                 |
-| `waitTtsPlaybackIdle()`                   | Blocks until outbound queue drained and `agent_speaking` false (prefer events in app code).                                                 |
-| `on(event, listener)`                     | Subscribe: event name or `'speech'` for all types.                                                                                          |
-| `off(event, listener)`                    | Unsubscribe.                                                                                                                                |
-| `speechEvents()`                          | Async iterator (`events.mode: 'stream'` or `'both'`). **Agent TTS events only on this agent’s stream** — not on the remote peer’s listener. |
-| `updateStt(config)`                     | Queue a new STT vendor config; applies at utterance boundary (or immediately when idle). See [Mid-session language / model switch](#mid-session-stttts-language-and-model-switch). |
-| `updateTts(config, options?)`           | Queue a new TTS vendor config before the next `sendTextToTTS` job; optional `cancelInflight`. Same section. |
-| `replayLastUtterance()`                 | Re-decode the last finalized utterance with the current STT after a swap. Same section. Max age: `config.replay.maxAgeMs` (default 10 s, cap 120 s). |
-| `beginSttHold({ mode, maxBufferMs? })`  | Stop feeding/polling the current STT and buffer user audio while a slow STT swap (cold pool) completes. See [STT hold](#stt-hold-slow-stt-swap). |
-| `releaseSttHold({ replay })`            | After `updateStt`: decode the held audio through the new STT (`replay: true`) or drop it. Same section. |
-| `cancelSttHold()`                       | Switch failed: resume the old STT, feeding it the buffered audio. Same section. |
+| Method                                    | Description                                                                                                                                                                        |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `constructor(config?)`                    | Builds native agent; optional `VoiceAgentConfig`.                                                                                                                                  |
+| `attach({ inboundTrack, outboundTrack })` | Binds `RemoteAudioTrack` (user mic) and `LocalAudioTrack` (agent TTS out).                                                                                                         |
+| `start()`                                 | Starts STT vendor, TTS drain worker, and inbound `readSample` → `processInboundPcm` loop.                                                                                          |
+| `stop()`                                  | Stops STT and inbound loop.                                                                                                                                                        |
+| `sendTextToTTS(text, options?)`           | Synthesizes and enqueues PCM on outbound track (20 ms frames). Options: `nonBlocking`, `interruptible` ([below](#sendtexttotts-options-and-non-interruptible-speech)).             |
+| `flushTts()`                              | Clears pending TTS (manual barge / cancel).                                                                                                                                        |
+| `waitTtsPlaybackIdle()`                   | Blocks until outbound queue drained and `agent_speaking` false (prefer events in app code).                                                                                        |
+| `on(event, listener)`                     | Subscribe: event name or `'speech'` for all types.                                                                                                                                 |
+| `off(event, listener)`                    | Unsubscribe.                                                                                                                                                                       |
+| `speechEvents()`                          | Async iterator (`events.mode: 'stream'` or `'both'`). **Agent TTS events only on this agent’s stream** — not on the remote peer’s listener.                                        |
+| `updateStt(config)`                       | Queue a new STT vendor config; applies at utterance boundary (or immediately when idle). See [Mid-session language / model switch](#mid-session-stttts-language-and-model-switch). |
+| `updateTts(config, options?)`             | Queue a new TTS vendor config before the next `sendTextToTTS` job; optional `cancelInflight`. Same section.                                                                        |
+| `replayLastUtterance()`                   | Re-decode the last finalized utterance with the current STT after a swap. Same section. Max age: `config.replay.maxAgeMs` (default 10 s, cap 120 s).                               |
+| `beginSttHold({ mode, maxBufferMs? })`    | Stop feeding/polling the current STT and buffer user audio while a slow STT swap (cold pool) completes. See [STT hold](#stt-hold-slow-stt-swap).                                   |
+| `releaseSttHold({ replay })`              | After `updateStt`: decode the held audio through the new STT (`replay: true`) or drop it. Same section.                                                                            |
+| `cancelSttHold()`                         | Switch failed: resume the old STT, feeding it the buffered audio. Same section.                                                                                                    |
 
 ### Lifecycle
 
@@ -65,33 +65,33 @@ With **`interruptible: false`** the utterance is protected while it synthesizes 
 
 ## Speech events
 
-| `SpeechEventType`      | When emitted                                 | Typical use                                                        |
-| ---------------------- | -------------------------------------------- | ------------------------------------------------------------------ |
-| `user_speaking_start`  | VAD `SpeechStart`                            | UI “listening” indicator                                           |
-| `user_speaking_end`    | End of user turn — see **gateStt** below     | End-of-utterance hint (not always first silence gap)               |
-| `user_speech_partial`  | STT streaming                                | Live captions, semantic barge-in                                   |
-| `user_speech_final`    | STT utterance closed                         | **Primary LLM turn trigger**                                       |
-| `agent_speaking_start` | First TTS PCM written                        | UI “agent talking”; `firstAudioMs` (speak request to first outbound frame) and `firstChunkMs` (to first vendor PCM chunk), unset when the reply queued behind playing audio |
-| `agent_speaking_end`   | TTS queue drained                            | Harness playback boundary; do not assume remote peer receives this |
-| `vad_triggered`        | VAD `SpeechStart` when `vad.enabled`         | STT listen opens; logging / `[speech]` traces                      |
-| `stt_stream_start`     | STT vendor PCM feed opened for an utterance  | Pairs with `stt_stream_end`                                        |
-| `stt_stream_end`       | STT vendor PCM feed closed                   | After final, C1, or C2 close                                       |
-| `user_stt_start`       | STT recognition session opened               | Pairs with `user_stt_end` or `user_stt_not_found`                  |
-| `user_stt_end`         | STT recognition session closed               | Normal or forced utterance close                                   |
-| `user_stt_not_found`   | VAD fired but no partial within C1 timeout   | No `user_speech_final` — nothing to reply to                       |
-| `barge_in`             | Barge-in path fired (VAD and/or STT partial) | Cancel LLM stream; TTS may already be flushed                      |
-| `tts_wait`             | A TTS synthesis start was refused (speech pod loading, full or restarting) and retried | `waitMs`, `attempts`, `reason` (gRPC code and message); count these in load tests |
-| `agent_speak_failed`   | One reply could not be synthesized (also after the wait cap) | `reason`; the session stays up and the agent keeps listening |
-| `error`                | Vendor or pipeline failure                   | Log / recover                                                      |
-| `user_language`        | LID (optional `languageId`)                  | **Detection only** — does not change STT/TTS; your app calls `updateStt` / `updateTts` if needed |
-| `language_id_skipped`  | LID (optional `languageId`)                  | No language decision for this utterance: `reason` (`too_short` \| `deferred_tts` \| `no_audio` \| `undetermined`), `speechMs`; no transcript text. Stop holding the final for `user_language` (see below) |
-| `stt_config_updated`   | After pending STT config is applied          | Confirm `language`, `modelPath`, `endpoint` on the active recognizer |
-| `tts_config_updated`   | After pending TTS config is applied            | Confirm `voice`, `modelPath`, `endpoint` on the active synthesizer |
-| `stt_hold_started`     | After `beginSttHold` accepted                  | `holdMode`, `bufferedMs` (audio of the open utterance already held); no transcript text |
-| `stt_hold_ended`       | After `releaseSttHold` / `cancelSttHold`       | `holdOutcome` (`released_replay` \| `released_drop` \| `cancelled` \| `failed`), `bufferedMs`, `droppedMs`; no transcript text |
-| `voice_language_switching` | Host coordinator (optional)              | UI “switching language…” — **not** emitted by `VoiceAgent` alone; typed for forwarded `speech_event` payloads |
-| `voice_language_changed`   | Host coordinator (optional)              | Switch succeeded (host metadata in `text` / `language`) |
-| `voice_language_switch_failed` | Host coordinator (optional)            | Switch rejected or vendor error (`error` may be set) |
+| `SpeechEventType`              | When emitted                                                                           | Typical use                                                                                                                                                                                               |
+| ------------------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `user_speaking_start`          | VAD `SpeechStart`                                                                      | UI “listening” indicator                                                                                                                                                                                  |
+| `user_speaking_end`            | End of user turn — see **gateStt** below                                               | End-of-utterance hint (not always first silence gap)                                                                                                                                                      |
+| `user_speech_partial`          | STT streaming                                                                          | Live captions, semantic barge-in                                                                                                                                                                          |
+| `user_speech_final`            | STT utterance closed                                                                   | **Primary LLM turn trigger**                                                                                                                                                                              |
+| `agent_speaking_start`         | First TTS PCM written                                                                  | UI “agent talking”; `firstAudioMs` (speak request to first outbound frame) and `firstChunkMs` (to first vendor PCM chunk), unset when the reply queued behind playing audio                               |
+| `agent_speaking_end`           | TTS queue drained                                                                      | Harness playback boundary; do not assume remote peer receives this                                                                                                                                        |
+| `vad_triggered`                | VAD `SpeechStart` when `vad.enabled`                                                   | STT listen opens; logging / `[speech]` traces                                                                                                                                                             |
+| `stt_stream_start`             | STT vendor PCM feed opened for an utterance                                            | Pairs with `stt_stream_end`                                                                                                                                                                               |
+| `stt_stream_end`               | STT vendor PCM feed closed                                                             | After final, C1, or C2 close                                                                                                                                                                              |
+| `user_stt_start`               | STT recognition session opened                                                         | Pairs with `user_stt_end` or `user_stt_not_found`                                                                                                                                                         |
+| `user_stt_end`                 | STT recognition session closed                                                         | Normal or forced utterance close                                                                                                                                                                          |
+| `user_stt_not_found`           | VAD fired but no partial within C1 timeout                                             | No `user_speech_final` — nothing to reply to                                                                                                                                                              |
+| `barge_in`                     | Barge-in path fired (VAD and/or STT partial)                                           | Cancel LLM stream; TTS may already be flushed                                                                                                                                                             |
+| `tts_wait`                     | A TTS synthesis start was refused (speech pod loading, full or restarting) and retried | `waitMs`, `attempts`, `reason` (gRPC code and message); count these in load tests                                                                                                                         |
+| `agent_speak_failed`           | One reply could not be synthesized (also after the wait cap)                           | `reason`; the session stays up and the agent keeps listening                                                                                                                                              |
+| `error`                        | Vendor or pipeline failure                                                             | Log / recover                                                                                                                                                                                             |
+| `user_language`                | LID (optional `languageId`)                                                            | **Detection only** — does not change STT/TTS; your app calls `updateStt` / `updateTts` if needed                                                                                                          |
+| `language_id_skipped`          | LID (optional `languageId`)                                                            | No language decision for this utterance: `reason` (`too_short` \| `deferred_tts` \| `no_audio` \| `undetermined`), `speechMs`; no transcript text. Stop holding the final for `user_language` (see below) |
+| `stt_config_updated`           | After pending STT config is applied                                                    | Confirm `language`, `modelPath`, `endpoint` on the active recognizer                                                                                                                                      |
+| `tts_config_updated`           | After pending TTS config is applied                                                    | Confirm `voice`, `modelPath`, `endpoint` on the active synthesizer                                                                                                                                        |
+| `stt_hold_started`             | After `beginSttHold` accepted                                                          | `holdMode`, `bufferedMs` (audio of the open utterance already held); no transcript text                                                                                                                   |
+| `stt_hold_ended`               | After `releaseSttHold` / `cancelSttHold`                                               | `holdOutcome` (`released_replay` \| `released_drop` \| `cancelled` \| `failed`), `bufferedMs`, `droppedMs`; no transcript text                                                                            |
+| `voice_language_switching`     | Host coordinator (optional)                                                            | UI “switching language…” — **not** emitted by `VoiceAgent` alone; typed for forwarded `speech_event` payloads                                                                                             |
+| `voice_language_changed`       | Host coordinator (optional)                                                            | Switch succeeded (host metadata in `text` / `language`)                                                                                                                                                   |
+| `voice_language_switch_failed` | Host coordinator (optional)                                                            | Switch rejected or vendor error (`error` may be set)                                                                                                                                                      |
 
 **Utterance correlation:** `user_speaking_start`, `user_speech_partial`, `user_speech_final`, `user_speaking_end`, and `user_language` on the same turn share `utteranceId` when the native pipeline assigns one. Replay finals set `replay: true` and `replacesUtteranceId` to the original id.
 
@@ -149,29 +149,29 @@ Keep the **PeerConnection** and **tracks** stable; only vendor configs change.
 
 Queues a full `SttConfig` (same shape as `VoiceAgent` constructor `stt`).
 
-| When | Behavior |
-| ---- | -------- |
-| **Idle** (no utterance in progress) | Applies immediately: stops the current STT provider, starts the new one, emits `stt_config_updated`. |
-| **Mid-utterance** | Config is held until the current utterance finishes (finalize, `user_speech_final`, gate hold drained). Then the swap runs before the next listen window. |
+| When                                | Behavior                                                                                                                                                  |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Idle** (no utterance in progress) | Applies immediately: stops the current STT provider, starts the new one, emits `stt_config_updated`.                                                      |
+| **Mid-utterance**                   | Config is held until the current utterance finishes (finalize, `user_speech_final`, gate hold drained). Then the swap runs before the next listen window. |
 
 “Utterance in progress” includes open STT stream, gate hold, and endpoint closing — not only visible partials.
 
 After apply, `stt_config_updated` carries:
 
-| Field on `SpeechEvent` | Source |
-| ---------------------- | ------ |
-| `language`             | `stt.language` |
+| Field on `SpeechEvent` | Source                                       |
+| ---------------------- | -------------------------------------------- |
+| `language`             | `stt.language`                               |
 | `modelPath`            | `stt.modelPath` (e.g. Sherpa ONNX directory) |
-| `endpoint`             | Custom STT endpoint when set |
+| `endpoint`             | Custom STT endpoint when set                 |
 
 ### `updateTts(config, options?)`
 
 Queues a full `TtsConfig`. The swap runs **before the next** `sendTextToTTS` synthesis job (not necessarily before the next inbound utterance).
 
-| Option | Effect |
-| ------ | ------ |
-| `cancelInflight: false` (default) | Pending synthesis and playback may finish on the old voice; the next phrase uses the new config. |
-| `cancelInflight: true` | Cancels in-flight synthesis and calls the same flush path as barge-in before applying the new TTS provider. Use when the user changed language mid-reply and old-locale audio must stop immediately. |
+| Option                            | Effect                                                                                                                                                                                               |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cancelInflight: false` (default) | Pending synthesis and playback may finish on the old voice; the next phrase uses the new config.                                                                                                     |
+| `cancelInflight: true`            | Cancels in-flight synthesis and calls the same flush path as barge-in before applying the new TTS provider. Use when the user changed language mid-reply and old-locale audio must stop immediately. |
 
 `tts_config_updated` includes `voice`, `modelPath`, and `endpoint` from the applied config.
 
@@ -189,11 +189,11 @@ Call **only when** no utterance is in progress (after the original final landed)
 
 **Failures** (rejected promise / `error` event depending on binding):
 
-| Condition | Meaning |
-| --------- | ------- |
-| No snapshot yet | No finalized utterance buffered (demo: [`start:replay-last-utterance`](../../examples/voice-agent-local-sherpa-multi-client/README.md)) |
-| Utterance still open | Wait for `user_speech_final` before replay |
-| Buffer overflow / empty / too old | PCM was not retained — user must speak again |
+| Condition                         | Meaning                                                                                                                                 |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| No snapshot yet                   | No finalized utterance buffered (demo: [`start:replay-last-utterance`](../../examples/voice-agent-local-sherpa-multi-client/README.md)) |
+| Utterance still open              | Wait for `user_speech_final` before replay                                                                                              |
+| Buffer overflow / empty / too old | PCM was not retained — user must speak again                                                                                            |
 
 Full PCM + replay final behavior: Rust `cargo test -p node-webrtc-rust-speech replay_last_utterance`.
 
@@ -214,17 +214,17 @@ LID says "de" (or the agent asks for German)
   → await agent.cancelSttHold()                               // old STT gets the audio back
 ```
 
-| Behavior | Detail |
-| -------- | ------ |
-| After `beginSttHold` resolves | The current STT is not fed and not polled: **no** `user_speech_partial` / `user_speech_final` from the old model is emitted. VAD and `user_speaking_*` / `vad_triggered` / `stt_stream_*` / `user_stt_*` events keep flowing; STT-partial semantic barge-in is inactive (VAD barge-in still works). C1/C2 forced finals are suppressed. |
-| Where audio is held | In the native agent, in the same post-RNNoise mono 16 kHz stream that would have gone to STT (including the SpeechStart pre-roll). Silence between utterances is not stored. The utterance in progress is seeded from the utterance replay ring (up to 15 s). |
-| `buffer_replay` | Keeps everything until release, bounded by `maxBufferMs` (default 45000, cap 120000; values above the cap are clamped up to 120000 and values below 1 are clamped to 1 ms). When full, the oldest audio is dropped and counted in `droppedMs`. |
-| `first_utterance` | Keeps only the triggering utterance (the one open at `beginSttHold`, else the first one that starts). After it ends, later speech is dropped and counted in `droppedMs`. |
-| `releaseSttHold({ replay: true })` | Applies a still-queued `updateStt` config, waits up to `SPEECH_STT_READY_WAIT_MS` (default 15 s) for the new STT to be ready before replaying (on timeout it replays anyway; a final that arrives later still carries `replay: true` for up to 15 s), then feeds the held audio to the new STT in order and finalizes it, emitting `user_speech_final` with `replay: true` (`replacesUtteranceId` = the original utterance when one existed). While the held audio is fed, live audio keeps being diverted into the same buffer; the hold is cleared atomically once the buffer is empty, so the order is held audio, then live audio, with no gap and no duplicate. If an utterance is still open at that moment, its final comes from the live path and carries `replay: true`; `replacesUtteranceId` is set only when an original final existed. |
-| `releaseSttHold({ replay: false })` | Drops the buffer; the new STT only sees audio from now on. |
-| `cancelSttHold()` | Discards a queued `updateStt`, feeds the buffered audio to the old STT in order, and closes utterances that ended during the hold through the normal path (normal finals, `replay` not set). |
-| Errors | `beginSttHold` rejects if a hold is active or the agent is not running; `release`/`cancel` reject without an active hold. `replayLastUtterance()` rejects while held. A feed or finalize failure ends the hold with `holdOutcome: 'failed'` and rejects. The snapshot used by `replayLastUtterance()` is invalidated by a hold (speak again). |
-| Logging / events | `stt_hold_started` and `stt_hold_ended` carry counts only (`bufferedMs`, `droppedMs`, `holdMode`, `holdOutcome`), never transcript text. |
+| Behavior                            | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| After `beginSttHold` resolves       | The current STT is not fed and not polled: **no** `user_speech_partial` / `user_speech_final` from the old model is emitted. VAD and `user_speaking_*` / `vad_triggered` / `stt_stream_*` / `user_stt_*` events keep flowing; STT-partial semantic barge-in is inactive (VAD barge-in still works). C1/C2 forced finals are suppressed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Where audio is held                 | In the native agent, in the same post-RNNoise mono 16 kHz stream that would have gone to STT (including the SpeechStart pre-roll). Silence between utterances is not stored. The utterance in progress is seeded from the utterance replay ring (up to 15 s).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `buffer_replay`                     | Keeps everything until release, bounded by `maxBufferMs` (default 45000, cap 120000; values above the cap are clamped up to 120000 and values below 1 are clamped to 1 ms). When full, the oldest audio is dropped and counted in `droppedMs`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `first_utterance`                   | Keeps only the triggering utterance (the one open at `beginSttHold`, else the first one that starts). After it ends, later speech is dropped and counted in `droppedMs`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `releaseSttHold({ replay: true })`  | Applies a still-queued `updateStt` config, waits up to `SPEECH_STT_READY_WAIT_MS` (default 15 s) for the new STT to be ready before replaying (on timeout it replays anyway; a final that arrives later still carries `replay: true` for up to 15 s), then feeds the held audio to the new STT in order and finalizes it, emitting `user_speech_final` with `replay: true` (`replacesUtteranceId` = the original utterance when one existed). While the held audio is fed, live audio keeps being diverted into the same buffer; the hold is cleared atomically once the buffer is empty, so the order is held audio, then live audio, with no gap and no duplicate. If an utterance is still open at that moment, its final comes from the live path and carries `replay: true`; `replacesUtteranceId` is set only when an original final existed. |
+| `releaseSttHold({ replay: false })` | Drops the buffer; the new STT only sees audio from now on.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `cancelSttHold()`                   | Discards a queued `updateStt`, feeds the buffered audio to the old STT in order, and closes utterances that ended during the hold through the normal path (normal finals, `replay` not set).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Errors                              | `beginSttHold` rejects if a hold is active or the agent is not running; `release`/`cancel` reject without an active hold. `replayLastUtterance()` rejects while held. A feed or finalize failure ends the hold with `holdOutcome: 'failed'` and rejects. The snapshot used by `replayLastUtterance()` is invalidated by a hold (speak again).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Logging / events                    | `stt_hold_started` and `stt_hold_ended` carry counts only (`bufferedMs`, `droppedMs`, `holdMode`, `holdOutcome`), never transcript text.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 `stop()` clears an active hold. Mock-vendor coverage: `cargo test -p node-webrtc-rust-speech --test stt_hold_test`.
 
@@ -238,11 +238,11 @@ LID says "de" (or the agent asks for German)
 
 `languageId.timing` chooses when the identify runs:
 
-| `timing` | Behaviour | CPU |
-| -------- | --------- | --- |
-| `end_of_utterance` (default) | One identify at utterance close, when at least `minSpeechMs` of speech is buffered. | One identify per utterance of at least `minSpeechMs`. |
-| `early` | One identify as soon as `minSpeechMs` of speech is buffered while the user is still speaking, never again for that utterance. If the utterance closes first, `language_id_skipped` (`too_short`) is emitted. `user_language` normally arrives before the final, without waiting for the utterance to end. | Same as `end_of_utterance` (exactly one identify per utterance of at least `minSpeechMs`), just earlier. |
-| `continuous` | The first identify like `early`, then repeated passes during a long utterance; a changed code emits `user_language` again. | Repeated passes; can starve TTS. |
+| `timing`                     | Behaviour                                                                                                                                                                                                                                                                                                 | CPU                                                                                                      |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `end_of_utterance` (default) | One identify at utterance close, when at least `minSpeechMs` of speech is buffered.                                                                                                                                                                                                                       | One identify per utterance of at least `minSpeechMs`.                                                    |
+| `early`                      | One identify as soon as `minSpeechMs` of speech is buffered while the user is still speaking, never again for that utterance. If the utterance closes first, `language_id_skipped` (`too_short`) is emitted. `user_language` normally arrives before the final, without waiting for the utterance to end. | Same as `end_of_utterance` (exactly one identify per utterance of at least `minSpeechMs`), just earlier. |
+| `continuous`                 | The first identify like `early`, then repeated passes during a long utterance; a changed code emits `user_language` again.                                                                                                                                                                                | Repeated passes; can starve TTS.                                                                         |
 
 `continuous: true` still works as an alias for `timing: 'continuous'` and is deprecated; an explicit `timing` takes precedence over it. Hosts opt in to `early`; the library default stays `end_of_utterance`. The one-outcome invariant below holds for all three timings.
 
@@ -250,12 +250,12 @@ LID says "de" (or the agent asks for German)
 
 `language_id_skipped` is emitted with `utteranceId`, `reason` and `speechMs` (buffered user speech in ms at the decision point). It never carries transcript text. Exactly one is emitted per utterance, only when `languageId` is enabled:
 
-| `reason` | When | Will `user_language` follow? |
-| -------- | ---- | ---------------------------- |
-| `too_short` | The utterance closed and no identify was started because buffered speech was below `minSpeechMs` (all timings; in `early` and `continuous` no mid-utterance identify ran either). | No |
-| `no_audio` | The utterance closed with no buffered speech. | No |
-| `undetermined` | An identify ran but returned no usable decision: no language code, an empty code, a code outside `allowlist`, or an identify error. | No (for this identify) |
-| `deferred_tts` | Identify could not start because TTS was active; it is deferred to playback drain. Emitted at the point of deferral. | Maybe: if the deferred identify runs and yields a new language code, a normal `user_language` follows after TTS drains. |
+| `reason`       | When                                                                                                                                                                              | Will `user_language` follow?                                                                                            |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `too_short`    | The utterance closed and no identify was started because buffered speech was below `minSpeechMs` (all timings; in `early` and `continuous` no mid-utterance identify ran either). | No                                                                                                                      |
+| `no_audio`     | The utterance closed with no buffered speech.                                                                                                                                     | No                                                                                                                      |
+| `undetermined` | An identify ran but returned no usable decision: no language code, an empty code, a code outside `allowlist`, or an identify error.                                               | No (for this identify)                                                                                                  |
+| `deferred_tts` | Identify could not start because TTS was active; it is deferred to playback drain. Emitted at the point of deferral.                                                              | Maybe: if the deferred identify runs and yields a new language code, a normal `user_language` follows after TTS drains. |
 
 Invariant: the FIRST outcome per utterance is always reported, as either `user_language` or `language_id_skipped`, once `languageId` is enabled. Later results for the same utterance are reported only when they add information: a different code (continuous mode) emits `user_language`; the same code as the one already emitted for this utterance emits nothing. A first result for a new utterance is emitted as `user_language` even when the code equals the previous utterance's code (previously suppressed), so a host never waits for a decision that was silently dropped. After a `deferred_tts` skip the deferred identify may still emit `user_language` (a second event for that utterance); if it is undetermined nothing more is emitted.
 
@@ -265,11 +265,11 @@ Host use: if you hold `user_speech_final` until `user_language` arrives, release
 
 ### LID vs mid-session swap
 
-| Mechanism | What it does |
-| --------- | ------------ |
-| `languageId` + `user_language` | Offline identify → ISO 639-1 hint on the utterance (`utteranceId` when assigned). |
-| `updateStt` / `updateTts` | Actually changes vendors/models/voices for subsequent audio. |
-| Auto-switch on LID | **Not built into the SDK** — implement in app code (or a host worker) if you want it. |
+| Mechanism                      | What it does                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------- |
+| `languageId` + `user_language` | Offline identify → ISO 639-1 hint on the utterance (`utteranceId` when assigned).     |
+| `updateStt` / `updateTts`      | Actually changes vendors/models/voices for subsequent audio.                          |
+| Auto-switch on LID             | **Not built into the SDK** — implement in app code (or a host worker) if you want it. |
 
 **LID model residency:** the Whisper tiny identifier is loaded once per process and shared by every `VoiceAgent` with the same `languageId.modelPath` (inference calls serialise on one lock; each call uses its own stream). Constructing a `VoiceAgent` starts that load in the background. A host that starts before any session exists (a runner pod) should await `preloadLanguageId({ modelPath })` from `@node-webrtc-rust/sdk/voice` at boot so the first utterance never pays the load. Set `VOICE_DEBUG=1` to see `LID model load` and `LID identify` timings (no transcript text).
 
@@ -294,13 +294,13 @@ Both include semantic barge-in defaults (`requireSttPartial: true`).
 
 ## Data channel bridge
 
-| Export                                                 | Role                                                                     |
-| ------------------------------------------------------ | ------------------------------------------------------------------------ |
-| `VOICE_CONTROL_CHANNEL_LABEL`                          | Recommended label: `'voice-control'`                                     |
-| `wireVoiceAgentToDataChannel(agent, channel)`          | Inbound `{ type: 'speak', text }` → `sendTextToTTS`                      |
-| `forwardVoiceAgentSpeechToDataChannel(agent, channel, { filter? })` | `speechEvents()` → JSON `speech_event` on channel (call after `start()`); `filter(event) === false` keeps an event off the wire |
-| `parseVoiceControlClientMessage(raw)`                  | Parse client JSON                                                        |
-| `speechEventToControlMessage(event)`                   | Serialize for wire: `text`, `language`, `error`, `reason`, `speechMs`, `utteranceId`, `replay`, `replacesUtteranceId`, `languageMismatch`, `holdMode`, `holdOutcome`, `bufferedMs`, `droppedMs` when set |
+| Export                                                              | Role                                                                                                                                                                                                     |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VOICE_CONTROL_CHANNEL_LABEL`                                       | Recommended label: `'voice-control'`                                                                                                                                                                     |
+| `wireVoiceAgentToDataChannel(agent, channel)`                       | Inbound `{ type: 'speak', text }` → `sendTextToTTS`                                                                                                                                                      |
+| `forwardVoiceAgentSpeechToDataChannel(agent, channel, { filter? })` | `speechEvents()` → JSON `speech_event` on channel (call after `start()`); `filter(event) === false` keeps an event off the wire                                                                          |
+| `parseVoiceControlClientMessage(raw)`                               | Parse client JSON                                                                                                                                                                                        |
+| `speechEventToControlMessage(event)`                                | Serialize for wire: `text`, `language`, `error`, `reason`, `speechMs`, `utteranceId`, `replay`, `replacesUtteranceId`, `languageMismatch`, `holdMode`, `holdOutcome`, `bufferedMs`, `droppedMs` when set |
 
 ## Debug
 
@@ -332,11 +332,11 @@ VoiceAgent always emits the same speech events; vendors differ in **when** parti
 
 ### STT: partials vs finalize-only
 
-| Pattern | `user_speech_partial` | Examples |
-| ------- | --------------------- | -------- |
-| **Live WebSocket** with documented interim results | Yes, while the user talks | Deepgram `nova-*` listen, ElevenLabs Scribe, AssemblyAI v3, Google Chirp V2 streaming, AWS Transcribe streaming, Sherpa, OpenAI Realtime |
-| **File / REST on utterance end** | No until finalize (then one final) | Groq Whisper multipart, Azure REST short audio, Google `latest_long` REST, OpenAI file JSON (`whisper-1`) |
-| **File SSE / committed Realtime** | Text deltas per vendor rules | OpenAI file SSE, Realtime committed-turn models |
+| Pattern                                            | `user_speech_partial`              | Examples                                                                                                                                 |
+| -------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Live WebSocket** with documented interim results | Yes, while the user talks          | Deepgram `nova-*` listen, ElevenLabs Scribe, AssemblyAI v3, Google Chirp V2 streaming, AWS Transcribe streaming, Sherpa, OpenAI Realtime |
+| **File / REST on utterance end**                   | No until finalize (then one final) | Groq Whisper multipart, Azure REST short audio, Google `latest_long` REST, OpenAI file JSON (`whisper-1`)                                |
+| **File SSE / committed Realtime**                  | Text deltas per vendor rules       | OpenAI file SSE, Realtime committed-turn models                                                                                          |
 
 `poll_transcript` in Rust vendors blocks until an in-flight file POST or WS commit finishes so `finalize_utterance` can return without stalling the inbound PCM loop.
 
@@ -344,10 +344,10 @@ VoiceAgent always emits the same speech events; vendors differ in **when** parti
 
 ### TTS: progressive vs full-body
 
-| Pattern | Playback | Examples |
-| ------- | -------- | -------- |
-| **Progressive** | PCM chunks before the HTTP/WS response completes | OpenAI chunked PCM, Deepgram Aura/Flux speak WS, ElevenLabs HTTP `/stream`, Google `StreamingSynthesize`, Cartesia WS |
-| **Full-body then frame** | Entire audio buffered, then 20 ms outbound frames | Groq Orpheus WAV, Azure REST, Polly `SynthesizeSpeech`, ElevenLabs `eleven_v3`, many fallbacks |
+| Pattern                  | Playback                                          | Examples                                                                                                              |
+| ------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Progressive**          | PCM chunks before the HTTP/WS response completes  | OpenAI chunked PCM, Deepgram Aura/Flux speak WS, ElevenLabs HTTP `/stream`, Google `StreamingSynthesize`, Cartesia WS |
+| **Full-body then frame** | Entire audio buffered, then 20 ms outbound frames | Groq Orpheus WAV, Azure REST, Polly `SynthesizeSpeech`, ElevenLabs `eleven_v3`, many fallbacks                        |
 
 `sendTextToTTS` enqueues on the outbound track at 20 ms cadence regardless; progressive vendors start playback sooner.
 

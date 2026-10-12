@@ -3,10 +3,7 @@ import { EventEmitter } from 'events'
 import type { JsRTCDataChannel as NativeDataChannel } from '@node-webrtc-rust/bindings'
 
 import { debugEvent, debugFn } from './debug'
-import {
-  createConnectionError,
-  dispatchConnectionError,
-} from './connection-errors'
+import { createConnectionError, dispatchConnectionError } from './connection-errors'
 import type { MessageEvent, RTCDataChannelInit, RTCDataChannelState, RTCErrorEvent } from './types'
 
 type SendPayload = string | Buffer | ArrayBuffer | Uint8Array
@@ -180,9 +177,7 @@ export class RTCDataChannel extends EventEmitter {
     })
 
     native.setOnError((_err, message) => {
-      this.emitError(
-        typeof message === 'string' ? message : String(_err ?? 'unknown error'),
-      )
+      this.emitError(typeof message === 'string' ? message : String(_err ?? 'unknown error'))
     })
 
     native.setOnBufferedAmountLow((_err) => {

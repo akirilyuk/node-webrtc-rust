@@ -6,12 +6,12 @@ Helper scripts used by examples and local dev (not CI-only). Run from **`node-we
 
 Frees a TCP port before an example server binds (avoids `EADDRINUSE` after a crashed or background `npm run start`).
 
-| Item | Detail |
-| ---- | ------ |
-| **Default usage** | `PORT=3004 bash scripts/free-port.sh [label]` |
-| **With port arg** | `bash scripts/free-port.sh 3004 my-label` |
-| **Chained start** | `bash scripts/free-port.sh 3004 label -- tsx src/index.ts` |
-| **Skip** | `VOICE_SKIP_FREE_PORT=1` |
+| Item               | Detail                                                           |
+| ------------------ | ---------------------------------------------------------------- |
+| **Default usage**  | `PORT=3004 bash scripts/free-port.sh [label]`                    |
+| **With port arg**  | `bash scripts/free-port.sh 3004 my-label`                        |
+| **Chained start**  | `bash scripts/free-port.sh 3004 label -- tsx src/index.ts`       |
+| **Skip**           | `VOICE_SKIP_FREE_PORT=1`                                         |
 | **Implementation** | `lsof -ti :PORT -sTCP:LISTEN` (Unix), `netstat` + kill (Windows) |
 
 **npm `prestart`:** [`voice-agent-local-sherpa-multi-client`](../examples/voice-agent-local-sherpa-multi-client/package.json) runs this automatically before `start`, `start:cap-2`, and `start:debug` (port **3004** or `PORT`).
@@ -41,11 +41,11 @@ See [`examples/voice-agent-local-sherpa/README.md`](../examples/voice-agent-loca
 
 Publishing and version bumps: **[`RELEASE.md`](RELEASE.md)** (full guide).
 
-| Script | Purpose |
-| ------ | ------- |
-| [`ci/bump-workspace-versions.sh`](ci/bump-workspace-versions.sh) | Bump all `@node-webrtc-rust/*` versions in git |
-| [`ci/post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh) | After npm publish — align `main` lockfile from registry |
-| [`ci/refresh-package-lock-optional-bindings.sh`](ci/refresh-package-lock-optional-bindings.sh) | Regenerate optional platform binding lock entries |
+| Script                                                                                           | Purpose                                                       |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| [`ci/bump-workspace-versions.sh`](ci/bump-workspace-versions.sh)                                 | Bump all `@node-webrtc-rust/*` versions in git                |
+| [`ci/post-release-sync-main-package-lock.sh`](ci/post-release-sync-main-package-lock.sh)         | After npm publish — align `main` lockfile from registry       |
+| [`ci/refresh-package-lock-optional-bindings.sh`](ci/refresh-package-lock-optional-bindings.sh)   | Regenerate optional platform binding lock entries             |
 | [`ci/validate-package-lock-optional-bindings.sh`](ci/validate-package-lock-optional-bindings.sh) | Detect stub lock entries (`npm run ci:validate:package-lock`) |
 
 Release prep: `SKIP_LOCK_REFRESH=1 bash scripts/ci/bump-workspace-versions.sh X.Y.Z`. After tag publish, merge the automated **`chore/post-release-package-lock-X.Y.Z`** PR (see RELEASE.md).

@@ -63,48 +63,43 @@ async function stopWithin(agent: VoiceAgent, boundMs: number): Promise<number | 
 
 describe.skipIf(!enabled)('VoiceAgent.stop with an open STT utterance', () => {
   for (const extraDelayMs of [0, 400, 1300, 3000]) {
-    test(
-      `stop resolves ${extraDelayMs}ms after the first partial`,
-      async () => {
-        const { agentOut, userInbound, cleanup } = await createVoiceLoopback()
-        const speaker = new VoiceAgent({
-          stt: { provider: 'mock', language: 'en' },
-          tts: {
-            provider: 'local-sherpa',
-            modelPath: process.env.SHERPA_TTS_MODEL_PATH!,
-            voice: '0',
-          },
-          events: { mode: 'callback' },
-        })
-        const listener = new VoiceAgent(listenerConfig())
-        const partials: string[] = []
-        listener.on('user_speech_partial', (e) => partials.push(e.text ?? ''))
-        await speaker.attach({
-          inboundTrack: userInbound,
-          outboundTrack: agentOut,
-        })
-        await listener.attach({
-          inboundTrack: userInbound,
-          outboundTrack: new LocalAudioTrack('listener-out', 'voice-test'),
-        })
-        await speaker.start()
-        await listener.start()
-        void speaker.sendTextToTTS(PHRASE, { nonBlocking: true })
+    test(`stop resolves ${extraDelayMs}ms after the first partial`, async () => {
+      const { agentOut, userInbound, cleanup } = await createVoiceLoopback()
+      const speaker = new VoiceAgent({
+        stt: { provider: 'mock', language: 'en' },
+        tts: {
+          provider: 'local-sherpa',
+          modelPath: process.env.SHERPA_TTS_MODEL_PATH!,
+          voice: '0',
+        },
+        events: { mode: 'callback' },
+      })
+      const listener = new VoiceAgent(listenerConfig())
+      const partials: string[] = []
+      listener.on('user_speech_partial', (e) => partials.push(e.text ?? ''))
+      await speaker.attach({
+        inboundTrack: userInbound,
+        outboundTrack: agentOut,
+      })
+      await listener.attach({
+        inboundTrack: userInbound,
+        outboundTrack: new LocalAudioTrack('listener-out', 'voice-test'),
+      })
+      await speaker.start()
+      await listener.start()
+      void speaker.sendTextToTTS(PHRASE, { nonBlocking: true })
 
-        const deadline = Date.now() + 30_000
-        while (partials.length === 0 && Date.now() < deadline) await sleep(20)
-        expect(partials.length).toBeGreaterThan(0)
-        await sleep(extraDelayMs)
+      const deadline = Date.now() + 30_000
+      while (partials.length === 0 && Date.now() < deadline) await sleep(20)
+      expect(partials.length).toBeGreaterThan(0)
+      await sleep(extraDelayMs)
 
-        const tookMs = await stopWithin(listener, STOP_BOUND_MS)
-        // eslint-disable-next-line no-console
-        console.log(`stop after +${extraDelayMs}ms took ${tookMs}ms`)
-        expect(tookMs, `listener.stop() hung > ${STOP_BOUND_MS}ms`).not.toBeNull()
-        expect(tookMs!).toBeLessThan(5_000)
-        await speaker.stop().catch(() => undefined)
-        await cleanup()
-      },
-      90_000,
-    )
+      const tookMs = await stopWithin(listener, STOP_BOUND_MS)
+      console.log(`stop after +${extraDelayMs}ms took ${tookMs}ms`)
+      expect(tookMs, `listener.stop() hung > ${STOP_BOUND_MS}ms`).not.toBeNull()
+      expect(tookMs!).toBeLessThan(5_000)
+      await speaker.stop().catch(() => undefined)
+      await cleanup()
+    }, 90_000)
   }
 })

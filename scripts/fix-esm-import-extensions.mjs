@@ -12,8 +12,7 @@ if (!root) {
   process.exit(1)
 }
 
-const SPECIFIER_RE =
-  /((?:import|export)\s+(?:[^'";]*?\s+from\s+|))['"](\.\.?\/[^'"]+)['"]/g
+const SPECIFIER_RE = /((?:import|export)\s+(?:[^'";]*?\s+from\s+|))['"](\.\.?\/[^'"]+)['"]/g
 
 function withJsExtension(specifier) {
   if (/\.(js|json|node|mjs|cjs)$/.test(specifier)) {

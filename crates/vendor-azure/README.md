@@ -4,31 +4,31 @@ Azure AI Speech STT/TTS for `@node-webrtc-rust/sdk` VoiceAgent (documented REST 
 
 ## Docs
 
-| | URL |
-|---|---|
-| STT short audio | [REST speech-to-text short](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short) |
-| TTS REST | [REST text-to-speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech) |
-| Language + voices (TTS tab) | [Language and voice support](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts) |
-| Regional voice list | [GET voices/list](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech#get-a-list-of-voices) |
+|                             | URL                                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| STT short audio             | [REST speech-to-text short](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short)      |
+| TTS REST                    | [REST text-to-speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech)                  |
+| Language + voices (TTS tab) | [Language and voice support](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts)     |
+| Regional voice list         | [GET voices/list](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech#get-a-list-of-voices) |
 
 ## Environment
 
-| Variable | Use |
-|---|---|
-| `AZURE_SPEECH_KEY` or `SPEECH_KEY` | Subscription key (`Ocp-Apim-Subscription-Key`) |
-| `AZURE_SPEECH_REGION` | Regional TTS host (`{region}.tts.speech.microsoft.com`) |
-| `AZURE_SPEECH_RESOURCE` | Resource hostname for STT (e.g. `myresource.cognitiveservices.azure.com`) |
-| `AZURE_SPEECH_LANGUAGE` | Default BCP-47 language for STT (fallback `en-US`) |
+| Variable                           | Use                                                                       |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| `AZURE_SPEECH_KEY` or `SPEECH_KEY` | Subscription key (`Ocp-Apim-Subscription-Key`)                            |
+| `AZURE_SPEECH_REGION`              | Regional TTS host (`{region}.tts.speech.microsoft.com`)                   |
+| `AZURE_SPEECH_RESOURCE`            | Resource hostname for STT (e.g. `myresource.cognitiveservices.azure.com`) |
+| `AZURE_SPEECH_LANGUAGE`            | Default BCP-47 language for STT (fallback `en-US`)                        |
 
 `config.endpoint` can override STT host or TTS regional host. `config.apiKey` overrides speech keys.
 
 ## Streaming decisions (STT)
 
-| Choice | What we implemented | Why |
-|---|---|---|
+| Choice    | What we implemented                                             | Why                                                                                                                                                                    |
+| --------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Transport | REST short audio `POST …/stt/speech/recognition/conversation/…` | Official [short-audio REST](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short). **Final `DisplayText` only** — no interims. |
-| Mode | `conversation` only | Documented REST path segment. `dictation` / `interactive` are not wired. |
-| Timing | Buffer PCM until `finalize_utterance`, then one POST | Matches the short-audio API (utterance file, not live frames). |
+| Mode      | `conversation` only                                             | Documented REST path segment. `dictation` / `interactive` are not wired.                                                                                               |
+| Timing    | Buffer PCM until `finalize_utterance`, then one POST            | Matches the short-audio API (utterance file, not live frames).                                                                                                         |
 
 **Not implemented (by design):**
 

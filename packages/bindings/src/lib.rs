@@ -6,6 +6,7 @@ mod data_channel;
 mod events;
 mod media;
 mod mixer;
+mod native_trace;
 mod peer_connection;
 mod player;
 mod rtp_receiver;

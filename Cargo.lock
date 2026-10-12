@@ -3747,6 +3747,8 @@ name = "node-webrtc-rust-bindings"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "env_logger",
+ "log",
  "napi",
  "napi-build",
  "napi-derive",

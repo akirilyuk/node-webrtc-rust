@@ -48,6 +48,7 @@ run "bash scripts/ci/run-release-tag-local-ci.test.sh"
 run "bash scripts/ci/run-pr-quality.test.sh"
 run "bash scripts/ci/workflow-job-outputs.test.sh"
 run "bash scripts/ci/check-native-exports.test.sh"
+run "bash scripts/ci/native-trace-wiring.test.sh"
 
 echo "==> npm ci"
 run "bash scripts/ci/npm-ci-workspace.sh"

@@ -33,6 +33,8 @@ npm run ci:pre-push
 | `speechEventFilter` (host option)      | `(event) => boolean`; return `false` to keep a speech event off the client's voice-control channel (`voiceHandler.onSpeechEvent` still sees it) |
 | `clientMixerWarn` (`SessionPod` option) | `(message, fields?) => void`; receives mixer queue-pressure warnings as `'[mix] queue pressure'` plus `{ peerId, compressed, concealed, overflowCompressed, decodeErrors, listenerCatchupCompressed, listenerSkipped, depth, target }`; forwarded to every slot host (default: one `console.warn` line) |
 | `clientMixerWarn` (host option)        | Same sink for a standalone `VoiceAgentSessionHost`, e.g. the host's structured logger |
+| `connectStallTimeoutMs` (host and `SessionPod` option) | After ICE connects, the peer must reach connectionState `connected` within this time (default `CONNECT_STALL_TIMEOUT_MS` = 10000; `0` disables); otherwise the host logs `connect stalled` and closes the peer so the client can reconnect |
+| `onConnectStall` (host and `SessionPod` option) | `({ peerId, iceState, connectionState, afterMs }) => void`; called before a stalled peer is closed (metadata only) |
 | `VoiceAgentSessionHost.broadcastSpeak` | TTS `text` on every connected client in the room                      |
 | `VoiceSessionHandler`                  | Per-tab hooks: transport/agent lifecycle, STT/VAD, speak requests     |
 | `VoiceSessionContext.getInboundAudioStats` | Packets and bytes of audio received from a tab so far; `null` when unavailable |

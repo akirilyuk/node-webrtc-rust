@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **helpers** — `clientMixerWarn` option on `SessionPod` and `VoiceAgentSessionHost`; mixer queue-pressure warnings now pass structured fields (`peerId`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`). The default sink still prints the same single `console.warn` line. The `ClientMixerWarn` type is exported.
+- **helpers** — `clientMixerWarn` option on `SessionPod` and `VoiceAgentSessionHost`; mixer queue-pressure warnings also pass structured fields (`peerId`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`) as a second argument (message unchanged). The `ClientMixerWarn` type is exported.
 
 ## [0.9.43] - 2026-10-11
 

@@ -191,9 +191,10 @@ export function clientsShareMixGroup(
 }
 
 /**
- * Structured sink for mixer warnings. Queue-pressure warnings pass the message
- * `'[mix] queue pressure'` and fields `{ peerId, compressed, concealed, overflowCompressed,
- * decodeErrors, depth, target }` (counter deltas since the last warning, as numbers).
+ * Sink for mixer warnings. `message` is the full single-line text (legacy format, so a
+ * one-argument sink keeps every counter); `fields` carries the same values structured.
+ * Queue-pressure fields: `{ peerId, compressed, concealed, overflowCompressed, decodeErrors,
+ * depth, target }` (counter deltas since the last warning, as numbers).
  */
 export type ClientMixerWarn = (message: string, fields?: Record<string, unknown>) => void
 
@@ -210,9 +211,10 @@ export type ClientAudioMixerOptions = {
   /** Inject a mock graph in unit tests; defaults to a new {@link AudioMixGraph}. */
   graph?: ClientMixGraph
   /**
-   * Sink for rate-limited queue-pressure warnings. Receives `'[mix] queue pressure'` and fields
+   * Sink for rate-limited queue-pressure warnings. `message` is the full single-line text
+   * (legacy format); `fields` is the same values structured:
    * `{ peerId, compressed, concealed, overflowCompressed, decodeErrors, depth, target }`.
-   * Default prints one line to `console.warn`.
+   * Default prints the message to `console.warn`.
    */
   warn?: ClientMixerWarn
 }
@@ -289,10 +291,7 @@ export class ClientAudioMixer {
 
   constructor(options?: ClientAudioMixerOptions) {
     this.graph = options?.graph ?? new AudioMixGraph()
-    this.warn =
-      options?.warn ??
-      ((message, fields) =>
-        console.warn(fields ? formatQueuePressureLine(message, fields) : message))
+    this.warn = options?.warn ?? ((message) => console.warn(message))
   }
 
   /** Per-source mix queue counters (`null` when the graph has no stats or the source is unknown). */
@@ -796,7 +795,7 @@ export class ClientAudioMixer {
         overflowCompressed: stats.overflowCompressed,
         decodeErrors: stats.decodeErrors,
       }
-      this.warn('[mix] queue pressure', {
+      const fields = {
         peerId,
         compressed: delta.compressed,
         concealed: delta.concealed,
@@ -804,7 +803,8 @@ export class ClientAudioMixer {
         decodeErrors: delta.decodeErrors,
         depth: stats.depth,
         target: stats.target,
-      })
+      }
+      this.warn(formatQueuePressureLine('[mix] queue pressure', fields), fields)
     }
   }
 }

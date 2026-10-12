@@ -79,6 +79,21 @@ import type {
  */
 export const DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS = 10_000
 
+/**
+ * Default for {@link VoiceAgentSessionHostOptions.connectStallTimeoutMs}: how long a peer whose ICE
+ * transport connected may stay below connectionState `connected` (DTLS handshake still running).
+ * The vendored DTLS has no handshake timeout, so without this bound the peer never goes `failed`.
+ */
+export const CONNECT_STALL_TIMEOUT_MS = 10_000
+
+/** Fields passed to {@link VoiceAgentSessionHostOptions.onConnectStall}. */
+export interface ConnectStallFields {
+  peerId: string
+  iceState: string
+  connectionState: string
+  afterMs: number
+}
+
 /** Control data-channel message type (`{ "type": "client_hangup" }`) a client sends to end its session at once. */
 export const CLIENT_HANGUP_MESSAGE_TYPE = 'client_hangup'
 /** Bound native peer cleanup so session budget release cannot hang forever. */
@@ -330,6 +345,8 @@ interface ClientSession {
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
   /** Wall-clock ms when the transport last went down; cleared on restore or close. */
   transportDownSince?: number
+  /** Armed when ICE connects while connectionState is not `connected`; see `connectStallTimeoutMs`. */
+  connectStallTimer?: ReturnType<typeof setTimeout>
   /** Set when the client sent {@link CLIENT_HANGUP_MESSAGE_TYPE} on the control channel. */
   clientHangup?: boolean
   /** True while an ICE candidate-pair stats read is in flight; further reads are dropped. */
@@ -426,6 +443,17 @@ export interface VoiceAgentSessionHostOptions {
    * 2026-10-07: 5 s ended every session on a short media blackout.
    */
   transportDisconnectGraceMs?: number
+  /**
+   * After ICE connects, the peer must reach connectionState `connected` within this time;
+   * otherwise the host treats the connection as failed, logs it and closes the peer so the
+   * client can reconnect. Default {@link CONNECT_STALL_TIMEOUT_MS}; `0` disables.
+   */
+  connectStallTimeoutMs?: number
+  /**
+   * Called (metadata only) when the connect-stall watchdog fires, before the peer is closed.
+   * Lets the runner emit its own structured log or metric.
+   */
+  onConnectStall?: (fields: ConnectStallFields) => void
 }
 
 /**
@@ -438,6 +466,7 @@ export class VoiceAgentSessionHost {
   private readonly sessionBudget: VoiceSessionBudget
   private readonly sessionMode: 'voice' | 'voice+data' | 'data-only'
   private readonly transportDisconnectGraceMs: number
+  private readonly connectStallTimeoutMs: number
   private clientMixer: ClientAudioMixer | undefined
   /** Last explicit {@link setSttEnabled} per client (default true when agent is started). */
   private readonly explicitSttEnabled = new Map<string, boolean>()
@@ -485,6 +514,7 @@ export class VoiceAgentSessionHost {
     this.sessionMode = options.sessionMode ?? 'voice'
     this.transportDisconnectGraceMs =
       options.transportDisconnectGraceMs ?? DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS
+    this.connectStallTimeoutMs = options.connectStallTimeoutMs ?? CONNECT_STALL_TIMEOUT_MS
     this.clientMixer =
       this.sessionMode === 'data-only'
         ? undefined
@@ -914,6 +944,7 @@ export class VoiceAgentSessionHost {
       }
       if (iceState === 'connected' || iceState === 'completed') {
         this.noteTransportRestored(peerId, session, 'ice-restart')
+        this.armConnectStallTimer(peerId, session)
       } else if (iceState === 'disconnected') {
         this.scheduleTransportDisconnect(peerId, session)
       } else if (iceState === 'failed') {
@@ -930,6 +961,13 @@ export class VoiceAgentSessionHost {
     pc.onconnectionstatechange = () => {
       const tag = dataOnly ? 'data' : 'voice'
       this.log(`[${tag} ${peerId}] connectionState=${pc.connectionState}`)
+      if (
+        pc.connectionState === 'connected' ||
+        pc.connectionState === 'failed' ||
+        pc.connectionState === 'closed'
+      ) {
+        this.clearConnectStallTimer(session)
+      }
       if (pc.connectionState === 'connected') {
         this.noteTransportRestored(peerId, session, 'ice-restart')
         this.reconnectAttempts.delete(peerId)
@@ -1455,6 +1493,46 @@ export class VoiceAgentSessionHost {
     }
   }
 
+  private clearConnectStallTimer(session: ClientSession): void {
+    if (session.connectStallTimer) {
+      clearTimeout(session.connectStallTimer)
+      session.connectStallTimer = undefined
+    }
+  }
+
+  /**
+   * ICE connected but connectionState is not `connected` yet: the DTLS handshake is still running.
+   * The vendored DTLS never times out, so bound it here and close the peer (client reconnects).
+   * One timer per peer; cleared on connected/failed/closed and in teardown.
+   */
+  private armConnectStallTimer(peerId: string, session: ClientSession): void {
+    const timeoutMs = this.connectStallTimeoutMs
+    if (!(timeoutMs > 0) || session.connectStallTimer) return
+    if (session.pc.connectionState === 'connected') return
+    session.connectStallTimer = setTimeout(() => {
+      session.connectStallTimer = undefined
+      if (this.hostClosing || this.sessions.get(peerId) !== session || session.closingLocally) {
+        return
+      }
+      const pc = session.pc
+      const connectionState = pc.connectionState
+      if (connectionState === 'connected' || connectionState === 'failed') return
+      if (connectionState === 'closed') return
+      const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+      const iceState = pc.iceConnectionState
+      this.log(
+        `[${tag} ${peerId}] connect stalled: ice=${iceState} connectionState=${connectionState} after ${timeoutMs}ms — closing peer`,
+      )
+      try {
+        this.options.onConnectStall?.({ peerId, iceState, connectionState, afterMs: timeoutMs })
+      } catch (error: unknown) {
+        console.error(`[${tag} ${peerId}] onConnectStall failed:`, error)
+      }
+      // Same terminal close the transport-grace path ends in (releases the slot, closes the pc).
+      this.voidCloseClient(peerId, session)
+    }, timeoutMs)
+  }
+
   private clearTransportDisconnectTimer(session: ClientSession): void {
     if (session.transportDisconnectTimer) {
       clearTimeout(session.transportDisconnectTimer)
@@ -1752,6 +1830,7 @@ export class VoiceAgentSessionHost {
 
     this.clearMicTrackTimer(session)
     this.clearTransportDisconnectTimer(session)
+    this.clearConnectStallTimer(session)
     session.resolveMicTrack = undefined
     session.rejectMicTrack = undefined
     delete session.inboundPromise

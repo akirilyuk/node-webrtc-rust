@@ -26,14 +26,11 @@ impl AzureTts {
         validate_tts_voice(&voice).map_err(SpeechError::Config)?;
         let region = resolve_region(config)?;
         Ok(Self {
-            speech_key: config
-                .api_key
-                .clone()
-                .or_else(|| {
-                    ["AZURE_SPEECH_KEY", "SPEECH_KEY"]
-                        .into_iter()
-                        .find_map(|env| std::env::var(env).ok())
-                }),
+            speech_key: config.api_key.clone().or_else(|| {
+                ["AZURE_SPEECH_KEY", "SPEECH_KEY"]
+                    .into_iter()
+                    .find_map(|env| std::env::var(env).ok())
+            }),
             region,
             voice,
         })
@@ -41,7 +38,12 @@ impl AzureTts {
 }
 
 fn resolve_region(config: &TtsConfig) -> SpeechResult<String> {
-    if let Some(endpoint) = config.endpoint.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(endpoint) = config
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if let Some(region) = parse_region_from_tts_endpoint(endpoint) {
             return Ok(region);
         }

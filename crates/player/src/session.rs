@@ -11,9 +11,11 @@ use symphonia::core::io::MediaSource;
 
 use crate::decoder::{hint_from_bytes, hint_from_path, DecoderSession};
 use crate::error::PlayerError;
-use crate::mp4_probe::{mp4_ready_for_decode, Mp4Layout, probe_mp4_layout};
+use crate::mp4_probe::{mp4_ready_for_decode, probe_mp4_layout, Mp4Layout};
 use crate::resample::stereo_byte_len_to_ms;
-use crate::source::{bytes_source, is_raw_pcm_s16le_48k_stereo, GrowingByteSource, GrowingByteWriter};
+use crate::source::{
+    bytes_source, is_raw_pcm_s16le_48k_stereo, GrowingByteSource, GrowingByteWriter,
+};
 use crate::types::{ClipPlayerStatus, ClipStatus, PREROLL_MIN_MS, PREROLL_TARGET_MS};
 
 enum InputKind {
@@ -45,8 +47,7 @@ impl ClipSession {
             .extension()
             .map(|e| e.to_string_lossy().to_string());
         if is_raw_pcm_s16le_48k_stereo(ext.as_deref()) {
-            let data = std::fs::read(path.as_ref())
-                .map_err(|e| PlayerError::Io(e.to_string()))?;
+            let data = std::fs::read(path.as_ref()).map_err(|e| PlayerError::Io(e.to_string()))?;
             return Ok(Self::spawn(play_id, InputKind::RawPcm(data)));
         }
         Ok(Self::spawn(play_id, InputKind::Path(path_str)))
@@ -203,7 +204,10 @@ fn wait_until_decode_ready(source: &GrowingByteSource) {
     }
 }
 
-fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> Result<(), PlayerError> {
+fn decode_growing(
+    state: &Arc<SessionState>,
+    source: Arc<GrowingByteSource>,
+) -> Result<(), PlayerError> {
     let mut session = None;
     while session.is_none() {
         if state.stop_requested.load(Ordering::SeqCst) {
@@ -272,11 +276,7 @@ fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> 
     Ok(())
 }
 
-fn wait_for_growing_bytes(
-    source: &GrowingByteSource,
-    prev_len: usize,
-    state: &Arc<SessionState>,
-) {
+fn wait_for_growing_bytes(source: &GrowingByteSource, prev_len: usize, state: &Arc<SessionState>) {
     while source.len() == prev_len && !source.is_eof() {
         if state.stop_requested.load(Ordering::SeqCst) {
             return;

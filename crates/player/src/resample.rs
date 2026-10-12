@@ -96,7 +96,12 @@ impl Stereo48kResampler {
         out
     }
 
-    fn emit_linear_resample_mono(&mut self, frames: usize, dst_rate: u32, finished: bool) -> Vec<i16> {
+    fn emit_linear_resample_mono(
+        &mut self,
+        frames: usize,
+        dst_rate: u32,
+        finished: bool,
+    ) -> Vec<i16> {
         let src_rate = self.src_rate;
         let mut out = Vec::new();
 
@@ -137,11 +142,7 @@ impl Stereo48kResampler {
 }
 
 /// Convert f32 interleaved samples (any channels) to stereo 48k i16 bytes.
-pub fn f32_interleaved_to_stereo_48k(
-    samples: &[f32],
-    src_rate: u32,
-    src_channels: usize,
-) -> Bytes {
+pub fn f32_interleaved_to_stereo_48k(samples: &[f32], src_rate: u32, src_channels: usize) -> Bytes {
     if samples.is_empty() || src_channels == 0 {
         return Bytes::new();
     }

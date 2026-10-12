@@ -4,13 +4,14 @@
 
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
-use node_webrtc_rust_speech::pcm::{i16_samples_to_bytes, stereo_48k_to_mono_16k, STT_MIN_BATCH_BYTES};
+use node_webrtc_rust_speech::pcm::{
+    i16_samples_to_bytes, stereo_48k_to_mono_16k, STT_MIN_BATCH_BYTES,
+};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider, VendorFactory};
-use node_webrtc_rust_vendor_openai::{DOCUMENTED_STT_MODELS, OpenAiFactory, OpenAiStt, OpenAiTts};
+use node_webrtc_rust_vendor_openai::{OpenAiFactory, OpenAiStt, OpenAiTts, DOCUMENTED_STT_MODELS};
 use tokio::sync::Mutex;
 
-const COUNTING_PHRASE: &str =
-    "one. two. three. four. five. six. seven. eight. nine. ten.";
+const COUNTING_PHRASE: &str = "one. two. three. four. five. six. seven. eight. nine. ten.";
 
 /// Models that support file HTTP with `stream=true` (default VoiceAgent path), excluding Realtime-only.
 const FILE_SSE_STT_MODELS: &[&str] = &[
@@ -120,10 +121,12 @@ async fn run_finalize(stt: &mut OpenAiStt, pcm: Bytes, model: &str) -> String {
 
 fn assert_counting_words(text: &str) {
     let lower = text.to_lowercase();
-    let word_hits = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
-        .iter()
-        .filter(|w| lower.contains(*w))
-        .count();
+    let word_hits = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ]
+    .iter()
+    .filter(|w| lower.contains(*w))
+    .count();
     let digit_hits = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
         .iter()
         .filter(|d| lower.contains(*d))

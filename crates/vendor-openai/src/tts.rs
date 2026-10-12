@@ -2,15 +2,15 @@
 use async_openai::types::{CreateSpeechRequestArgs, SpeechModel, SpeechResponseFormat, Voice};
 #[cfg(feature = "live")]
 use async_openai::Client;
+use async_trait::async_trait;
 #[cfg(feature = "live")]
 use base64::Engine;
-#[cfg(feature = "live")]
-use serde_json::Value;
-use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
+#[cfg(feature = "live")]
+use serde_json::Value;
 #[cfg(feature = "live")]
 use tokio::sync::Mutex;
 
@@ -265,12 +265,12 @@ impl OpenAiTts {
             "response_format": "pcm",
             "stream_format": "sse",
         });
-        let http = reqwest::Client::builder().build().map_err(|err| {
-            SpeechError::Vendor {
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(|err| SpeechError::Vendor {
                 vendor: "openai".into(),
                 message: format!("HTTP client: {err}"),
-            }
-        })?;
+            })?;
         let response = http
             .post(url)
             .bearer_auth(api_key)
@@ -318,20 +318,19 @@ impl OpenAiTts {
                     if payload.is_empty() || payload == "[DONE]" {
                         continue;
                     }
-                    let event: Value = serde_json::from_str(payload).map_err(|err| {
-                        SpeechError::Vendor {
+                    let event: Value =
+                        serde_json::from_str(payload).map_err(|err| SpeechError::Vendor {
                             vendor: "openai".into(),
                             message: format!("speech SSE JSON: {err}"),
-                        }
-                    })?;
+                        })?;
                     match event.get("type").and_then(Value::as_str) {
                         Some("speech.audio.delta") => {
-                            let audio_b64 = event
-                                .get("audio")
-                                .and_then(Value::as_str)
-                                .ok_or_else(|| SpeechError::Vendor {
-                                    vendor: "openai".into(),
-                                    message: "speech.audio.delta missing audio".into(),
+                            let audio_b64 =
+                                event.get("audio").and_then(Value::as_str).ok_or_else(|| {
+                                    SpeechError::Vendor {
+                                        vendor: "openai".into(),
+                                        message: "speech.audio.delta missing audio".into(),
+                                    }
                                 })?;
                             let decoded = base64::engine::general_purpose::STANDARD
                                 .decode(audio_b64)

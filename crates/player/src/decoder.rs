@@ -49,15 +49,12 @@ impl DecoderSession {
             .ok_or_else(|| PlayerError::DecodeFailed("no audio track".into()))?;
 
         let track_id = track.id;
-        let duration_ms = track
-            .codec_params
-            .n_frames
-            .and_then(|frames| {
-                track
-                    .codec_params
-                    .sample_rate
-                    .map(|rate| (frames * 1000) / rate as u64)
-            });
+        let duration_ms = track.codec_params.n_frames.and_then(|frames| {
+            track
+                .codec_params
+                .sample_rate
+                .map(|rate| (frames * 1000) / rate as u64)
+        });
 
         let decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &DecoderOptions::default())
@@ -83,9 +80,7 @@ impl DecoderSession {
         loop {
             let packet = match self.format.next_packet() {
                 Ok(packet) => packet,
-                Err(SymphoniaError::IoError(err))
-                    if err.kind() == io::ErrorKind::UnexpectedEof =>
-                {
+                Err(SymphoniaError::IoError(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     break;
                 }
                 Err(SymphoniaError::ResetRequired) => {
@@ -114,9 +109,7 @@ impl DecoderSession {
                 Err(SymphoniaError::DecodeError(err)) => {
                     return Err(PlayerError::DecodeFailed(format!("decode: {err}")));
                 }
-                Err(SymphoniaError::IoError(err))
-                    if err.kind() == io::ErrorKind::UnexpectedEof =>
-                {
+                Err(SymphoniaError::IoError(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     break;
                 }
                 Err(err) => {
@@ -245,8 +238,7 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.mp3");
         let data = std::fs::read(path).expect("read mp3");
         let hint = hint_from_bytes(&data);
-        let mut session =
-            DecoderSession::open(Cursor::new(data), Some(hint)).expect("open");
+        let mut session = DecoderSession::open(Cursor::new(data), Some(hint)).expect("open");
         let out = session.decode_available().expect("decode");
         assert!(!out.pcm.is_empty(), "pcm bytes {}", out.pcm.len());
     }
@@ -256,8 +248,7 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.flac");
         let data = std::fs::read(&path).expect("read flac");
         let hint = hint_from_bytes(&data);
-        let mut session =
-            DecoderSession::open(Cursor::new(data), Some(hint)).expect("open flac");
+        let mut session = DecoderSession::open(Cursor::new(data), Some(hint)).expect("open flac");
         let out = session.decode_available().expect("decode flac");
         assert!(!out.pcm.is_empty(), "pcm bytes {}", out.pcm.len());
     }
@@ -281,8 +272,7 @@ mod tests {
         wav.extend_from_slice(&(num_samples * 4).to_le_bytes());
         wav.extend(vec![0u8; num_samples as usize * 4]);
         let hint = hint_from_bytes(&wav);
-        let mut session =
-            DecoderSession::open(Cursor::new(wav), Some(hint)).expect("open wav");
+        let mut session = DecoderSession::open(Cursor::new(wav), Some(hint)).expect("open wav");
         let out = session.decode_available().expect("decode wav");
         assert!(!out.pcm.is_empty());
     }

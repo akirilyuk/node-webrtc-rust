@@ -21,7 +21,7 @@ pub use player::{
     take_clip_frame,
 };
 pub use session::{split_frames, ClipSession};
-pub use source::{GrowingByteSource, GrowingByteWriter, is_raw_pcm_s16le_48k_stereo};
+pub use source::{is_raw_pcm_s16le_48k_stereo, GrowingByteSource, GrowingByteWriter};
 pub use types::{ClipPlayerStatus, ClipStatus, PREROLL_MAX_MS, PREROLL_MIN_MS, PREROLL_TARGET_MS};
 
 /// Crate version string (matches `CARGO_PKG_VERSION`).

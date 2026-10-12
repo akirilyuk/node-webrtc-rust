@@ -50,11 +50,11 @@ impl SttProvider for TaggingStt {
 }
 
 impl VendorFactory for TaggingSttFactory {
-    fn create_stt(&self, config: &SttConfig) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
-        let tag = config
-            .model
-            .clone()
-            .unwrap_or_else(|| "default".into());
+    fn create_stt(
+        &self,
+        config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
+        let tag = config.model.clone().unwrap_or_else(|| "default".into());
         Ok(Box::new(TaggingStt {
             tag,
             starts: Arc::clone(&self.starts),

@@ -836,16 +836,28 @@ mod language_id_config_tests {
             })
         };
         assert_eq!(language_id_timing(&None), LanguageIdTiming::EndOfUtterance);
-        assert_eq!(language_id_timing(&mk(None, None)), LanguageIdTiming::EndOfUtterance);
-        assert_eq!(language_id_timing(&mk(None, Some(true))), LanguageIdTiming::Continuous);
-        assert_eq!(language_id_timing(&mk(Some(LanguageIdTiming::Early), None)), LanguageIdTiming::Early);
+        assert_eq!(
+            language_id_timing(&mk(None, None)),
+            LanguageIdTiming::EndOfUtterance
+        );
+        assert_eq!(
+            language_id_timing(&mk(None, Some(true))),
+            LanguageIdTiming::Continuous
+        );
+        assert_eq!(
+            language_id_timing(&mk(Some(LanguageIdTiming::Early), None)),
+            LanguageIdTiming::Early
+        );
         // Explicit timing wins over the deprecated flag.
         assert_eq!(
             language_id_timing(&mk(Some(LanguageIdTiming::EndOfUtterance), Some(true))),
             LanguageIdTiming::EndOfUtterance
         );
         assert!(language_id_early(&mk(Some(LanguageIdTiming::Early), None)));
-        assert_eq!(LanguageIdTiming::parse("early"), Some(LanguageIdTiming::Early));
+        assert_eq!(
+            LanguageIdTiming::parse("early"),
+            Some(LanguageIdTiming::Early)
+        );
         assert_eq!(LanguageIdTiming::parse("bogus"), None);
     }
 }
@@ -870,8 +882,8 @@ mod vendor_wire_tests {
             endpoint: Some("http://speech-stt:50051".into()),
             ..stt.clone()
         };
-        let parsed: SttConfig = serde_json::from_str(&serde_json::to_string(&with_ep).unwrap())
-            .unwrap();
+        let parsed: SttConfig =
+            serde_json::from_str(&serde_json::to_string(&with_ep).unwrap()).unwrap();
         assert_eq!(parsed.endpoint.as_deref(), Some("http://speech-stt:50051"));
     }
 

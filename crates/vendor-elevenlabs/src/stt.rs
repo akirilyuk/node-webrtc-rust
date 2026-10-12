@@ -153,8 +153,8 @@ impl SttProvider for ElevenLabsStt {
             let _ = self.api_key()?;
             Err(SpeechError::Vendor {
                 vendor: "elevenlabs".into(),
-                message:
-                    "live ElevenLabs STT requires `--features live` on vendor-elevenlabs".into(),
+                message: "live ElevenLabs STT requires `--features live` on vendor-elevenlabs"
+                    .into(),
             })
         }
     }

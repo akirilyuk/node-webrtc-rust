@@ -174,9 +174,7 @@ impl OpenAiStt {
             }
         } else {
             match default {
-                SttDefaultTransport::RealtimeLive => {
-                    Transport::Realtime(RealtimeBackend::new())
-                }
+                SttDefaultTransport::RealtimeLive => Transport::Realtime(RealtimeBackend::new()),
                 SttDefaultTransport::FileJson => {
                     Transport::Http(HttpBackend::new(api_base.clone(), false))
                 }
@@ -377,8 +375,7 @@ impl HttpBackend {
             let (tx, rx) = mpsc::unbounded_channel();
             let handle = tokio::spawn(async move {
                 if use_sse {
-                    http_transcribe_sse(pcm, &api_key, &url, &model, language.as_deref(), tx)
-                        .await
+                    http_transcribe_sse(pcm, &api_key, &url, &model, language.as_deref(), tx).await
                 } else {
                     match http_transcribe(pcm, &api_key, &url, &model, language.as_deref()).await? {
                         Some(transcript) => {
@@ -658,10 +655,7 @@ async fn mint_transcription_client_secret(
     model: &str,
     language: Option<&str>,
 ) -> SpeechResult<String> {
-    let url = format!(
-        "{}/realtime/client_secrets",
-        api_base.trim_end_matches('/')
-    );
+    let url = format!("{}/realtime/client_secrets", api_base.trim_end_matches('/'));
     let body = transcription_client_secret_request(model, language);
     let client = reqwest::Client::new();
     let response = client
@@ -684,8 +678,7 @@ async fn mint_transcription_client_secret(
             vendor: "openai".into(),
             message: format!(
                 "POST /v1/realtime/client_secrets HTTP {}: {}",
-                status,
-                payload
+                status, payload
             ),
         });
     }
@@ -728,11 +721,15 @@ async fn connect_realtime_websocket(
     ws_url: &str,
 ) -> SpeechResult<(
     futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         Message,
     >,
     futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
     >,
 )> {
     let mut request = ws_url
@@ -762,11 +759,15 @@ async fn connect_realtime_websocket(
 #[cfg(feature = "live")]
 type RealtimeWsSplit = (
     futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         Message,
     >,
     futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
     >,
 );
 
@@ -1190,19 +1191,17 @@ impl RealtimeBackend {
                     vendor: "openai".into(),
                     message,
                 }),
-                Err(mpsc::error::TryRecvError::Empty) if waiting => {
-                    match rx.recv().await {
-                        Some(Incoming::Update(transcript)) => Ok(Some(transcript)),
-                        Some(Incoming::Failed(message)) => Err(SpeechError::Vendor {
-                            vendor: "openai".into(),
-                            message,
-                        }),
-                        None => Err(SpeechError::Vendor {
-                            vendor: "openai".into(),
-                            message: "realtime transcription socket closed".into(),
-                        }),
-                    }
-                }
+                Err(mpsc::error::TryRecvError::Empty) if waiting => match rx.recv().await {
+                    Some(Incoming::Update(transcript)) => Ok(Some(transcript)),
+                    Some(Incoming::Failed(message)) => Err(SpeechError::Vendor {
+                        vendor: "openai".into(),
+                        message,
+                    }),
+                    None => Err(SpeechError::Vendor {
+                        vendor: "openai".into(),
+                        message: "realtime transcription socket closed".into(),
+                    }),
+                },
                 Err(mpsc::error::TryRecvError::Empty) => Ok(None),
                 Err(mpsc::error::TryRecvError::Disconnected) => Err(SpeechError::Vendor {
                     vendor: "openai".into(),
@@ -1499,8 +1498,8 @@ mod tests {
         #[tokio::test]
         async fn http_finalize_posts_once_and_poll_returns_final() {
             let (api_base, posts) = spawn_transcription_mock("whisper-1").await;
-            let mut stt = OpenAiStt::new(&test_stt_config("whisper-1", Some(api_base)))
-                .expect("stt");
+            let mut stt =
+                OpenAiStt::new(&test_stt_config("whisper-1", Some(api_base))).expect("stt");
             stt.start().await.expect("start");
             stt.push_audio(pcm_above_min_batch()).await.expect("push");
             assert!(stt.poll_transcript().await.expect("poll").is_none());

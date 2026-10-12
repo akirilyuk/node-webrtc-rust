@@ -806,7 +806,9 @@ mod tests {
     }
 
     fn attr(resource: &Resource, key: &str) -> Option<String> {
-        resource.get(&Key::new(key.to_string())).map(|v| v.to_string())
+        resource
+            .get(&Key::new(key.to_string()))
+            .map(|v| v.to_string())
     }
 
     #[test]
@@ -830,7 +832,10 @@ mod tests {
             ("OTEL_SERVICE_NAME", Some("runner")),
         ]);
         let resource = build_resource();
-        assert_eq!(attr(&resource, "service.instance.id").as_deref(), Some("pod-a"));
+        assert_eq!(
+            attr(&resource, "service.instance.id").as_deref(),
+            Some("pod-a")
+        );
         assert_eq!(attr(&resource, "k8s.pod.name").as_deref(), Some("pod-a"));
         assert_eq!(attr(&resource, "service.name").as_deref(), Some("runner"));
     }

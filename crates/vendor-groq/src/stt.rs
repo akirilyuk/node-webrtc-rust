@@ -15,7 +15,9 @@ use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::factory::api_key_from;
-use crate::matrix::{default_stt_model, parse_transcription_json, validate_stt_model, DEFAULT_TRANSCRIPTIONS_URL};
+use crate::matrix::{
+    default_stt_model, parse_transcription_json, validate_stt_model, DEFAULT_TRANSCRIPTIONS_URL,
+};
 
 pub struct GroqStt {
     api_key: Option<String>,

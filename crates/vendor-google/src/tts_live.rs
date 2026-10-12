@@ -107,8 +107,8 @@ pub async fn streaming_synthesize(
 
     let (grpc_tx, mut grpc_rx) = client.streaming_synthesize().build();
 
-    let config = StreamingSynthesizeRequest::new().set_streaming_request(
-        StreamingRequest::StreamingConfig(
+    let config =
+        StreamingSynthesizeRequest::new().set_streaming_request(StreamingRequest::StreamingConfig(
             StreamingSynthesizeConfig::new()
                 .set_voice(
                     VoiceSelectionParams::new()
@@ -116,16 +116,13 @@ pub async fn streaming_synthesize(
                         .set_language_code(language),
                 )
                 .into(),
-        ),
-    );
+        ));
 
-    let input = StreamingSynthesizeRequest::new().set_streaming_request(
-        StreamingRequest::Input(
-            StreamingSynthesisInput::new()
-                .set_input_source(Some(InputSource::Text(text.to_string())))
-                .into(),
-        ),
-    );
+    let input = StreamingSynthesizeRequest::new().set_streaming_request(StreamingRequest::Input(
+        StreamingSynthesisInput::new()
+            .set_input_source(Some(InputSource::Text(text.to_string())))
+            .into(),
+    ));
 
     grpc_tx
         .send(config)

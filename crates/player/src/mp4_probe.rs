@@ -101,7 +101,12 @@ fn read_u32_be(data: &[u8], offset: usize) -> u32 {
 }
 
 fn read_box_type(data: &[u8], offset: usize) -> [u8; 4] {
-    [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]
+    [
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]
 }
 
 #[cfg(test)]

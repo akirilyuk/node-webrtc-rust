@@ -50,10 +50,7 @@ impl AzureStt {
             .unwrap_or_else(|| "en-US".to_string());
         let resource_host = resolve_resource_host(config)?;
         Ok(Self {
-            speech_key: config
-                .api_key
-                .clone()
-                .or_else(speech_key_from_env),
+            speech_key: config.api_key.clone().or_else(speech_key_from_env),
             resource_host,
             mode,
             language,
@@ -116,7 +113,12 @@ fn speech_key_from_env() -> Option<String> {
 }
 
 fn resolve_resource_host(config: &SttConfig) -> SpeechResult<String> {
-    if let Some(endpoint) = config.endpoint.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(endpoint) = config
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         return Ok(normalize_host(endpoint));
     }
     if let Ok(host) = std::env::var("AZURE_SPEECH_RESOURCE") {
@@ -130,8 +132,7 @@ fn resolve_resource_host(config: &SttConfig) -> SpeechResult<String> {
         }
     }
     Err(SpeechError::Config(
-        "Azure STT requires config.endpoint, AZURE_SPEECH_RESOURCE, or AZURE_SPEECH_REGION"
-            .into(),
+        "Azure STT requires config.endpoint, AZURE_SPEECH_RESOURCE, or AZURE_SPEECH_REGION".into(),
     ))
 }
 
@@ -259,9 +260,8 @@ impl SttProvider for AzureStt {
             let url = self.stt_url()?;
             let wav = mono16_le_to_wav(&pcm);
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle = tokio::spawn(async move {
-                http_short_audio_recognize(wav, &key, &url, tx).await
-            });
+            let handle =
+                tokio::spawn(async move { http_short_audio_recognize(wav, &key, &url, tx).await });
             *self.poll_rx.lock().await = Some(rx);
             *self.poll_task.lock().await = Some(handle);
             return Ok(());

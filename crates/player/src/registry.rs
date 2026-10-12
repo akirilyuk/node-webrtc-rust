@@ -22,9 +22,9 @@ pub fn insert(session: ClipSession) {
 
 pub fn get(play_id: &str) -> Option<ClipPlayerStatusSnapshot> {
     let guard = registry().lock().expect("player registry lock");
-    guard.get(play_id).map(|s| ClipPlayerStatusSnapshot {
-        status: s.status(),
-    })
+    guard
+        .get(play_id)
+        .map(|s| ClipPlayerStatusSnapshot { status: s.status() })
 }
 
 pub fn stop(play_id: &str) -> bool {
@@ -64,7 +64,9 @@ pub fn start_from_bytes(play_id: String, data: Vec<u8>) -> Result<String, Player
     Ok(play_id)
 }
 
-pub fn start_from_growing(play_id: String) -> Result<(String, crate::source::GrowingByteWriter), PlayerError> {
+pub fn start_from_growing(
+    play_id: String,
+) -> Result<(String, crate::source::GrowingByteWriter), PlayerError> {
     let (session, writer) = ClipSession::start_from_growing(play_id.clone());
     insert(session);
     Ok((play_id, writer))

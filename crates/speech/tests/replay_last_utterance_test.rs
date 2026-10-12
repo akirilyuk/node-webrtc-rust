@@ -6,8 +6,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    SttConfig, SttVendor, TtsConfig, TtsVendor, UpdateTtsConfigOptions, VadConfig,
-    VoiceAgentConfig,
+    SttConfig, SttVendor, TtsConfig, TtsVendor, UpdateTtsConfigOptions, VadConfig, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::SpeechEventKind;
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider, VendorFactory};
@@ -58,14 +57,9 @@ impl SttProvider for TagPushStt {
     ) -> node_webrtc_rust_speech::SpeechResult<Option<SttTranscript>> {
         if *self.pending_final.lock().unwrap() {
             *self.pending_final.lock().unwrap() = false;
-            return Ok(Some(SttTranscript::Final(format!(
-                "final-{}",
-                self.tag
-            ))));
+            return Ok(Some(SttTranscript::Final(format!("final-{}", self.tag))));
         }
-        if *self.push_bytes.lock().unwrap() >= 1600
-            && !*self.emitted_partial.lock().unwrap()
-        {
+        if *self.push_bytes.lock().unwrap() >= 1600 && !*self.emitted_partial.lock().unwrap() {
             *self.emitted_partial.lock().unwrap() = true;
             return Ok(Some(SttTranscript::Partial("…".into())));
         }
@@ -98,10 +92,7 @@ impl VendorFactory for TagPushSttFactory {
         &self,
         config: &SttConfig,
     ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
-        let tag = config
-            .model
-            .clone()
-            .unwrap_or_else(|| "default".into());
+        let tag = config.model.clone().unwrap_or_else(|| "default".into());
         let counter = {
             let mut map = self.push_by_tag.lock().unwrap();
             map.entry(tag.clone())

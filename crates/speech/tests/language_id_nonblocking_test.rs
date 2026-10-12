@@ -8,8 +8,8 @@ use tokio::sync::Notify;
 
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    LanguageIdConfig, LanguageIdTiming, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor,
-    VadConfig, VoiceAgentConfig,
+    LanguageIdConfig, LanguageIdTiming, SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig,
+    TtsVendor, VadConfig, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::SpeechEventKind;
 use node_webrtc_rust_speech::pipeline::{
@@ -189,7 +189,10 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
         lid_sleep_ms: LID_SLEEP_MS,
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
@@ -244,7 +247,10 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
         lid_sleep_ms: LID_SLEEP_MS,
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
@@ -308,7 +314,10 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     }
 
     let bytes_before_lid = *stt_bytes.lock().unwrap();
-    assert!(bytes_before_lid > 0, "STT should receive speech before LID threshold");
+    assert!(
+        bytes_before_lid > 0,
+        "STT should receive speech before LID threshold"
+    );
 
     // Frames 4–13: default mode buffers only (no mid-utterance identify).
     let batch_start = Instant::now();
@@ -365,7 +374,6 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     );
 }
 
-
 /// Staging regression (`usage-credits-smoke`): echo TTS clip was delayed ~45s while Whisper LID
 /// ran on the blocking pool. Full stack STT+TTS+LID+VAD — first outbound PCM must not await
 /// slow `identify` while LID is in flight.
@@ -411,7 +419,10 @@ async fn language_id_does_not_block_tts_playback() {
     agent
         .send_text_to_tts_with_options(
             "one two three",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -514,17 +525,17 @@ impl TtsProvider for OverlapTrackingTts {
         "overlap-mock"
     }
 
-    async fn synthesize(&self, text: &str) -> node_webrtc_rust_speech::SpeechResult<Vec<TtsAudioChunk>> {
+    async fn synthesize(
+        &self,
+        text: &str,
+    ) -> node_webrtc_rust_speech::SpeechResult<Vec<TtsAudioChunk>> {
         self.guard.enter_tts();
         let duration_ms = (text.len() as u32 * 50).clamp(100, 5000);
         tokio::time::sleep(Duration::from_millis(80)).await;
         let samples = 48_000 * duration_ms / 1000;
         let pcm = Bytes::from(vec![0_u8; samples as usize * 4]);
         self.guard.leave_tts();
-        Ok(vec![TtsAudioChunk {
-            pcm,
-            duration_ms,
-        }])
+        Ok(vec![TtsAudioChunk { pcm, duration_ms }])
     }
 }
 
@@ -580,7 +591,10 @@ fn agent_with_overlap_tracking_lid(
         lid_sleep_ms: LID_SLEEP_MS,
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(
         SttVendor::LocalSherpa,
         Arc::clone(&factory) as Arc<dyn VendorFactory>,
@@ -660,7 +674,10 @@ async fn language_id_does_not_overlap_tts_synthesis() {
     agent
         .send_text_to_tts_with_options(
             "one two three",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -735,7 +752,10 @@ async fn language_id_leftover_min_speech_must_not_overlap_later_tts() {
     agent
         .send_text_to_tts_with_options(
             "echo. One, two, three, four, five, six, seven, eight, nine, ten",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -887,7 +907,10 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
         lid_sleep_ms,
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
@@ -975,7 +998,10 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
         stt_bytes: Arc::clone(&stt_bytes),
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
@@ -1152,7 +1178,10 @@ fn agent_with_counting_lid_timing_min(
         lid_languages,
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
@@ -1258,7 +1287,11 @@ fn agent_with_timed_overlap_lid(
     stt_bytes: Arc<Mutex<usize>>,
     guard: Arc<OverlapGuard>,
     lid_sleep_ms: u64,
-) -> (Arc<VoiceAgent>, Arc<Mutex<Option<Instant>>>, Arc<Mutex<Option<Instant>>>) {
+) -> (
+    Arc<VoiceAgent>,
+    Arc<Mutex<Option<Instant>>>,
+    Arc<Mutex<Option<Instant>>>,
+) {
     let started_at = Arc::new(Mutex::new(None));
     let ended_at = Arc::new(Mutex::new(None));
     let lid_started = Arc::clone(&started_at);
@@ -1319,7 +1352,10 @@ fn agent_with_timed_overlap_lid(
         ended_at: lid_ended,
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(
         SttVendor::LocalSherpa,
         Arc::clone(&factory) as Arc<dyn VendorFactory>,
@@ -1562,7 +1598,10 @@ async fn hangup_does_not_start_second_identify_after_inbound_lid() {
     agent
         .send_text_to_tts_with_options(
             "one two three",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1643,7 +1682,10 @@ async fn short_utterance_still_gets_user_language_after_tts_idle() {
     agent
         .send_text_to_tts_with_options(
             "one two three",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1757,7 +1799,10 @@ async fn detached_speak_after_final_never_overlaps_lid() {
         agent_spawn
             .send_text_to_tts_with_options(
                 "echo. one two three",
-                SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+                SendTextToTtsOptions {
+                    non_blocking: true,
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -1798,7 +1843,10 @@ async fn tts_active_at_speech_end_defers_lid_to_drain() {
     agent
         .send_text_to_tts_with_options(
             "this is a longer agent preface to keep playback active across user speech end",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1862,7 +1910,10 @@ async fn lid_error_does_not_block_final() {
         stt_bytes: Arc::clone(&stt_bytes),
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
@@ -1920,11 +1971,15 @@ async fn lid_error_does_not_block_final() {
     let events = collect_events_until_final(&mut rx, &agent, &silent).await;
 
     assert!(
-        events.iter().any(|e| e.kind == SpeechEventKind::UserSpeechFinal),
+        events
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::UserSpeechFinal),
         "expected user_speech_final despite LID error"
     );
     assert!(
-        !events.iter().any(|e| e.kind == SpeechEventKind::UserLanguage),
+        !events
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::UserLanguage),
         "LID error must not emit user_language"
     );
 
@@ -1996,7 +2051,10 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
         ended_at: Arc::clone(&ended_at),
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(
         SttVendor::LocalSherpa,
         Arc::clone(&factory) as Arc<dyn VendorFactory>,
@@ -2039,7 +2097,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
                 lid_max_clip_ms: None,
                 lid_gate_max_wait_ms: None,
                 timing: None,
-            tts_exclusion: Some(true),
+                tts_exclusion: Some(true),
             }),
             vad,
             ..Default::default()
@@ -2067,7 +2125,10 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
     agent
         .send_text_to_tts_with_options(
             "during lid",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -2270,8 +2331,14 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
         tts_started: Arc::clone(&tts_started),
     });
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
-    registry.register_tts(TtsVendor::Mock, Arc::clone(&factory) as Arc<dyn VendorFactory>);
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
+    registry.register_tts(
+        TtsVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
     registry.register_stt(SttVendor::LocalSherpa, factory);
 
     let mut vad = VadConfig::default();
@@ -2344,7 +2411,10 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
     agent
         .send_text_to_tts_with_options(
             "remote echo",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -2541,7 +2611,10 @@ async fn tts_active_at_speech_end_emits_language_id_skipped_deferred_tts() {
     agent
         .send_text_to_tts_with_options(
             "this is a longer agent preface to keep playback active across user speech end",
-            SendTextToTtsOptions { non_blocking: true, ..Default::default() },
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -2610,7 +2683,11 @@ fn assert_one_first_outcome(
             )
         })
         .collect();
-    assert_eq!(outcomes.len(), 1, "expected exactly one outcome: {outcomes:?}");
+    assert_eq!(
+        outcomes.len(),
+        1,
+        "expected exactly one outcome: {outcomes:?}"
+    );
     outcomes[0]
 }
 
@@ -2691,7 +2768,10 @@ async fn same_language_on_second_utterance_still_reports_first_outcome() {
     );
     let mut rx = agent.subscribe_events();
     let first = run_one_utterance_events(&agent, &mut rx, 12).await;
-    assert_eq!(assert_one_first_outcome(&first).kind, SpeechEventKind::UserLanguage);
+    assert_eq!(
+        assert_one_first_outcome(&first).kind,
+        SpeechEventKind::UserLanguage
+    );
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
     drive_loud_frames(&agent, &loud, 12).await;
@@ -2699,7 +2779,10 @@ async fn same_language_on_second_utterance_still_reports_first_outcome() {
     tokio::time::sleep(Duration::from_millis(400)).await;
     drive_silent_frames(&agent, &silent, 5).await;
     let second = drain_events(&mut rx);
-    assert_eq!(assert_one_first_outcome(&second).kind, SpeechEventKind::UserLanguage);
+    assert_eq!(
+        assert_one_first_outcome(&second).kind,
+        SpeechEventKind::UserLanguage
+    );
     agent.stop().await.unwrap();
 }
 
@@ -2839,7 +2922,10 @@ async fn continuous_alias_matches_timing_continuous() {
     while Instant::now() < deadline && lid_calls.load(Ordering::SeqCst) < 2 {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(lid_calls.load(Ordering::SeqCst) > 1, "alias must be continuous");
+    assert!(
+        lid_calls.load(Ordering::SeqCst) > 1,
+        "alias must be continuous"
+    );
     agent.stop().await.unwrap();
 }
 
@@ -2859,7 +2945,11 @@ async fn explicit_timing_overrides_continuous_flag() {
     let loud = loud_stereo_frame();
     drive_loud_frames(&agent, &loud, 40).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(lid_calls.load(Ordering::SeqCst), 0, "no identify before the utterance closes");
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        0,
+        "no identify before the utterance closes"
+    );
     agent.stop().await.unwrap();
 }
 
@@ -2883,7 +2973,10 @@ async fn one_outcome_per_utterance_in_all_timings() {
         } else {
             SpeechEventKind::LanguageIdSkipped
         };
-        assert_eq!(outcome.kind, expected, "timing={timing:?} frames={loud_frames}");
+        assert_eq!(
+            outcome.kind, expected,
+            "timing={timing:?} frames={loud_frames}"
+        );
         agent.stop().await.unwrap();
     }
 }
@@ -2994,7 +3087,11 @@ async fn early_timing_identifies_once_voiced_reaches_min() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let events = drain_events(&mut rx);
     assert_eq!(count_kind(&events, SpeechEventKind::UserLanguage), 1);
-    assert_eq!(lid_calls.load(Ordering::SeqCst), 1, "early mode identifies exactly once");
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "early mode identifies exactly once"
+    );
     agent.stop().await.unwrap();
 }
 
@@ -3004,8 +3101,7 @@ async fn pauses_between_words_count_trailing_silence_does_not() {
     let lid_calls = Arc::new(AtomicUsize::new(0));
     let agent = voiced_min_agent(None, Arc::clone(&lid_calls), 600);
     let mut rx = agent.subscribe_events();
-    let events =
-        run_segments_events(&agent, &mut rx, &[(true, 35), (false, 20), (true, 35)]).await;
+    let events = run_segments_events(&agent, &mut rx, &[(true, 35), (false, 20), (true, 35)]).await;
     let outcome = assert_one_first_outcome(&events);
     assert_eq!(outcome.kind, SpeechEventKind::UserLanguage);
     assert_eq!(lid_calls.load(Ordering::SeqCst), 1);
@@ -3015,8 +3111,7 @@ async fn pauses_between_words_count_trailing_silence_does_not() {
     let lid_calls = Arc::new(AtomicUsize::new(0));
     let agent = voiced_min_agent(None, Arc::clone(&lid_calls), 600);
     let mut rx = agent.subscribe_events();
-    let events =
-        run_segments_events(&agent, &mut rx, &[(true, 25), (false, 15), (true, 25)]).await;
+    let events = run_segments_events(&agent, &mut rx, &[(true, 25), (false, 15), (true, 25)]).await;
     let outcome = assert_one_first_outcome(&events);
     assert_eq!(outcome.reason.as_deref(), Some("too_short"));
     assert_eq!(lid_calls.load(Ordering::SeqCst), 0);

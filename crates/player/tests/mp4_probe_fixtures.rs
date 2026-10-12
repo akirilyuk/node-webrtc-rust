@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use node_webrtc_rust_player::{Mp4Layout, probe_mp4_layout};
+use node_webrtc_rust_player::{probe_mp4_layout, Mp4Layout};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")

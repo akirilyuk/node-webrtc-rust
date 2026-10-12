@@ -105,10 +105,13 @@ pub async fn start_v2_streaming(
     model: &str,
     language: &str,
 ) -> SpeechResult<(mpsc::UnboundedReceiver<SttTranscript>, V2StreamHandle)> {
-    let mut client = Speech::builder().build().await.map_err(|err| SpeechError::Vendor {
-        vendor: "google".into(),
-        message: err.to_string(),
-    })?;
+    let mut client = Speech::builder()
+        .build()
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "google".into(),
+            message: err.to_string(),
+        })?;
 
     let recognizer = format!(
         "projects/{}/locations/{}/recognizers/{}",

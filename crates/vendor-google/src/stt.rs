@@ -74,15 +74,11 @@ impl SttProvider for GoogleStt {
         {
             state.v2_handle = None;
             if stt_uses_v2_streaming(self.transport) {
-                let locator = self.v2_locator.clone().ok_or_else(|| SpeechError::Config(
-                    "missing Google V2 recognizer configuration".into(),
-                ))?;
-                let (rx, handle) = stt_live::start_v2_streaming(
-                    &locator,
-                    &self.model,
-                    &self.language,
-                )
-                .await?;
+                let locator = self.v2_locator.clone().ok_or_else(|| {
+                    SpeechError::Config("missing Google V2 recognizer configuration".into())
+                })?;
+                let (rx, handle) =
+                    stt_live::start_v2_streaming(&locator, &self.model, &self.language).await?;
                 state.transcript_rx = Some(rx);
                 state.v2_handle = Some(handle);
             }

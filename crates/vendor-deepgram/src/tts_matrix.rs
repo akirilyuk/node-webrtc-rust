@@ -61,7 +61,9 @@ pub fn tts_progressive_transport(model: &str) -> Result<TtsProgressiveTransport,
 pub fn v1_speak_rest_url(model: &str) -> Result<String, String> {
     validate_speak_model(model)?;
     if speak_api_version(model)? != SpeakApiVersion::V1Aura {
-        return Err(format!("model `{model}` is not served on /v1/speak (Aura only)"));
+        return Err(format!(
+            "model `{model}` is not served on /v1/speak (Aura only)"
+        ));
     }
     Ok(format!(
         "https://api.deepgram.com/v1/speak?model={model}&encoding=linear16&sample_rate=48000"
@@ -71,7 +73,9 @@ pub fn v1_speak_rest_url(model: &str) -> Result<String, String> {
 pub fn v2_speak_rest_url(model: &str) -> Result<String, String> {
     validate_speak_model(model)?;
     if speak_api_version(model)? != SpeakApiVersion::V2Flux {
-        return Err(format!("model `{model}` is not served on /v2/speak (Flux only)"));
+        return Err(format!(
+            "model `{model}` is not served on /v2/speak (Flux only)"
+        ));
     }
     Ok(format!(
         "https://api.deepgram.com/v2/speak?model={model}&encoding=linear16&sample_rate=48000"
@@ -81,7 +85,9 @@ pub fn v2_speak_rest_url(model: &str) -> Result<String, String> {
 pub fn v1_speak_websocket_url(model: &str) -> Result<String, String> {
     validate_speak_model(model)?;
     if speak_api_version(model)? != SpeakApiVersion::V1Aura {
-        return Err(format!("Aura model required for /v1/speak websocket, got `{model}`"));
+        return Err(format!(
+            "Aura model required for /v1/speak websocket, got `{model}`"
+        ));
     }
     Ok(format!(
         "wss://api.deepgram.com/v1/speak?model={model}&encoding=linear16&sample_rate=48000"
@@ -91,7 +97,9 @@ pub fn v1_speak_websocket_url(model: &str) -> Result<String, String> {
 pub fn v2_speak_websocket_url(model: &str) -> Result<String, String> {
     validate_speak_model(model)?;
     if speak_api_version(model)? != SpeakApiVersion::V2Flux {
-        return Err(format!("Flux model required for /v2/speak websocket, got `{model}`"));
+        return Err(format!(
+            "Flux model required for /v2/speak websocket, got `{model}`"
+        ));
     }
     Ok(format!(
         "wss://api.deepgram.com/v2/speak?model={model}&encoding=linear16&sample_rate=48000"

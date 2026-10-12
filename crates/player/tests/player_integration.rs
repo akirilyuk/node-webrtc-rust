@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use node_webrtc_rust_mixer::{FRAME_BYTES, SAMPLE_RATE};
-use node_webrtc_rust_player::{ClipSession, ClipStatus, Mp4Layout, probe_mp4_layout};
+use node_webrtc_rust_player::{probe_mp4_layout, ClipSession, ClipStatus, Mp4Layout};
 
 static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
@@ -71,8 +71,7 @@ fn wait_for_status(session: &ClipSession, want: ClipStatus, timeout: Duration) {
 fn wav_pcm_decodes_and_plays() {
     with_serial(|| {
         let wav = make_wav_pcm();
-        let session =
-            ClipSession::start_from_bytes("test-wav".into(), wav).expect("play wav");
+        let session = ClipSession::start_from_bytes("test-wav".into(), wav).expect("play wav");
         wait_for_status(&session, ClipStatus::Playing, Duration::from_secs(2));
         assert!(session.status().buffered_ms >= 100);
 
@@ -209,7 +208,10 @@ fn position_monotonic_while_playing() {
             assert!(status.position_ms > last || last == 0);
             last = status.position_ms;
         }
-        assert!(last > 0, "position_ms should advance when frames are consumed");
+        assert!(
+            last > 0,
+            "position_ms should advance when frames are consumed"
+        );
     });
 }
 

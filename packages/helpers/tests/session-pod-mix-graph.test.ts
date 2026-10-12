@@ -111,6 +111,25 @@ describe('SessionPod shared client mix graph', () => {
     server = undefined
   })
 
+  it('SessionPod forwards clientMixerWarn to slot hosts', async () => {
+    const clientMixerWarn = vi.fn()
+    const pod = await createPod({
+      sessionMode: 'voice+data',
+      clientMixGraph: createMockMixGraph(),
+      clientMixerWarn,
+    })
+
+    await pod.ensureSession('session-a')
+    await pod.ensureSession('session-b')
+
+    expect(hostOptions).toHaveLength(2)
+    expect(hostOptions[0]?.clientMixerWarn).toBe(clientMixerWarn)
+    expect(hostOptions[1]?.clientMixerWarn).toBe(clientMixerWarn)
+
+    await pod.close().catch(() => undefined)
+    server = undefined
+  })
+
   it('does not attach a mix graph on data-only pods', async () => {
     const pod = await createPod({ sessionMode: 'data-only' })
 

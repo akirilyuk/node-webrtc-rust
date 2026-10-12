@@ -1,7 +1,12 @@
 import type { MixStats } from '@node-webrtc-rust/sdk/mix'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ClientAudioMixer, type ClientMixGraph } from '../src/client-audio-mixer.js'
+import {
+  ClientAudioMixer,
+  formatQueuePressureLine,
+  type ClientMixGraph,
+  type ClientMixerWarn,
+} from '../src/client-audio-mixer.js'
 import { PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 
 function zeroStats(): MixStats {
@@ -42,7 +47,7 @@ function createStatsGraph(stats: Map<string, MixStats>): ClientMixGraph {
 
 describe('ClientAudioMixer mix queue warnings', () => {
   let stats: Map<string, MixStats>
-  let warn: ReturnType<typeof vi.fn<(message: string) => void>>
+  let warn: ReturnType<typeof vi.fn<ClientMixerWarn>>
   let mixer: ClientAudioMixer
   const out = { writeSample: vi.fn(async () => undefined) }
 
@@ -55,7 +60,7 @@ describe('ClientAudioMixer mix queue warnings', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'Date', 'performance'] })
     stats = new Map([['speaker', zeroStats()]])
-    warn = vi.fn<(message: string) => void>()
+    warn = vi.fn<ClientMixerWarn>()
     mixer = new ClientAudioMixer({ graph: createStatsGraph(stats), warn })
     mixer.registerPeer('speaker')
     mixer.registerPeer('listener')
@@ -95,6 +100,86 @@ describe('ClientAudioMixer mix queue warnings', () => {
     expect(line).toContain('decodeErrors=+0')
     expect(line).toContain('depth=7')
     expect(line).toContain('target=4')
+  })
+
+  it('queue pressure warning passes structured fields', async () => {
+    await tick(1000)
+    const s = stats.get('speaker')!
+    s.played = 40
+    s.compressed = 3
+    s.depth = 7
+    s.target = 4
+    await tick(1000)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(
+      '[mix] queue pressure peerId=speaker compressed=+3 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=7 target=4',
+      {
+        peerId: 'speaker',
+        compressed: 3,
+        concealed: 0,
+        overflowCompressed: 0,
+        decodeErrors: 0,
+        depth: 7,
+        target: 4,
+      },
+    )
+  })
+
+  it('one-argument warn still receives the full line', async () => {
+    const lines: string[] = []
+    const legacy = new ClientAudioMixer({
+      graph: createStatsGraph(stats),
+      warn: (m: string) => lines.push(m),
+    })
+    legacy.registerPeer('speaker')
+    legacy.registerPeer('listener')
+    legacy.startMixPump('listener', out)
+    stats.get('speaker')!.played = 40
+    stats.get('speaker')!.compressed = 3
+    vi.advanceTimersByTime(1000)
+    await legacy.pumpMixFrame('listener', out)
+    legacy.stopMixPump('listener')
+    expect(lines[0]).toBe(
+      '[mix] queue pressure peerId=speaker compressed=+3 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3',
+    )
+  })
+
+  it('default warn keeps the single-line stdout format', async () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const def = new ClientAudioMixer({ graph: createStatsGraph(stats) })
+      def.registerPeer('speaker')
+      def.registerPeer('listener')
+      def.startMixPump('listener', out)
+      stats.get('speaker')!.played = 40
+      stats.get('speaker')!.compressed = 2
+      stats.get('speaker')!.concealed = 1
+      vi.advanceTimersByTime(1000)
+      await def.pumpMixFrame('listener', out)
+      def.stopMixPump('listener')
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(spy).toHaveBeenCalledWith(
+        '[mix] queue pressure peerId=speaker compressed=+2 concealed=+1 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3',
+      )
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('formatQueuePressureLine renders the legacy line', () => {
+    expect(
+      formatQueuePressureLine('[mix] queue pressure', {
+        peerId: 'p',
+        compressed: 1,
+        concealed: 2,
+        overflowCompressed: 3,
+        decodeErrors: 4,
+        depth: 5,
+        target: 6,
+      }),
+    ).toBe(
+      '[mix] queue pressure peerId=p compressed=+1 concealed=+2 overflowCompressed=+3 decodeErrors=+4 depth=5 target=6',
+    )
   })
 
   it('does not warn about start-up concealment before the source played its first frame', async () => {
@@ -158,7 +243,7 @@ describe('ClientAudioMixer mix queue warnings', () => {
   it('never warns when the graph has no mixStats', async () => {
     const graph = createStatsGraph(stats)
     delete graph.mixStats
-    const quietWarn = vi.fn<(message: string) => void>()
+    const quietWarn = vi.fn<ClientMixerWarn>()
     const quiet = new ClientAudioMixer({ graph, warn: quietWarn })
     quiet.registerPeer('speaker')
     quiet.registerPeer('listener')

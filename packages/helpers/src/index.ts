@@ -55,6 +55,7 @@ export {
   sumStereoPcm,
   type ClientAudioMixerOptions,
   type ClientMixGraph,
+  type ClientMixerWarn,
   type ClientMixSnapshot,
   type ClientMixStatus,
   type MixPumpOutboundTrack,

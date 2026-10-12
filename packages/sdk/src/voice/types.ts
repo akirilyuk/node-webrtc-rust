@@ -278,6 +278,8 @@ export type SpeechEventType =
   | 'stt_hold_ended'
   /** A TTS synthesis start was refused and retried (`waitMs`, `attempts`, `reason`). */
   | 'tts_wait'
+  /** A reply (or one synthesis job of it) was served from the phrase cache (`chars`). No text. */
+  | 'tts_phrase_cache_hit'
   /** One reply could not be synthesized (`reason`); the session keeps running. */
   | 'agent_speak_failed'
   /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
@@ -313,6 +315,7 @@ export const SPEECH_EVENT_TYPE = {
   sttHoldStarted: 'stt_hold_started',
   sttHoldEnded: 'stt_hold_ended',
   ttsWait: 'tts_wait',
+  ttsPhraseCacheHit: 'tts_phrase_cache_hit',
   agentSpeakFailed: 'agent_speak_failed',
   voiceLanguageSwitching: 'voice_language_switching',
   voiceLanguageChanged: 'voice_language_changed',
@@ -375,6 +378,8 @@ export interface SpeechEvent {
   waitMs?: number
   /** `tts_wait`: refused attempts that were retried. */
   attempts?: number
+  /** `tts_phrase_cache_hit`: chars (Unicode scalars) of the text served from the phrase cache. */
+  chars?: number
 }
 
 /** `languageId.timing` values. */

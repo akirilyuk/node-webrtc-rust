@@ -360,6 +360,7 @@ export const enum JsSpeechEventType {
   SttHoldStarted = 'stt_hold_started',
   SttHoldEnded = 'stt_hold_ended',
   TtsWait = 'tts_wait',
+  TtsPhraseCacheHit = 'tts_phrase_cache_hit',
   AgentSpeakFailed = 'agent_speak_failed'
 }
 export interface JsSpeechEvent {
@@ -388,6 +389,8 @@ export interface JsSpeechEvent {
   waitMs?: number
   /** `tts_wait`: refused attempts that were retried. */
   attempts?: number
+  /** `tts_phrase_cache_hit`: chars (Unicode scalars) of the text served from the cache. */
+  chars?: number
 }
 export const enum JsSttHoldMode {
   BufferReplay = 'buffer_replay',

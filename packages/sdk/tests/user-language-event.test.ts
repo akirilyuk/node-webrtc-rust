@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'vitest'
 
 import { SPEECH_EVENT_TYPE, type LanguageIdSkipReason } from '../src/voice/types'
+import { JsSpeechEventType } from '@node-webrtc-rust/bindings'
+
 import { speechEventToControlMessage } from '../src/voice/speech-event-bridge'
+import { fromJsSpeechEvent } from '../src/voice/VoiceAgent'
 
 describe('user_language speech events', () => {
   test('SPEECH_EVENT_TYPE includes user_language', () => {
@@ -113,5 +116,29 @@ describe('agent_speaking_start timing on the wire', () => {
     expect(msg.firstChunkMs).toBeUndefined()
     expect(msg.firstAudioMs).toBeUndefined()
     expect(JSON.parse(JSON.stringify(msg))).not.toHaveProperty('firstAudioMs')
+  })
+})
+
+describe('tts_phrase_cache_hit speech events', () => {
+  test('SPEECH_EVENT_TYPE includes tts_phrase_cache_hit', () => {
+    expect(SPEECH_EVENT_TYPE.ttsPhraseCacheHit).toBe('tts_phrase_cache_hit')
+  })
+
+  test('native event maps to tts_phrase_cache_hit and passes chars through', () => {
+    const event = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.TtsPhraseCacheHit,
+      chars: 12,
+    })
+    expect(event.type).toBe('tts_phrase_cache_hit')
+    expect(event.chars).toBe(12)
+    expect(event.text).toBeUndefined()
+  })
+
+  test('speechEventToControlMessage forwards chars', () => {
+    expect(speechEventToControlMessage({ type: 'tts_phrase_cache_hit', chars: 12 })).toMatchObject({
+      type: 'speech_event',
+      event: 'tts_phrase_cache_hit',
+      chars: 12,
+    })
   })
 })

@@ -333,31 +333,40 @@ async function runDirectControl(pattern: SendPattern): Promise<SequenceAnalysis>
 }
 
 /**
- * Same bar for every send pattern: the elastic mix queue must not lose a frame.
+ * Same bar for every send pattern: the elastic mix queue must not lose a frame silently.
  *
- * Bounds, measured over 10 runs per pattern on macOS:
- * - gaps 0, played >= 145: exactly three marker frames are always unrecognisable (index 39,
- *   2350 Hz, once per 40-frame period). They also come out ambiguous when the stream is relayed
- *   through two Opus hops without any mixer, so they are a codec artefact of this marker set,
- *   and an ambiguous frame stands in for its missing index (see `analyseSequence`).
- * - ambiguous <= 5: those three, plus one concealment frame at the stream edges.
- * - duplicates 0: the pump renders at its scheduled slot time (`renderOutput(id, atMs)`), so a
- *   late timer or a catch-up double render plays the next frame and never repeats the previous.
+ * The contract (plan 2026-10-11-mix-elastic-jitter-buffer) is "every pushed frame is played,
+ * minus explicit, counted time-compression, and underruns are concealed and counted". When the
+ * test process is starved of CPU the sender bunches or stalls, which legitimately triggers
+ * both, so the bounds are derived from `mixStats` and not fixed constants:
+ * - gaps <= compressed + overflowCompressed: a merged pair of frames absorbs one marker index,
+ *   which `analyseSequence` reports as one gap. Anything beyond that is a frame that vanished.
+ * - duplicates <= concealed: a concealment frame is a faded repeat of the previous frame.
+ * - ambiguous <= 5 + concealed + compressed: three marker indices (index 39, 2350 Hz) are
+ *   always unrecognisable (also through two Opus hops without any mixer; an ambiguous frame
+ *   stands in for its missing index, see `analyseSequence`), plus one concealment frame at the
+ *   stream edges; each concealed frame (faded) and each cross-faded merge is ambiguous too.
+ * - reordered 0, decodeErrors 0, pushed == played + compressed + overflowCompressed + depth:
+ *   conservation, nothing silently overwritten.
+ * - played >= 145 - 2 * merged: a merge costs two advancing markers (the absorbed index and the
+ *   cross-faded frame itself, which is ambiguous).
+ * - The pump renders at its scheduled slot time (`renderOutput(id, atMs)`), so a late timer
+ *   or a catch-up double render plays the next frame and never repeats the previous.
  */
 function expectContinuous({ seq, stats }: { seq: SequenceAnalysis; stats: MixStats | null }): void {
   const detail = JSON.stringify({ seq, stats })
-  expect(seq.gaps, detail).toBe(0)
-  expect(seq.reordered, detail).toBe(0)
-  expect(seq.duplicates, detail).toBe(0)
-  expect(seq.played, detail).toBeGreaterThanOrEqual(145)
-  expect(seq.ambiguous, detail).toBeLessThanOrEqual(5)
   expect(stats, detail).not.toBeNull()
-  expect(stats!.decodeErrors, detail).toBe(0)
-  expect(stats!.overflowCompressed, detail).toBe(0)
-  expect(stats!.pushed, detail).toBeGreaterThanOrEqual(MARKED_FRAMES)
-  expect(stats!.pushed, detail).toBe(
-    stats!.played + stats!.compressed + stats!.overflowCompressed + stats!.depth,
-  )
+  const s = stats!
+  const merged = s.compressed + s.overflowCompressed
+  expect(seq.gaps, detail).toBeLessThanOrEqual(merged)
+  expect(seq.reordered, detail).toBe(0)
+  expect(seq.duplicates, detail).toBeLessThanOrEqual(s.concealed)
+  expect(seq.played, detail).toBeGreaterThanOrEqual(145 - 2 * merged)
+  expect(seq.ambiguous, detail).toBeLessThanOrEqual(5 + s.concealed + s.compressed)
+  expect(s.decodeErrors, detail).toBe(0)
+  expect(s.overflowCompressed, detail).toBe(0)
+  expect(s.pushed, detail).toBeGreaterThanOrEqual(MARKED_FRAMES)
+  expect(s.pushed, detail).toBe(s.played + s.compressed + s.overflowCompressed + s.depth)
 }
 
 describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)', () => {

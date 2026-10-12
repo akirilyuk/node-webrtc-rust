@@ -21,6 +21,7 @@
 //! | `UserSttNotFound` | VAD fired but no STT partial within `sttListenTimeoutMs` |
 //! | `BargeIn` | Barge-in path (semantic STT partial and/or VAD during agent TTS) |
 //! | `TtsWait` | A TTS synthesis start was refused and retried (`wait_ms`, `attempts`, `reason`) |
+//! | `TtsPhraseCacheHit` | A reply (or one synthesis job of it) was served from the phrase cache (`chars`); no text |
 //! | `AgentSpeakFailed` | One reply could not be synthesized (`reason`); the session keeps running |
 //! | `Error` | Vendor or internal failure |
 
@@ -56,6 +57,8 @@ pub enum SpeechEventKind {
     SttHoldEnded,
     /// TTS synthesis start waited on a transient refusal (`wait_ms`, `attempts`, `reason`).
     TtsWait,
+    /// A reply (or one synthesis job of it) was served from the phrase cache (`chars`). No text.
+    TtsPhraseCacheHit,
     /// One reply failed to synthesize (`reason`); the agent keeps listening.
     AgentSpeakFailed,
 }
@@ -100,6 +103,8 @@ pub struct SpeechEvent {
     pub wait_ms: Option<u32>,
     /// `tts_wait`: refused attempts that were retried.
     pub attempts: Option<u32>,
+    /// `tts_phrase_cache_hit`: Unicode scalar count of the text served from the cache.
+    pub chars: Option<u32>,
 }
 
 impl SpeechEvent {
@@ -126,6 +131,7 @@ impl SpeechEvent {
             first_audio_ms: None,
             wait_ms: None,
             attempts: None,
+            chars: None,
         }
     }
 
@@ -135,6 +141,13 @@ impl SpeechEvent {
         ev.wait_ms = Some(wait_ms);
         ev.attempts = Some(attempts);
         ev.reason = Some(reason.into());
+        ev
+    }
+
+    /// A synthesis was served from the phrase cache; `chars` is the text length in chars.
+    pub fn tts_phrase_cache_hit(chars: u32) -> Self {
+        let mut ev = Self::base(SpeechEventKind::TtsPhraseCacheHit);
+        ev.chars = Some(chars);
         ev
     }
 

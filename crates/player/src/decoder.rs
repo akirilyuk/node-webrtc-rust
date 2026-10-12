@@ -15,6 +15,7 @@ use crate::resample::f32_interleaved_to_stereo_48k;
 
 pub struct DecodeOutput {
     pub pcm: bytes::Bytes,
+    #[allow(dead_code)] // filled in by decoders; the session derives its own duration
     pub duration_ms: Option<u64>,
 }
 

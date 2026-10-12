@@ -61,6 +61,7 @@ pub(crate) struct RoomEventSenders {
     pub participant_kicked: mpsc::UnboundedSender<ParticipantKicked>,
     pub participant_muted: mpsc::UnboundedSender<ParticipantMuted>,
     pub mixing_enabled_changed: mpsc::UnboundedSender<MixingEnabledChanged>,
+    #[allow(dead_code)] // held so the error channel stays open for receivers
     pub error: mpsc::UnboundedSender<RoomError>,
 }
 

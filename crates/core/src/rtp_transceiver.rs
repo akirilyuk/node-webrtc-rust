@@ -106,10 +106,6 @@ impl RtpReceiver {
     pub fn kind(&self) -> TrackKind {
         self.inner.kind().into()
     }
-
-    pub(crate) fn inner(&self) -> Arc<RTCRtpReceiver> {
-        Arc::clone(&self.inner)
-    }
 }
 
 /// Combined sender/receiver pair sharing an SDP mid.
@@ -125,10 +121,6 @@ impl RtpTransceiver {
             inner,
             stopped: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    pub(crate) fn inner(&self) -> Arc<RTCRtpTransceiver> {
-        Arc::clone(&self.inner)
     }
 
     /// Negotiated media section mid, if assigned.

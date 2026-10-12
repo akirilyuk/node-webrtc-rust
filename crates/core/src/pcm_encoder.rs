@@ -49,9 +49,7 @@ fn resolved_opus_application() -> Application {
 }
 
 fn parse_opus_bitrate_bps_from_env(raw: Option<&str>) -> Option<i32> {
-    let Some(raw) = raw else {
-        return None;
-    };
+    let raw = raw?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;

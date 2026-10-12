@@ -42,6 +42,7 @@ pub fn take_frame(play_id: &str) -> Option<node_webrtc_rust_mixer::Frame> {
     guard.get(play_id).and_then(|session| session.take_frame())
 }
 
+#[allow(dead_code)] // registry API surface; no caller yet
 pub fn remove(play_id: &str) {
     let mut guard = registry().lock().expect("player registry lock");
     guard.remove(play_id);

@@ -38,6 +38,10 @@ impl GrowingByteWriter {
     pub fn len(&self) -> usize {
         self.inner.data.lock().expect("growing source lock").len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 struct GrowingByteSourceInner {
@@ -87,6 +91,10 @@ impl GrowingByteSource {
     pub fn len(&self) -> usize {
         self.inner.data.lock().expect("growing source lock").len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl Read for GrowingByteSource {
@@ -97,12 +105,10 @@ impl Read for GrowingByteSource {
         let guard = self.inner.data.lock().expect("growing source lock");
         let mut pos = self.inner.read_pos.load(Ordering::SeqCst);
 
-        while pos >= guard.len() {
-            if self.inner.eof.load(Ordering::SeqCst) {
-                return Ok(0);
-            }
-            // Progressive streams: return 0 when caught up to buffered bytes so symphonia
-            // can decode partial input and retry after more `append` calls.
+        if pos >= guard.len() {
+            // Both EOF and "caught up" report 0 bytes. Progressive streams: return 0
+            // when caught up to buffered bytes so symphonia can decode partial input
+            // and retry after more `append` calls.
             return Ok(0);
         }
 

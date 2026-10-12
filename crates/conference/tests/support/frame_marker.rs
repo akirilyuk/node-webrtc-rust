@@ -203,7 +203,7 @@ mod tests {
             .as_chunks::<2>()
             .0
             .iter()
-            .zip(fb.pcm.chunks_exact(2))
+            .zip(fb.pcm.as_chunks::<2>().0.iter())
             .flat_map(|(x, y)| {
                 let s = i16::from_le_bytes([x[0], x[1]]) / 2 + i16::from_le_bytes([y[0], y[1]]) / 2;
                 s.to_le_bytes()

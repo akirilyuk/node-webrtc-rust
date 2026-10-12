@@ -15,6 +15,12 @@ pub struct JsConferenceServer {
     inner: Arc<ConferenceServer>,
 }
 
+impl Default for JsConferenceServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl JsConferenceServer {
     /// Creates an empty conference server.

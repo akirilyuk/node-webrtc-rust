@@ -51,8 +51,9 @@ const stats = await ctx.getInboundAudioStats({ timeoutMs: 500 })
 // { packetsReceived: 1480, bytesReceived: 118400 } or null
 ```
 
-The counts are summed over the connection's inbound audio streams. The call works until the peer
-connection closes, including from `onPeerDisconnected`, and never rejects: it resolves `null` when
+The counts are summed over the connection's inbound audio streams. The call reads live stats while the
+peer connection is open. In `onPeerDisconnected` it returns a snapshot taken just before close
+(bounded at 500 ms; `null` if unavailable). It never rejects: it resolves `null` when
 the connection is closed, no audio stream exists yet, the stats call fails, or `timeoutMs`
 (default 500) passes. The `InboundAudioStats` type is exported from the package entry point.
 

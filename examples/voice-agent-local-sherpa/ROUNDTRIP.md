@@ -195,17 +195,18 @@ VOICE_DEBUG=1 SHERPA_COUNTING_VERBOSE=1 npm run start:roundtrip-counting-echo-li
 
 Unit tests (no models): `npx vitest run examples/voice-agent-local-sherpa/src/roundtrip-counting-echo-lid-multi-assert.test.ts` or `npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`.
 
-| Env                           | Default         | Purpose                                                                            |
-| ----------------------------- | --------------- | ---------------------------------------------------------------------------------- |
-| `SHERPA_MULTI_SESSIONS`       | `10`            | Concurrent speaker↔echo pairs (1–20); legacy alias `SESSIONS`                      |
-| `SHERPA_LID_TTS_EXCLUSION`    | library default | `1`/`on` or `0`/`off` → `languageId.ttsExclusion` on echo leg                      |
-| `SHERPA_MULTI_SINGLE_PROCESS` | off             | Single-process comparison (shared ultimate pool)                                   |
-| `SHERPA_MULTI_PCM_CAPTURE`    | `1` (on)        | Per-hop PCM table: echo outbound (child IPC), speaker `readSample`, STT-fed timing |
-| `SHERPA_MULTI_WAV_DIR`        | auto            | WAV dumps on failure under `.test-logs/multi-wav/<stamp>/`                         |
-| `SHERPA_ROUNDTRIP_WALL_MS`    | `240000`        | Process wall clock (10 sessions @ 2-thread echo pool)                              |
-| `SHERPA_COUNTING_PHRASE`      | one … ten       | Speaker source phrase                                                              |
-| `SHERPA_COUNTING_TIMEOUT_MS`  | `90000`         | Per-session STT wait                                                               |
-| `VOICE_DEBUG`                 | off             | Rust `[voice-debug]` in parent + echo child when `1`                               |
+| Env                           | Default         | Purpose                                                                                  |
+| ----------------------------- | --------------- | ---------------------------------------------------------------------------------------- |
+| `SHERPA_MULTI_SESSIONS`       | `10`            | Concurrent speaker↔echo pairs (1–20); legacy alias `SESSIONS`                            |
+| `SHERPA_LID_TTS_EXCLUSION`    | library default | `1`/`on` or `0`/`off` → `languageId.ttsExclusion` on echo leg                            |
+| `SHERPA_MULTI_SINGLE_PROCESS` | off             | Single-process comparison (shared ultimate pool)                                         |
+| `SHERPA_MULTI_PCM_CAPTURE`    | `1` (on)        | Per-hop PCM table: echo outbound (child IPC), speaker `readSample`, STT-fed timing       |
+| `SHERPA_MULTI_WAV_DIR`        | auto            | WAV dumps on failure under `.test-logs/multi-wav/<stamp>/`                               |
+| `SHERPA_ROUNDTRIP_WALL_MS`    | `240000`        | Process wall clock (10 sessions @ 2-thread echo pool)                                    |
+| `SHERPA_COUNTING_PHRASE`      | one … ten       | Speaker source phrase                                                                    |
+| `SHERPA_COUNTING_TIMEOUT_MS`  | `90000`         | Per-session STT wait                                                                     |
+| `VOICE_DEBUG`                 | off             | Rust `[voice-debug]` in parent + echo child when `1`                                     |
+| `VOICE_FINALIZE_TRACE`        | off             | Only the Rust `[voice-debug] finalize path=…` timing lines when `1` (no per-frame noise) |
 
 CI: `start:roundtrip-counting-echo-lid-multi` in `SHERPA_ROUNDTRIP_E2E` (`run-sherpa-example-ci.sh`).
 

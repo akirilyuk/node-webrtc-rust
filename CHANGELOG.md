@@ -10,6 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- helpers: log the selected ICE candidate pair on each ICE state change (types, protocol, counters; no addresses).
 - **helpers** — `clientMixerWarn` option on `SessionPod` and `VoiceAgentSessionHost`; mixer queue-pressure warnings also pass structured fields (`peerId`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`) as a second argument (message unchanged). The `ClientMixerWarn` type is exported.
 - **mixer** — `voice_mix_frames_total{outcome}` OTel counter (`played|compressed|concealed|overflow_compressed|decode_error`, no per-session labels); equals the sum of `mixStats` across sources. Release builds with `otel`.
 - **Core / Opus** — The encode bitrate is capped per packet duration so a payload stays at or below 1000 bytes (inside the 1200-byte RTP MTU). 20 ms packets keep the configured bitrate (default 400 kbps); 40 ms and 60 ms packets are capped at 200 kbps and about 133 kbps. Before, a 60 ms packet at the default was about 3 kB and receivers dropped it.

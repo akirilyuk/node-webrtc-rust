@@ -77,6 +77,13 @@ export {
 } from './inbound-audio-stats.js'
 
 export {
+  readSelectedIcePair,
+  formatIcePairLine,
+  ICE_PAIR_STATS_TIMEOUT_MS,
+  type SelectedIcePair,
+} from './ice-pair-stats.js'
+
+export {
   flushVoiceControlChannel,
   VOICE_CONTROL_FLUSH_POLL_MS,
   VOICE_CONTROL_FLUSH_TIMEOUT_MS,

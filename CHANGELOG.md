@@ -8,8 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — The C1 listen timeout (`sttListenTimeoutMs`, no STT partial) now runs on media time: it fires only when that much audio reached the agent and the same time passed on the wall clock, so audio that arrives late or slowly is no longer closed as "not found" mid-speech. Wall time alone still closes it when inbound PCM has stopped completely. The wall-clock C1/C2 ticker also skips ticks while an inbound call is running, so a slow finalize is no longer force-closed a second time (duplicate empty `user_speech_final`).
+
 ### Added
 
+- **speech** — `VOICE_FINALIZE_TRACE=1` prints one `[voice-debug] finalize path=…` timing line per finalize decision (no transcript text).
 - **helpers** — `VoiceAgentSessionHost` logs the selected ICE candidate pair on each ICE state change (`ice=<state> ice_pair local=… remote=… protocol=… state=… pkts_tx=… pkts_rx=… stun_req_tx=… stun_resp_rx=… last_rx_ms=…`): candidate types, protocol, local port and counters, no addresses. The stats read is bounded (500 ms) and at most one runs per peer. `readSelectedIcePair` and `formatIcePairLine` are exported.
 - **helpers** — `clientMixerWarn` option on `SessionPod` and `VoiceAgentSessionHost`; mixer queue-pressure warnings also pass structured fields (`peerId`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`) as a second argument (message unchanged). The `ClientMixerWarn` type is exported.
 - **mixer** — `voice_mix_frames_total{outcome}` OTel counter (`played|compressed|concealed|overflow_compressed|decode_error`, no per-session labels); equals the sum of `mixStats` across sources. Release builds with `otel`.

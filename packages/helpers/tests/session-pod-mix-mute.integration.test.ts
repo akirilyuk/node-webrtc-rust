@@ -8,6 +8,7 @@ import type { ClientAudioMixer } from '../src/client-audio-mixer.js'
 import { SessionPod } from '../src/session-pod.js'
 import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
 import { VoiceSessionBudget, resetProcessVoiceSessionBudget } from '../src/voice-session-budget.js'
+import { connectAllOrCloseAll } from './connect-all-or-close.js'
 import {
   appendStereoChannels,
   assertToneAbsentStereo,
@@ -319,11 +320,14 @@ async function setupThreeClientMix(pod: SessionPod, wsUrl: string) {
     await pod.ensureSession(sessionId)
   }
 
-  const [client1, client2, client3] = await Promise.all([
-    connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
-    connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
-    connectClientToSession(wsUrl, 'session-c3', 'client-mix-3'),
-  ])
+  const [client1, client2, client3] = await connectAllOrCloseAll(
+    [
+      () => connectClientToSession(wsUrl, 'session-c1', 'client-mix-1'),
+      () => connectClientToSession(wsUrl, 'session-c2', 'client-mix-2'),
+      () => connectClientToSession(wsUrl, 'session-c3', 'client-mix-3'),
+    ],
+    closeClient,
+  )
 
   const host = getVoiceHostForSession(pod, 'session-c2')
   expect(host).toBeDefined()

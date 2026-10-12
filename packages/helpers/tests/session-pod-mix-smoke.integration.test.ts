@@ -35,6 +35,7 @@ import {
   waitForInboundStereoEnergy,
   waitForInboundStereoQuiet,
 } from './mix-energy-helpers.js'
+import { connectAllOrCloseAll, sdpMediaKinds } from './connect-all-or-close.js'
 import { defaultIceConfig, delay, waitForConnection } from './mix-three-client-helpers.js'
 
 const CLIENT_IDS = ['client-mix-1', 'client-mix-2', 'client-mix-3'] as const
@@ -127,26 +128,58 @@ async function connectClientToSession(
     peerId,
   })
 
+  // Which layer stalled: the host's offer is this client's remote description.
+  let controlChannelOpen = false
+  pc.ondatachannel = (event) => {
+    if (event.channel.readyState === 'open') {
+      controlChannelOpen = true
+      return
+    }
+    event.channel.onopen = () => {
+      controlChannelOpen = true
+    }
+  }
+  const stalledLayer = (): string =>
+    `connectionState=${pc.connectionState}, iceConnectionState=${pc.iceConnectionState}, ` +
+    `control channel open ${controlChannelOpen ? 'yes' : 'no'}, ` +
+    `offer m-lines: ${sdpMediaKinds(pc.remoteDescription?.sdp)}`
+
+  let agentAudioTimer: ReturnType<typeof setTimeout> | undefined
   const agentAudioPromise = new Promise<RemoteAudioTrack>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`timed out waiting for agent audio track (${peerId})`))
+    agentAudioTimer = setTimeout(() => {
+      reject(new Error(`timed out waiting for agent audio track (${peerId}) [${stalledLayer()}]`))
     }, 30_000)
     pc.ontrack = (event) => {
       if (event.track instanceof RemoteAudioTrack) {
-        clearTimeout(timer)
+        clearTimeout(agentAudioTimer)
         resolve(event.track)
       }
     }
   })
+  // The promise is awaited below; keep a rejection from an early failure from being unhandled.
+  agentAudioPromise.catch(() => undefined)
 
   const teardownNegotiate = autoNegotiate({ pc, signaling, polite: true })
-  await signaling.connect()
-  await waitForConnection(pc)
+  try {
+    await signaling.connect()
+    try {
+      await waitForConnection(pc)
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} (${peerId}) [${stalledLayer()}]`,
+      )
+    }
 
-  await mic.writeSample(Buffer.alloc(960), 5)
-  const agentAudio = await agentAudioPromise
-
-  return { pc, signaling, mic, agentAudio, teardownNegotiate }
+    await mic.writeSample(Buffer.alloc(960), 5)
+    const agentAudio = await agentAudioPromise
+    return { pc, signaling, mic, agentAudio, teardownNegotiate }
+  } catch (error) {
+    clearTimeout(agentAudioTimer)
+    teardownNegotiate()
+    pc.close()
+    signaling.disconnect()
+    throw error
+  }
 }
 
 function closeClient(client: ConnectedClient): void {
@@ -208,11 +241,10 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
         await pod.ensureSession(sessionId)
       }
 
-      const [client1, client2, client3] = await Promise.all([
-        connectClientToSession(wsUrl, SESSION_IDS[0], CLIENT_IDS[0]),
-        connectClientToSession(wsUrl, SESSION_IDS[1], CLIENT_IDS[1]),
-        connectClientToSession(wsUrl, SESSION_IDS[2], CLIENT_IDS[2]),
-      ])
+      const [client1, client2, client3] = await connectAllOrCloseAll(
+        [0, 1, 2].map((i) => () => connectClientToSession(wsUrl, SESSION_IDS[i], CLIENT_IDS[i])),
+        closeClient,
+      )
 
       let listenerRx: ReturnType<typeof createLiveInboundReader> | undefined
       try {
@@ -401,10 +433,10 @@ describe.skipIf(!sessionPodMixIntegrationNativeAvailable())(
       await pod.ensureSession(SESSION_IDS[0])
       await pod.ensureSession(SESSION_IDS[1])
 
-      const [talker, listener] = await Promise.all([
-        connectClientToSession(wsUrl, SESSION_IDS[0], CLIENT_IDS[0]),
-        connectClientToSession(wsUrl, SESSION_IDS[1], CLIENT_IDS[1]),
-      ])
+      const [talker, listener] = await connectAllOrCloseAll(
+        [0, 1].map((i) => () => connectClientToSession(wsUrl, SESSION_IDS[i], CLIENT_IDS[i])),
+        closeClient,
+      )
 
       let listenerRx: ReturnType<typeof createLiveInboundReader> | undefined
       try {

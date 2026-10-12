@@ -27,6 +27,9 @@ npx tsc --noEmit -p scripts/ci/tsconfig.typecheck.json
 echo "==> lint"
 npm run lint
 
+echo "==> format:check (Prettier, repo-wide)"
+npm run format:check
+
 echo "==> helpers unit tests (vitest, no native .node; excludes *.integration.test.ts)"
 bash scripts/ci/run-helpers-unit-tests.sh
 

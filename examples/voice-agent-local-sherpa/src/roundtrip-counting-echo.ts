@@ -321,6 +321,9 @@ export async function playTtsAndCollect(params: {
     params.timeoutMs,
     params.finalizeWaitMs,
   )
+  // The transcript wait can reject (timeout) while playback is still pending; without a handler
+  // attached now, Node reports an unhandled rejection with a raw stack instead of our failure report.
+  recognizedPromise.catch(() => undefined)
   await playbackPromise
   const recognized = await recognizedPromise
   // Long echo TTS can still emit a prefix final before playback ends — prefer longest transcript.

@@ -1698,10 +1698,16 @@ impl VoiceAgent {
             tts_vendor_calls_inflight.fetch_add(1, Ordering::SeqCst);
             let synthesize_result = provider.synthesize(text).await;
             tts_vendor_calls_inflight.fetch_sub(1, Ordering::SeqCst);
-            (synthesize_result, provider.take_open_wait())
+            let cache_hit = if synthesize_result.is_ok() {
+                provider.take_cache_hit()
+            } else {
+                None
+            };
+            (synthesize_result, provider.take_open_wait(), cache_hit)
         };
-        let (chunks, open_wait) = chunks;
+        let (chunks, open_wait, cache_hit) = chunks;
         Self::emit_tts_wait(event_bus, open_wait);
+        Self::emit_tts_phrase_cache_hit(event_bus, cache_hit);
         Self::record_tts_job_latency(inner, tts_started).await;
         let chunks = match chunks {
             Ok(chunks) => chunks,
@@ -1858,10 +1864,16 @@ impl VoiceAgent {
             tts_vendor_calls_inflight.fetch_add(1, Ordering::SeqCst);
             let result = provider.synthesize_progressive(text, Some(sink)).await;
             tts_vendor_calls_inflight.fetch_sub(1, Ordering::SeqCst);
-            (result, provider.take_open_wait())
+            let cache_hit = if result.is_ok() {
+                provider.take_cache_hit()
+            } else {
+                None
+            };
+            (result, provider.take_open_wait(), cache_hit)
         };
-        let (synth_result, open_wait) = synth_result;
+        let (synth_result, open_wait, cache_hit) = synth_result;
         Self::emit_tts_wait(event_bus, open_wait);
+        Self::emit_tts_phrase_cache_hit(event_bus, cache_hit);
         Self::record_tts_job_latency(inner, tts_started).await;
 
         // Dropping the last sender happens when synthesize_progressive returns
@@ -1907,6 +1919,12 @@ impl VoiceAgent {
                 wait.attempts,
                 wait.reason,
             ));
+        }
+    }
+
+    fn emit_tts_phrase_cache_hit(event_bus: &SpeechEventBus, cache_hit: Option<u32>) {
+        if let Some(chars) = cache_hit {
+            event_bus.emit(SpeechEvent::tts_phrase_cache_hit(chars));
         }
     }
 

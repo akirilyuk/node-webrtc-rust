@@ -13,6 +13,8 @@
 //!   weighs.
 //! - Keys carry project, vendor, model, model path, voice and normalised text, so tenants
 //!   and voices never share an entry.
+//! - Each hit is reported once through [`TtsProvider::take_cache_hit`], which
+//!   [`crate::VoiceAgent`] turns into the `tts_phrase_cache_hit` speech event.
 //!
 //! Environment (read once per process):
 //!
@@ -21,7 +23,7 @@
 //! | `VOICE_TTS_PHRASE_CACHE` | on | `0` / `false` / `no` / `off` disables |
 //! | `VOICE_TTS_PHRASE_CACHE_MAX_BYTES` | 16 MiB | total PCM budget |
 //! | `VOICE_TTS_PHRASE_CACHE_MAX_ENTRY_BYTES` | 2 MiB | larger phrases are not cached |
-//! | `VOICE_TTS_PHRASE_CACHE_VENDORS` | `local-sherpa,cluster-sherpa` | comma list of TTS vendors |
+//! | `VOICE_TTS_PHRASE_CACHE_VENDORS` | `*` | `*` caches every TTS vendor; a comma list of vendors narrows it |
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -53,7 +55,7 @@ pub fn normalize_phrase_text(text: &str) -> String {
 
 const DEFAULT_MAX_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MAX_ENTRY_BYTES: usize = 2 * 1024 * 1024;
-const DEFAULT_VENDORS: &str = "local-sherpa,cluster-sherpa";
+const DEFAULT_VENDORS: &str = "*";
 
 /// Cache key: everything that changes the audio for the same text.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -63,6 +65,7 @@ pub struct PhraseKey {
     model: String,
     model_path: String,
     voice: String,
+    endpoint: String,
     text: String,
 }
 
@@ -74,17 +77,19 @@ impl PhraseKey {
             model: cfg.model.clone().unwrap_or_default(),
             model_path: cfg.model_path.clone().unwrap_or_default(),
             voice: cfg.voice.clone().unwrap_or_default(),
+            endpoint: cfg.endpoint.clone().unwrap_or_default(),
             text: normalized.to_string(),
         }
     }
 
-    /// Same project, vendor, model, model path and voice (any text).
+    /// Same project, vendor, model, model path, voice and endpoint (any text).
     fn same_group(&self, other: &Self) -> bool {
         self.project_id == other.project_id
             && self.vendor == other.vendor
             && self.model == other.model
             && self.model_path == other.model_path
             && self.voice == other.voice
+            && self.endpoint == other.endpoint
     }
 }
 
@@ -142,7 +147,9 @@ impl CacheSettings {
     }
 
     pub fn caches_vendor(&self, vendor: TtsVendor) -> bool {
-        self.vendors.iter().any(|item| item == vendor.as_str())
+        self.vendors
+            .iter()
+            .any(|item| item == "*" || item == vendor.as_str())
     }
 }
 
@@ -276,6 +283,7 @@ pub struct CachingTtsProvider {
     config: TtsConfig,
     cache: Arc<PhraseCache>,
     project_id: Mutex<String>,
+    last_hit: Mutex<Option<u32>>,
 }
 
 impl CachingTtsProvider {
@@ -285,6 +293,13 @@ impl CachingTtsProvider {
             config,
             cache,
             project_id: Mutex::new(String::new()),
+            last_hit: Mutex::new(None),
+        }
+    }
+
+    fn set_last_hit(&self, value: Option<u32>) {
+        if let Ok(mut guard) = self.last_hit.lock() {
+            *guard = value;
         }
     }
 
@@ -319,6 +334,10 @@ impl TtsProvider for CachingTtsProvider {
         self.inner.take_open_wait()
     }
 
+    fn take_cache_hit(&self) -> Option<u32> {
+        self.last_hit.lock().ok().and_then(|mut g| g.take())
+    }
+
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         self.synthesize_progressive(text, None).await
     }
@@ -341,6 +360,7 @@ impl TtsProvider for CachingTtsProvider {
     ) -> SpeechResult<TtsSynthesis> {
         let normalized = normalize_phrase_text(text);
         if normalized.is_empty() {
+            self.set_last_hit(None);
             return Ok(TtsSynthesis {
                 chunks: Vec::new(),
                 complete: true,
@@ -352,6 +372,7 @@ impl TtsProvider for CachingTtsProvider {
 
         if let Some(chunk) = self.cache.get(&key) {
             otel::record_sherpa_tts_phrase_cache_hit(&attrs);
+            self.set_last_hit(Some(text.chars().count() as u32));
             if let Some(sink) = sink {
                 // The cached clip is the whole utterance; deliver it in bounded slices.
                 for slice in slice_for_sink(&chunk.pcm) {
@@ -372,6 +393,7 @@ impl TtsProvider for CachingTtsProvider {
         }
 
         otel::record_sherpa_tts_phrase_cache_miss(&attrs);
+        self.set_last_hit(None);
         let out = self
             .inner
             .synthesize_progressive_with_status(text, sink)
@@ -823,10 +845,10 @@ mod tests {
         assert!(defaults.enabled);
         assert_eq!(defaults.max_bytes, 16 * 1024 * 1024);
         assert_eq!(defaults.max_entry_bytes, 2 * 1024 * 1024);
-        assert_eq!(defaults.vendors, vec!["local-sherpa", "cluster-sherpa"]);
+        assert_eq!(defaults.vendors, vec!["*"]);
         assert!(defaults.caches_vendor(TtsVendor::LocalSherpa));
         assert!(defaults.caches_vendor(TtsVendor::ClusterSherpa));
-        assert!(!defaults.caches_vendor(TtsVendor::Openai));
+        assert!(defaults.caches_vendor(TtsVendor::Openai));
 
         for off in ["0", "false", "no", "off", " OFF "] {
             let settings = CacheSettings::from_lookup(|key| {
@@ -861,7 +883,9 @@ mod tests {
 
     #[tokio::test]
     async fn wrap_only_for_listed_vendors() {
-        let settings = CacheSettings::from_lookup(|_| None);
+        let settings = CacheSettings::from_lookup(|key| {
+            (key == "VOICE_TTS_PHRASE_CACHE_VENDORS").then(|| "local-sherpa".to_string())
+        });
         let cache = big_cache();
 
         let (inner, state) = Fake::boxed(4_000);
@@ -903,6 +927,67 @@ mod tests {
             2,
             "disabled caches nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn hit_reports_chars_once() {
+        let (inner, _state) = Fake::boxed(4_000);
+        let cache = big_cache();
+        let tts = wrapper(inner, &cfg(TtsVendor::LocalSherpa, "a"), &cache);
+        let text = "Grüße, hallo";
+        tts.synthesize(text).await.unwrap();
+        assert_eq!(tts.take_cache_hit(), None);
+        tts.synthesize(text).await.unwrap();
+        assert_eq!(tts.take_cache_hit(), Some(text.chars().count() as u32));
+        assert_ne!(text.chars().count(), text.len());
+        assert_eq!(tts.take_cache_hit(), None);
+    }
+
+    #[tokio::test]
+    async fn miss_reports_none() {
+        let (inner, _state) = Fake::boxed(4_000);
+        let cache = big_cache();
+        let tts = wrapper(inner, &cfg(TtsVendor::LocalSherpa, "a"), &cache);
+        tts.synthesize("one").await.unwrap();
+        assert_eq!(tts.take_cache_hit(), None);
+        tts.synthesize("one").await.unwrap();
+        tts.synthesize("two").await.unwrap();
+        assert_eq!(tts.take_cache_hit(), None, "a miss clears the previous hit");
+    }
+
+    #[test]
+    fn star_caches_every_vendor() {
+        let settings = CacheSettings::from_lookup(|_| None);
+        assert!(settings.caches_vendor(TtsVendor::Openai));
+        assert!(settings.caches_vendor(TtsVendor::LocalSherpa));
+    }
+
+    #[test]
+    fn explicit_list_narrows_vendors() {
+        let settings = CacheSettings::from_lookup(|key| {
+            (key == "VOICE_TTS_PHRASE_CACHE_VENDORS").then(|| "local-sherpa".to_string())
+        });
+        assert!(settings.caches_vendor(TtsVendor::LocalSherpa));
+        assert!(!settings.caches_vendor(TtsVendor::Openai));
+    }
+
+    #[tokio::test]
+    async fn endpoint_is_part_of_the_key() {
+        let (inner, state) = Fake::boxed(4_000);
+        let cache = big_cache();
+        let mut a = cfg(TtsVendor::LocalSherpa, "a");
+        a.endpoint = Some("http://a".into());
+        let mut b = a.clone();
+        b.endpoint = Some("http://b".into());
+        let first = wrapper(inner, &a, &cache);
+        first.synthesize("hello").await.unwrap();
+        // Same shared inner call counter: build a second wrapper over a fresh fake sharing the cache.
+        let (inner2, state2) = Fake::boxed(4_000);
+        let second = wrapper(inner2, &b, &cache);
+        second.synthesize("hello").await.unwrap();
+        assert_eq!(state.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(state2.calls.load(Ordering::SeqCst), 1, "other endpoint misses");
+        assert_eq!(second.take_cache_hit(), None);
     }
 
     #[test]

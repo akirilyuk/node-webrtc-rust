@@ -18,6 +18,8 @@ fn install_rustls_crypto_provider() {
 #[napi::module_init]
 fn init() {
     install_rustls_crypto_provider();
+    // No-op unless WNR_LOG_FILE is set (CI failure traces).
+    crate::native_trace::install_from_env();
     let rt = Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()

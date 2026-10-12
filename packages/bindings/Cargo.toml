@@ -44,6 +44,9 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 tokio = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
+# Opt-in native trace log (WNR_LOG_FILE); see src/native_trace.rs.
+env_logger = "0.11"
+log = "0.4"
 
 [build-dependencies]
 napi-build = "2"

@@ -108,11 +108,13 @@ impl VendorFactory for TagPushSttFactory {
 }
 
 fn agent_config(stt_model: &str) -> VoiceAgentConfig {
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.gate_stt = true;
-    vad.min_silence_duration_ms = 200;
-    vad.stt_gate_hold_ms = 100;
+    let vad = VadConfig {
+        enabled: true,
+        gate_stt: true,
+        min_silence_duration_ms: 200,
+        stt_gate_hold_ms: 100,
+        ..VadConfig::default()
+    };
     VoiceAgentConfig {
         stt: Some(SttConfig {
             provider: SttVendor::Mock,

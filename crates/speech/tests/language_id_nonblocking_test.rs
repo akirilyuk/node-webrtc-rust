@@ -196,13 +196,15 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 80;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: true,
+        stt_gate_hold_ms: 80,
+        ..VadConfig::default()
+    };
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -254,11 +256,13 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
+    let mut vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        ..VadConfig::default()
+    };
     // gate_stt off: mock STT never emits finals; gate-hold finalize would skip speaking_end.
     // C1 (`stt_listen_timeout_ms`) closes the stream and pairs user_speaking_end with LID.
     vad.gate_stt = false;
@@ -601,14 +605,16 @@ fn agent_with_overlap_tracking_lid(
     );
     registry.register_tts(TtsVendor::Mock, factory as Arc<dyn VendorFactory>);
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 80;
-    vad.stt_listen_timeout_ms = 60_000;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: true,
+        stt_gate_hold_ms: 80,
+        stt_listen_timeout_ms: 60_000,
+        ..VadConfig::default()
+    };
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -914,14 +920,16 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 80;
-    vad.stt_listen_timeout_ms = 60_000;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: true,
+        stt_gate_hold_ms: 80,
+        stt_listen_timeout_ms: 60_000,
+        ..VadConfig::default()
+    };
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -1005,14 +1013,16 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 0;
-    vad.stt_listen_timeout_ms = 60_000;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: true,
+        stt_gate_hold_ms: 0,
+        stt_listen_timeout_ms: 60_000,
+        ..VadConfig::default()
+    };
 
     VoiceAgent::new(
         VoiceAgentConfig {
@@ -1185,12 +1195,14 @@ fn agent_with_counting_lid_timing_min(
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = gate_stt;
+    let mut vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt,
+        ..VadConfig::default()
+    };
     if gate_stt {
         vad.stt_gate_hold_ms = 80;
     }
@@ -1283,15 +1295,13 @@ async fn collect_events_until_final(
     events
 }
 
+type InstantSlot = Arc<Mutex<Option<Instant>>>;
+
 fn agent_with_timed_overlap_lid(
     stt_bytes: Arc<Mutex<usize>>,
     guard: Arc<OverlapGuard>,
     lid_sleep_ms: u64,
-) -> (
-    Arc<VoiceAgent>,
-    Arc<Mutex<Option<Instant>>>,
-    Arc<Mutex<Option<Instant>>>,
-) {
+) -> (Arc<VoiceAgent>, InstantSlot, InstantSlot) {
     let started_at = Arc::new(Mutex::new(None));
     let ended_at = Arc::new(Mutex::new(None));
     let lid_started = Arc::clone(&started_at);
@@ -1362,14 +1372,16 @@ fn agent_with_timed_overlap_lid(
     );
     registry.register_tts(TtsVendor::Mock, factory as Arc<dyn VendorFactory>);
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 80;
-    vad.stt_listen_timeout_ms = 60_000;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: true,
+        stt_gate_hold_ms: 80,
+        stt_listen_timeout_ms: 60_000,
+        ..VadConfig::default()
+    };
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -1917,13 +1929,15 @@ async fn lid_error_does_not_block_final() {
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 80;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: true,
+        stt_gate_hold_ms: 80,
+        ..VadConfig::default()
+    };
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {
@@ -2061,14 +2075,16 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
     );
     registry.register_tts(TtsVendor::Mock, factory as Arc<dyn VendorFactory>);
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 80;
-    vad.stt_listen_timeout_ms = 60_000;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: true,
+        stt_gate_hold_ms: 80,
+        stt_listen_timeout_ms: 60_000,
+        ..VadConfig::default()
+    };
 
     let agent = VoiceAgent::new(
         VoiceAgentConfig {
@@ -2341,14 +2357,16 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
     );
     registry.register_stt(SttVendor::LocalSherpa, factory);
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 80;
-    vad.stt_listen_timeout_ms = 60_000;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: true,
+        stt_gate_hold_ms: 80,
+        stt_listen_timeout_ms: 60_000,
+        ..VadConfig::default()
+    };
 
     let agent = VoiceAgent::new(
         VoiceAgentConfig {

@@ -393,7 +393,9 @@ fn levels(pcm: &[u8]) -> Vec<u32> {
         .map(|c| {
             let n = (c.len() / 2).max(1);
             let sum: u64 = c
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs() as u64)
                 .sum();
             (sum / n as u64) as u32

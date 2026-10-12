@@ -126,13 +126,15 @@ async fn empty_leftover_final_while_speaking_does_not_drop_real_utterance() {
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 80;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_gate_hold_ms: 80,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let config = VoiceAgentConfig {

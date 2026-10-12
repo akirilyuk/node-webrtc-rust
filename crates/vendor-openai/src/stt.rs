@@ -39,6 +39,7 @@ const OPENAI_PCM_RATE: u32 = 24_000;
 const DEFAULT_OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 
 /// Legacy test helper — only `gpt-live-transcribe` uses Realtime by default in VoiceAgent.
+#[cfg(test)]
 pub(crate) fn model_uses_realtime_transcription(model: &str) -> bool {
     matches!(
         stt_default_transport(model),
@@ -71,6 +72,7 @@ pub struct OpenAiStt {
     language: Option<String>,
     transport: Transport,
     /// When set, force Realtime WS (committed-turn / live tests) instead of the file default.
+    #[allow(dead_code)] // set by constructors; only live tests branch on it
     force_realtime: bool,
 }
 
@@ -377,18 +379,17 @@ impl HttpBackend {
                 if use_sse {
                     http_transcribe_sse(pcm, &api_key, &url, &model, language.as_deref(), tx).await
                 } else {
-                    match http_transcribe(pcm, &api_key, &url, &model, language.as_deref()).await? {
-                        Some(transcript) => {
-                            let _ = tx.send(transcript);
-                        }
-                        None => {}
+                    if let Some(transcript) =
+                        http_transcribe(pcm, &api_key, &url, &model, language.as_deref()).await?
+                    {
+                        let _ = tx.send(transcript);
                     }
                     Ok(())
                 }
             });
             *self.poll_rx.lock().await = Some(rx);
             *self.poll_task.lock().await = Some(handle);
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(feature = "live"))]
@@ -598,6 +599,7 @@ impl TranscriptAssembler {
 }
 
 /// OpenAPI `transcription_session.update` on a Realtime WebSocket (`?model=` handshake).
+#[cfg(test)]
 pub(crate) fn transcription_session_update_body(model: &str, language: Option<&str>) -> Value {
     let mut input_audio_transcription = serde_json::json!({ "model": model });
     if let Some(language) = language {
@@ -1489,7 +1491,7 @@ mod tests {
                         body
                     );
                     let _ = stream.write_all(response.as_bytes()).await;
-                    let _ = stream.shutdown();
+                    let _ = stream.shutdown().await;
                 }
             });
             (format!("http://{addr}/v1"), posts)

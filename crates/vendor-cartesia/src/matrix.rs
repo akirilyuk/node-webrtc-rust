@@ -17,7 +17,7 @@ pub fn default_model_id() -> &'static str {
 }
 
 /// Alias for callers that expect a `DEFAULT_MODEL_ID` name.
-pub static DEFAULT_MODEL_ID: LazyLock<&'static str> = LazyLock::new(|| default_model_id());
+pub static DEFAULT_MODEL_ID: LazyLock<&'static str> = LazyLock::new(default_model_id);
 
 pub static DOCUMENTED_WS_MODELS: LazyLock<&'static [&'static str]> =
     LazyLock::new(|| voice_catalog::tts_models("cartesia").expect("cartesia in voice catalog"));

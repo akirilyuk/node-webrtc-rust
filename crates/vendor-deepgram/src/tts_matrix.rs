@@ -6,6 +6,7 @@
 
 pub const V1_SPEAK_DOC: &str = "https://developers.deepgram.com/reference/text-to-speech/speak";
 pub const V2_SPEAK_DOC: &str = "https://developers.deepgram.com/docs/flux-tts/overview";
+#[allow(dead_code)] // documentation reference, kept next to the other doc URLs
 pub const V2_SERVER_MESSAGES_DOC: &str =
     "https://developers.deepgram.com/docs/flux-tts/server-messages";
 
@@ -28,6 +29,7 @@ pub enum TtsProgressiveTransport {
     /// `wss://api.deepgram.com/v2/speak` — Flux `flux-*` models; events include `SpeechStarted`, `SpeechMetadata`.
     WebSocketV2,
     /// Full-body REST when progressive socket is unavailable without `live`.
+    #[allow(dead_code)] // documented fallback, selected only without `live`
     RestFullBody,
 }
 

@@ -3,7 +3,6 @@
 //! REST: `POST https://texttospeech.googleapis.com/v1/text:synthesize`
 //! Streaming: `StreamingSynthesize` — `matrix::TTS_STREAMING_DOC`
 
-use futures_util::StreamExt;
 use google_cloud_texttospeech_v1::client::TextToSpeech;
 use google_cloud_texttospeech_v1::model::streaming_synthesis_input::InputSource;
 use google_cloud_texttospeech_v1::model::streaming_synthesize_request::StreamingRequest;
@@ -97,7 +96,7 @@ pub async fn streaming_synthesize(
     text: &str,
     sink: Option<TtsProgressiveSink>,
 ) -> SpeechResult<Vec<TtsAudioChunk>> {
-    let mut client = TextToSpeech::builder()
+    let client = TextToSpeech::builder()
         .build()
         .await
         .map_err(|err| SpeechError::Vendor {

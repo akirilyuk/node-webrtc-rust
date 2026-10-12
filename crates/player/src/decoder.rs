@@ -1,6 +1,6 @@
 //! Symphonia-based decode pipeline producing stereo 48 kHz PCM bytes.
 
-use std::io::{self, Cursor, Seek, SeekFrom};
+use std::io::{self};
 
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -41,7 +41,7 @@ impl DecoderSession {
             )
             .map_err(|e| PlayerError::DecodeFailed(format!("probe failed: {e}")))?;
 
-        let mut format = probed.format;
+        let format = probed.format;
         let track = format
             .tracks()
             .iter()
@@ -138,7 +138,7 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
                     interleaved.push(b.chan(ch)[frame]);
                 }
             }
-            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+            f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec()
         }
         AudioBufferRef::S32(b) => {
             let spec = b.spec();
@@ -151,7 +151,7 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
                     interleaved.push(b.chan(ch)[frame] as f32 / i32::MAX as f32);
                 }
             }
-            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+            f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec()
         }
         AudioBufferRef::S24(b) => {
             let spec = b.spec();
@@ -164,7 +164,7 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
                     interleaved.push(b.chan(ch)[frame].inner() as f32 / 8_388_608.0);
                 }
             }
-            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+            f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec()
         }
         AudioBufferRef::S16(b) => {
             let spec = b.spec();
@@ -177,7 +177,7 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
                     interleaved.push(b.chan(ch)[frame] as f32 / i16::MAX as f32);
                 }
             }
-            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+            f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec()
         }
         _ => {
             let f32_buf = buf.make_equivalent::<f32>();

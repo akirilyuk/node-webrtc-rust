@@ -127,7 +127,7 @@ impl ElevenLabsTts {
                 vendor: "elevenlabs".into(),
                 message: err.to_string(),
             })?;
-            return Ok(vec![pcm_chunk_from_mono(mono.as_ref())]);
+            Ok(vec![pcm_chunk_from_mono(mono.as_ref())])
         }
 
         #[cfg(not(feature = "live"))]

@@ -266,7 +266,7 @@ impl SttProvider for SherpaStt {
             session.decode_ready("sherpa decode loop capped at 64 steps (possible is_ready stuck)");
 
             let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            if push == 1 || push % 50 == 0 {
+            if push == 1 || push.is_multiple_of(50) {
                 voice_debug(format!("sherpa push_audio samples={}", samples.len()));
             }
 
@@ -411,7 +411,7 @@ impl SttProvider for SherpaStt {
                 accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
                 session.stream.accept_waveform(SAMPLE_RATE, &samples);
                 let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                if push == 1 || push % 50 == 0 {
+                if push == 1 || push.is_multiple_of(50) {
                     voice_debug(format!("sherpa push_audio samples={}", samples.len()));
                 }
             }

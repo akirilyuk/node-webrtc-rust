@@ -410,6 +410,12 @@ impl JsMixGraph {
     }
 }
 
+impl Default for JsMixGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Identity quaternion helper for pose setup from TypeScript.
 #[napi]
 pub fn js_quat_identity() -> JsQuat {

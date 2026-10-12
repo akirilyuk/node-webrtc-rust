@@ -20,7 +20,7 @@ pub fn default_stt_model() -> &'static str {
 }
 
 /// Alias for callers that expect a `DEFAULT_STT_MODEL` name.
-pub static DEFAULT_STT_MODEL: LazyLock<&'static str> = LazyLock::new(|| default_stt_model());
+pub static DEFAULT_STT_MODEL: LazyLock<&'static str> = LazyLock::new(default_stt_model);
 
 /// PCM rate for `audio_format=pcm_16000` (matches voice pipeline STT input).
 pub const STT_PCM_SAMPLE_RATE: u32 = 16_000;

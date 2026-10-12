@@ -122,7 +122,7 @@ impl SttProvider for GoogleStt {
             return Ok(None);
         }
         if let Some(rx) = state.transcript_rx.as_mut() {
-            if let Some(t) = rx.try_recv().ok() {
+            if let Ok(t) = rx.try_recv() {
                 return Ok(Some(t));
             }
         }

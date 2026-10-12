@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
-use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::error::SpeechResult;
 use node_webrtc_rust_speech::pcm::{
     duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
 };

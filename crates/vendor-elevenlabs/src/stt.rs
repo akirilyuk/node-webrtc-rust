@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::stt_matrix::{
     default_stt_model, input_audio_chunk_json, parse_realtime_message, realtime_websocket_url,
-    validate_stt_model, STT_PCM_SAMPLE_RATE,
+    validate_stt_model,
 };
 
 #[cfg(feature = "live")]
@@ -210,6 +210,7 @@ impl SttProvider for ElevenLabsStt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stt_matrix::STT_PCM_SAMPLE_RATE;
     use node_webrtc_rust_speech::config::SttVendor;
 
     #[test]

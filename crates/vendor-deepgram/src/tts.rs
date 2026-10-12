@@ -124,7 +124,7 @@ impl DeepgramTts {
             if let Some(s) = _sink {
                 let _ = s.send(chunk.clone());
             }
-            return Ok(vec![chunk]);
+            Ok(vec![chunk])
         }
 
         #[cfg(not(feature = "live"))]

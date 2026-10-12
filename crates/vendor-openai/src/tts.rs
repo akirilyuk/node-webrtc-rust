@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::factory::api_key_from;
-use crate::matrix::{tts_delivery_plan, tts_sse_allowed, TtsStreamFormat};
+use crate::matrix::tts_sse_allowed;
 
 /// OpenAI TTS PCM output sample rate (16-bit mono LE).
 const OPENAI_TTS_PCM_SAMPLE_RATE: u32 = 24_000;
@@ -373,7 +373,7 @@ impl OpenAiTts {
     }
 }
 
-#[cfg(feature = "live")]
+#[cfg(all(test, feature = "live"))]
 pub(crate) fn parse_speech_sse_event_for_test(event: &Value) -> Option<Vec<u8>> {
     if event.get("type").and_then(Value::as_str) != Some("speech.audio.delta") {
         return None;
@@ -446,7 +446,7 @@ fn parse_speech_model(model: &str) -> SpeechModel {
 /// Upsample mono 24 kHz s16le to stereo 48 kHz for WebRTC outbound tracks.
 fn mono_24k_s16le_to_stereo_48k(mono_24k: &[u8]) -> bytes::Bytes {
     let mut mono_48k = Vec::with_capacity(mono_24k.len() * 2);
-    for sample in mono_24k.chunks_exact(2) {
+    for sample in mono_24k.as_chunks::<2>().0 {
         mono_48k.extend_from_slice(sample);
         mono_48k.extend_from_slice(sample);
     }
@@ -456,6 +456,7 @@ fn mono_24k_s16le_to_stereo_48k(mono_24k: &[u8]) -> bytes::Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::matrix::{tts_delivery_plan, TtsStreamFormat};
     use node_webrtc_rust_speech::config::TtsVendor;
 
     #[test]

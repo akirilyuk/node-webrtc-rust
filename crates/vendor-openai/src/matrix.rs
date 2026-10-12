@@ -33,14 +33,17 @@ pub enum SttRealtimeMode {
     CommittedTurn,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsStreamFormat {
     /// Chunked raw PCM (`stream_format=audio`).
     Audio,
     /// `stream_format=sse` — not for `tts-1` / `tts-1-hd`.
+    #[allow(dead_code)] // documented wire format; only asserted against in tests
     Sse,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TtsDeliveryPlan {
     pub try_stream: TtsStreamFormat,
@@ -73,6 +76,7 @@ pub fn stt_file_sse_supported(model: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 pub fn stt_uses_realtime_ws(default: SttDefaultTransport) -> bool {
     matches!(default, SttDefaultTransport::RealtimeLive)
 }
@@ -88,6 +92,7 @@ pub fn documented_realtime_model(mode: SttRealtimeMode) -> &'static str {
 /// Connect with `Authorization: Bearer <ek_…>` from `POST /v1/realtime/client_secrets`.
 pub const REALTIME_WEBSOCKET_URL: &str = "wss://api.openai.com/v1/realtime";
 
+#[cfg(test)]
 pub fn tts_delivery_plan(model: &str) -> TtsDeliveryPlan {
     match model {
         "tts-1" | "tts-1-hd" => TtsDeliveryPlan {

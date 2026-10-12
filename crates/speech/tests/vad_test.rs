@@ -16,8 +16,10 @@ fn stereo_frame(samples_per_channel: usize, amplitude: i16) -> Vec<u8> {
 #[cfg(not(feature = "silero-vad"))]
 #[test]
 fn silero_provider_errors_when_feature_not_compiled() {
-    let mut config = VadConfig::default();
-    config.provider = "silero".to_string();
+    let config = VadConfig {
+        provider: "silero".to_string(),
+        ..VadConfig::default()
+    };
     match VadEngine::new(config) {
         Err(e) => {
             let msg = e.to_string();
@@ -32,8 +34,10 @@ fn silero_provider_errors_when_feature_not_compiled() {
 
 #[test]
 fn unsupported_vad_provider_errors() {
-    let mut config = VadConfig::default();
-    config.provider = "webrtc".to_string();
+    let config = VadConfig {
+        provider: "webrtc".to_string(),
+        ..VadConfig::default()
+    };
     match VadEngine::new(config) {
         Err(e) => assert!(e.to_string().contains("webrtc")),
         Ok(_) => panic!("unknown provider must fail"),
@@ -42,10 +46,12 @@ fn unsupported_vad_provider_errors() {
 
 #[test]
 fn energy_vad_detects_loud_frame() {
-    let mut config = VadConfig::default();
-    config.threshold = 0.05;
-    config.min_speech_duration_ms = 20;
-    config.min_silence_duration_ms = 20;
+    let config = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 20,
+        min_silence_duration_ms: 20,
+        ..VadConfig::default()
+    };
 
     let mut vad = VadEngine::new(config).unwrap();
     let loud = stereo_frame(960, i16::MAX / 3);
@@ -55,8 +61,10 @@ fn energy_vad_detects_loud_frame() {
 
 #[test]
 fn energy_vad_ignores_silence() {
-    let mut config = VadConfig::default();
-    config.threshold = 0.2;
+    let config = VadConfig {
+        threshold: 0.2,
+        ..VadConfig::default()
+    };
 
     let mut vad = VadEngine::new(config).unwrap();
     let silence = stereo_frame(960, 0);
@@ -75,11 +83,13 @@ fn resample_produces_mono_16k() {
 
 #[test]
 fn min_silence_duration_delays_speech_end() {
-    let mut config = VadConfig::default();
-    config.threshold = 0.05;
-    config.min_speech_duration_ms = 40;
-    config.min_silence_duration_ms = 60;
-    config.speech_pad_ms = 20;
+    let config = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 60,
+        speech_pad_ms: 20,
+        ..VadConfig::default()
+    };
 
     let mut vad = VadEngine::new(config).unwrap();
     let loud = stereo_frame(960, i16::MAX / 3);
@@ -111,11 +121,13 @@ fn min_silence_duration_delays_speech_end() {
 
 #[test]
 fn short_intra_utterance_gap_does_not_end_speech() {
-    let mut config = VadConfig::default();
-    config.threshold = 0.05;
-    config.min_speech_duration_ms = 40;
-    config.min_silence_duration_ms = 300;
-    config.speech_pad_ms = 20;
+    let config = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 300,
+        speech_pad_ms: 20,
+        ..VadConfig::default()
+    };
 
     let mut vad = VadEngine::new(config).unwrap();
     let loud = stereo_frame(960, i16::MAX / 3);
@@ -141,11 +153,13 @@ fn short_intra_utterance_gap_does_not_end_speech() {
 
 #[test]
 fn large_speech_pad_does_not_shorten_min_speech_before_start() {
-    let mut config = VadConfig::default();
-    config.threshold = 0.05;
-    config.min_speech_duration_ms = 60;
-    config.min_silence_duration_ms = 20;
-    config.speech_pad_ms = 500;
+    let config = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 60,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 500,
+        ..VadConfig::default()
+    };
 
     let mut vad = VadEngine::new(config).unwrap();
     let loud = stereo_frame(960, i16::MAX / 3);
@@ -163,10 +177,12 @@ fn large_speech_pad_does_not_shorten_min_speech_before_start() {
 
 #[test]
 fn is_pending_speech_only_before_speech_start() {
-    let mut config = VadConfig::default();
-    config.threshold = 0.05;
-    config.min_speech_duration_ms = 60;
-    config.min_silence_duration_ms = 20;
+    let config = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 60,
+        min_silence_duration_ms: 20,
+        ..VadConfig::default()
+    };
 
     let mut vad = VadEngine::new(config).unwrap();
     let loud = stereo_frame(960, i16::MAX / 3);
@@ -190,9 +206,11 @@ fn is_pending_speech_only_before_speech_start() {
 
 #[test]
 fn vad_disabled_emits_no_transitions() {
-    let mut config = VadConfig::default();
-    config.enabled = false;
-    config.threshold = 0.05;
+    let config = VadConfig {
+        enabled: false,
+        threshold: 0.05,
+        ..VadConfig::default()
+    };
 
     let mut vad = VadEngine::new(config).unwrap();
     let loud = stereo_frame(960, i16::MAX / 3);
@@ -204,11 +222,13 @@ fn vad_disabled_emits_no_transitions() {
 
 #[test]
 fn speech_end_allows_new_utterance() {
-    let mut config = VadConfig::default();
-    config.threshold = 0.05;
-    config.min_speech_duration_ms = 40;
-    config.min_silence_duration_ms = 40;
-    config.speech_pad_ms = 20;
+    let config = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        speech_pad_ms: 20,
+        ..VadConfig::default()
+    };
 
     let mut vad = VadEngine::new(config).unwrap();
     let loud = stereo_frame(960, i16::MAX / 3);

@@ -54,7 +54,6 @@ impl AwsTts {
     async fn synthesize_pcm(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         #[cfg(feature = "live")]
         {
-            use futures_util::StreamExt;
             let voice_id = voice_id_from_name(&self.voice).map_err(SpeechError::Config)?;
             let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
                 .load()

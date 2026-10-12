@@ -44,7 +44,7 @@ async fn tts_injection_writes_pcm_to_outbound() {
 
     let chunks = written.lock().unwrap();
     assert!(!chunks.is_empty());
-    assert!(chunks[0].0.len() > 0);
+    assert!(!chunks[0].0.is_empty());
 }
 
 #[tokio::test]
@@ -212,12 +212,16 @@ async fn non_blocking_two_jobs_still_play_in_order() {
         .unwrap();
 
     agent.wait_tts_playback_idle().await.unwrap();
-    let chunks = written.lock().unwrap();
-    let total_bytes: usize = chunks.iter().map(|(pcm, _)| pcm.len()).sum();
+    let (total_bytes, writes) = {
+        let chunks = written.lock().unwrap();
+        (
+            chunks.iter().map(|(pcm, _)| pcm.len()).sum::<usize>(),
+            chunks.len(),
+        )
+    };
     assert!(
         total_bytes > 100_000,
-        "expected PCM from two TTS jobs, got {total_bytes} bytes in {} writes",
-        chunks.len()
+        "expected PCM from two TTS jobs, got {total_bytes} bytes in {writes} writes"
     );
     agent.stop().await.unwrap();
 }
@@ -241,11 +245,8 @@ async fn drain_speech_events(
     rx: &mut tokio::sync::broadcast::Receiver<SpeechEvent>,
 ) -> Vec<SpeechEvent> {
     let mut events = Vec::new();
-    loop {
-        match timeout(TokioDuration::from_millis(100), rx.recv()).await {
-            Ok(Ok(event)) => events.push(event),
-            _ => break,
-        }
+    while let Ok(Ok(event)) = timeout(TokioDuration::from_millis(100), rx.recv()).await {
+        events.push(event);
     }
     events
 }

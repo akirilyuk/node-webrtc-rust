@@ -7,7 +7,7 @@ use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor
 use node_webrtc_rust_speech::pcm::{
     i16_samples_to_bytes, stereo_48k_to_mono_16k, STT_MIN_BATCH_BYTES,
 };
-use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider, VendorFactory};
+use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, VendorFactory};
 use node_webrtc_rust_vendor_openai::{OpenAiFactory, OpenAiStt, OpenAiTts, DOCUMENTED_STT_MODELS};
 use tokio::sync::Mutex;
 

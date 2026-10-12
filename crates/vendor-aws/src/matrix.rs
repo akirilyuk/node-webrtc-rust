@@ -49,6 +49,7 @@ pub fn validate_tts_voice(voice: &str) -> Result<(), String> {
 }
 
 /// Parse documented `TranscriptEvent` JSON payload (IsPartial + Alternatives[0].Transcript).
+#[cfg(test)]
 pub fn parse_transcript_event_json(raw: &str) -> Option<(bool, String)> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let results = value.pointer("/Transcript/Results")?.as_array()?;

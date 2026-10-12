@@ -11,7 +11,7 @@ use node_webrtc_rust_voice_catalog as voice_catalog;
 
 /// Official Azure TTS ShortNames from shared `azure-tts-voices.json`.
 pub static DOCUMENTED_TTS_VOICES: LazyLock<&'static [&'static str]> =
-    LazyLock::new(|| voice_catalog::azure_tts_voices());
+    LazyLock::new(voice_catalog::azure_tts_voices);
 
 pub const STT_SHORT_AUDIO_DOC: &str =
     "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short";

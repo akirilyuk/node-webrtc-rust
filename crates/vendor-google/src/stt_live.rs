@@ -4,9 +4,7 @@
 //! V2 streaming: `Speech.StreamingRecognize` with `interim_results` — `matrix::STT_V2_STREAMING_DOC`.
 
 use bytes::Bytes;
-use futures_util::StreamExt;
 use google_cloud_speech_v2::client::Speech;
-use google_cloud_speech_v2::model::streaming_recognize_request::StreamingRequest;
 use google_cloud_speech_v2::model::{
     ExplicitDecodingConfig, RecognitionConfig, StreamingRecognitionConfig,
     StreamingRecognitionFeatures, StreamingRecognizeRequest,
@@ -105,7 +103,7 @@ pub async fn start_v2_streaming(
     model: &str,
     language: &str,
 ) -> SpeechResult<(mpsc::UnboundedReceiver<SttTranscript>, V2StreamHandle)> {
-    let mut client = Speech::builder()
+    let client = Speech::builder()
         .build()
         .await
         .map_err(|err| SpeechError::Vendor {

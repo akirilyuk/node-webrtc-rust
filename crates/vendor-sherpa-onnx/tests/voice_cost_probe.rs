@@ -286,7 +286,9 @@ fn clip_chunks() -> Vec<Bytes> {
     let data = std::fs::read(clip_path()).expect("read fixture wav");
     assert!(data.len() > 44, "wav too short");
     let samples: Vec<i16> = data[44..]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     assert!(!samples.is_empty(), "fixture has no samples");
@@ -297,7 +299,9 @@ fn clip_chunks() -> Vec<Bytes> {
         .take(STT_CLIP_SAMPLES)
         .collect();
     looped
-        .chunks_exact(STT_CHUNK_SAMPLES)
+        .as_chunks::<STT_CHUNK_SAMPLES>()
+        .0
+        .iter()
         .map(|chunk| {
             Bytes::from(
                 chunk

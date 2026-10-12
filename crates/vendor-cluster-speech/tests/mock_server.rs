@@ -117,7 +117,7 @@ impl Speech for MockSpeech {
         let rejected = self
             .state
             .reject_first_opens
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
         if rejected {
             self.state.rejected_opens.fetch_add(1, Ordering::SeqCst);
@@ -137,7 +137,6 @@ impl Speech for MockSpeech {
                     })),
                 }))
                 .await;
-            let mut utterance_open = false;
             loop {
                 // Stalled-server mode: do not read the next inbound message while paused.
                 // `enable()` registers the waiter before the flag check, so a resume that lands
@@ -156,7 +155,6 @@ impl Speech for MockSpeech {
                 };
                 match req.msg {
                     Some(transcribe_request::Msg::Audio(SttAudio { pcm_s16le })) => {
-                        utterance_open = true;
                         state.audio_frames.fetch_add(1, Ordering::SeqCst);
                         state
                             .audio_bytes_received
@@ -236,7 +234,6 @@ impl Speech for MockSpeech {
                                 msg: Some(transcribe_response::Msg::Finalized(SttFinalized {})),
                             }))
                             .await;
-                        utterance_open = false;
                         if state.relocate_after_finalize.load(Ordering::SeqCst) {
                             let _ = tx
                                 .send(Ok(TranscribeResponse {

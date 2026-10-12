@@ -21,7 +21,7 @@ pub(crate) fn add_stt_queued_bytes(n: usize) {
 
 /// Saturating subtract (a zeroed session can race with the worker's own subtract).
 pub(crate) fn sub_stt_queued_bytes(n: usize) {
-    let _ = STT_QUEUED_BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+    let _ = STT_QUEUED_BYTES.try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
         Some(cur.saturating_sub(n as u64))
     });
 }

@@ -38,15 +38,17 @@ const PHRASE: &str =
 const STOP_BOUND: Duration = Duration::from_secs(10);
 
 fn vad() -> VadConfig {
-    let mut vad = VadConfig::default();
-    vad.provider = "energy".into();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 200;
-    vad.speech_pad_ms = 500;
-    vad.min_silence_duration_ms = 1300;
-    vad.gate_stt = true;
-    vad.gate_stt_open_on_pending = true;
-    vad.stt_gate_hold_ms = 1000;
+    let mut vad = VadConfig {
+        provider: "energy".into(),
+        threshold: 0.05,
+        min_speech_duration_ms: 200,
+        speech_pad_ms: 500,
+        min_silence_duration_ms: 1300,
+        gate_stt: true,
+        gate_stt_open_on_pending: true,
+        stt_gate_hold_ms: 1000,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
     vad
 }

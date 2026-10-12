@@ -18,18 +18,13 @@ use crate::rtp_sender::RtpSender;
 static NEXT_RECEIVER_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Unified Plan transceiver direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RtpTransceiverDirection {
+    #[default]
     Sendrecv,
     Sendonly,
     Recvonly,
     Inactive,
-}
-
-impl Default for RtpTransceiverDirection {
-    fn default() -> Self {
-        Self::Sendrecv
-    }
 }
 
 impl From<RTCRtpTransceiverDirection> for RtpTransceiverDirection {

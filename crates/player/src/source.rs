@@ -94,7 +94,7 @@ impl Read for GrowingByteSource {
         if buf.is_empty() {
             return Ok(0);
         }
-        let mut guard = self.inner.data.lock().expect("growing source lock");
+        let guard = self.inner.data.lock().expect("growing source lock");
         let mut pos = self.inner.read_pos.load(Ordering::SeqCst);
 
         while pos >= guard.len() {

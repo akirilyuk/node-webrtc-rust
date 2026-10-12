@@ -46,12 +46,14 @@ fn loud_dc_stereo_frame() -> Vec<u8> {
 }
 
 fn vad_rnnoise_config(provider: NoiseSuppressionProvider) -> VoiceAgentConfig {
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = false;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: false,
+        ..VadConfig::default()
+    };
     vad.barge_in.use_vad = false;
 
     VoiceAgentConfig {

@@ -58,3 +58,14 @@ runs:
 
     - uses: ./.github/actions/ci-restore-workspace-ownership
       if: always()
+
+    # Native DTLS/ICE trace written by scripts/ci/run-pr-integration.sh. The script deletes the
+    # directory when the helpers integration step passes, so files exist only after that step failed.
+    - name: Upload native trace (helpers integration failed)
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: native-trace-${{ github.run_id }}
+        path: .test-logs/native-trace
+        if-no-files-found: ignore
+        retention-days: 7

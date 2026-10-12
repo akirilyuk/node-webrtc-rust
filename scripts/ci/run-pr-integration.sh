@@ -79,8 +79,24 @@ echo "==> native binding exports match index.d.ts"
 node scripts/ci/check-native-exports.mjs
 
 echo "==> helpers native integration tests"
-bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "helpers integration" -- \
-  npm run test:integration --workspace=@node-webrtc-rust/helpers
+# Native transport trace for failures only. The bindings write one bounded file per vitest worker
+# process ({pid}) when WNR_LOG_FILE is set (packages/bindings/src/native_trace.rs: transport
+# targets only, no customer content). The files are an artifact when this step fails
+# (.github/actions/ci-run-integration-tests) and are deleted when it passes.
+# Guard: packages/helpers/tests/native-trace-ci-wiring.test.ts (net.connect-stall-no-timeout).
+NATIVE_TRACE_DIR="$ROOT/.test-logs/native-trace"
+NATIVE_TRACE_RUST_LOG="dtls=trace,webrtc_dtls=trace,webrtc::dtls_transport=trace,webrtc::peer_connection=trace,webrtc_ice=trace,webrtc_sctp=trace,webrtc::sctp_transport=trace"
+rm -rf "$NATIVE_TRACE_DIR"
+mkdir -p "$NATIVE_TRACE_DIR"
+if WNR_LOG_FILE="$NATIVE_TRACE_DIR/native-{pid}.log" RUST_LOG="$NATIVE_TRACE_RUST_LOG" \
+  bash "$CI_STEP" --timeout "$DEFAULT_NPM_TEST_TIMEOUT_SEC" "helpers integration" -- \
+  npm run test:integration --workspace=@node-webrtc-rust/helpers; then
+  rm -rf "$NATIVE_TRACE_DIR"
+else
+  helpers_rc=$?
+  echo "helpers integration failed: native trace kept in $NATIVE_TRACE_DIR" >&2
+  exit "$helpers_rc"
+fi
 
 echo "==> Sherpa roundtrip E2E (all start:roundtrip-*)"
 bash scripts/ci/run-sherpa-example-ci.sh e2e

@@ -169,7 +169,7 @@ Jobs do not share a workspace on self-hosted runners (each job checks out fresh)
 
 Local contract checks: `bash scripts/ci/native-build-fingerprint.test.sh`, `bash scripts/ci/native-artifact-manifest.test.sh`, `bash scripts/ci/check-release-targets.test.sh`, `bash scripts/ci/native-binding-cache-key.test.sh`
 
-Test execution: runner **host Docker** → public `coturn/coturn:latest` sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`. A prepare step resets workspace ownership before checkout (container jobs write root-owned files).
+Test execution: runner **host Docker** → pinned `coturn/coturn:4.17.2` (by digest) sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`. A prepare step resets workspace ownership before checkout (container jobs write root-owned files).
 
 **TURN test networking:** peers and coturn share the test container network namespace (`--network container:coturn`). Traffic stays on loopback / Docker — **no inbound ports on the host firewall** (80/443 nginx is unrelated). coturn uses UDP/TCP **3478** for TURN control and **49152–65535** for relay allocations inside the container only. CI enables `--allow-loopback-peers` because both WebRTC peers run on the same host.
 

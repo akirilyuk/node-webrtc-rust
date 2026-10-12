@@ -8,11 +8,11 @@ This document explains why, how to spot the failure, and how to customize the pr
 
 ## Quick rules
 
-| Role | Peer id | Notes |
-| ---- | ------- | ----- |
-| **Browser / Node client** | `client-*` (required by default) | Omit `peerId` in `@voicethere/client` — default is `client-<random>` |
-| **Voice agent server** | `voice-agent-server` | Constant `VOICE_AGENT_SERVER_PEER_ID` in helpers |
-| **Custom apps** (cosine demo, mesh) | Your choice | Only if you **do not** use `VoiceAgentSessionHost` / `SessionPod` voice path |
+| Role                                | Peer id                          | Notes                                                                        |
+| ----------------------------------- | -------------------------------- | ---------------------------------------------------------------------------- |
+| **Browser / Node client**           | `client-*` (required by default) | Omit `peerId` in `@voicethere/client` — default is `client-<random>`         |
+| **Voice agent server**              | `voice-agent-server`             | Constant `VOICE_AGENT_SERVER_PEER_ID` in helpers                             |
+| **Custom apps** (cosine demo, mesh) | Your choice                      | Only if you **do not** use `VoiceAgentSessionHost` / `SessionPod` voice path |
 
 **Bad (no offer):** `steady-1`, `user-tab2`, `churn-worker-3`  
 **Good:** `client-steady-1`, `client-tab2`, `client-churn-3-c1`
@@ -37,12 +37,12 @@ Relevant code: `packages/helpers/src/voice-agent-session-host.ts` (`peer-joined`
 
 When `peerId` does not match the server prefix:
 
-| Layer | What you see |
-| ----- | ------------ |
-| **Session API** | `ready`, credentials returned (~normal provision time) |
-| **Signaling** | WebSocket open, `join` sent, sometimes `rejoined` / `same_session_reconnect` |
-| **WebRTC** | **No inbound `offer`**, `RTCPeerConnection` stays **`new`** until timeout |
-| **Runner logs** | Room exists, **`connections=0`**, no `[voice client-…] offer sent` |
+| Layer           | What you see                                                                 |
+| --------------- | ---------------------------------------------------------------------------- |
+| **Session API** | `ready`, credentials returned (~normal provision time)                       |
+| **Signaling**   | WebSocket open, `join` sent, sometimes `rejoined` / `same_session_reconnect` |
+| **WebRTC**      | **No inbound `offer`**, `RTCPeerConnection` stays **`new`** until timeout    |
+| **Runner logs** | Room exists, **`connections=0`**, no `[voice client-…] offer sent`           |
 
 This is **not** TURN, signaling gateway saturation, or provisioning failure — it is the server deliberately ignoring the peer id.
 
@@ -56,7 +56,7 @@ This is **not** TURN, signaling gateway saturation, or provisioning failure — 
 
 ```typescript
 function defaultPeerId(): string {
-  return `client-${Math.random().toString(36).slice(2, 10)}`;
+  return `client-${Math.random().toString(36).slice(2, 10)}`
 }
 ```
 
@@ -106,8 +106,8 @@ Operator runbook: [`e2e/docs/LOAD-STAGING.md`](../../e2e/docs/LOAD-STAGING.md) (
 
 ## Related
 
-| Resource | Topic |
-| -------- | ----- |
-| [`packages/helpers/README.md`](../packages/helpers/README.md) | SessionPod, VoiceAgentSessionHost API |
-| [`examples/voice-agent-local-sherpa-multi-client/README.md`](../examples/voice-agent-local-sherpa-multi-client/README.md) | Multi-tab `client-tab*` pattern |
-| [`examples/browser-cosine-chat/README.md`](../examples/browser-cosine-chat/README.md) | Non-voice mesh (different peer rules) |
+| Resource                                                                                                                  | Topic                                 |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| [`packages/helpers/README.md`](../packages/helpers/README.md)                                                             | SessionPod, VoiceAgentSessionHost API |
+| [`examples/voice-agent-local-sherpa-multi-client/README.md`](../examples/voice-agent-local-sherpa-multi-client/README.md) | Multi-tab `client-tab*` pattern       |
+| [`examples/browser-cosine-chat/README.md`](../examples/browser-cosine-chat/README.md)                                     | Non-voice mesh (different peer rules) |

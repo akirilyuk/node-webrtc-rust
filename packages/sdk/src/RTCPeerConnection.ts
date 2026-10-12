@@ -58,6 +58,14 @@ function toNativeConfig(config?: RTCConfiguration): JsRtcConfiguration {
   }
 }
 
+/**
+ * Upper bound on how long {@link RTCPeerConnection.createOffer} waits for data channels whose
+ * native create is still in flight. A native create normally lands within a few milliseconds;
+ * the bound only fires when the native side is stuck, so a hung create fails the offer instead
+ * of blocking it forever.
+ */
+const NATIVE_DATA_CHANNEL_READY_TIMEOUT_MS = 5_000
+
 function toNativeDescription(desc: RTCSessionDescription): JsRtcSessionDescription {
   return { type: desc.type, sdp: desc.sdp }
 }
@@ -83,6 +91,8 @@ export class RTCPeerConnection extends EventEmitter {
   private _localDescription: RTCSessionDescription | null = null
   private _remoteDescription: RTCSessionDescription | null = null
   private _configuration: RTCConfiguration
+  /** `nativeReady` of every data channel whose native create has not settled yet. */
+  private readonly pendingDataChannels = new Set<Promise<void>>()
 
   /** Fired when a local ICE candidate is gathered; `candidate` is null when gathering completes. */
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null
@@ -207,10 +217,15 @@ export class RTCPeerConnection extends EventEmitter {
 
   /**
    * Creates an SDP offer describing the local media and data channel setup.
+   *
+   * The offer includes every data channel created before this call, even when its native create
+   * completes later (W3C `createDataChannel` is synchronous). The wait is bounded at 5 s; a
+   * native create that does not settle by then fails the call.
    * @param _options - Reserved for future W3C offer options.
    */
   async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescription> {
     debugFn('sdk::RTCPeerConnection', 'createOffer')
+    await this.awaitPendingDataChannels()
     return fromNativeDescription(await this.native.createOffer(toNativeOfferOptions(options)))
   }
 
@@ -263,16 +278,58 @@ export class RTCPeerConnection extends EventEmitter {
 
   /**
    * Creates an outgoing data channel on this connection.
+   *
+   * The native create may still be in flight when this returns; it is safe to call
+   * {@link createOffer} immediately afterwards, because the offer waits for it.
    * @param label - Application-defined channel name.
    * @param options - Ordering, reliability, and negotiated channel id.
    */
   createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannel {
     debugFn('sdk::RTCPeerConnection', 'createDataChannel', `label=${label}`)
-    return RTCDataChannel.fromNativePromise(
+    const channel = RTCDataChannel.fromNativePromise(
       this.native.createDataChannel(label, options),
       label,
       options,
     )
+    const ready = channel.nativeReady
+    this.pendingDataChannels.add(ready)
+    const done = (): void => {
+      this.pendingDataChannels.delete(ready)
+    }
+    ready.then(done, done)
+    return channel
+  }
+
+  /**
+   * Waits for data channels whose native create is still in flight, bounded by
+   * {@link NATIVE_DATA_CHANNEL_READY_TIMEOUT_MS}. A rejected native create is ignored here: the
+   * channel already emits its error and the offer proceeds without it.
+   */
+  private async awaitPendingDataChannels(): Promise<void> {
+    if (this.pendingDataChannels.size === 0) {
+      return
+    }
+    const snapshot = [...this.pendingDataChannels]
+    debugFn(
+      'sdk::RTCPeerConnection',
+      'createOffer',
+      `waiting for ${snapshot.length} data channel(s)`,
+    )
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(
+            `createOffer: native createDataChannel did not complete within ${NATIVE_DATA_CHANNEL_READY_TIMEOUT_MS} ms`,
+          ),
+        )
+      }, NATIVE_DATA_CHANNEL_READY_TIMEOUT_MS)
+    })
+    try {
+      await Promise.race([Promise.allSettled(snapshot), timeout])
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /**

@@ -9,11 +9,11 @@ Same voice semantics as [`e2e/fixtures/echo-agent`](../../../e2e/fixtures/echo-a
 
 ## Stack comparison
 
-| Layer | Process | Agent logic | Redis |
-|-------|---------|-------------|-------|
-| **echo-pod** (this) | SessionPod + VoiceAgentSessionHost | Inline `echoVoiceHandler` | No |
-| **runner M1** | Runner parent + child IPC | `e2e/fixtures/echo-agent` bundle | Yes |
-| **staging** | K8s runner pod | Deployed echo bundle | Yes |
+| Layer               | Process                            | Agent logic                      | Redis |
+| ------------------- | ---------------------------------- | -------------------------------- | ----- |
+| **echo-pod** (this) | SessionPod + VoiceAgentSessionHost | Inline `echoVoiceHandler`        | No    |
+| **runner M1**       | Runner parent + child IPC          | `e2e/fixtures/echo-agent` bundle | Yes   |
+| **staging**         | K8s runner pod                     | Deployed echo bundle             | Yes   |
 
 Use this to isolate bugs in **WebRTC + Sherpa STT/TTS + SessionPod reconnect** before involving runner IPC or agent child.
 
@@ -43,11 +43,11 @@ npm run test:local-direct-voice-load   # concurrent workers + reconnect churn
 
 ## API (runner-compatible subset)
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/healthz` | Liveness |
-| `POST` | `/api/sessions` | `{ "sessionId": "..." }` |
-| `GET` | `/api/sessions` | Active sessions |
-| `WS` | `/ws` | Signaling (plain, no JWT) |
+| Method | Path            | Purpose                   |
+| ------ | --------------- | ------------------------- |
+| `GET`  | `/healthz`      | Liveness                  |
+| `POST` | `/api/sessions` | `{ "sessionId": "..." }`  |
+| `GET`  | `/api/sessions` | Active sessions           |
+| `WS`   | `/ws`           | Signaling (plain, no JWT) |
 
 No `/readyz` (no Redis).

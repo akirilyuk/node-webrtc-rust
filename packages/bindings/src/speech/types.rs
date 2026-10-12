@@ -533,6 +533,8 @@ pub enum JsSpeechEventType {
     SttHoldEnded,
     #[napi(value = "tts_wait")]
     TtsWait,
+    #[napi(value = "tts_phrase_cache_hit")]
+    TtsPhraseCacheHit,
     #[napi(value = "agent_speak_failed")]
     AgentSpeakFailed,
 }
@@ -565,6 +567,8 @@ pub struct JsSpeechEvent {
     pub wait_ms: Option<u32>,
     /// `tts_wait`: refused attempts that were retried.
     pub attempts: Option<u32>,
+    /// `tts_phrase_cache_hit`: chars (Unicode scalars) of the text served from the cache.
+    pub chars: Option<u32>,
 }
 
 #[napi(string_enum)]

@@ -36,22 +36,22 @@ setRootConnectionErrorHandler(undefined)
 
 ## `ConnectionError.source`
 
-| `subsystem` | Emitted by | `source` fields |
-|-------------|------------|-----------------|
-| `signaling` | `SignalingClient`, Node/browser signaling WebSocket | `phase` (`connect` \| `socket`), optional `room`, `peerId`, `url` |
-| `session` | `@voicethere/client` provisioning / WebRTC / runner `session_error` DC | `sessionId`, `code`, optional `projectId`, `buildId` |
-| `webrtc` | `RTCPeerConnection`, `RTCDataChannel`, browser voice signaling WS | `kind` (see below), optional `sessionId`, `peerId`, `label` |
+| `subsystem` | Emitted by                                                             | `source` fields                                                   |
+| ----------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `signaling` | `SignalingClient`, Node/browser signaling WebSocket                    | `phase` (`connect` \| `socket`), optional `room`, `peerId`, `url` |
+| `session`   | `@voicethere/client` provisioning / WebRTC / runner `session_error` DC | `sessionId`, `code`, optional `projectId`, `buildId`              |
+| `webrtc`    | `RTCPeerConnection`, `RTCDataChannel`, browser voice signaling WS      | `kind` (see below), optional `sessionId`, `peerId`, `label`       |
 
 ### WebRTC `kind` values
 
-| `kind` | Meaning |
-|--------|---------|
+| `kind`            | Meaning                                                             |
+| ----------------- | ------------------------------------------------------------------- |
 | `peer-connection` | `RTCPeerConnection` entered `failed` or native state callback error |
-| `ice` | ICE transport `failed` |
-| `disconnect` | `RTCPeerConnection.close()` native error |
-| `datachannel` | `RTCDataChannel` send/close/native error |
-| `signaling-ws` | Browser voice session signaling WebSocket error |
-| `connect` | Reserved for connect-timeout style failures |
+| `ice`             | ICE transport `failed`                                              |
+| `disconnect`      | `RTCPeerConnection.close()` native error                            |
+| `datachannel`     | `RTCDataChannel` send/close/native error                            |
+| `signaling-ws`    | Browser voice session signaling WebSocket error                     |
+| `connect`         | Reserved for connect-timeout style failures                         |
 
 Use {@link ConnectionError.is} to narrow:
 
@@ -74,7 +74,10 @@ automatically. Keep per-session `onSessionError` when you need session-scoped UI
 toast, retry button) — it still runs **in addition** to the root handler.
 
 ```typescript
-import { connectBrowserVoiceSession, setRootConnectionErrorHandler } from '@voicethere/client/browser'
+import {
+  connectBrowserVoiceSession,
+  setRootConnectionErrorHandler,
+} from '@voicethere/client/browser'
 
 setRootConnectionErrorHandler((error) => logger.error({ ...error.source, msg: error.message }))
 
@@ -118,15 +121,15 @@ call {@link dispatchConnectionError}, which:
 
 ## API reference (exported from `@node-webrtc-rust/sdk`)
 
-| Export | Role |
-|--------|------|
-| `setRootConnectionErrorHandler` | Install or clear the process-wide handler |
-| `getRootConnectionErrorHandler` | Read current handler (tests) |
-| `reportConnectionError` | Forward to root only; returns whether handled |
-| `dispatchConnectionError` | Root → instance emit → stderr fallback |
-| `createConnectionError` | Build a tagged error (libraries use this internally) |
-| `formatConnectionErrorSource` | Stable log string from `source` |
-| `ConnectionError` | Error subclass with `.source` and `.cause` |
+| Export                          | Role                                                 |
+| ------------------------------- | ---------------------------------------------------- |
+| `setRootConnectionErrorHandler` | Install or clear the process-wide handler            |
+| `getRootConnectionErrorHandler` | Read current handler (tests)                         |
+| `reportConnectionError`         | Forward to root only; returns whether handled        |
+| `dispatchConnectionError`       | Root → instance emit → stderr fallback               |
+| `createConnectionError`         | Build a tagged error (libraries use this internally) |
+| `formatConnectionErrorSource`   | Stable log string from `source`                      |
+| `ConnectionError`               | Error subclass with `.source` and `.cause`           |
 
 `@node-webrtc-rust/signaling` re-exports the same symbols for convenience.
 

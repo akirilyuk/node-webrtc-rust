@@ -64,9 +64,7 @@ export const echoVoiceHandler: VoiceSessionHandler = {
     if (isVoiceControlProbeText(text)) return
     const echoText = `echo:${text.trim()}`
     if (isSpeechEventLogEnabled()) {
-      console.error(
-        `[echo-pod] chat echo peer=${ctx.peerId} text=${JSON.stringify(text.trim())}`,
-      )
+      console.error(`[echo-pod] chat echo peer=${ctx.peerId} text=${JSON.stringify(text.trim())}`)
     }
     logSpeakText(`echo-pod/${ctx.peerId}`, echoText)
     await speakToClient(ctx, echoText)

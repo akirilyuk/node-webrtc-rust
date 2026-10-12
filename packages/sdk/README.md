@@ -150,19 +150,19 @@ interface VoiceAgentConfig {
 
 Providers are **mix-and-match** per session. **Official API docs:** [`examples/shared/VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md)
 
-| Provider       | STT | TTS | Typical env var                                                         | API docs                                                                                                                       |
-| -------------- | --- | --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `openai`       | ✓   | ✓   | `OPENAI_API_KEY`                                                        | [STT](https://platform.openai.com/docs/guides/speech-to-text) · [TTS](https://platform.openai.com/docs/guides/text-to-speech)  |
-| `deepgram`     | ✓   | ✓   | `DEEPGRAM_API_KEY`                                                      | [Listen](https://developers.deepgram.com/docs/live-streaming-audio) · [Speak](https://developers.deepgram.com/reference/text-to-speech/speak) |
-| `elevenlabs`   | ✓   | ✓   | `ELEVENLABS_API_KEY`                                                    | [Scribe STT](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) · [TTS stream](https://elevenlabs.io/docs/api-reference/text-to-speech/stream) |
-| `cartesia`     | —   | ✓   | `CARTESIA_API_KEY`                                                      | [TTS WebSocket](https://docs.cartesia.ai/api-reference/tts/websocket) · [bytes](https://docs.cartesia.ai/api-reference/tts/bytes) |
-| `assemblyai`   | ✓   | —   | `ASSEMBLYAI_API_KEY`                                                    | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                      |
-| `google`       | ✓   | ✓   | `GOOGLE_APPLICATION_CREDENTIALS`                                        | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs)                      |
-| `groq`         | ✓   | ✓   | `GROQ_API_KEY`                                                          | [STT](https://console.groq.com/docs/speech-to-text) · [TTS](https://console.groq.com/docs/text-to-speech) — file STT, no live partials |
+| Provider       | STT | TTS | Typical env var                                                         | API docs                                                                                                                                                                                                            |
+| -------------- | --- | --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `openai`       | ✓   | ✓   | `OPENAI_API_KEY`                                                        | [STT](https://platform.openai.com/docs/guides/speech-to-text) · [TTS](https://platform.openai.com/docs/guides/text-to-speech)                                                                                       |
+| `deepgram`     | ✓   | ✓   | `DEEPGRAM_API_KEY`                                                      | [Listen](https://developers.deepgram.com/docs/live-streaming-audio) · [Speak](https://developers.deepgram.com/reference/text-to-speech/speak)                                                                       |
+| `elevenlabs`   | ✓   | ✓   | `ELEVENLABS_API_KEY`                                                    | [Scribe STT](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) · [TTS stream](https://elevenlabs.io/docs/api-reference/text-to-speech/stream)                                    |
+| `cartesia`     | —   | ✓   | `CARTESIA_API_KEY`                                                      | [TTS WebSocket](https://docs.cartesia.ai/api-reference/tts/websocket) · [bytes](https://docs.cartesia.ai/api-reference/tts/bytes)                                                                                   |
+| `assemblyai`   | ✓   | —   | `ASSEMBLYAI_API_KEY`                                                    | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                                                                                                           |
+| `google`       | ✓   | ✓   | `GOOGLE_APPLICATION_CREDENTIALS`                                        | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs)                                                                                                           |
+| `groq`         | ✓   | ✓   | `GROQ_API_KEY`                                                          | [STT](https://console.groq.com/docs/speech-to-text) · [TTS](https://console.groq.com/docs/text-to-speech) — file STT, no live partials                                                                              |
 | `azure`        | ✓   | ✓   | `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `AZURE_SPEECH_RESOURCE`      | [REST STT](https://learn.microsoft.com/azure/ai-services/speech-service/rest-speech-to-text-short) · [REST TTS](https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech) — finals-only STT |
-| `aws`          | ✓   | ✓   | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`              | [Transcribe stream](https://docs.aws.amazon.com/transcribe/latest/dg/streaming-setting-up.html) · [Polly](https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html) |
-| `local-sherpa` | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
-| `mock`         | ✓   | ✓   | _(none — use for CI/local)_                                             | —                                                                                                                              |
+| `aws`          | ✓   | ✓   | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`              | [Transcribe stream](https://docs.aws.amazon.com/transcribe/latest/dg/streaming-setting-up.html) · [Polly](https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html)                                    |
+| `local-sherpa` | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)                                                                                      |
+| `mock`         | ✓   | ✓   | _(none — use for CI/local)_                                             | —                                                                                                                                                                                                                   |
 
 #### Internal vendors
 
@@ -192,12 +192,12 @@ API keys via `apiKey` in config or env vars. Never logged or returned in speech 
 
 Requires downloaded **Zipformer transducer** (STT) and **Piper/VITS** (TTS) directories.
 
-| Variable                | Required      | Purpose                                                                  |
-| ----------------------- | ------------- | ------------------------------------------------------------------------ |
-| `SHERPA_STT_MODEL_PATH` | **Yes** (STT) | Path to extracted Zipformer STT directory                                |
+| Variable                | Required      | Purpose                                                                                                                                              |
+| ----------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SHERPA_STT_MODEL_PATH` | **Yes** (STT) | Path to extracted Zipformer STT directory                                                                                                            |
 | `SHERPA_TTS_MODEL_PATH` | **Yes** (TTS) | Path to Piper/VITS directory (`tokens.txt`, `*.onnx`, `espeak-ng-data/`; lexicon models such as Melo use `lexicon.txt` instead of `espeak-ng-data/`) |
-| `SHERPA_STT_LANGUAGE`   | No            | `stt.language` tag (inferred from path when omitted)                     |
-| `SHERPA_TTS_SPEAKER`    | No            | Piper speaker id for `tts.voice` (default `0`)                           |
+| `SHERPA_STT_LANGUAGE`   | No            | `stt.language` tag (inferred from path when omitted)                                                                                                 |
+| `SHERPA_TTS_SPEAKER`    | No            | Piper speaker id for `tts.voice` (default `0`)                                                                                                       |
 
 Automatic downloads (from repo root):
 
@@ -249,11 +249,11 @@ User turns on the same session also expose **`utteranceId`** on `user_speaking_s
 
 Swap recognition or synthesis **without** renegotiating WebRTC:
 
-| API | Role |
-| --- | ---- |
-| `updateStt(config)` | New STT vendor/model/language; applies after the current utterance finalizes (or immediately when idle). Emits `stt_config_updated` (`language`, `modelPath`, `endpoint`). |
-| `updateTts(config, { cancelInflight? })` | New TTS before the next `sendTextToTTS`; `cancelInflight: true` stops in-flight speech. Emits `tts_config_updated`. |
-| `replayLastUtterance()` | Re-run the last finalized user PCM through the **new** STT so the triggering phrase is transcribed again (`user_speech_final` with `replay: true`). |
+| API                                      | Role                                                                                                                                                                       |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `updateStt(config)`                      | New STT vendor/model/language; applies after the current utterance finalizes (or immediately when idle). Emits `stt_config_updated` (`language`, `modelPath`, `endpoint`). |
+| `updateTts(config, { cancelInflight? })` | New TTS before the next `sendTextToTTS`; `cancelInflight: true` stops in-flight speech. Emits `tts_config_updated`.                                                        |
+| `replayLastUtterance()`                  | Re-run the last finalized user PCM through the **new** STT so the triggering phrase is transcribed again (`user_speech_final` with `replay: true`).                        |
 
 **LID does not auto-switch:** `user_language` from optional `languageId` is a hint only. Your application (or a host coordinator above `VoiceAgent`) must call `updateStt` / `updateTts` when you want a new locale or model. Auto-switch on LID is an **application policy** — not always-on in the SDK.
 
@@ -316,6 +316,7 @@ dc.onopen = () => {
 }
 ```
 
+- `RTCDataChannel.nativeReady` resolves once the native channel exists. When you create the offer yourself, `await dc.nativeReady` after `createDataChannel` and before `createOffer`, so the offer includes the data channel (`m=application`). `pc.createOffer()` itself also waits (up to 5 s) for data channels whose native create is still in flight, so calling it right after `createDataChannel` is safe.
 - **Server → client:** `{ type: 'speech_event', event: 'user_speech_final', text: '…' }` (STT, VAD, `barge_in`, …)
 - **Client → server:** `{ type: 'speak', text: 'Hello' }` → `agent.sendTextToTTS(text)`
 
@@ -336,8 +337,8 @@ Full browser + Node demo: [`examples/voice-agent-browser`](../../examples/voice-
 | `speechEvents()`                          | Async generator of all speech events                                 |
 | `wireVoiceAgentToDataChannel(agent, dc)`  | Forward speech events + handle `{ type: 'speak' }` on a data channel |
 | `updateStt(config)`                       | Mid-session STT swap (utterance boundary)                            |
-| `updateTts(config, options?)`           | Mid-session TTS swap (next synthesis job)                          |
-| `replayLastUtterance()`                   | Re-decode last utterance after STT swap                            |
+| `updateTts(config, options?)`             | Mid-session TTS swap (next synthesis job)                            |
+| `replayLastUtterance()`                   | Re-decode last utterance after STT swap                              |
 
 ### Examples and live vendor testing
 

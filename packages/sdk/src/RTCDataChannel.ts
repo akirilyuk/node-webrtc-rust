@@ -3,10 +3,7 @@ import { EventEmitter } from 'events'
 import type { JsRTCDataChannel as NativeDataChannel } from '@node-webrtc-rust/bindings'
 
 import { debugEvent, debugFn } from './debug'
-import {
-  createConnectionError,
-  dispatchConnectionError,
-} from './connection-errors'
+import { createConnectionError, dispatchConnectionError } from './connection-errors'
 import type { MessageEvent, RTCDataChannelInit, RTCDataChannelState, RTCErrorEvent } from './types'
 
 type SendPayload = string | Buffer | ArrayBuffer | Uint8Array
@@ -48,6 +45,16 @@ export class RTCDataChannel extends EventEmitter {
   onbufferedamountlow: ((event: Event) => void) | null = null
 
   private readonly pendingSends: SendPayload[] = []
+  private _nativeReady: Promise<void> = Promise.resolve()
+
+  /**
+   * Resolves once the native channel exists. Await before createOffer so the offer
+   * includes the data channel (m=application). Rejects with the native error when
+   * creation fails; already resolved for channels received via `ondatachannel`.
+   */
+  get nativeReady(): Promise<void> {
+    return this._nativeReady
+  }
 
   constructor(native: NativeDataChannel, init?: RTCDataChannelInit) {
     super()
@@ -68,6 +75,10 @@ export class RTCDataChannel extends EventEmitter {
   ): RTCDataChannel {
     const channel = new RTCDataChannel(createDeferredNative(label, init), init)
     channel.native = null
+    const ready = nativePromise.then(() => undefined)
+    // Awaiters still see the rejection; this only keeps it from being an unhandled rejection.
+    ready.catch(() => undefined)
+    channel._nativeReady = ready
     void nativePromise
       .then((native) => {
         channel.native = native
@@ -166,9 +177,7 @@ export class RTCDataChannel extends EventEmitter {
     })
 
     native.setOnError((_err, message) => {
-      this.emitError(
-        typeof message === 'string' ? message : String(_err ?? 'unknown error'),
-      )
+      this.emitError(typeof message === 'string' ? message : String(_err ?? 'unknown error'))
     })
 
     native.setOnBufferedAmountLow((_err) => {

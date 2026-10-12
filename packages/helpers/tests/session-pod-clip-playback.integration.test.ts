@@ -9,6 +9,7 @@ import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-ru
 import { SessionPod } from '../src/session-pod.js'
 import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
 import { VoiceSessionBudget, resetProcessVoiceSessionBudget } from '../src/voice-session-budget.js'
+import { connectAllOrCloseAll } from './connect-all-or-close.js'
 import {
   appendStereoChannels,
   assertToneAbsentStereo,
@@ -602,11 +603,14 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       await pod.ensureSession(sessionId)
     }
 
-    const [client1, client2, client3] = await Promise.all([
-      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[0], SMOKE_PEER_IDS[0]),
-      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[1], SMOKE_PEER_IDS[1]),
-      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[2], SMOKE_PEER_IDS[2]),
-    ])
+    const [client1, client2, client3] = await connectAllOrCloseAll(
+      [
+        () => connectClientToSession(wsUrl, SMOKE_SESSION_IDS[0], SMOKE_PEER_IDS[0]),
+        () => connectClientToSession(wsUrl, SMOKE_SESSION_IDS[1], SMOKE_PEER_IDS[1]),
+        () => connectClientToSession(wsUrl, SMOKE_SESSION_IDS[2], SMOKE_PEER_IDS[2]),
+      ],
+      closeClient,
+    )
     const client1Rx = createLiveInboundReader(client1.agentAudio)
     const client2Rx = createLiveInboundReader(client2.agentAudio)
     const client3Rx = createLiveInboundReader(client3.agentAudio)
@@ -678,11 +682,14 @@ describe.skipIf(!sessionPodClipNativeAvailable())('SessionPod clip playback inte
       await pod.ensureSession(sessionId)
     }
 
-    const [client1, client2, client3] = await Promise.all([
-      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[0], SMOKE_PEER_IDS[0]),
-      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[1], SMOKE_PEER_IDS[1]),
-      connectClientToSession(wsUrl, SMOKE_SESSION_IDS[2], SMOKE_PEER_IDS[2]),
-    ])
+    const [client1, client2, client3] = await connectAllOrCloseAll(
+      [
+        () => connectClientToSession(wsUrl, SMOKE_SESSION_IDS[0], SMOKE_PEER_IDS[0]),
+        () => connectClientToSession(wsUrl, SMOKE_SESSION_IDS[1], SMOKE_PEER_IDS[1]),
+        () => connectClientToSession(wsUrl, SMOKE_SESSION_IDS[2], SMOKE_PEER_IDS[2]),
+      ],
+      closeClient,
+    )
     const client1Rx = createLiveInboundReader(client1.agentAudio)
     const client2Rx = createLiveInboundReader(client2.agentAudio)
     const client3Rx = createLiveInboundReader(client3.agentAudio)

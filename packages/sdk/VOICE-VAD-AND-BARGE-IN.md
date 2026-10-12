@@ -56,10 +56,10 @@ Override a field only when you hit a concrete issue (false barge-in, STT cutting
 
 Optional RNNoise runs on **stereo 48 kHz** inbound PCM **before** downsample and VAD. It reduces stationary background noise for STT; it is **not** caller isolation or echo cancellation.
 
-| Surface | Config | Default |
-| ------- | ------ | ------- |
-| `VoiceAgent` | `noiseSuppression: { provider: 'rnnoise' }` | Off (`provider` omitted or `'none'`) |
-| Conference `RoomOptions` | `noiseSuppression: 'rnnoise' \| 'none'` | On when omitted (`'rnnoise'`) |
+| Surface                  | Config                                      | Default                              |
+| ------------------------ | ------------------------------------------- | ------------------------------------ |
+| `VoiceAgent`             | `noiseSuppression: { provider: 'rnnoise' }` | Off (`provider` omitted or `'none'`) |
+| Conference `RoomOptions` | `noiseSuppression: 'rnnoise' \| 'none'`     | On when omitted (`'rnnoise'`)        |
 
 ```typescript
 const agent = new VoiceAgent({
@@ -124,12 +124,12 @@ stateDiagram-v2
   end note
 ```
 
-| Flow       | Config                                                            | STT on VAD         | Barge / flush                                                   |
-| ---------- | ----------------------------------------------------------------- | ------------------ | --------------------------------------------------------------- |
-| **A**      | `bargeIn` on, `requireSttPartial: false`, agent speaking          | Immediate          | Same `SpeechStart` as `vad_triggered`                           |
+| Flow       | Config                                                            | STT on VAD         | Barge / flush                                                    |
+| ---------- | ----------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------- |
+| **A**      | `bargeIn` on, `requireSttPartial: false`, agent speaking          | Immediate          | Same `SpeechStart` as `vad_triggered`                            |
 | **B**      | `bargeIn` on, `requireSttPartial: true` (default), agent speaking | Immediate          | After qualifying `user_speech_partial` (≥ `minSttPartialTokens`) |
-| **D**      | `bargeIn` off during agent TTS                                    | Immediate          | Never auto — agent keeps talking                                |
-| **Normal** | Agent not speaking                                                | On `vad_triggered` | No barge                                                        |
+| **D**      | `bargeIn` off during agent TTS                                    | Immediate          | Never auto — agent keeps talking                                 |
+| **Normal** | Agent not speaking                                                | On `vad_triggered` | No barge                                                         |
 
 Event order for semantic barge (**B**): `vad_triggered` → `user_stt_start` → `stt_stream_start` → … → `user_speech_partial` → `barge_in` → `agent_speaking_end` (when `flushTts`).
 

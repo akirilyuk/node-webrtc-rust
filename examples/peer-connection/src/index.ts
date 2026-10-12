@@ -82,6 +82,7 @@ async function main(): Promise<void> {
 
   try {
     const dc1 = pc1.createDataChannel('chat')
+    await dc1.nativeReady // offer must include the data channel
 
     // Parity: backpressure — fired when bufferedAmount drops below threshold after a large send.
     dc1.bufferedAmountLowThreshold = 64 * 1024

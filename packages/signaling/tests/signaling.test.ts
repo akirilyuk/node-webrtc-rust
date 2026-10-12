@@ -144,4 +144,59 @@ describe('autoNegotiate', () => {
     sig1.disconnect()
     sig2.disconnect()
   })
+
+  test('autoNegotiate opens a data channel whose native create completes 150 ms late', async () => {
+    const pc1 = new RTCPeerConnection(defaultIceConfig)
+    const pc2 = new RTCPeerConnection(defaultIceConfig)
+    const sig1 = new SignalingClient({
+      url: `ws://127.0.0.1:${server.port}`,
+      room: 'auto-negotiate-late-native-dc',
+      peerId: 'late-pc1',
+    })
+    const sig2 = new SignalingClient({
+      url: `ws://127.0.0.1:${server.port}`,
+      room: 'auto-negotiate-late-native-dc',
+      peerId: 'late-pc2',
+    })
+    const withTimeout = <T>(promise: Promise<T>, name: string): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${name} did not happen within 8 s`)), 8_000)
+      })
+      return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+    }
+    try {
+      // Delay the impolite client's native create so the offer is built while it is in flight.
+      const native = (
+        pc1 as unknown as {
+          native: { createDataChannel(label: string, options?: unknown): Promise<unknown> }
+        }
+      ).native
+      const original = native.createDataChannel.bind(native)
+      native.createDataChannel = (label, options) =>
+        new Promise((resolve) => setTimeout(resolve, 150)).then(() => original(label, options))
+
+      const dc1 = pc1.createDataChannel('voice-control')
+      autoNegotiate({ pc: pc1, signaling: sig1, polite: false })
+      autoNegotiate({ pc: pc2, signaling: sig2, polite: true })
+
+      const dc2Promise = new Promise<typeof dc1>((resolve) => {
+        pc2.ondatachannel = (event) => resolve(event.channel)
+      })
+
+      await sig1.connect()
+      await sig2.connect()
+
+      const dc2 = await withTimeout(dc2Promise, 'server ondatachannel')
+      await withTimeout(waitForOpen(dc1, 8_000), 'client data channel open')
+      await withTimeout(waitForOpen(dc2, 8_000), 'server data channel open')
+      expect(dc1.readyState).toBe('open')
+      expect(dc2.readyState).toBe('open')
+    } finally {
+      pc1.close()
+      pc2.close()
+      sig1.disconnect()
+      sig2.disconnect()
+    }
+  })
 })

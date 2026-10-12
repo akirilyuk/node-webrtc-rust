@@ -32,6 +32,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::SttHoldStarted => JsSpeechEventType::SttHoldStarted,
             SpeechEventKind::SttHoldEnded => JsSpeechEventType::SttHoldEnded,
             SpeechEventKind::TtsWait => JsSpeechEventType::TtsWait,
+            SpeechEventKind::TtsPhraseCacheHit => JsSpeechEventType::TtsPhraseCacheHit,
             SpeechEventKind::AgentSpeakFailed => JsSpeechEventType::AgentSpeakFailed,
         },
         text: event.text,
@@ -54,6 +55,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         first_audio_ms: event.first_audio_ms,
         wait_ms: event.wait_ms,
         attempts: event.attempts,
+        chars: event.chars,
     }
 }
 
@@ -124,6 +126,14 @@ mod speech_event_to_js_tests {
         let js = speech_event_to_js(SpeechEvent::agent_speak_failed("boom"));
         assert_eq!(js.event_type, JsSpeechEventType::AgentSpeakFailed);
         assert_eq!(js.reason.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn tts_phrase_cache_hit_maps_chars() {
+        let js = speech_event_to_js(SpeechEvent::tts_phrase_cache_hit(12));
+        assert_eq!(js.event_type, JsSpeechEventType::TtsPhraseCacheHit);
+        assert_eq!(js.chars, Some(12));
+        assert!(js.text.is_none());
     }
 
     #[test]

@@ -28,20 +28,11 @@ export type WebRtcErrorSource = {
   subsystem: 'webrtc'
   sessionId?: string
   peerId?: string
-  kind:
-    | 'connect'
-    | 'disconnect'
-    | 'ice'
-    | 'datachannel'
-    | 'signaling-ws'
-    | 'peer-connection'
+  kind: 'connect' | 'disconnect' | 'ice' | 'datachannel' | 'signaling-ws' | 'peer-connection'
   label?: string
 }
 
-export type ConnectionErrorSource =
-  | SignalingErrorSource
-  | SessionErrorSource
-  | WebRtcErrorSource
+export type ConnectionErrorSource = SignalingErrorSource | SessionErrorSource | WebRtcErrorSource
 
 export type RootConnectionErrorHandler = (error: ConnectionError) => void
 
@@ -117,9 +108,7 @@ export function dispatchConnectionError(
   }
   if (options?.fallbackLog === false) return
   if (rootHandler) return
-  console.error(
-    `[connection] ${formatConnectionErrorSource(error.source)}: ${error.message}`,
-  )
+  console.error(`[connection] ${formatConnectionErrorSource(error.source)}: ${error.message}`)
 }
 
 export function formatConnectionErrorSource(source: ConnectionErrorSource): string {

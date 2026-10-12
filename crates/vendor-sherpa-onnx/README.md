@@ -4,12 +4,12 @@ Local **streaming speech-to-text** via [sherpa-onnx](https://crates.io/crates/sh
 
 ## Streaming decisions
 
-| Choice | What we implemented | Why |
-|---|---|---|
-| STT | In-process **streaming Zipformer** (`OnlineRecognizer`) | Official Sherpa-ONNX streaming ASR. Partials and finals without a network hop. |
-| TTS | In-process Piper/VITS (and Melo where catalogued) | Official Sherpa TTS bundles. |
-| **Not** offline STT | Cohere / non-Zipformer layouts | Different ONNX graph (`OfflineRecognizer`). See [`docs/offline-sherpa-stt-plan.md`](../../docs/offline-sherpa-stt-plan.md). |
-| **Not** cloud STT | — | This crate never calls a third-party speech API. |
+| Choice              | What we implemented                                     | Why                                                                                                                         |
+| ------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| STT                 | In-process **streaming Zipformer** (`OnlineRecognizer`) | Official Sherpa-ONNX streaming ASR. Partials and finals without a network hop.                                              |
+| TTS                 | In-process Piper/VITS (and Melo where catalogued)       | Official Sherpa TTS bundles.                                                                                                |
+| **Not** offline STT | Cohere / non-Zipformer layouts                          | Different ONNX graph (`OfflineRecognizer`). See [`docs/offline-sherpa-stt-plan.md`](../../docs/offline-sherpa-stt-plan.md). |
+| **Not** cloud STT   | —                                                       | This crate never calls a third-party speech API.                                                                            |
 
 Included in the **default** native bindings — no optional Cargo feature.
 
@@ -110,12 +110,12 @@ Operators on Alpine must install `onnxruntime` and either set `SHERPA_ONNX_LIB_D
 
 **Pooled (default):** a process-wide **`SherpaModelPool`** shares one `OnlineRecognizer` per STT `model_path` and one `OfflineTts` per TTS model directory. Each `VoiceAgent` / `SherpaStt` session still owns its own `OnlineStream`; TTS uses a shared engine with a synthesis mutex and optional concurrency limits.
 
-| Variable                            | Default           | Purpose                                             |
-| ----------------------------------- | ----------------- | --------------------------------------------------- |
-| `SHERPA_POOL_MAX_CONCURRENT_DECODE` | CPU count (min 1) | Cap parallel STT decode work                        |
-| `SHERPA_POOL_MAX_CONCURRENT_TTS`    | `2`               | Cap parallel TTS generations                        |
-| `SHERPA_STT_NUM_THREADS`            | `1`               | `OnlineRecognizer` intra-op threads                 |
-| `SHERPA_TTS_NUM_THREADS`            | `2`               | `OfflineTts` intra-op threads                       |
+| Variable                            | Default           | Purpose                                                                                                                                                                      |
+| ----------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SHERPA_POOL_MAX_CONCURRENT_DECODE` | CPU count (min 1) | Cap parallel STT decode work                                                                                                                                                 |
+| `SHERPA_POOL_MAX_CONCURRENT_TTS`    | `2`               | Cap parallel TTS generations                                                                                                                                                 |
+| `SHERPA_STT_NUM_THREADS`            | `1`               | `OnlineRecognizer` intra-op threads                                                                                                                                          |
+| `SHERPA_TTS_NUM_THREADS`            | `2`               | `OfflineTts` intra-op threads                                                                                                                                                |
 | `VOICE_TTS_STREAM_CHUNKS`           | `1` (on)          | Stream PCM into the drain buffer during ONNX generate (lower time-to-first-audio). Set `0` / `false` / `off` for the legacy fully-buffered path (synthesize all, then play). |
 
 Measured throughput, voice costs and tuning advice for these settings: [`docs/performance.md`](../../docs/performance.md).
@@ -126,11 +126,11 @@ Measured throughput, voice costs and tuning advice for these settings: [`docs/pe
 
 **OpenTelemetry metrics** (feature `otel` on `node-webrtc-rust-speech`):
 
-| Metric | Labels |
-|--------|--------|
-| `voice_stt_latency_ms` | `stt.vendor`, `stt.model` (catalog id), `stt.language`, `project_id` |
-| `voice_tts_latency_ms` | `tts.vendor`, `tts.model` (catalog id), `tts.language`, `tts.voice`, `project_id` |
-| `sherpa_pool_wait_ms` | TTS path: same as phrase-cache attrs below; STT decode permit: unlabeled |
+| Metric                                                                                | Labels                                                                                              |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `voice_stt_latency_ms`                                                                | `stt.vendor`, `stt.model` (catalog id), `stt.language`, `project_id`                                |
+| `voice_tts_latency_ms`                                                                | `tts.vendor`, `tts.model` (catalog id), `tts.language`, `tts.voice`, `project_id`                   |
+| `sherpa_pool_wait_ms`                                                                 | TTS path: same as phrase-cache attrs below; STT decode permit: unlabeled                            |
 | `sherpa_tts_phrase_cache_*` / `sherpa_tts_queue_wait_ms` / `sherpa_tts_synth_wall_ms` | `tts.model` (catalog id), `tts.model_dir` (dir basename), `tts.language`, `tts.voice`, `project_id` |
 
 Use `tts.model` / `stt.model` to compare catalog entries (e.g. `en-amy-medium` vs `en-lessac-high`).

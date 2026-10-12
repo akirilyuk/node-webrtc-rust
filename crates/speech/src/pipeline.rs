@@ -159,6 +159,11 @@ pub trait TtsProvider: Send + Sync {
         None
     }
 
+    /// Chars served from the phrase cache by the last synthesis call; taken once.
+    fn take_cache_hit(&self) -> Option<u32> {
+        None
+    }
+
     /// Fully synthesize `text` and return all PCM chunks (legacy / cache-friendly path).
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>>;
 

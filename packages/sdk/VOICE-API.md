@@ -305,11 +305,11 @@ Both include semantic barge-in defaults (`requireSttPartial: true`).
 
 ## Debug
 
-| Export / env                 | Effect                                      |
-| ---------------------------- | ------------------------------------------- |
-| `isVoiceDebugEnabled()`      | `VOICE_DEBUG=1`                             |
-| `voiceDebugLog(module, msg)` | stderr `[voice-debug]` from TS              |
-| `VOICE_DEBUG` (Rust)         | stderr `[voice-debug]` from native pipeline |
+| Export / env                  | Effect                                                                                                                       |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `isVoiceDebugEnabled()`       | `VOICE_DEBUG=1`                                                                                                              |
+| `voiceDebugLog(module, msg)`  | stderr `[voice-debug]` from TS                                                                                               |
+| `VOICE_DEBUG` (Rust)          | stderr `[voice-debug]` from native pipeline                                                                                  |
 | `VOICE_FINALIZE_TRACE` (Rust) | only the `[voice-debug] finalize path=…` timing line per finalize decision (no transcript text), without the per-frame noise |
 
 ## Rust crate (`node-webrtc-rust-speech`)

@@ -110,7 +110,7 @@ fn playback_failure_message(error: &SpeechError) -> String {
 
 /// Synthetic silence fed to STT before finalize — aligned with Sherpa roundtrip harness.
 fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
-    vad.min_silence_duration_ms.max(400).min(600)
+    vad.min_silence_duration_ms.clamp(400, 600)
 }
 
 /// True when most of the post–speech-end gate hold has elapsed (90%), i.e. resume is a new phrase not a digit gap.
@@ -246,6 +246,7 @@ enum HandleOutcome {
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
+#[derive(Default)]
 pub struct AgentOtelState {
     pub session_context: VoiceSessionContext,
     #[cfg(feature = "otel")]
@@ -254,20 +255,6 @@ pub struct AgentOtelState {
     pub stt_vendor: Option<crate::config::SttVendor>,
     #[cfg(feature = "otel")]
     pub tts_vendor: Option<crate::config::TtsVendor>,
-}
-
-impl Default for AgentOtelState {
-    fn default() -> Self {
-        Self {
-            session_context: VoiceSessionContext::default(),
-            #[cfg(feature = "otel")]
-            session_span: None,
-            #[cfg(feature = "otel")]
-            stt_vendor: None,
-            #[cfg(feature = "otel")]
-            tts_vendor: None,
-        }
-    }
 }
 
 struct TtsSynthesisJob {
@@ -1184,11 +1171,10 @@ impl VoiceAgent {
                 return Ok(());
             }
             // Safety net when RTP/inbound loop stops: only force if PCM actually stalled.
-            let pcm_stalled = inner
+            inner
                 .last_inbound_pcm_at
                 .map(|t| t.elapsed() >= std::time::Duration::from_millis(timeout_ms))
-                .unwrap_or(true);
-            pcm_stalled
+                .unwrap_or(true)
         };
         if should_force {
             voice_debug("C2 wall-clock timeout (inbound PCM stalled after end-of-turn grace)");
@@ -1599,6 +1585,7 @@ impl VoiceAgent {
         }));
     }
 
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn run_tts_synthesis_job(
         text: &str,
         requested_at: Instant,
@@ -1668,6 +1655,7 @@ impl VoiceAgent {
 
     /// Legacy path: fully synthesize, then enqueue all PCM, then drain.
     /// Enabled with `VOICE_TTS_STREAM_CHUNKS=0`.
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn run_tts_synthesis_job_buffered(
         text: &str,
         requested_at: Instant,
@@ -1775,6 +1763,7 @@ impl VoiceAgent {
 
     /// Default path: stream PCM chunks into the buffer while synthesis runs so
     /// drain can start before the full utterance is ready (`VOICE_TTS_STREAM_CHUNKS`).
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn run_tts_synthesis_job_streaming(
         text: &str,
         requested_at: Instant,
@@ -2028,6 +2017,7 @@ impl VoiceAgent {
         otel::record_tts_latency_ms(started.elapsed().as_secs_f64() * 1000.0, &tts_attrs);
     }
 
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn ensure_tts_drain_worker_shared(
         slot: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
         wake: &Arc<Notify>,
@@ -3087,7 +3077,7 @@ impl VoiceAgent {
 
     async fn maybe_spawn_deferred_lid_after_tts(
         weak_self: &Weak<VoiceAgent>,
-        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
+        _tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
         inner: &Arc<Mutex<AgentInner>>,
     ) {
         let should_run = {
@@ -3148,7 +3138,7 @@ impl VoiceAgent {
     /// [`stop`](Self::stop) has run. Set `VOICE_DEBUG=1` for per-frame diagnostics.
     pub async fn process_inbound_pcm(&self, pcm: Bytes, duration_ms: u32) -> SpeechResult<()> {
         let call = INBOUND_PCM_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
-        if call == 1 || call % 50 == 0 {
+        if call == 1 || call.is_multiple_of(50) {
             voice_debug(format!(
                 "process_inbound_pcm call={call} bytes={} duration_ms={duration_ms}",
                 pcm.len()
@@ -3570,8 +3560,6 @@ impl VoiceAgent {
                 } else {
                     vad_speaking || inner.stt_gate_hold_ms > 0 || pending_gate || utterance_closing
                 }
-            } else if inner.stt_stream_open {
-                true
             } else {
                 true
             };
@@ -3594,7 +3582,7 @@ impl VoiceAgent {
         let gate_closed_skip_stt = gate_stt && !stt_poll_open && !should_finalize_utterance;
         let push_to_stt_directly = !gate_stt || stt_audio_open;
 
-        if call == 1 || call % 50 == 0 {
+        if call == 1 || call.is_multiple_of(50) {
             voice_debug(format!(
                 "inbound PCM frame={call} bytes={} duration_ms={duration_ms}",
                 pcm.len()
@@ -3613,7 +3601,7 @@ impl VoiceAgent {
         if !gate_stt || stt_poll_open {
             self.poll_stt_transcripts().await?;
         } else if gate_closed_skip_stt {
-            if call == 1 || call % 50 == 0 {
+            if call == 1 || call.is_multiple_of(50) {
                 voice_debug(format!(
                     "process_inbound_pcm call={call} skipped: gate_stt closed (STT poll deferred; pre-roll buffered)"
                 ));
@@ -3945,7 +3933,7 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
         weak_self: &Weak<VoiceAgent>,
-        tts_synthesis_busy: &Arc<AtomicBool>,
+        _tts_synthesis_busy: &Arc<AtomicBool>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
         let writer = {
@@ -4066,6 +4054,7 @@ impl VoiceAgent {
     }
 
     /// Write paced 20 ms frames. Writer failures propagate; barge/stop returns [`TtsDrainWrite::Stopped`].
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn write_paced_tts_frames(
         writer: &PcmWriter,
         tts_buffer: &TtsBuffer,

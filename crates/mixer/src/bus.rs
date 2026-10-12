@@ -18,7 +18,7 @@ impl MixBus {
             if input.pcm.len() != FRAME_BYTES {
                 continue;
             }
-            for (idx, chunk) in input.pcm.chunks_exact(2).enumerate() {
+            for (idx, chunk) in input.pcm.as_chunks::<2>().0.iter().enumerate() {
                 let sample = i16::from_le_bytes([chunk[0], chunk[1]]) as i32;
                 accum[idx] = accum[idx].saturating_add(sample);
             }
@@ -83,18 +83,21 @@ mod tests {
     fn peak_abs_sample(frame: &Frame) -> u16 {
         frame
             .pcm
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]).unsigned_abs())
             .max()
             .unwrap_or(0)
     }
 
     #[test]
+    #[allow(clippy::absurd_extreme_comparisons)] // asserts the i16 clip contract at the type bound
     fn clip_bounds_max_sample_value() {
         let loud = sine_frame(i16::MAX / 2, 0.0);
         let mixed = MixBus::mix(&[loud.clone(), loud]);
 
-        for chunk in mixed.pcm.chunks_exact(2) {
+        for chunk in mixed.pcm.as_chunks::<2>().0 {
             let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
             assert!(sample <= i16::MAX);
             assert!(sample >= i16::MIN);

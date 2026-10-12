@@ -3,18 +3,13 @@
 use serde::{Deserialize, Serialize};
 
 /// How speech events are delivered to the host application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EventDeliveryMode {
     Callback,
     Stream,
+    #[default]
     Both,
-}
-
-impl Default for EventDeliveryMode {
-    fn default() -> Self {
-        Self::Both
-    }
 }
 
 /// Event delivery configuration.
@@ -160,17 +155,12 @@ fn default_true() -> bool {
 }
 
 /// Inbound noise suppression backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NoiseSuppressionProvider {
+    #[default]
     None,
     Rnnoise,
-}
-
-impl Default for NoiseSuppressionProvider {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Inbound PCM noise suppression (before VAD / downsample).
@@ -190,12 +180,13 @@ impl Default for NoiseSuppressionConfig {
 }
 
 /// Supported VAD sample rates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VadSampleRate {
     #[serde(rename = "8000")]
     Hz8000 = 8000,
     #[serde(rename = "16000")]
+    #[default]
     Hz16000 = 16000,
 }
 
@@ -205,12 +196,6 @@ impl VadSampleRate {
             Self::Hz8000 => 8000,
             Self::Hz16000 => 16000,
         }
-    }
-}
-
-impl Default for VadSampleRate {
-    fn default() -> Self {
-        Self::Hz16000
     }
 }
 

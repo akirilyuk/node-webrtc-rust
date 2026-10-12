@@ -59,7 +59,7 @@ pub enum SessionChannel {
     Inbound,
 }
 
-struct SpeechRun {
+pub(crate) struct SpeechRun {
     channel: SessionChannel,
     wall_start_ms: u32,
     wall_end_ms: u32,
@@ -327,10 +327,12 @@ pub fn pcm_to_mono_s16(pcm: &[u8]) -> Vec<i16> {
     if pcm.len() < 2 {
         return Vec::new();
     }
-    let looks_stereo = pcm.len() % 4 == 0 && pcm.len() >= 4;
+    let looks_stereo = pcm.len().is_multiple_of(4) && pcm.len() >= 4;
     if !looks_stereo {
         return pcm
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
     }
@@ -590,7 +592,9 @@ pub fn encode_opus_ogg(
     }
 
     let samples: Vec<i16> = pcm_interleaved
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
         .collect();
     let samples_per_frame = OPUS_FRAME_SAMPLES_PER_CHANNEL * usize::from(channels);

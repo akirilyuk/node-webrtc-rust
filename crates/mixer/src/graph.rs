@@ -1125,12 +1125,11 @@ mod tests {
             (0.5 + (n as f64) * f64::from(target_freq) / f64::from(sample_rate)).floor() as usize;
         let omega = (2.0 * std::f64::consts::PI * k as f64) / n as f64;
         let coeff = 2.0 * omega.cos();
-        let mut s0 = 0.0f64;
         let mut s1 = 0.0f64;
         let mut s2 = 0.0f64;
         for &sample in samples {
             let x = f64::from(sample);
-            s0 = x + coeff * s1 - s2;
+            let s0 = x + coeff * s1 - s2;
             s2 = s1;
             s1 = s0;
         }

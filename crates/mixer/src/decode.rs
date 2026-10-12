@@ -134,7 +134,9 @@ mod tests {
         let n = frame.pcm.len() / 2;
         let sum: f64 = frame
             .pcm
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| f64::from(i16::from_le_bytes([c[0], c[1]])).powi(2))
             .sum();
         (sum / n as f64).sqrt()

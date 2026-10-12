@@ -21,7 +21,11 @@ run_quality=false
 classify_path() {
   local path="$1"
   [[ -z "$path" ]] && return 0
-  [[ "$path" == *.md || "$path" == docs/* ]] && return 0
+  # Markdown/docs: no compile/test, but Prettier (format:check) covers them, so run quality.
+  if [[ "$path" == *.md || "$path" == docs/* ]]; then
+    run_quality=true
+    return 0
+  fi
 
   if [[ "$path" == .github/workflows/* || "$path" == .cursor/* ]]; then
     run_quality=true

@@ -95,7 +95,6 @@ describe.skipIf(!enabled)('VoiceAgent.stop with an open STT utterance', () => {
       await sleep(extraDelayMs)
 
       const tookMs = await stopWithin(listener, STOP_BOUND_MS)
-      // eslint-disable-next-line no-console
       console.log(`stop after +${extraDelayMs}ms took ${tookMs}ms`)
       expect(tookMs, `listener.stop() hung > ${STOP_BOUND_MS}ms`).not.toBeNull()
       expect(tookMs!).toBeLessThan(5_000)

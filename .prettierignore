@@ -9,3 +9,6 @@ packages/bindings/npm/
 
 # Vendored third-party crates are kept byte-identical to upstream
 third_party/
+
+# Downloaded model bundles (gitignored/cache artifacts, not repo content)
+.models/

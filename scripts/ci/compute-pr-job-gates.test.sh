@@ -40,4 +40,28 @@ assert_contains "$out_filter" "run_compile=true"
 assert_contains "$out_filter" "skip_test=false"
 echo "ok: paths-filter native fallback forces compile + test"
 
+# Docs-only diff (Markdown + docs/): quality must run (Prettier covers Markdown), compile/test must not.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+(
+  cd "$tmp"
+  git init -q
+  git -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m base
+  mkdir docs
+  echo "# x" >docs/a.md
+  echo "# y" >README.md
+  git add -A
+  git -c user.name=t -c user.email=t@example.invalid commit -q -m docs
+)
+docs_base="$(git -C "$tmp" rev-parse HEAD~1)"
+docs_head="$(git -C "$tmp" rev-parse HEAD)"
+out_docs="$(cd "$tmp" && "$GATES" "$docs_base" "$docs_head" false false)"
+assert_contains "$out_docs" "run_quality=true"
+assert_contains "$out_docs" "skip_quality=false"
+assert_contains "$out_docs" "run_compile=false"
+assert_contains "$out_docs" "run_build_ts=false"
+assert_contains "$out_docs" "run_test=false"
+assert_contains "$out_docs" "skip_test=true"
+echo "ok: docs-only diff → quality only"
+
 echo "compute-pr-job-gates.test.sh: all checks passed"

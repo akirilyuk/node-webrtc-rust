@@ -316,7 +316,7 @@ dc.onopen = () => {
 }
 ```
 
-- `RTCDataChannel.nativeReady` resolves once the native channel exists. When you create the offer yourself, `await dc.nativeReady` after `createDataChannel` and before `createOffer`, so the offer includes the data channel (`m=application`).
+- `RTCDataChannel.nativeReady` resolves once the native channel exists. When you create the offer yourself, `await dc.nativeReady` after `createDataChannel` and before `createOffer`, so the offer includes the data channel (`m=application`). `pc.createOffer()` itself also waits (up to 5 s) for data channels whose native create is still in flight, so calling it right after `createDataChannel` is safe.
 - **Server → client:** `{ type: 'speech_event', event: 'user_speech_final', text: '…' }` (STT, VAD, `barge_in`, …)
 - **Client → server:** `{ type: 'speak', text: 'Hello' }` → `agent.sendTextToTTS(text)`
 

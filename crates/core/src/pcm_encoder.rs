@@ -11,7 +11,8 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
 
 use crate::error::CoreError;
 
-const OPUS_OUTPUT_CAPACITY: usize = 4_000;
+/// Max Opus payload per RTP packet: outbound RTP MTU 1200 (webrtc-rs `RTP_OUTBOUND_MTU`) minus RTP header (12 B), header extensions and SRTP auth tag headroom.
+pub const OPUS_MAX_PAYLOAD_BYTES: usize = 1000;
 
 /// Default Opus encode bitrate (stereo Audio mode) when `WEBRTC_OPUS_BITRATE_BPS` is unset.
 pub const OPUS_TARGET_BITRATE_BPS: i32 = 400_000;
@@ -178,6 +179,17 @@ impl NegotiatedAudioFormat {
     }
 }
 
+/// Encode bitrate for a packet of `duration_ms`, capped so the payload stays within
+/// [`OPUS_MAX_PAYLOAD_BYTES`]. `duration_ms == 0` returns `base_bps` unchanged.
+pub fn opus_bitrate_for_duration(base_bps: i32, duration_ms: u32) -> i32 {
+    if duration_ms == 0 {
+        return base_bps;
+    }
+    let cap = (OPUS_MAX_PAYLOAD_BYTES as u64 * 8 * 1000 / duration_ms as u64) as i64;
+    let capped = (base_bps as i64).min(cap) as i32;
+    capped.max(OPUS_BITRATE_MIN_BPS)
+}
+
 /// Encodes interleaved stereo PCM into payloads for the negotiated codec.
 #[derive(Clone)]
 pub struct PcmEncoder {
@@ -188,12 +200,17 @@ struct OpusEncoderState {
     encoder: Encoder,
     pcm_scratch: Vec<i16>,
     opus_scratch: Vec<u8>,
+    base_bitrate_bps: i32,
+    current_bitrate_bps: i32,
 }
 
 impl PcmEncoder {
     pub fn new() -> Result<Self, CoreError> {
+        Self::new_with_bitrate(opus_target_bitrate_bps())
+    }
+
+    fn new_with_bitrate(bitrate_bps: i32) -> Result<Self, CoreError> {
         let application = resolved_opus_application();
-        let bitrate_bps = opus_target_bitrate_bps();
         let mut encoder = Encoder::new(SampleRate::Hz48000, Channels::Stereo, application)
             .map_err(|e| CoreError::Track(format!("Opus encoder init: {e}")))?;
         encoder
@@ -207,7 +224,9 @@ impl PcmEncoder {
             opus: Arc::new(Mutex::new(OpusEncoderState {
                 encoder,
                 pcm_scratch: Vec::new(),
-                opus_scratch: vec![0u8; OPUS_OUTPUT_CAPACITY],
+                opus_scratch: vec![0u8; OPUS_MAX_PAYLOAD_BYTES],
+                base_bitrate_bps: bitrate_bps,
+                current_bitrate_bps: bitrate_bps,
             })),
         })
     }
@@ -257,6 +276,18 @@ impl PcmEncoder {
             .opus
             .lock()
             .map_err(|_| CoreError::Track("Opus encoder lock poisoned".into()))?;
+
+        let effective = opus_bitrate_for_duration(
+            state.base_bitrate_bps,
+            duration.as_millis().min(u32::MAX as u128) as u32,
+        );
+        if effective != state.current_bitrate_bps {
+            state
+                .encoder
+                .set_bitrate(Bitrate::BitsPerSecond(effective))
+                .map_err(|e| CoreError::Track(format!("Opus encoder bitrate: {e}")))?;
+            state.current_bitrate_bps = effective;
+        }
 
         state.pcm_scratch.clear();
         state.pcm_scratch.reserve(pcm.len() / 2);
@@ -308,6 +339,76 @@ fn samples_per_channel_for_duration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn noise_pcm(seed: &mut u64, duration_ms: usize) -> Vec<u8> {
+        let samples = 48 * duration_ms * 2;
+        let mut out = Vec::with_capacity(samples * 2);
+        for _ in 0..samples {
+            *seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let v = ((*seed >> 33) as i32 % 65536 - 32768) as i16;
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    fn test_format() -> NegotiatedAudioFormat {
+        NegotiatedAudioFormat::advertised_opus()
+    }
+
+    #[test]
+    fn opus_bitrate_for_duration_caps_long_packets() {
+        assert_eq!(opus_bitrate_for_duration(400_000, 20), 400_000);
+        assert_eq!(opus_bitrate_for_duration(400_000, 40), 200_000);
+        assert_eq!(opus_bitrate_for_duration(400_000, 60), 133_333);
+        assert_eq!(opus_bitrate_for_duration(510_000, 20), 400_000);
+        assert_eq!(opus_bitrate_for_duration(64_000, 60), 64_000);
+        assert_eq!(opus_bitrate_for_duration(400_000, 0), 400_000);
+    }
+
+    fn assert_packets_fit(base: i32) {
+        let enc = PcmEncoder::new_with_bitrate(base).unwrap();
+        let fmt = test_format();
+        let mut seed = 12345u64;
+        for ms in [20usize, 40, 60] {
+            for _ in 0..50 {
+                let pcm = noise_pcm(&mut seed, ms);
+                let (payload, _) = enc
+                    .encode(&fmt, &pcm, Duration::from_millis(ms as u64))
+                    .unwrap();
+                assert!(
+                    payload.len() <= OPUS_MAX_PAYLOAD_BYTES,
+                    "{ms} ms packet {} B > budget at base {base}",
+                    payload.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn opus_packets_fit_mtu_budget_at_every_duration() {
+        assert_packets_fit(OPUS_TARGET_BITRATE_BPS);
+    }
+
+    #[test]
+    fn opus_packets_fit_mtu_budget_with_max_base_bitrate() {
+        assert_packets_fit(OPUS_BITRATE_MAX_BPS);
+    }
+
+    #[test]
+    fn opus_bitrate_restored_after_long_frame() {
+        let enc = PcmEncoder::new_with_bitrate(400_000).unwrap();
+        let fmt = test_format();
+        let mut seed = 7u64;
+        enc.encode(&fmt, &noise_pcm(&mut seed, 60), Duration::from_millis(60))
+            .unwrap();
+        assert_eq!(enc.opus.lock().unwrap().current_bitrate_bps, 133_333);
+        enc.encode(&fmt, &noise_pcm(&mut seed, 20), Duration::from_millis(20))
+            .unwrap();
+        let st = enc.opus.lock().unwrap();
+        assert_eq!(st.current_bitrate_bps, st.base_bitrate_bps);
+    }
     use audiopus::coder::Decoder;
     use audiopus::packet::Packet;
     use audiopus::{MutSignals, SampleRate};

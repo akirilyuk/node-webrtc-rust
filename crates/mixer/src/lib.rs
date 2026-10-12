@@ -13,6 +13,7 @@ mod decode;
 mod elastic;
 mod frame;
 mod graph;
+mod otel;
 mod spatial;
 
 pub use bus::MixBus;

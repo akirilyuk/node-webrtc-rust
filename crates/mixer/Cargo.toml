@@ -6,7 +6,16 @@ license.workspace = true
 repository.workspace = true
 description = "PCM audio mixing pipeline for node-webrtc-rust"
 
+[features]
+# Export `voice_mix_frames_total{outcome}` through the global OpenTelemetry meter provider
+# (installed by node-webrtc-rust-speech `otel`). Off by default: the hooks compile to no-ops.
+otel = ["dep:opentelemetry"]
+
 [dependencies]
 audiopus = "0.3.0-rc.0"
 bytes = { workspace = true }
 thiserror = { workspace = true }
+opentelemetry = { version = "0.28", optional = true }
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.28", features = ["testing"] }

@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 
 use crate::frame::{silence_frame, Frame, FRAME_BYTES, FRAME_MS, SAMPLES_PER_CHANNEL};
+use crate::otel::{record_mix_frames, MixFrameOutcome};
 
 /// Maximum queued frames per source (1 s).
 pub const QUEUE_CAPACITY: usize = 50;
@@ -138,6 +139,7 @@ impl ElasticFrameQueue {
             if let (Some(a), Some(b)) = (self.frames.pop_front(), self.frames.pop_front()) {
                 self.frames.push_front(merge_pair(&a, &b));
                 self.overflow_compressed += 1;
+                record_mix_frames(MixFrameOutcome::OverflowCompressed, 1);
                 self.warn_overflow(now);
             }
         }
@@ -147,6 +149,7 @@ impl ElasticFrameQueue {
     /// Counts an undecodable inbound packet and logs it (rate-limited to one per second).
     pub fn note_decode_error(&mut self, reason: &str, now: Instant) {
         self.decode_errors += 1;
+        record_mix_frames(MixFrameOutcome::DecodeError, 1);
         let due = match self.last_decode_warn {
             None => true,
             Some(prev) => now.saturating_duration_since(prev) >= WARN_INTERVAL,
@@ -190,11 +193,13 @@ impl ElasticFrameQueue {
         let out = if self.over_ticks >= SHRINK_AFTER_TICKS && !self.frames.is_empty() {
             let second = self.frames.pop_front().unwrap_or_else(silence_frame);
             self.compressed += 1;
+            record_mix_frames(MixFrameOutcome::Compressed, 1);
             merge_pair(&first, &second)
         } else {
             first
         };
         self.played += 1;
+        record_mix_frames(MixFrameOutcome::Played, 1);
         self.last_played = Some(out.clone());
         out
     }
@@ -234,6 +239,7 @@ impl ElasticFrameQueue {
             match &self.last_played {
                 Some(last) => {
                     self.concealed += 1;
+                    record_mix_frames(MixFrameOutcome::Concealed, 1);
                     fade_out(last)
                 }
                 None => silence_frame(),

@@ -173,8 +173,8 @@ struct AgentInner {
     otel: AgentOtelState,
     vad: Option<VadEngine>,
     stt_pre_roll: Option<SttPreRollBuffer>,
-    /// VAD-pending onset frames held back from the closing STT stream during the gate hold; counted by exactly one stream (see handoff-counting).
-    /// Mono s16le 16 kHz.
+    /// VAD-pending onset frames held back from the closing STT stream during the gate hold.
+    /// Counted by exactly one stream (handoff-counting). Mono s16le 16 kHz.
     hold_pending_pcm: Vec<u8>,
     /// Milliseconds of inbound audio still forwarded to STT after VAD speech end.
     stt_gate_hold_ms: u32,

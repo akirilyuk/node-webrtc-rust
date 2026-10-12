@@ -91,7 +91,7 @@ runs:
 
     - name: Install Rust toolchain
       if: inputs.setup_host_toolchain == 'true' && steps.resolve.outputs.build_required == 'true'
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@1.99.0
       with:
         targets: ${{ inputs.target }}
 

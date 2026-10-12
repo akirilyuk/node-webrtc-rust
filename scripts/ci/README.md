@@ -326,7 +326,7 @@ Release prep on git uses `SKIP_LOCK_REFRESH=1` with [`bump-workspace-versions.sh
 | `ghcr.io/<owner>/node-webrtc-rust/ci-build:latest`        | [`docker/ci/Dockerfile`](../../docker/ci/Dockerfile)               | glibc native builds (Linux gnu x64), PR compile-native, integration tests |
 | `ghcr.io/<owner>/node-webrtc-rust/ci-build-alpine:latest` | [`docker/ci/Dockerfile.alpine`](../../docker/ci/Dockerfile.alpine) | **musl** native builds (`x86_64-unknown-linux-musl`)                      |
 
-**ci-build:** Ubuntu 24.04, Node 20, Rust stable + Linux cross targets, Zig (napi `--zig` for non-gnu targets).  
+**ci-build:** Ubuntu 24.04, Node 20, Rust 1.99.0 (pinned in `rust-toolchain.toml`) + Linux cross targets, Zig (napi `--zig` for non-gnu targets).  
 **ci-build-alpine:** Node 24 Alpine, Rust + musl toolchain via [`install-alpine-native-toolchain.sh`](install-alpine-native-toolchain.sh).
 
 Rebuild when either Dockerfile (or the Alpine install script) changes:

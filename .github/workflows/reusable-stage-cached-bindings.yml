@@ -94,7 +94,7 @@ jobs:
           node-version: 20
 
       - name: Install Rust metadata toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
 
       - name: Require cached native artifact + manifest
         shell: bash
@@ -147,7 +147,7 @@ jobs:
           node-version: 20
 
       - name: Install Rust metadata toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
 
       - name: Require cached native artifact + manifest
         shell: bash

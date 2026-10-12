@@ -22,13 +22,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust (stable) + Linux cross targets used in CI
+# Rust (pinned 1.99.0, see rust-toolchain.toml) + Linux cross targets used in CI
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --default-toolchain stable --profile minimal \
+      | sh -s -- -y --default-toolchain 1.99.0 --profile minimal \
     && rustup target add \
       x86_64-unknown-linux-gnu \
       x86_64-unknown-linux-musl \

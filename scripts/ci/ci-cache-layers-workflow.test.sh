@@ -22,7 +22,7 @@ manifest_write="scripts/ci/write-native-artifact-manifest.sh"
 summary=scripts/ci/write-native-ci-summary.sh
 
 # --- Plan runner: cargo metadata via CI_IMAGE on bare self-hosted hosts ---
-if grep -q 'dtolnay/rust-toolchain@stable' "$plan"; then
+if grep -q 'dtolnay/rust-toolchain@1.99.0' "$plan"; then
   fail "plan action must not install host rust-toolchain (use CARGO_VIA_CI_IMAGE)"
 fi
 grep -q 'CARGO_VIA_CI_IMAGE' "$plan" || fail "plan action must set CARGO_VIA_CI_IMAGE on contract step"
@@ -51,7 +51,7 @@ def job(text: str, name: str) -> str:
 
 def require_cargo_via_image(path: str, job_name: str, marker: str) -> None:
     block = job(Path(path).read_text(encoding="utf-8"), job_name)
-    if "dtolnay/rust-toolchain@stable" in block:
+    if "dtolnay/rust-toolchain@1.99.0" in block:
         raise SystemExit(f"{path}:{job_name}: must not install host rust-toolchain")
     contract = block.find(marker)
     if contract < 0:
@@ -94,7 +94,7 @@ def job_block(name: str) -> str:
 
 def require_toolchain_before_manifest(job: str) -> None:
     block = job_block(job)
-    toolchain = block.find("dtolnay/rust-toolchain@stable")
+    toolchain = block.find("dtolnay/rust-toolchain@1.99.0")
     manifest = block.find("write-native-artifact-manifest.sh")
     if manifest < 0:
         raise SystemExit(f"{job}: missing manifest refresh")
@@ -104,7 +104,7 @@ def require_toolchain_before_manifest(job: str) -> None:
 
 def require_no_host_toolchain_or_cargo_via(job: str) -> None:
     block = job_block(job)
-    if "dtolnay/rust-toolchain@stable" in block:
+    if "dtolnay/rust-toolchain@1.99.0" in block:
         raise SystemExit(f"{job}: must not install host rust-toolchain (container has cargo)")
     if "CARGO_VIA_CI_IMAGE" in block:
         raise SystemExit(f"{job}: must not set CARGO_VIA_CI_IMAGE (container has cargo)")

@@ -32,6 +32,7 @@ import {
   exitSherpaRoundtripFailure,
   rememberRoundtripEntryScript,
 } from './roundtrip-failure-debug.js'
+import { startHostSuspendWatch } from './host-suspend-watch.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 import { streamSilence } from './pcm-relay.js'
 import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
@@ -105,11 +106,29 @@ export function installRoundtripWallClockTimeout(defaultWallMs = 90_000): void {
     wallMs = maxWallMs
   }
   console.log(`[${scriptName}] wall-clock limit ${wallMs} ms (SHERPA_ROUNDTRIP_WALL_MS)`)
+  startHostSuspendWatch()
+  installFatalErrorHandlers()
   setTimeout(() => {
     exitSherpaRoundtripFailure({
       reason: `wall-clock timeout after ${wallMs} ms (SHERPA_ROUNDTRIP_WALL_MS)`,
     })
   }, wallMs)
+}
+
+let fatalHandlersInstalled = false
+
+/** No roundtrip script may exit through a raw Node stack: route stray errors to the failure report. */
+function installFatalErrorHandlers(): void {
+  if (fatalHandlersInstalled) return
+  fatalHandlersInstalled = true
+  const onFatal = (err: unknown): void => {
+    exitSherpaRoundtripFailure({
+      reason: err instanceof Error ? err.message : String(err),
+      error: err,
+    })
+  }
+  process.on('unhandledRejection', onFatal)
+  process.on('uncaughtException', onFatal)
 }
 
 function sleepMs(ms: number): Promise<void> {

@@ -40,6 +40,10 @@ fn instant_for_at_ms(origin: &mut Option<(Instant, f64)>, at_ms: f64) -> Instant
 impl JsMixGraph {
     #[napi(constructor)]
     pub fn new() -> Self {
+        // Start OTel before the mixer caches its counter: an instrument created before the
+        // global meter provider exists stays a no-op forever (voice sessions init lazily).
+        #[cfg(feature = "otel")]
+        let _ = node_webrtc_rust_speech::otel::init_from_env();
         Self {
             inner: Mutex::new(MixGraph::new()),
             render_origin: Mutex::new(None),
@@ -461,5 +465,15 @@ mod tests {
         assert_eq!(instant_for_at_ms(&mut origin, f64::INFINITY), t0);
         assert_eq!(instant_for_at_ms(&mut origin, f64::NEG_INFINITY), t0);
         assert_eq!(instant_for_at_ms(&mut origin, 1e300), t0);
+    }
+
+    #[cfg(feature = "otel")]
+    #[test]
+    fn constructing_a_mix_graph_starts_otel() {
+        let _graph = JsMixGraph::new();
+        assert!(
+            node_webrtc_rust_speech::otel::is_enabled(),
+            "OTel must be initialised before the mixer caches its counter"
+        );
     }
 }

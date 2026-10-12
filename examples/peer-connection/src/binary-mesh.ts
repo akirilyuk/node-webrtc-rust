@@ -67,6 +67,7 @@ async function connectToPeer(
 
   if (createOffer) {
     const dc = link.createDataChannel(GAME_SYNC_CHANNEL_LABEL)
+    await dc.nativeReady // offer must include the data channel
     wireChannel(peer, remoteId, dc)
   } else {
     link.ondatachannel = (event) => wireChannel(peer, remoteId, event.channel)

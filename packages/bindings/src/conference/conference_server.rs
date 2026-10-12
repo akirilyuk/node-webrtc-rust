@@ -32,6 +32,10 @@ impl JsConferenceServer {
         room_id: String,
         options: Option<JsRoomOptions>,
     ) -> Result<JsConferenceRoom> {
+        // Start OTel before the mixer caches its counter: an instrument created before the
+        // global meter provider exists stays a no-op forever (voice sessions init lazily).
+        #[cfg(feature = "otel")]
+        let _ = node_webrtc_rust_speech::otel::init_from_env();
         let config = options.unwrap_or_default().into();
         let room = self
             .inner

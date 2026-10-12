@@ -7,6 +7,7 @@ import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-ru
 import { SessionPod } from '../src/session-pod.js'
 import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
 import { VoiceSessionBudget, resetProcessVoiceSessionBudget } from '../src/voice-session-budget.js'
+import { connectAllOrCloseAll } from './connect-all-or-close.js'
 import {
   defaultIceConfig,
   delay,
@@ -214,11 +215,14 @@ async function runThreeClientPositionalMix(
       await pod.ensureSession(sessionId)
     }
 
-    const [client1, client2, client3] = await Promise.all([
-      connectClientToSession(wsUrl, sessionIds[0], peerIds[0]),
-      connectClientToSession(wsUrl, sessionIds[1], peerIds[1]),
-      connectClientToSession(wsUrl, sessionIds[2], peerIds[2]),
-    ])
+    const [client1, client2, client3] = await connectAllOrCloseAll(
+      [
+        () => connectClientToSession(wsUrl, sessionIds[0], peerIds[0]),
+        () => connectClientToSession(wsUrl, sessionIds[1], peerIds[1]),
+        () => connectClientToSession(wsUrl, sessionIds[2], peerIds[2]),
+      ],
+      (client) => void closeClient(client),
+    )
 
     try {
       await client1.mic.writeSample(Buffer.alloc(960), 5)

@@ -51,6 +51,7 @@ async function main(): Promise<void> {
 
   try {
     const dc1 = pc1.createDataChannel('game-sync')
+    await dc1.nativeReady // offer must include the data channel
     const dc2Promise = new Promise<RTCDataChannel>((resolve) => {
       pc2.ondatachannel = (event) => resolve(event.channel)
     })

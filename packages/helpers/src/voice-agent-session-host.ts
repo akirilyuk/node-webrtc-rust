@@ -78,6 +78,8 @@ export const DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS = 10_000
 export const CLIENT_HANGUP_MESSAGE_TYPE = 'client_hangup'
 /** Bound native peer cleanup so session budget release cannot hang forever. */
 const PEER_NATIVE_CLOSE_TIMEOUT_MS = 5_000
+/** Bound on the native data channel create finishing before the offer is built. */
+const DATA_CHANNEL_CREATE_TIMEOUT_MS = 5_000
 
 type AwaitablePeerConnection = RTCPeerConnection & {
   closeAsync?: () => Promise<void>
@@ -219,6 +221,31 @@ async function awaitAgentStopped(
   if (timedOut) return { status: 'timed_out', pending }
   if (error !== undefined) return { status: 'failed', error }
   return { status: 'ok' }
+}
+
+/**
+ * Waits for outgoing data channels to exist natively. `createDataChannel` is fire-and-forget;
+ * an offer built before the native create ran has no `m=application` section and the control
+ * channel never opens. Rejects on a native error or after `timeoutMs`.
+ */
+export async function awaitDataChannelsReady(
+  channels: Array<{ nativeReady: Promise<void> } | undefined>,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      Promise.all(channels.map((channel) => channel?.nativeReady)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`data channel create timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        )
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 function isClientHangupMessage(data: unknown): boolean {
@@ -1001,6 +1028,14 @@ export class VoiceAgentSessionHost {
     }
 
     const tag = dataOnly ? 'data' : 'voice'
+    try {
+      await awaitDataChannelsReady([controlChannel, syncChannel], DATA_CHANNEL_CREATE_TIMEOUT_MS)
+    } catch (error: unknown) {
+      this.log(
+        `[${tag} ${peerId}] data channel create failed before offer: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      throw error
+    }
     await createOfferGatherWithIceCredentials(pc, {
       onRetry: (attempt, sdpLen) => {
         this.log(

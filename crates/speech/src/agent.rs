@@ -201,6 +201,8 @@ struct AgentInner {
     stt_listen_deadline_ms: u32,
     /// Wall-clock anchor for C1 from VAD `SpeechStart` (not PCM `duration_ms`).
     stt_listen_started_at: Option<Instant>,
+    /// Inbound media ms seen since the C1 listen window armed (C1 expires on this, not on wall).
+    stt_listen_media_ms: u32,
     /// One `voice_debug` line per utterance when C1 is deferred due to STT decode backlog.
     c1_backlog_deferred_logged: bool,
     /// When the STT stream open was first seen refused for this wait (`None` = not pending).
@@ -366,6 +368,34 @@ pub struct VoiceAgent {
     tts_vendor_calls_inflight: Arc<AtomicUsize>,
     weak_self: Weak<VoiceAgent>,
     c2_ticker_started: AtomicBool,
+    /// True while a `process_inbound_pcm` call is running. The wall-clock ticker skips its C1/C2
+    /// checks then: a long call (slow decode inside finalize) is not "PCM stopped".
+    inbound_in_flight: AtomicBool,
+    /// Reference point for `last_inbound_activity_ms`.
+    epoch: Instant,
+    /// Ms since `epoch` of the last entry into OR exit from `process_inbound_pcm`. The ticker's
+    /// "PCM stopped" age counts from here, so a call that ran for seconds does not look stalled
+    /// the moment it returns. Atomic because the call's drop guard cannot take the async lock.
+    last_inbound_activity_ms: AtomicU64,
+}
+
+/// Marks a `process_inbound_pcm` call as running; on every exit path clears the flag and stamps
+/// the exit time.
+struct InboundInFlight<'a>(&'a VoiceAgent);
+
+impl<'a> InboundInFlight<'a> {
+    fn enter(agent: &'a VoiceAgent) -> Self {
+        agent.stamp_inbound_activity();
+        agent.inbound_in_flight.store(true, Ordering::SeqCst);
+        Self(agent)
+    }
+}
+
+impl Drop for InboundInFlight<'_> {
+    fn drop(&mut self) {
+        self.0.stamp_inbound_activity();
+        self.0.inbound_in_flight.store(false, Ordering::SeqCst);
+    }
 }
 
 impl VoiceAgent {
@@ -430,6 +460,7 @@ impl VoiceAgent {
                 vad_triggered_this_utterance: false,
                 stt_listen_deadline_ms: 0,
                 stt_listen_started_at: None,
+                stt_listen_media_ms: 0,
                 c1_backlog_deferred_logged: false,
                 stt_open_wait_started_at: None,
                 utterance_finalize_deadline_ms: 0,
@@ -490,6 +521,9 @@ impl VoiceAgent {
             tts_vendor_calls_inflight: Arc::new(AtomicUsize::new(0)),
             weak_self: weak.clone(),
             c2_ticker_started: AtomicBool::new(false),
+            inbound_in_flight: AtomicBool::new(false),
+            epoch: Instant::now(),
+            last_inbound_activity_ms: AtomicU64::new(0),
         }))
     }
 
@@ -1004,6 +1038,7 @@ impl VoiceAgent {
     fn clear_stt_listen_timer(inner: &mut AgentInner) {
         inner.stt_listen_deadline_ms = 0;
         inner.stt_listen_started_at = None;
+        inner.stt_listen_media_ms = 0;
         inner.c1_backlog_deferred_logged = false;
         inner.stt_open_wait_started_at = None;
     }
@@ -1029,26 +1064,42 @@ impl VoiceAgent {
         }
         if since.elapsed() < std::time::Duration::from_millis(max_ms as u64) {
             inner.stt_listen_started_at = Some(Instant::now());
+            inner.stt_listen_media_ms = 0;
             return true;
         }
         false
     }
 
-    fn c1_listen_expired(inner: &AgentInner, backlog_ms: u32) -> bool {
+    /// C1 expires only when BOTH `stt_listen_media_ms` of audio reached the agent without a
+    /// partial (late or slow audio is never cut off for being late) AND the same time passed on
+    /// the wall clock (a burst of audio gives the STT no time to decode). Wall time alone backs
+    /// it up only when inbound PCM has stopped completely (`pcm_idle` >= the timeout).
+    /// `pcm_idle` is `Duration::ZERO` when called from inside `process_inbound_pcm`.
+    fn c1_listen_expired(inner: &AgentInner, backlog_ms: u32, pcm_idle: std::time::Duration) -> bool {
         if inner.stt_listen_deadline_ms == 0 {
             return false;
         }
         let Some(started_at) = inner.stt_listen_started_at else {
             return false;
         };
-        let elapsed = started_at.elapsed();
+        let timeout_ms = inner.config.vad.stt_listen_timeout_ms as u64;
         let hard_timeout_ms = effective_stt_listen_hard_timeout_ms(&inner.config.vad);
-        if elapsed >= std::time::Duration::from_millis(hard_timeout_ms) {
+        let slack = inner.config.vad.stt_listen_backlog_slack_ms;
+        let media_ms = inner.stt_listen_media_ms as u64;
+        let wall = started_at.elapsed();
+        let wall_at_least = |ms: u64| wall >= std::time::Duration::from_millis(ms);
+        if media_ms >= hard_timeout_ms && wall_at_least(hard_timeout_ms) {
             return true;
         }
-        let timeout_ms = inner.config.vad.stt_listen_timeout_ms as u64;
-        let slack = inner.config.vad.stt_listen_backlog_slack_ms;
-        elapsed >= std::time::Duration::from_millis(timeout_ms) && backlog_ms <= slack
+        if media_ms >= timeout_ms && wall_at_least(timeout_ms) && backlog_ms <= slack {
+            return true;
+        }
+        // Pure-stall safety net: no PCM at all for a full timeout.
+        let stopped = pcm_idle >= std::time::Duration::from_millis(timeout_ms);
+        if stopped && wall_at_least(hard_timeout_ms) {
+            return true;
+        }
+        stopped && wall_at_least(timeout_ms) && backlog_ms <= slack
     }
 
     fn maybe_log_c1_backlog_deferred(inner: &mut AgentInner, backlog_ms: u32) {
@@ -1137,6 +1188,19 @@ impl VoiceAgent {
         }
     }
 
+    fn stamp_inbound_activity(&self) {
+        self.last_inbound_activity_ms
+            .store(self.epoch.elapsed().as_millis() as u64, Ordering::SeqCst);
+    }
+
+    /// Wall time since inbound PCM was last entered or finished (never since a call started
+    /// running long).
+    fn inbound_idle(&self) -> std::time::Duration {
+        let now = self.epoch.elapsed().as_millis() as u64;
+        let last = self.last_inbound_activity_ms.load(Ordering::SeqCst);
+        std::time::Duration::from_millis(now.saturating_sub(last))
+    }
+
     fn ensure_c2_wall_clock_ticker(self: &Arc<Self>) {
         if self
             .c2_ticker_started
@@ -1170,6 +1234,11 @@ impl VoiceAgent {
     }
 
     async fn c2_wall_clock_tick(&self) -> SpeechResult<()> {
+        if self.inbound_in_flight.load(Ordering::SeqCst) {
+            // A call is running (possibly slow). Its own media-time checks decide.
+            return Ok(());
+        }
+        let pcm_idle = self.inbound_idle();
         let backlog_ms = self.stt_decode_backlog_ms().await;
         let open_pending = self.stt_stream_open_pending().await;
         let c1_expired = {
@@ -1179,7 +1248,7 @@ impl VoiceAgent {
             } else if inner.stt_stream_open && !inner.partials_emitted_this_utterance {
                 if Self::c1_hold_for_stt_open(&mut inner, open_pending) {
                     false
-                } else if Self::c1_listen_expired(&inner, backlog_ms) {
+                } else if Self::c1_listen_expired(&inner, backlog_ms, pcm_idle) {
                     true
                 } else {
                     Self::maybe_log_c1_backlog_deferred(&mut inner, backlog_ms);
@@ -1214,11 +1283,7 @@ impl VoiceAgent {
                 return Ok(());
             }
             // Safety net when RTP/inbound loop stops: only force if PCM actually stalled.
-            let pcm_stalled = inner
-                .last_inbound_pcm_at
-                .map(|t| t.elapsed() >= std::time::Duration::from_millis(timeout_ms))
-                .unwrap_or(true);
-            pcm_stalled
+            pcm_idle >= std::time::Duration::from_millis(timeout_ms)
         };
         if should_force {
             voice_debug("C2 wall-clock timeout (inbound PCM stalled after end-of-turn grace)");
@@ -2394,6 +2459,7 @@ impl VoiceAgent {
             if has_stt && !inner.partials_emitted_this_utterance {
                 inner.stt_listen_deadline_ms = inner.config.vad.stt_listen_timeout_ms;
                 inner.stt_listen_started_at = Some(Instant::now());
+                inner.stt_listen_media_ms = 0;
             }
             if !inner.partials_emitted_this_utterance {
                 Self::clear_utterance_finalize_timer(&mut inner);
@@ -3180,6 +3246,7 @@ impl VoiceAgent {
     /// Runs VAD transitions, barge-in, STT gate/hold/finalize, and STT poll. No-op when
     /// [`stop`](Self::stop) has run. Set `VOICE_DEBUG=1` for per-frame diagnostics.
     pub async fn process_inbound_pcm(&self, pcm: Bytes, duration_ms: u32) -> SpeechResult<()> {
+        let _in_flight = InboundInFlight::enter(self);
         let call = INBOUND_PCM_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
         if call == 1 || call % 50 == 0 {
             voice_debug(format!(
@@ -3203,6 +3270,9 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             inner.last_inbound_pcm_at = Some(Instant::now());
             inner.utterance_media_ms = inner.utterance_media_ms.saturating_add(duration_ms as u64);
+            if inner.stt_listen_deadline_ms > 0 && inner.stt_listen_started_at.is_some() {
+                inner.stt_listen_media_ms = inner.stt_listen_media_ms.saturating_add(duration_ms);
+            }
         }
 
         let pcm = {
@@ -3360,7 +3430,11 @@ impl VoiceAgent {
                 {
                     if Self::c1_hold_for_stt_open(&mut inner, open_pending) {
                         // Not expired: the STT stream open is still being retried.
-                    } else if Self::c1_listen_expired(&inner, backlog_ms) {
+                    } else if Self::c1_listen_expired(
+                        &inner,
+                        backlog_ms,
+                        std::time::Duration::ZERO,
+                    ) {
                         c1 = true;
                     } else {
                         Self::maybe_log_c1_backlog_deferred(&mut inner, backlog_ms);

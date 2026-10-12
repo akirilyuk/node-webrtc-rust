@@ -8,8 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech** — The C1 listen timeout (`sttListenTimeoutMs`, no STT partial) now runs on media time: it fires only when that much audio reached the agent and the same time passed on the wall clock, so audio that arrives late or slowly is no longer closed as "not found" mid-speech. Wall time alone still closes it when inbound PCM has stopped completely. The wall-clock C1/C2 ticker also skips ticks while an inbound call is running, so a slow finalize is no longer force-closed a second time (duplicate empty `user_speech_final`).
+
 ### Added
 
+- **speech** — `VOICE_FINALIZE_TRACE=1` prints one `[voice-debug] finalize path=…` timing line per finalize decision (no transcript text).
 - **helpers** — `clientMixerWarn` option on `SessionPod` and `VoiceAgentSessionHost`; mixer queue-pressure warnings also pass structured fields (`peerId`, `compressed`, `concealed`, `overflowCompressed`, `decodeErrors`, `depth`, `target`) as a second argument (message unchanged). The `ClientMixerWarn` type is exported.
 - **Core / Opus** — The encode bitrate is capped per packet duration so a payload stays at or below 1000 bytes (inside the 1200-byte RTP MTU). 20 ms packets keep the configured bitrate (default 400 kbps); 40 ms and 60 ms packets are capped at 200 kbps and about 133 kbps. Before, a 60 ms packet at the default was about 3 kB and receivers dropped it.
 

@@ -61,6 +61,8 @@ struct Script {
     /// chunks), modelling a decode that is starved of CPU while the inbound call is running.
     tail_push_delay_ms: u64,
     finalize_calls: u32,
+    /// No partial until this much LOUD audio (ms) reached the STT (0 = first at 500 ms).
+    first_partial_loud_ms: u32,
 }
 
 fn words(n: u32) -> String {
@@ -96,7 +98,11 @@ impl SttProvider for ScriptedStt {
                 .filter(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs() > 1000)
                 .count() as u32;
             script.loud_ms += loud_samples / 16; // 16 kHz mono
-            let target = script.loud_ms / 500;
+            let target = if script.loud_ms >= script.first_partial_loud_ms {
+                script.loud_ms / 500
+            } else {
+                0
+            };
             while script.words_emitted < target {
                 script.words_emitted += 1;
                 let text = words(script.words_emitted);
@@ -170,6 +176,10 @@ impl VendorFactory for ScriptedFactory {
 /// Production-shaped VAD (see `roundtrip-counting-echo-lid-multi`): 1300 ms min silence,
 /// 1000 ms STT gate hold, default 1500 ms C2 timeout.
 async fn make_agent(script: &Arc<Mutex<Script>>) -> Arc<VoiceAgent> {
+    make_agent_with(script, true).await
+}
+
+async fn make_agent_with(script: &Arc<Mutex<Script>>, gate_stt: bool) -> Arc<VoiceAgent> {
     let mut registry = VendorRegistry::new();
     registry.register_stt(
         SttVendor::Mock,
@@ -184,7 +194,7 @@ async fn make_agent(script: &Arc<Mutex<Script>>) -> Arc<VoiceAgent> {
     vad.threshold = 0.05;
     vad.min_speech_duration_ms = 40;
     vad.min_silence_duration_ms = 1300;
-    vad.gate_stt = true;
+    vad.gate_stt = gate_stt;
     vad.stt_gate_hold_ms = 1000;
     vad.barge_in.enabled = false;
 
@@ -236,16 +246,21 @@ struct Observed {
 
 async fn run(stall: Option<Stall>, setup: impl FnOnce(&mut Script)) -> Observed {
     run_segments(
-        &[(true, SPEECH_FRAMES), (false, SILENCE_FRAMES)],
+        &[
+            (true, SPEECH_FRAMES, FRAME_MS),
+            (false, SILENCE_FRAMES, FRAME_MS),
+        ],
         stall,
         setup,
     )
     .await
 }
 
-/// `segments`: `(loud, frame_count)` runs delivered back to back on the 20 ms schedule.
+/// `segments`: `(loud, frame_count, wall_ms_per_frame)` runs delivered back to back. Each frame
+/// is 20 ms of media; a pace above 20 ms models audio that arrives slowly, and frames whose due
+/// time has passed (after a stall) are delivered as a burst.
 async fn run_segments(
-    segments: &[(bool, usize)],
+    segments: &[(bool, usize, u64)],
     stall: Option<Stall>,
     setup: impl FnOnce(&mut Script),
 ) -> Observed {
@@ -257,10 +272,14 @@ async fn run_segments(
     let silent = Bytes::from(silent_stereo_frame());
 
     let start = Instant::now();
-    let plan: Vec<bool> = segments
-        .iter()
-        .flat_map(|(loud, n)| std::iter::repeat_n(*loud, *n))
-        .collect();
+    let mut plan: Vec<(bool, u64)> = Vec::new();
+    let mut offset_ms = 0_u64;
+    for (loud, n, pace) in segments {
+        for _ in 0..*n {
+            plan.push((*loud, offset_ms));
+            offset_ms += pace;
+        }
+    }
     let total = plan.len();
     let mut timeline = Vec::new();
     for i in 0..total {
@@ -269,9 +288,9 @@ async fn run_segments(
                 tokio::time::sleep(Duration::from_millis(s.stall_ms)).await;
             }
         }
-        let due = start + Duration::from_millis(i as u64 * FRAME_MS);
+        let due = start + Duration::from_millis(plan[i].1);
         tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
-        let frame = if plan[i] { &loud } else { &silent };
+        let frame = if plan[i].0 { &loud } else { &silent };
         agent.process_inbound_pcm(frame.clone(), 20).await.unwrap();
         while let Ok(event) = events.try_recv() {
             let at = start.elapsed().as_millis() as u64;
@@ -397,9 +416,7 @@ async fn stall_while_waiting_for_slow_final_early_matches_realtime_finals() {
     silence_stall_matches_realtime(118, 40).await;
 }
 
-// fails before the fix: the wall-clock C2 ticker force-closes while the inbound call is still in
-// its endpoint tail / finalize (armed_at and last_inbound_pcm_at are both older than 1500 ms), so
-// finalize runs twice and a second, empty user_speech_final follows the real one.
+// Guards: the wall-clock ticker must not force-close while one inbound call is still running.
 /// Decode starved inside the inbound call: each 100 ms endpoint-tail chunk takes 400 ms, so one
 /// `process_inbound_pcm` call runs for about 2.4 s while the wall-clock ticker keeps running.
 /// Same audio, same arrival; only the STT is slow. The finals must still equal the fast run.
@@ -419,17 +436,16 @@ async fn slow_decode_inside_finalize_matches_fast_decode_finals() {
     );
 }
 
-// fails before the fix: same cause as `slow_decode_inside_finalize_matches_fast_decode_finals`
-// (an empty duplicate final after each utterance); the next utterance itself is fine.
+// Guards: no empty duplicate final after a slow finalize, and the next utterance still finals.
 /// After a slow finalize the next utterance must still reach the user: a second utterance of 2 s
 /// of speech (4 words) follows the first one and must end in its own final.
 #[tokio::test]
 async fn second_utterance_after_slow_finalize_still_produces_a_final() {
     let segments = [
-        (true, SPEECH_FRAMES),
-        (false, SILENCE_FRAMES),
-        (true, 100),
-        (false, SILENCE_FRAMES),
+        (true, SPEECH_FRAMES, FRAME_MS),
+        (false, SILENCE_FRAMES, FRAME_MS),
+        (true, 100, FRAME_MS),
+        (false, SILENCE_FRAMES, FRAME_MS),
     ];
     let observed = run_segments(&segments, None, |s| s.tail_push_delay_ms = 400).await;
     assert_eq!(
@@ -440,25 +456,106 @@ async fn second_utterance_after_slow_finalize_still_produces_a_final() {
     );
 }
 
-// fails before the fix: C1 (`stt_listen_timeout_ms`, 4000 ms) runs on wall time from VAD
-// SpeechStart. Only 120 ms of the utterance reached the agent before the stall, so no partial
-// could exist yet; at 4 s of wall time `c2_wall_clock_tick` closes the STT stream
-// (`close_stt_stream_not_found`) although the speech is only late, not absent. The rest of the
-// utterance is then never sent to STT and no `user_speech_final` follows.
+// Guards: C1 counts media time, so audio that trickles in (one frame per 700 ms for 8 frames,
+// then the rest as a burst) is not closed as "no STT partial" at 4 s of wall time.
 #[tokio::test]
-async fn stall_before_first_partial_matches_realtime_finals() {
+async fn trickling_audio_before_first_partial_matches_realtime_finals() {
     let baseline = run(None, |_| {}).await;
-    let stalled = run(
-        Some(Stall {
-            after_frames: 6, // 120 ms of speech: SpeechStart seen, no partial yet
-            stall_ms: 4500,
-        }),
-        |_| {},
+    let segments = [
+        (true, 6, FRAME_MS),
+        (true, 8, 700),
+        (true, SPEECH_FRAMES - 14, FRAME_MS),
+        (false, SILENCE_FRAMES, FRAME_MS),
+    ];
+    let trickled = run_segments(&segments, None, |_| {}).await;
+    assert_eq!(
+        trickled.finals, baseline.finals,
+        "trickled timeline: {:?}\nbaseline timeline: {:?}",
+        trickled.timeline, baseline.timeline
+    );
+}
+
+// Guards: audio arriving at 1/4 real time (20 ms frames every 80 ms) with the first partial
+// 1.5 s of MEDIA in (6 s of wall) is not closed by C1 at 4 s of wall time.
+#[tokio::test]
+async fn c1_waits_for_media_time_when_audio_arrives_slowly() {
+    let baseline = run_segments(
+        &[(true, 100, FRAME_MS), (false, 175, FRAME_MS)],
+        None,
+        |s| s.first_partial_loud_ms = 1500,
     )
     .await;
+    let slow = run_segments(&[(true, 100, 80), (false, 175, FRAME_MS)], None, |s| {
+        s.first_partial_loud_ms = 1500
+    })
+    .await;
+    assert_eq!(baseline.finals, vec![words(4)], "{:?}", baseline.timeline);
     assert_eq!(
-        stalled.finals, baseline.finals,
-        "stalled timeline: {:?}\nbaseline timeline: {:?}",
-        stalled.timeline, baseline.timeline
+        slow.finals, baseline.finals,
+        "slow timeline: {:?}\nbaseline timeline: {:?}",
+        slow.timeline, baseline.timeline
     );
+}
+
+fn finals_and_kinds(
+    events: &mut tokio::sync::broadcast::Receiver<node_webrtc_rust_speech::events::SpeechEvent>,
+) -> (Vec<String>, usize) {
+    let (mut finals, mut not_found) = (Vec::new(), 0);
+    while let Ok(event) = events.try_recv() {
+        match event.kind {
+            SpeechEventKind::UserSpeechFinal => finals.push(event.text.unwrap_or_default()),
+            SpeechEventKind::UserSttNotFound => not_found += 1,
+            _ => {}
+        }
+    }
+    (finals, not_found)
+}
+
+// Guards the safety net: when PCM stops for good after the end of the turn, the wall-clock C2
+// still emits the final from the last partial after utterance_finalize_timeout_ms (1500 ms).
+// gate_stt is off so C2 is armed right at SpeechEnd.
+#[tokio::test]
+async fn pcm_fully_stopped_still_forces_finalize_after_timeout() {
+    let script = Arc::new(Mutex::new(Script::default()));
+    let agent = make_agent_with(&script, false).await;
+    let mut events = agent.subscribe_events();
+    let loud = Bytes::from(loud_stereo_frame());
+    let silent = Bytes::from(silent_stereo_frame());
+    for _ in 0..100 {
+        agent.process_inbound_pcm(loud.clone(), 20).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(FRAME_MS)).await;
+    }
+    // 1.4 s of silence: VAD SpeechEnd after 1300 ms arms C2; then no more PCM at all.
+    for _ in 0..70 {
+        agent.process_inbound_pcm(silent.clone(), 20).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(FRAME_MS)).await;
+    }
+    let (early, _) = finals_and_kinds(&mut events);
+    assert!(early.is_empty(), "final before the timeout: {early:?}");
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    let (finals, _) = finals_and_kinds(&mut events);
+    let _ = agent.stop().await;
+    assert_eq!(finals, vec![words(4)]);
+}
+
+// Guards the safety net: speech starts, the STT emits nothing, PCM stops for good: C1 still
+// closes the stream after stt_listen_timeout_ms (4000 ms of wall time).
+#[tokio::test]
+async fn c1_closes_when_pcm_fully_stopped_without_partials() {
+    let script = Arc::new(Mutex::new(Script::default()));
+    script.lock().unwrap().first_partial_loud_ms = u32::MAX;
+    let agent = make_agent(&script).await;
+    let mut events = agent.subscribe_events();
+    let loud = Bytes::from(loud_stereo_frame());
+    for _ in 0..10 {
+        agent.process_inbound_pcm(loud.clone(), 20).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(FRAME_MS)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let (_, early) = finals_and_kinds(&mut events);
+    assert_eq!(early, 0, "C1 closed before the timeout");
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    let (_, not_found) = finals_and_kinds(&mut events);
+    let _ = agent.stop().await;
+    assert_eq!(not_found, 1, "C1 must close once PCM has stopped");
 }

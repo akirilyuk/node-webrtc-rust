@@ -71,7 +71,7 @@ impl TtsProvider for GoogleTts {
         #[cfg(not(feature = "live"))]
         {
             let _ = (text, sink, &self.voice);
-            Err(SpeechError::Vendor {
+            Err(node_webrtc_rust_speech::error::SpeechError::Vendor {
                 vendor: "google".into(),
                 message: "live Google TTS requires `--features live` on vendor-google".into(),
             })

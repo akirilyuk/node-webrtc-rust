@@ -54,7 +54,11 @@ function wireChannel(peer: MeshPeer, remoteId: string, channel: RTCDataChannel):
   }
 }
 
-async function connectToPeer(peer: MeshPeer, remoteId: string, createOffer: boolean): Promise<void> {
+async function connectToPeer(
+  peer: MeshPeer,
+  remoteId: string,
+  createOffer: boolean,
+): Promise<void> {
   if (peer.links.has(remoteId)) return
 
   const link = new RTCPeerConnection({ iceServers: DEMO_ICE_SERVERS })
@@ -82,7 +86,11 @@ async function connectToPeer(peer: MeshPeer, remoteId: string, createOffer: bool
   }
 }
 
-async function onOffer(peer: MeshPeer, fromPeerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
+async function onOffer(
+  peer: MeshPeer,
+  fromPeerId: string,
+  sdp: RTCSessionDescriptionInit,
+): Promise<void> {
   if (!peer.links.has(fromPeerId)) {
     await connectToPeer(peer, fromPeerId, false)
   }
@@ -96,7 +104,11 @@ async function onOffer(peer: MeshPeer, fromPeerId: string, sdp: RTCSessionDescri
   peer.signaling.sendAnswer(fromPeerId, link.localDescription!.toJSON())
 }
 
-async function onAnswer(peer: MeshPeer, fromPeerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
+async function onAnswer(
+  peer: MeshPeer,
+  fromPeerId: string,
+  sdp: RTCSessionDescriptionInit,
+): Promise<void> {
   const link = peer.links.get(fromPeerId)
   if (!link) return
   await link.setRemoteDescription(sdp)
@@ -174,10 +186,7 @@ async function main(): Promise<void> {
   const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
     const channels = peers.flatMap((p) => [...p.channels.values()])
-    if (
-      channels.length === expectedLinks &&
-      channels.every((ch) => ch.readyState === 'open')
-    ) {
+    if (channels.length === expectedLinks && channels.every((ch) => ch.readyState === 'open')) {
       break
     }
     await new Promise((r) => setTimeout(r, 50))

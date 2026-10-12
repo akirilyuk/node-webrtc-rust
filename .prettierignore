@@ -4,6 +4,7 @@ target/
 *.node
 package-lock.json
 packages/bindings/index.d.ts
+packages/bindings/index.js
 packages/bindings/npm/
 
 # Vendored third-party crates are kept byte-identical to upstream

@@ -53,8 +53,14 @@ function sessionPodMixIntegrationNativeAvailable(): boolean {
   }
 }
 
-/** Max 440 Hz power of a muted listener relative to a listener that hears the source (-30 dB). */
-const MUTED_LEAK_MAX_RATIO = 1e-3
+/**
+ * Max 440 Hz power of a muted listener relative to a listener that hears the source (-15 dB).
+ * Listener mute is binary: a leaked source arrives at about the audible level (ratio ~1). The
+ * muted listener still hears the 880 Hz source, and when that source is starved the mixer's
+ * counted concealment (faded repeat, then silence) puts discontinuities in it that splatter
+ * into the 440 Hz bin; measured up to -22 dB under heavy CPU starvation, about -30 dB otherwise.
+ */
+const MUTED_LEAK_MAX_RATIO = 3e-2
 
 const CLIENT_IDS = ['client-mix-1', 'client-mix-2', 'client-mix-3'] as const
 const SESSION_IDS = ['session-c1', 'session-c2', 'session-c3'] as const
@@ -216,9 +222,17 @@ function fullToneStereo(left: Int16Array, right: Int16Array, freqHz: number): bo
 }
 
 /**
- * Reads frames until a sliding window of FRAME_COUNT frames is dominated by `freqHz` (a full window of the tone), so the
- * assertion starts after audio actually flows instead of at an arbitrary time. Every frame
- * read is also passed to `onFrame`.
+ * Reads frames until FRAME_COUNT of them are dominated by `freqHz` (each frame's own tone
+ * energy fraction passes), not necessarily consecutive. Every frame read is also passed to
+ * `onFrame`.
+ *
+ * Why cumulative and not a contiguous window: the elastic mix queue conceals an underrun with
+ * a faded repeat of the last frame and then silence (counted in `mixStats().concealed`). When
+ * the writer in this process is starved of CPU it delivers below real time, so tone and
+ * concealed silence alternate and no run of FRAME_COUNT clean frames ever occurs, however long
+ * we wait. A concealment frame that is a faded repeat still carries the tone and counts; a
+ * silent frame has no energy and does not. The assertion that matters (the other listener
+ * hears the source, the muted one does not) needs FRAME_COUNT tone frames, not their adjacency.
  */
 async function waitForToneWindow(
   listener: ConnectedClient,
@@ -228,22 +242,25 @@ async function waitForToneWindow(
   timeoutMs = 20_000,
 ): Promise<{ left: Int16Array; right: Int16Array }> {
   const deadline = Date.now() + timeoutMs
-  const windowFrames: Buffer[] = []
+  const left: number[] = []
+  const right: number[] = []
+  let toneFrames = 0
   while (Date.now() < deadline) {
     const pcm = await readSampleWithTimeout(listener.agentAudio, label)
     onFrame(pcm)
-    windowFrames.push(pcm)
-    if (windowFrames.length > FRAME_COUNT) windowFrames.shift()
-    if (windowFrames.length < FRAME_COUNT) continue
-    const left: number[] = []
-    const right: number[] = []
-    for (const frame of windowFrames) appendStereoChannels(left, right, frame)
-    const l = Int16Array.from(left)
-    const r = Int16Array.from(right)
-    if (fullToneStereo(l, r, freqHz)) return { left: l, right: r }
+    const l: number[] = []
+    const r: number[] = []
+    appendStereoChannels(l, r, pcm)
+    if (fullToneStereo(Int16Array.from(l), Int16Array.from(r), freqHz)) {
+      left.push(...l)
+      right.push(...r)
+      toneFrames++
+      if (toneFrames >= FRAME_COUNT)
+        return { left: Int16Array.from(left), right: Int16Array.from(right) }
+    }
   }
   throw new Error(
-    `${label}: no full ${freqHz} Hz tone in any ${FRAME_COUNT}-frame window after ${timeoutMs}ms`,
+    `${label}: heard only ${toneFrames} of ${FRAME_COUNT} ${freqHz} Hz tone frames after ${timeoutMs}ms`,
   )
 }
 

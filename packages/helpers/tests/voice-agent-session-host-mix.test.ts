@@ -138,15 +138,18 @@ describe('VoiceAgentSessionHost mix APIs', () => {
       vi.advanceTimersByTime(1000)
       await mixer.pumpMixFrame('listener', out)
       mixer.stopMixPump('listener')
-      expect(warn).toHaveBeenCalledWith('[mix] queue pressure', {
-        peerId: 'speaker',
-        compressed: 2,
-        concealed: 0,
-        overflowCompressed: 0,
-        decodeErrors: 0,
-        depth: 2,
-        target: 3,
-      })
+      expect(warn).toHaveBeenCalledWith(
+        '[mix] queue pressure peerId=speaker compressed=+2 concealed=+0 overflowCompressed=+0 decodeErrors=+0 depth=2 target=3',
+        {
+          peerId: 'speaker',
+          compressed: 2,
+          concealed: 0,
+          overflowCompressed: 0,
+          decodeErrors: 0,
+          depth: 2,
+          target: 3,
+        },
+      )
     } finally {
       vi.useRealTimers()
     }

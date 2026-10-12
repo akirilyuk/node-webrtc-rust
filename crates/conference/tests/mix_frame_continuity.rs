@@ -38,9 +38,6 @@ fn peer_config() -> PeerConnectionConfig {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         std::env::set_var("WEBRTC_INCLUDE_LOOPBACK_CANDIDATES", "1");
-        // The default 400 kbps makes a 60 ms packet ~3 kB, above the RTP MTU, and the sender
-        // drops it. 128 kbps keeps a 60 ms packet near 1 kB.
-        std::env::set_var("WEBRTC_OPUS_BITRATE_BPS", "128000");
     });
     PeerConnectionConfig {
         ice_servers: vec![],

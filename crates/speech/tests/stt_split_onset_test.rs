@@ -16,7 +16,7 @@
 //! (20 ms per frame) instead of `start_paused = true`.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -63,10 +63,15 @@ fn marker_for(block: &[i16]) -> Option<&'static str> {
 
 /// One transcript per stream: words are the collapsed markers of the audio pushed since the last
 /// `finalize_utterance`.
+///
+/// Also counts the raw 20 ms "onset" blocks per stream and records the count at finalize in
+/// `onset_log` (one entry per finalized stream), so a test can assert which stream got them.
 #[derive(Default)]
 struct MarkerStt {
     words: Vec<&'static str>,
     queue: VecDeque<SttTranscript>,
+    onset_blocks: usize,
+    onset_log: Arc<Mutex<Vec<usize>>>,
 }
 
 #[async_trait::async_trait]
@@ -92,6 +97,9 @@ impl SttProvider for MarkerStt {
             .collect();
         for block in samples.chunks(320) {
             if let Some(word) = marker_for(block) {
+                if word == "onset" {
+                    self.onset_blocks += 1;
+                }
                 if self.words.last() != Some(&word) {
                     self.words.push(word);
                     self.queue
@@ -110,8 +118,10 @@ impl SttProvider for MarkerStt {
         if !self.words.is_empty() {
             self.queue
                 .push_back(SttTranscript::Final(self.words.join(" ")));
+            self.onset_log.lock().unwrap().push(self.onset_blocks);
         }
         self.words.clear();
+        self.onset_blocks = 0;
         Ok(())
     }
 
@@ -122,14 +132,20 @@ impl SttProvider for MarkerStt {
     }
 }
 
-struct MarkerFactory;
+#[derive(Default)]
+struct MarkerFactory {
+    onset_log: Arc<Mutex<Vec<usize>>>,
+}
 
 impl VendorFactory for MarkerFactory {
     fn create_stt(
         &self,
         _config: &node_webrtc_rust_speech::SttConfig,
     ) -> SpeechResult<Box<dyn SttProvider>> {
-        Ok(Box::new(MarkerStt::default()))
+        Ok(Box::new(MarkerStt {
+            onset_log: self.onset_log.clone(),
+            ..Default::default()
+        }))
     }
 
     fn create_tts(
@@ -140,9 +156,9 @@ impl VendorFactory for MarkerFactory {
     }
 }
 
-async fn make_agent() -> Arc<VoiceAgent> {
+async fn make_agent(onset_log: Arc<Mutex<Vec<usize>>>) -> Arc<VoiceAgent> {
     let mut registry = VendorRegistry::new();
-    registry.register_stt(SttVendor::Mock, Arc::new(MarkerFactory));
+    registry.register_stt(SttVendor::Mock, Arc::new(MarkerFactory { onset_log }));
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
     let mut vad = VadConfig {
@@ -190,7 +206,16 @@ async fn make_agent() -> Arc<VoiceAgent> {
 /// Feed `(level, ms)` segments back to back in real time; return the non-empty user finals in
 /// order, plus a `(ms since start, kind, text)` timeline for failure messages.
 async fn run(segments: &[(i16, u64)]) -> (Vec<String>, Vec<(u64, &'static str, String)>) {
-    let agent = make_agent().await;
+    let (finals, timeline, _) = run_counting_onset(segments).await;
+    (finals, timeline)
+}
+
+/// Same as [`run`], plus the number of onset blocks each finalized stream received (in order).
+async fn run_counting_onset(
+    segments: &[(i16, u64)],
+) -> (Vec<String>, Vec<(u64, &'static str, String)>, Vec<usize>) {
+    let onset_log = Arc::new(Mutex::new(Vec::new()));
+    let agent = make_agent(onset_log.clone()).await;
     let mut events = agent.subscribe_events();
     let start = std::time::Instant::now();
     let mut timeline = Vec::new();
@@ -232,7 +257,8 @@ async fn run(segments: &[(i16, u64)]) -> (Vec<String>, Vec<(u64, &'static str, S
         .filter(|(_, k, t)| *k == "final" && !t.is_empty())
         .map(|(_, _, t)| t.clone())
         .collect();
-    (finals, timeline)
+    let onset_counts = onset_log.lock().unwrap().clone();
+    (finals, timeline, onset_counts)
 }
 
 /// Gap longer than half the hold: the next phrase is a NEW utterance, so its onset belongs to the
@@ -300,4 +326,24 @@ async fn hold_expires_during_pending_onset_goes_to_next_stream() {
     for f in &finals[..n - 1] {
         assert!(!f.contains("onset"), "{msg}");
     }
+}
+
+/// Hand-off counting (`rt.handoff-double-count`): each onset block is counted by exactly one
+/// stream. Long pause: the old stream gets none, the new stream gets all 10 (200 ms / 20 ms).
+#[tokio::test]
+async fn onset_frames_counted_by_exactly_one_stream() {
+    let (finals, timeline, onset_counts) = run_counting_onset(&[
+        (ALPHA, 1000),
+        (SILENCE, MIN_SILENCE_MS + 700),
+        (ONSET, 200),
+        (BRAVO, 1000),
+        (SILENCE, 3000),
+    ])
+    .await;
+    let msg = format!(
+        "finals: {finals:?}\nonset blocks per stream: {onset_counts:?}\ntimeline: {timeline:?}"
+    );
+    assert_eq!(onset_counts.len(), 2, "{msg}");
+    assert_eq!(onset_counts[0], 0, "old stream must see no onset: {msg}");
+    assert_eq!(onset_counts[1], 10, "new stream must see all onset: {msg}");
 }

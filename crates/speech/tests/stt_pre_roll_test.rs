@@ -474,13 +474,17 @@ async fn gate_stt_hold_passes_trailing_speech_after_speech_end() {
         "endpoint tail silence should reach STT"
     );
 
-    agent
-        .process_inbound_pcm(Bytes::from(loud.clone()), 20)
-        .await
-        .unwrap();
+    // min_speech 40 ms: the first loud frame is VAD-pending (held back from the closing stream),
+    // the second declares SpeechStart within the first half of the hold → brief gap, same stream.
+    for _ in 0..2 {
+        agent
+            .process_inbound_pcm(Bytes::from(loud.clone()), 20)
+            .await
+            .unwrap();
+    }
     assert!(
-        *bytes.lock().unwrap() > after_end,
-        "trailing speech within gate-hold must still reach STT"
+        *bytes.lock().unwrap() >= after_end + 2 * 640,
+        "trailing speech within gate-hold must still reach STT (both frames, none lost)"
     );
 }
 
@@ -1370,7 +1374,9 @@ async fn gate_stt_cold_inbound_pre_roll_pad_to_capacity() {
 async fn gate_stt_brief_gap_pre_roll_flush_not_padded() {
     let mut vad = sherpa_like_vad_config();
     vad.min_silence_duration_ms = 20;
-    vad.stt_gate_hold_ms = 200;
+    // 2 silent frames + the VAD-pending onset stay well under hold/2, so this is a
+    // same-stream continuation (not a long-pause new phrase).
+    vad.stt_gate_hold_ms = 2_000;
     let capacity_bytes = (stt_pre_roll_capacity_ms(&vad) as usize * 16_000 / 1000) * 2;
     let (agent, chunks) = agent_with_recording_stt(vad).await;
 
@@ -1410,6 +1416,12 @@ async fn gate_stt_brief_gap_pre_roll_flush_not_padded() {
             "brief-gap pre-roll flush must not be left-padded to full ring capacity"
         );
     }
+    // 12 loud frames >= min_speech 200 ms / 20 ms + 2, so SpeechStart is declared (loop count kept).
+    let resumed: usize = recorded.iter().skip(after_first).map(|c| c.len()).sum();
+    assert!(
+        resumed >= 12 * 640,
+        "every resumed-speech frame must reach the same stream, got {resumed} bytes"
+    );
 }
 
 #[tokio::test]

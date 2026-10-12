@@ -173,6 +173,9 @@ struct AgentInner {
     otel: AgentOtelState,
     vad: Option<VadEngine>,
     stt_pre_roll: Option<SttPreRollBuffer>,
+    /// VAD-pending onset frames held back from the closing STT stream during the gate hold; counted by exactly one stream (see handoff-counting).
+    /// Mono s16le 16 kHz.
+    hold_pending_pcm: Vec<u8>,
     /// Milliseconds of inbound audio still forwarded to STT after VAD speech end.
     stt_gate_hold_ms: u32,
     /// When true, finalize STT once gate hold drains (after trailing speech is relayed).
@@ -433,6 +436,7 @@ impl VoiceAgent {
                 otel: AgentOtelState::default(),
                 vad,
                 stt_pre_roll,
+                hold_pending_pcm: Vec::new(),
                 stt_gate_hold_ms: 0,
                 stt_finalize_pending: false,
                 stt_endpoint_closing_started: false,
@@ -1017,6 +1021,7 @@ impl VoiceAgent {
 
     fn reset_stt_pipeline_state(inner: &mut AgentInner) {
         inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+        inner.hold_pending_pcm.clear();
         inner.stt_gate_hold_ms = 0;
         inner.stt_finalize_pending = false;
         inner.stt_endpoint_closing_started = false;
@@ -3523,6 +3528,12 @@ impl VoiceAgent {
         };
 
         if speech_start && stt_active {
+            // Onset frames held back during the gate hold belong to the NEW phrase. Take them
+            // before the old stream is finalized so its final never contains them.
+            let held_onset = {
+                let mut inner = self.inner.lock().await;
+                std::mem::take(&mut inner.hold_pending_pcm)
+            };
             let long_pause_new_phrase = {
                 let inner = self.inner.lock().await;
                 if !inner.config.vad.gate_stt {
@@ -3538,6 +3549,7 @@ impl VoiceAgent {
                 self.complete_pending_utterance_if_any().await?;
             }
             let mut pre_roll_after_start = None;
+            let mut held_same_stream: Option<Bytes> = None;
             let mut dropped_pending = 0_usize;
             let mut started_new_utterance = false;
             {
@@ -3584,6 +3596,30 @@ impl VoiceAgent {
                     // SpeechStart; streaming recognizers need left context before onset.
                     // Pad only when opening a new STT stream — not for brief-gap continuations.
                     let new_stream = !inner.stt_stream_open;
+                    let mut held_onset = held_onset;
+                    if !held_onset.is_empty() {
+                        voice_debug(format!(
+                            "STT hold-back: {} ms onset → {}",
+                            crate::pcm::duration_ms_from_mono_s16le(
+                                held_onset.len(),
+                                crate::pcm::STT_PCM_SAMPLE_RATE,
+                            ),
+                            if new_stream {
+                                "new stream pre-roll"
+                            } else {
+                                "same stream"
+                            },
+                        ));
+                        if new_stream {
+                            if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
+                                pre_roll.push(&held_onset);
+                                held_onset = Vec::new();
+                            }
+                        }
+                        if !held_onset.is_empty() {
+                            held_same_stream = Some(Bytes::from(held_onset));
+                        }
+                    }
                     if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                         let buffered_len = pre_roll.len();
                         let buffered = if new_stream {
@@ -3623,6 +3659,9 @@ impl VoiceAgent {
                     }
                     self.push_stt_audio_bytes(buffered).await?;
                 }
+            }
+            if let Some(held) = held_same_stream {
+                self.push_stt_audio_frames(held).await?;
             }
         }
 
@@ -3689,8 +3728,15 @@ impl VoiceAgent {
         }
 
         // After VAD transitions (SpeechStart opens STT stream via `on_vad_speech_start`).
-        let (stt_audio_open, stt_poll_open, should_finalize_utterance) = {
-            let inner = self.inner.lock().await;
+        let (
+            stt_audio_open,
+            stt_poll_open,
+            should_finalize_utterance,
+            hold_back,
+            held_excess,
+            held_resolved_to_stream,
+        ) = {
+            let mut inner = self.inner.lock().await;
             let pending_gate = inner.config.vad.gate_stt_open_on_pending && vad_pending;
             let utterance_closing =
                 inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance;
@@ -3717,8 +3763,58 @@ impl VoiceAgent {
                 && !inner.stt_endpoint_closing_started
                 && inner.stt_gate_hold_ms == 0
                 && !vad_speaking;
-            (stt_audio_open, stt_poll_open, should_finalize_utterance)
+
+            // Onset of the next phrase during a gate hold / pending close: hold it back so the
+            // closing stream does not count it (it belongs to the stream that starts next).
+            let hold_back = gate_stt
+                && stt_active
+                && inner.stt_stream_open
+                && vad_pending
+                && !vad_speaking
+                && !speech_start
+                && (inner.stt_gate_hold_ms > 0 || utterance_closing);
+            let mut held_excess: Option<Bytes> = None;
+            let mut held_resolved_to_stream: Option<Bytes> = None;
+            if hold_back {
+                inner
+                    .hold_pending_pcm
+                    .extend_from_slice(mono_bytes.as_ref());
+                let cap_ms = inner.config.vad.stt_gate_hold_ms.saturating_add(
+                    crate::stt_pre_roll::stt_pre_roll_capacity_ms(&inner.config.vad),
+                );
+                let cap_bytes =
+                    (crate::pcm::STT_PCM_SAMPLE_RATE as usize * cap_ms as usize / 1000) * 2;
+                if inner.hold_pending_pcm.len() > cap_bytes {
+                    // Never drop a frame: the oldest excess goes to the (open, old) stream.
+                    let excess_len = (inner.hold_pending_pcm.len() - cap_bytes) & !1;
+                    let excess: Vec<u8> = inner.hold_pending_pcm.drain(..excess_len).collect();
+                    held_excess = Some(Bytes::from(excess));
+                }
+            } else if !inner.hold_pending_pcm.is_empty() {
+                // Hold ended without a SpeechStart (finalize, C1/C2, toggle, swap): resolve it.
+                let held = std::mem::take(&mut inner.hold_pending_pcm);
+                if inner.stt_stream_open {
+                    held_resolved_to_stream = Some(Bytes::from(held));
+                } else if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
+                    pre_roll.push(&held);
+                }
+            }
+            (
+                stt_audio_open,
+                stt_poll_open,
+                should_finalize_utterance,
+                hold_back,
+                held_excess,
+                held_resolved_to_stream,
+            )
         };
+        if let Some(held) = held_resolved_to_stream {
+            voice_debug("STT hold-back: onset → same stream (hold ended without speech start)");
+            self.push_stt_audio_frames(held).await?;
+        }
+        if let Some(excess) = held_excess {
+            self.push_stt_audio_frames(excess).await?;
+        }
 
         // When gate is closed: skip STT poll. Continuous pre-roll still buffers every frame
         // not pushed directly to STT (silence, soft onset, agent-TTS listen).
@@ -3732,7 +3828,9 @@ impl VoiceAgent {
             ));
         }
 
-        if push_to_stt_directly {
+        if hold_back {
+            // Frame already appended to `hold_pending_pcm` above.
+        } else if push_to_stt_directly {
             self.push_stt_audio_bytes(mono_bytes).await?;
         } else if gate_stt && stt_active {
             let mut inner = self.inner.lock().await;
@@ -3846,6 +3944,20 @@ impl VoiceAgent {
             }
         }
 
+        Ok(())
+    }
+
+    /// Push held-back onset audio to the open stream in 20 ms chunks, the granularity the same
+    /// frames would have had if they had been pushed live.
+    async fn push_stt_audio_frames(&self, mono_bytes: Bytes) -> SpeechResult<()> {
+        const FRAME_BYTES: usize = 640; // 20 ms mono s16le 16 kHz
+        let mut offset = 0;
+        while offset < mono_bytes.len() {
+            let end = (offset + FRAME_BYTES).min(mono_bytes.len());
+            self.push_stt_audio_bytes(mono_bytes.slice(offset..end))
+                .await?;
+            offset = end;
+        }
         Ok(())
     }
 
@@ -4253,6 +4365,7 @@ impl VoiceAgent {
                     guard.barge_awaiting_stt_partial = false;
                     // Drop any user-turn pre-roll so agent echo does not reach STT on barge.
                     guard.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+                    guard.hold_pending_pcm.clear();
                     (first_audio_ms, timing.and_then(|t| t.first_chunk_ms))
                 };
                 event_bus.emit(SpeechEvent::agent_speaking_start_with_timing(

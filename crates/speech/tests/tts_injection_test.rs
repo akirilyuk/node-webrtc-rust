@@ -17,6 +17,18 @@ use node_webrtc_rust_speech::{
 use node_webrtc_rust_vendor_mock::MockFactory;
 use tokio::time::{timeout, Duration as TokioDuration};
 
+/// Distinct utterance per call. The phrase cache (`PhraseCache::global()`) is process-wide and
+/// keyed by project, vendor, model, voice, endpoint and text, so two tests in one binary that
+/// speak the same text with the same fake vendor would share entries and see a cache hit (fewer
+/// vendor calls, an extra `TtsPhraseCacheHit` event) depending on test order.
+fn unique_text(base: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    format!(
+        "{base} #{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
 #[tokio::test]
 async fn tts_injection_writes_pcm_to_outbound() {
     let mut registry = VendorRegistry::new();
@@ -38,7 +50,7 @@ async fn tts_injection_writes_pcm_to_outbound() {
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
     agent.start(None).await.unwrap();
-    agent.send_text_to_tts("hello agent").await.unwrap();
+    agent.send_text_to_tts(&unique_text("hello agent")).await.unwrap();
     agent.wait_tts_playback_idle().await.unwrap();
     agent.stop().await.unwrap();
 
@@ -71,14 +83,58 @@ async fn tts_injection_emits_agent_speaking_events() {
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
     agent.start(None).await.unwrap();
-    agent.send_text_to_tts("hi").await.unwrap();
+    agent.send_text_to_tts(&unique_text("hi")).await.unwrap();
     agent.wait_tts_playback_idle().await.unwrap();
 
-    let event = timeout(TokioDuration::from_secs(1), rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert_eq!(event.kind, SpeechEventKind::AgentSpeakingStart);
+    next_event_of(&mut rx, SpeechEventKind::AgentSpeakingStart).await;
+}
+
+/// Next event of `kind`, skipping others (for example a `TtsPhraseCacheHit` that precedes
+/// `AgentSpeakingStart` when the same reply was already synthesized).
+async fn next_event_of(
+    rx: &mut tokio::sync::broadcast::Receiver<SpeechEvent>,
+    kind: SpeechEventKind,
+) -> SpeechEvent {
+    timeout(TokioDuration::from_secs(1), async {
+        loop {
+            let event = rx.recv().await.expect("channel closed");
+            if event.kind == kind {
+                return event;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {kind:?}"))
+}
+
+/// Guard for `test.shared-global-state`: the same reply spoken by two agents in one process.
+/// The second is served from the process-wide phrase cache, so it emits `TtsPhraseCacheHit`
+/// before `AgentSpeakingStart`; both agents still emit the speaking events.
+#[tokio::test]
+async fn same_reply_in_two_agents_emits_speaking_start_in_both_and_a_cache_hit_in_the_second() {
+    let text = unique_text("shared reply");
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let mut registry = VendorRegistry::new();
+        registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
+        let agent = VoiceAgent::new(mock_tts_only_config(), Arc::new(registry)).unwrap();
+        let mut rx = agent.subscribe_events();
+        let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+        let reader = Arc::new(|| Ok(None));
+        agent.attach(reader, writer).await.unwrap();
+        agent.start(None).await.unwrap();
+        agent.send_text_to_tts(&text).await.unwrap();
+        agent.wait_tts_playback_idle().await.unwrap();
+        seen.push(drain_speech_events(&mut rx).await);
+        agent.stop().await.unwrap();
+    }
+    let kinds = |events: &[SpeechEvent], kind| events.iter().filter(|e| e.kind == kind).count();
+    for events in &seen {
+        assert_eq!(kinds(events, SpeechEventKind::AgentSpeakingStart), 1, "{events:?}");
+        assert_eq!(kinds(events, SpeechEventKind::AgentSpeakingEnd), 1, "{events:?}");
+    }
+    assert_eq!(kinds(&seen[0], SpeechEventKind::TtsPhraseCacheHit), 0, "{:?}", seen[0]);
+    assert_eq!(kinds(&seen[1], SpeechEventKind::TtsPhraseCacheHit), 1, "{:?}", seen[1]);
 }
 
 struct SlowMockTts {
@@ -360,7 +416,7 @@ async fn successful_tts_playback_still_emits_balanced_speaking_events() {
     let reader = Arc::new(|| Ok(None));
     agent.attach(reader, writer).await.unwrap();
     agent.start(None).await.unwrap();
-    agent.send_text_to_tts("hi").await.unwrap();
+    agent.send_text_to_tts(&unique_text("hi")).await.unwrap();
     agent.wait_tts_playback_idle().await.unwrap();
 
     let events = drain_speech_events(&mut rx).await;

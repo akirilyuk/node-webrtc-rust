@@ -1,9 +1,11 @@
 //! `voice_mix_frames_total{outcome}` OpenTelemetry counter.
 //!
-//! With the `otel` feature the counter is created on the global meter provider (installed by
-//! `node-webrtc-rust-speech`'s `init_from_env`, same meter name as the voice metrics). Without
-//! it every call is an inlined no-op. The only label is `outcome`; there is no peer, session
-//! or participant label.
+//! With the `otel` feature the counter is created on the global meter provider (same meter name
+//! as the voice metrics). The bindings start OTel (`node-webrtc-rust-speech`'s `init_from_env`)
+//! when an `AudioMixGraph` or a conference room is created, because the cached instrument must
+//! be built after the provider is installed: an instrument created earlier stays a no-op.
+//! Without the feature every call is an inlined no-op. The only label is `outcome`; there is no
+//! peer, session or participant label.
 
 /// What happened to a source frame, mirroring the `mixStats` counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

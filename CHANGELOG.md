@@ -16,6 +16,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **sdk** — `createOffer` waits (≤ 5 s) for data channels whose native create is still in flight, so an offer right after `createDataChannel` always includes `m=application` (fixes channels that never opened under CPU load, e.g. with `autoNegotiate`).
 - **sdk, helpers** — An offer could miss the data channel (`m=application`) when the native `createDataChannel` ran late (a starved host). ICE and DTLS connected, but the control channel never opened. New `RTCDataChannel.nativeReady` resolves once the native channel exists; the session host awaits it (bounded at 5 s) before creating the offer.
 - **helpers** — `getInboundAudioStats()` returned `null` from `onPeerDisconnected` because the peer connection was already closing. The host now reads the stats just before closing and the disconnect context returns that snapshot (bounded at 500 ms; `null` if unavailable). Teardown waits at most 500 ms for it. Live sessions still read live.
 

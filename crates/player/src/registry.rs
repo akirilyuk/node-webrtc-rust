@@ -22,13 +22,13 @@ pub fn insert(session: ClipSession) {
 
 pub fn get(play_id: &str) -> Option<ClipPlayerStatusSnapshot> {
     let guard = registry().lock().expect("player registry lock");
-    guard.get(play_id).map(|s| ClipPlayerStatusSnapshot {
-        status: s.status(),
-    })
+    guard
+        .get(play_id)
+        .map(|s| ClipPlayerStatusSnapshot { status: s.status() })
 }
 
 pub fn stop(play_id: &str) -> bool {
-    let mut guard = registry().lock().expect("player registry lock");
+    let guard = registry().lock().expect("player registry lock");
     if let Some(session) = guard.get(play_id) {
         session.stop();
         true
@@ -38,10 +38,11 @@ pub fn stop(play_id: &str) -> bool {
 }
 
 pub fn take_frame(play_id: &str) -> Option<node_webrtc_rust_mixer::Frame> {
-    let mut guard = registry().lock().expect("player registry lock");
+    let guard = registry().lock().expect("player registry lock");
     guard.get(play_id).and_then(|session| session.take_frame())
 }
 
+#[allow(dead_code)] // registry API surface; no caller yet
 pub fn remove(play_id: &str) {
     let mut guard = registry().lock().expect("player registry lock");
     guard.remove(play_id);
@@ -64,7 +65,9 @@ pub fn start_from_bytes(play_id: String, data: Vec<u8>) -> Result<String, Player
     Ok(play_id)
 }
 
-pub fn start_from_growing(play_id: String) -> Result<(String, crate::source::GrowingByteWriter), PlayerError> {
+pub fn start_from_growing(
+    play_id: String,
+) -> Result<(String, crate::source::GrowingByteWriter), PlayerError> {
     let (session, writer) = ClipSession::start_from_growing(play_id.clone());
     insert(session);
     Ok((play_id, writer))

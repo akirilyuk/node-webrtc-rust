@@ -64,7 +64,7 @@ runs:
 
     - name: Install Rust toolchain
       if: steps.resolve.outputs.build_required == 'true'
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@1.99.0
       with:
         targets: ${{ inputs.target }}
 
@@ -127,7 +127,7 @@ runs:
 
     - name: Install Rust metadata toolchain
       if: steps.resolve.outputs.build_required != 'true'
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@1.99.0
 
     - name: Write provenance manifest
       shell: bash

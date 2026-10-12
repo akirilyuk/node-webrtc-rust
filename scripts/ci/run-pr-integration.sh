@@ -40,6 +40,10 @@ fi
 echo "==> sync workspace bindings for npm test (registry copy under packages/sdk)"
 bash "$ROOT/scripts/ci/sync-workspace-bindings.sh"
 
+echo "==> Rust fmt + clippy (toolchain pinned in rust-toolchain.toml)"
+bash "$CI_STEP" --timeout "${CI_RUST_LINT_TIMEOUT_SEC:-1500}" "rust lint" -- \
+  bash scripts/ci/run-rust-lint.sh
+
 echo "==> cargo test (core, mixer, conference, speech)"
 echo "    (compiles Rust test deps on cold cache — separate from the .node binding above)"
 # opus_sdp_fmtp_omits_maxaveragebitrate_when_env_unset uses OnceLock. A developer

@@ -28,7 +28,9 @@ pub fn stereo_48k_to_mono_16k(pcm: &[u8]) -> Vec<i16> {
     }
 
     let samples: Vec<i16> = pcm
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
         .collect();
 
@@ -79,7 +81,7 @@ pub fn duration_ms_from_mono_s16le(byte_len: usize, sample_rate: u32) -> u32 {
 /// Duplicate mono s16le samples into stereo interleaved PCM (WebRTC outbound format).
 pub fn mono_s16le_to_stereo(mono: &[u8]) -> Bytes {
     let mut stereo = Vec::with_capacity(mono.len() * 2);
-    for sample in mono.chunks_exact(2) {
+    for sample in mono.as_chunks::<2>().0 {
         stereo.extend_from_slice(sample);
         stereo.extend_from_slice(sample);
     }
@@ -88,7 +90,9 @@ pub fn mono_s16le_to_stereo(mono: &[u8]) -> Bytes {
 
 /// Convert mono s16le PCM bytes to normalized f32 samples in [-1.0, 1.0].
 pub fn mono_s16le_bytes_to_f32(pcm: &[u8]) -> Vec<f32> {
-    pcm.chunks_exact(2)
+    pcm.as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| {
             let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
             f32::from(sample) / 32768.0

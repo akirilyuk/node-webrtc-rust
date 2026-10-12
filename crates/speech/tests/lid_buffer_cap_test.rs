@@ -114,12 +114,14 @@ fn agent_with_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
     registry.register_stt(SttVendor::LocalSherpa, factory);
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 20;
-    vad.speech_pad_ms = 20;
-    vad.gate_stt = false;
+    let vad = VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 20,
+        speech_pad_ms: 20,
+        gate_stt: false,
+        ..VadConfig::default()
+    };
 
     let config = VoiceAgentConfig {
         stt: Some(SttConfig {

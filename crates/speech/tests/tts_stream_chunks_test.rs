@@ -187,7 +187,13 @@ async fn measure_first_audio_ms(factory: Arc<ChunkedMockFactory>, text: &str) ->
 
     *send_start.lock().unwrap() = Some(Instant::now());
     agent
-        .send_text_to_tts_with_options(text, SendTextToTtsOptions { non_blocking: true, ..Default::default() })
+        .send_text_to_tts_with_options(
+            text,
+            SendTextToTtsOptions {
+                non_blocking: true,
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
 

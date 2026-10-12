@@ -216,10 +216,6 @@ impl JsLocalAudioTrack {
     pub(crate) fn write_tee_handle(&self) -> Arc<Mutex<Option<WriteSampleTee>>> {
         Arc::clone(&self.write_tee)
     }
-
-    pub(crate) fn notify_write_tee(&self, pcm: &[u8], duration_ms: u32) {
-        notify_write_tee_handle(&self.write_tee, pcm, duration_ms);
-    }
 }
 
 pub(crate) fn notify_write_tee_handle(

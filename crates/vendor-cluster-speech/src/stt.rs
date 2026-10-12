@@ -185,7 +185,7 @@ pub struct ClusterSherpaStt {
 /// Subtract `n` from `counter` without wrapping; returns what was actually removed.
 fn sub_queued_saturating(counter: &AtomicUsize, n: usize) -> usize {
     let mut removed = 0;
-    let _ = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
+    let _ = counter.try_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
         removed = n.min(cur);
         Some(cur - removed)
     });

@@ -8,7 +8,7 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 
 use crate::tts_matrix::{
     default_speak_model, flush_json, speak_json, tts_progressive_transport, v1_speak_rest_url,
-    v2_speak_rest_url, v1_speak_websocket_url, v2_speak_websocket_url, TtsProgressiveTransport,
+    v1_speak_websocket_url, v2_speak_rest_url, v2_speak_websocket_url, TtsProgressiveTransport,
 };
 
 pub struct DeepgramTts {
@@ -124,7 +124,7 @@ impl DeepgramTts {
             if let Some(s) = _sink {
                 let _ = s.send(chunk.clone());
             }
-            return Ok(vec![chunk]);
+            Ok(vec![chunk])
         }
 
         #[cfg(not(feature = "live"))]

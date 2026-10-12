@@ -23,7 +23,9 @@ fn read_wav_mono_16k(path: &PathBuf) -> Vec<i16> {
     let data = std::fs::read(path).expect("read fixture wav");
     assert!(data.len() > 44, "wav too short");
     let pcm = &data[44..];
-    pcm.chunks_exact(2)
+    pcm.as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect()
 }
@@ -42,15 +44,16 @@ fn mono_16k_chunk_to_stereo_48k_frame(samples: &[i16]) -> Vec<u8> {
 }
 
 fn sherpa_vad_config() -> VadConfig {
-    let mut vad = VadConfig::default();
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 200;
-    vad.speech_pad_ms = 500;
-    vad.min_silence_duration_ms = 1300;
-    vad.gate_stt = true;
-    vad.gate_stt_open_on_pending = false;
-    vad.stt_gate_hold_ms = 1000;
-    vad
+    VadConfig {
+        threshold: 0.05,
+        min_speech_duration_ms: 200,
+        speech_pad_ms: 500,
+        min_silence_duration_ms: 1300,
+        gate_stt: true,
+        gate_stt_open_on_pending: false,
+        stt_gate_hold_ms: 1000,
+        ..VadConfig::default()
+    }
 }
 
 fn stt_config(model_path: String) -> SttConfig {

@@ -132,7 +132,11 @@ async fn second_identical_reply_emits_one_cache_hit_with_chars() {
     assert!(hit.text.is_none());
     next_event(&mut events, SpeechEventKind::AgentSpeakingEnd).await;
 
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "second reply came from the cache");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "second reply came from the cache"
+    );
     // The first reply was a miss, the second a hit: exactly one hit event in total.
     while let Ok(event) = events.try_recv() {
         assert_ne!(event.kind, SpeechEventKind::TtsPhraseCacheHit);

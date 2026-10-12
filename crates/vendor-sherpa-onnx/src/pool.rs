@@ -437,6 +437,12 @@ impl SherpaModelPool {
     }
 }
 
+impl Default for SherpaModelPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SharedSttRecognizer {
     fn new(recognizer: OnlineRecognizer) -> Self {
         Self {

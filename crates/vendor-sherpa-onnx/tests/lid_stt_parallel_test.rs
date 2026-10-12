@@ -43,10 +43,10 @@ fn lid_config(model_path: String) -> LanguageIdConfig {
         allowlist: None,
         min_speech_ms: None,
         continuous: None,
-            lid_max_clip_ms: None,
-            lid_gate_max_wait_ms: None,
-            timing: None,
-            tts_exclusion: None,
+        lid_max_clip_ms: None,
+        lid_gate_max_wait_ms: None,
+        timing: None,
+        tts_exclusion: None,
     }
 }
 

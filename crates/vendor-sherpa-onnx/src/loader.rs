@@ -117,29 +117,31 @@ pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecogn
 pub fn create_offline_tts(config: &TtsConfig) -> SpeechResult<OfflineTts> {
     let paths = resolve_tts_model_paths(config)?;
 
-    let mut model_config = OfflineTtsModelConfig::default();
-    model_config.num_threads = tts_num_threads();
-    model_config.vits = OfflineTtsVitsModelConfig {
-        model: Some(path_to_string(&paths.vits_model)?),
-        tokens: Some(path_to_string(&paths.tokens)?),
-        data_dir: paths
-            .data_dir
-            .as_ref()
-            .map(|p| path_to_string(p))
-            .transpose()?,
-        lexicon: paths
-            .lexicon
-            .as_ref()
-            .map(|p| path_to_string(p))
-            .transpose()?,
-        dict_dir: paths
-            .dict_dir
-            .as_ref()
-            .map(|p| path_to_string(p))
-            .transpose()?,
-        noise_scale: 0.667,
-        noise_scale_w: 0.8,
-        length_scale: 1.0,
+    let model_config = OfflineTtsModelConfig {
+        num_threads: tts_num_threads(),
+        vits: OfflineTtsVitsModelConfig {
+            model: Some(path_to_string(&paths.vits_model)?),
+            tokens: Some(path_to_string(&paths.tokens)?),
+            data_dir: paths
+                .data_dir
+                .as_ref()
+                .map(|p| path_to_string(p))
+                .transpose()?,
+            lexicon: paths
+                .lexicon
+                .as_ref()
+                .map(|p| path_to_string(p))
+                .transpose()?,
+            dict_dir: paths
+                .dict_dir
+                .as_ref()
+                .map(|p| path_to_string(p))
+                .transpose()?,
+            noise_scale: 0.667,
+            noise_scale_w: 0.8,
+            length_scale: 1.0,
+        },
+        ..Default::default()
     };
 
     let rule_fsts = paths

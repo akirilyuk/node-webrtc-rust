@@ -1,6 +1,6 @@
 //! Symphonia-based decode pipeline producing stereo 48 kHz PCM bytes.
 
-use std::io::{self, Cursor, Seek, SeekFrom};
+use std::io::{self};
 
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -15,6 +15,7 @@ use crate::resample::f32_interleaved_to_stereo_48k;
 
 pub struct DecodeOutput {
     pub pcm: bytes::Bytes,
+    #[allow(dead_code)] // filled in by decoders; the session derives its own duration
     pub duration_ms: Option<u64>,
 }
 
@@ -41,7 +42,7 @@ impl DecoderSession {
             )
             .map_err(|e| PlayerError::DecodeFailed(format!("probe failed: {e}")))?;
 
-        let mut format = probed.format;
+        let format = probed.format;
         let track = format
             .tracks()
             .iter()
@@ -49,15 +50,12 @@ impl DecoderSession {
             .ok_or_else(|| PlayerError::DecodeFailed("no audio track".into()))?;
 
         let track_id = track.id;
-        let duration_ms = track
-            .codec_params
-            .n_frames
-            .and_then(|frames| {
-                track
-                    .codec_params
-                    .sample_rate
-                    .map(|rate| (frames * 1000) / rate as u64)
-            });
+        let duration_ms = track.codec_params.n_frames.and_then(|frames| {
+            track
+                .codec_params
+                .sample_rate
+                .map(|rate| (frames * 1000) / rate as u64)
+        });
 
         let decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &DecoderOptions::default())
@@ -83,9 +81,7 @@ impl DecoderSession {
         loop {
             let packet = match self.format.next_packet() {
                 Ok(packet) => packet,
-                Err(SymphoniaError::IoError(err))
-                    if err.kind() == io::ErrorKind::UnexpectedEof =>
-                {
+                Err(SymphoniaError::IoError(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     break;
                 }
                 Err(SymphoniaError::ResetRequired) => {
@@ -114,9 +110,7 @@ impl DecoderSession {
                 Err(SymphoniaError::DecodeError(err)) => {
                     return Err(PlayerError::DecodeFailed(format!("decode: {err}")));
                 }
-                Err(SymphoniaError::IoError(err))
-                    if err.kind() == io::ErrorKind::UnexpectedEof =>
-                {
+                Err(SymphoniaError::IoError(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     break;
                 }
                 Err(err) => {
@@ -145,7 +139,7 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
                     interleaved.push(b.chan(ch)[frame]);
                 }
             }
-            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+            f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec()
         }
         AudioBufferRef::S32(b) => {
             let spec = b.spec();
@@ -158,7 +152,7 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
                     interleaved.push(b.chan(ch)[frame] as f32 / i32::MAX as f32);
                 }
             }
-            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+            f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec()
         }
         AudioBufferRef::S24(b) => {
             let spec = b.spec();
@@ -171,7 +165,7 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
                     interleaved.push(b.chan(ch)[frame].inner() as f32 / 8_388_608.0);
                 }
             }
-            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+            f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec()
         }
         AudioBufferRef::S16(b) => {
             let spec = b.spec();
@@ -184,7 +178,7 @@ fn audio_buffer_to_stereo_48k(buf: &AudioBufferRef<'_>) -> Vec<u8> {
                     interleaved.push(b.chan(ch)[frame] as f32 / i16::MAX as f32);
                 }
             }
-            return f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec();
+            f32_interleaved_to_stereo_48k(&interleaved, rate, channels).to_vec()
         }
         _ => {
             let f32_buf = buf.make_equivalent::<f32>();
@@ -245,8 +239,7 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.mp3");
         let data = std::fs::read(path).expect("read mp3");
         let hint = hint_from_bytes(&data);
-        let mut session =
-            DecoderSession::open(Cursor::new(data), Some(hint)).expect("open");
+        let mut session = DecoderSession::open(Cursor::new(data), Some(hint)).expect("open");
         let out = session.decode_available().expect("decode");
         assert!(!out.pcm.is_empty(), "pcm bytes {}", out.pcm.len());
     }
@@ -256,8 +249,7 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.flac");
         let data = std::fs::read(&path).expect("read flac");
         let hint = hint_from_bytes(&data);
-        let mut session =
-            DecoderSession::open(Cursor::new(data), Some(hint)).expect("open flac");
+        let mut session = DecoderSession::open(Cursor::new(data), Some(hint)).expect("open flac");
         let out = session.decode_available().expect("decode flac");
         assert!(!out.pcm.is_empty(), "pcm bytes {}", out.pcm.len());
     }
@@ -281,8 +273,7 @@ mod tests {
         wav.extend_from_slice(&(num_samples * 4).to_le_bytes());
         wav.extend(vec![0u8; num_samples as usize * 4]);
         let hint = hint_from_bytes(&wav);
-        let mut session =
-            DecoderSession::open(Cursor::new(wav), Some(hint)).expect("open wav");
+        let mut session = DecoderSession::open(Cursor::new(wav), Some(hint)).expect("open wav");
         let out = session.decode_available().expect("decode wav");
         assert!(!out.pcm.is_empty());
     }

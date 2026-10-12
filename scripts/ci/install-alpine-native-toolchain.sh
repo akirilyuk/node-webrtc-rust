@@ -41,7 +41,7 @@ export PATH="${CARGO_HOME}/bin:${PATH}"
 
 if ! command -v rustc >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain stable --profile minimal
+    | sh -s -- -y --default-toolchain 1.99.0 --profile minimal
 fi
 
 rustup target add x86_64-unknown-linux-musl

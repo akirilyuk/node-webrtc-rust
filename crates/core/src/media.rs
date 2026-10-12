@@ -260,7 +260,7 @@ impl RemoteTrack {
             if crate::debug::is_debug_enabled() {
                 let peak = frames
                     .iter()
-                    .flat_map(|f| f.pcm.chunks_exact(2))
+                    .flat_map(|f| f.pcm.as_chunks::<2>().0.iter())
                     .map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs())
                     .max()
                     .unwrap_or(0);

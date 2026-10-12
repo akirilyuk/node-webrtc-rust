@@ -8,7 +8,7 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 
 use crate::matrix::{
     http_stream_url, tts_delivery_plan, tts_progressive_transport, tts_websocket_allowed,
-    websocket_stream_input_url, DEFAULT_MODEL_ID, TtsDeliveryPlan, TtsProgressiveTransport,
+    websocket_stream_input_url, TtsDeliveryPlan, TtsProgressiveTransport, DEFAULT_MODEL_ID,
 };
 
 const DEFAULT_VOICE_ID: &str = "EXAVITQu4vr4xnSDxMaL";
@@ -73,9 +73,7 @@ impl TtsProvider for ElevenLabsTts {
                 emit_chunks(sink.as_ref(), &chunks);
                 Ok(chunks)
             }
-            TtsProgressiveTransport::HttpStream => {
-                self.synthesize_http_stream(text, sink).await
-            }
+            TtsProgressiveTransport::HttpStream => self.synthesize_http_stream(text, sink).await,
             TtsProgressiveTransport::WebSocketStreamInput => {
                 #[cfg(feature = "live")]
                 {
@@ -129,7 +127,7 @@ impl ElevenLabsTts {
                 vendor: "elevenlabs".into(),
                 message: err.to_string(),
             })?;
-            return Ok(vec![pcm_chunk_from_mono(mono.as_ref())]);
+            Ok(vec![pcm_chunk_from_mono(mono.as_ref())])
         }
 
         #[cfg(not(feature = "live"))]
@@ -233,10 +231,12 @@ impl ElevenLabsTts {
         let api_key = self.api_key()?;
         let voice_id = self.voice_id();
         let url = websocket_stream_input_url(&voice_id, &self.model);
-        let mut request = url.into_client_request().map_err(|err| SpeechError::Vendor {
-            vendor: "elevenlabs".into(),
-            message: err.to_string(),
-        })?;
+        let mut request = url
+            .into_client_request()
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "elevenlabs".into(),
+                message: err.to_string(),
+            })?;
         request
             .headers_mut()
             .insert("xi-api-key", api_key.parse().unwrap());
@@ -265,7 +265,9 @@ impl ElevenLabsTts {
             })?;
         ws_tx
             .send(Message::Text(
-                serde_json::json!({"text": text, "flush": true}).to_string().into(),
+                serde_json::json!({"text": text, "flush": true})
+                    .to_string()
+                    .into(),
             ))
             .await
             .map_err(|err| SpeechError::Vendor {
@@ -273,7 +275,9 @@ impl ElevenLabsTts {
                 message: err.to_string(),
             })?;
         ws_tx
-            .send(Message::Text(serde_json::json!({"text": ""}).to_string().into()))
+            .send(Message::Text(
+                serde_json::json!({"text": ""}).to_string().into(),
+            ))
             .await
             .map_err(|err| SpeechError::Vendor {
                 vendor: "elevenlabs".into(),
@@ -286,20 +290,21 @@ impl ElevenLabsTts {
                 break;
             }
             let Ok(Message::Text(raw)) = msg else { break };
-            let value: serde_json::Value = serde_json::from_str(&raw).map_err(|err| {
-                SpeechError::Vendor {
+            let value: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|err| SpeechError::Vendor {
                     vendor: "elevenlabs".into(),
                     message: err.to_string(),
-                }
-            })?;
+                })?;
             if value.get("isFinal").and_then(|v| v.as_bool()) == Some(true) {
                 break;
             }
             if let Some(audio_b64) = value.get("audio").and_then(|v| v.as_str()) {
-                let bytes = STANDARD.decode(audio_b64).map_err(|err| SpeechError::Vendor {
-                    vendor: "elevenlabs".into(),
-                    message: err.to_string(),
-                })?;
+                let bytes = STANDARD
+                    .decode(audio_b64)
+                    .map_err(|err| SpeechError::Vendor {
+                        vendor: "elevenlabs".into(),
+                        message: err.to_string(),
+                    })?;
                 mono.extend_from_slice(&bytes);
                 if let Some(s) = sink.as_ref() {
                     let _ = s.send(pcm_chunk_from_mono(&bytes));

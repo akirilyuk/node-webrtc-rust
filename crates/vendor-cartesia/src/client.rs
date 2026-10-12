@@ -83,14 +83,14 @@ impl CartesiaClient {
                 });
             }
 
-            return response
+            response
                 .bytes()
                 .await
                 .map(|bytes| bytes.to_vec())
                 .map_err(|err| SpeechError::Vendor {
                     vendor: "cartesia".into(),
                     message: err.to_string(),
-                });
+                })
         }
 
         #[cfg(not(feature = "live"))]
@@ -134,17 +134,18 @@ impl CartesiaClient {
                 .unwrap_or(0)
         );
         let url = websocket_url(&self.api_version);
-        let mut request = url.into_client_request().map_err(|err| SpeechError::Vendor {
-            vendor: "cartesia".into(),
-            message: err.to_string(),
-        })?;
+        let mut request = url
+            .into_client_request()
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "cartesia".into(),
+                message: err.to_string(),
+            })?;
         request
             .headers_mut()
             .insert("X-API-Key", api_key.parse().unwrap());
-        request.headers_mut().insert(
-            "Cartesia-Version",
-            self.api_version.parse().unwrap(),
-        );
+        request
+            .headers_mut()
+            .insert("Cartesia-Version", self.api_version.parse().unwrap());
 
         let (ws, _) = connect_async(request)
             .await
@@ -180,12 +181,11 @@ impl CartesiaClient {
                 break;
             }
             let Ok(Message::Text(raw)) = msg else { break };
-            let value: serde_json::Value = serde_json::from_str(&raw).map_err(|err| {
-                SpeechError::Vendor {
+            let value: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|err| SpeechError::Vendor {
                     vendor: "cartesia".into(),
                     message: err.to_string(),
-                }
-            })?;
+                })?;
             if value.get("type").and_then(|v| v.as_str()) == Some("done")
                 && value.get("done").and_then(|v| v.as_bool()) == Some(true)
             {
@@ -194,14 +194,17 @@ impl CartesiaClient {
             if value.get("type").and_then(|v| v.as_str()) == Some("chunk") {
                 if let Some(data_b64) = value.get("data").and_then(|v| v.as_str()) {
                     use base64::{engine::general_purpose::STANDARD, Engine as _};
-                    let bytes = STANDARD.decode(data_b64).map_err(|err| SpeechError::Vendor {
-                        vendor: "cartesia".into(),
-                        message: err.to_string(),
-                    })?;
+                    let bytes = STANDARD
+                        .decode(data_b64)
+                        .map_err(|err| SpeechError::Vendor {
+                            vendor: "cartesia".into(),
+                            message: err.to_string(),
+                        })?;
                     mono.extend_from_slice(&bytes);
                     if let Some(s) = sink.as_ref() {
                         use node_webrtc_rust_speech::pcm::{
-                            duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
+                            duration_ms_from_mono_s16le, mono_s16le_to_stereo,
+                            WEBRTC_PCM_SAMPLE_RATE,
                         };
                         use node_webrtc_rust_speech::pipeline::TtsAudioChunk;
                         let duration_ms =

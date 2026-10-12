@@ -7,6 +7,7 @@
 //! later server binary can depend on `features = ["server"]` without pulling client
 //! channel code when default features are off.
 
+#[allow(clippy::result_large_err, clippy::double_must_use)] // tonic/prost generated stubs, regenerated from the .proto
 pub mod v1 {
     include!("generated/speech.v1.rs");
 }

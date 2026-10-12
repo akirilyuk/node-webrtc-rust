@@ -11,9 +11,11 @@ use symphonia::core::io::MediaSource;
 
 use crate::decoder::{hint_from_bytes, hint_from_path, DecoderSession};
 use crate::error::PlayerError;
-use crate::mp4_probe::{mp4_ready_for_decode, Mp4Layout, probe_mp4_layout};
+use crate::mp4_probe::{mp4_ready_for_decode, probe_mp4_layout, Mp4Layout};
 use crate::resample::stereo_byte_len_to_ms;
-use crate::source::{bytes_source, is_raw_pcm_s16le_48k_stereo, GrowingByteSource, GrowingByteWriter};
+use crate::source::{
+    bytes_source, is_raw_pcm_s16le_48k_stereo, GrowingByteSource, GrowingByteWriter,
+};
 use crate::types::{ClipPlayerStatus, ClipStatus, PREROLL_MIN_MS, PREROLL_TARGET_MS};
 
 enum InputKind {
@@ -45,8 +47,7 @@ impl ClipSession {
             .extension()
             .map(|e| e.to_string_lossy().to_string());
         if is_raw_pcm_s16le_48k_stereo(ext.as_deref()) {
-            let data = std::fs::read(path.as_ref())
-                .map_err(|e| PlayerError::Io(e.to_string()))?;
+            let data = std::fs::read(path.as_ref()).map_err(|e| PlayerError::Io(e.to_string()))?;
             return Ok(Self::spawn(play_id, InputKind::RawPcm(data)));
         }
         Ok(Self::spawn(play_id, InputKind::Path(path_str)))
@@ -203,13 +204,16 @@ fn wait_until_decode_ready(source: &GrowingByteSource) {
     }
 }
 
-fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> Result<(), PlayerError> {
+fn decode_growing(
+    state: &Arc<SessionState>,
+    source: Arc<GrowingByteSource>,
+) -> Result<(), PlayerError> {
     let mut session = None;
     while session.is_none() {
         if state.stop_requested.load(Ordering::SeqCst) {
             return Ok(());
         }
-        wait_until_decode_ready(&*source);
+        wait_until_decode_ready(&source);
         if source.is_eof() && source.snapshot().is_empty() {
             return Err(PlayerError::DecodeFailed("empty stream".into()));
         }
@@ -272,11 +276,7 @@ fn decode_growing(state: &Arc<SessionState>, source: Arc<GrowingByteSource>) -> 
     Ok(())
 }
 
-fn wait_for_growing_bytes(
-    source: &GrowingByteSource,
-    prev_len: usize,
-    state: &Arc<SessionState>,
-) {
+fn wait_for_growing_bytes(source: &GrowingByteSource, prev_len: usize, state: &Arc<SessionState>) {
     while source.len() == prev_len && !source.is_eof() {
         if state.stop_requested.load(Ordering::SeqCst) {
             return;
@@ -296,29 +296,27 @@ fn decode_from_source<M: MediaSource + 'static>(
         status.duration_ms = Some(dur);
     }
     while !state.stop_requested.load(Ordering::SeqCst) {
-        match session.decode_available() {
-            Ok(out) => {
-                let had_pcm = !out.pcm.is_empty();
-                if had_pcm {
-                    enqueue_pcm(state, out.pcm);
-                }
-                let buffered_ms = state.status.lock().expect("status lock").buffered_ms;
-                if buffered_ms >= state.preroll_ms {
-                    return Ok(());
-                }
-                // Static sources: empty output means EOF with no further PCM.
-                if !had_pcm {
-                    return Ok(());
-                }
+        {
+            let out = session.decode_available()?;
+            let had_pcm = !out.pcm.is_empty();
+            if had_pcm {
+                enqueue_pcm(state, out.pcm);
             }
-            Err(err) => return Err(err),
+            let buffered_ms = state.status.lock().expect("status lock").buffered_ms;
+            if buffered_ms >= state.preroll_ms {
+                return Ok(());
+            }
+            // Static sources: empty output means EOF with no further PCM.
+            if !had_pcm {
+                return Ok(());
+            }
         }
     }
     Ok(())
 }
 
 fn decode_raw_pcm(state: &Arc<SessionState>, data: Vec<u8>) -> Result<(), PlayerError> {
-    if data.len() % 4 != 0 {
+    if !data.len().is_multiple_of(4) {
         return Err(PlayerError::InvalidInput(
             "raw PCM must be s16le stereo (4 bytes per frame)".into(),
         ));

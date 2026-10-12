@@ -2,20 +2,20 @@
 use async_openai::types::{CreateSpeechRequestArgs, SpeechModel, SpeechResponseFormat, Voice};
 #[cfg(feature = "live")]
 use async_openai::Client;
+use async_trait::async_trait;
 #[cfg(feature = "live")]
 use base64::Engine;
-#[cfg(feature = "live")]
-use serde_json::Value;
-use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 #[cfg(feature = "live")]
+use serde_json::Value;
+#[cfg(feature = "live")]
 use tokio::sync::Mutex;
 
 use crate::factory::api_key_from;
-use crate::matrix::{tts_delivery_plan, tts_sse_allowed, TtsStreamFormat};
+use crate::matrix::tts_sse_allowed;
 
 /// OpenAI TTS PCM output sample rate (16-bit mono LE).
 const OPENAI_TTS_PCM_SAMPLE_RATE: u32 = 24_000;
@@ -265,12 +265,12 @@ impl OpenAiTts {
             "response_format": "pcm",
             "stream_format": "sse",
         });
-        let http = reqwest::Client::builder().build().map_err(|err| {
-            SpeechError::Vendor {
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(|err| SpeechError::Vendor {
                 vendor: "openai".into(),
                 message: format!("HTTP client: {err}"),
-            }
-        })?;
+            })?;
         let response = http
             .post(url)
             .bearer_auth(api_key)
@@ -318,20 +318,19 @@ impl OpenAiTts {
                     if payload.is_empty() || payload == "[DONE]" {
                         continue;
                     }
-                    let event: Value = serde_json::from_str(payload).map_err(|err| {
-                        SpeechError::Vendor {
+                    let event: Value =
+                        serde_json::from_str(payload).map_err(|err| SpeechError::Vendor {
                             vendor: "openai".into(),
                             message: format!("speech SSE JSON: {err}"),
-                        }
-                    })?;
+                        })?;
                     match event.get("type").and_then(Value::as_str) {
                         Some("speech.audio.delta") => {
-                            let audio_b64 = event
-                                .get("audio")
-                                .and_then(Value::as_str)
-                                .ok_or_else(|| SpeechError::Vendor {
-                                    vendor: "openai".into(),
-                                    message: "speech.audio.delta missing audio".into(),
+                            let audio_b64 =
+                                event.get("audio").and_then(Value::as_str).ok_or_else(|| {
+                                    SpeechError::Vendor {
+                                        vendor: "openai".into(),
+                                        message: "speech.audio.delta missing audio".into(),
+                                    }
                                 })?;
                             let decoded = base64::engine::general_purpose::STANDARD
                                 .decode(audio_b64)
@@ -374,7 +373,7 @@ impl OpenAiTts {
     }
 }
 
-#[cfg(feature = "live")]
+#[cfg(all(test, feature = "live"))]
 pub(crate) fn parse_speech_sse_event_for_test(event: &Value) -> Option<Vec<u8>> {
     if event.get("type").and_then(Value::as_str) != Some("speech.audio.delta") {
         return None;
@@ -447,7 +446,7 @@ fn parse_speech_model(model: &str) -> SpeechModel {
 /// Upsample mono 24 kHz s16le to stereo 48 kHz for WebRTC outbound tracks.
 fn mono_24k_s16le_to_stereo_48k(mono_24k: &[u8]) -> bytes::Bytes {
     let mut mono_48k = Vec::with_capacity(mono_24k.len() * 2);
-    for sample in mono_24k.chunks_exact(2) {
+    for sample in mono_24k.as_chunks::<2>().0 {
         mono_48k.extend_from_slice(sample);
         mono_48k.extend_from_slice(sample);
     }
@@ -457,6 +456,7 @@ fn mono_24k_s16le_to_stereo_48k(mono_24k: &[u8]) -> bytes::Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::matrix::{tts_delivery_plan, TtsStreamFormat};
     use node_webrtc_rust_speech::config::TtsVendor;
 
     #[test]

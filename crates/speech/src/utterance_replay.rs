@@ -26,6 +26,12 @@ pub struct UtteranceReplayBuffer {
     active: bool,
 }
 
+impl Default for UtteranceReplayBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UtteranceReplayBuffer {
     pub fn new() -> Self {
         Self::with_max_bytes(replay_max_bytes())

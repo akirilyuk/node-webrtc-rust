@@ -140,18 +140,22 @@ mod tests {
 
     #[test]
     fn capacity_from_vad_config_covers_speech_window() {
-        let mut config = crate::config::VadConfig::default();
-        config.min_speech_duration_ms = 250;
-        config.speech_pad_ms = 30;
+        let config = crate::config::VadConfig {
+            min_speech_duration_ms: 250,
+            speech_pad_ms: 30,
+            ..crate::config::VadConfig::default()
+        };
         let ring = SttPreRollBuffer::from_vad_config(&config);
         assert_eq!(ring.capacity_ms(), 280);
     }
 
     #[test]
     fn capacity_prefers_speech_pad_lead_in() {
-        let mut config = crate::config::VadConfig::default();
-        config.min_speech_duration_ms = 80;
-        config.speech_pad_ms = 400;
+        let config = crate::config::VadConfig {
+            min_speech_duration_ms: 80,
+            speech_pad_ms: 400,
+            ..crate::config::VadConfig::default()
+        };
         let ring = SttPreRollBuffer::from_vad_config(&config);
         assert_eq!(ring.capacity_ms(), 480);
     }

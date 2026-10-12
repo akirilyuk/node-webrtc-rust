@@ -19,7 +19,6 @@ struct TaggingSttFactory {
 }
 
 struct TaggingStt {
-    tag: String,
     starts: Arc<AtomicUsize>,
 }
 
@@ -50,13 +49,11 @@ impl SttProvider for TaggingStt {
 }
 
 impl VendorFactory for TaggingSttFactory {
-    fn create_stt(&self, config: &SttConfig) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
-        let tag = config
-            .model
-            .clone()
-            .unwrap_or_else(|| "default".into());
+    fn create_stt(
+        &self,
+        _config: &SttConfig,
+    ) -> node_webrtc_rust_speech::SpeechResult<Box<dyn SttProvider>> {
         Ok(Box::new(TaggingStt {
-            tag,
             starts: Arc::clone(&self.starts),
         }))
     }
@@ -70,9 +67,11 @@ impl VendorFactory for TaggingSttFactory {
 }
 
 fn agent_config(stt_model: &str) -> VoiceAgentConfig {
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.gate_stt = false;
+    let vad = VadConfig {
+        enabled: true,
+        gate_stt: false,
+        ..VadConfig::default()
+    };
     VoiceAgentConfig {
         stt: Some(SttConfig {
             provider: SttVendor::Mock,

@@ -9,8 +9,7 @@ use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsOpenWait, TtsProgressiveSink, TtsProvider, TtsSynthesis,
 };
 use node_webrtc_rust_speech_proto::v1::speech_client::SpeechClient;
-use node_webrtc_rust_speech_proto::v1::{ModelRef, SessionContext, SynthesizeRequest};
-use tonic::metadata::MetadataValue;
+use node_webrtc_rust_speech_proto::v1::{ModelRef, SynthesizeRequest};
 use tonic::{Code, Request};
 
 use crate::channel::{

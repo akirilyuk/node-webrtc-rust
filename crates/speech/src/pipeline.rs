@@ -44,14 +44,13 @@ impl TtsProgressiveSink {
 /// Set `VOICE_TTS_STREAM_CHUNKS=0` (also `false` / `off` / `no`) to keep the legacy
 /// buffered path: fully synthesize, then enqueue, then drain.
 pub fn tts_stream_chunks_enabled() -> bool {
-    match std::env::var("VOICE_TTS_STREAM_CHUNKS")
-        .ok()
-        .as_deref()
-        .map(str::trim)
-    {
-        Some("0") | Some("false") | Some("no") | Some("off") => false,
-        _ => true,
-    }
+    !matches!(
+        std::env::var("VOICE_TTS_STREAM_CHUNKS")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("0") | Some("false") | Some("no") | Some("off")
+    )
 }
 
 /// Streaming STT transcript update.
@@ -62,6 +61,7 @@ pub enum SttTranscript {
 }
 
 /// Speech-to-text provider trait.
+#[allow(clippy::double_must_use)] // async_trait expansion re-adds must_use on boxed futures
 #[async_trait]
 pub trait SttProvider: Send + Sync {
     fn vendor_name(&self) -> &'static str;
@@ -145,6 +145,7 @@ pub struct TtsOpenWait {
 }
 
 /// Text-to-speech provider trait.
+#[allow(clippy::double_must_use)] // async_trait expansion re-adds must_use on boxed futures
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
     fn vendor_name(&self) -> &'static str;
@@ -210,6 +211,7 @@ pub struct LanguageIdResult {
 }
 
 /// Offline spoken-language identification (e.g. Sherpa Whisper tiny).
+#[allow(clippy::double_must_use)] // async_trait expansion re-adds must_use on boxed futures
 #[async_trait]
 pub trait LanguageIdProvider: Send + Sync {
     /// Identify language from mono PCM at `sample_rate` Hz (typically 16_000).

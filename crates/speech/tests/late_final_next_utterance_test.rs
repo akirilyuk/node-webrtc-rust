@@ -123,13 +123,15 @@ async fn make_agent(script: &Arc<Mutex<Script>>, gate_hold_ms: u32) -> Arc<Voice
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = gate_hold_ms;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_gate_hold_ms: gate_hold_ms,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let config = VoiceAgentConfig {

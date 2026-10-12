@@ -165,6 +165,7 @@ jobs:
               - '!docs/**'
             native:
               - 'Cargo.toml'
+              - 'rust-toolchain.toml'
               - 'Cargo.lock'
               - 'crates/**'
               - 'packages/bindings/**'
@@ -208,6 +209,7 @@ jobs:
               - '.github/actions/ci-cache-sherpa-models/**'
               - '.github/workflows/reusable-test.yml'
               - 'scripts/ci/run-pr-integration.sh'
+              - 'scripts/ci/run-rust-lint.sh'
               - 'scripts/ci/run-pr-tests-full.sh'
               - 'scripts/ci/run-sherpa-example-ci.sh'
               - 'scripts/ci/run-sherpa-roundtrip-e2e.sh'

@@ -986,7 +986,11 @@ mod tests {
         let second = wrapper(inner2, &b, &cache);
         second.synthesize("hello").await.unwrap();
         assert_eq!(state.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(state2.calls.load(Ordering::SeqCst), 1, "other endpoint misses");
+        assert_eq!(
+            state2.calls.load(Ordering::SeqCst),
+            1,
+            "other endpoint misses"
+        );
         assert_eq!(second.take_cache_hit(), None);
     }
 

@@ -11,7 +11,6 @@ use node_webrtc_rust_speech::config::SttConfig;
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
 /// Documented Speech-to-Text model identifiers (V2 table + V1 `latest_long`).
-
 pub static DOCUMENTED_STT_MODELS: LazyLock<&'static [&'static str]> =
     LazyLock::new(|| voice_catalog::stt_models("google").expect("google in voice catalog"));
 

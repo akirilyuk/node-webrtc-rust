@@ -7,7 +7,7 @@ use node_webrtc_rust_speech::pcm::{
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 use crate::client::CartesiaClient;
-use crate::matrix::{DEFAULT_MODEL_ID, TtsDeliveryPlan};
+use crate::matrix::{TtsDeliveryPlan, DEFAULT_MODEL_ID};
 
 pub struct CartesiaTts {
     client: CartesiaClient,

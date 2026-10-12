@@ -148,7 +148,10 @@ async fn agent_speaking_start_reports_first_chunk_and_first_audio() {
     let (agent, _) = make_agent(Duration::from_millis(80)).await;
     let mut events = agent.subscribe_events();
 
-    agent.send_text_to_tts(&unique_text("hello there")).await.unwrap();
+    agent
+        .send_text_to_tts(&unique_text("hello there"))
+        .await
+        .unwrap();
     let start = next_speaking_start(&mut events).await;
 
     let first_chunk_ms = start.first_chunk_ms.expect("first_chunk_ms set");

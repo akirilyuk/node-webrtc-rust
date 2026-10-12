@@ -55,8 +55,8 @@ impl SttProvider for AwsStt {
     async fn start(&mut self) -> SpeechResult<()> {
         #[cfg(feature = "live")]
         {
-            use aws_sdk_transcribestreaming::types::MediaEncoding;
             use aws_sdk_transcribestreaming::primitives::event_stream::EventStreamSender;
+            use aws_sdk_transcribestreaming::types::MediaEncoding;
 
             let language_code = self.language_code.clone();
             let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<Bytes>();
@@ -162,9 +162,7 @@ impl Stream for PcmAudioStream {
                 use aws_sdk_transcribestreaming::types::{AudioEvent, AudioStream};
                 use aws_smithy_types::Blob;
                 let event = AudioStream::AudioEvent(
-                    AudioEvent::builder()
-                        .audio_chunk(Blob::new(chunk))
-                        .build(),
+                    AudioEvent::builder().audio_chunk(Blob::new(chunk)).build(),
                 );
                 Poll::Ready(Some(Ok(event)))
             }

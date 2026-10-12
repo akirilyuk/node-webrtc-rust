@@ -85,7 +85,9 @@ pub fn detect_frame(pcm: &[u8]) -> Detected {
         return Detected::Silent;
     }
     let left: Vec<f64> = pcm
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f64::from(i16::from_le_bytes([c[0], c[1]])) / 32_768.0)
         .collect();
     let rms = (left.iter().map(|x| x * x).sum::<f64>() / left.len() as f64).sqrt();
@@ -198,8 +200,10 @@ mod tests {
         let fb = b.frame(17);
         let mixed: Vec<u8> = fa
             .pcm
-            .chunks_exact(2)
-            .zip(fb.pcm.chunks_exact(2))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(fb.pcm.as_chunks::<2>().0.iter())
             .flat_map(|(x, y)| {
                 let s = i16::from_le_bytes([x[0], x[1]]) / 2 + i16::from_le_bytes([y[0], y[1]]) / 2;
                 s.to_le_bytes()

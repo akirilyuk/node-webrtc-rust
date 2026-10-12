@@ -27,12 +27,14 @@ fn mock_tts_duration_ms(text: &str) -> u32 {
 }
 
 fn speaker_config() -> VoiceAgentConfig {
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = false;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: false,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = true;
     vad.barge_in.use_vad = true;
     vad.barge_in.flush_tts = true;
@@ -242,12 +244,14 @@ async fn agent_playback_guard_suppresses_early_barge_in() {
     registry.register_stt(SttVendor::Mock, Arc::new(MockFactory));
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = false;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: false,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = true;
     vad.barge_in.use_vad = true;
     vad.barge_in.flush_tts = true;
@@ -323,10 +327,12 @@ async fn use_vad_false_skips_auto_barge_on_speech_start() {
     let mut registry = VendorRegistry::new();
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = true;
     vad.barge_in.use_vad = false;
     vad.barge_in.flush_tts = true;
@@ -392,13 +398,15 @@ async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() 
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 500;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_gate_hold_ms: 500,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
     vad.barge_in.require_stt_partial = false;
 
@@ -532,12 +540,14 @@ async fn stt_partial_gated_barge_flushes_agent_tts_after_partial() {
     registry.register_stt(SttVendor::Mock, Arc::new(PartialOnPollFactory));
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = true;
     vad.barge_in.use_vad = true;
     vad.barge_in.flush_tts = true;
@@ -626,12 +636,14 @@ async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = true;
     vad.barge_in.use_vad = true;
     vad.barge_in.flush_tts = true;
@@ -723,13 +735,15 @@ async fn c1_no_partial_emits_user_stt_not_found() {
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_listen_timeout_ms = 200;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_listen_timeout_ms: 200,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let config = VoiceAgentConfig {
@@ -904,13 +918,15 @@ fn drain_user_stt_not_found(
 #[tokio::test]
 async fn c1_deferred_while_decode_backlog() {
     let backlog_ms = Arc::new(AtomicU32::new(1500));
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_listen_timeout_ms = 200;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_listen_timeout_ms: 200,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let (agent, mut events) = run_c1_backlog_scenario(Arc::clone(&backlog_ms), vad).await;
@@ -945,14 +961,16 @@ async fn c1_deferred_while_decode_backlog() {
 #[tokio::test]
 async fn c1_hard_timeout_fires_despite_backlog() {
     let backlog_ms = Arc::new(AtomicU32::new(1500));
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_listen_timeout_ms = 200;
-    vad.stt_listen_hard_timeout_ms = 600;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_listen_timeout_ms: 200,
+        stt_listen_hard_timeout_ms: 600,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let (agent, mut events) = run_c1_backlog_scenario(Arc::clone(&backlog_ms), vad).await;
@@ -978,15 +996,17 @@ async fn c1_hard_timeout_fires_despite_backlog() {
 }
 
 fn open_wait_vad(stt_open_wait_max_ms: u32) -> VadConfig {
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_listen_timeout_ms = 100;
-    vad.stt_listen_hard_timeout_ms = 300;
-    vad.stt_open_wait_max_ms = stt_open_wait_max_ms;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_listen_timeout_ms: 100,
+        stt_listen_hard_timeout_ms: 300,
+        stt_open_wait_max_ms,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
     vad
 }
@@ -1133,14 +1153,16 @@ async fn c2_partial_stall_forces_user_speech_final() {
     registry.register_stt(SttVendor::Mock, Arc::new(PartialOnlyFactory));
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 100;
-    vad.utterance_finalize_timeout_ms = 200;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_gate_hold_ms: 100,
+        utterance_finalize_timeout_ms: 200,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let config = VoiceAgentConfig {
@@ -1212,14 +1234,16 @@ async fn c2_partial_stall_no_pcm_forces_user_speech_final() {
     registry.register_stt(SttVendor::Mock, Arc::new(PartialOnlyFactory));
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 100;
-    vad.utterance_finalize_timeout_ms = 200;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_gate_hold_ms: 100,
+        utterance_finalize_timeout_ms: 200,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let config = VoiceAgentConfig {
@@ -1295,10 +1319,12 @@ async fn c2_does_not_force_during_active_vad_speech() {
     registry.register_stt(SttVendor::Mock, Arc::new(PartialOnlyFactory));
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        ..VadConfig::default()
+    };
     // Long min silence — no SpeechEnd during continuous loud frames.
     vad.min_silence_duration_ms = 5000;
     vad.gate_stt = true;
@@ -1381,14 +1407,16 @@ async fn second_turn_stt_finalizes_after_prior_utterance_final() {
     registry.register_stt(SttVendor::Mock, Arc::new(MockFactory));
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
-    vad.stt_gate_hold_ms = 1000;
-    vad.utterance_finalize_timeout_ms = 200;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        stt_gate_hold_ms: 1000,
+        utterance_finalize_timeout_ms: 200,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let config = VoiceAgentConfig {
@@ -1454,12 +1482,14 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 40;
-    vad.gate_stt = true;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 40,
+        gate_stt: true,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let config = VoiceAgentConfig {

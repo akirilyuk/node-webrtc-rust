@@ -441,7 +441,7 @@ Node.js **≥ 18** required.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs) (stable)
+- [Rust](https://rustup.rs) (the toolchain is pinned to 1.99.0 in `rust-toolchain.toml`; rustup installs it on first use)
 - Node.js ≥ 18, npm ≥ 9
 
 ### Clone and build

@@ -319,10 +319,6 @@ impl DataChannel {
                 .await;
         });
     }
-
-    pub(crate) fn inner(&self) -> Arc<RTCDataChannel> {
-        Arc::clone(&self.inner)
-    }
 }
 
 #[cfg(test)]

@@ -94,7 +94,9 @@ impl SttProvider for ScriptedStt {
         let delay = {
             let mut script = self.script.lock().unwrap();
             let loud_samples = pcm
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .filter(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs() > 1000)
                 .count() as u32;
             script.loud_ms += loud_samples / 16; // 16 kHz mono
@@ -189,13 +191,15 @@ async fn make_agent_with(script: &Arc<Mutex<Script>>, gate_stt: bool) -> Arc<Voi
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
-    let mut vad = VadConfig::default();
-    vad.enabled = true;
-    vad.threshold = 0.05;
-    vad.min_speech_duration_ms = 40;
-    vad.min_silence_duration_ms = 1300;
-    vad.gate_stt = gate_stt;
-    vad.stt_gate_hold_ms = 1000;
+    let mut vad = VadConfig {
+        enabled: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 40,
+        min_silence_duration_ms: 1300,
+        gate_stt,
+        stt_gate_hold_ms: 1000,
+        ..VadConfig::default()
+    };
     vad.barge_in.enabled = false;
 
     let config = VoiceAgentConfig {
@@ -280,17 +284,16 @@ async fn run_segments(
             offset_ms += pace;
         }
     }
-    let total = plan.len();
     let mut timeline = Vec::new();
-    for i in 0..total {
+    for (i, &(is_loud, due_ms)) in plan.iter().enumerate() {
         if let Some(s) = stall {
             if i == s.after_frames {
                 tokio::time::sleep(Duration::from_millis(s.stall_ms)).await;
             }
         }
-        let due = start + Duration::from_millis(plan[i].1);
+        let due = start + Duration::from_millis(due_ms);
         tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
-        let frame = if plan[i].0 { &loud } else { &silent };
+        let frame = if is_loud { &loud } else { &silent };
         agent.process_inbound_pcm(frame.clone(), 20).await.unwrap();
         while let Ok(event) = events.try_recv() {
             let at = start.elapsed().as_millis() as u64;

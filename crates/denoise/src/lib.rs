@@ -96,7 +96,7 @@ pub fn stereo_pcm_rms(pcm: &[u8]) -> f32 {
     }
     let mut sum_sq = 0.0f64;
     let mut count = 0usize;
-    for chunk in pcm.chunks_exact(4) {
+    for chunk in pcm.as_chunks::<4>().0 {
         for ch in [0, 2] {
             let s = i16::from_le_bytes([chunk[ch], chunk[ch + 1]]) as f64 / f64::from(i16::MAX);
             sum_sq += s * s;
@@ -109,10 +109,12 @@ pub fn stereo_pcm_rms(pcm: &[u8]) -> f32 {
     (sum_sq / count as f64).sqrt() as f32
 }
 
+#[cfg(test)]
 fn stereo_silence_20ms() -> Vec<u8> {
     vec![0u8; STEREO_20MS_BYTES]
 }
 
+#[cfg(test)]
 fn stereo_white_noise_20ms(seed: u32) -> Vec<u8> {
     let mut state = seed.max(1);
     let mut pcm = Vec::with_capacity(STEREO_20MS_BYTES);
@@ -125,6 +127,7 @@ fn stereo_white_noise_20ms(seed: u32) -> Vec<u8> {
     pcm
 }
 
+#[cfg(test)]
 fn stereo_sine_440_20ms() -> Vec<u8> {
     let mut pcm = Vec::with_capacity(STEREO_20MS_BYTES);
     for i in 0..960 {
@@ -137,6 +140,7 @@ fn stereo_sine_440_20ms() -> Vec<u8> {
     pcm
 }
 
+#[cfg(test)]
 fn warmup_frames(denoiser: &mut Stereo48kRnnoise, n: usize) {
     let frame = stereo_white_noise_20ms(42);
     for i in 0..n {

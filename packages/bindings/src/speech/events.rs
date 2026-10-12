@@ -59,10 +59,39 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
     }
 }
 
+pub fn wire_speech_callback(
+    env: &Env,
+    callback: JsFunction,
+    mut rx: tokio::sync::broadcast::Receiver<SpeechEvent>,
+) -> Result<()> {
+    let tsfn = create_event_callback(
+        env,
+        callback,
+        move |ctx: ThreadSafeCallContext<SpeechEvent>| Ok(vec![speech_event_to_js(ctx.value)]),
+    )?;
+    spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let status = tsfn.call(Ok(event), ThreadsafeFunctionCallMode::NonBlocking);
+                    if status != napi::Status::Ok {
+                        eprintln!("[voice-debug] speech callback: tsfn.call status={status:?}");
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!("[voice-debug] speech callback: lagged, skipped {skipped} events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    Ok(())
+}
+
 #[cfg(test)]
 mod speech_event_to_js_tests {
     use super::*;
-    use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
+    use node_webrtc_rust_speech::events::SpeechEvent;
 
     #[test]
     fn user_language_maps_language_field() {
@@ -121,33 +150,4 @@ mod speech_event_to_js_tests {
         assert_eq!(plain.first_audio_ms, None);
         assert_eq!(plain.first_chunk_ms, None);
     }
-}
-
-pub fn wire_speech_callback(
-    env: &Env,
-    callback: JsFunction,
-    mut rx: tokio::sync::broadcast::Receiver<SpeechEvent>,
-) -> Result<()> {
-    let tsfn = create_event_callback(
-        env,
-        callback,
-        move |ctx: ThreadSafeCallContext<SpeechEvent>| Ok(vec![speech_event_to_js(ctx.value)]),
-    )?;
-    spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let status = tsfn.call(Ok(event), ThreadsafeFunctionCallMode::NonBlocking);
-                    if status != napi::Status::Ok {
-                        eprintln!("[voice-debug] speech callback: tsfn.call status={status:?}");
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    eprintln!("[voice-debug] speech callback: lagged, skipped {skipped} events");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-    Ok(())
 }

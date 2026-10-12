@@ -49,9 +49,7 @@ fn resolved_opus_application() -> Application {
 }
 
 fn parse_opus_bitrate_bps_from_env(raw: Option<&str>) -> Option<i32> {
-    let Some(raw) = raw else {
-        return None;
-    };
+    let raw = raw?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -291,7 +289,7 @@ impl PcmEncoder {
 
         state.pcm_scratch.clear();
         state.pcm_scratch.reserve(pcm.len() / 2);
-        for chunk in pcm.chunks_exact(2) {
+        for chunk in pcm.as_chunks::<2>().0 {
             state
                 .pcm_scratch
                 .push(i16::from_le_bytes([chunk[0], chunk[1]]));

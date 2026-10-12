@@ -62,6 +62,6 @@ mod tests {
         });
         let chunks = tts.synthesize("hello").await.unwrap();
         assert_eq!(chunks.len(), 1);
-        assert!(chunks[0].pcm.len() > 0);
+        assert!(!chunks[0].pcm.is_empty());
     }
 }

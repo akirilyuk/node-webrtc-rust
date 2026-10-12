@@ -41,11 +41,11 @@ classify_path() {
     run_quality=true
     return 0
   fi
-  if [[ "$path" == .github/actions/ci-run-integration-tests/* || "$path" == .github/workflows/reusable-test.yml || "$path" == scripts/ci/run-pr-integration.sh || "$path" == scripts/ci/run-pr-tests-full.sh || "$path" == scripts/ci/run-sherpa-example-ci.sh || "$path" == scripts/ci/run-sherpa-roundtrip-e2e.sh || "$path" == scripts/ci/run-pr-test-job-docker.sh || "$path" == scripts/ci/compute-pr-job-gates.sh ]]; then
+  if [[ "$path" == .github/actions/ci-run-integration-tests/* || "$path" == .github/workflows/reusable-test.yml || "$path" == scripts/ci/run-pr-integration.sh || "$path" == scripts/ci/run-rust-lint.sh || "$path" == scripts/ci/run-pr-tests-full.sh || "$path" == scripts/ci/run-sherpa-example-ci.sh || "$path" == scripts/ci/run-sherpa-roundtrip-e2e.sh || "$path" == scripts/ci/run-pr-test-job-docker.sh || "$path" == scripts/ci/compute-pr-job-gates.sh ]]; then
     run_quality=true
     return 0
   fi
-  if [[ "$path" == Cargo.toml || "$path" == Cargo.lock || "$path" =~ ^crates/ || "$path" =~ ^packages/bindings/ ]]; then
+  if [[ "$path" == Cargo.toml || "$path" == Cargo.lock || "$path" == rust-toolchain.toml || "$path" =~ ^crates/ || "$path" =~ ^packages/bindings/ ]]; then
     run_compile=true
     run_test=true
     run_quality=true

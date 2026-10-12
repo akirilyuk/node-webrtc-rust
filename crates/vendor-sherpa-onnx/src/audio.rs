@@ -151,7 +151,7 @@ impl StreamingStereo48kResampler {
         // Every source sample maps 1:1 and consumed samples are dropped, so `src` holds
         // exactly what has not been emitted yet.
         let mut out = BytesMut::zeroed(self.src.len() * 4);
-        for (frame, &sample) in out.chunks_exact_mut(4).zip(&self.src) {
+        for (frame, &sample) in out.as_chunks_mut::<4>().0.iter_mut().zip(&self.src) {
             write_stereo_sample(frame, sample);
         }
         self.src.clear();
@@ -180,7 +180,7 @@ impl StreamingStereo48kResampler {
         let first_out = self.next_out;
         let count = (max_out - first_out) as usize;
         let mut output = BytesMut::zeroed(count * 4);
-        for (i, frame) in output.chunks_exact_mut(4).enumerate() {
+        for (i, frame) in output.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let src_pos =
                 (first_out + i as u64) as f64 * f64::from(self.src_rate) / f64::from(dst_rate);
             let left_abs = src_pos.floor() as u64;

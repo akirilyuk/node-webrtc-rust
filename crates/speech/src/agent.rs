@@ -13,29 +13,30 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::config::{
-    effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous, language_id_early,
-    language_id_enabled, resolved_language_id_min_speech_ms, resolved_post_utterance_silence_ms,
-    EventDeliveryMode, NoiseSuppressionProvider, SendTextToTtsOptions, SttConfig, TtsConfig,
-    UpdateTtsConfigOptions, VadConfig, VoiceAgentConfig, VoiceSessionContext,
+    effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
+    language_id_early, language_id_enabled, resolved_language_id_min_speech_ms,
+    resolved_post_utterance_silence_ms, EventDeliveryMode, NoiseSuppressionProvider,
+    SendTextToTtsOptions, SttConfig, TtsConfig, UpdateTtsConfigOptions, VadConfig,
+    VoiceAgentConfig, VoiceSessionContext,
 };
-use crate::stt_hold::{
-    resolved_hold_max_buffer_ms, resolved_replay_max_age_ms, BeginSttHoldOptions,
-    ReleaseSttHoldOptions, SttHold,
-};
-use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::otel;
-use crate::turn_latency::TurnLatencyTracker;
 use crate::pcm::i16_samples_to_bytes;
 use crate::pipeline::{
     tts_stream_chunks_enabled, LanguageIdProvider, SttProvider, SttTranscript, TtsProgressiveSink,
     TtsProvider,
 };
 use crate::registry::VendorRegistry;
+use crate::stt_hold::{
+    resolved_hold_max_buffer_ms, resolved_replay_max_age_ms, BeginSttHoldOptions,
+    ReleaseSttHoldOptions, SttHold,
+};
 use crate::stt_pre_roll::SttPreRollBuffer;
 use crate::tts_buffer::TtsBuffer;
 use crate::tts_cache::wrap_tts_for_agent;
+use crate::turn_latency::TurnLatencyTracker;
+use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
 use crate::vad::{handle_barge_in, VadEngine, VadTransition};
 use node_webrtc_rust_denoise::Stereo48kRnnoise;
 
@@ -147,7 +148,7 @@ fn playback_failure_message(error: &SpeechError) -> String {
 
 /// Synthetic silence fed to STT before finalize — aligned with Sherpa roundtrip harness.
 fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
-    vad.min_silence_duration_ms.max(400).min(600)
+    vad.min_silence_duration_ms.clamp(400, 600)
 }
 
 /// True when most of the post–speech-end gate hold has elapsed (90%), i.e. resume is a new phrase not a digit gap.
@@ -287,6 +288,7 @@ enum HandleOutcome {
 }
 
 /// Per-session OpenTelemetry state (public for the `otel` module).
+#[derive(Default)]
 pub struct AgentOtelState {
     pub session_context: VoiceSessionContext,
     #[cfg(feature = "otel")]
@@ -295,20 +297,6 @@ pub struct AgentOtelState {
     pub stt_vendor: Option<crate::config::SttVendor>,
     #[cfg(feature = "otel")]
     pub tts_vendor: Option<crate::config::TtsVendor>,
-}
-
-impl Default for AgentOtelState {
-    fn default() -> Self {
-        Self {
-            session_context: VoiceSessionContext::default(),
-            #[cfg(feature = "otel")]
-            session_span: None,
-            #[cfg(feature = "otel")]
-            stt_vendor: None,
-            #[cfg(feature = "otel")]
-            tts_vendor: None,
-        }
-    }
 }
 
 struct TtsSynthesisJob {
@@ -608,7 +596,9 @@ impl VoiceAgent {
             .wait_ready(std::time::Duration::from_millis(wait_ms))
             .await?;
         if !ready {
-            voice_debug(format!("stt not ready after {wait_ms} ms; replaying anyway"));
+            voice_debug(format!(
+                "stt not ready after {wait_ms} ms; replaying anyway"
+            ));
             eprintln!("[speech] stt not ready after {wait_ms} ms; replaying anyway");
         }
         Ok(())
@@ -781,7 +771,11 @@ impl VoiceAgent {
                 let mut inner = self.inner.lock().await;
                 let pcm = match inner.stt_hold.as_mut() {
                     Some(hold) => hold.take_pcm(),
-                    None => return Err(SpeechError::Internal("STT hold ended during release".into())),
+                    None => {
+                        return Err(SpeechError::Internal(
+                            "STT hold ended during release".into(),
+                        ))
+                    }
                 };
                 if pcm.is_empty() {
                     let hold = inner.stt_hold.take().expect("hold present");
@@ -871,7 +865,11 @@ impl VoiceAgent {
         }
         drop(stt_guard);
         self.emit(SpeechEvent::stt_hold_ended(
-            if result.is_ok() { "released_replay" } else { "failed" },
+            if result.is_ok() {
+                "released_replay"
+            } else {
+                "failed"
+            },
             crate::stt_hold::pcm_bytes_to_ms(fed_bytes),
             dropped_ms,
         ));
@@ -895,7 +893,9 @@ impl VoiceAgent {
                     let pcm = match inner.stt_hold.as_mut() {
                         Some(hold) => hold.take_pcm(),
                         None => {
-                            return Err(SpeechError::Internal("STT hold ended during cancel".into()))
+                            return Err(SpeechError::Internal(
+                                "STT hold ended during cancel".into(),
+                            ))
                         }
                     };
                     if pcm.is_empty() {
@@ -1075,7 +1075,11 @@ impl VoiceAgent {
     /// the wall clock (a burst of audio gives the STT no time to decode). Wall time alone backs
     /// it up only when inbound PCM has stopped completely (`pcm_idle` >= the timeout).
     /// `pcm_idle` is `Duration::ZERO` when called from inside `process_inbound_pcm`.
-    fn c1_listen_expired(inner: &AgentInner, backlog_ms: u32, pcm_idle: std::time::Duration) -> bool {
+    fn c1_listen_expired(
+        inner: &AgentInner,
+        backlog_ms: u32,
+        pcm_idle: std::time::Duration,
+    ) -> bool {
         if inner.stt_listen_deadline_ms == 0 {
             return false;
         }
@@ -1695,6 +1699,7 @@ impl VoiceAgent {
         }));
     }
 
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn run_tts_synthesis_job(
         text: &str,
         requested_at: Instant,
@@ -1764,6 +1769,7 @@ impl VoiceAgent {
 
     /// Legacy path: fully synthesize, then enqueue all PCM, then drain.
     /// Enabled with `VOICE_TTS_STREAM_CHUNKS=0`.
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn run_tts_synthesis_job_buffered(
         text: &str,
         requested_at: Instant,
@@ -1877,6 +1883,7 @@ impl VoiceAgent {
 
     /// Default path: stream PCM chunks into the buffer while synthesis runs so
     /// drain can start before the full utterance is ready (`VOICE_TTS_STREAM_CHUNKS`).
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn run_tts_synthesis_job_streaming(
         text: &str,
         requested_at: Instant,
@@ -2142,6 +2149,7 @@ impl VoiceAgent {
         otel::record_tts_latency_ms(started.elapsed().as_secs_f64() * 1000.0, &tts_attrs);
     }
 
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn ensure_tts_drain_worker_shared(
         slot: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
         wake: &Arc<Notify>,
@@ -3113,7 +3121,7 @@ impl VoiceAgent {
             };
             inner.lid_pcm_buffer.clear();
             inner.lid_voiced_ms = 0;
-        inner.lid_pending_silence_ms = 0;
+            inner.lid_pending_silence_ms = 0;
             let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
             Some((
                 pcm,
@@ -3204,7 +3212,7 @@ impl VoiceAgent {
 
     async fn maybe_spawn_deferred_lid_after_tts(
         weak_self: &Weak<VoiceAgent>,
-        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
+        _tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
         inner: &Arc<Mutex<AgentInner>>,
     ) {
         let should_run = {
@@ -3266,7 +3274,7 @@ impl VoiceAgent {
     pub async fn process_inbound_pcm(&self, pcm: Bytes, duration_ms: u32) -> SpeechResult<()> {
         let _in_flight = InboundInFlight::enter(self);
         let call = INBOUND_PCM_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
-        if call == 1 || call % 50 == 0 {
+        if call == 1 || call.is_multiple_of(50) {
             voice_debug(format!(
                 "process_inbound_pcm call={call} bytes={} duration_ms={duration_ms}",
                 pcm.len()
@@ -3448,11 +3456,8 @@ impl VoiceAgent {
                 {
                     if Self::c1_hold_for_stt_open(&mut inner, open_pending) {
                         // Not expired: the STT stream open is still being retried.
-                    } else if Self::c1_listen_expired(
-                        &inner,
-                        backlog_ms,
-                        std::time::Duration::ZERO,
-                    ) {
+                    } else if Self::c1_listen_expired(&inner, backlog_ms, std::time::Duration::ZERO)
+                    {
                         c1 = true;
                     } else {
                         Self::maybe_log_c1_backlog_deferred(&mut inner, backlog_ms);
@@ -3565,8 +3570,9 @@ impl VoiceAgent {
                 };
                 let dropped = dropped_pending + dropped_in_provider;
                 if dropped > 0 {
-                    let msg =
-                        format!("[voice] dropped {dropped} late STT result(s) of the previous utterance");
+                    let msg = format!(
+                        "[voice] dropped {dropped} late STT result(s) of the previous utterance"
+                    );
                     eprintln!("{msg}");
                     voice_debug(msg);
                 }
@@ -3697,8 +3703,6 @@ impl VoiceAgent {
                 } else {
                     vad_speaking || inner.stt_gate_hold_ms > 0 || pending_gate || utterance_closing
                 }
-            } else if inner.stt_stream_open {
-                true
             } else {
                 true
             };
@@ -3721,7 +3725,7 @@ impl VoiceAgent {
         let gate_closed_skip_stt = gate_stt && !stt_poll_open && !should_finalize_utterance;
         let push_to_stt_directly = !gate_stt || stt_audio_open;
 
-        if call == 1 || call % 50 == 0 {
+        if call == 1 || call.is_multiple_of(50) {
             voice_debug(format!(
                 "inbound PCM frame={call} bytes={} duration_ms={duration_ms}",
                 pcm.len()
@@ -3740,7 +3744,7 @@ impl VoiceAgent {
         if !gate_stt || stt_poll_open {
             self.poll_stt_transcripts().await?;
         } else if gate_closed_skip_stt {
-            if call == 1 || call % 50 == 0 {
+            if call == 1 || call.is_multiple_of(50) {
                 voice_debug(format!(
                     "process_inbound_pcm call={call} skipped: gate_stt closed (STT poll deferred; pre-roll buffered)"
                 ));
@@ -3861,9 +3865,7 @@ impl VoiceAgent {
                 hold.push(mono_bytes.as_ref());
                 return Ok(());
             }
-            inner
-                .utterance_replay_buffer
-                .push(mono_bytes.as_ref());
+            inner.utterance_replay_buffer.push(mono_bytes.as_ref());
         }
         let mut stt = self.stt.lock().await;
         if let Some(stt) = stt.as_mut() {
@@ -3981,7 +3983,10 @@ impl VoiceAgent {
     }
 
     /// Emit the events for one STT transcript (shared by queued and freshly polled transcripts).
-    async fn handle_stt_transcript(&self, transcript: SttTranscript) -> SpeechResult<HandleOutcome> {
+    async fn handle_stt_transcript(
+        &self,
+        transcript: SttTranscript,
+    ) -> SpeechResult<HandleOutcome> {
         match transcript {
             SttTranscript::Partial(text) => {
                 voice_debug(format!("STT partial: {text}"));
@@ -4073,7 +4078,7 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
         weak_self: &Weak<VoiceAgent>,
-        tts_synthesis_busy: &Arc<AtomicBool>,
+        _tts_synthesis_busy: &Arc<AtomicBool>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
         let writer = {
@@ -4194,6 +4199,7 @@ impl VoiceAgent {
     }
 
     /// Write paced 20 ms frames. Writer failures propagate; barge/stop returns [`TtsDrainWrite::Stopped`].
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn write_paced_tts_frames(
         writer: &PcmWriter,
         tts_buffer: &TtsBuffer,

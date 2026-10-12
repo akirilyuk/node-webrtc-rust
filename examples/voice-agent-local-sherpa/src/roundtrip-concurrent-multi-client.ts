@@ -42,8 +42,6 @@ import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 const DEFAULT_TIMEOUT_MS = 90_000
 const DEFAULT_MAX_ENQUEUE_MS = 200
 const DEFAULT_WARMUP_S = 0.6
-const MAX_AGENT_START_SPREAD_MS = 500
-const MAX_FINAL_SPREAD_MS = 500
 
 export function resolveConcurrentLegs(
   legCount = Number(process.env.SHERPA_CONCURRENT_LEGS ?? 3),
@@ -158,14 +156,15 @@ async function main(): Promise<void> {
   const verbose = process.env.SHERPA_COUNTING_VERBOSE === '1'
   const ttsPool = Number(process.env.SHERPA_POOL_MAX_CONCURRENT_TTS ?? 2)
   const observeOnly = process.env.SHERPA_CONCURRENT_OBSERVE === '1' || legDefs.length > ttsPool
-  const maxAgentStartSpreadMs = Number(
-    process.env.SHERPA_CONCURRENT_MAX_AGENT_START_SPREAD_MS ??
-      (observeOnly ? 60_000 : MAX_AGENT_START_SPREAD_MS),
-  )
-  const maxFinalSpreadMs = Number(
-    process.env.SHERPA_CONCURRENT_MAX_FINAL_SPREAD_MS ??
-      (observeOnly ? 120_000 : MAX_FINAL_SPREAD_MS),
-  )
+  // Concurrency is judged relative to one leg's own latency (see evaluateRelativeSpread), so a
+  // slow or loaded host cannot fail it. The env vars remain as absolute overrides; observe mode
+  // (more legs than TTS slots, so queueing is expected) uses wide absolute limits.
+  const envMs = (name: string): number | undefined =>
+    process.env[name] === undefined ? undefined : Number(process.env[name])
+  const maxAgentStartSpreadMs =
+    envMs('SHERPA_CONCURRENT_MAX_AGENT_START_SPREAD_MS') ?? (observeOnly ? 60_000 : undefined)
+  const maxFinalSpreadMs =
+    envMs('SHERPA_CONCURRENT_MAX_FINAL_SPREAD_MS') ?? (observeOnly ? 120_000 : undefined)
 
   console.log(`=== Sherpa concurrent multi-client roundtrip (${legDefs.length} legs) ===`)
   console.log(`Pipeline: ${label}`)
@@ -179,7 +178,7 @@ async function main(): Promise<void> {
   )
   if (observeOnly) {
     console.log(
-      `Observe mode: timing spreads logged (max agent_start=${maxAgentStartSpreadMs}ms final=${maxFinalSpreadMs}ms); enqueue + STT keywords still required`,
+      `Observe mode: timing spreads logged (max agent_start=${maxAgentStartSpreadMs ?? 'relative'}ms final=${maxFinalSpreadMs ?? 'relative'}ms); enqueue + STT keywords still required`,
     )
   }
   console.log('')
@@ -237,6 +236,7 @@ async function main(): Promise<void> {
     ),
     enqueueMs,
     maxEnqueueMs,
+    startedAtMs: t0,
     maxAgentStartSpreadMs,
     maxFinalSpreadMs,
   })

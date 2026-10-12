@@ -135,8 +135,10 @@ describe('tts_phrase_cache_hit speech events', () => {
   })
 
   test('speechEventToControlMessage forwards chars', () => {
-    expect(
-      speechEventToControlMessage({ type: 'tts_phrase_cache_hit', chars: 12 }),
-    ).toMatchObject({ type: 'speech_event', event: 'tts_phrase_cache_hit', chars: 12 })
+    expect(speechEventToControlMessage({ type: 'tts_phrase_cache_hit', chars: 12 })).toMatchObject({
+      type: 'speech_event',
+      event: 'tts_phrase_cache_hit',
+      chars: 12,
+    })
   })
 })

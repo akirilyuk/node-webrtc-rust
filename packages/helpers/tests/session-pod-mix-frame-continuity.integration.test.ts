@@ -21,11 +21,6 @@ import {
   type SequenceAnalysis,
 } from './support/frame-marker.js'
 
-// The repo-wide default Opus encode bitrate (400 kbps) makes one 60 ms packet ~3000 bytes, over
-// the RTP MTU, so the receiving peer drops it. Real clients send ~32-64 kbps. The encoder reads
-// this once per process, before the first LocalAudioTrack below is created.
-process.env.WEBRTC_OPUS_BITRATE_BPS = '96000'
-
 // Same-process loopback: do not set WEBRTC_NAT_1TO1_IPS (breaks ICE in CI).
 //
 // End-to-end audio continuity through the production path: SDK speaker client -> real Opus RTP

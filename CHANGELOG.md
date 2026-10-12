@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- **Core / Opus** — The encode bitrate is capped per packet duration so a payload stays at or below 1000 bytes (inside the 1200-byte RTP MTU). 20 ms packets keep the configured bitrate (default 400 kbps); 40 ms and 60 ms packets are capped at 200 kbps and about 133 kbps. Before, a 60 ms packet at the default was about 3 kB and receivers dropped it.
+
 ## [0.9.43] - 2026-10-11
 
 ### Added

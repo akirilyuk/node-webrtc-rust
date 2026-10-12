@@ -7,6 +7,7 @@ import { autoNegotiate, SignalingClient, SignalingServer } from '@node-webrtc-ru
 import { SessionPod } from '../src/session-pod.js'
 import type { VoiceAgentSessionHost } from '../src/voice-agent-session-host.js'
 import { VoiceSessionBudget, resetProcessVoiceSessionBudget } from '../src/voice-session-budget.js'
+import { connectAllOrCloseAll } from './connect-all-or-close.js'
 import {
   defaultIceConfig,
   delay,
@@ -393,10 +394,13 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
     caseKey: string = pattern,
   ): Promise<{ seq: SequenceAnalysis; stats: MixStats | null }> {
     const ids = clientIds(caseKey)
-    const [speaker, listener] = await Promise.all([
-      connectClientToSession(wsUrl, SPEAKER_SESSION, ids.speaker),
-      connectClientToSession(wsUrl, LISTENER_SESSION, ids.listener),
-    ])
+    const [speaker, listener] = await connectAllOrCloseAll(
+      [
+        () => connectClientToSession(wsUrl, SPEAKER_SESSION, ids.speaker),
+        () => connectClientToSession(wsUrl, LISTENER_SESSION, ids.listener),
+      ],
+      closeClient,
+    )
     try {
       // The mix graph is shared by both sessions. A non-positional group with both clients:
       // each participant hears the others (mix-minus), so the listener's mix is only the
@@ -459,10 +463,13 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
     pauseMs: number,
   ): Promise<Array<{ seq: SequenceAnalysis; stats: MixStats | null; firstFrameMs: number }>> {
     const ids = clientIds(caseKey)
-    const [speaker, listener] = await Promise.all([
-      connectClientToSession(wsUrl, SPEAKER_SESSION, ids.speaker),
-      connectClientToSession(wsUrl, LISTENER_SESSION, ids.listener),
-    ])
+    const [speaker, listener] = await connectAllOrCloseAll(
+      [
+        () => connectClientToSession(wsUrl, SPEAKER_SESSION, ids.speaker),
+        () => connectClientToSession(wsUrl, LISTENER_SESSION, ids.listener),
+      ],
+      closeClient,
+    )
     try {
       const host = getVoiceHostForSession(pod, LISTENER_SESSION)
       expect(host).toBeDefined()

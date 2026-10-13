@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.47] - 2026-10-13
+
 ### Fixed
 
 - **speech** — `stt_stream_end` carries `reason` (`listen_timeout` | `finalize_timeout` | `pcm_stall` | `end_of_utterance` | `vendor_final`); an utterance with no transcript now ends in `user_stt_not_found` instead of no event / an empty final.

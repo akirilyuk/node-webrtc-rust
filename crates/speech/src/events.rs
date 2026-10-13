@@ -92,6 +92,7 @@ pub struct SpeechEvent {
     /// PCM duration (ms) dropped by the buffer bound or `first_utterance` on `stt_hold_ended`.
     pub dropped_ms: Option<u32>,
     /// `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio` | `undetermined`.
+    /// `stt_stream_end`: `listen_timeout` | `finalize_timeout` | `pcm_stall` | `end_of_utterance` | `vendor_final`.
     pub reason: Option<String>,
     /// `language_id_skipped`: buffered user speech (ms) at the decision point.
     pub speech_ms: Option<u32>,
@@ -265,6 +266,15 @@ impl SpeechEvent {
         Self::base(SpeechEventKind::SttStreamEnd)
     }
 
+    /// `stt_stream_end` with the reason the STT stream closed: `listen_timeout` (no partial in
+    /// time), `finalize_timeout` (end-of-turn finalize timed out), `pcm_stall` (inbound PCM
+    /// stalled), `end_of_utterance` (gate finalize at the end of the turn) or `vendor_final`.
+    pub fn stt_stream_end_with_reason(reason: impl Into<String>) -> Self {
+        let mut ev = Self::base(SpeechEventKind::SttStreamEnd);
+        ev.reason = Some(reason.into());
+        ev
+    }
+
     pub fn user_stt_start() -> Self {
         Self::base(SpeechEventKind::UserSttStart)
     }
@@ -390,6 +400,14 @@ mod user_language_event_tests {
         assert_eq!(event.speech_ms, Some(120));
         assert_eq!(event.utterance_id.as_deref(), Some("utt-1"));
         assert!(event.text.is_none());
+    }
+
+    #[test]
+    fn stt_stream_end_with_reason_sets_reason() {
+        let event = SpeechEvent::stt_stream_end_with_reason("listen_timeout");
+        assert_eq!(event.kind, SpeechEventKind::SttStreamEnd);
+        assert_eq!(event.reason.as_deref(), Some("listen_timeout"));
+        assert!(SpeechEvent::stt_stream_end().reason.is_none());
     }
 
     #[test]

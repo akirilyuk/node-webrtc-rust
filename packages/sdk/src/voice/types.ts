@@ -358,6 +358,8 @@ export interface SpeechEvent {
   /**
    * `language_id_skipped`: why no language decision will be made for this utterance.
    * `tts_wait`: the last refusal (gRPC code and message). `agent_speak_failed`: why the reply failed.
+   * `stt_stream_end`: why the STT stream closed, one of `listen_timeout` | `finalize_timeout` |
+   * `pcm_stall` | `end_of_utterance` | `vendor_final`.
    */
   reason?: LanguageIdSkipReason | (string & {})
   /** `language_id_skipped`: buffered user speech (ms) at the decision point. */

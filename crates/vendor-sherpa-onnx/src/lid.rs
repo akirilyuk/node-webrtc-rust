@@ -11,6 +11,7 @@ use node_webrtc_rust_speech::pipeline::{LanguageIdProvider, LanguageIdResult};
 use tokio::sync::oneshot;
 
 use crate::loader::voice_debug;
+use crate::native_calls::NativeCallGuard;
 use crate::pool::{SharedLidRecognizer, SherpaModelPool};
 
 pub(crate) const SAMPLE_RATE: i32 = 16_000;
@@ -102,6 +103,7 @@ impl LanguageIdProvider for SherpaLanguageId {
 
 impl SharedLidRecognizer {
     pub(crate) fn identify_samples(&self, samples: &[f32]) -> SpeechResult<Option<String>> {
+        let _native = NativeCallGuard::enter();
         let lock_started = Instant::now();
         let guard = self
             .identifier

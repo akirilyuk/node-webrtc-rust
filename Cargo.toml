@@ -24,10 +24,11 @@ members = [
     "crates/voice-catalog",
     "packages/bindings",
 ]
-exclude = ["third_party/dtls"]
+exclude = ["third_party/dtls", "third_party/webrtc-ice"]
 
 [patch.crates-io]
 dtls = { path = "third_party/dtls" }
+webrtc-ice = { path = "third_party/webrtc-ice" }
 
 [workspace.package]
 version = "0.1.0"

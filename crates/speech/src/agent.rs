@@ -2582,9 +2582,8 @@ impl VoiceAgent {
                 self.emit_user_speaking_end_after_lid_gate().await;
             }
         }
-        if session_open {
-            self.clear_utterance_id_after_final().await;
-        }
+        // The utterance id stays set: while VAD still hears speech, `user_speaking_end` is
+        // emitted later and must carry it. New speech resets it.
         Ok(())
     }
 

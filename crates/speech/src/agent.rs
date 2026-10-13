@@ -184,6 +184,8 @@ struct AgentInner {
     stt_endpoint_closing_started: bool,
     /// Set when poll_transcript already emitted user_speech_final for this utterance.
     stt_final_emitted_this_utterance: bool,
+    /// `user_stt_not_found` already emitted for this utterance (it is emitted at most once).
+    stt_not_found_emitted_this_utterance: bool,
     /// `user_speaking_end` paired with the next `user_speech_final` for this utterance.
     stt_speaking_end_emitted_this_utterance: bool,
     /// `user_speaking_start` already emitted for the current STT utterance.
@@ -441,6 +443,7 @@ impl VoiceAgent {
                 stt_finalize_pending: false,
                 stt_endpoint_closing_started: false,
                 stt_final_emitted_this_utterance: false,
+                stt_not_found_emitted_this_utterance: false,
                 stt_speaking_end_emitted_this_utterance: false,
                 stt_speaking_start_emitted_this_utterance: false,
                 agent_speaking: false,
@@ -1026,6 +1029,7 @@ impl VoiceAgent {
         inner.stt_finalize_pending = false;
         inner.stt_endpoint_closing_started = false;
         inner.stt_final_emitted_this_utterance = false;
+        inner.stt_not_found_emitted_this_utterance = false;
         inner.stt_speaking_end_emitted_this_utterance = false;
         inner.stt_speaking_start_emitted_this_utterance = false;
         inner.stt_stream_open = false;
@@ -1297,7 +1301,7 @@ impl VoiceAgent {
         if should_force {
             voice_debug("C2 wall-clock timeout (inbound PCM stalled after end-of-turn grace)");
             finalize_trace("wallclock_c2", &*self.inner.lock().await);
-            self.force_close_utterance().await?;
+            self.force_close_utterance("pcm_stall").await?;
         }
         Ok(())
     }
@@ -2539,6 +2543,9 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             let stream_was_open = inner.stt_stream_open;
             let session_open = inner.user_stt_session_open;
+            if session_open {
+                inner.stt_not_found_emitted_this_utterance = true;
+            }
             let vad_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
             inner.stt_stream_open = false;
             inner.user_stt_session_open = false;
@@ -2550,7 +2557,7 @@ impl VoiceAgent {
         };
         if stream_was_open {
             voice_debug("emit stt_stream_end (C1: no STT partial)");
-            self.emit(SpeechEvent::stt_stream_end());
+            self.emit(SpeechEvent::stt_stream_end_with_reason("listen_timeout"));
         }
         if session_open {
             voice_debug("emit user_stt_not_found + user_stt_end (C1)");
@@ -2574,7 +2581,7 @@ impl VoiceAgent {
         Ok(())
     }
 
-    async fn force_close_utterance(&self) -> SpeechResult<()> {
+    async fn force_close_utterance(&self, close_reason: &'static str) -> SpeechResult<()> {
         voice_debug("force_close_utterance (C2 timeout or stall)");
         let (last_partial, held) = {
             let inner = self.inner.lock().await;
@@ -2615,8 +2622,23 @@ impl VoiceAgent {
             let already_final = inner.stt_final_emitted_this_utterance;
             (stream, session, already_final)
         };
+        // An utterance with no transcript ends in `user_stt_not_found`, never an empty final.
+        let no_transcript = last_partial
+            .as_deref()
+            .map(|text| text.trim().is_empty())
+            .unwrap_or(true);
+        let emit_not_found = !already_final && !held && no_transcript && {
+            let mut inner = self.inner.lock().await;
+            let first = !inner.stt_not_found_emitted_this_utterance;
+            inner.stt_not_found_emitted_this_utterance = true;
+            first
+        };
         if emit_stream_end {
-            self.emit(SpeechEvent::stt_stream_end());
+            self.emit(SpeechEvent::stt_stream_end_with_reason(close_reason));
+        }
+        if emit_not_found {
+            voice_debug("emit user_stt_not_found (forced utterance close, no transcript)");
+            self.emit(SpeechEvent::user_stt_not_found());
         }
         if emit_stt_end {
             self.emit(SpeechEvent::user_stt_end());
@@ -2640,6 +2662,9 @@ impl VoiceAgent {
             }
             if held {
                 // Old-model partial text must not surface while the STT is held.
+                return Ok(());
+            }
+            if no_transcript {
                 return Ok(());
             }
             voice_debug(format!(
@@ -2773,6 +2798,7 @@ impl VoiceAgent {
         inner.stt_finalize_pending = false;
         inner.stt_endpoint_closing_started = false;
         inner.stt_final_emitted_this_utterance = false;
+        inner.stt_not_found_emitted_this_utterance = false;
         inner.stt_speaking_end_emitted_this_utterance = false;
         inner.stt_speaking_start_emitted_this_utterance = false;
         inner.stt_stream_open = false;
@@ -3490,7 +3516,7 @@ impl VoiceAgent {
         }
         if c2_expired {
             finalize_trace("media_c2", &*self.inner.lock().await);
-            self.force_close_utterance().await?;
+            self.force_close_utterance("finalize_timeout").await?;
         }
 
         {
@@ -3875,7 +3901,7 @@ impl VoiceAgent {
             ));
             self.push_stt_endpoint_tail(tail_ms).await?;
             self.finalize_stt_utterance().await?;
-            let (emit_stream_end, emit_stt_end, need_forced_final, forced_text) = {
+            let (emit_stream_end, emit_stt_end, need_forced_final, forced_text, emit_not_found) = {
                 let mut inner = self.inner.lock().await;
                 let stream = inner.stt_stream_open;
                 let session = inner.user_stt_session_open;
@@ -3888,14 +3914,26 @@ impl VoiceAgent {
                 Self::clear_stt_listen_timer(&mut inner);
                 Self::clear_utterance_finalize_timer(&mut inner);
                 inner.vad_triggered_this_utterance = false;
-                let need_forced = !inner.stt_final_emitted_this_utterance
-                    && inner.partials_emitted_this_utterance
-                    && inner.stt_hold.is_none();
                 let forced_text = inner.last_partial_text.clone().unwrap_or_default();
-                (stream, session, need_forced, forced_text)
+                let has_text = !forced_text.trim().is_empty();
+                let no_final = !inner.stt_final_emitted_this_utterance && inner.stt_hold.is_none();
+                let need_forced = no_final && inner.partials_emitted_this_utterance && has_text;
+                // No vendor final and no partial text: the utterance ends in `user_stt_not_found`.
+                let not_found = no_final
+                    && !has_text
+                    && (stream || session)
+                    && !inner.stt_not_found_emitted_this_utterance;
+                if not_found {
+                    inner.stt_not_found_emitted_this_utterance = true;
+                }
+                (stream, session, need_forced, forced_text, not_found)
             };
             if emit_stream_end {
-                self.emit(SpeechEvent::stt_stream_end());
+                self.emit(SpeechEvent::stt_stream_end_with_reason("end_of_utterance"));
+            }
+            if emit_not_found {
+                voice_debug("emit user_stt_not_found (gate finalize, no transcript)");
+                self.emit(SpeechEvent::user_stt_not_found());
             }
             if emit_stt_end {
                 self.emit(SpeechEvent::user_stt_end());
@@ -4154,7 +4192,7 @@ impl VoiceAgent {
                     (emit_end, close_stream)
                 };
                 if close_stream {
-                    self.emit(SpeechEvent::stt_stream_end());
+                    self.emit(SpeechEvent::stt_stream_end_with_reason("vendor_final"));
                     self.emit(SpeechEvent::user_stt_end());
                 }
                 if emit_speaking_end {

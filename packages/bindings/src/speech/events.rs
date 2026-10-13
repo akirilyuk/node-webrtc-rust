@@ -116,6 +116,13 @@ mod speech_event_to_js_tests {
     }
 
     #[test]
+    fn stt_stream_end_maps_reason() {
+        let js = speech_event_to_js(SpeechEvent::stt_stream_end_with_reason("end_of_utterance"));
+        assert_eq!(js.event_type, JsSpeechEventType::SttStreamEnd);
+        assert_eq!(js.reason.as_deref(), Some("end_of_utterance"));
+    }
+
+    #[test]
     fn tts_wait_and_speak_failed_map_fields() {
         let js = speech_event_to_js(SpeechEvent::tts_wait(1500, 7, "Unavailable loading"));
         assert_eq!(js.event_type, JsSpeechEventType::TtsWait);

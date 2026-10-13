@@ -16,6 +16,7 @@ use crate::lid_model_paths::{
     lid_paths_to_strings, resolve_lid_model_dir, resolve_lid_model_paths,
 };
 use crate::model_paths::resolve_model_paths;
+use crate::native_calls::NativeCallGuard;
 use crate::tts_model_paths::resolve_tts_model_paths;
 
 pub(crate) fn stt_num_threads() -> i32 {
@@ -81,6 +82,7 @@ pub(crate) fn voice_debug(message: impl AsRef<str>) {
 }
 
 pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecognizer> {
+    let _native = NativeCallGuard::enter();
     let paths = resolve_model_paths(config)?;
 
     let mut recognizer_config = OnlineRecognizerConfig::default();
@@ -115,6 +117,7 @@ pub fn create_online_recognizer(config: &SttConfig) -> SpeechResult<OnlineRecogn
 }
 
 pub fn create_offline_tts(config: &TtsConfig) -> SpeechResult<OfflineTts> {
+    let _native = NativeCallGuard::enter();
     let paths = resolve_tts_model_paths(config)?;
 
     let model_config = OfflineTtsModelConfig {
@@ -168,6 +171,7 @@ pub fn create_offline_tts(config: &TtsConfig) -> SpeechResult<OfflineTts> {
 pub fn create_spoken_language_identification(
     config: &LanguageIdConfig,
 ) -> SpeechResult<SpokenLanguageIdentification> {
+    let _native = NativeCallGuard::enter();
     let paths = resolve_lid_model_paths(config)?;
     let (encoder, decoder) = lid_paths_to_strings(&paths)?;
 

@@ -17,6 +17,10 @@ use crate::loader::{
     voice_debug,
 };
 use crate::model_paths::resolve_stt_model_dir;
+use crate::native_calls::{
+    native_calls_in_flight, wait_for_native_calls_drained, NATIVE_EXIT_DRAIN_BOUND,
+    NATIVE_EXIT_DRAIN_POLL,
+};
 use crate::once_map::OnceMap;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
 use crate::tts_slots::TtsSlots;
@@ -27,26 +31,36 @@ extern "C" {
     fn atexit(func: extern "C" fn()) -> i32;
 }
 
-/// Join TTS and LID preload threads before ONNX static destructors run.
+/// Before ONNX static destructors run: join TTS and LID preload threads, then wait (bounded)
+/// for native calls still running on blocking threads.
 ///
 /// `OnceLock` statics are not dropped on process exit. A detached preload
 /// thread still inside `create_offline_tts` then races Sherpa teardown
-/// (SIGSEGV after otherwise-green ignored TTS tests). `atexit` is LIFO, and
-/// this handler is registered after the first engine exists, so it runs
-/// before ONNX's own exit handlers.
+/// (SIGSEGV after otherwise-green ignored TTS tests). A blocking thread still inside
+/// `generate_with_config` (or STT decode, LID compute) hits a destroyed runtime instead:
+/// the C++ exception unwinds into tokio and Rust aborts ("Rust cannot catch foreign
+/// exceptions", exit 134). `atexit` is LIFO, and this handler is registered after the first
+/// engine exists, so it runs before ONNX's own exit handlers.
 extern "C" fn join_tts_preloads_at_exit() {
-    let Some(pool) = GLOBAL_POOL.get() else {
-        return;
-    };
-    pool.join_tts_preloads();
-    pool.join_lid_preloads();
+    if let Some(pool) = GLOBAL_POOL.get() {
+        pool.join_tts_preloads();
+        pool.join_lid_preloads();
+    }
+    if !wait_for_native_calls_drained(NATIVE_EXIT_DRAIN_BOUND, NATIVE_EXIT_DRAIN_POLL) {
+        eprintln!(
+            "sherpa: {} native calls still running at exit after {} ms",
+            native_calls_in_flight(),
+            NATIVE_EXIT_DRAIN_BOUND.as_millis()
+        );
+    }
 }
 
+/// Register the exit handler once. Call after an engine (TTS, STT or LID) exists.
 fn register_tts_preload_exit_join() {
     static REGISTERED: Once = Once::new();
     REGISTERED.call_once(|| {
-        // SAFETY: process-global C `atexit`. The handler only joins threads
-        // this pool already spawned.
+        // SAFETY: process-global C `atexit`. The handler only joins threads this pool
+        // already spawned and polls an atomic counter.
         let rc = unsafe { atexit(join_tts_preloads_at_exit) };
         if rc != 0 {
             eprintln!("sherpa tts preload exit join registration failed");
@@ -316,6 +330,7 @@ impl SherpaModelPool {
         let (shared, created_now) = self.stt.get_or_load(key, || {
             create_online_recognizer(config).map(SharedSttRecognizer::new)
         })?;
+        register_tts_preload_exit_join();
         if created_now {
             self.publish_entry_gauge();
         }
@@ -331,6 +346,7 @@ impl SherpaModelPool {
         let (shared, created_now) = self.lid.get_or_load(key, || {
             create_spoken_language_identification(config).map(SharedLidRecognizer::new)
         })?;
+        register_tts_preload_exit_join();
         if created_now {
             self.publish_entry_gauge();
         }
@@ -412,6 +428,7 @@ impl SherpaModelPool {
         let (pool, created_now) = self.tts.get_or_load(key, || {
             TtsEnginePool::new(config, Arc::clone(&self.tts_slots))
         })?;
+        register_tts_preload_exit_join();
         if created_now {
             self.publish_entry_gauge();
         }

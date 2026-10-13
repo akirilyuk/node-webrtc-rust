@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 
 use crate::audio::{pad_stereo_pcm_to_20ms, slice_for_sink, StreamingStereo48kResampler};
 use crate::loader::voice_debug;
+use crate::native_calls::NativeCallGuard;
 use crate::pool::{SherpaModelPool, TtsEnginePool};
 use crate::sentences::split_for_first_audio;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
@@ -336,6 +337,7 @@ fn synthesize_sentence(
         });
     }
 
+    let _native = NativeCallGuard::enter();
     let shared = engine_pool.acquire();
     let _active = shared.track_session();
     let gen_config = GenerationConfig {

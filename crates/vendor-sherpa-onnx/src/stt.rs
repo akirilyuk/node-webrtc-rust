@@ -13,6 +13,7 @@ use sherpa_onnx::OnlineStream;
 use tokio::sync::Mutex;
 
 use crate::loader::voice_debug;
+use crate::native_calls::NativeCallGuard;
 use crate::pool::{ActiveSessionGuard, SharedSttRecognizer, SherpaModelPool};
 
 pub(crate) const SAMPLE_RATE: i32 = 16_000;
@@ -181,6 +182,7 @@ impl SttProvider for SherpaStt {
         let unread = Arc::clone(&self.unread);
 
         tokio::task::spawn_blocking(move || -> SpeechResult<()> {
+            let _native = NativeCallGuard::enter();
             let session = SherpaStt::open_session(&config, &pool, unread)?;
             let mut guard = state.blocking_lock();
             guard.running = true;
@@ -199,6 +201,7 @@ impl SttProvider for SherpaStt {
         self.accepted_ms.store(0, Ordering::Relaxed);
 
         tokio::task::spawn_blocking(move || {
+            let _native = NativeCallGuard::enter();
             let mut guard = state.blocking_lock();
             guard.running = false;
             unread.store(false, Ordering::Release);
@@ -253,6 +256,7 @@ impl SttProvider for SherpaStt {
             .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
 
         tokio::task::spawn_blocking(move || -> SpeechResult<()> {
+            let _native = NativeCallGuard::enter();
             let mut guard = state.blocking_lock();
             if !guard.running {
                 return Ok(());
@@ -292,6 +296,7 @@ impl SttProvider for SherpaStt {
             .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
 
         tokio::task::spawn_blocking(move || -> SpeechResult<Option<SttTranscript>> {
+            let _native = NativeCallGuard::enter();
             SHERPA_POLL_BLOCKING_HOPS.fetch_add(1, Ordering::SeqCst);
             let mut guard = state.blocking_lock();
             if !guard.running {
@@ -335,6 +340,7 @@ impl SttProvider for SherpaStt {
             .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
 
         tokio::task::spawn_blocking(move || -> SpeechResult<()> {
+            let _native = NativeCallGuard::enter();
             let mut guard = state.blocking_lock();
             if !guard.running {
                 return Ok(());
@@ -398,6 +404,7 @@ impl SttProvider for SherpaStt {
             .map_err(|_| SpeechError::Internal("sherpa decode semaphore closed".into()))?;
 
         let ready = tokio::task::spawn_blocking(move || -> SpeechResult<Vec<SttTranscript>> {
+            let _native = NativeCallGuard::enter();
             let mut ready = Vec::new();
             let mut guard = state.blocking_lock();
             if !guard.running {

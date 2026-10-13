@@ -8,6 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.46] - 2026-10-13
+
+### Fixed
+
+- **core / ICE** — One wedged UDP socket could stop ICE for the whole peer. webrtc-ice 0.17.1 runs a single 200 ms connectivity-check loop per agent and awaited every STUN write with no bound, so a host candidate whose socket stopped reporting writable (seen on macOS on one of the host's own IPv6 addresses) froze checks and nomination for every pair. The peer stayed in `checking`, or ICE connected while DTLS never started. `webrtc-ice` is now vendored under `third_party/webrtc-ice` with each STUN write on a UDP candidate bounded at 100 ms; a slower write counts as a lost datagram and STUN retransmits. TCP candidate writes are unchanged. Local macOS stress: about 1 stall per 200–800 loopback pairs before, 5 in 3,000 after.
+
+### CI and tests
+
+- **test** — the vendored webrtc-ice suite runs in PR CI ("cargo vendored webrtc-ice"), including a conn whose writes never complete; an ignored `connect_stall_stress` harness for loopback offerer/answerer pairs.
+
 ## [0.9.45] - 2026-10-13
 
 ### Fixed

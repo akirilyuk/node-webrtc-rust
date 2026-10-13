@@ -1,0 +1,7 @@
+# Vendored `webrtc-ice` 0.17.1
+
+- Upstream: https://github.com/webrtc-rs/webrtc, crate `webrtc-ice` 0.17.1 (as published on crates.io).
+- Why vendored: each ICE agent runs one connectivity-check loop (every 200 ms) that awaits every STUN write with no bound. When one local UDP socket stops reporting writable, that write never finishes and the loop stops for good: no more checks, and the controlling agent never nominates. The peer stays in `checking`, or its remote reaches "ICE connected" while DTLS never starts, and nothing times out. Seen on macOS, where host-candidate sockets on the machine's own IPv6 addresses wedged in about 1 of 200-800 concurrent loopback pairs.
+- Change: `AgentInternal::send_stun` bounds each STUN write on a UDP candidate by `STUN_SEND_TIMEOUT` (100 ms, `src/agent/agent_config.rs`). A write that does not finish in time is dropped like a lost datagram; STUN retransmits. TCP candidates are not bounded (cancelling a framed write would corrupt the stream). Everything else is byte-identical to the published crate.
+- Guard: `src/agent/agent_stun_send_test.rs` (a conn whose writes never complete; both tests fail without the bound). Run in CI by `scripts/ci/run-pr-integration.sh` ("cargo vendored webrtc-ice").
+- Upstream: same code on the `v0.17.x` branch; master (sans-IO `rtc-ice`) is a rewrite. Drop the vendored copy and the `[patch.crates-io]` entry once a 0.17.x release carries a fix.

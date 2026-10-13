@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Rust format + lint gate on the toolchain pinned in rust-toolchain.toml.
-# Vendored third_party/dtls is not a workspace member and is not linted here.
+# Vendored third_party/dtls and third_party/webrtc-ice are not workspace members and are not linted here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

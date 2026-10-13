@@ -360,8 +360,9 @@ export interface SpeechEvent {
    * `tts_wait`: the last refusal (gRPC code and message). `agent_speak_failed`: why the reply failed.
    * `stt_stream_end`: why the STT stream closed, one of `listen_timeout` | `finalize_timeout` |
    * `pcm_stall` | `end_of_utterance` | `vendor_final`.
+   * `user_stt_not_found`: why the utterance ended with no transcript ({@link SttNotFoundReason}).
    */
-  reason?: LanguageIdSkipReason | (string & {})
+  reason?: LanguageIdSkipReason | SttNotFoundReason | (string & {})
   /** `language_id_skipped`: buffered user speech (ms) at the decision point. */
   speechMs?: number
   /**
@@ -389,6 +390,12 @@ export type LanguageIdTiming = 'end_of_utterance' | 'early' | 'continuous'
 
 /** `reason` on `language_id_skipped`. */
 export type LanguageIdSkipReason = 'too_short' | 'deferred_tts' | 'no_audio' | 'undetermined'
+
+/**
+ * `reason` on `user_stt_not_found`: `no_partial` (C1 timeout), `no_transcript` (the stream closed
+ * with no partial text and no vendor final), `empty_final` (the final text was empty).
+ */
+export type SttNotFoundReason = 'no_partial' | 'no_transcript' | 'empty_final'
 
 /** What {@link VoiceAgent.beginSttHold} keeps. */
 export type SttHoldMode = 'buffer_replay' | 'first_utterance'

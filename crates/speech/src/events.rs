@@ -18,7 +18,7 @@
 //! | `VadTriggered` | VAD `SpeechStart` when `vad.enabled` — opens STT listen for this utterance |
 //! | `SttStreamStart` / `SttStreamEnd` | STT vendor PCM feed opened / closed for an utterance |
 //! | `UserSttStart` / `UserSttEnd` | STT recognition session for one user utterance |
-//! | `UserSttNotFound` | VAD fired but no STT partial within `sttListenTimeoutMs` |
+//! | `UserSttNotFound` | Utterance ended with no transcript (`reason`: `no_partial` C1 timeout, `no_transcript`, `empty_final`) |
 //! | `BargeIn` | Barge-in path (semantic STT partial and/or VAD during agent TTS) |
 //! | `TtsWait` | A TTS synthesis start was refused and retried (`wait_ms`, `attempts`, `reason`) |
 //! | `TtsPhraseCacheHit` | A reply (or one synthesis job of it) was served from the phrase cache (`chars`); no text |
@@ -92,7 +92,7 @@ pub struct SpeechEvent {
     /// PCM duration (ms) dropped by the buffer bound or `first_utterance` on `stt_hold_ended`.
     pub dropped_ms: Option<u32>,
     /// `language_id_skipped`: `too_short` | `deferred_tts` | `no_audio` | `undetermined`.
-    /// `stt_stream_end`: `listen_timeout` | `finalize_timeout` | `pcm_stall` | `end_of_utterance` | `vendor_final`.
+    /// `stt_stream_end`: `listen_timeout` | `finalize_timeout` | `pcm_stall` | `end_of_utterance` | `vendor_final` / `user_stt_not_found`: `no_partial` | `no_transcript` | `empty_final`.
     pub reason: Option<String>,
     /// `language_id_skipped`: buffered user speech (ms) at the decision point.
     pub speech_ms: Option<u32>,
@@ -285,6 +285,14 @@ impl SpeechEvent {
 
     pub fn user_stt_not_found() -> Self {
         Self::base(SpeechEventKind::UserSttNotFound)
+    }
+
+    /// Terminal outcome of an utterance with no transcript. `reason`: `no_partial` (C1) |
+    /// `no_transcript` (stream closed with no partial text and no vendor final) | `empty_final`.
+    pub fn user_stt_not_found_with_reason(reason: &str, utterance_id: Option<String>) -> Self {
+        let mut ev = Self::base(SpeechEventKind::UserSttNotFound).with_utterance_id(utterance_id);
+        ev.reason = Some(reason.to_string());
+        ev
     }
 
     pub fn barge_in() -> Self {

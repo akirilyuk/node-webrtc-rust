@@ -2539,10 +2539,11 @@ impl VoiceAgent {
     }
 
     async fn close_stt_stream_not_found(&self) -> SpeechResult<()> {
-        let (stream_was_open, session_open, vad_speaking) = {
+        let (stream_was_open, session_open, vad_speaking, utterance_id) = {
             let mut inner = self.inner.lock().await;
             let stream_was_open = inner.stt_stream_open;
             let session_open = inner.user_stt_session_open;
+            let utterance_id = inner.current_utterance_id.clone();
             if session_open {
                 inner.stt_not_found_emitted_this_utterance = true;
             }
@@ -2553,7 +2554,7 @@ impl VoiceAgent {
             Self::clear_utterance_finalize_timer(&mut inner);
             inner.vad_triggered_this_utterance = false;
             inner.barge_awaiting_stt_partial = false;
-            (stream_was_open, session_open, vad_speaking)
+            (stream_was_open, session_open, vad_speaking, utterance_id)
         };
         if stream_was_open {
             voice_debug("emit stt_stream_end (C1: no STT partial)");
@@ -2561,7 +2562,10 @@ impl VoiceAgent {
         }
         if session_open {
             voice_debug("emit user_stt_not_found + user_stt_end (C1)");
-            self.emit(SpeechEvent::user_stt_not_found());
+            self.emit(SpeechEvent::user_stt_not_found_with_reason(
+                "no_partial",
+                utterance_id,
+            ));
             self.emit(SpeechEvent::user_stt_end());
         }
         if !vad_speaking {
@@ -2577,6 +2581,9 @@ impl VoiceAgent {
             if emit_end {
                 self.emit_user_speaking_end_after_lid_gate().await;
             }
+        }
+        if session_open {
+            self.clear_utterance_id_after_final().await;
         }
         Ok(())
     }
@@ -2627,18 +2634,24 @@ impl VoiceAgent {
             .as_deref()
             .map(|text| text.trim().is_empty())
             .unwrap_or(true);
-        let emit_not_found = !already_final && !held && no_transcript && {
+        let not_found_utterance_id = if !already_final && !held && no_transcript {
             let mut inner = self.inner.lock().await;
             let first = !inner.stt_not_found_emitted_this_utterance;
             inner.stt_not_found_emitted_this_utterance = true;
-            first
+            first.then(|| inner.current_utterance_id.clone())
+        } else {
+            None
         };
+        let emit_not_found = not_found_utterance_id.is_some();
         if emit_stream_end {
             self.emit(SpeechEvent::stt_stream_end_with_reason(close_reason));
         }
         if emit_not_found {
             voice_debug("emit user_stt_not_found (forced utterance close, no transcript)");
-            self.emit(SpeechEvent::user_stt_not_found());
+            self.emit(SpeechEvent::user_stt_not_found_with_reason(
+                "no_transcript",
+                not_found_utterance_id.flatten(),
+            ));
         }
         if emit_stt_end {
             self.emit(SpeechEvent::user_stt_end());
@@ -2665,6 +2678,9 @@ impl VoiceAgent {
                 return Ok(());
             }
             if no_transcript {
+                if emit_not_found {
+                    self.clear_utterance_id_after_final().await;
+                }
                 return Ok(());
             }
             voice_debug(format!(
@@ -2697,6 +2713,27 @@ impl VoiceAgent {
     /// `close_utterance` clears the open utterance id after a replay final (forced close and
     /// last-partial fallback end the utterance; the vendor-final path leaves it as before).
     async fn emit_utterance_final(&self, text: String, close_utterance: bool) {
+        if text.trim().is_empty() {
+            // Never emit an empty final: the utterance ends in `user_stt_not_found` (once).
+            let not_found_utterance_id = {
+                let mut inner = self.inner.lock().await;
+                inner.replay_final_context.take();
+                if inner.stt_not_found_emitted_this_utterance {
+                    None
+                } else {
+                    inner.stt_not_found_emitted_this_utterance = true;
+                    Some(inner.current_utterance_id.clone())
+                }
+            };
+            if let Some(utterance_id) = not_found_utterance_id {
+                self.emit(SpeechEvent::user_stt_not_found_with_reason(
+                    "empty_final",
+                    utterance_id,
+                ));
+            }
+            self.clear_utterance_id_after_final().await;
+            return;
+        }
         self.note_stt_final_for_turn_latency().await;
         let replay_ctx = self
             .inner
@@ -2764,6 +2801,109 @@ impl VoiceAgent {
         ));
     }
 
+    /// Closes the STT stream / session after `finalize_stt_utterance` and guarantees the
+    /// utterance ends with a terminal event: the last-partial fallback final, or
+    /// `user_stt_not_found` (`no_transcript`). Emits nothing extra when the vendor final already
+    /// arrived during finalize (stream flags cleared, speaking_end already emitted).
+    async fn close_utterance_after_finalize(&self) -> SpeechResult<()> {
+        let (emit_stream_end, emit_stt_end, need_forced_final, forced_text, not_found_utterance_id) = {
+            let mut inner = self.inner.lock().await;
+            let stream = inner.stt_stream_open;
+            let session = inner.user_stt_session_open;
+            if inner.stt_stream_open {
+                inner.stt_stream_open = false;
+            }
+            if inner.user_stt_session_open {
+                inner.user_stt_session_open = false;
+            }
+            Self::clear_stt_listen_timer(&mut inner);
+            Self::clear_utterance_finalize_timer(&mut inner);
+            inner.vad_triggered_this_utterance = false;
+            let forced_text = inner.last_partial_text.clone().unwrap_or_default();
+            let has_text = !forced_text.trim().is_empty();
+            let no_final = !inner.stt_final_emitted_this_utterance && inner.stt_hold.is_none();
+            let need_forced = no_final && inner.partials_emitted_this_utterance && has_text;
+            // No vendor final and no partial text: the utterance ends in `user_stt_not_found`.
+            let not_found = no_final
+                && !has_text
+                && (stream || session)
+                && !inner.stt_not_found_emitted_this_utterance;
+            let not_found_utterance_id = if not_found {
+                inner.stt_not_found_emitted_this_utterance = true;
+                Some(inner.current_utterance_id.clone())
+            } else {
+                None
+            };
+            (
+                stream,
+                session,
+                need_forced,
+                forced_text,
+                not_found_utterance_id,
+            )
+        };
+        if emit_stream_end {
+            self.emit(SpeechEvent::stt_stream_end_with_reason("end_of_utterance"));
+        }
+        let emitted_not_found = not_found_utterance_id.is_some();
+        if let Some(utterance_id) = not_found_utterance_id {
+            voice_debug("emit user_stt_not_found (gate finalize, no transcript)");
+            self.emit(SpeechEvent::user_stt_not_found_with_reason(
+                "no_transcript",
+                utterance_id,
+            ));
+        }
+        if emit_stt_end {
+            self.emit(SpeechEvent::user_stt_end());
+        }
+        if need_forced_final {
+            let emit_speaking_end = {
+                let mut inner = self.inner.lock().await;
+                let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
+                if emit_end {
+                    inner.stt_speaking_end_emitted_this_utterance = true;
+                }
+                inner.stt_final_emitted_this_utterance = true;
+                inner.stt_finalize_pending = false;
+                inner.stt_endpoint_closing_started = false;
+                emit_end
+            };
+            if emit_speaking_end {
+                voice_debug("emit user_speaking_end (finalize without vendor final)");
+                self.emit_user_speaking_end_after_lid_gate().await;
+            }
+            voice_debug(format!(
+                "emit user_speech_final (last partial fallback): {}",
+                if forced_text.len() > 80 {
+                    format!("{}…", &forced_text[..80])
+                } else {
+                    forced_text.clone()
+                }
+            ));
+            self.emit_utterance_final(forced_text, true).await;
+        } else {
+            let emit_speaking_end_at_finalize = {
+                let mut inner = self.inner.lock().await;
+                if inner.stt_speaking_end_emitted_this_utterance {
+                    false
+                } else {
+                    inner.stt_speaking_end_emitted_this_utterance = true;
+                    inner.stt_finalize_pending = false;
+                    inner.stt_endpoint_closing_started = false;
+                    true
+                }
+            };
+            if emit_speaking_end_at_finalize {
+                voice_debug("emit user_speaking_end (STT finalize without vendor final)");
+                self.emit_user_speaking_end_after_lid_gate().await;
+            }
+            if emitted_not_found {
+                self.clear_utterance_id_after_final().await;
+            }
+        }
+        Ok(())
+    }
+
     /// Finish STT for an utterance waiting on gate hold / finalize (e.g. before new `SpeechStart`).
     async fn complete_pending_utterance_if_any(&self) -> SpeechResult<()> {
         let (needed, tail_ms, closing_started) = {
@@ -2790,7 +2930,8 @@ impl VoiceAgent {
             }
             self.push_stt_endpoint_tail(tail_ms).await?;
         }
-        self.finalize_stt_utterance().await
+        self.finalize_stt_utterance().await?;
+        self.close_utterance_after_finalize().await
     }
 
     fn reset_utterance_state_for_new_speech(inner: &mut AgentInner) {
@@ -3901,85 +4042,7 @@ impl VoiceAgent {
             ));
             self.push_stt_endpoint_tail(tail_ms).await?;
             self.finalize_stt_utterance().await?;
-            let (emit_stream_end, emit_stt_end, need_forced_final, forced_text, emit_not_found) = {
-                let mut inner = self.inner.lock().await;
-                let stream = inner.stt_stream_open;
-                let session = inner.user_stt_session_open;
-                if inner.stt_stream_open {
-                    inner.stt_stream_open = false;
-                }
-                if inner.user_stt_session_open {
-                    inner.user_stt_session_open = false;
-                }
-                Self::clear_stt_listen_timer(&mut inner);
-                Self::clear_utterance_finalize_timer(&mut inner);
-                inner.vad_triggered_this_utterance = false;
-                let forced_text = inner.last_partial_text.clone().unwrap_or_default();
-                let has_text = !forced_text.trim().is_empty();
-                let no_final = !inner.stt_final_emitted_this_utterance && inner.stt_hold.is_none();
-                let need_forced = no_final && inner.partials_emitted_this_utterance && has_text;
-                // No vendor final and no partial text: the utterance ends in `user_stt_not_found`.
-                let not_found = no_final
-                    && !has_text
-                    && (stream || session)
-                    && !inner.stt_not_found_emitted_this_utterance;
-                if not_found {
-                    inner.stt_not_found_emitted_this_utterance = true;
-                }
-                (stream, session, need_forced, forced_text, not_found)
-            };
-            if emit_stream_end {
-                self.emit(SpeechEvent::stt_stream_end_with_reason("end_of_utterance"));
-            }
-            if emit_not_found {
-                voice_debug("emit user_stt_not_found (gate finalize, no transcript)");
-                self.emit(SpeechEvent::user_stt_not_found());
-            }
-            if emit_stt_end {
-                self.emit(SpeechEvent::user_stt_end());
-            }
-            if need_forced_final {
-                let emit_speaking_end = {
-                    let mut inner = self.inner.lock().await;
-                    let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
-                    if emit_end {
-                        inner.stt_speaking_end_emitted_this_utterance = true;
-                    }
-                    inner.stt_final_emitted_this_utterance = true;
-                    inner.stt_finalize_pending = false;
-                    inner.stt_endpoint_closing_started = false;
-                    emit_end
-                };
-                if emit_speaking_end {
-                    voice_debug("emit user_speaking_end (finalize without vendor final)");
-                    self.emit_user_speaking_end_after_lid_gate().await;
-                }
-                voice_debug(format!(
-                    "emit user_speech_final (last partial fallback): {}",
-                    if forced_text.len() > 80 {
-                        format!("{}…", &forced_text[..80])
-                    } else {
-                        forced_text.clone()
-                    }
-                ));
-                self.emit_utterance_final(forced_text, true).await;
-            } else {
-                let emit_speaking_end_at_finalize = {
-                    let mut inner = self.inner.lock().await;
-                    if inner.stt_speaking_end_emitted_this_utterance {
-                        false
-                    } else {
-                        inner.stt_speaking_end_emitted_this_utterance = true;
-                        inner.stt_finalize_pending = false;
-                        inner.stt_endpoint_closing_started = false;
-                        true
-                    }
-                };
-                if emit_speaking_end_at_finalize {
-                    voice_debug("emit user_speaking_end (STT finalize without vendor final)");
-                    self.emit_user_speaking_end_after_lid_gate().await;
-                }
-            }
+            self.close_utterance_after_finalize().await?;
         }
 
         Ok(())

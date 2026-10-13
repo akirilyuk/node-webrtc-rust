@@ -8,6 +8,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.45] - 2026-10-13
+
+### Fixed
+
+- **speech** — After a speech end, the gate hold sent the next phrase's onset to the closing STT stream while VAD was still pending, so both utterances counted it ("Okay. Once" + "one, two" under CPU starvation). Frames that arrive during the hold now wait in a bounded buffer: at the next SpeechStart they become the new stream's pre-roll, and on a brief gap or any other end of the hold they go to the open stream in order. No frame is dropped.
+- **sherpa** — A process that exited while a blocking thread was still inside a Sherpa native call (for example a TTS synthesis abandoned after the bounded worker join timed out) could abort with `fatal runtime error: Rust cannot catch foreign exceptions` (exit 134), because ONNX static destructors ran under that thread. The exit handler now waits for in-flight TTS, STT and LID native calls to finish, bounded at 10 s, so exit never hangs. A live process was not affected.
+
+### CI and tests
+
+- **ci** — rustc is pinned to 1.99.0, and CI enforces `cargo fmt` and `clippy -D warnings`.
+- **ci** — the coturn sidecar image is pinned (`latest` rejected the CI arguments).
+- **test** — `stt_split_onset_test` (scripted STT, onset counted by one utterance only) and `tts_exit_inflight_test` (subprocess exits during an abandoned synthesis; no abort).
+
 ## [0.9.44] - 2026-10-12
 
 ### Fixed

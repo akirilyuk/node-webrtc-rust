@@ -13,6 +13,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **speech** — `stt_stream_end` carries `reason` (`listen_timeout` | `finalize_timeout` | `pcm_stall` | `end_of_utterance` | `vendor_final`); an utterance with no transcript now ends in `user_stt_not_found` instead of no event / an empty final.
+- **speech** — `user_stt_not_found` carries `reason` (`no_partial` C1 timeout, `no_transcript` stream closed with nothing, `empty_final`). A vendor `Final("")` after VAD end now ends in `user_stt_not_found` (`empty_final`) instead of an empty `user_speech_final`. New speech that supersedes a pending utterance with no vendor final now closes it first (last-partial final, or `user_stt_not_found`) instead of dropping it silently. New SDK type `SttNotFoundReason`.
 
 ## [0.9.46] - 2026-10-13
 

@@ -32,7 +32,7 @@ use crate::stt_hold::{
     resolved_hold_max_buffer_ms, resolved_replay_max_age_ms, BeginSttHoldOptions,
     ReleaseSttHoldOptions, SttHold,
 };
-use crate::stt_pre_roll::SttPreRollBuffer;
+use crate::stt_pre_roll::{ShortBurstRetainer, SttPreRollBuffer, SHORT_BURST_SEPARATOR_MS};
 use crate::tts_buffer::TtsBuffer;
 use crate::tts_cache::wrap_tts_for_agent;
 use crate::turn_latency::TurnLatencyTracker;
@@ -173,6 +173,8 @@ struct AgentInner {
     otel: AgentOtelState,
     vad: Option<VadEngine>,
     stt_pre_roll: Option<SttPreRollBuffer>,
+    /// Short voiced bursts that ended without VAD `SpeechStart`, kept for the next new stream.
+    short_burst: ShortBurstRetainer,
     /// VAD-pending onset frames held back from the closing STT stream during the gate hold.
     /// Counted by exactly one stream (handoff-counting). Mono s16le 16 kHz.
     hold_pending_pcm: Vec<u8>,
@@ -438,6 +440,7 @@ impl VoiceAgent {
                 otel: AgentOtelState::default(),
                 vad,
                 stt_pre_roll,
+                short_burst: ShortBurstRetainer::new(),
                 hold_pending_pcm: Vec::new(),
                 stt_gate_hold_ms: 0,
                 stt_finalize_pending: false,
@@ -1024,6 +1027,7 @@ impl VoiceAgent {
 
     fn reset_stt_pipeline_state(inner: &mut AgentInner) {
         inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+        inner.short_burst.clear();
         inner.hold_pending_pcm.clear();
         inner.stt_gate_hold_ms = 0;
         inner.stt_finalize_pending = false;
@@ -3791,13 +3795,52 @@ impl VoiceAgent {
                             held_same_stream = Some(Bytes::from(held_onset));
                         }
                     }
+                    let mut burst_head: Option<(Bytes, bool)> = None;
+                    if new_stream {
+                        let capacity_ms = inner
+                            .stt_pre_roll
+                            .as_ref()
+                            .map_or(0, SttPreRollBuffer::capacity_ms);
+                        if let Some((head, contiguous)) =
+                            inner.short_burst.take_for_new_stream(capacity_ms)
+                        {
+                            voice_debug(format!(
+                                "STT short-burst kept: {} ms before pre-roll ({})",
+                                crate::pcm::duration_ms_from_mono_s16le(
+                                    head.len(),
+                                    crate::pcm::STT_PCM_SAMPLE_RATE,
+                                ),
+                                if contiguous {
+                                    "contiguous"
+                                } else {
+                                    "separated"
+                                },
+                            ));
+                            burst_head = Some((head, contiguous));
+                        }
+                    } else {
+                        inner.short_burst.clear();
+                    }
                     if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                         let buffered_len = pre_roll.len();
-                        let buffered = if new_stream {
+                        let mut buffered = if new_stream && burst_head.is_none() {
                             pre_roll.drain_padded_to_capacity()
                         } else {
                             pre_roll.drain()
                         };
+                        if let Some((head, contiguous)) = burst_head {
+                            let mut joined = Vec::with_capacity(head.len() + buffered.len() + 6400);
+                            joined.extend_from_slice(&head);
+                            if !contiguous {
+                                let sep = (crate::pcm::STT_PCM_SAMPLE_RATE as usize
+                                    * SHORT_BURST_SEPARATOR_MS as usize
+                                    / 1000)
+                                    * 2;
+                                joined.resize(joined.len() + sep, 0);
+                            }
+                            joined.extend_from_slice(&buffered);
+                            buffered = Bytes::from(joined);
+                        }
                         if !buffered.is_empty() {
                             let total_ms = crate::pcm::duration_ms_from_mono_s16le(
                                 buffered.len(),
@@ -4008,6 +4051,11 @@ impl VoiceAgent {
             if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                 pre_roll.push(&mono_bytes);
             }
+            inner.short_burst.on_frame(
+                &mono_bytes,
+                frame_active && vad_pending && !vad_speaking,
+                duration_ms,
+            );
         }
 
         if !gate_stt || stt_poll_open {
@@ -4470,6 +4518,7 @@ impl VoiceAgent {
                     guard.barge_awaiting_stt_partial = false;
                     // Drop any user-turn pre-roll so agent echo does not reach STT on barge.
                     guard.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
+                    guard.short_burst.clear();
                     guard.hold_pending_pcm.clear();
                     (first_audio_ms, timing.and_then(|t| t.first_chunk_ms))
                 };

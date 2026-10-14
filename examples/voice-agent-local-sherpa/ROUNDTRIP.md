@@ -71,6 +71,7 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **Language ID**       | `npm run start:roundtrip-language-id` — en/de/es TTS legs → `user_language` ISO codes (needs `download-lid` + per-lang TTS; see [§ Language ID roundtrip](#language-id-roundtrip-startroundtrip-language-id))                                                    |
 | **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths                                                                                                                                   |
 | **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                                                                                                                                                 |
+| **C1 timeouts**       | `npm run start:roundtrip-c1-timeouts` — STT no-partial timeouts: flowing frames close normally, a stopped sender waits for the 12 s bound, a 4.5 s gap mid-phrase is survived (see below)                                                                        |
 | **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                                                                                                                                                   |
 | **Session record**    | `NWR_RECORD_FORMAT=wav npm run start:record` — short counting roundtrip + stereo WAV for listen-back (see below)                                                                                                                                                 |
 | **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                                                                                                                                                    |
@@ -363,6 +364,26 @@ NWR_RECORD_FORMAT=wav npm run start:record --workspace=@node-webrtc-rust/example
 | `SHERPA_RECORD_PHRASE`   | `one two … ten`                           | TTS phrase                                     |
 
 Included in Sherpa CI E2E (`start:record` in `run-sherpa-example-ci.sh`).
+
+## C1 timeouts roundtrip (`start:roundtrip-c1-timeouts`)
+
+[`src/roundtrip-c1-timeouts.ts`](./src/roundtrip-c1-timeouts.ts) checks the STT "no partial" safety net (C1) over real loopback WebRTC with `sttListenTimeoutMs: 4000` and the hard timeout unset (3 x 4 s = 12 s). A client writes PCM straight to a `LocalAudioTrack`, paced from an anchor, and a Sherpa listener `VoiceAgent` records speech events. Each phase is preceded by 3 s of silence frames.
+
+| Phase | Input                                                                                | Expected                                                                                                      |
+| ----- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| A     | 600 ms noise, then 10 s of silence frames                                            | exactly one `user_stt_not_found` 1.5-6.5 s after the noise ends (normal endpoint close), no non-empty final   |
+| B     | 400 ms of the same noise, then nothing for 16 s                                      | no `user_stt_not_found` earlier than 10 s after the sender stops, exactly one by 15 s (the 12 s hard timeout) |
+| C     | TTS "one … ten" rendered once; first 1.6 s, 4.5 s of nothing, the rest, then silence | no `user_stt_not_found`; finals hold at least 8 number words in order, including one of seven to ten          |
+
+The contract: while no PCM reaches the agent and VAD is in speech, only the hard timeout (12 s) closes the stream. A reader-side gap must not close it. Frames that keep flowing close through the normal endpoint and never wait for the 12 s bound.
+
+Phase A shows unchanged behavior: 0.9.48 and 0.10 both close at about 2.3 s here (minSilence 1300 ms + gate hold 1000 ms). B (about 4 s on 0.9.48 vs about 11.8 s now) and C (false close at about 5.6 s and a truncated final on 0.9.48) separate the old and new behavior.
+
+```bash
+npm run start:roundtrip-c1-timeouts --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Runtime is about 75 s. Summary lines look like `[c1-smoke] phase=B notFoundAfterMs=11819 finals=[] PASS`.
 
 ## Utterance timing roundtrip (`user_speaking_end` ↔ `user_speech_final`)
 

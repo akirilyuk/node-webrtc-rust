@@ -21,7 +21,7 @@ use crate::speech::types::{
 };
 
 /// `VOICE_DEBUG=1|true|yes`, read once per process.
-fn voice_debug_enabled() -> bool {
+pub(crate) fn voice_debug_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         matches!(
@@ -71,6 +71,7 @@ impl JsVoiceAgent {
         let outbound = outbound_track.inner();
         // Live Arc so `setWriteSampleTee` after attach still receives TTS frames.
         let write_tee = outbound_track.write_tee_handle();
+        let tts_sink = outbound_track.tts_sink_handle();
         let pcm_writer: PcmWriter = {
             let track = Arc::clone(&outbound);
             Arc::new(move |pcm, duration_ms| {
@@ -78,6 +79,12 @@ impl JsVoiceAgent {
                 let write_tee = Arc::clone(&write_tee);
                 let bytes = pcm;
                 crate::media::notify_write_tee_handle(&write_tee, bytes.as_ref(), duration_ms);
+                // Native mix pump sink: feed its queue directly, no Opus encode on the sidecar.
+                let sink = tts_sink.lock().ok().and_then(|g| g.clone());
+                if let Some(queue) = sink {
+                    queue.push_pcm(bytes.as_ref());
+                    return Ok(());
+                }
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async move {
                         track

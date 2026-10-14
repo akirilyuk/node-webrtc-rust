@@ -64,6 +64,20 @@ export interface MixStats {
   target: number
 }
 
+/** Native mix pump counters (polled at 1 Hz). */
+export interface NativePumpStats {
+  /** TTS frames currently queued for the pump. */
+  ttsQueueFrames: number
+  /** Deepest TTS backlog (frames) since the previous stats read. */
+  ttsQueueMaxDepthFrames: number
+  /** Outbound frames written since the pump started. */
+  framesWritten: number
+  /** Due slots skipped during an active TTS stream. */
+  slotsSkipped: number
+  /** Times the pump clock was rebased after a long stall. */
+  rebases: number
+}
+
 export const MIX_PLACEMENT = {
   Center: 'center',
   Left: 'left',

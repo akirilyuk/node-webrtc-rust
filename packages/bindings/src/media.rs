@@ -13,11 +13,12 @@ use node_webrtc_rust_core::{
 };
 
 use crate::config::to_js_unknown;
+use crate::mixer::mix_pump::NativeTtsQueue;
 
 /// Optional JS listener for VoiceAgent TTS PCM (and future native writers).
 /// Uses {@link ErrorStrategy::Fatal} so the JS callback is `(data, durationMs)` —
 /// not Node-style `(err, data, durationMs)` (CalleeHandled default prepends `null`).
-type WriteSampleTee = ThreadsafeFunction<(Vec<u8>, u32), ErrorStrategy::Fatal>;
+pub(crate) type WriteSampleTee = ThreadsafeFunction<(Vec<u8>, u32), ErrorStrategy::Fatal>;
 
 /// Media stream track exposed to JavaScript.
 #[napi]
@@ -117,6 +118,8 @@ fn track_kind_to_string(kind: TrackKind) -> String {
 pub struct JsLocalAudioTrack {
     inner: Arc<LocalAudioTrack>,
     write_tee: Arc<Mutex<Option<WriteSampleTee>>>,
+    /// Native TTS sink: when set, PCM written to this track feeds the native mix pump queue.
+    tts_sink: Arc<Mutex<Option<Arc<NativeTtsQueue>>>>,
 }
 
 #[napi]
@@ -131,6 +134,7 @@ impl JsLocalAudioTrack {
         Self {
             inner: Arc::new(LocalAudioTrack::new(&id, &stream_id)),
             write_tee: Arc::new(Mutex::new(None)),
+            tts_sink: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -200,6 +204,11 @@ impl JsLocalAudioTrack {
         );
         // Tee is not notified here: JS callers often wrap writeSample for capture; VoiceAgent
         // TTS drain calls notify_write_tee_handle directly so outbound agent audio is still tee'd.
+        let sink = self.tts_sink.lock().ok().and_then(|g| g.clone());
+        if let Some(queue) = sink {
+            queue.push_pcm(data.as_ref());
+            return Ok(());
+        }
         let bytes = bytes::Bytes::copy_from_slice(data.as_ref());
         self.inner
             .write_sample(bytes, Duration::from_millis(duration_ms as u64))
@@ -211,6 +220,16 @@ impl JsLocalAudioTrack {
 impl JsLocalAudioTrack {
     pub(crate) fn inner(&self) -> Arc<LocalAudioTrack> {
         Arc::clone(&self.inner)
+    }
+
+    pub(crate) fn set_tts_sink(&self, sink: Option<Arc<NativeTtsQueue>>) {
+        if let Ok(mut slot) = self.tts_sink.lock() {
+            *slot = sink;
+        }
+    }
+
+    pub(crate) fn tts_sink_handle(&self) -> Arc<Mutex<Option<Arc<NativeTtsQueue>>>> {
+        Arc::clone(&self.tts_sink)
     }
 
     pub(crate) fn write_tee_handle(&self) -> Arc<Mutex<Option<WriteSampleTee>>> {

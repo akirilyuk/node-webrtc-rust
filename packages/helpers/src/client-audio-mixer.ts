@@ -16,6 +16,7 @@ import {
   type ClientPose,
   type MixPlacement,
   type MixStats,
+  type NativePumpStats,
 } from '@node-webrtc-rust/sdk/mix'
 import type { RemoteAudioTrack } from '@node-webrtc-rust/sdk'
 
@@ -101,6 +102,18 @@ export interface ClientMixGraph {
   clearListenerRoutes?(listener: string): void
   /** Per-source queue counters; `null` when the source is unknown. */
   mixStats?(participantId: string): MixStats | null | undefined
+  /** Native mix pump (Rust task per listener); absent on mock graphs. */
+  startNativePump?(
+    listenerId: string,
+    pcOutbound: LocalAudioTrack,
+    ttsSidecar: LocalAudioTrack,
+  ): Promise<void>
+  stopNativePump?(listenerId: string, ttsSidecar?: LocalAudioTrack): void
+  pauseNativePump?(listenerId: string): Promise<void>
+  resumeNativePump?(listenerId: string): void
+  burstNativePump?(listenerId: string, frames: number, paced: boolean): Promise<void>
+  discardNativeTts?(listenerId: string): number
+  nativePumpStats?(listenerId: string): NativePumpStats | null | undefined
 }
 
 type GraphGroupState = {
@@ -228,6 +241,12 @@ export type ClientAudioMixerOptions = {
    * Default prints the message to `console.warn`.
    */
   warn?: ClientMixerWarn
+  /**
+   * Run the 20 ms mix pump as a native Rust task per listener (default `true`). Also needs a
+   * native graph and native tracks, and `NWR_MIX_NATIVE_PUMP` not set to `0`; otherwise the
+   * JS pump runs.
+   */
+  nativePump?: boolean
 }
 
 /** Counters whose increase means audio was compressed, concealed or failed to decode. */
@@ -281,6 +300,10 @@ type PeerMixState = {
   queueWasNonEmptyLastTick: boolean
   /** Consecutive active-window skips without a write. */
   consecutiveTtsSkips: number
+  /** The native Rust pump owns this peer's outbound; the JS pump and `ttsQueue` stay unused. */
+  nativePump: boolean
+  /** Pending `startNativePump` call (control calls wait for it). */
+  nativeStart?: Promise<void>
 }
 
 /** Saturating sum of two equal-length stereo PCM buffers (20 ms frames). */
@@ -308,10 +331,14 @@ export class ClientAudioMixer {
   private readonly warn: ClientMixerWarn
   private readonly queueWatch = new Map<string, QueueStatsWatch>()
   private lastQueueCheckAt: number | null = null
+  private readonly nativePumpEnabled: boolean
+  /** Shared 1 Hz poll for native pump stats and queue pressure. */
+  private nativeStatsTimer?: ReturnType<typeof setInterval>
 
   constructor(options?: ClientAudioMixerOptions) {
     this.graph = options?.graph ?? new AudioMixGraph()
     this.warn = options?.warn ?? ((message) => console.warn(message))
+    this.nativePumpEnabled = options?.nativePump !== false
   }
 
   /** Per-source mix queue counters (`null` when the graph has no stats or the source is unknown). */
@@ -352,6 +379,7 @@ export class ClientAudioMixer {
       lastSidecarEnqueueAt: null,
       queueWasNonEmptyLastTick: false,
       consecutiveTtsSkips: 0,
+      nativePump: false,
     }
   }
 
@@ -437,6 +465,12 @@ export class ClientAudioMixer {
 
   /** @internal Post-mute mix burst — one mixed frame per call, bypasses due accounting. */
   async burstOutboundMix(peerId: string, frames = MIX_MUTE_FLUSH_FRAMES): Promise<void> {
+    const native = this.peers.get(peerId)
+    if (native?.nativePump) {
+      await native.nativeStart?.catch(() => undefined)
+      await this.graph.burstNativePump?.(peerId, frames, false)
+      return
+    }
     for (let i = 0; i < frames; i++) {
       await this.enqueueBurstMixFrame(peerId)
     }
@@ -447,6 +481,12 @@ export class ClientAudioMixer {
    * Fast back-to-back writes queue silence in the sender but do not advance listener playout.
    */
   private async pacedBurstOutboundMix(peerId: string, frames: number): Promise<void> {
+    const native = this.peers.get(peerId)
+    if (native?.nativePump) {
+      await native.nativeStart?.catch(() => undefined)
+      await this.graph.burstNativePump?.(peerId, frames, true)
+      return
+    }
     for (let i = 0; i < frames; i++) {
       await this.enqueueBurstMixFrame(peerId)
       if (i + 1 < frames) {
@@ -469,6 +509,11 @@ export class ClientAudioMixer {
   async pauseMixPump(peerId: string): Promise<void> {
     const state = this.peers.get(peerId)
     if (!state) return
+    if (state.nativePump) {
+      await state.nativeStart?.catch(() => undefined)
+      await this.graph.pauseNativePump?.(peerId)
+      return
+    }
     if (state.pumpInterval) {
       clearInterval(state.pumpInterval)
       state.pumpInterval = undefined
@@ -479,6 +524,10 @@ export class ClientAudioMixer {
   /** @internal Resume one listener mix pump after {@link pauseMixPump}. */
   resumeMixPump(peerId: string): void {
     const state = this.peers.get(peerId)
+    if (state?.nativePump) {
+      this.graph.resumeNativePump?.(peerId)
+      return
+    }
     if (!state?.pcOutbound || state.pumpInterval) return
     const out = state.pcOutbound
     state.pumpT0 = performance.now()
@@ -636,7 +685,12 @@ export class ClientAudioMixer {
    */
   startMixPump(peerId: string, pcOutbound: MixPumpOutboundTrack): void {
     const state = this.peerState(peerId)
-    if (state.pumpInterval) return
+    if (state.pumpInterval || state.nativePump) return
+
+    if (this.canUseNativePump(state, pcOutbound)) {
+      this.startNativeMixPump(peerId, state, pcOutbound, state.sidecar)
+      return
+    }
 
     state.pcOutbound = pcOutbound
     state.pumpT0 = performance.now()
@@ -647,8 +701,93 @@ export class ClientAudioMixer {
     }, PCM_FRAME_DURATION_MS)
   }
 
+  private canUseNativePump(
+    state: PeerMixState,
+    pcOutbound: MixPumpOutboundTrack,
+  ): pcOutbound is LocalAudioTrack {
+    return (
+      this.nativePumpEnabled &&
+      process.env.NWR_MIX_NATIVE_PUMP !== '0' &&
+      typeof this.graph.startNativePump === 'function' &&
+      pcOutbound instanceof LocalAudioTrack &&
+      state.sidecar instanceof LocalAudioTrack
+    )
+  }
+
+  private startNativeMixPump(
+    peerId: string,
+    state: PeerMixState,
+    pcOutbound: LocalAudioTrack,
+    sidecar: TtsSidecarTrack | undefined,
+  ): void {
+    // The native sink replaces the JS tee: TTS goes straight into the native queue.
+    sidecar?.setWriteSampleTee(null)
+    state.nativePump = true
+    state.pcOutbound = pcOutbound
+    const start = this.graph.startNativePump!(peerId, pcOutbound, sidecar as LocalAudioTrack)
+    state.nativeStart = start
+    start.catch((err: unknown) => {
+      this.warn(`[mix] native pump start failed peerId=${peerId} error=${String(err)}`)
+    })
+    this.ensureNativeStatsTimer()
+  }
+
+  private ensureNativeStatsTimer(): void {
+    if (this.nativeStatsTimer) return
+    this.nativeStatsTimer = setInterval(() => this.pollNativePumps(), QUEUE_STATS_CHECK_INTERVAL_MS)
+    this.nativeStatsTimer.unref()
+  }
+
+  private stopNativeStatsTimerIfIdle(): void {
+    if (!this.nativeStatsTimer) return
+    for (const state of this.peers.values()) {
+      if (state.nativePump) return
+    }
+    clearInterval(this.nativeStatsTimer)
+    this.nativeStatsTimer = undefined
+  }
+
+  private pollNativePumps(): void {
+    const now = performance.now()
+    this.checkQueueStats(now)
+    for (const [peerId, state] of this.peers) {
+      if (!state.nativePump) continue
+      const stats = this.graph.nativePumpStats?.(peerId)
+      if (!stats) continue
+      if (stats.ttsQueueMaxDepthFrames > TTS_BACKLOG_WARN_FRAMES) {
+        this.maybeWarnTtsBacklog(
+          peerId,
+          state,
+          now,
+          stats.ttsQueueFrames,
+          stats.ttsQueueMaxDepthFrames,
+        )
+      }
+    }
+  }
+
+  private stopNativeMixPump(peerId: string, state: PeerMixState): void {
+    const sidecar = state.sidecar instanceof LocalAudioTrack ? state.sidecar : undefined
+    this.graph.stopNativePump?.(peerId, sidecar)
+    const start = state.nativeStart
+    if (start) {
+      // A start still in flight installs its sink late; stop again once it has settled.
+      void start.catch(() => undefined).then(() => this.graph.stopNativePump?.(peerId, sidecar))
+    }
+    state.nativeStart = undefined
+    state.nativePump = false
+    state.pcOutbound = undefined
+    // Back to the JS tee so a later JS pump sees sidecar TTS again.
+    if (state.sidecar) this.wireTtsSidecar(peerId, state.sidecar)
+    this.stopNativeStatsTimerIfIdle()
+  }
+
   stopMixPump(peerId: string): void {
     const state = this.peers.get(peerId)
+    if (state?.nativePump) {
+      this.stopNativeMixPump(peerId, state)
+      return
+    }
     if (!state?.pumpInterval) return
     clearInterval(state.pumpInterval)
     state.pumpInterval = undefined
@@ -676,22 +815,38 @@ export class ClientAudioMixer {
     state.consecutiveTtsSkips = 0
     const depth = state.ttsQueue.length
     if (depth > state.ttsQueueMaxDepth) state.ttsQueueMaxDepth = depth
-    if (depth > TTS_BACKLOG_WARN_FRAMES)
-      this.maybeWarnTtsBacklog(peerId, state, state.lastSidecarEnqueueAt)
+    if (
+      depth > TTS_BACKLOG_WARN_FRAMES &&
+      this.maybeWarnTtsBacklog(
+        peerId,
+        state,
+        state.lastSidecarEnqueueAt,
+        depth,
+        state.ttsQueueMaxDepth,
+      )
+    ) {
+      state.ttsQueueMaxDepth = depth
+    }
   }
 
   /** Throttled (QUEUE_WARN_MIN_INTERVAL_MS per peer) warning: the pump is behind the TTS producer. Frames are kept, never dropped. */
-  private maybeWarnTtsBacklog(peerId: string, state: PeerMixState, now: number): void {
+  private maybeWarnTtsBacklog(
+    peerId: string,
+    state: PeerMixState,
+    now: number,
+    depthFrames: number,
+    maxDepthFrames: number,
+  ): boolean {
     if (state.ttsBacklogWarnAt != null && now - state.ttsBacklogWarnAt < QUEUE_WARN_MIN_INTERVAL_MS)
-      return
+      return false
     state.ttsBacklogWarnAt = now
     const fields = {
       peerId,
-      depthMs: state.ttsQueue.length * PCM_FRAME_DURATION_MS,
-      maxDepthMs: state.ttsQueueMaxDepth * PCM_FRAME_DURATION_MS,
+      depthMs: depthFrames * PCM_FRAME_DURATION_MS,
+      maxDepthMs: maxDepthFrames * PCM_FRAME_DURATION_MS,
     }
-    state.ttsQueueMaxDepth = state.ttsQueue.length
     this.warn(formatQueuePressureLine('[mix] tts backlog', fields), fields)
+    return true
   }
 
   /**
@@ -701,6 +856,7 @@ export class ClientAudioMixer {
   discardQueuedTts(peerId: string): number {
     const state = this.peers.get(peerId)
     if (!state) return 0
+    if (state.nativePump) return this.graph.discardNativeTts?.(peerId) ?? 0
     const n = state.ttsQueue.length
     state.ttsQueue = []
     state.sidecarLeftover = Buffer.alloc(0)

@@ -170,6 +170,19 @@ export interface JsMixStats {
   /** Current adaptive target depth in frames (2 to 8). */
   target: number
 }
+/** Native mix pump counters (polled at 1 Hz by the helpers mixer). */
+export interface JsNativePumpStats {
+  /** TTS frames currently queued for the pump. */
+  ttsQueueFrames: number
+  /** Deepest TTS backlog (frames) since the previous stats read. */
+  ttsQueueMaxDepthFrames: number
+  /** Outbound frames written since the pump started. */
+  framesWritten: number
+  /** Due slots skipped during an active TTS stream. */
+  slotsSkipped: number
+  /** Times the pump clock was rebased after a long stall. */
+  rebases: number
+}
 export const enum JsClipStatus {
   Buffering = 'Buffering',
   Playing = 'Playing',
@@ -554,6 +567,22 @@ export declare class JsMixGraph {
   mixStats(participantId: string): JsMixStats | null
   /** Pans a TTS frame for `listener_id` using the graph's TTS pose or placement. */
   panTtsFrame(pcm: Buffer, listenerId: string): Buffer
+  /**
+   * Starts the native mix pump for `listener_id`: a Rust task that is then the sole writer
+   * of `pc_outbound`. TTS written to `tts_sidecar` (JS or VoiceAgent drain) feeds its queue.
+   */
+  startNativePump(listenerId: string, pcOutbound: JsLocalAudioTrack, ttsSidecar: JsLocalAudioTrack): Promise<void>
+  /** Stops the native pump for `listener_id` and detaches the TTS sink from the sidecar. */
+  stopNativePump(listenerId: string, ttsSidecar?: JsLocalAudioTrack | undefined | null): void
+  /** Pauses ticking and waits (bounded) for any in-flight write to finish. */
+  pauseNativePump(listenerId: string): Promise<void>
+  resumeNativePump(listenerId: string): void
+  /** Writes `frames` mixed frames (queued TTS or silence), optionally paced at 20 ms. */
+  burstNativePump(listenerId: string, frames: number, paced: boolean): Promise<void>
+  /** Discards queued native TTS (barge-in); returns the discarded frame count. */
+  discardNativeTts(listenerId: string): number
+  /** Native pump counters, or `null` when no pump runs for the listener. */
+  nativePumpStats(listenerId: string): JsNativePumpStats | null
 }
 /** WebRTC peer connection exposed to JavaScript. */
 export declare class JsPeerConnection {

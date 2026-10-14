@@ -221,3 +221,18 @@ impl From<SourceStats> for JsMixStats {
         }
     }
 }
+
+/// Native mix pump counters (polled at 1 Hz by the helpers mixer).
+#[napi(object)]
+pub struct JsNativePumpStats {
+    /// TTS frames currently queued for the pump.
+    pub tts_queue_frames: u32,
+    /// Deepest TTS backlog (frames) since the previous stats read.
+    pub tts_queue_max_depth_frames: u32,
+    /// Outbound frames written since the pump started.
+    pub frames_written: f64,
+    /// Due slots skipped during an active TTS stream.
+    pub slots_skipped: f64,
+    /// Times the pump clock was rebased after a long stall.
+    pub rebases: f64,
+}

@@ -11,4 +11,5 @@ pub use types::{
     JsBargeInConfig, JsEventDeliveryMode, JsSpeechEvent, JsSpeechEventType, JsSttConfig,
     JsSttVendor, JsTtsConfig, JsTtsVendor, JsVadConfig, JsVadSampleRate, JsVoiceAgentConfig,
 };
+pub(crate) use voice_agent::voice_debug_enabled;
 pub use voice_agent::JsVoiceAgent;

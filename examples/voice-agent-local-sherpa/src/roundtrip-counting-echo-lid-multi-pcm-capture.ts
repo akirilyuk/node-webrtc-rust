@@ -353,6 +353,19 @@ export function wrapOutboundTrackForPcmCapture<T extends LocalAudioTrack>(
     capture.recordOutboundPcm(Buffer.from(data))
     return origWrite(data, durationMs)
   }
+  // The native mix pump writes the PC outbound without JS: tap its write tee instead.
+  // JS `writeSample` does not notify the tee, so the two taps never double-capture.
+  const teeable = trackAny as T & {
+    setWriteSampleTee?: (callback: ((...args: unknown[]) => void) | null) => void
+  }
+  teeable.setWriteSampleTee?.((...args: unknown[]) => {
+    for (const arg of args) {
+      if (Buffer.isBuffer(arg) || arg instanceof Uint8Array) {
+        capture.recordOutboundPcm(Buffer.from(arg))
+        return
+      }
+    }
+  })
   trackAny.__pcmOutWrapped = true
   return track
 }

@@ -114,6 +114,101 @@ pub fn stt_pre_roll_capacity_ms(config: &VadConfig) -> u32 {
         .saturating_add(config.min_speech_duration_ms)
 }
 
+/// How long a short voiced burst that ended without VAD `SpeechStart` is kept for the next utterance.
+pub const SHORT_BURST_RETAIN_MS: u32 = 1500;
+/// Silence inserted between a retained burst and the pre-roll ring when they are not contiguous.
+pub const SHORT_BURST_SEPARATOR_MS: u32 = 200;
+
+/// Keeps short voiced bursts (below `min_speech_duration_ms`, so no VAD `SpeechStart`) for
+/// [`SHORT_BURST_RETAIN_MS`], so the part that already fell out of the pre-roll ring can be
+/// prepended when the next utterance opens a new STT stream. Mono s16le 16 kHz bytes.
+#[derive(Default)]
+pub struct ShortBurstRetainer {
+    /// Voiced pending frames since the last inactive frame.
+    current: Vec<u8>,
+    /// Bursts that ended (gaps between them filled with zeros).
+    retained: Vec<u8>,
+    /// Media ms after the end of `retained` (every frame pushed after it).
+    since_retained_end_ms: u32,
+}
+
+impl ShortBurstRetainer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn cap_bytes() -> usize {
+        mono_s16le_bytes_for_duration_ms(SHORT_BURST_RETAIN_MS)
+    }
+
+    /// Feed one frame that went to the pre-roll ring while the gate was closed.
+    pub fn on_frame(&mut self, mono: &[u8], voiced_pending: bool, duration_ms: u32) {
+        if voiced_pending {
+            self.current.extend_from_slice(mono);
+            if !self.retained.is_empty() {
+                self.since_retained_end_ms = self.since_retained_end_ms.saturating_add(duration_ms);
+            }
+            return;
+        }
+        if !self.current.is_empty() {
+            if !self.retained.is_empty() {
+                // `since_retained_end_ms` also counts the voiced frames of `current`, which are
+                // appended below, so only the remainder is the gap.
+                let current_ms = mono_duration_ms_from_bytes(self.current.len());
+                let gap = mono_s16le_bytes_for_duration_ms(
+                    self.since_retained_end_ms.saturating_sub(current_ms),
+                );
+                self.retained.resize(self.retained.len() + gap, 0);
+            }
+            let current = std::mem::take(&mut self.current);
+            self.retained.extend_from_slice(&current);
+            let cap = Self::cap_bytes();
+            if self.retained.len() > cap {
+                let drop_len = (self.retained.len() - cap + 1) & !1;
+                self.retained.drain(..drop_len);
+            }
+            self.since_retained_end_ms = 0;
+        }
+        if !self.retained.is_empty() {
+            self.since_retained_end_ms = self.since_retained_end_ms.saturating_add(duration_ms);
+            if self.since_retained_end_ms > SHORT_BURST_RETAIN_MS {
+                self.retained.clear();
+                self.since_retained_end_ms = 0;
+            }
+        }
+    }
+
+    /// At a SpeechStart that opens a new stream: the part of the retained burst that is no
+    /// longer in the ring (head), and whether it is contiguous with the ring content.
+    pub fn take_for_new_stream(&mut self, ring_capacity_ms: u32) -> Option<(Bytes, bool)> {
+        let result = if self.retained.is_empty() {
+            None
+        } else {
+            let retained_ms = mono_duration_ms_from_bytes(self.retained.len());
+            let age_ms = self.since_retained_end_ms;
+            let in_ring_ms = ring_capacity_ms.saturating_sub(age_ms).min(retained_ms);
+            let out_ms = retained_ms - in_ring_ms;
+            if out_ms == 0 {
+                None
+            } else {
+                let end = mono_s16le_bytes_for_duration_ms(out_ms).min(self.retained.len());
+                Some((
+                    Bytes::copy_from_slice(&self.retained[..end]),
+                    in_ring_ms > 0,
+                ))
+            }
+        };
+        self.clear();
+        result
+    }
+
+    pub fn clear(&mut self) {
+        self.current.clear();
+        self.retained.clear();
+        self.since_retained_end_ms = 0;
+    }
+}
+
 fn mono_s16le_bytes_for_duration_ms(duration_ms: u32) -> usize {
     (STT_PCM_SAMPLE_RATE as usize * duration_ms as usize / 1000).saturating_mul(2)
 }
@@ -205,5 +300,83 @@ mod tests {
         };
         let padded = ring.drain_padded_to_capacity();
         assert_eq!(padded, plain);
+    }
+
+    fn feed(r: &mut ShortBurstRetainer, voiced: bool, frames: u32, fill: u8) {
+        for _ in 0..frames {
+            r.on_frame(&vec![fill; 640], voiced, 20);
+        }
+    }
+
+    #[test]
+    fn burst_then_silence_within_window_is_kept() {
+        let mut r = ShortBurstRetainer::new();
+        feed(&mut r, true, 8, 7);
+        feed(&mut r, false, 50, 0);
+        assert_eq!(r.retained.len(), 8 * 640);
+        assert_eq!(r.since_retained_end_ms, 1000);
+    }
+
+    #[test]
+    fn burst_older_than_window_is_cleared() {
+        let mut r = ShortBurstRetainer::new();
+        feed(&mut r, true, 8, 7);
+        feed(&mut r, false, 76, 0);
+        assert!(r.retained.is_empty());
+        assert!(r.take_for_new_stream(700).is_none());
+    }
+
+    #[test]
+    fn burst_fully_in_ring_returns_none() {
+        let mut r = ShortBurstRetainer::new();
+        feed(&mut r, true, 8, 7);
+        feed(&mut r, false, 15, 0);
+        assert!(r.take_for_new_stream(700).is_none());
+        assert!(r.retained.is_empty());
+    }
+
+    #[test]
+    fn partial_overlap_returns_out_of_ring_head_contiguous() {
+        let mut r = ShortBurstRetainer::new();
+        feed(&mut r, true, 8, 7); // 160 ms
+        feed(&mut r, false, 30, 0); // age 600 ms, ring 700 -> 100 ms of burst in ring
+        let (head, contiguous) = r.take_for_new_stream(700).unwrap();
+        assert!(contiguous);
+        assert_eq!(head.len(), mono_s16le_bytes_for_duration_ms(60));
+        assert!(head.iter().all(|&b| b == 7));
+    }
+
+    #[test]
+    fn no_overlap_returns_whole_burst_separated() {
+        let mut r = ShortBurstRetainer::new();
+        feed(&mut r, true, 8, 7);
+        feed(&mut r, false, 70, 0); // age 1400 > ring 700
+        let (head, contiguous) = r.take_for_new_stream(700).unwrap();
+        assert!(!contiguous);
+        assert_eq!(head.len(), 8 * 640);
+    }
+
+    #[test]
+    fn two_bursts_are_joined_with_zero_gap() {
+        let mut r = ShortBurstRetainer::new();
+        feed(&mut r, true, 3, 7);
+        feed(&mut r, false, 10, 0); // 200 ms gap
+        feed(&mut r, true, 3, 9);
+        feed(&mut r, false, 1, 0);
+        assert_eq!(r.retained.len(), (3 + 10 + 3) * 640);
+        assert!(r.retained[..3 * 640].iter().all(|&b| b == 7));
+        assert!(r.retained[3 * 640..13 * 640].iter().all(|&b| b == 0));
+        assert!(r.retained[13 * 640..].iter().all(|&b| b == 9));
+    }
+
+    #[test]
+    fn retained_is_capped_at_window() {
+        let mut r = ShortBurstRetainer::new();
+        feed(&mut r, true, 60, 5); // 1200 ms
+        feed(&mut r, false, 1, 0);
+        feed(&mut r, true, 40, 6); // 800 ms
+        feed(&mut r, false, 1, 0);
+        assert_eq!(r.retained.len(), mono_s16le_bytes_for_duration_ms(1500));
+        assert!(r.retained.ends_with(&vec![6u8; 40 * 640]));
     }
 }

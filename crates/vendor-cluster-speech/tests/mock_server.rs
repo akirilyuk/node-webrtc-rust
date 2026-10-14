@@ -53,6 +53,16 @@ pub struct MockSpeechState {
     pub rejected_opens: Arc<AtomicUsize>,
     /// Milliseconds the mock waits between the final transcript and `Finalized` (0 = none).
     pub finalized_delay_ms: Arc<AtomicUsize>,
+    /// Milliseconds the mock waits after `Finalize` before sending the final transcript
+    /// (0 = none). `finalized_delay_ms` still applies between the final and `Finalized`.
+    pub final_delay_ms: Arc<AtomicUsize>,
+    /// When non-zero, a `transcribe` call that is the Nth+1 accepted open (N =
+    /// `open_header_delay_once_after`) sleeps this many ms before returning its response, so the
+    /// client's `transcribe(request).await` waits for headers. 600_000 = effectively never.
+    pub open_header_delay_ms: Arc<AtomicUsize>,
+    /// Number of accepted opens that proceed normally before `open_header_delay_ms` applies.
+    /// Only the one open whose 1-based index is `open_header_delay_once_after + 1` is delayed.
+    pub open_header_delay_once_after: Arc<AtomicUsize>,
     /// When `true`, final transcripts read `final-{n}` with `n` = the finalize count.
     pub numbered_finals: Arc<AtomicBool>,
     /// Every audio message the server read: `(1-based stream index, bytes)` in arrival order.
@@ -124,6 +134,17 @@ impl Speech for MockSpeech {
             return Err(Status::resource_exhausted("mock: speech pod full"));
         }
         let stream_idx = self.state.transcribe_streams.fetch_add(1, Ordering::SeqCst) + 1;
+        let header_delay_ms = self.state.open_header_delay_ms.load(Ordering::SeqCst);
+        if header_delay_ms > 0
+            && stream_idx
+                == self
+                    .state
+                    .open_header_delay_once_after
+                    .load(Ordering::SeqCst)
+                    + 1
+        {
+            tokio::time::sleep(Duration::from_millis(header_delay_ms as u64)).await;
+        }
         let mut inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(32);
         let state = self.state.clone();
@@ -208,6 +229,10 @@ impl Speech for MockSpeech {
                     }
                     Some(transcribe_request::Msg::Finalize(SttFinalize {})) => {
                         let finalize_n = state.finalize_count.fetch_add(1, Ordering::SeqCst) + 1;
+                        let final_delay = state.final_delay_ms.load(Ordering::SeqCst);
+                        if final_delay > 0 {
+                            tokio::time::sleep(Duration::from_millis(final_delay as u64)).await;
+                        }
                         let _ = tx
                             .send(Ok(TranscribeResponse {
                                 msg: Some(transcribe_response::Msg::Transcript(SttTranscript {

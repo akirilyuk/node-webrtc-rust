@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static REOPEN_IDLE_ERROR: AtomicU64 = AtomicU64::new(0);
 static REOPEN_RELOCATE: AtomicU64 = AtomicU64::new(0);
 static REOPEN_GOAWAY: AtomicU64 = AtomicU64::new(0);
+/// Transcribe opens that got no response headers within the open bound and were retried.
+static REOPEN_OPEN_TIMEOUT: AtomicU64 = AtomicU64::new(0);
 /// STT audio accepted by `push_audio` and not yet written to the speech pod, all sessions.
 static STT_QUEUED_BYTES: AtomicU64 = AtomicU64::new(0);
 
@@ -42,6 +44,9 @@ pub fn inc_stt_reopen(reason: &str) {
         "goaway" => {
             REOPEN_GOAWAY.fetch_add(1, Ordering::Relaxed);
         }
+        "open_timeout" => {
+            REOPEN_OPEN_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+        }
         _ => {}
     }
 }
@@ -51,6 +56,7 @@ pub fn stt_reopen_total(reason: &str) -> u64 {
         "idle_error" => REOPEN_IDLE_ERROR.load(Ordering::Relaxed),
         "relocate" => REOPEN_RELOCATE.load(Ordering::Relaxed),
         "goaway" => REOPEN_GOAWAY.load(Ordering::Relaxed),
+        "open_timeout" => REOPEN_OPEN_TIMEOUT.load(Ordering::Relaxed),
         _ => 0,
     }
 }
@@ -194,6 +200,7 @@ pub fn reset_stt_reopen_metrics() {
     REOPEN_IDLE_ERROR.store(0, Ordering::Relaxed);
     REOPEN_RELOCATE.store(0, Ordering::Relaxed);
     REOPEN_GOAWAY.store(0, Ordering::Relaxed);
+    REOPEN_OPEN_TIMEOUT.store(0, Ordering::Relaxed);
     UTTERANCE_STREAMS.store(0, Ordering::Relaxed);
     OPEN_MS_SESSION_START.reset();
     OPEN_MS_UTTERANCE.reset();

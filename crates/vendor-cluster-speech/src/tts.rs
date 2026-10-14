@@ -24,6 +24,9 @@ use crate::stt::{auth_metadata, session_context_proto};
 const TTS_OPEN_WAIT_MAX_MS: u64 = 30_000;
 /// Pause between attempts at a refused synthesis start.
 const TTS_OPEN_RETRY_MS: u64 = 200;
+/// Bound on `synthesize()` returning response headers; a call the server accepted but never
+/// answers must not park the synthesis. Override with `SPEECH_TTS_OPEN_TIMEOUT_MS`.
+const SYNTH_OPEN_TIMEOUT_MS: u64 = 10_000;
 
 fn open_wait_max_ms_from_env() -> u64 {
     static VALUE: OnceLock<u64> = OnceLock::new();
@@ -139,7 +142,25 @@ impl ClusterSherpaTts {
             if let Ok(auth) = auth_metadata(&self.token) {
                 request.metadata_mut().insert("authorization", auth);
             }
-            let refusal = match client.synthesize(request).await {
+            let open_timeout_ms: u64 = std::env::var("SPEECH_TTS_OPEN_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(SYNTH_OPEN_TIMEOUT_MS);
+            let opened = match tokio::time::timeout(
+                Duration::from_millis(open_timeout_ms),
+                client.synthesize(request),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    return Err(SpeechError::Vendor {
+                        vendor: "cluster-sherpa".into(),
+                        message: format!("synthesize open timed out after {open_timeout_ms} ms"),
+                    });
+                }
+            };
+            let refusal = match opened {
                 Ok(resp) => {
                     let mut stream = resp.into_inner();
                     match stream.message().await {

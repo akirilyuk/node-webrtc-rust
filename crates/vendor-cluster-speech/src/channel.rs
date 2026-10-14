@@ -132,6 +132,15 @@ pub async fn stt_channel(endpoint: &str) -> SpeechResult<Channel> {
     Ok(channel)
 }
 
+/// Drop the cached STT channel so the next `stt_channel` call dials a new connection; used after
+/// an open that never got response headers. Existing clones keep working.
+pub fn evict_stt_channel(endpoint: &str) {
+    stt_channels()
+        .lock()
+        .expect("stt channel cache")
+        .remove(endpoint);
+}
+
 pub async fn tts_channel(endpoint: &str) -> SpeechResult<Channel> {
     {
         let mut map = tts_channels().lock().expect("tts channel cache");

@@ -17,7 +17,8 @@ use tonic::metadata::MetadataValue;
 use tonic::Request;
 
 use crate::channel::{
-    resolve_speech_token, resolve_stt_endpoint, stt_channel, MAX_GRPC_MESSAGE_BYTES,
+    evict_stt_channel, resolve_speech_token, resolve_stt_endpoint, stt_channel,
+    MAX_GRPC_MESSAGE_BYTES,
 };
 use crate::metrics::{
     add_stt_queued_bytes, inc_stt_reopen, inc_stt_utterance_streams, record_stt_stream_open_ms,
@@ -34,6 +35,11 @@ const QUEUED_ERROR_MS: usize = 10_000;
 /// Upper bound of the finalize wait added for audio still queued behind the pod.
 const FINALIZE_QUEUED_WAIT_CAP_MS: usize = 30_000;
 const READY_WAIT_MS: u64 = 15_000;
+/// Bound on `transcribe()` returning response headers; a stream the server accepted but never
+/// answers must not park the worker. Override with `SPEECH_STT_OPEN_TIMEOUT_MS`.
+const OPEN_HEADERS_TIMEOUT_MS: u64 = 5_000;
+/// Longest `stop()` waits for the worker task before aborting it.
+const STOP_JOIN_MS: u64 = 2_000;
 /// How long finalize waits for the server's Finalized beyond the queued audio. Finalized normally
 /// arrives within a few hundred ms. The wait only runs this long when the speech pod lags, and a
 /// fallback final from the last partial is worse than the extra latency (2026-10-07 load test:
@@ -376,7 +382,7 @@ async fn stream_worker(
     ready_tx.send_replace(false);
     // One channel for the whole worker: it multiplexes HTTP/2 streams (one per Transcribe call)
     // and the load balancer places each new stream.
-    let channel = match stt_channel(&endpoint).await {
+    let mut channel = match stt_channel(&endpoint).await {
         Ok(c) => c,
         Err(e) => {
             let _ = transcript_tx.send(SttTranscript::Final(String::new()));
@@ -432,9 +438,18 @@ async fn stream_worker(
         }
         open_pending.store(true, Ordering::SeqCst);
         let open_started = Instant::now();
-        let mut grpc = match client.transcribe(request).await {
-            Ok(resp) => resp.into_inner(),
-            Err(status) => {
+        let open_timeout_ms: u64 = std::env::var("SPEECH_STT_OPEN_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(OPEN_HEADERS_TIMEOUT_MS);
+        let mut grpc = match tokio::time::timeout(
+            Duration::from_millis(open_timeout_ms),
+            client.transcribe(request),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => resp.into_inner(),
+            Ok(Err(status)) => {
                 inc_stt_reopen("idle_error");
                 match streak.mark_denied(Instant::now()) {
                     DeniedLog::First => {
@@ -447,6 +462,20 @@ async fn stream_worker(
                 }
                 open_pending.store(true, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(200)).await;
+                reopen = true;
+                continue;
+            }
+            Err(_elapsed) => {
+                inc_stt_reopen("open_timeout");
+                eprintln!("[cluster-sherpa] transcribe open timed out after {open_timeout_ms} ms (no response headers); reconnecting");
+                evict_stt_channel(&endpoint);
+                match stt_channel(&endpoint).await {
+                    Ok(c) => channel = c,
+                    Err(e) => {
+                        eprintln!("[cluster-sherpa] reconnect after open timeout failed: {e}");
+                    }
+                }
+                open_pending.store(true, Ordering::SeqCst);
                 reopen = true;
                 continue;
             }
@@ -661,7 +690,17 @@ impl SttProvider for ClusterSherpaStt {
             let _ = tx.send(StreamCommand::Stop);
         }
         if let Some(task) = inner.stream_task.take() {
-            let _ = task.await;
+            let mut task = task;
+            if tokio::time::timeout(Duration::from_millis(STOP_JOIN_MS), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                eprintln!(
+                    "[cluster-sherpa] stt worker did not stop within {STOP_JOIN_MS} ms; aborted"
+                );
+                self.open_pending.store(false, Ordering::SeqCst);
+            }
         }
         clear_queued(&self.queued_bytes);
         inner.transcript_rx = None;

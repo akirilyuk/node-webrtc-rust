@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.48] - 2026-10-14
+
 ### Added
 
 - **helpers** — `SessionPod`: `preparedSessionJoinGraceMs` option for the idle grace of a prepared session that no client has joined (defaults to `neverConnectedRejoinGraceMs`).

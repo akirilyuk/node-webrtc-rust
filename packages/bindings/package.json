@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/bindings",
-  "version": "0.9.47",
+  "version": "0.9.48",
   "description": "NAPI-RS native bindings for node-webrtc-rust — WebRTC peer connections, data channels, and conference audio mixing",
   "keywords": [
     "webrtc",

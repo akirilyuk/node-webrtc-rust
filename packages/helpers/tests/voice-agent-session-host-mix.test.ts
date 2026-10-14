@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { ClientAudioMixer as ClientAudioMixerImpl } from '../src/client-audio-mixer.js'
+
 import type {
   ClientAudioMixer,
   ClientMixGraph,
@@ -393,5 +395,92 @@ describe('VoiceAgentSessionHost mix APIs', () => {
     expect(status.ttsPose).toEqual(ttsPose)
     expect(status.mutedBy).toEqual(['client-b'])
     expect(status.groupId).toBe('g1')
+  })
+})
+
+describe('VoiceAgentSessionHost barge-in clears the client mix TTS queue', () => {
+  const bargeIn = { type: 'barge_in' } as never
+
+  async function runBargeIn(
+    withHandler: boolean,
+    bargeFlushesTts = true,
+  ): Promise<{
+    spy: ReturnType<typeof vi.spyOn>
+    send: ReturnType<typeof vi.fn>
+    onSpeechEvent: ReturnType<typeof vi.fn>
+  }> {
+    const onSpeechEvent = vi.fn()
+    const host = new VoiceAgentSessionHost(createStubSignaling() as never, [], {
+      voiceConfig: { stt: { provider: 'mock' }, tts: { provider: 'mock' } } as never,
+      sessionMode: 'voice+data',
+      clientMixGraph: createMockMixGraph(),
+      voiceHandler: withHandler ? ({ onSpeechEvent } as never) : undefined,
+      sessionBudget: {
+        tryAcquire: () => 'lease-test',
+        release: () => undefined,
+        snapshot: () => ({ active: 0, max: 0, available: 0, rejectedTotal: 0 }),
+      },
+    })
+    const mixer = host.getClientMixer()!
+    mixer.registerPeer('peer-1')
+    const spy = vi.spyOn(ClientAudioMixerImpl.prototype, 'discardQueuedTts')
+    const send = vi.fn()
+    const agent = {
+      speechEvents: async function* () {
+        yield bargeIn
+      },
+    }
+    const session = {
+      agent,
+      controlChannel: { readyState: 'open', send },
+      syncChannel: undefined,
+      pc: undefined,
+      bargeFlushesTts,
+    }
+    const unwire = (
+      host as unknown as {
+        wireSpeechEvents: (peerId: string, session: unknown) => () => void
+      }
+    ).wireSpeechEvents('peer-1', session)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    unwire()
+    return { spy, send, onSpeechEvent }
+  }
+
+  it('barge_in speech event clears the client mix TTS queue (no voiceHandler)', async () => {
+    const { spy, send } = await runBargeIn(false)
+    expect(spy).toHaveBeenCalledWith('peer-1')
+    expect(send).toHaveBeenCalledWith(expect.stringContaining('"barge_in"'))
+    spy.mockRestore()
+  })
+
+  it('barge_in speech event clears the client mix TTS queue (with voiceHandler)', async () => {
+    const { spy, send, onSpeechEvent } = await runBargeIn(true)
+    expect(spy).toHaveBeenCalledWith('peer-1')
+    expect(send).toHaveBeenCalledWith(expect.stringContaining('"barge_in"'))
+    expect(onSpeechEvent).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+  })
+
+  it('barge_in with bargeIn.flushTts false keeps the queued TTS', async () => {
+    const { spy, send } = await runBargeIn(false, false)
+    expect(spy).not.toHaveBeenCalled()
+    expect(send).toHaveBeenCalledWith(expect.stringContaining('"barge_in"'))
+    spy.mockRestore()
+  })
+
+  it('manual flushTts discards the client mix TTS queue', async () => {
+    const host = createHost('voice+data', createMockMixGraph())
+    host.getClientMixer()!.registerPeer('peer-1')
+    const spy = vi.spyOn(ClientAudioMixerImpl.prototype, 'discardQueuedTts')
+    const nativeFlush = vi.fn(async () => undefined)
+    const agent = { flushTts: nativeFlush }
+    ;(
+      host as unknown as { wrapAgentFlushTts: (peerId: string, agent: unknown) => void }
+    ).wrapAgentFlushTts('peer-1', agent)
+    await agent.flushTts()
+    expect(nativeFlush).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledWith('peer-1')
+    spy.mockRestore()
   })
 })

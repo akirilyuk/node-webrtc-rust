@@ -1083,6 +1083,8 @@ impl VoiceAgent {
     /// partial (late or slow audio is never cut off for being late) AND the same time passed on
     /// the wall clock (a burst of audio gives the STT no time to decode). Wall time alone backs
     /// it up only when inbound PCM has stopped completely (`pcm_idle` >= the timeout).
+    /// While VAD is in speech only the hard timeout applies to the pure-stall case (a stalled reader
+    /// is not a stopped sender).
     /// `pcm_idle` is `Duration::ZERO` when called from inside `process_inbound_pcm`.
     fn c1_listen_expired(
         inner: &AgentInner,
@@ -1107,12 +1109,15 @@ impl VoiceAgent {
         if media_ms >= timeout_ms && wall_at_least(timeout_ms) && backlog_ms <= slack {
             return true;
         }
-        // Pure-stall safety net: no PCM at all for a full timeout.
+        // Pure-stall safety net: no PCM at all for a full timeout. A frozen inbound reader (CPU-starved
+        // host event loop) looks exactly like a stopped sender while its audio waits in the track
+        // buffer, so the normal timeout never closes a stream while VAD is in speech (same rule as C2);
+        // only the hard timeout bounds that case.
         let stopped = pcm_idle >= std::time::Duration::from_millis(timeout_ms);
         if stopped && wall_at_least(hard_timeout_ms) {
             return true;
         }
-        stopped && wall_at_least(timeout_ms) && backlog_ms <= slack
+        stopped && !Self::vad_is_speaking(inner) && wall_at_least(timeout_ms) && backlog_ms <= slack
     }
 
     fn maybe_log_c1_backlog_deferred(inner: &mut AgentInner, backlog_ms: u32) {

@@ -25,7 +25,7 @@ import {
   VOICE_CONTROL_CHANNEL_LABEL,
   VOICE_SYNC_CHANNEL_LABEL,
   agentSpeakToControlMessage,
-  forwardVoiceAgentSpeechToDataChannel,
+  SPEECH_EVENT_TYPE,
   speechEventToControlMessage,
   wireVoiceAgentToDataChannel,
   type SpeechEvent,
@@ -320,6 +320,8 @@ interface ClientSession {
   controlChannel: RTCDataChannel
   syncChannel?: RTCDataChannel
   agent?: VoiceAgent
+  /** False when `vad.bargeIn.flushTts` is false: barge_in does not stop the agent reply. */
+  bargeFlushesTts: boolean
   agentOut?: LocalAudioTrack
   /** Voice+Data: TTS sidecar — not on PC; VoiceAgent attaches here. */
   agentTtsOut?: LocalAudioTrack
@@ -877,6 +879,7 @@ export class VoiceAgentSessionHost {
     } else {
       agentOut = new LocalAudioTrack(`agent-out-${peerId}`, 'voice-agent')
       agent = new VoiceAgent(this.options.voiceConfig)
+      this.wrapAgentFlushTts(peerId, agent)
       hooks.onAgentCreated(agent)
       await pc.addTrack(agentOut)
     }
@@ -887,6 +890,7 @@ export class VoiceAgentSessionHost {
       controlChannel,
       syncChannel,
       agent,
+      bargeFlushesTts: (this.options.voiceConfig.vad?.bargeIn?.flushTts ?? true) !== false,
       budgetLease,
       agentStarted: false,
       agentStartInProgress: false,
@@ -1371,39 +1375,53 @@ export class VoiceAgentSessionHost {
     if (!session.agent) {
       return () => undefined
     }
-    if (!voiceHandler?.onSpeechEvent) {
-      return forwardVoiceAgentSpeechToDataChannel(session.agent, session.controlChannel, {
-        filter: this.options.speechEventFilter,
-      })
-    }
-
-    if (!session.agent) {
-      return () => undefined
-    }
     const agent = session.agent
 
-    const ctx = this.createSessionContext(
-      peerId,
-      agent,
-      session.controlChannel,
-      session.syncChannel,
-      session.pc,
-    )
+    const ctx = voiceHandler?.onSpeechEvent
+      ? this.createSessionContext(
+          peerId,
+          agent,
+          session.controlChannel,
+          session.syncChannel,
+          session.pc,
+        )
+      : undefined
     let active = true
 
     void (async () => {
       for await (const event of agent.speechEvents()) {
         if (!active) break
+        if (event.type === SPEECH_EVENT_TYPE.bargeIn && session.bargeFlushesTts) {
+          this.discardMixerTts(peerId)
+        }
         this.sendSpeechEventToControlChannel(session.controlChannel, event)
-        void Promise.resolve(voiceHandler.onSpeechEvent!(ctx, event)).catch((error: unknown) => {
-          console.error(`[voice ${peerId}] voiceHandler.onSpeechEvent failed:`, error)
-        })
+        if (ctx && voiceHandler?.onSpeechEvent) {
+          void Promise.resolve(voiceHandler.onSpeechEvent(ctx, event)).catch((error: unknown) => {
+            console.error(`[voice ${peerId}] voiceHandler.onSpeechEvent failed:`, error)
+          })
+        }
       }
     })()
 
     return () => {
       active = false
     }
+  }
+
+  /** Manual `flushTts()` emits no barge_in, so the host discards the mix queue itself. */
+  private wrapAgentFlushTts(peerId: string, agent: VoiceAgent): void {
+    const nativeFlushTts = agent.flushTts.bind(agent)
+    agent.flushTts = async () => {
+      await nativeFlushTts()
+      this.discardMixerTts(peerId)
+    }
+  }
+
+  /** Barge-in or manual flush stopped the agent reply: its TTS still queued in the client mix pump must not play. */
+  private discardMixerTts(peerId: string): void {
+    const mixer = this.clientMixer
+    if (!mixer || !mixer.listRegisteredPeers().includes(peerId)) return
+    mixer.discardQueuedTts(peerId)
   }
 
   private sendSpeechEventToControlChannel(channel: RTCDataChannel, event: SpeechEvent): void {

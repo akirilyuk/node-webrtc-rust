@@ -541,10 +541,9 @@ async fn pcm_fully_stopped_still_forces_finalize_after_timeout() {
     assert_eq!(finals, vec![words(4)]);
 }
 
-// Guards the safety net: speech starts, the STT emits nothing, PCM stops for good: C1 still
-// closes the stream after stt_listen_timeout_ms (4000 ms of wall time).
+// Guards the safety net: speech starts, the STT emits nothing, PCM stops for good while VAD is in speech. A stalled inbound reader looks the same, so the 4 s timeout must not close it (that would lose buffered words); the hard timeout (3 × stt_listen_timeout_ms = 12 s) still closes the stream.
 #[tokio::test]
-async fn c1_closes_when_pcm_fully_stopped_without_partials() {
+async fn c1_closes_at_hard_timeout_when_pcm_stops_mid_speech() {
     let script = Arc::new(Mutex::new(Script::default()));
     script.lock().unwrap().first_partial_loud_ms = u32::MAX;
     let agent = make_agent(&script).await;
@@ -554,11 +553,17 @@ async fn c1_closes_when_pcm_fully_stopped_without_partials() {
         agent.process_inbound_pcm(loud.clone(), 20).await.unwrap();
         tokio::time::sleep(Duration::from_millis(FRAME_MS)).await;
     }
-    tokio::time::sleep(Duration::from_millis(3000)).await;
+    tokio::time::sleep(Duration::from_millis(4800)).await;
     let (_, early) = finals_and_kinds(&mut events);
-    assert_eq!(early, 0, "C1 closed before the timeout");
-    tokio::time::sleep(Duration::from_millis(1800)).await;
+    assert_eq!(
+        early, 0,
+        "C1 closed a mid-speech stall at the normal timeout"
+    );
+    tokio::time::sleep(Duration::from_millis(8000)).await;
     let (_, not_found) = finals_and_kinds(&mut events);
     let _ = agent.stop().await;
-    assert_eq!(not_found, 1, "C1 must close once PCM has stopped");
+    assert_eq!(
+        not_found, 1,
+        "C1 hard timeout must close once PCM has stopped"
+    );
 }

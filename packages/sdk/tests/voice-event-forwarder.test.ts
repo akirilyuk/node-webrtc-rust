@@ -29,11 +29,12 @@ describe('VoiceAgent native speech event forwarder', () => {
     for (const fn of cleanups.splice(0)) await fn().catch(() => undefined)
   })
 
-  async function startVadAgent(): Promise<VoiceAgent> {
+  async function startVadAgent(mode: 'both' | 'stream' = 'both'): Promise<VoiceAgent> {
     const { userInbound, cleanup } = await createVoiceLoopback()
     cleanups.push(cleanup)
     const agent = new VoiceAgent({
       vad: { enabled: true, provider: 'energy', threshold: 0.05, minSpeechDurationMs: 100 },
+      events: { mode },
     })
     await agent.attach({
       inboundTrack: userInbound,
@@ -99,5 +100,32 @@ describe('VoiceAgent native speech event forwarder', () => {
     expect(result).not.toBe('timeout')
     expect(Date.now() - started).toBeLessThan(500)
     expect((result as IteratorResult<unknown>).done).toBe(true)
+  }, 30_000)
+
+  test('nextSpeechEvent called after stop resolves null', async () => {
+    const agent = await startVadAgent()
+    await agent.stop()
+    const result = await Promise.race([
+      agent.getNativeAgent().nextSpeechEvent(),
+      sleep(200).then(() => 'timeout' as const),
+    ])
+    expect(result).toBeNull()
+  }, 30_000)
+
+  test('events queued before stop are still delivered', async () => {
+    const agent = await startVadAgent('stream')
+    const native = agent.getNativeAgent()
+    // Stream mode: no JS pull loop drains the queue in this test.
+    const tone = toneFrame()
+    for (let n = 0; n < 15; n++) await native.processInboundPcm(tone, FRAME_MS)
+    await sleep(200)
+    await agent.stop()
+    const first = await Promise.race([native.nextSpeechEvent(), sleep(500).then(() => 'timeout')])
+    expect(first).not.toBe('timeout')
+    expect(first).not.toBeNull()
+    // Drain anything else queued; then the queue is empty and the call resolves null.
+    let next = await native.nextSpeechEvent()
+    for (let i = 0; i < 20 && next; i++) next = await native.nextSpeechEvent()
+    expect(next).toBeNull()
   }, 30_000)
 })

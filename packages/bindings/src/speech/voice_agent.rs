@@ -1,6 +1,6 @@
 //! VoiceAgent NAPI bindings.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -57,6 +57,8 @@ pub struct JsVoiceAgent {
     events_lagged: Arc<AtomicU64>,
     /// Woken by `stop()` so a pending `next_speech_event` resolves `None`.
     stop_notify: Arc<Notify>,
+    /// Set by `stop()`, cleared by `start()`: a late `next_speech_event` must not wait forever.
+    stopped: AtomicBool,
     /// Native inbound PCM loop task (see `start_native_inbound`).
     native_inbound: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -127,6 +129,7 @@ impl JsVoiceAgent {
             forwarder_init: std::sync::Mutex::new(Some((bus_rx, events_tx))),
             events_lagged: Arc::new(AtomicU64::new(0)),
             stop_notify: Arc::new(Notify::new()),
+            stopped: AtomicBool::new(false),
             native_inbound: std::sync::Mutex::new(None),
         })
     }
@@ -172,6 +175,7 @@ impl JsVoiceAgent {
 
     #[napi]
     pub async fn start(&self, session_context: Option<JsVoiceSessionContext>) -> Result<()> {
+        self.stopped.store(false, Ordering::SeqCst);
         // Spawned here (not in the constructor, which may run outside the runtime).
         let init = self.forwarder_init.lock().ok().and_then(|mut g| g.take());
         if let Some((rx, tx)) = init {
@@ -191,6 +195,7 @@ impl JsVoiceAgent {
             }
         }
         let result = self.inner.stop().await.map_err(speech_err);
+        self.stopped.store(true, Ordering::SeqCst);
         self.stop_notify.notify_waiters();
         result
     }
@@ -314,10 +319,20 @@ impl JsVoiceAgent {
     #[napi]
     pub async fn next_speech_event(&self) -> Result<Option<JsSpeechEvent>> {
         let mut rx = self.events_rx.lock().await;
+        if let Ok(e) = rx.try_recv() {
+            return Ok(Some(speech_event_to_js(e)));
+        }
+        // Register for the stop wake-up before checking the flag, so none can be missed.
+        let notified = self.stop_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.stopped.load(Ordering::SeqCst) {
+            return Ok(rx.try_recv().ok().map(speech_event_to_js));
+        }
         tokio::select! {
             biased;
             event = rx.recv() => Ok(event.map(speech_event_to_js)),
-            _ = self.stop_notify.notified() => Ok(None),
+            _ = &mut notified => Ok(rx.try_recv().ok().map(speech_event_to_js)),
         }
     }
 

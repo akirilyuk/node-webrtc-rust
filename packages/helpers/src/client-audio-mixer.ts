@@ -107,7 +107,7 @@ export interface ClientMixGraph {
     listenerId: string,
     pcOutbound: LocalAudioTrack,
     ttsSidecar: LocalAudioTrack,
-  ): Promise<void>
+  ): void
   stopNativePump?(listenerId: string, ttsSidecar?: LocalAudioTrack): void
   pauseNativePump?(listenerId: string): Promise<void>
   resumeNativePump?(listenerId: string): void
@@ -302,8 +302,6 @@ type PeerMixState = {
   consecutiveTtsSkips: number
   /** The native Rust pump owns this peer's outbound; the JS pump and `ttsQueue` stay unused. */
   nativePump: boolean
-  /** Pending `startNativePump` call (control calls wait for it). */
-  nativeStart?: Promise<void>
 }
 
 /** Saturating sum of two equal-length stereo PCM buffers (20 ms frames). */
@@ -467,7 +465,6 @@ export class ClientAudioMixer {
   async burstOutboundMix(peerId: string, frames = MIX_MUTE_FLUSH_FRAMES): Promise<void> {
     const native = this.peers.get(peerId)
     if (native?.nativePump) {
-      await native.nativeStart?.catch(() => undefined)
       await this.graph.burstNativePump?.(peerId, frames, false)
       return
     }
@@ -483,7 +480,6 @@ export class ClientAudioMixer {
   private async pacedBurstOutboundMix(peerId: string, frames: number): Promise<void> {
     const native = this.peers.get(peerId)
     if (native?.nativePump) {
-      await native.nativeStart?.catch(() => undefined)
       await this.graph.burstNativePump?.(peerId, frames, true)
       return
     }
@@ -510,7 +506,6 @@ export class ClientAudioMixer {
     const state = this.peers.get(peerId)
     if (!state) return
     if (state.nativePump) {
-      await state.nativeStart?.catch(() => undefined)
       await this.graph.pauseNativePump?.(peerId)
       return
     }
@@ -687,8 +682,10 @@ export class ClientAudioMixer {
     const state = this.peerState(peerId)
     if (state.pumpInterval || state.nativePump) return
 
-    if (this.canUseNativePump(state, pcOutbound)) {
-      this.startNativeMixPump(peerId, state, pcOutbound, state.sidecar)
+    if (
+      this.canUseNativePump(state, pcOutbound) &&
+      this.startNativeMixPump(peerId, state, pcOutbound, state.sidecar as LocalAudioTrack)
+    ) {
       return
     }
 
@@ -714,22 +711,31 @@ export class ClientAudioMixer {
     )
   }
 
+  /** Returns `false` (nothing changed) when the native start throws, so the JS pump takes over. */
   private startNativeMixPump(
     peerId: string,
     state: PeerMixState,
     pcOutbound: LocalAudioTrack,
-    sidecar: TtsSidecarTrack | undefined,
-  ): void {
-    // The native sink replaces the JS tee: TTS goes straight into the native queue.
-    sidecar?.setWriteSampleTee(null)
+    sidecar: LocalAudioTrack,
+  ): boolean {
+    try {
+      // The native sink is live from here: TTS the drain writes next goes to the native queue.
+      this.graph.startNativePump!(peerId, pcOutbound, sidecar)
+    } catch (err) {
+      this.warn(`[mix] native pump start failed peerId=${peerId} error=${String(err)}`)
+      return false
+    }
+    // Frames the JS pump had queued play first, in order, ahead of anything written from now on.
+    const pending = state.ttsQueue
+    state.ttsQueue = []
+    state.sidecarLeftover = Buffer.alloc(0)
+    // Synchronous native push keeps order ahead of later drain writes.
+    for (const frame of pending) sidecar.native.pushTtsSinkPcm(frame)
+    sidecar.setWriteSampleTee(null)
     state.nativePump = true
     state.pcOutbound = pcOutbound
-    const start = this.graph.startNativePump!(peerId, pcOutbound, sidecar as LocalAudioTrack)
-    state.nativeStart = start
-    start.catch((err: unknown) => {
-      this.warn(`[mix] native pump start failed peerId=${peerId} error=${String(err)}`)
-    })
     this.ensureNativeStatsTimer()
+    return true
   }
 
   private ensureNativeStatsTimer(): void {
@@ -769,12 +775,6 @@ export class ClientAudioMixer {
   private stopNativeMixPump(peerId: string, state: PeerMixState): void {
     const sidecar = state.sidecar instanceof LocalAudioTrack ? state.sidecar : undefined
     this.graph.stopNativePump?.(peerId, sidecar)
-    const start = state.nativeStart
-    if (start) {
-      // A start still in flight installs its sink late; stop again once it has settled.
-      void start.catch(() => undefined).then(() => this.graph.stopNativePump?.(peerId, sidecar))
-    }
-    state.nativeStart = undefined
     state.nativePump = false
     state.pcOutbound = undefined
     // Back to the JS tee so a later JS pump sees sidecar TTS again.

@@ -423,7 +423,7 @@ impl JsMixGraph {
     /// Starts the native mix pump for `listener_id`: a Rust task that is then the sole writer
     /// of `pc_outbound`. TTS written to `tts_sidecar` (JS or VoiceAgent drain) feeds its queue.
     #[napi]
-    pub async fn start_native_pump(
+    pub fn start_native_pump(
         &self,
         listener_id: String,
         pc_outbound: &JsLocalAudioTrack,

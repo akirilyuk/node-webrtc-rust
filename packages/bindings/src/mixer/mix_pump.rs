@@ -256,7 +256,7 @@ impl PumpIo {
 }
 
 impl NativeMixPump {
-    /// Spawns the actor task. Must be called inside a tokio runtime.
+    /// Spawns the actor task on the napi runtime (callable from a sync NAPI method).
     pub(crate) fn spawn(
         graph: Arc<Mutex<MixGraph>>,
         listener: String,
@@ -274,7 +274,7 @@ impl NativeMixPump {
             pc_outbound,
             pc_tee,
         };
-        tokio::spawn(run_pump(io, cmd_rx));
+        napi::bindgen_prelude::spawn(run_pump(io, cmd_rx));
         Self {
             cmd_tx,
             queue,

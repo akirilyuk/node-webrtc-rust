@@ -230,12 +230,12 @@ export class AudioMixGraph {
    * Starts the native mix pump for `listenerId`: a Rust task that becomes the sole writer of
    * `pcOutbound`. TTS written to `ttsSidecar` (including the VoiceAgent drain) feeds its queue.
    */
-  async startNativePump(
+  startNativePump(
     listenerId: string,
     pcOutbound: LocalAudioTrack,
     ttsSidecar: LocalAudioTrack,
-  ): Promise<void> {
-    await this.native.startNativePump(listenerId, pcOutbound.native, ttsSidecar.native)
+  ): void {
+    this.native.startNativePump(listenerId, pcOutbound.native, ttsSidecar.native)
   }
 
   /** Stops the native pump and detaches its TTS sink from the sidecar when given. */

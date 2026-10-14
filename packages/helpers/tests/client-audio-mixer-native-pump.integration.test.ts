@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { ClientAudioMixer } from '../src/client-audio-mixer.js'
 import { PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
+import { injectTtsSidecarPendingFrame } from './mix-energy-helpers.js'
 
 function nativeAvailable(): boolean {
   try {
@@ -69,7 +70,7 @@ describe.skipIf(!nativeAvailable())('ClientAudioMixer native pump', () => {
 
   async function startNative(): Promise<void> {
     mixer.startMixPump('p1', pcOut)
-    expect(await until(() => graph.nativePumpStats('p1') !== null, 5_000)).toBe(true)
+    expect(graph.nativePumpStats('p1')).not.toBeNull()
   }
 
   const nonSilent = (): Buffer[] => captured.filter((f) => peak(f) > 0)
@@ -85,6 +86,22 @@ describe.skipIf(!nativeAvailable())('ClientAudioMixer native pump', () => {
     await sleep(100)
     const peaks = nonSilent().map(peak)
     expect(peaks).toHaveLength(150)
+    for (let i = 1; i < peaks.length; i++) {
+      expect(peaks[i]).toBeGreaterThan(peaks[i - 1]!)
+    }
+  })
+
+  it('frames queued in the JS pump before the switch play first, then native frames', async () => {
+    // JS-pump state: frames sit in the mixer's own queue before the native pump exists.
+    for (let i = 0; i < 20; i++)
+      injectTtsSidecarPendingFrame(mixer, 'p1', constantFrame(1_000 + 100 * i))
+    mixer.startMixPump('p1', pcOut)
+    expect(graph.nativePumpStats('p1')).not.toBeNull()
+    for (let i = 20; i < 40; i++) await sidecar.writeSample(constantFrame(1_000 + 100 * i), 20)
+    expect(await until(() => nonSilent().length >= 40, 10_000)).toBe(true)
+    await sleep(100)
+    const peaks = nonSilent().map(peak)
+    expect(peaks).toHaveLength(40)
     for (let i = 1; i < peaks.length; i++) {
       expect(peaks[i]).toBeGreaterThan(peaks[i - 1]!)
     }

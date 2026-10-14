@@ -163,6 +163,20 @@ impl JsLocalAudioTrack {
         Ok(())
     }
 
+    /// Synchronously appends PCM to the native TTS sink (no encode). Returns `false` when no
+    /// sink is installed. Used to move frames queued by the JS pump ahead of later drain writes.
+    #[napi]
+    pub fn push_tts_sink_pcm(&self, data: Buffer) -> bool {
+        let sink = self.tts_sink.lock().ok().and_then(|g| g.clone());
+        match sink {
+            Some(queue) => {
+                queue.push_pcm(data.as_ref());
+                true
+            }
+            None => false,
+        }
+    }
+
     #[napi(getter)]
     pub fn id(&self) -> String {
         MediaStreamTrack::id(self.inner.as_ref()).to_string()

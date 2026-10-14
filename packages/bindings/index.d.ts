@@ -507,6 +507,11 @@ export declare class JsLocalAudioTrack {
    * Pass `null` to clear. Used by load-test stereo WAV capture (native TTS bypasses JS patches).
    */
   setWriteSampleTee(callback?: (...args: any[]) => any | undefined | null): void
+  /**
+   * Synchronously appends PCM to the native TTS sink (no encode). Returns `false` when no
+   * sink is installed. Used to move frames queued by the JS pump ahead of later drain writes.
+   */
+  pushTtsSinkPcm(data: Buffer): boolean
   get id(): string
   get kind(): string
   get streamId(): string
@@ -571,7 +576,7 @@ export declare class JsMixGraph {
    * Starts the native mix pump for `listener_id`: a Rust task that is then the sole writer
    * of `pc_outbound`. TTS written to `tts_sidecar` (JS or VoiceAgent drain) feeds its queue.
    */
-  startNativePump(listenerId: string, pcOutbound: JsLocalAudioTrack, ttsSidecar: JsLocalAudioTrack): Promise<void>
+  startNativePump(listenerId: string, pcOutbound: JsLocalAudioTrack, ttsSidecar: JsLocalAudioTrack): void
   /** Stops the native pump for `listener_id` and detaches the TTS sink from the sidecar. */
   stopNativePump(listenerId: string, ttsSidecar?: JsLocalAudioTrack | undefined | null): void
   /** Pauses ticking and waits (bounded) for any in-flight write to finish. */

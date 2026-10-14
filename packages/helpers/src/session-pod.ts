@@ -60,6 +60,12 @@ export interface SessionPodOptions {
    * Gives half-open / slow DTLS reconnect time to find voice-agent-server.
    */
   neverConnectedRejoinGraceMs?: number
+  /**
+   * Idle grace for a prepared session that no client has joined yet (armed when the slot is created).
+   * Defaults to {@link neverConnectedRejoinGraceMs}. Hosts that start their own join window
+   * (e.g. from a "client was told the session is ready" signal) set this to their hard cap.
+   */
+  preparedSessionJoinGraceMs?: number
   /** Server-side signaling peer id (default {@link VOICE_AGENT_SERVER_PEER_ID}). */
   serverPeerId?: string
   /** Shared across all rooms in this pod (default: process env budget). */
@@ -157,6 +163,7 @@ export class SessionPod {
   private readonly teardownIdle: boolean
   private readonly rejoinGraceMs: number
   private readonly neverConnectedRejoinGraceMs: number
+  private readonly preparedSessionJoinGraceMs: number
   private readonly log: (message: string) => void
   private readonly sessionBudget: VoiceSessionBudget
   /** Lazily created when {@link SessionPodOptions.clientMixGraph} is omitted. */
@@ -170,6 +177,8 @@ export class SessionPod {
     this.rejoinGraceMs = options.rejoinGraceMs ?? DEFAULT_SESSION_REJOIN_GRACE_MS
     this.neverConnectedRejoinGraceMs =
       options.neverConnectedRejoinGraceMs ?? DEFAULT_NEVER_CONNECTED_REJOIN_GRACE_MS
+    this.preparedSessionJoinGraceMs =
+      options.preparedSessionJoinGraceMs ?? this.neverConnectedRejoinGraceMs
     this.log = options.log ?? ((message) => console.log(message))
     this.sessionBudget = options.sessionBudget ?? getProcessVoiceSessionBudget()
   }
@@ -384,7 +393,7 @@ export class SessionPod {
     this.bindAgentSignalingReconnect(slot)
     this.slots.set(sessionId, slot)
     if (this.teardownIdle) {
-      this.scheduleIdleTeardown(sessionId, 'never_connected', this.neverConnectedRejoinGraceMs)
+      this.scheduleIdleTeardown(sessionId, 'never_connected', this.preparedSessionJoinGraceMs)
     }
     await Promise.resolve(
       this.options.onSessionChange?.({

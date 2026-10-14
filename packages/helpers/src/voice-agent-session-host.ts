@@ -25,7 +25,7 @@ import {
   VOICE_CONTROL_CHANNEL_LABEL,
   VOICE_SYNC_CHANNEL_LABEL,
   agentSpeakToControlMessage,
-  forwardVoiceAgentSpeechToDataChannel,
+  SPEECH_EVENT_TYPE,
   speechEventToControlMessage,
   wireVoiceAgentToDataChannel,
   type SpeechEvent,
@@ -1371,39 +1371,44 @@ export class VoiceAgentSessionHost {
     if (!session.agent) {
       return () => undefined
     }
-    if (!voiceHandler?.onSpeechEvent) {
-      return forwardVoiceAgentSpeechToDataChannel(session.agent, session.controlChannel, {
-        filter: this.options.speechEventFilter,
-      })
-    }
-
-    if (!session.agent) {
-      return () => undefined
-    }
     const agent = session.agent
 
-    const ctx = this.createSessionContext(
-      peerId,
-      agent,
-      session.controlChannel,
-      session.syncChannel,
-      session.pc,
-    )
+    const ctx = voiceHandler?.onSpeechEvent
+      ? this.createSessionContext(
+          peerId,
+          agent,
+          session.controlChannel,
+          session.syncChannel,
+          session.pc,
+        )
+      : undefined
     let active = true
 
     void (async () => {
       for await (const event of agent.speechEvents()) {
         if (!active) break
+        if (event.type === SPEECH_EVENT_TYPE.bargeIn) {
+          this.discardMixerTtsOnBargeIn(peerId)
+        }
         this.sendSpeechEventToControlChannel(session.controlChannel, event)
-        void Promise.resolve(voiceHandler.onSpeechEvent!(ctx, event)).catch((error: unknown) => {
-          console.error(`[voice ${peerId}] voiceHandler.onSpeechEvent failed:`, error)
-        })
+        if (ctx && voiceHandler?.onSpeechEvent) {
+          void Promise.resolve(voiceHandler.onSpeechEvent(ctx, event)).catch((error: unknown) => {
+            console.error(`[voice ${peerId}] voiceHandler.onSpeechEvent failed:`, error)
+          })
+        }
       }
     })()
 
     return () => {
       active = false
     }
+  }
+
+  /** Barge-in stops the agent reply: its TTS still queued in the client mix pump must not play. */
+  private discardMixerTtsOnBargeIn(peerId: string): void {
+    const mixer = this.clientMixer
+    if (!mixer || !mixer.listRegisteredPeers().includes(peerId)) return
+    mixer.discardQueuedTts(peerId)
   }
 
   private sendSpeechEventToControlChannel(channel: RTCDataChannel, event: SpeechEvent): void {

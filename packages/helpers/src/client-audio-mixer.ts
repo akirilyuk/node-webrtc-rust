@@ -30,8 +30,8 @@ function delayMs(ms: number): Promise<void> {
 
 /** Post-mute outbound bursts (~380ms) to replace pre-mute WebRTC playout buffer. */
 const MIX_MUTE_FLUSH_FRAMES = 19
-/** Sidecar TTS FIFO cap (~1 s at 20 ms/frame); oldest dropped on overflow. */
-const TTS_QUEUE_MAX_FRAMES = 50
+/** Sidecar TTS backlog (~1 s) above which the pump warns. The FIFO is unbounded: TTS frames are never dropped. */
+const TTS_BACKLOG_WARN_FRAMES = 50
 /** Max outbound frames emitted from one interval tick (avoids silence catch-up bursts). */
 const PUMP_MAX_FRAMES_PER_TICK = 4
 /** Sidecar enqueue within this window keeps the TTS stream "active" (skip silence on empty queue). */
@@ -201,6 +201,13 @@ export type ClientMixerWarn = (message: string, fields?: Record<string, unknown>
 
 /** Single-line text for the default `console.warn` sink (keeps stdout greps working). */
 export function formatQueuePressureLine(message: string, fields: Record<string, unknown>): string {
+  if (fields.depthMs !== undefined) {
+    // TTS backlog warning: only peerId + depth fields.
+    return (
+      `${message} peerId=${String(fields.peerId)} depthMs=${String(fields.depthMs)} ` +
+      `maxDepthMs=${String(fields.maxDepthMs)}`
+    )
+  }
   return (
     `${message} peerId=${String(fields.peerId)} compressed=+${String(fields.compressed)} ` +
     `concealed=+${String(fields.concealed)} overflowCompressed=+${String(fields.overflowCompressed)} ` +
@@ -252,8 +259,10 @@ const ZERO_QUEUE_PRESSURE: QueuePressureCounters = {
 type PeerMixState = {
   /** Full sidecar TTS frames queued for the mix pump. */
   ttsQueue: Buffer[]
-  /** Frames dropped when {@link TTS_QUEUE_MAX_FRAMES} overflowed (diagnostics). */
-  ttsQueueOverflowDrops: number
+  /** Deepest sidecar TTS backlog (frames) since the last backlog warning. */
+  ttsQueueMaxDepth: number
+  /** `performance.now()` of the last `[mix] tts backlog` warning for this peer. */
+  ttsBacklogWarnAt: number | null
   /** Partial sidecar tee bytes not yet framed to {@link PCM_FULL_FRAME_BYTES}. */
   sidecarLeftover: Buffer
   pumpInterval?: ReturnType<typeof setInterval>
@@ -335,7 +344,8 @@ export class ClientAudioMixer {
   private createPeerMixState(): PeerMixState {
     return {
       ttsQueue: [],
-      ttsQueueOverflowDrops: 0,
+      ttsQueueMaxDepth: 0,
+      ttsBacklogWarnAt: null,
       sidecarLeftover: Buffer.alloc(0),
       pumpT0: performance.now(),
       pumpWritten: 0,
@@ -595,6 +605,7 @@ export class ClientAudioMixer {
       let offset = 0
       while (offset + PCM_FULL_FRAME_BYTES <= combined.length) {
         this.enqueueTtsFrame(
+          peerId,
           state,
           Buffer.from(combined.subarray(offset, offset + PCM_FULL_FRAME_BYTES)),
         )
@@ -659,14 +670,42 @@ export class ClientAudioMixer {
     return next
   }
 
-  private enqueueTtsFrame(state: PeerMixState, frame: Buffer): void {
-    if (state.ttsQueue.length >= TTS_QUEUE_MAX_FRAMES) {
-      state.ttsQueue.shift()
-      state.ttsQueueOverflowDrops += 1
-    }
+  private enqueueTtsFrame(peerId: string, state: PeerMixState, frame: Buffer): void {
     state.ttsQueue.push(frame)
     state.lastSidecarEnqueueAt = performance.now()
     state.consecutiveTtsSkips = 0
+    const depth = state.ttsQueue.length
+    if (depth > state.ttsQueueMaxDepth) state.ttsQueueMaxDepth = depth
+    if (depth > TTS_BACKLOG_WARN_FRAMES)
+      this.maybeWarnTtsBacklog(peerId, state, state.lastSidecarEnqueueAt)
+  }
+
+  /** Throttled (QUEUE_WARN_MIN_INTERVAL_MS per peer) warning: the pump is behind the TTS producer. Frames are kept, never dropped. */
+  private maybeWarnTtsBacklog(peerId: string, state: PeerMixState, now: number): void {
+    if (state.ttsBacklogWarnAt != null && now - state.ttsBacklogWarnAt < QUEUE_WARN_MIN_INTERVAL_MS)
+      return
+    state.ttsBacklogWarnAt = now
+    const fields = {
+      peerId,
+      depthMs: state.ttsQueue.length * PCM_FRAME_DURATION_MS,
+      maxDepthMs: state.ttsQueueMaxDepth * PCM_FRAME_DURATION_MS,
+    }
+    state.ttsQueueMaxDepth = state.ttsQueue.length
+    this.warn(formatQueuePressureLine('[mix] tts backlog', fields), fields)
+  }
+
+  /**
+   * Discards queued sidecar TTS for one peer (barge-in / flush). Returns the number of frames discarded.
+   * The agent stopped this reply; its queued frames must not play after the barge-in.
+   */
+  discardQueuedTts(peerId: string): number {
+    const state = this.peers.get(peerId)
+    if (!state) return 0
+    const n = state.ttsQueue.length
+    state.ttsQueue = []
+    state.sidecarLeftover = Buffer.alloc(0)
+    state.queueWasNonEmptyLastTick = false
+    return n
   }
 
   private tryDequeueTts(state: PeerMixState): Buffer | null {

@@ -320,6 +320,8 @@ interface ClientSession {
   controlChannel: RTCDataChannel
   syncChannel?: RTCDataChannel
   agent?: VoiceAgent
+  /** False when `vad.bargeIn.flushTts` is false: barge_in does not stop the agent reply. */
+  bargeFlushesTts: boolean
   agentOut?: LocalAudioTrack
   /** Voice+Data: TTS sidecar — not on PC; VoiceAgent attaches here. */
   agentTtsOut?: LocalAudioTrack
@@ -877,6 +879,7 @@ export class VoiceAgentSessionHost {
     } else {
       agentOut = new LocalAudioTrack(`agent-out-${peerId}`, 'voice-agent')
       agent = new VoiceAgent(this.options.voiceConfig)
+      this.wrapAgentFlushTts(peerId, agent)
       hooks.onAgentCreated(agent)
       await pc.addTrack(agentOut)
     }
@@ -887,6 +890,7 @@ export class VoiceAgentSessionHost {
       controlChannel,
       syncChannel,
       agent,
+      bargeFlushesTts: (this.options.voiceConfig.vad?.bargeIn?.flushTts ?? true) !== false,
       budgetLease,
       agentStarted: false,
       agentStartInProgress: false,
@@ -1387,8 +1391,8 @@ export class VoiceAgentSessionHost {
     void (async () => {
       for await (const event of agent.speechEvents()) {
         if (!active) break
-        if (event.type === SPEECH_EVENT_TYPE.bargeIn) {
-          this.discardMixerTtsOnBargeIn(peerId)
+        if (event.type === SPEECH_EVENT_TYPE.bargeIn && session.bargeFlushesTts) {
+          this.discardMixerTts(peerId)
         }
         this.sendSpeechEventToControlChannel(session.controlChannel, event)
         if (ctx && voiceHandler?.onSpeechEvent) {
@@ -1404,8 +1408,17 @@ export class VoiceAgentSessionHost {
     }
   }
 
-  /** Barge-in stops the agent reply: its TTS still queued in the client mix pump must not play. */
-  private discardMixerTtsOnBargeIn(peerId: string): void {
+  /** Manual `flushTts()` emits no barge_in, so the host discards the mix queue itself. */
+  private wrapAgentFlushTts(peerId: string, agent: VoiceAgent): void {
+    const nativeFlushTts = agent.flushTts.bind(agent)
+    agent.flushTts = async () => {
+      await nativeFlushTts()
+      this.discardMixerTts(peerId)
+    }
+  }
+
+  /** Barge-in or manual flush stopped the agent reply: its TTS still queued in the client mix pump must not play. */
+  private discardMixerTts(peerId: string): void {
     const mixer = this.clientMixer
     if (!mixer || !mixer.listRegisteredPeers().includes(peerId)) return
     mixer.discardQueuedTts(peerId)

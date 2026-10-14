@@ -7,12 +7,14 @@ use bytes::Bytes;
 use napi::bindgen_prelude::*;
 use napi::JsFunction;
 use napi_derive::napi;
+use node_webrtc_rust_mixer::{Frame, FRAME_BYTES};
 use node_webrtc_rust_speech::{
     PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, UpdateTtsConfigOptions, VoiceAgent,
 };
 use tokio::sync::{broadcast, Mutex};
 
-use crate::media::JsLocalAudioTrack;
+use crate::media::{JsLocalAudioTrack, JsMediaStreamTrack};
+use crate::mixer::JsMixGraph;
 use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
 use crate::speech::types::{
@@ -42,6 +44,29 @@ struct VoiceAgentState {
 pub struct JsVoiceAgent {
     inner: Arc<VoiceAgent>,
     state: Arc<Mutex<VoiceAgentState>>,
+    /// Native inbound PCM loop task (see `start_native_inbound`).
+    native_inbound: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+/// Receiver-stopped errors that mean "wait for the next RTP burst" (same set as the TS loop).
+pub(crate) fn is_stream_end(message: &str) -> bool {
+    message.contains("DataChannel is not opened")
+        || message.contains("ErrClosedPipe")
+        || message.contains("closed pipe")
+}
+
+/// Injected after a stream end so the agent's VAD/STT sees the end of the utterance.
+const INBOUND_SILENCE_TAIL_FRAMES: u32 = 75;
+const INBOUND_FRAME: Duration = Duration::from_millis(20);
+
+impl Drop for JsVoiceAgent {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.native_inbound.lock() {
+            if let Some(handle) = slot.take() {
+                handle.abort();
+            }
+        }
+    }
 }
 
 #[napi]
@@ -62,6 +87,7 @@ impl JsVoiceAgent {
                 callback_wired: false,
                 outbound: None,
             })),
+            native_inbound: std::sync::Mutex::new(None),
         })
     }
 
@@ -114,7 +140,95 @@ impl JsVoiceAgent {
 
     #[napi]
     pub async fn stop(&self) -> Result<()> {
+        if let Ok(mut slot) = self.native_inbound.lock() {
+            if let Some(handle) = slot.take() {
+                handle.abort();
+            }
+        }
         self.inner.stop().await.map_err(speech_err)
+    }
+
+    /// Runs the inbound PCM loop natively: reads `track`, pushes frames into `mix_graph` for
+    /// `participant_id` (unless globally muted), notifies the track's read tee and feeds the
+    /// agent. Call after `start`.
+    #[napi]
+    pub fn start_native_inbound(
+        &self,
+        track: &JsMediaStreamTrack,
+        mix_graph: Option<&JsMixGraph>,
+        participant_id: Option<String>,
+    ) -> Result<()> {
+        let remote = track
+            .remote_track()
+            .ok_or_else(|| Error::from_reason("startNativeInbound requires a remote track"))?;
+        let read_tee = track.read_tee_handle();
+        let graph = mix_graph.map(JsMixGraph::graph_handle);
+        let mut slot = self
+            .native_inbound
+            .lock()
+            .map_err(|_| Error::from_reason("native inbound lock poisoned"))?;
+        if slot.as_ref().is_some_and(|h| !h.is_finished()) {
+            return Err(Error::from_reason("native inbound loop already running"));
+        }
+        if voice_debug_enabled() {
+            eprintln!(
+                "[voice-debug] native inbound loop started participant={}",
+                participant_id.as_deref().unwrap_or("none")
+            );
+        }
+        let agent = Arc::clone(&self.inner);
+        *slot = Some(napi::bindgen_prelude::spawn(async move {
+            let silent = Bytes::from(vec![0u8; FRAME_BYTES]);
+            let mut awaiting_next_burst = false;
+            while agent.is_running() {
+                match remote.read_sample().await {
+                    Ok(sample) => {
+                        awaiting_next_burst = false;
+                        let dur = sample.duration.as_millis() as u32;
+                        if let (Some(graph), Some(pid)) = (&graph, &participant_id) {
+                            let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
+                            if !g.is_globally_muted(pid) {
+                                #[allow(clippy::chunks_exact_to_as_chunks)]
+                                for chunk in sample.pcm.chunks_exact(FRAME_BYTES) {
+                                    g.push_frame(
+                                        pid.clone(),
+                                        Frame::new(Bytes::copy_from_slice(chunk), None),
+                                    );
+                                }
+                            }
+                        }
+                        crate::media::notify_write_tee_handle(&read_tee, sample.pcm.as_ref(), dur);
+                        if let Err(err) = agent.process_inbound_pcm(sample.pcm, dur).await {
+                            if voice_debug_enabled() {
+                                eprintln!(
+                                    "[voice-debug] native inbound processInboundPcm error: {err}"
+                                );
+                            }
+                        }
+                    }
+                    Err(err) if is_stream_end(&err.to_string()) => {
+                        if !awaiting_next_burst {
+                            awaiting_next_burst = true;
+                            for _ in 0..INBOUND_SILENCE_TAIL_FRAMES {
+                                if !agent.is_running() {
+                                    break;
+                                }
+                                let _ = agent.process_inbound_pcm(silent.clone(), 20).await;
+                                tokio::time::sleep(INBOUND_FRAME).await;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(err) => {
+                        if voice_debug_enabled() {
+                            eprintln!("[voice-debug] native inbound readSample error: {err}");
+                        }
+                        tokio::time::sleep(INBOUND_FRAME).await;
+                    }
+                }
+            }
+        }));
+        Ok(())
     }
 
     #[napi]
@@ -264,5 +378,18 @@ impl JsVoiceAgent {
     #[napi]
     pub async fn replay_last_utterance(&self) -> Result<()> {
         self.inner.replay_last_utterance().await.map_err(speech_err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_stream_end;
+
+    #[test]
+    fn stream_end_messages_match() {
+        assert!(is_stream_end("read failed: DataChannel is not opened"));
+        assert!(is_stream_end("io: ErrClosedPipe"));
+        assert!(is_stream_end("write on closed pipe"));
+        assert!(!is_stream_end("opus decode failed"));
     }
 }

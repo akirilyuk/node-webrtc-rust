@@ -570,6 +570,12 @@ impl JsMixGraph {
     }
 }
 
+impl JsMixGraph {
+    pub(crate) fn graph_handle(&self) -> Arc<Mutex<MixGraph>> {
+        Arc::clone(&self.inner)
+    }
+}
+
 impl Drop for JsMixGraph {
     fn drop(&mut self) {
         if let Ok(pumps) = self.pumps.get_mut() {

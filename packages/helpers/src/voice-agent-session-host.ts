@@ -15,7 +15,7 @@ import {
   RTCIceCandidate,
   RTCPeerConnection,
   RTCSessionDescription,
-  type RemoteAudioTrack,
+  RemoteAudioTrack,
   type RTCDataChannel,
   type RTCIceCandidateInit,
   type RTCSessionDescriptionInit,
@@ -46,7 +46,7 @@ import {
 } from './client-audio-mixer.js'
 import { AudioClipController, type PlayAudioRequest } from './audio-clip-controller.js'
 import type { ClipPlayerStatus } from '@node-webrtc-rust/sdk/player'
-import type { ClientPose, MixPlacement } from '@node-webrtc-rust/sdk/mix'
+import type { AudioMixGraph, ClientPose, MixPlacement } from '@node-webrtc-rust/sdk/mix'
 import { assertAudioPositionExclusive, type AudioPosition } from './audio-position.js'
 import {
   getProcessVoiceSessionBudget,
@@ -1211,19 +1211,7 @@ export class VoiceAgentSessionHost {
       let agentOutbound = session.agentOut
 
       const mixer = this.ensureClientMixer()
-      if (mixer) {
-        mixer.registerPeer(peerId)
-        if (
-          inboundTrack &&
-          typeof (inboundTrack as { readSample?: unknown }).readSample === 'function'
-        ) {
-          inboundTrack = mixer.wrapInboundTrack(
-            peerId,
-            inboundTrack as Parameters<ClientAudioMixer['wrapInboundTrack']>[1],
-          )
-          session.inboundTrack = inboundTrack
-        }
-      }
+      if (mixer) mixer.registerPeer(peerId)
 
       if (this.options.wrapAudioTracks && pcOutbound) {
         const wrapped = await this.options.wrapAudioTracks({
@@ -1241,6 +1229,36 @@ export class VoiceAgentSessionHost {
         agentOutbound = pcOutbound
       }
 
+      // Native inbound loop: Rust reads, mixes and feeds the agent. Only when nothing in JS
+      // wraps `readSample` (a wrapper needs every frame and keeps the JS loop).
+      let nativeInbound: false | { mixGraph?: AudioMixGraph; participantId: string } = false
+      if (
+        inboundTrack instanceof RemoteAudioTrack &&
+        inboundTrack.readSample === RemoteAudioTrack.prototype.readSample &&
+        process.env.NWR_NATIVE_INBOUND !== '0'
+      ) {
+        const graph = mixer?.getGraph()
+        if (!mixer) {
+          nativeInbound = { participantId: peerId }
+        } else if (
+          typeof (graph as Partial<AudioMixGraph> | undefined)?.getNativeGraph === 'function'
+        ) {
+          nativeInbound = { mixGraph: graph as AudioMixGraph, participantId: peerId }
+        }
+      }
+      if (mixer && !nativeInbound) {
+        if (
+          inboundTrack &&
+          typeof (inboundTrack as { readSample?: unknown }).readSample === 'function'
+        ) {
+          inboundTrack = mixer.wrapInboundTrack(
+            peerId,
+            inboundTrack as Parameters<ClientAudioMixer['wrapInboundTrack']>[1],
+          )
+          session.inboundTrack = inboundTrack
+        }
+      }
+
       if (mixer && pcOutbound) {
         session.agentTtsOut = mixer.createTtsSidecar(peerId)
         agentOutbound = session.agentTtsOut
@@ -1253,6 +1271,9 @@ export class VoiceAgentSessionHost {
       await session.agent.attach({
         inboundTrack,
         outboundTrack: agentOutbound!,
+        // Omitted when the host wrapped `readSample`: the agent then sees an overridden
+        // `readSample` and keeps the JS loop.
+        ...(nativeInbound ? { nativeInbound } : {}),
       })
 
       const startCtx = this.options.resolveVoiceAgentSessionContext?.({

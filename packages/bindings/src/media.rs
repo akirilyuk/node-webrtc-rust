@@ -28,6 +28,8 @@ pub struct JsMediaStreamTrack {
     stream_id: String,
     enabled: bool,
     remote: Option<RemoteTrack>,
+    /// Optional JS listener notified with every PCM chunk read from this remote track.
+    read_tee: Arc<Mutex<Option<WriteSampleTee>>>,
 }
 
 impl JsMediaStreamTrack {
@@ -38,7 +40,16 @@ impl JsMediaStreamTrack {
             stream_id: track.stream_id().to_string(),
             enabled: true,
             remote: Some(track),
+            read_tee: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn remote_track(&self) -> Option<RemoteTrack> {
+        self.remote.clone()
+    }
+
+    pub(crate) fn read_tee_handle(&self) -> Arc<Mutex<Option<WriteSampleTee>>> {
+        Arc::clone(&self.read_tee)
     }
 }
 
@@ -83,7 +94,28 @@ impl JsMediaStreamTrack {
             .read_sample()
             .await
             .map_err(|e| Error::from_reason(e.to_string()))?;
+        notify_write_tee_handle(
+            &self.read_tee,
+            sample.pcm.as_ref(),
+            sample.duration.as_millis() as u32,
+        );
         Ok(Buffer::from(sample.pcm.as_ref()))
+    }
+
+    /// Registers a non-blocking listener for every PCM chunk read from this remote track
+    /// (JS `readSample` and the native inbound loop). Callback is `(data, durationMs)`.
+    /// Pass `null` to clear.
+    #[napi]
+    pub fn set_read_sample_tee(&self, _env: Env, callback: Option<JsFunction>) -> Result<()> {
+        let mut slot = self
+            .read_tee
+            .lock()
+            .map_err(|e| Error::from_reason(format!("read_sample_tee lock: {e}")))?;
+        *slot = match callback {
+            Some(cb) => Some(create_tee(cb)?),
+            None => None,
+        };
+        Ok(())
     }
 }
 
@@ -147,17 +179,7 @@ impl JsLocalAudioTrack {
             .lock()
             .map_err(|e| Error::from_reason(format!("write_sample_tee lock: {e}")))?;
         *slot = match callback {
-            Some(cb) => {
-                let tsfn: WriteSampleTee =
-                    cb.create_threadsafe_function(0, |ctx| -> Result<Vec<JsUnknown>> {
-                        let (data, duration_ms) = ctx.value;
-                        let buffer = Buffer::from(data);
-                        let buf_js = to_js_unknown(&ctx.env, buffer)?;
-                        let dur_js = to_js_unknown(&ctx.env, ctx.env.create_uint32(duration_ms)?)?;
-                        Ok(vec![buf_js, dur_js])
-                    })?;
-                Some(tsfn)
-            }
+            Some(cb) => Some(create_tee(cb)?),
             None => None,
         };
         Ok(())
@@ -266,4 +288,14 @@ pub(crate) fn notify_write_tee_handle(
         (pcm.to_vec(), duration_ms),
         ThreadsafeFunctionCallMode::NonBlocking,
     );
+}
+
+fn create_tee(cb: JsFunction) -> Result<WriteSampleTee> {
+    cb.create_threadsafe_function(0, |ctx| -> Result<Vec<JsUnknown>> {
+        let (data, duration_ms) = ctx.value;
+        let buffer = Buffer::from(data);
+        let buf_js = to_js_unknown(&ctx.env, buffer)?;
+        let dur_js = to_js_unknown(&ctx.env, ctx.env.create_uint32(duration_ms)?)?;
+        Ok(vec![buf_js, dur_js])
+    })
 }

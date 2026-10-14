@@ -17,7 +17,8 @@ import {
   type JsVoiceSessionContext,
 } from '@node-webrtc-rust/bindings'
 
-import type { RemoteAudioTrack } from '../RemoteAudioTrack'
+import { RemoteAudioTrack } from '../RemoteAudioTrack'
+import type { AudioMixGraph } from '../mix/AudioMixGraph'
 import { debugEvent, debugFn } from '../debug'
 import { isVoiceDebugEnabled, voiceDebugLog } from './debug'
 import type {
@@ -371,6 +372,7 @@ export class VoiceAgent {
   private readonly native: JsVoiceAgent
   private readonly eventsMode: EventDeliveryMode
   private inboundTrack?: RemoteAudioTrack
+  private nativeInbound: VoiceAttachOptions['nativeInbound'] = true
   private inboundLoop?: Promise<void>
   private speechPullLoop?: Promise<void>
   /** Buffered events for {@link speechEvents} when mode is `'both'` (single pull consumer). */
@@ -395,6 +397,7 @@ export class VoiceAgent {
   async attach(options: VoiceAttachOptions): Promise<void> {
     debugFn(MODULE, 'attach')
     this.inboundTrack = options.inboundTrack
+    this.nativeInbound = options.nativeInbound ?? true
     await this.native.attach(options.outboundTrack.native)
   }
 
@@ -404,7 +407,7 @@ export class VoiceAgent {
     await this.native.start(toJsSessionContext(sessionContext))
     this.running = true
     voiceDebugLog(MODULE, 'native start() complete — starting inbound PCM loop')
-    this.startInboundLoop()
+    if (!this.startNativeInboundLoop()) this.startInboundLoop()
     if (this.eventsMode === 'callback' || this.eventsMode === 'both') {
       this.startSpeechEventPullLoop()
     }
@@ -688,6 +691,27 @@ export class VoiceAgent {
       await this.native.processInboundPcm(silent, INBOUND_FRAME_MS)
       await new Promise((resolve) => setTimeout(resolve, INBOUND_FRAME_MS))
     }
+  }
+
+  /** Starts the Rust inbound loop when eligible; returns `false` to use the JS loop. */
+  private startNativeInboundLoop(): boolean {
+    const track = this.inboundTrack
+    const opt = this.nativeInbound
+    if (!track || opt === false) return false
+    if (process.env.NWR_NATIVE_INBOUND === '0') return false
+    if (!(track instanceof RemoteAudioTrack)) return false
+    // A JS wrapper (own property or subclass override) must keep seeing every frame.
+    if (track.readSample !== RemoteAudioTrack.prototype.readSample) return false
+    if (typeof this.native.startNativeInbound !== 'function') return false
+    const cfg: { mixGraph?: AudioMixGraph; participantId?: string } =
+      typeof opt === 'object' ? opt : {}
+    this.native.startNativeInbound(
+      track.native,
+      cfg.mixGraph?.getNativeGraph() ?? null,
+      cfg.participantId ?? null,
+    )
+    voiceDebugLog(MODULE, 'native inbound loop started')
+    return true
   }
 
   private startInboundLoop(): void {

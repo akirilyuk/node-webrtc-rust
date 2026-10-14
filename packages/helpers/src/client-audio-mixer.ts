@@ -344,6 +344,11 @@ export class ClientAudioMixer {
     return this.graph.mixStats?.(peerId) ?? null
   }
 
+  /** The mix graph this mixer renders from (native {@link AudioMixGraph} or a test mock). */
+  getGraph(): ClientMixGraph {
+    return this.graph
+  }
+
   /** @internal Test access to the underlying graph. */
   getMixGraph(): ClientMixGraph {
     return this.graph

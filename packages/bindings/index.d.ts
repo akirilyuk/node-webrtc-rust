@@ -493,6 +493,12 @@ export declare class JsMediaStreamTrack {
   set enabled(enabled: boolean)
   /** Decodes the next inbound Opus RTP packet to stereo PCM (remote audio only). */
   readSample(): Promise<Buffer>
+  /**
+   * Registers a non-blocking listener for every PCM chunk read from this remote track
+   * (JS `readSample` and the native inbound loop). Callback is `(data, durationMs)`.
+   * Pass `null` to clear.
+   */
+  setReadSampleTee(callback?: (...args: any[]) => any | undefined | null): void
 }
 /** Media stream exposed to JavaScript (stub). */
 export declare class JsMediaStream {
@@ -675,6 +681,12 @@ export declare class JsVoiceAgent {
   attach(outboundTrack: JsLocalAudioTrack): Promise<void>
   start(sessionContext?: JsVoiceSessionContext | undefined | null): Promise<void>
   stop(): Promise<void>
+  /**
+   * Runs the inbound PCM loop natively: reads `track`, pushes frames into `mix_graph` for
+   * `participant_id` (unless globally muted), notifies the track's read tee and feeds the
+   * agent. Call after `start`.
+   */
+  startNativeInbound(track: JsMediaStreamTrack, mixGraph?: JsMixGraph | undefined | null, participantId?: string | undefined | null): void
   sendTextToTts(text: string, nonBlocking?: boolean | undefined | null, interruptible?: boolean | undefined | null): Promise<void>
   flushTts(): Promise<void>
   /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */

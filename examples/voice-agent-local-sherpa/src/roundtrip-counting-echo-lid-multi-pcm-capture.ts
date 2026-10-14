@@ -378,11 +378,27 @@ export function wrapInboundTrackForPcmCapture(
   const flagged = track as RemoteAudioTrack & { __pcmInWrapped?: boolean }
   if (flagged.__pcmInWrapped) return track
 
-  const orig = track.readSample.bind(track)
-  track.readSample = async () => {
-    const pcm = await orig()
-    capture.recordInboundRead(pcm, performance.now())
-    return pcm
+  // Native inbound loop: tap the read tee and leave `readSample` alone, so the track stays
+  // eligible for the native loop. Otherwise wrap `readSample` (JS loop).
+  const teeable = track as RemoteAudioTrack & {
+    setReadSampleTee?: (callback: ((...args: unknown[]) => void) | null) => void
+  }
+  if (typeof teeable.setReadSampleTee === 'function') {
+    teeable.setReadSampleTee((...args: unknown[]) => {
+      for (const arg of args) {
+        if (Buffer.isBuffer(arg) || arg instanceof Uint8Array) {
+          capture.recordInboundRead(Buffer.from(arg), performance.now())
+          return
+        }
+      }
+    })
+  } else {
+    const orig = track.readSample.bind(track)
+    track.readSample = async () => {
+      const pcm = await orig()
+      capture.recordInboundRead(pcm, performance.now())
+      return pcm
+    }
   }
   flagged.__pcmInWrapped = true
   return track

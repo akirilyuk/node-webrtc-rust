@@ -9,6 +9,7 @@
  */
 
 import type { LocalAudioTrack } from '../LocalAudioTrack'
+import type { AudioMixGraph } from '../mix/AudioMixGraph'
 import type { RemoteAudioTrack } from '../RemoteAudioTrack'
 
 /** How {@link SpeechEvent} is delivered: Node callbacks, `speechEvents()` iterator, or both. */
@@ -440,6 +441,13 @@ export interface VoiceAttachOptions {
   inboundTrack: RemoteAudioTrack
   /** Agent → user audio (TTS PCM). */
   outboundTrack: LocalAudioTrack
+  /**
+   * Run the inbound PCM loop natively (default `true`): Rust reads the remote track, pushes
+   * frames into `mixGraph` for `participantId`, notifies the track's read tee and feeds the
+   * agent. Falls back to the JS loop when `false`, when `NWR_NATIVE_INBOUND=0`, or when the
+   * track's `readSample` was overridden in JS.
+   */
+  nativeInbound?: boolean | { mixGraph?: AudioMixGraph; participantId?: string }
 }
 
 export type SpeechEventListener = (event: SpeechEvent) => void

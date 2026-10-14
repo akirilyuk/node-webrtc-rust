@@ -12,9 +12,22 @@ import { MediaStreamTrack } from './MediaStreamTrack'
 export class RemoteAudioTrack extends MediaStreamTrack {
   private readonly remoteNative: JsMediaStreamTrack
 
+  /** Native handle (used by the native inbound loop). */
+  get native(): JsMediaStreamTrack {
+    return this.remoteNative
+  }
+
   constructor(native: JsMediaStreamTrack) {
     super(native)
     this.remoteNative = native
+  }
+
+  /**
+   * Optional listener for every PCM chunk read from this track, in JS `readSample` and in the
+   * native inbound loop. Callback is `(data, durationMs)`. Pass `null` to clear.
+   */
+  setReadSampleTee(callback: ((data: Buffer, durationMs: number) => void) | null): void {
+    this.remoteNative.setReadSampleTee(callback ?? undefined)
   }
 
   /**

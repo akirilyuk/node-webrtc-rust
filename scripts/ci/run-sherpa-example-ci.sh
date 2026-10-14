@@ -40,6 +40,10 @@ sherpa_roundtrip_timeout_sec() {
       # time left (see run-sherpa-roundtrip-e2e.sh). Guard: roundtrip-ci-step-budget.test.ts.
       echo "${CI_SHERPA_LID_MULTI_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
+    start:roundtrip-c1-timeouts)
+      # ~75s of real-time phases (10s + 16s no-frame waits); 150s in-process wall, one VOICE_DEBUG re-run.
+      echo "${CI_SHERPA_C1_TIMEOUTS_ROUNDTRIP_TIMEOUT_SEC:-300}"
+      ;;
     start:roundtrip-load-ci)
       # 4 concurrent legs x 2 turns; 60s setup + per-turn TTS/silence/STT budget in-process.
       echo "${CI_SHERPA_LOAD_ROUNDTRIP_TIMEOUT_SEC:-420}"
@@ -57,6 +61,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:roundtrip-counting
   start:record
   start:roundtrip-utterance-timing
+  start:roundtrip-c1-timeouts
   start:roundtrip-two-phrases
   start:roundtrip-barge-in
   start:roundtrip-barge-in-buffered

@@ -9,6 +9,7 @@ use napi::bindgen_prelude::*;
 use napi::JsFunction;
 use napi_derive::napi;
 use node_webrtc_rust_mixer::{Frame, FRAME_BYTES};
+use node_webrtc_rust_speech::inbound_pump::{spawn_inbound_pump, InboundPumpHandles, InboundRead};
 use node_webrtc_rust_speech::{
     PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, UpdateTtsConfigOptions, VoiceAgent,
 };
@@ -60,7 +61,7 @@ pub struct JsVoiceAgent {
     /// Set by `stop()`, cleared by `start()`: a late `next_speech_event` must not wait forever.
     stopped: AtomicBool,
     /// Native inbound PCM loop task (see `start_native_inbound`).
-    native_inbound: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    native_inbound: std::sync::Mutex<Option<InboundPumpHandles>>,
 }
 
 /// Moves every bus event into `tx` in order. The bus holds 256 events, so this must keep
@@ -93,15 +94,11 @@ pub(crate) fn is_stream_end(message: &str) -> bool {
         || message.contains("closed pipe")
 }
 
-/// Injected after a stream end so the agent's VAD/STT sees the end of the utterance.
-const INBOUND_SILENCE_TAIL_FRAMES: u32 = 75;
-const INBOUND_FRAME: Duration = Duration::from_millis(20);
-
 impl Drop for JsVoiceAgent {
     fn drop(&mut self) {
         if let Ok(mut slot) = self.native_inbound.lock() {
-            if let Some(handle) = slot.take() {
-                handle.abort();
+            if let Some(handles) = slot.take() {
+                handles.abort();
             }
         }
     }
@@ -190,8 +187,8 @@ impl JsVoiceAgent {
     #[napi]
     pub async fn stop(&self) -> Result<()> {
         if let Ok(mut slot) = self.native_inbound.lock() {
-            if let Some(handle) = slot.take() {
-                handle.abort();
+            if let Some(handles) = slot.take() {
+                handles.abort();
             }
         }
         let result = self.inner.stop().await.map_err(speech_err);
@@ -228,58 +225,51 @@ impl JsVoiceAgent {
                 participant_id.as_deref().unwrap_or("none")
             );
         }
-        let agent = Arc::clone(&self.inner);
-        *slot = Some(napi::bindgen_prelude::spawn(async move {
-            let silent = Bytes::from(vec![0u8; FRAME_BYTES]);
-            let mut awaiting_next_burst = false;
-            while agent.is_running() {
-                match remote.read_sample().await {
-                    Ok(sample) => {
-                        awaiting_next_burst = false;
-                        let dur = sample.duration.as_millis() as u32;
-                        if let (Some(graph), Some(pid)) = (&graph, &participant_id) {
-                            let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
-                            if !g.is_globally_muted(pid) {
-                                #[allow(clippy::chunks_exact_to_as_chunks)]
-                                for chunk in sample.pcm.chunks_exact(FRAME_BYTES) {
-                                    g.push_frame(
-                                        pid.clone(),
-                                        Frame::new(Bytes::copy_from_slice(chunk), None),
-                                    );
-                                }
-                            }
-                        }
-                        crate::media::notify_write_tee_handle(&read_tee, sample.pcm.as_ref(), dur);
-                        if let Err(err) = agent.process_inbound_pcm(sample.pcm, dur).await {
-                            if voice_debug_enabled() {
-                                eprintln!(
-                                    "[voice-debug] native inbound processInboundPcm error: {err}"
-                                );
-                            }
-                        }
-                    }
-                    Err(err) if is_stream_end(&err.to_string()) => {
-                        if !awaiting_next_burst {
-                            awaiting_next_burst = true;
-                            for _ in 0..INBOUND_SILENCE_TAIL_FRAMES {
-                                if !agent.is_running() {
-                                    break;
-                                }
-                                let _ = agent.process_inbound_pcm(silent.clone(), 20).await;
-                                tokio::time::sleep(INBOUND_FRAME).await;
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    Err(err) => {
-                        if voice_debug_enabled() {
-                            eprintln!("[voice-debug] native inbound readSample error: {err}");
-                        }
-                        tokio::time::sleep(INBOUND_FRAME).await;
+        let read_agent = Arc::clone(&self.inner);
+        let process_agent = Arc::clone(&self.inner);
+        // The reader task (read, mix graph, read tee) never waits for the agent: frames reach
+        // the agent through an unbounded queue (see `inbound_pump`).
+        *slot = Some(spawn_inbound_pump(
+            move || {
+                let remote = remote.clone();
+                async move {
+                    match remote.read_sample().await {
+                        Ok(sample) => InboundRead::Pcm {
+                            duration_ms: sample.duration.as_millis() as u32,
+                            pcm: sample.pcm,
+                        },
+                        Err(err) if is_stream_end(&err.to_string()) => InboundRead::StreamEnd,
+                        Err(err) => InboundRead::Error(err.to_string()),
                     }
                 }
-            }
-        }));
+            },
+            move |pcm: &Bytes, dur: u32| {
+                if let (Some(graph), Some(pid)) = (&graph, &participant_id) {
+                    let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
+                    if !g.is_globally_muted(pid) {
+                        #[allow(clippy::chunks_exact_to_as_chunks)]
+                        for chunk in pcm.chunks_exact(FRAME_BYTES) {
+                            g.push_frame(
+                                pid.clone(),
+                                Frame::new(Bytes::copy_from_slice(chunk), None),
+                            );
+                        }
+                    }
+                }
+                crate::media::notify_write_tee_handle(&read_tee, pcm.as_ref(), dur);
+            },
+            move |pcm, dur| {
+                let agent = Arc::clone(&process_agent);
+                async move {
+                    agent
+                        .process_inbound_pcm(pcm, dur)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
+            },
+            move || read_agent.is_running(),
+            napi::bindgen_prelude::spawn,
+        ));
         Ok(())
     }
 

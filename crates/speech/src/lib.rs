@@ -50,6 +50,7 @@ pub mod agent;
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod inbound_pump;
 pub mod otel;
 pub mod pcm;
 pub mod pipeline;

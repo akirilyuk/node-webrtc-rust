@@ -8,6 +8,34 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-14
+
+### Changed
+
+- **bindings / sdk / helpers**: the per-frame voice media loops run in Rust instead of on the Node.js main thread. With 10 concurrent voice sessions in one process, JS main-thread CPU drops from 107 to 20 ms per second and process CPU by 6–9 % ([`docs/performance.md`](docs/performance.md#voice-media-loops-in-rust-0100)).
+  - **Client-mix pump:** `ClientAudioMixer` runs one Rust task per listener, with the same scheduling as before (one frame per 20 ms slot, at most 4 per wake-up, no bursts to the network). The VoiceAgent TTS drain feeds it directly: no thread-safe callback per frame, and no Opus encode into an unsent sidecar track. JS keeps the control calls and a once-a-second stats poll. New `AudioMixGraph` methods: `startNativePump`, `stopNativePump`, `pauseNativePump`, `resumeNativePump`, `burstNativePump`, `discardNativeTts`, `nativePumpStats`.
+  - **Inbound audio:** `VoiceAgent.start()` reads the inbound track in a Rust task, pushes frames into the mix graph when the session is mixed, and passes the real frame duration (60 ms packets were counted as 20 ms). This applies when the inbound track is a native `RemoteAudioTrack` whose `readSample` is not wrapped in JS; wrapped tracks keep the JS loop. New `VoiceAttachOptions.nativeInbound` and `RemoteAudioTrack.setReadSampleTee()` (recorders get the inbound PCM without wrapping `readSample`).
+  - **Speech events:** a Rust forwarder moves every event into an unbounded per-agent queue, and the SDK awaits `nextSpeechEvent()` instead of polling every 10 ms. A slow JS consumer can no longer miss events when the 256-slot event channel lags.
+  - **Fallbacks:** `NWR_MIX_NATIVE_PUMP=0` and `NWR_NATIVE_INBOUND=0` select the JS loops. The JS loops are also used automatically for mock mix graphs and non-native tracks.
+- **speech**: the C1 "no partial" pure-stall branch (no PCM for `sttListenTimeoutMs`) no longer closes a stream while VAD is in speech. A frozen inbound reader looks like a stopped sender while its audio is only delayed. In that case only the hard timeout (3 × `sttListenTimeoutMs`, 12 s by default) applies. A sender that stops completely mid-speech now gets `user_stt_not_found` after 12 s instead of 4 s; frames that keep flowing close as before.
+
+### Fixed
+
+- **helpers**: the client-mix pump dropped the oldest agent TTS frames once its queue held 1 s. A host whose JS event loop fell behind (CPU starvation) lost the middle of the agent's reply. The queue is now unbounded and a throttled `[mix] tts backlog` warning reports the backlog. A barge-in that flushes TTS (`bargeIn.flushTts` not `false`) or a manual `flushTts()` discards the queued reply.
+- **speech**: the C1 change above also fixes lost words after a multi-second stall of the inbound reader (the stream was closed mid-phrase and the following audio was trimmed).
+- **speech**: a short, quiet first word was lost when it was below `minSpeechDurationMs` and followed by a pause longer than the pre-roll. Example: "Okay" with 160 ms above the VAD threshold, then 1.4 s of silence; the final was "one two three …". Such bursts are kept for up to 3 s and prepended to the next utterance, with no duplicate when part of the burst is still in the pre-roll. A half-lost first word, with the pause slightly shorter than the pre-roll, is fixed too.
+
+### CI and tests
+
+- **test**: deterministic tests for every fix:
+  - `client-audio-mixer-tts-never-drop.test.ts`: 400 frames into a stalled pump all come out;
+  - `c1_reader_stall_test.rs`;
+  - `stt_short_first_word_test.rs`;
+  - native pump, inbound loop and event-forwarder integration tests.
+- **test**: new Sherpa smoke `start:roundtrip-c1-timeouts` (in the example CI list) covers the C1 4 s / 12 s contract over loopback WebRTC.
+- **test**: the `no-audio-queue-drop` source scan fails a PR that adds "length cap, then drop the head" to audio queues in helpers, sdk or bindings.
+- **docs**: `docs/performance.md` has the media-loop numbers and the behavior under CPU starvation. New probe `scripts/perf/js-thread-probe.mjs`.
+
 ## [0.9.48] - 2026-10-14
 
 ### Added

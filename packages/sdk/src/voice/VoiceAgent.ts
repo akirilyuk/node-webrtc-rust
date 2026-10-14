@@ -377,7 +377,7 @@ export class VoiceAgent {
   private speechPullLoop?: Promise<void>
   /** Buffered events for {@link speechEvents} when mode is `'both'` (single pull consumer). */
   private readonly speechStreamQueue: SpeechEvent[] = []
-  private readonly speechStreamWaiters: Array<(event: SpeechEvent) => void> = []
+  private readonly speechStreamWaiters: Array<(event: SpeechEvent | null) => void> = []
   private running = false
   private readonly listeners = new Map<SpeechEventName, Set<SpeechEventListener>>()
 
@@ -417,6 +417,8 @@ export class VoiceAgent {
   async stop(): Promise<void> {
     debugFn(MODULE, 'stop')
     this.running = false
+    // Release pending stream consumers; `waitSpeechStreamEvent` returns null once stopped.
+    for (const waiter of this.speechStreamWaiters.splice(0)) waiter(null)
     await this.native.stop()
   }
 
@@ -606,19 +608,18 @@ export class VoiceAgent {
         const event = await this.waitSpeechStreamEvent()
         if (event) {
           yield event
-        } else {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+        } else if (!this.running) {
+          break
         }
       }
       return
     }
     while (this.running) {
-      const event = await this.native.pullSpeechEvent()
+      const event = await this.native.nextSpeechEvent()
       if (event) {
-        const speechEvent = fromJsSpeechEvent(event)
-        yield speechEvent
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 10))
+        yield fromJsSpeechEvent(event)
+      } else if (!this.running) {
+        break
       }
     }
   }
@@ -635,16 +636,17 @@ export class VoiceAgent {
   }
 
   /**
-   * Native ThreadsafeFunction callbacks are unreliable under Node; pull from the
-   * broadcast channel and dispatch to `on()` listeners (and queue for `both` mode).
+   * Native ThreadsafeFunction callbacks are unreliable under Node. Instead this loop awaits
+   * `nextSpeechEvent()`, which a native forwarder task feeds from the event bus (no polling,
+   * no lagged drops), and dispatches to `on()` listeners (and queues for `both` mode).
    */
   private startSpeechEventPullLoop(): void {
     this.speechPullLoop = (async () => {
       while (this.running) {
         try {
-          const raw = await this.native.pullSpeechEvent()
+          const raw = await this.native.nextSpeechEvent()
           if (!raw) {
-            await new Promise((resolve) => setTimeout(resolve, 10))
+            if (!this.running) break
             continue
           }
           const event = fromJsSpeechEvent(raw)

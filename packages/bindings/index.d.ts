@@ -691,7 +691,12 @@ export declare class JsVoiceAgent {
   flushTts(): Promise<void>
   /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */
   waitTtsPlaybackIdle(): Promise<void>
-  /** Pull the next speech event for async stream consumption. */
+  /**
+   * Awaits the next speech event from the native forwarder. Resolves `null` after `stop()`.
+   * Use this from one consumer only.
+   */
+  nextSpeechEvent(): Promise<JsSpeechEvent | null>
+  /** Non-blocking variant of `next_speech_event` (kept for compatibility). */
   pullSpeechEvent(): Promise<JsSpeechEvent | null>
   setOnSpeechEvent(callback: (...args: any[]) => any): void
   /** Processes one inbound PCM frame (48 kHz stereo) through VAD/STT. */

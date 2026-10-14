@@ -1,5 +1,6 @@
 //! VoiceAgent NAPI bindings.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use node_webrtc_rust_mixer::{Frame, FRAME_BYTES};
 use node_webrtc_rust_speech::{
     PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, UpdateTtsConfigOptions, VoiceAgent,
 };
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex, Notify};
 
 use crate::media::{JsLocalAudioTrack, JsMediaStreamTrack};
 use crate::mixer::JsMixGraph;
@@ -34,7 +35,6 @@ pub(crate) fn voice_debug_enabled() -> bool {
 }
 
 struct VoiceAgentState {
-    pull_rx: Option<broadcast::Receiver<SpeechEvent>>,
     callback_wired: bool,
     outbound: Option<Arc<node_webrtc_rust_core::LocalAudioTrack>>,
 }
@@ -44,8 +44,44 @@ struct VoiceAgentState {
 pub struct JsVoiceAgent {
     inner: Arc<VoiceAgent>,
     state: Arc<Mutex<VoiceAgentState>>,
+    /// Events forwarded from the broadcast bus; drained by `next_speech_event`.
+    events_rx: Arc<Mutex<mpsc::UnboundedReceiver<SpeechEvent>>>,
+    /// Sender half and bus receiver, consumed by the forwarder spawned on the first `start`.
+    forwarder_init: std::sync::Mutex<
+        Option<(
+            broadcast::Receiver<SpeechEvent>,
+            mpsc::UnboundedSender<SpeechEvent>,
+        )>,
+    >,
+    /// Broadcast events lost before the forwarder (never expected: the forwarder is native).
+    events_lagged: Arc<AtomicU64>,
+    /// Woken by `stop()` so a pending `next_speech_event` resolves `None`.
+    stop_notify: Arc<Notify>,
     /// Native inbound PCM loop task (see `start_native_inbound`).
     native_inbound: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+/// Moves every bus event into `tx` in order. The bus holds 256 events, so this must keep
+/// reading; it runs natively, so a stalled JS thread cannot make it lag.
+pub(crate) async fn forward_events(
+    mut rx: broadcast::Receiver<SpeechEvent>,
+    tx: mpsc::UnboundedSender<SpeechEvent>,
+    lagged: Arc<AtomicU64>,
+) {
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                lagged.fetch_add(n, Ordering::Relaxed);
+                eprintln!("[voice] speech events lagged: {n} dropped before the JS forwarder");
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
 }
 
 /// Receiver-stopped errors that mean "wait for the next RTP burst" (same set as the TS loop).
@@ -79,14 +115,18 @@ impl JsVoiceAgent {
         let config = config.unwrap_or_default().into();
         let registry = default_vendor_registry();
         let agent = VoiceAgent::new(config, registry).map_err(speech_err)?;
-        let pull_rx = agent.subscribe_events();
+        let bus_rx = agent.subscribe_events();
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
         Ok(Self {
             inner: agent,
             state: Arc::new(Mutex::new(VoiceAgentState {
-                pull_rx: Some(pull_rx),
                 callback_wired: false,
                 outbound: None,
             })),
+            events_rx: Arc::new(Mutex::new(events_rx)),
+            forwarder_init: std::sync::Mutex::new(Some((bus_rx, events_tx))),
+            events_lagged: Arc::new(AtomicU64::new(0)),
+            stop_notify: Arc::new(Notify::new()),
             native_inbound: std::sync::Mutex::new(None),
         })
     }
@@ -132,6 +172,11 @@ impl JsVoiceAgent {
 
     #[napi]
     pub async fn start(&self, session_context: Option<JsVoiceSessionContext>) -> Result<()> {
+        // Spawned here (not in the constructor, which may run outside the runtime).
+        let init = self.forwarder_init.lock().ok().and_then(|mut g| g.take());
+        if let Some((rx, tx)) = init {
+            napi::bindgen_prelude::spawn(forward_events(rx, tx, Arc::clone(&self.events_lagged)));
+        }
         self.inner
             .start(session_context.map(Into::into))
             .await
@@ -145,7 +190,9 @@ impl JsVoiceAgent {
                 handle.abort();
             }
         }
-        self.inner.stop().await.map_err(speech_err)
+        let result = self.inner.stop().await.map_err(speech_err);
+        self.stop_notify.notify_waiters();
+        result
     }
 
     /// Runs the inbound PCM loop natively: reads `track`, pushes frames into `mix_graph` for
@@ -262,22 +309,25 @@ impl JsVoiceAgent {
             .map_err(speech_err)
     }
 
-    /// Pull the next speech event for async stream consumption.
+    /// Awaits the next speech event from the native forwarder. Resolves `null` after `stop()`.
+    /// Use this from one consumer only.
+    #[napi]
+    pub async fn next_speech_event(&self) -> Result<Option<JsSpeechEvent>> {
+        let mut rx = self.events_rx.lock().await;
+        tokio::select! {
+            biased;
+            event = rx.recv() => Ok(event.map(speech_event_to_js)),
+            _ = self.stop_notify.notified() => Ok(None),
+        }
+    }
+
+    /// Non-blocking variant of `next_speech_event` (kept for compatibility).
     #[napi]
     pub async fn pull_speech_event(&self) -> Result<Option<JsSpeechEvent>> {
-        let mut state = self.state.lock().await;
-        let rx = state
-            .pull_rx
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("speech event stream unavailable"))?;
-        loop {
-            match rx.try_recv() {
-                Ok(event) => return Ok(Some(speech_event_to_js(event))),
-                Err(broadcast::error::TryRecvError::Empty) => return Ok(None),
-                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(broadcast::error::TryRecvError::Closed) => return Ok(None),
-            }
-        }
+        let Ok(mut rx) = self.events_rx.try_lock() else {
+            return Ok(None);
+        };
+        Ok(rx.try_recv().ok().map(speech_event_to_js))
     }
 
     #[napi]
@@ -383,7 +433,46 @@ impl JsVoiceAgent {
 
 #[cfg(test)]
 mod tests {
-    use super::is_stream_end;
+    use super::{forward_events, is_stream_end};
+    use node_webrtc_rust_speech::{SpeechEvent, SpeechEventBus};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn forwarder_delivers_a_burst_beyond_bus_capacity_in_order() {
+        let bus = SpeechEventBus::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let lagged = Arc::new(AtomicU64::new(0));
+        tokio::spawn(forward_events(bus.subscribe(), tx, Arc::clone(&lagged)));
+        // 1,000 events while the consumer reads nothing; batches of 200 stay under the bus
+        // capacity (256) and yield so the forwarder keeps draining it.
+        for batch in 0..5 {
+            for i in 0..200 {
+                bus.emit(SpeechEvent::user_speech_partial(
+                    format!("{}", batch * 200 + i),
+                    None,
+                ));
+            }
+            // The forwarder reads continuously but tokio's cooperative budget makes it yield
+            // every 128 events: let it finish this batch before the next one.
+            let target = (batch + 1) * 200;
+            for _ in 0..1000 {
+                if rx.len() >= target {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(rx.len() >= target, "forwarder fell behind at batch {batch}");
+        }
+        for expected in 0..1000 {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("event within 5 s")
+                .expect("channel open");
+            assert_eq!(event.text.as_deref(), Some(expected.to_string().as_str()));
+        }
+        assert_eq!(lagged.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn stream_end_messages_match() {

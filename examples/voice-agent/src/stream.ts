@@ -12,7 +12,7 @@
  * feeding a state machine, rather than many `on()` registrations. Both modes share the
  * same native event bus; set `mode: 'both'` to use handlers and the iterator together.
  *
- * Under the hood the SDK polls `pullSpeechEvent()` from native code in a tight loop
+ * Under the hood the SDK awaits `nextSpeechEvent()` from a native forwarder
  * while `running === true`.
  *
  * ## Run

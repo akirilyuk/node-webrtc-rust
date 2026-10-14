@@ -7,7 +7,16 @@ import {
   type JsMixPlacement,
 } from '@node-webrtc-rust/bindings'
 
-import type { ClientPose, DistanceParams, MixPlacement, MixStats, Quat, Vec3 } from './types.js'
+import type { LocalAudioTrack } from '../LocalAudioTrack.js'
+import type {
+  ClientPose,
+  DistanceParams,
+  MixPlacement,
+  MixStats,
+  NativePumpStats,
+  Quat,
+  Vec3,
+} from './types.js'
 
 function toJsPlacement(placement: MixPlacement): JsMixPlacement {
   return placement as JsMixPlacement
@@ -216,6 +225,47 @@ export class AudioMixGraph {
   panTtsFrame(pcm: Buffer, listenerId: string): Buffer {
     return this.native.panTtsFrame(pcm, listenerId)
   }
+
+  /**
+   * Starts the native mix pump for `listenerId`: a Rust task that becomes the sole writer of
+   * `pcOutbound`. TTS written to `ttsSidecar` (including the VoiceAgent drain) feeds its queue.
+   */
+  startNativePump(
+    listenerId: string,
+    pcOutbound: LocalAudioTrack,
+    ttsSidecar: LocalAudioTrack,
+  ): void {
+    this.native.startNativePump(listenerId, pcOutbound.native, ttsSidecar.native)
+  }
+
+  /** Stops the native pump and detaches its TTS sink from the sidecar when given. */
+  stopNativePump(listenerId: string, ttsSidecar?: LocalAudioTrack): void {
+    this.native.stopNativePump(listenerId, ttsSidecar?.native)
+  }
+
+  /** Pauses the native pump and waits (bounded) for the in-flight write. */
+  async pauseNativePump(listenerId: string): Promise<void> {
+    await this.native.pauseNativePump(listenerId)
+  }
+
+  resumeNativePump(listenerId: string): void {
+    this.native.resumeNativePump(listenerId)
+  }
+
+  /** Writes `frames` mixed frames (queued TTS or silence); `paced` spaces them 20 ms apart. */
+  async burstNativePump(listenerId: string, frames: number, paced: boolean): Promise<void> {
+    await this.native.burstNativePump(listenerId, frames, paced)
+  }
+
+  /** Discards queued native TTS; returns the number of frames discarded. */
+  discardNativeTts(listenerId: string): number {
+    return this.native.discardNativeTts(listenerId)
+  }
+
+  /** Native pump counters, or `null` when no pump runs for the listener. */
+  nativePumpStats(listenerId: string): NativePumpStats | null {
+    return this.native.nativePumpStats(listenerId) ?? null
+  }
 }
 
 /** Origin position for pose setup. */
@@ -228,5 +278,13 @@ export function quatIdentity(): Quat {
   return jsQuatIdentity()
 }
 
-export type { ClientPose, DistanceParams, MixPlacement, MixStats, Quat, Vec3 } from './types.js'
+export type {
+  ClientPose,
+  DistanceParams,
+  MixPlacement,
+  MixStats,
+  NativePumpStats,
+  Quat,
+  Vec3,
+} from './types.js'
 export { MIX_PLACEMENT } from './types.js'

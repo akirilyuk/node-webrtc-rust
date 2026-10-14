@@ -3,7 +3,15 @@ import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from '../src/pcm.js'
 import { delay } from './mix-three-client-helpers.js'
 
 type MixerTtsTestAccess = ClientAudioMixer & {
-  peers: Map<string, { ttsQueue: Buffer[]; lastSidecarEnqueueAt: number | null }>
+  peers: Map<
+    string,
+    {
+      ttsQueue: Buffer[]
+      lastSidecarEnqueueAt: number | null
+      nativePump: boolean
+      sidecar?: { writeSample(data: Buffer, durationMs?: number): Promise<void> }
+    }
+  >
 }
 
 const DEFAULT_LOUDER_RATIO = 1.5
@@ -526,6 +534,11 @@ export function injectTtsSidecarPendingFrame(
   const state = (mixer as MixerTtsTestAccess).peers.get(peerId)
   if (!state) {
     throw new Error(`ClientAudioMixer peer ${peerId} is not registered`)
+  }
+  if (state.nativePump && state.sidecar) {
+    // Native pump: the sidecar's native sink is the queue (the JS ttsQueue is unused).
+    void state.sidecar.writeSample(Buffer.from(pcm), PCM_FRAME_DURATION_MS)
+    return
   }
   state.ttsQueue.push(Buffer.from(pcm))
   // Same bookkeeping as the wired tee: keeps the TTS stream "active" so a producer that runs a

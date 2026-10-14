@@ -170,6 +170,19 @@ export interface JsMixStats {
   /** Current adaptive target depth in frames (2 to 8). */
   target: number
 }
+/** Native mix pump counters (polled at 1 Hz by the helpers mixer). */
+export interface JsNativePumpStats {
+  /** TTS frames currently queued for the pump. */
+  ttsQueueFrames: number
+  /** Deepest TTS backlog (frames) since the previous stats read. */
+  ttsQueueMaxDepthFrames: number
+  /** Outbound frames written since the pump started. */
+  framesWritten: number
+  /** Due slots skipped during an active TTS stream. */
+  slotsSkipped: number
+  /** Times the pump clock was rebased after a long stall. */
+  rebases: number
+}
 export const enum JsClipStatus {
   Buffering = 'Buffering',
   Playing = 'Playing',
@@ -480,6 +493,12 @@ export declare class JsMediaStreamTrack {
   set enabled(enabled: boolean)
   /** Decodes the next inbound Opus RTP packet to stereo PCM (remote audio only). */
   readSample(): Promise<Buffer>
+  /**
+   * Registers a non-blocking listener for every PCM chunk read from this remote track
+   * (JS `readSample` and the native inbound loop). Callback is `(data, durationMs)`.
+   * Pass `null` to clear.
+   */
+  setReadSampleTee(callback?: (...args: any[]) => any | undefined | null): void
 }
 /** Media stream exposed to JavaScript (stub). */
 export declare class JsMediaStream {
@@ -494,6 +513,11 @@ export declare class JsLocalAudioTrack {
    * Pass `null` to clear. Used by load-test stereo WAV capture (native TTS bypasses JS patches).
    */
   setWriteSampleTee(callback?: (...args: any[]) => any | undefined | null): void
+  /**
+   * Synchronously appends PCM to the native TTS sink (no encode). Returns `false` when no
+   * sink is installed. Used to move frames queued by the JS pump ahead of later drain writes.
+   */
+  pushTtsSinkPcm(data: Buffer): boolean
   get id(): string
   get kind(): string
   get streamId(): string
@@ -554,6 +578,22 @@ export declare class JsMixGraph {
   mixStats(participantId: string): JsMixStats | null
   /** Pans a TTS frame for `listener_id` using the graph's TTS pose or placement. */
   panTtsFrame(pcm: Buffer, listenerId: string): Buffer
+  /**
+   * Starts the native mix pump for `listener_id`: a Rust task that is then the sole writer
+   * of `pc_outbound`. TTS written to `tts_sidecar` (JS or VoiceAgent drain) feeds its queue.
+   */
+  startNativePump(listenerId: string, pcOutbound: JsLocalAudioTrack, ttsSidecar: JsLocalAudioTrack): void
+  /** Stops the native pump for `listener_id` and detaches the TTS sink from the sidecar. */
+  stopNativePump(listenerId: string, ttsSidecar?: JsLocalAudioTrack | undefined | null): void
+  /** Pauses ticking and waits (bounded) for any in-flight write to finish. */
+  pauseNativePump(listenerId: string): Promise<void>
+  resumeNativePump(listenerId: string): void
+  /** Writes `frames` mixed frames (queued TTS or silence), optionally paced at 20 ms. */
+  burstNativePump(listenerId: string, frames: number, paced: boolean): Promise<void>
+  /** Discards queued native TTS (barge-in); returns the discarded frame count. */
+  discardNativeTts(listenerId: string): number
+  /** Native pump counters, or `null` when no pump runs for the listener. */
+  nativePumpStats(listenerId: string): JsNativePumpStats | null
 }
 /** WebRTC peer connection exposed to JavaScript. */
 export declare class JsPeerConnection {
@@ -641,11 +681,22 @@ export declare class JsVoiceAgent {
   attach(outboundTrack: JsLocalAudioTrack): Promise<void>
   start(sessionContext?: JsVoiceSessionContext | undefined | null): Promise<void>
   stop(): Promise<void>
+  /**
+   * Runs the inbound PCM loop natively: reads `track`, pushes frames into `mix_graph` for
+   * `participant_id` (unless globally muted), notifies the track's read tee and feeds the
+   * agent. Call after `start`.
+   */
+  startNativeInbound(track: JsMediaStreamTrack, mixGraph?: JsMixGraph | undefined | null, participantId?: string | undefined | null): void
   sendTextToTts(text: string, nonBlocking?: boolean | undefined | null, interruptible?: boolean | undefined | null): Promise<void>
   flushTts(): Promise<void>
   /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */
   waitTtsPlaybackIdle(): Promise<void>
-  /** Pull the next speech event for async stream consumption. */
+  /**
+   * Awaits the next speech event from the native forwarder. Resolves `null` after `stop()`.
+   * Use this from one consumer only.
+   */
+  nextSpeechEvent(): Promise<JsSpeechEvent | null>
+  /** Non-blocking variant of `next_speech_event` (kept for compatibility). */
   pullSpeechEvent(): Promise<JsSpeechEvent | null>
   setOnSpeechEvent(callback: (...args: any[]) => any): void
   /** Processes one inbound PCM frame (48 kHz stereo) through VAD/STT. */

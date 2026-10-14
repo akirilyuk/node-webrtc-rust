@@ -353,6 +353,19 @@ export function wrapOutboundTrackForPcmCapture<T extends LocalAudioTrack>(
     capture.recordOutboundPcm(Buffer.from(data))
     return origWrite(data, durationMs)
   }
+  // The native mix pump writes the PC outbound without JS: tap its write tee instead.
+  // JS `writeSample` does not notify the tee, so the two taps never double-capture.
+  const teeable = trackAny as T & {
+    setWriteSampleTee?: (callback: ((...args: unknown[]) => void) | null) => void
+  }
+  teeable.setWriteSampleTee?.((...args: unknown[]) => {
+    for (const arg of args) {
+      if (Buffer.isBuffer(arg) || arg instanceof Uint8Array) {
+        capture.recordOutboundPcm(Buffer.from(arg))
+        return
+      }
+    }
+  })
   trackAny.__pcmOutWrapped = true
   return track
 }
@@ -365,11 +378,27 @@ export function wrapInboundTrackForPcmCapture(
   const flagged = track as RemoteAudioTrack & { __pcmInWrapped?: boolean }
   if (flagged.__pcmInWrapped) return track
 
-  const orig = track.readSample.bind(track)
-  track.readSample = async () => {
-    const pcm = await orig()
-    capture.recordInboundRead(pcm, performance.now())
-    return pcm
+  // Native inbound loop: tap the read tee and leave `readSample` alone, so the track stays
+  // eligible for the native loop. Otherwise wrap `readSample` (JS loop).
+  const teeable = track as RemoteAudioTrack & {
+    setReadSampleTee?: (callback: ((...args: unknown[]) => void) | null) => void
+  }
+  if (typeof teeable.setReadSampleTee === 'function') {
+    teeable.setReadSampleTee((...args: unknown[]) => {
+      for (const arg of args) {
+        if (Buffer.isBuffer(arg) || arg instanceof Uint8Array) {
+          capture.recordInboundRead(Buffer.from(arg), performance.now())
+          return
+        }
+      }
+    })
+  } else {
+    const orig = track.readSample.bind(track)
+    track.readSample = async () => {
+      const pcm = await orig()
+      capture.recordInboundRead(pcm, performance.now())
+      return pcm
+    }
   }
   flagged.__pcmInWrapped = true
   return track

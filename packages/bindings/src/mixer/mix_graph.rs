@@ -1,6 +1,8 @@
 //! MixGraph NAPI bindings (control plane + PCM push/render for helpers mixer).
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -8,14 +10,18 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_mixer::{Frame, MixGraph, Quat, Vec3, FRAME_BYTES};
 
+use crate::media::JsLocalAudioTrack;
+use crate::mixer::mix_pump::{NativeMixPump, NativeTtsQueue, PumpCmd, PUMP_FRAME};
 use crate::mixer::types::{
-    JsClientPose, JsDistanceParams, JsMixPlacement, JsMixStats, JsQuat, JsVec3,
+    JsClientPose, JsDistanceParams, JsMixPlacement, JsMixStats, JsNativePumpStats, JsQuat, JsVec3,
 };
 
 /// Conference mix graph control handle (poses, groups, mutes, placements).
 #[napi]
 pub struct JsMixGraph {
-    inner: Mutex<MixGraph>,
+    inner: Arc<Mutex<MixGraph>>,
+    /// Native client-mix pumps by listener id.
+    pumps: Mutex<HashMap<String, NativeMixPump>>,
     /// Mapping from the caller's monotonic millisecond clock to `Instant`, fixed by the
     /// first `renderOutput(listenerId, atMs)` call: `(origin_instant, origin_ms)`.
     render_origin: Mutex<Option<(Instant, f64)>>,
@@ -45,7 +51,8 @@ impl JsMixGraph {
         #[cfg(feature = "otel")]
         let _ = node_webrtc_rust_speech::otel::init_from_env();
         Self {
-            inner: Mutex::new(MixGraph::new()),
+            inner: Arc::new(Mutex::new(MixGraph::new())),
+            pumps: Mutex::new(HashMap::new()),
             render_origin: Mutex::new(None),
         }
     }
@@ -411,6 +418,171 @@ impl JsMixGraph {
             .map_err(|_| Error::from_reason("mix graph lock poisoned"))?
             .pan_tts_frame(&frame, &listener_id);
         Ok(Buffer::from(out.pcm.as_ref()))
+    }
+
+    /// Starts the native mix pump for `listener_id`: a Rust task that is then the sole writer
+    /// of `pc_outbound`. TTS written to `tts_sidecar` (JS or VoiceAgent drain) feeds its queue.
+    #[napi]
+    pub fn start_native_pump(
+        &self,
+        listener_id: String,
+        pc_outbound: &JsLocalAudioTrack,
+        tts_sidecar: &JsLocalAudioTrack,
+    ) -> Result<()> {
+        let mut pumps = self
+            .pumps
+            .lock()
+            .map_err(|_| Error::from_reason("mix pumps lock poisoned"))?;
+        if pumps.contains_key(&listener_id) {
+            return Err(Error::from_reason(format!(
+                "native mix pump already running for {listener_id}"
+            )));
+        }
+        let queue = Arc::new(NativeTtsQueue::new());
+        tts_sidecar.set_tts_sink(Some(Arc::clone(&queue)));
+        let pump = NativeMixPump::spawn(
+            Arc::clone(&self.inner),
+            listener_id.clone(),
+            pc_outbound.inner(),
+            pc_outbound.write_tee_handle(),
+            queue,
+        );
+        if crate::speech::voice_debug_enabled() {
+            eprintln!("[voice-debug] native mix pump started listener={listener_id}");
+        }
+        pumps.insert(listener_id, pump);
+        Ok(())
+    }
+
+    /// Stops the native pump for `listener_id` and detaches the TTS sink from the sidecar.
+    #[napi]
+    pub fn stop_native_pump(
+        &self,
+        listener_id: String,
+        tts_sidecar: Option<&JsLocalAudioTrack>,
+    ) -> Result<()> {
+        let removed = self
+            .pumps
+            .lock()
+            .map_err(|_| Error::from_reason("mix pumps lock poisoned"))?
+            .remove(&listener_id);
+        if let Some(pump) = removed {
+            let _ = pump.cmd_tx.send(PumpCmd::Stop);
+        }
+        if let Some(sidecar) = tts_sidecar {
+            sidecar.set_tts_sink(None);
+        }
+        Ok(())
+    }
+
+    fn pump_sender(
+        &self,
+        listener_id: &str,
+    ) -> Result<Option<tokio::sync::mpsc::UnboundedSender<PumpCmd>>> {
+        Ok(self
+            .pumps
+            .lock()
+            .map_err(|_| Error::from_reason("mix pumps lock poisoned"))?
+            .get(listener_id)
+            .map(|p| p.cmd_tx.clone()))
+    }
+
+    /// Pauses ticking and waits (bounded) for any in-flight write to finish.
+    #[napi]
+    pub async fn pause_native_pump(&self, listener_id: String) -> Result<()> {
+        let Some(tx) = self.pump_sender(&listener_id)? else {
+            return Ok(());
+        };
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        if tx.send(PumpCmd::Pause(ack_tx)).is_err() {
+            return Ok(());
+        }
+        if tokio::time::timeout(Duration::from_secs(2), ack_rx)
+            .await
+            .is_err()
+        {
+            log::warn!("native mix pump pause timed out listener={listener_id}");
+        }
+        Ok(())
+    }
+
+    #[napi]
+    pub fn resume_native_pump(&self, listener_id: String) -> Result<()> {
+        if let Some(tx) = self.pump_sender(&listener_id)? {
+            let _ = tx.send(PumpCmd::Resume);
+        }
+        Ok(())
+    }
+
+    /// Writes `frames` mixed frames (queued TTS or silence), optionally paced at 20 ms.
+    #[napi]
+    pub async fn burst_native_pump(
+        &self,
+        listener_id: String,
+        frames: u32,
+        paced: bool,
+    ) -> Result<()> {
+        let Some(tx) = self.pump_sender(&listener_id)? else {
+            return Ok(());
+        };
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        if tx
+            .send(PumpCmd::Burst {
+                frames,
+                paced,
+                done: done_tx,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+        let bound = PUMP_FRAME * frames + Duration::from_secs(2);
+        if tokio::time::timeout(bound, done_rx).await.is_err() {
+            log::warn!("native mix pump burst timed out listener={listener_id}");
+        }
+        Ok(())
+    }
+
+    /// Discards queued native TTS (barge-in); returns the discarded frame count.
+    #[napi]
+    pub fn discard_native_tts(&self, listener_id: String) -> Result<u32> {
+        let pumps = self
+            .pumps
+            .lock()
+            .map_err(|_| Error::from_reason("mix pumps lock poisoned"))?;
+        Ok(pumps.get(&listener_id).map_or(0, |p| p.queue.discard()))
+    }
+
+    /// Native pump counters, or `null` when no pump runs for the listener.
+    #[napi]
+    pub fn native_pump_stats(&self, listener_id: String) -> Result<Option<JsNativePumpStats>> {
+        let pumps = self
+            .pumps
+            .lock()
+            .map_err(|_| Error::from_reason("mix pumps lock poisoned"))?;
+        Ok(pumps.get(&listener_id).map(|p| JsNativePumpStats {
+            tts_queue_frames: p.queue.len() as u32,
+            tts_queue_max_depth_frames: p.queue.take_max_depth() as u32,
+            frames_written: p.stats.frames_written.load(Ordering::Relaxed) as f64,
+            slots_skipped: p.stats.slots_skipped.load(Ordering::Relaxed) as f64,
+            rebases: p.stats.rebases.load(Ordering::Relaxed) as f64,
+        }))
+    }
+}
+
+impl JsMixGraph {
+    pub(crate) fn graph_handle(&self) -> Arc<Mutex<MixGraph>> {
+        Arc::clone(&self.inner)
+    }
+}
+
+impl Drop for JsMixGraph {
+    fn drop(&mut self) {
+        if let Ok(pumps) = self.pumps.get_mut() {
+            for pump in pumps.values() {
+                let _ = pump.cmd_tx.send(PumpCmd::Stop);
+            }
+        }
     }
 }
 

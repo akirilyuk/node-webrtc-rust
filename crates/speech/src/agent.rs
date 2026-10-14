@@ -366,6 +366,8 @@ pub struct VoiceAgent {
     /// True while a `process_inbound_pcm` call is running. The wall-clock ticker skips its C1/C2
     /// checks then: a long call (slow decode inside finalize) is not "PCM stopped".
     inbound_in_flight: AtomicBool,
+    /// Mirror of `AgentInner::running` readable without the async lock (host inbound loops).
+    running_flag: AtomicBool,
     /// Reference point for `last_inbound_activity_ms`.
     epoch: Instant,
     /// Ms since `epoch` of the last entry into OR exit from `process_inbound_pcm`. The ticker's
@@ -520,6 +522,7 @@ impl VoiceAgent {
             weak_self: weak.clone(),
             c2_ticker_started: AtomicBool::new(false),
             inbound_in_flight: AtomicBool::new(false),
+            running_flag: AtomicBool::new(false),
             epoch: Instant::now(),
             last_inbound_activity_ms: AtomicU64::new(0),
         }))
@@ -1348,6 +1351,11 @@ impl VoiceAgent {
         Ok(())
     }
 
+    /// True between a successful `start` and `stop`; cheap, lock-free.
+    pub fn is_running(&self) -> bool {
+        self.running_flag.load(Ordering::Acquire)
+    }
+
     /// Starts STT vendor and TTS drain worker. Inbound PCM is driven by the host via [`process_inbound_pcm`](Self::process_inbound_pcm).
     ///
     /// Optional `session_context` carries session labels and W3C `traceparent` for OpenTelemetry
@@ -1362,6 +1370,7 @@ impl VoiceAgent {
                 return Err(SpeechError::AlreadyRunning);
             }
             inner.running = true;
+            self.running_flag.store(true, Ordering::Release);
             let stt_vendor = inner.config.stt.as_ref().map(|cfg| cfg.provider);
             let tts_vendor = inner.config.tts.as_ref().map(|cfg| cfg.provider);
             otel::begin_session(
@@ -1450,6 +1459,7 @@ impl VoiceAgent {
                 return Err(SpeechError::NotRunning);
             }
             inner.running = false;
+            self.running_flag.store(false, Ordering::Release);
             inner.stt_hold = None;
             otel::end_session(&mut inner.otel);
             true

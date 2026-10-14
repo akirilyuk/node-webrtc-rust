@@ -1,5 +1,6 @@
 //! VoiceAgent NAPI bindings.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -7,12 +8,14 @@ use bytes::Bytes;
 use napi::bindgen_prelude::*;
 use napi::JsFunction;
 use napi_derive::napi;
+use node_webrtc_rust_mixer::{Frame, FRAME_BYTES};
 use node_webrtc_rust_speech::{
     PcmReader, PcmWriter, SendTextToTtsOptions, SpeechEvent, UpdateTtsConfigOptions, VoiceAgent,
 };
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex, Notify};
 
-use crate::media::JsLocalAudioTrack;
+use crate::media::{JsLocalAudioTrack, JsMediaStreamTrack};
+use crate::mixer::JsMixGraph;
 use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
 use crate::speech::types::{
@@ -21,7 +24,7 @@ use crate::speech::types::{
 };
 
 /// `VOICE_DEBUG=1|true|yes`, read once per process.
-fn voice_debug_enabled() -> bool {
+pub(crate) fn voice_debug_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         matches!(
@@ -32,7 +35,6 @@ fn voice_debug_enabled() -> bool {
 }
 
 struct VoiceAgentState {
-    pull_rx: Option<broadcast::Receiver<SpeechEvent>>,
     callback_wired: bool,
     outbound: Option<Arc<node_webrtc_rust_core::LocalAudioTrack>>,
 }
@@ -42,6 +44,67 @@ struct VoiceAgentState {
 pub struct JsVoiceAgent {
     inner: Arc<VoiceAgent>,
     state: Arc<Mutex<VoiceAgentState>>,
+    /// Events forwarded from the broadcast bus; drained by `next_speech_event`.
+    events_rx: Arc<Mutex<mpsc::UnboundedReceiver<SpeechEvent>>>,
+    /// Sender half and bus receiver, consumed by the forwarder spawned on the first `start`.
+    forwarder_init: std::sync::Mutex<
+        Option<(
+            broadcast::Receiver<SpeechEvent>,
+            mpsc::UnboundedSender<SpeechEvent>,
+        )>,
+    >,
+    /// Broadcast events lost before the forwarder (never expected: the forwarder is native).
+    events_lagged: Arc<AtomicU64>,
+    /// Woken by `stop()` so a pending `next_speech_event` resolves `None`.
+    stop_notify: Arc<Notify>,
+    /// Set by `stop()`, cleared by `start()`: a late `next_speech_event` must not wait forever.
+    stopped: AtomicBool,
+    /// Native inbound PCM loop task (see `start_native_inbound`).
+    native_inbound: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+/// Moves every bus event into `tx` in order. The bus holds 256 events, so this must keep
+/// reading; it runs natively, so a stalled JS thread cannot make it lag.
+pub(crate) async fn forward_events(
+    mut rx: broadcast::Receiver<SpeechEvent>,
+    tx: mpsc::UnboundedSender<SpeechEvent>,
+    lagged: Arc<AtomicU64>,
+) {
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                lagged.fetch_add(n, Ordering::Relaxed);
+                eprintln!("[voice] speech events lagged: {n} dropped before the JS forwarder");
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
+/// Receiver-stopped errors that mean "wait for the next RTP burst" (same set as the TS loop).
+pub(crate) fn is_stream_end(message: &str) -> bool {
+    message.contains("DataChannel is not opened")
+        || message.contains("ErrClosedPipe")
+        || message.contains("closed pipe")
+}
+
+/// Injected after a stream end so the agent's VAD/STT sees the end of the utterance.
+const INBOUND_SILENCE_TAIL_FRAMES: u32 = 75;
+const INBOUND_FRAME: Duration = Duration::from_millis(20);
+
+impl Drop for JsVoiceAgent {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.native_inbound.lock() {
+            if let Some(handle) = slot.take() {
+                handle.abort();
+            }
+        }
+    }
 }
 
 #[napi]
@@ -54,14 +117,20 @@ impl JsVoiceAgent {
         let config = config.unwrap_or_default().into();
         let registry = default_vendor_registry();
         let agent = VoiceAgent::new(config, registry).map_err(speech_err)?;
-        let pull_rx = agent.subscribe_events();
+        let bus_rx = agent.subscribe_events();
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
         Ok(Self {
             inner: agent,
             state: Arc::new(Mutex::new(VoiceAgentState {
-                pull_rx: Some(pull_rx),
                 callback_wired: false,
                 outbound: None,
             })),
+            events_rx: Arc::new(Mutex::new(events_rx)),
+            forwarder_init: std::sync::Mutex::new(Some((bus_rx, events_tx))),
+            events_lagged: Arc::new(AtomicU64::new(0)),
+            stop_notify: Arc::new(Notify::new()),
+            stopped: AtomicBool::new(false),
+            native_inbound: std::sync::Mutex::new(None),
         })
     }
 
@@ -71,6 +140,7 @@ impl JsVoiceAgent {
         let outbound = outbound_track.inner();
         // Live Arc so `setWriteSampleTee` after attach still receives TTS frames.
         let write_tee = outbound_track.write_tee_handle();
+        let tts_sink = outbound_track.tts_sink_handle();
         let pcm_writer: PcmWriter = {
             let track = Arc::clone(&outbound);
             Arc::new(move |pcm, duration_ms| {
@@ -78,6 +148,12 @@ impl JsVoiceAgent {
                 let write_tee = Arc::clone(&write_tee);
                 let bytes = pcm;
                 crate::media::notify_write_tee_handle(&write_tee, bytes.as_ref(), duration_ms);
+                // Native mix pump sink: feed its queue directly, no Opus encode on the sidecar.
+                let sink = tts_sink.lock().ok().and_then(|g| g.clone());
+                if let Some(queue) = sink {
+                    queue.push_pcm(bytes.as_ref());
+                    return Ok(());
+                }
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async move {
                         track
@@ -99,6 +175,12 @@ impl JsVoiceAgent {
 
     #[napi]
     pub async fn start(&self, session_context: Option<JsVoiceSessionContext>) -> Result<()> {
+        self.stopped.store(false, Ordering::SeqCst);
+        // Spawned here (not in the constructor, which may run outside the runtime).
+        let init = self.forwarder_init.lock().ok().and_then(|mut g| g.take());
+        if let Some((rx, tx)) = init {
+            napi::bindgen_prelude::spawn(forward_events(rx, tx, Arc::clone(&self.events_lagged)));
+        }
         self.inner
             .start(session_context.map(Into::into))
             .await
@@ -107,7 +189,98 @@ impl JsVoiceAgent {
 
     #[napi]
     pub async fn stop(&self) -> Result<()> {
-        self.inner.stop().await.map_err(speech_err)
+        if let Ok(mut slot) = self.native_inbound.lock() {
+            if let Some(handle) = slot.take() {
+                handle.abort();
+            }
+        }
+        let result = self.inner.stop().await.map_err(speech_err);
+        self.stopped.store(true, Ordering::SeqCst);
+        self.stop_notify.notify_waiters();
+        result
+    }
+
+    /// Runs the inbound PCM loop natively: reads `track`, pushes frames into `mix_graph` for
+    /// `participant_id` (unless globally muted), notifies the track's read tee and feeds the
+    /// agent. Call after `start`.
+    #[napi]
+    pub fn start_native_inbound(
+        &self,
+        track: &JsMediaStreamTrack,
+        mix_graph: Option<&JsMixGraph>,
+        participant_id: Option<String>,
+    ) -> Result<()> {
+        let remote = track
+            .remote_track()
+            .ok_or_else(|| Error::from_reason("startNativeInbound requires a remote track"))?;
+        let read_tee = track.read_tee_handle();
+        let graph = mix_graph.map(JsMixGraph::graph_handle);
+        let mut slot = self
+            .native_inbound
+            .lock()
+            .map_err(|_| Error::from_reason("native inbound lock poisoned"))?;
+        if slot.as_ref().is_some_and(|h| !h.is_finished()) {
+            return Err(Error::from_reason("native inbound loop already running"));
+        }
+        if voice_debug_enabled() {
+            eprintln!(
+                "[voice-debug] native inbound loop started participant={}",
+                participant_id.as_deref().unwrap_or("none")
+            );
+        }
+        let agent = Arc::clone(&self.inner);
+        *slot = Some(napi::bindgen_prelude::spawn(async move {
+            let silent = Bytes::from(vec![0u8; FRAME_BYTES]);
+            let mut awaiting_next_burst = false;
+            while agent.is_running() {
+                match remote.read_sample().await {
+                    Ok(sample) => {
+                        awaiting_next_burst = false;
+                        let dur = sample.duration.as_millis() as u32;
+                        if let (Some(graph), Some(pid)) = (&graph, &participant_id) {
+                            let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
+                            if !g.is_globally_muted(pid) {
+                                #[allow(clippy::chunks_exact_to_as_chunks)]
+                                for chunk in sample.pcm.chunks_exact(FRAME_BYTES) {
+                                    g.push_frame(
+                                        pid.clone(),
+                                        Frame::new(Bytes::copy_from_slice(chunk), None),
+                                    );
+                                }
+                            }
+                        }
+                        crate::media::notify_write_tee_handle(&read_tee, sample.pcm.as_ref(), dur);
+                        if let Err(err) = agent.process_inbound_pcm(sample.pcm, dur).await {
+                            if voice_debug_enabled() {
+                                eprintln!(
+                                    "[voice-debug] native inbound processInboundPcm error: {err}"
+                                );
+                            }
+                        }
+                    }
+                    Err(err) if is_stream_end(&err.to_string()) => {
+                        if !awaiting_next_burst {
+                            awaiting_next_burst = true;
+                            for _ in 0..INBOUND_SILENCE_TAIL_FRAMES {
+                                if !agent.is_running() {
+                                    break;
+                                }
+                                let _ = agent.process_inbound_pcm(silent.clone(), 20).await;
+                                tokio::time::sleep(INBOUND_FRAME).await;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(err) => {
+                        if voice_debug_enabled() {
+                            eprintln!("[voice-debug] native inbound readSample error: {err}");
+                        }
+                        tokio::time::sleep(INBOUND_FRAME).await;
+                    }
+                }
+            }
+        }));
+        Ok(())
     }
 
     #[napi]
@@ -141,22 +314,35 @@ impl JsVoiceAgent {
             .map_err(speech_err)
     }
 
-    /// Pull the next speech event for async stream consumption.
+    /// Awaits the next speech event from the native forwarder. Resolves `null` after `stop()`.
+    /// Use this from one consumer only.
+    #[napi]
+    pub async fn next_speech_event(&self) -> Result<Option<JsSpeechEvent>> {
+        let mut rx = self.events_rx.lock().await;
+        if let Ok(e) = rx.try_recv() {
+            return Ok(Some(speech_event_to_js(e)));
+        }
+        // Register for the stop wake-up before checking the flag, so none can be missed.
+        let notified = self.stop_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.stopped.load(Ordering::SeqCst) {
+            return Ok(rx.try_recv().ok().map(speech_event_to_js));
+        }
+        tokio::select! {
+            biased;
+            event = rx.recv() => Ok(event.map(speech_event_to_js)),
+            _ = &mut notified => Ok(rx.try_recv().ok().map(speech_event_to_js)),
+        }
+    }
+
+    /// Non-blocking variant of `next_speech_event` (kept for compatibility).
     #[napi]
     pub async fn pull_speech_event(&self) -> Result<Option<JsSpeechEvent>> {
-        let mut state = self.state.lock().await;
-        let rx = state
-            .pull_rx
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("speech event stream unavailable"))?;
-        loop {
-            match rx.try_recv() {
-                Ok(event) => return Ok(Some(speech_event_to_js(event))),
-                Err(broadcast::error::TryRecvError::Empty) => return Ok(None),
-                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(broadcast::error::TryRecvError::Closed) => return Ok(None),
-            }
-        }
+        let Ok(mut rx) = self.events_rx.try_lock() else {
+            return Ok(None);
+        };
+        Ok(rx.try_recv().ok().map(speech_event_to_js))
     }
 
     #[napi]
@@ -257,5 +443,57 @@ impl JsVoiceAgent {
     #[napi]
     pub async fn replay_last_utterance(&self) -> Result<()> {
         self.inner.replay_last_utterance().await.map_err(speech_err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{forward_events, is_stream_end};
+    use node_webrtc_rust_speech::{SpeechEvent, SpeechEventBus};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn forwarder_delivers_a_burst_beyond_bus_capacity_in_order() {
+        let bus = SpeechEventBus::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let lagged = Arc::new(AtomicU64::new(0));
+        tokio::spawn(forward_events(bus.subscribe(), tx, Arc::clone(&lagged)));
+        // 1,000 events while the consumer reads nothing; batches of 200 stay under the bus
+        // capacity (256) and yield so the forwarder keeps draining it.
+        for batch in 0..5 {
+            for i in 0..200 {
+                bus.emit(SpeechEvent::user_speech_partial(
+                    format!("{}", batch * 200 + i),
+                    None,
+                ));
+            }
+            // The forwarder reads continuously but tokio's cooperative budget makes it yield
+            // every 128 events: let it finish this batch before the next one.
+            let target = (batch + 1) * 200;
+            for _ in 0..1000 {
+                if rx.len() >= target {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(rx.len() >= target, "forwarder fell behind at batch {batch}");
+        }
+        for expected in 0..1000 {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("event within 5 s")
+                .expect("channel open");
+            assert_eq!(event.text.as_deref(), Some(expected.to_string().as_str()));
+        }
+        assert_eq!(lagged.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn stream_end_messages_match() {
+        assert!(is_stream_end("read failed: DataChannel is not opened"));
+        assert!(is_stream_end("io: ErrClosedPipe"));
+        assert!(is_stream_end("write on closed pipe"));
+        assert!(!is_stream_end("opus decode failed"));
     }
 }

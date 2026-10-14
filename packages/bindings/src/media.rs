@@ -13,11 +13,12 @@ use node_webrtc_rust_core::{
 };
 
 use crate::config::to_js_unknown;
+use crate::mixer::mix_pump::NativeTtsQueue;
 
 /// Optional JS listener for VoiceAgent TTS PCM (and future native writers).
 /// Uses {@link ErrorStrategy::Fatal} so the JS callback is `(data, durationMs)` —
 /// not Node-style `(err, data, durationMs)` (CalleeHandled default prepends `null`).
-type WriteSampleTee = ThreadsafeFunction<(Vec<u8>, u32), ErrorStrategy::Fatal>;
+pub(crate) type WriteSampleTee = ThreadsafeFunction<(Vec<u8>, u32), ErrorStrategy::Fatal>;
 
 /// Media stream track exposed to JavaScript.
 #[napi]
@@ -27,6 +28,8 @@ pub struct JsMediaStreamTrack {
     stream_id: String,
     enabled: bool,
     remote: Option<RemoteTrack>,
+    /// Optional JS listener notified with every PCM chunk read from this remote track.
+    read_tee: Arc<Mutex<Option<WriteSampleTee>>>,
 }
 
 impl JsMediaStreamTrack {
@@ -37,7 +40,16 @@ impl JsMediaStreamTrack {
             stream_id: track.stream_id().to_string(),
             enabled: true,
             remote: Some(track),
+            read_tee: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn remote_track(&self) -> Option<RemoteTrack> {
+        self.remote.clone()
+    }
+
+    pub(crate) fn read_tee_handle(&self) -> Arc<Mutex<Option<WriteSampleTee>>> {
+        Arc::clone(&self.read_tee)
     }
 }
 
@@ -82,7 +94,28 @@ impl JsMediaStreamTrack {
             .read_sample()
             .await
             .map_err(|e| Error::from_reason(e.to_string()))?;
+        notify_write_tee_handle(
+            &self.read_tee,
+            sample.pcm.as_ref(),
+            sample.duration.as_millis() as u32,
+        );
         Ok(Buffer::from(sample.pcm.as_ref()))
+    }
+
+    /// Registers a non-blocking listener for every PCM chunk read from this remote track
+    /// (JS `readSample` and the native inbound loop). Callback is `(data, durationMs)`.
+    /// Pass `null` to clear.
+    #[napi]
+    pub fn set_read_sample_tee(&self, _env: Env, callback: Option<JsFunction>) -> Result<()> {
+        let mut slot = self
+            .read_tee
+            .lock()
+            .map_err(|e| Error::from_reason(format!("read_sample_tee lock: {e}")))?;
+        *slot = match callback {
+            Some(cb) => Some(create_tee(cb)?),
+            None => None,
+        };
+        Ok(())
     }
 }
 
@@ -117,6 +150,8 @@ fn track_kind_to_string(kind: TrackKind) -> String {
 pub struct JsLocalAudioTrack {
     inner: Arc<LocalAudioTrack>,
     write_tee: Arc<Mutex<Option<WriteSampleTee>>>,
+    /// Native TTS sink: when set, PCM written to this track feeds the native mix pump queue.
+    tts_sink: Arc<Mutex<Option<Arc<NativeTtsQueue>>>>,
 }
 
 #[napi]
@@ -131,6 +166,7 @@ impl JsLocalAudioTrack {
         Self {
             inner: Arc::new(LocalAudioTrack::new(&id, &stream_id)),
             write_tee: Arc::new(Mutex::new(None)),
+            tts_sink: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -143,20 +179,24 @@ impl JsLocalAudioTrack {
             .lock()
             .map_err(|e| Error::from_reason(format!("write_sample_tee lock: {e}")))?;
         *slot = match callback {
-            Some(cb) => {
-                let tsfn: WriteSampleTee =
-                    cb.create_threadsafe_function(0, |ctx| -> Result<Vec<JsUnknown>> {
-                        let (data, duration_ms) = ctx.value;
-                        let buffer = Buffer::from(data);
-                        let buf_js = to_js_unknown(&ctx.env, buffer)?;
-                        let dur_js = to_js_unknown(&ctx.env, ctx.env.create_uint32(duration_ms)?)?;
-                        Ok(vec![buf_js, dur_js])
-                    })?;
-                Some(tsfn)
-            }
+            Some(cb) => Some(create_tee(cb)?),
             None => None,
         };
         Ok(())
+    }
+
+    /// Synchronously appends PCM to the native TTS sink (no encode). Returns `false` when no
+    /// sink is installed. Used to move frames queued by the JS pump ahead of later drain writes.
+    #[napi]
+    pub fn push_tts_sink_pcm(&self, data: Buffer) -> bool {
+        let sink = self.tts_sink.lock().ok().and_then(|g| g.clone());
+        match sink {
+            Some(queue) => {
+                queue.push_pcm(data.as_ref());
+                true
+            }
+            None => false,
+        }
     }
 
     #[napi(getter)]
@@ -200,6 +240,11 @@ impl JsLocalAudioTrack {
         );
         // Tee is not notified here: JS callers often wrap writeSample for capture; VoiceAgent
         // TTS drain calls notify_write_tee_handle directly so outbound agent audio is still tee'd.
+        let sink = self.tts_sink.lock().ok().and_then(|g| g.clone());
+        if let Some(queue) = sink {
+            queue.push_pcm(data.as_ref());
+            return Ok(());
+        }
         let bytes = bytes::Bytes::copy_from_slice(data.as_ref());
         self.inner
             .write_sample(bytes, Duration::from_millis(duration_ms as u64))
@@ -211,6 +256,16 @@ impl JsLocalAudioTrack {
 impl JsLocalAudioTrack {
     pub(crate) fn inner(&self) -> Arc<LocalAudioTrack> {
         Arc::clone(&self.inner)
+    }
+
+    pub(crate) fn set_tts_sink(&self, sink: Option<Arc<NativeTtsQueue>>) {
+        if let Ok(mut slot) = self.tts_sink.lock() {
+            *slot = sink;
+        }
+    }
+
+    pub(crate) fn tts_sink_handle(&self) -> Arc<Mutex<Option<Arc<NativeTtsQueue>>>> {
+        Arc::clone(&self.tts_sink)
     }
 
     pub(crate) fn write_tee_handle(&self) -> Arc<Mutex<Option<WriteSampleTee>>> {
@@ -233,4 +288,14 @@ pub(crate) fn notify_write_tee_handle(
         (pcm.to_vec(), duration_ms),
         ThreadsafeFunctionCallMode::NonBlocking,
     );
+}
+
+fn create_tee(cb: JsFunction) -> Result<WriteSampleTee> {
+    cb.create_threadsafe_function(0, |ctx| -> Result<Vec<JsUnknown>> {
+        let (data, duration_ms) = ctx.value;
+        let buffer = Buffer::from(data);
+        let buf_js = to_js_unknown(&ctx.env, buffer)?;
+        let dur_js = to_js_unknown(&ctx.env, ctx.env.create_uint32(duration_ms)?)?;
+        Ok(vec![buf_js, dur_js])
+    })
 }

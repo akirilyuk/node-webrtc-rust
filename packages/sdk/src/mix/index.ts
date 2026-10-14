@@ -6,4 +6,12 @@
  */
 
 export { AudioMixGraph, MIX_PLACEMENT, quatIdentity, vec3Zero } from './AudioMixGraph.js'
-export type { ClientPose, DistanceParams, MixPlacement, MixStats, Quat, Vec3 } from './types.js'
+export type {
+  ClientPose,
+  DistanceParams,
+  MixPlacement,
+  MixStats,
+  NativePumpStats,
+  Quat,
+  Vec3,
+} from './types.js'

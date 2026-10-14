@@ -95,6 +95,7 @@ Speech engine numbers were measured in a container limited to one CPU; media pat
 - Streaming speech-to-text keeps 16 concurrent streams in real time on one CPU, with a p95 decode lag of 378 ms ([details](docs/performance.md#speech-to-text-sherpa-onnx-streaming)).
 - Encoding the Opus audio of one session takes 112 µs per 20 ms stereo frame, about 0.6% of one core ([details](docs/performance.md#media-path)).
 - In the 8-session voice loopback test, synthesized speech starts playing 71 ms after the request (p50) ([details](docs/performance.md#voice-loopback-under-load)).
+- Since 0.10.0 the per-frame voice media loops (mix pump, inbound audio, speech events) run in Rust. With 10 concurrent voice sessions in one process, the Node.js main thread spends 20 ms of CPU per second on them instead of 107 ms ([details](docs/performance.md#voice-media-loops-in-rust-0100)), and a CPU-starved host no longer loses words ([details](docs/performance.md#behavior-under-cpu-starvation)).
 
 ---
 

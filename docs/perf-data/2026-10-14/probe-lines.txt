@@ -1,0 +1,48 @@
+## B-alljs run-1.log
+[perf-probe pid=19593] t=5s elu=0.116 delay_p50=10.5 p99=12.6 max=14.6 cpu_ms_per_s=743 cum_elu=0.116 cum_cpu_ms_per_s=743 cum_delay_p99=12.6 cum_delay_max=14.6 cum_js_thread_cpu_ms_per_s=119
+[perf-probe pid=19593] t=10s elu=0.119 delay_p50=10.2 p99=11.6 max=12.3 cpu_ms_per_s=1494 cum_elu=0.118 cum_cpu_ms_per_s=1118 cum_delay_p99=12.4 cum_delay_max=14.6 cum_js_thread_cpu_ms_per_s=113
+[perf-probe pid=19593] t=15s elu=0.107 delay_p50=10.2 p99=11.5 max=11.7 cpu_ms_per_s=442 cum_elu=0.114 cum_cpu_ms_per_s=893 cum_delay_p99=12.3 cum_delay_max=14.6 cum_js_thread_cpu_ms_per_s=108
+## B-alljs run-2.log
+[perf-probe pid=19673] t=5s elu=0.115 delay_p50=10.5 p99=12.9 max=13.7 cpu_ms_per_s=725 cum_elu=0.115 cum_cpu_ms_per_s=725 cum_delay_p99=12.9 cum_delay_max=13.7 cum_js_thread_cpu_ms_per_s=118
+[perf-probe pid=19673] t=10s elu=0.118 delay_p50=10.2 p99=11.5 max=12.2 cpu_ms_per_s=1565 cum_elu=0.117 cum_cpu_ms_per_s=1145 cum_delay_p99=12.6 cum_delay_max=13.7 cum_js_thread_cpu_ms_per_s=113
+[perf-probe pid=19673] t=15s elu=0.107 delay_p50=10.2 p99=11.5 max=11.8 cpu_ms_per_s=445 cum_elu=0.113 cum_cpu_ms_per_s=911 cum_delay_p99=12.4 cum_delay_max=13.7 cum_js_thread_cpu_ms_per_s=108
+## B-alljs run-3.log
+[perf-probe pid=19742] t=5s elu=0.114 delay_p50=10.5 p99=12.5 max=13.3 cpu_ms_per_s=714 cum_elu=0.114 cum_cpu_ms_per_s=714 cum_delay_p99=12.5 cum_delay_max=13.3 cum_js_thread_cpu_ms_per_s=118
+[perf-probe pid=19742] t=10s elu=0.116 delay_p50=10.2 p99=11.5 max=11.9 cpu_ms_per_s=1429 cum_elu=0.115 cum_cpu_ms_per_s=1071 cum_delay_p99=12.3 cum_delay_max=13.3 cum_js_thread_cpu_ms_per_s=112
+[perf-probe pid=19742] t=15s elu=0.105 delay_p50=10.2 p99=11.6 max=11.9 cpu_ms_per_s=426 cum_elu=0.112 cum_cpu_ms_per_s=856 cum_delay_p99=12.2 cum_delay_max=13.3 cum_js_thread_cpu_ms_per_s=106
+## B-pump run-1.log
+[perf-probe pid=19817] t=5s elu=0.051 delay_p50=10.6 p99=12.5 max=13.0 cpu_ms_per_s=725 cum_elu=0.051 cum_cpu_ms_per_s=725 cum_delay_p99=12.5 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=52
+[perf-probe pid=19817] t=10s elu=0.050 delay_p50=10.3 p99=11.9 max=12.9 cpu_ms_per_s=1465 cum_elu=0.051 cum_cpu_ms_per_s=1095 cum_delay_p99=12.5 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=46
+[perf-probe pid=19817] t=15s elu=0.032 delay_p50=10.7 p99=12.6 max=17.0 cpu_ms_per_s=386 cum_elu=0.045 cum_cpu_ms_per_s=859 cum_delay_p99=12.5 cum_delay_max=17.0 cum_js_thread_cpu_ms_per_s=39
+## B-pump run-2.log
+[perf-probe pid=19899] t=5s elu=0.050 delay_p50=10.6 p99=12.7 max=13.0 cpu_ms_per_s=720 cum_elu=0.050 cum_cpu_ms_per_s=720 cum_delay_p99=12.7 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=50
+[perf-probe pid=19899] t=10s elu=0.051 delay_p50=10.2 p99=11.9 max=12.6 cpu_ms_per_s=1502 cum_elu=0.051 cum_cpu_ms_per_s=1111 cum_delay_p99=12.6 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=45
+[perf-probe pid=19899] t=15s elu=0.027 delay_p50=10.6 p99=12.6 max=12.8 cpu_ms_per_s=355 cum_elu=0.043 cum_cpu_ms_per_s=859 cum_delay_p99=12.6 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=38
+## B-pump run-3.log
+[perf-probe pid=19968] t=5s elu=0.050 delay_p50=10.5 p99=12.6 max=12.9 cpu_ms_per_s=716 cum_elu=0.050 cum_cpu_ms_per_s=716 cum_delay_p99=12.6 cum_delay_max=12.9 cum_js_thread_cpu_ms_per_s=50
+[perf-probe pid=19968] t=10s elu=0.051 delay_p50=10.2 p99=11.8 max=12.2 cpu_ms_per_s=1588 cum_elu=0.051 cum_cpu_ms_per_s=1152 cum_delay_p99=12.5 cum_delay_max=12.9 cum_js_thread_cpu_ms_per_s=45
+[perf-probe pid=19968] t=15s elu=0.028 delay_p50=10.7 p99=12.3 max=12.9 cpu_ms_per_s=423 cum_elu=0.043 cum_cpu_ms_per_s=909 cum_delay_p99=12.4 cum_delay_max=12.9 cum_js_thread_cpu_ms_per_s=38
+## B-both run-1.log
+[perf-probe pid=19211] t=5s elu=0.033 delay_p50=11.1 p99=12.8 max=13.6 cpu_ms_per_s=708 cum_elu=0.034 cum_cpu_ms_per_s=708 cum_delay_p99=12.8 cum_delay_max=13.6 cum_js_thread_cpu_ms_per_s=39
+[perf-probe pid=19211] t=10s elu=0.025 delay_p50=10.7 p99=12.4 max=12.7 cpu_ms_per_s=1470 cum_elu=0.029 cum_cpu_ms_per_s=1089 cum_delay_p99=12.6 cum_delay_max=13.6 cum_js_thread_cpu_ms_per_s=30
+[perf-probe pid=19211] t=15s elu=0.022 delay_p50=10.7 p99=12.4 max=12.5 cpu_ms_per_s=357 cum_elu=0.027 cum_cpu_ms_per_s=845 cum_delay_p99=12.6 cum_delay_max=13.6 cum_js_thread_cpu_ms_per_s=26
+## B-both run-2.log
+[perf-probe pid=19284] t=5s elu=0.040 delay_p50=10.9 p99=12.8 max=13.3 cpu_ms_per_s=715 cum_elu=0.040 cum_cpu_ms_per_s=715 cum_delay_p99=12.8 cum_delay_max=13.3 cum_js_thread_cpu_ms_per_s=41
+[perf-probe pid=19284] t=10s elu=0.026 delay_p50=10.6 p99=12.3 max=12.6 cpu_ms_per_s=1433 cum_elu=0.033 cum_cpu_ms_per_s=1074 cum_delay_p99=12.7 cum_delay_max=13.3 cum_js_thread_cpu_ms_per_s=32
+[perf-probe pid=19284] t=15s elu=0.023 delay_p50=10.7 p99=12.3 max=13.1 cpu_ms_per_s=353 cum_elu=0.029 cum_cpu_ms_per_s=834 cum_delay_p99=12.6 cum_delay_max=13.3 cum_js_thread_cpu_ms_per_s=27
+## B-both run-3.log
+[perf-probe pid=19357] t=5s elu=0.031 delay_p50=10.9 p99=12.6 max=13.6 cpu_ms_per_s=693 cum_elu=0.031 cum_cpu_ms_per_s=693 cum_delay_p99=12.6 cum_delay_max=13.6 cum_js_thread_cpu_ms_per_s=39
+[perf-probe pid=19357] t=10s elu=0.025 delay_p50=10.6 p99=12.3 max=12.7 cpu_ms_per_s=1458 cum_elu=0.028 cum_cpu_ms_per_s=1076 cum_delay_p99=12.5 cum_delay_max=13.6 cum_js_thread_cpu_ms_per_s=30
+[perf-probe pid=19357] t=15s elu=0.022 delay_p50=10.7 p99=12.1 max=12.7 cpu_ms_per_s=352 cum_elu=0.026 cum_cpu_ms_per_s=835 cum_delay_p99=12.4 cum_delay_max=13.6 cum_js_thread_cpu_ms_per_s=26
+## C-all run-1.log
+[perf-probe pid=28420] t=5s elu=0.026 delay_p50=10.9 p99=12.7 max=13.0 cpu_ms_per_s=698 cum_elu=0.026 cum_cpu_ms_per_s=698 cum_delay_p99=12.7 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=32
+[perf-probe pid=28420] t=10s elu=0.018 delay_p50=10.6 p99=12.6 max=12.8 cpu_ms_per_s=1496 cum_elu=0.022 cum_cpu_ms_per_s=1097 cum_delay_p99=12.6 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=24
+[perf-probe pid=28420] t=15s elu=0.016 delay_p50=10.7 p99=12.3 max=12.9 cpu_ms_per_s=340 cum_elu=0.020 cum_cpu_ms_per_s=845 cum_delay_p99=12.6 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=20
+## C-all run-2.log
+[perf-probe pid=28512] t=5s elu=0.029 delay_p50=11.0 p99=12.9 max=16.2 cpu_ms_per_s=701 cum_elu=0.029 cum_cpu_ms_per_s=701 cum_delay_p99=12.9 cum_delay_max=16.2 cum_js_thread_cpu_ms_per_s=33
+[perf-probe pid=28512] t=10s elu=0.018 delay_p50=10.7 p99=12.4 max=12.6 cpu_ms_per_s=1496 cum_elu=0.023 cum_cpu_ms_per_s=1098 cum_delay_p99=12.7 cum_delay_max=16.2 cum_js_thread_cpu_ms_per_s=24
+[perf-probe pid=28512] t=15s elu=0.016 delay_p50=10.8 p99=12.5 max=12.7 cpu_ms_per_s=341 cum_elu=0.021 cum_cpu_ms_per_s=846 cum_delay_p99=12.6 cum_delay_max=16.2 cum_js_thread_cpu_ms_per_s=20
+## C-all run-3.log
+[perf-probe pid=28641] t=5s elu=0.025 delay_p50=10.9 p99=12.6 max=13.0 cpu_ms_per_s=683 cum_elu=0.025 cum_cpu_ms_per_s=683 cum_delay_p99=12.6 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=32
+[perf-probe pid=28641] t=10s elu=0.018 delay_p50=10.7 p99=12.3 max=12.8 cpu_ms_per_s=1389 cum_elu=0.022 cum_cpu_ms_per_s=1036 cum_delay_p99=12.5 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=23
+[perf-probe pid=28641] t=15s elu=0.016 delay_p50=10.6 p99=12.4 max=12.9 cpu_ms_per_s=330 cum_elu=0.020 cum_cpu_ms_per_s=801 cum_delay_p99=12.5 cum_delay_max=13.0 cum_js_thread_cpu_ms_per_s=20

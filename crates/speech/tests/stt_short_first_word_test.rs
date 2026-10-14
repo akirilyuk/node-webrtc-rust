@@ -285,6 +285,22 @@ async fn short_quiet_first_word_after_long_pause_is_kept() {
 }
 
 #[tokio::test]
+async fn short_quiet_first_word_after_2500ms_pause_is_kept() {
+    check(
+        &[
+            silence(25),
+            burst(ALPHA, 8),
+            silence(125),
+            burst(BRAVO, 40),
+            silence(150),
+        ],
+        &["alpha bravo"],
+        &[8],
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn short_burst_still_in_ring_is_not_duplicated() {
     check(
         &[
@@ -322,7 +338,7 @@ async fn short_burst_older_than_window_is_not_kept() {
         &[
             silence(25),
             burst(ALPHA, 8),
-            silence(100),
+            silence(175),
             burst(BRAVO, 40),
             silence(150),
         ],

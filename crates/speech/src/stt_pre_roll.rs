@@ -114,8 +114,10 @@ pub fn stt_pre_roll_capacity_ms(config: &VadConfig) -> u32 {
         .saturating_add(config.min_speech_duration_ms)
 }
 
-/// How long a short voiced burst that ended without VAD `SpeechStart` is kept for the next utterance.
-pub const SHORT_BURST_RETAIN_MS: u32 = 1500;
+/// How long a short voiced burst that ended without VAD `SpeechStart` is kept for the next utterance (a quiet first word followed by a pause of up to 3 s).
+pub const SHORT_BURST_RETAIN_MS: u32 = 3000;
+/// Cap on the length of the retained audio.
+pub const SHORT_BURST_MAX_AUDIO_MS: u32 = 1500;
 /// Silence inserted between a retained burst and the pre-roll ring when they are not contiguous.
 pub const SHORT_BURST_SEPARATOR_MS: u32 = 200;
 
@@ -138,7 +140,7 @@ impl ShortBurstRetainer {
     }
 
     fn cap_bytes() -> usize {
-        mono_s16le_bytes_for_duration_ms(SHORT_BURST_RETAIN_MS)
+        mono_s16le_bytes_for_duration_ms(SHORT_BURST_MAX_AUDIO_MS)
     }
 
     /// Feed one frame that went to the pre-roll ring while the gate was closed.
@@ -321,7 +323,7 @@ mod tests {
     fn burst_older_than_window_is_cleared() {
         let mut r = ShortBurstRetainer::new();
         feed(&mut r, true, 8, 7);
-        feed(&mut r, false, 76, 0);
+        feed(&mut r, false, 151, 0);
         assert!(r.retained.is_empty());
         assert!(r.take_for_new_stream(700).is_none());
     }

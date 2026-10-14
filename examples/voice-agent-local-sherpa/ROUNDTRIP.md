@@ -72,6 +72,7 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths                                                                                                                                   |
 | **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                                                                                                                                                 |
 | **C1 timeouts**       | `npm run start:roundtrip-c1-timeouts` — STT no-partial timeouts: flowing frames close normally, a stopped sender waits for the 12 s bound, a 4.5 s gap mid-phrase is survived (see below)                                                                        |
+| **Doubled word**      | `npm run start:roundtrip-doubled-first-word` — replay a committed fixture 20x on one reused listener agent; no final may start with "okay okay" (see below)                                                                                                      |
 | **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                                                                                                                                                   |
 | **Session record**    | `NWR_RECORD_FORMAT=wav npm run start:record` — short counting roundtrip + stereo WAV for listen-back (see below)                                                                                                                                                 |
 | **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                                                                                                                                                    |
@@ -384,6 +385,24 @@ npm run start:roundtrip-c1-timeouts --workspace=@node-webrtc-rust/example-voice-
 ```
 
 Runtime is about 75 s. Summary lines look like `[c1-smoke] phase=B notFoundAfterMs=11819 finals=[] PASS`.
+
+## Doubled first word roundtrip (`start:roundtrip-doubled-first-word`)
+
+[`src/roundtrip-doubled-first-word.ts`](./src/roundtrip-doubled-first-word.ts) guards against a stream-reuse bug in the Sherpa STT adapter. A reply that says "okay" once could come back as `user_speech_final` "okay okay seven three two six ten" in about 2 % of turns on staging load tests. The audio reached STT once; the online recognizer stream was reused across utterances (`InputFinished` plus `Reset`, which keeps the encoder state and the last tokens as context). The adapter now starts every utterance on a fresh stream (`finalize_utterance` in `crates/vendor-sherpa-onnx/src/stt.rs`).
+
+| `DOUBLED_WORD_MODE`            | What it does                                                                                                                                                                                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `replay-fixture` (default, CI) | Replays `crates/vendor-sherpa-onnx/tests/fixtures/okay-doubled-first-word-16k-mono.pcm` (upsampled to 48 kHz stereo) 20x on ONE listener agent, unpaced (`fast`), 6 s silence before and after each replay. Exit 1 on any doubled final or a replay without a final.                                         |
+| `phrases`                      | 120 seeded phrases ("Okay. <4-5 number words>") rendered with Piper amy-medium at speed 0.8 and fed through a loopback with the client VAD config, 6 s apart. `DOUBLED_WORD_VARIANT=client\|nogate\|fast`, `DOUBLED_WORD_PHRASES`, `DOUBLED_WORD_SEED`. Saves doubled PCMs under `.test-logs/doubled-word/`. |
+
+`DOUBLED_WORD_REPLAY=<path.pcm>` replays any saved 48 kHz stereo PCM instead (`DOUBLED_WORD_REPLAYS`, default 20; `DOUBLED_WORD_REPLAY_FRESH=1` for a new agent per replay). The vendor-level guard is `crates/vendor-sherpa-onnx/tests/fresh_stream_per_utterance_test.rs` (needs `SHERPA_STT_MODEL_PATH`, skips without it).
+
+```bash
+npm run start:roundtrip-doubled-first-word --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+DOUBLED_WORD_MODE=phrases DOUBLED_WORD_VARIANT=nogate npm run start:roundtrip-doubled-first-word --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Runtime of the default mode is about 90 s. The summary line looks like `[doubled-smoke] replay variant=fast doubled=0/20 no_final=0`.
 
 ## Utterance timing roundtrip (`user_speaking_end` ↔ `user_speech_final`)
 

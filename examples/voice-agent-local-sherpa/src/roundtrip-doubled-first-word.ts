@@ -14,7 +14,15 @@
  *      config, paced 20 ms per frame from an anchor, and collects every `user_speech_final`.
  *   4. Prints one line per phrase and exits 1 when any final starts with "okay okay".
  *
- * Variants (`DOUBLED_WORD_VARIANT`):
+ * Modes (`DOUBLED_WORD_MODE`):
+ *   replay-fixture  (default, CI) replay the committed fixture
+ *                   `crates/vendor-sherpa-onnx/tests/fixtures/okay-doubled-first-word-16k-mono.pcm`
+ *                   (upsampled to 48 kHz stereo by sample duplication) 20x on ONE reused agent with
+ *                   `fast` pacing; exit 1 on any doubled final or any replay without a final.
+ *                   On the unfixed code a reused stream doubles the first word in some replays.
+ *   phrases         the 120-phrase TTS smoke described above
+ *
+ * Variants (`DOUBLED_WORD_VARIANT`, phrases mode and `DOUBLED_WORD_REPLAY`):
  *   client  the load-test client config (VOICE_AGENT_VAD_PRESET + energy 0.05, gateStt true)
  *   nogate  same, `gateStt: false` (audio streams to STT continuously, no pre-roll splice)
  *   fast    client config, no loopback and no pacing: frames go to `processInboundPcm` back-to-back
@@ -410,20 +418,37 @@ async function runSmoke(
   process.exit(0)
 }
 
+/** Mono 16 kHz s16le to the 48 kHz stereo s16le the agent takes: each sample x3 in time, both channels. */
+function upsampleMono16kToStereo48k(mono: Buffer): Buffer {
+  const out = Buffer.alloc((mono.length / 2) * 3 * 4)
+  let o = 0
+  for (let i = 0; i + 1 < mono.length; i += 2) {
+    const sample = mono.readInt16LE(i)
+    for (let rep = 0; rep < 3; rep++) {
+      out.writeInt16LE(sample, o)
+      out.writeInt16LE(sample, o + 2)
+      o += 4
+    }
+  }
+  return out
+}
+
 async function runReplay(
   variant: DoubledWordVariant,
   sttPath: string,
-  replayPath: string,
+  source: { label: string; pcm: Buffer },
+  requireFinal: boolean,
 ): Promise<void> {
-  const pcmFrames = toFrames(readFileSync(replayPath))
+  const pcmFrames = toFrames(source.pcm)
   const replays = Number(process.env.DOUBLED_WORD_REPLAYS ?? DEFAULT_REPLAYS)
   const fresh = process.env.DOUBLED_WORD_REPLAY_FRESH === '1'
   console.log(
-    `[doubled-smoke] replay file=${replayPath} frames=${pcmFrames.length} variant=${variant} replays=${replays} fresh=${fresh}`,
+    `[doubled-smoke] replay source=${source.label} frames=${pcmFrames.length} variant=${variant} replays=${replays} fresh=${fresh}`,
   )
 
   let session: ListenerSession | null = null
   let doubled = 0
+  let withoutFinal = 0
   for (let n = 0; n < replays; n++) {
     if (session === null || fresh) {
       await session?.close()
@@ -447,6 +472,7 @@ async function runReplay(
       .map((f) => f.text)
     const isDoubled = finals.some(isDoubledFirstWord)
     if (isDoubled) doubled += 1
+    if (finals.length === 0) withoutFinal += 1
     console.log(
       `[doubled-smoke] replay #${n} finals=${JSON.stringify(finals)}${isDoubled ? ' DOUBLED' : ''}`,
     )
@@ -454,43 +480,79 @@ async function runReplay(
   }
   await session?.close()
 
-  console.log(`[doubled-smoke] replay variant=${variant} doubled=${doubled}/${replays}`)
-  if (doubled > 0) {
+  console.log(
+    `[doubled-smoke] replay variant=${variant} doubled=${doubled}/${replays} no_final=${withoutFinal}`,
+  )
+  const failures: string[] = []
+  if (doubled > 0) failures.push(`${doubled}/${replays} replays doubled the first word`)
+  if (requireFinal && withoutFinal > 0)
+    failures.push(`${withoutFinal}/${replays} replays had no final`)
+  if (failures.length > 0) {
     exitSherpaRoundtripFailure({
-      reason: `replay doubled ${doubled}/${replays} (variant ${variant})`,
-      failures: [replayPath],
+      reason: `replay of ${source.label} failed (variant ${variant})`,
+      failures,
     })
   }
+  console.log('Doubled first word replay OK — no final started with "okay okay".')
   process.exit(0)
+}
+
+const FIXTURE_PATH = fileURLToPath(
+  new URL(
+    '../../../crates/vendor-sherpa-onnx/tests/fixtures/okay-doubled-first-word-16k-mono.pcm',
+    import.meta.url,
+  ),
+)
+
+type DoubledWordMode = 'replay-fixture' | 'phrases'
+
+function parseMode(raw: string | undefined): DoubledWordMode {
+  const value = (raw ?? '').trim()
+  if (value === '' || value === 'replay-fixture') return 'replay-fixture'
+  if (value === 'phrases') return 'phrases'
+  throw new Error(`DOUBLED_WORD_MODE must be replay-fixture or phrases (got "${value}")`)
 }
 
 async function main(): Promise<void> {
   enableRoundtripSpeechEventLog()
-  const variant = parseVariant(process.env.DOUBLED_WORD_VARIANT)
+  const mode = parseMode(process.env.DOUBLED_WORD_MODE)
+  const replayPath = process.env.DOUBLED_WORD_REPLAY?.trim() ?? ''
   const count = parsePhraseCount(process.env.DOUBLED_WORD_PHRASES)
-  const replayPath = process.env.DOUBLED_WORD_REPLAY?.trim()
-  const wallMs =
-    replayPath != null && replayPath !== ''
-      ? 300_000 +
-        Number(process.env.DOUBLED_WORD_REPLAYS ?? DEFAULT_REPLAYS) *
-          (2 * SILENCE_BETWEEN_PHRASES_MS + 12_000 + FINAL_TAIL_MS)
-      : wallClockBudgetMs(count, variant)
-  installRoundtripWallClockTimeout(wallMs)
+  // The fixture replay always runs unpaced (`fast`); other runs follow DOUBLED_WORD_VARIANT.
+  const variant =
+    mode === 'replay-fixture' && replayPath === ''
+      ? 'fast'
+      : parseVariant(process.env.DOUBLED_WORD_VARIANT)
+  if (mode === 'replay-fixture' && replayPath === '') installRoundtripWallClockTimeout(120_000)
+  else
+    installRoundtripWallClockTimeout(replayWallMs(replayPath) ?? wallClockBudgetMs(count, variant))
 
   const sttPath = requireEnv('SHERPA_STT_MODEL_PATH')
-  const ttsPath = requireEnv('SHERPA_TTS_MODEL_PATH')
 
   console.log('=== Sherpa doubled first word smoke ===')
-  console.log(`variant=${variant} replay=${replayPath ?? '(none)'}`)
+  console.log(`mode=${mode} variant=${variant} replay=${replayPath === '' ? '(none)' : replayPath}`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttPath}`)
-  console.log(`SHERPA_TTS_MODEL_PATH=${ttsPath}`)
   console.log(`vad=${JSON.stringify(clientConfig(variant, sttPath).vad)}`)
 
-  if (replayPath != null && replayPath !== '') {
-    await runReplay(variant, sttPath, replayPath)
+  if (replayPath !== '') {
+    await runReplay(variant, sttPath, { label: replayPath, pcm: readFileSync(replayPath) }, false)
     return
   }
+  if (mode === 'replay-fixture') {
+    const pcm = upsampleMono16kToStereo48k(readFileSync(FIXTURE_PATH))
+    await runReplay(variant, sttPath, { label: 'fixture', pcm }, true)
+    return
+  }
+  const ttsPath = requireEnv('SHERPA_TTS_MODEL_PATH')
+  console.log(`SHERPA_TTS_MODEL_PATH=${ttsPath}`)
   await runSmoke(variant, sttPath, ttsPath)
+}
+
+/** Wall-clock budget of a `DOUBLED_WORD_REPLAY` run (null when no replay path is set). */
+function replayWallMs(replayPath: string): number | null {
+  if (replayPath === '') return null
+  const replays = Number(process.env.DOUBLED_WORD_REPLAYS ?? DEFAULT_REPLAYS)
+  return 300_000 + replays * (2 * SILENCE_BETWEEN_PHRASES_MS + 12_000 + FINAL_TAIL_MS)
 }
 
 const isMain = process.argv[1]?.endsWith('roundtrip-doubled-first-word.ts') === true

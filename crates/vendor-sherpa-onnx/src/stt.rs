@@ -373,8 +373,11 @@ impl SttProvider for SherpaStt {
                 if !text.is_empty() {
                     session.pending.push_back(SttTranscript::Final(text));
                 }
-                recognizer.reset(&session.stream);
             });
+            // A finalized stream got InputFinished and Reset keeps the encoder state and the last
+            // tokens as context, so reusing it can repeat the previous utterance's first word
+            // ("okay okay"). Every utterance starts on a fresh stream; the old one is dropped here.
+            session.stream = session.shared.create_stream();
             session.last_emitted_text.clear();
             session.decoded_since_result = false;
             session

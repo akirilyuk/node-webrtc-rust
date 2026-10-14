@@ -62,6 +62,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:record
   start:roundtrip-utterance-timing
   start:roundtrip-c1-timeouts
+  start:roundtrip-doubled-first-word
   start:roundtrip-two-phrases
   start:roundtrip-barge-in
   start:roundtrip-barge-in-buffered

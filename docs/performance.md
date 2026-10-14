@@ -148,6 +148,66 @@ These tests cover the failure modes that show up when many sessions start, stop 
 - Lexicon models (Melo) synthesize, and Piper models still do: [`tts_lexicon_model_test.rs`](../crates/vendor-sherpa-onnx/tests/tts_lexicon_model_test.rs)
 - Model folders that contain only git-lfs pointer files are rejected with a clear error instead of aborting ONNX Runtime, and Melo folders resolve their lexicon, dictionary and rule FSTs: unit tests in [`tts_model_paths.rs`](../crates/vendor-sherpa-onnx/src/tts_model_paths.rs)
 
+## Voice media loops in Rust (0.10.0)
+
+Up to 0.9.x, the per-frame work of a voice session ran on the Node.js main thread. For every peer and every 20 ms frame, JS read the inbound frame (`readSample`), pushed it into the mix graph, handed it to the agent (`processInboundPcm`), received each agent TTS frame through a thread-safe callback, and ran the client-mix pump (`renderOutput`, `panTtsFrame`, a JS loop that summed 1,920 samples, `writeSample`). On top of that, each agent polled for speech events every 10 ms. Since 0.10.0 these loops run in Rust tasks, and JS only configures them and receives events.
+
+```mermaid
+flowchart TB
+  subgraph before["Up to 0.9.x: JS main thread, per peer, every 20 ms"]
+    direction TB
+    r1["await readSample()"] --> r2["mixGraph.pushFrame()"] --> r3["await processInboundPcm()"]
+    t1["TTS frame via thread-safe callback"] --> t2["JS queue"]
+    p1["setInterval 20 ms: pump"] --> p2["renderOutput + panTtsFrame + JS sum"] --> p3["await writeSample()"]
+    e1["setTimeout 10 ms: await pullSpeechEvent()"]
+  end
+  subgraph after["0.10.0: Rust tasks; JS configures and receives events"]
+    direction TB
+    n1["inbound task: read_sample → mix graph → agent (real frame duration) → read tee"]
+    n2["TTS drain → native queue (no callback, no encode of an unsent sidecar track)"]
+    n3["mix pump task per listener: render + pan + sum → write_sample → write tee"]
+    n4["event forwarder → unbounded queue → JS awaits nextSpeechEvent()"]
+  end
+```
+
+- **Mix pump.** `ClientAudioMixer` starts one Rust task per listener with the same scheduling as the JS pump: one frame per 20 ms slot, at most 4 frames per wake-up, a clock rebase when it falls behind, no bursts to the network. The TTS queue is unbounded. A backlog plays late but complete, and a throttled `[mix] tts backlog` line reports it. JS keeps start/stop/pause/resume/burst/discard and a once-a-second stats poll.
+- **Inbound loop.** `VoiceAgent.start()` runs the inbound loop in Rust when the inbound track is a native `RemoteAudioTrack` whose `readSample` was not wrapped in JS. The loop pushes frames into the mix graph when the session is mixed. `RemoteAudioTrack.setReadSampleTee()` gives recorders the inbound PCM without wrapping `readSample`.
+- **Speech events.** A Rust forwarder moves every event into an unbounded per-agent queue as it is emitted, and the SDK awaits `nextSpeechEvent()`. Before, a slow JS consumer could miss events when the 256-slot event channel lagged.
+- **Fallback switches.** `NWR_MIX_NATIVE_PUMP=0` and `NWR_NATIVE_INBOUND=0` select the JS loops. The JS loops are also used automatically for mock mix graphs, non-native tracks and JS-wrapped `readSample`.
+
+### Results
+
+Workload: the `start:roundtrip-counting-echo-lid-multi` example (10 concurrent voice sessions). The numbers are for its echo-server process, which runs `VoiceAgentSessionHost` with the client mix, Sherpa STT and TTS and language ID for all 10 sessions. Native on the Apple M4 Pro, unthrottled, 3 runs per mode, measured with [`scripts/perf/js-thread-probe.mjs`](../scripts/perf/js-thread-probe.mjs) (cumulative over each 18 s run). The modes were selected with the switches above in one build.
+
+| Mode                           | JS main-thread CPU (ms per s) | Event-loop utilization | Process CPU, all threads (ms per s) | Event-loop delay p99 (ms) |
+| ------------------------------ | ----------------------------: | ---------------------: | ----------------------------------: | ------------------------: |
+| JS loops (0.9.x behavior)      |                       106–109 |            0.112–0.114 |                             856–932 |                 12.2–12.4 |
+| Native mix pump                |                         38–40 |            0.043–0.045 |                             855–909 |                 12.4–12.6 |
+| Native mix pump + inbound loop |                         26–27 |            0.026–0.029 |                             834–845 |                 12.4–12.6 |
+| All native (0.10.0 default)    |                        **20** |            0.020–0.021 |                             801–846 |                 12.5–12.6 |
+
+The JS main thread now spends about 2 % of one core on 10 voice sessions, down from about 11 % (−81 %). Total process CPU dropped 6–9 %, mostly because TTS frames are no longer Opus-encoded into an unsent sidecar track. The event-loop delay is dominated by the 10 ms timer resolution and did not change.
+
+Per-run data: [`perf-data/2026-10-14/runs.md`](perf-data/2026-10-14/runs.md) and the raw probe lines in [`perf-data/2026-10-14/probe-lines.txt`](perf-data/2026-10-14/probe-lines.txt).
+
+## Behavior under CPU starvation
+
+A voice host that gets too little CPU used to lose words. Measured with a SIGSTOP duty cycle on the whole 10-session example (5 ms run / 45 ms stop ≈ 10 % CPU; 5 ms / 20 ms ≈ 20 %), and with a busy-wait that blocks the echo server's JS thread for 4 s every 12 s:
+
+| Scenario (10 sessions per run)            | 0.9.48                                        | 0.10.0                                |
+| ----------------------------------------- | --------------------------------------------- | ------------------------------------- |
+| 4 s JS stall every 12 s + 5/20 duty cycle | 0 of 3 runs clean, 11 sessions lost 1–6 words | 3 of 3 runs clean                     |
+| 5/45 duty cycle                           | up to 8 of 10 sessions lost middle words      | 0 sessions with lost words in 9 runs  |
+| 5/20 duty cycle                           | 20 of 20 runs clean                           | 198 of 200 sessions clean (see below) |
+
+The causes fixed between those versions:
+
+1. **The client-mix pump dropped agent speech.** Its TTS queue held 1 s and dropped the oldest frames when JS fell behind, so the middle of a reply was lost. The queue is now unbounded, and a barge-in or `flushTts()` discards it.
+2. **The STT "no partial" safety net closed a live stream.** No PCM for `sttListenTimeoutMs` (4 s) looked like a stopped sender, while the audio was only waiting behind a frozen reader. While VAD is in speech, only the hard timeout (3 × `sttListenTimeoutMs`, 12 s) closes the stream now. A sender that stops completely mid-speech is therefore closed after 12 s instead of 4 s. Frames that keep flowing close at the normal end of speech, as before.
+3. **A short first word fell out of the pre-roll.** A quiet word below `minSpeechDurationMs`, followed by a pause longer than the pre-roll, never reached STT. Such bursts are now kept for up to 3 s and prepended to the next utterance, without duplicating audio that is still in the pre-roll.
+
+The two remaining 5/20 sessions were a doubled "eight" on one TTS rendering of "eight, nine" (the received audio has no repeated part, and a replay of it transcribes correctly) and one lost first word after a 1.54 s TTS pause, which the 3 s window above now covers.
+
 ## Tuning
 
 | Variable                            | Default               | What it changes                                                                                                                                     | Recommendation                                                                                                                                                                                                             |
@@ -156,6 +216,8 @@ These tests cover the failure modes that show up when many sessions start, stop 
 | `SHERPA_POOL_MAX_CONCURRENT_DECODE` | CPU count (minimum 1) | How many STT decodes run at once.                                                                                                                   | Leave at the CPU count.                                                                                                                                                                                                    |
 | `SHERPA_TTS_NUM_THREADS`            | `2`                   | ONNX intra-op threads of one synthesis.                                                                                                             | Many concurrent sessions per CPU: 1 for `-low` / `-medium` voices (threads compete for the CPU). One session at a time: 2 lowers first audio (amy-low 254 → 112 ms p50 on 1 CPU). `-high` voices and Melo: threads = CPUs. |
 | `SHERPA_POOL_MAX_CONCURRENT_TTS`    | `2`                   | How many syntheses run at once, and how many engines (model copies) are loaded.                                                                     | `-low` / `-medium` voices: 1 engine per CPU. `-high` voices and Melo: 1.                                                                                                                                                   |
+| `NWR_MIX_NATIVE_PUMP`               | on                    | `0` runs the client-mix pump in JS instead of the Rust task.                                                                                        | Keep on. Use `0` only to compare.                                                                                                                                                                                          |
+| `NWR_NATIVE_INBOUND`                | on                    | `0` reads inbound audio in a JS loop instead of the Rust task.                                                                                      | Keep on. Recorders should use `setReadSampleTee()` instead of wrapping `readSample`, so the Rust loop stays active.                                                                                                        |
 | `VOICE_TTS_PHRASE_CACHE`            | on                    | Serves repeated phrases from memory. Size limits: `VOICE_TTS_PHRASE_CACHE_MAX_BYTES` (16 MiB) and `VOICE_TTS_PHRASE_CACHE_MAX_ENTRY_BYTES` (2 MiB). | Keep on for agents that repeat greetings and prompts.                                                                                                                                                                      |
 
 ## Reproduce
@@ -213,6 +275,20 @@ npm run start:roundtrip-load --workspace=@node-webrtc-rust/example-voice-agent-l
 SHERPA_LOAD_CAPACITY=1 SHERPA_LOAD_TURNS=2 npm run start:roundtrip-load --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
+### JS main-thread cost (0.10.0 media loops)
+
+The probe is a preload, so it measures any Node.js process without code changes. For the 10-session example, match the echo-server child:
+
+```bash
+PERF_PROBE=1 PERF_PROBE_MATCH=roundtrip-counting-echo-lid-multi-echo-server.ts \
+  NODE_OPTIONS="--import $PWD/scripts/perf/js-thread-probe.mjs" \
+  SHERPA_MULTI_PCM_CAPTURE=0 WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1 \
+  npm run start:roundtrip-counting-echo-lid-multi --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+# compare with the JS loops: prefix NWR_MIX_NATIVE_PUMP=0 NWR_NATIVE_INBOUND=0
+```
+
+Read the last `cum_js_thread_cpu_ms_per_s` value. Turn the example's PCM capture off (`SHERPA_MULTI_PCM_CAPTURE=0`): its capture tee adds a JS callback per frame and peer. Do not attach a CPU profiler while measuring, because the inspector profiler inflates event-loop utilization several times. On macOS, set `WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1` if the application firewall drops UDP on the LAN interface.
+
 ## Raw data
 
 The generated reports behind these tables are in [`perf-data/2026-10-10`](perf-data/2026-10-10/):
@@ -225,3 +301,10 @@ The generated reports behind these tables are in [`perf-data/2026-10-10`](perf-d
 | `voice-cost-20261010-223247`, `-223345`, `-223445` (`.md` and `.json`) | Engine sweep: `SHERPA_POOL_MAX_CONCURRENT_TTS` 1, 2 and 4                   |
 | `media-path-2b24d82.json`                                              | Media path benches and probes, every probe run                              |
 | `roundtrip-load-8x5.jsonl`, `roundtrip-load-capacity.jsonl`            | The `perf_probe` lines of the two voice loopback runs                       |
+
+The data behind [Voice media loops in Rust](#voice-media-loops-in-rust-0100) and [Behavior under CPU starvation](#behavior-under-cpu-starvation) is in [`perf-data/2026-10-14`](perf-data/2026-10-14/):
+
+| Files             | Content                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `runs.md`         | One row per run: verdict, duration, sessions with word errors, failure class, which loops were native, probe values |
+| `probe-lines.txt` | The raw 5 s probe lines of every unthrottled measurement run, per mode                                              |

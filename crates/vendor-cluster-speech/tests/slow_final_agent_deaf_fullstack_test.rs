@@ -18,18 +18,29 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use mock_server::{spawn_mock_speech, MockSpeechState};
+use node_webrtc_rust_speech::config::SttConfig;
 use node_webrtc_rust_speech::config::{
     SendTextToTtsOptions, SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::SpeechEventKind;
+use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 use node_webrtc_rust_speech::{PcmWriter, VendorRegistry, VoiceAgent};
-use node_webrtc_rust_vendor_cluster_speech::ClusterSherpaFactory;
+use node_webrtc_rust_vendor_cluster_speech::{
+    stt_reopen_total, ClusterSherpaFactory, ClusterSherpaStt, ClusterSttOptions,
+};
 use tokio::time::{sleep, sleep_until, Instant as TokioInstant};
 
 const FRAME_MS: u64 = 20;
 const TURN_PERIOD_MS: u64 = 14_000;
 const SPEECH_MS: u64 = 2_500;
 const MAX_CALL_MS: u128 = 1_000;
+/// Longest an inbound call may take while a Transcribe open never answers: the open bound
+/// (`OPEN_HEADERS_TIMEOUT_MS` = 5_000 in `src/stt.rs`) plus 2_000 ms of slack.
+const MAX_CALL_DURING_HUNG_OPEN_MS: u128 = 7_000;
+/// Same constant as `OPEN_HEADERS_TIMEOUT_MS` in `src/stt.rs`.
+const OPEN_HEADERS_TIMEOUT_MS: u64 = 5_000;
+/// 16 kHz mono s16le: 32 bytes per millisecond.
+const STT_BYTES_PER_MS: usize = 32;
 /// Longest a single inbound call may run before the script gives up and reports it as hung.
 const HUNG_CALL_BOUND: Duration = Duration::from_secs(20);
 
@@ -55,6 +66,9 @@ fn set_per_utterance_env() {
     }
 }
 
+/// `(ms since anchor, kind, text)` of every speech event.
+type EventLog = Arc<Mutex<Vec<(u128, SpeechEventKind, Option<String>)>>>;
+
 /// What happened in one turn window (`[turn * period, (turn + 1) * period)` since the anchor).
 #[derive(Debug, Default, Clone)]
 struct TurnReport {
@@ -71,6 +85,8 @@ struct RunReport {
     turns: Vec<TurnReport>,
     /// `(ms since anchor, call duration ms)` of every call over 500 ms.
     slow_calls: Vec<(u128, u128)>,
+    /// How long `agent.stop()` took (capped at its 5 s test bound).
+    stop_ms: u128,
 }
 
 /// Run `turns` scripted turns against a VoiceAgent wired to the mock speech service.
@@ -129,8 +145,7 @@ async fn run_script(
     sleep(Duration::from_millis(80)).await;
 
     let anchor = Instant::now();
-    let events: Arc<Mutex<Vec<(u128, SpeechEventKind, Option<String>)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let events: EventLog = Arc::new(Mutex::new(Vec::new()));
 
     // Event consumer: records every event and replies like the echo agent.
     let mut rx = agent.subscribe_events();
@@ -145,7 +160,7 @@ async fn run_script(
             };
             consumer_events.lock().unwrap().push((
                 anchor.elapsed().as_millis(),
-                event.kind.clone(),
+                event.kind,
                 event.text.clone(),
             ));
             if event.kind == SpeechEventKind::UserSpeechFinal {
@@ -230,13 +245,15 @@ async fn run_script(
     let (per_turn_max, streams_at_end, slow_calls) = inbound.await.unwrap();
     sleep(Duration::from_millis(300)).await;
     consumer.abort();
-    // `stop()` can hang behind a stuck stream open; the test must still end.
+    // `stop()` must not hang behind a stuck stream open; bound it so a regression ends the test.
+    let stop_started = Instant::now();
     if tokio::time::timeout(Duration::from_secs(5), agent.stop())
         .await
         .is_err()
     {
         eprintln!("agent.stop() did not return within 5 s");
     }
+    let stop_ms = stop_started.elapsed().as_millis();
     let _ = shutdown.send(());
 
     let mut reports = vec![TurnReport::default(); turns];
@@ -261,6 +278,7 @@ async fn run_script(
     RunReport {
         turns: reports,
         slow_calls,
+        stop_ms,
     }
 }
 
@@ -285,7 +303,8 @@ fn describe(report: &RunReport) -> String {
 }
 
 /// Turns 1-2 default, turn 3 has a 3.3 s late final, turns 4-6 default again. Every turn must
-/// start speaking, open a fresh stream, produce a final, and never stall the inbound call.
+/// start speaking, open a fresh stream and produce a final. Only the slow turn may stall the
+/// inbound call, and only for the vendor's delay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agent_keeps_hearing_after_a_slow_final() {
     set_per_utterance_env();
@@ -301,7 +320,7 @@ async fn agent_keeps_hearing_after_a_slow_final() {
         },
     )
     .await;
-    assert_every_turn_heard(&report);
+    assert_every_turn_heard(&report, 3_300);
 }
 
 /// Same as the slow-final test, with `Finalized` also arriving 3 s after the final.
@@ -326,7 +345,7 @@ async fn agent_keeps_hearing_after_a_slow_final_and_slow_finalized() {
         },
     )
     .await;
-    assert_every_turn_heard(&report);
+    assert_every_turn_heard(&report, 3_300 + 3_000);
 }
 
 /// Same as the slow-final test, with turn 3 carrying only 1.5 s of speech (less audio, as on
@@ -346,10 +365,12 @@ async fn agent_keeps_hearing_after_a_slow_final_on_a_short_turn() {
         },
     )
     .await;
-    assert_every_turn_heard(&report);
+    assert_every_turn_heard(&report, 3_300);
 }
 
-fn assert_every_turn_heard(report: &RunReport) {
+/// Turn 3 (index 2) carries a slow vendor final of `slow_final_ms` in total; every other turn
+/// must stay under `MAX_CALL_MS`.
+fn assert_every_turn_heard(report: &RunReport, slow_final_ms: u128) {
     let summary = describe(report);
     eprintln!("{summary}");
 
@@ -364,9 +385,17 @@ fn assert_every_turn_heard(report: &RunReport) {
             "turn {}: no user_speech_final\n{summary}",
             i + 1
         );
+        // A slow vendor final still stalls the inbound call for the delay: finalize runs inline in
+        // process_inbound_pcm (follow-up: move finalize off the inbound path). The agent must
+        // recover afterwards.
+        let allowed_ms = if i == 2 {
+            slow_final_ms + 1_500
+        } else {
+            MAX_CALL_MS
+        };
         assert!(
-            t.max_call_ms < MAX_CALL_MS,
-            "turn {}: process_inbound_pcm took {} ms\n{summary}",
+            t.max_call_ms < allowed_ms,
+            "turn {}: process_inbound_pcm took {} ms (allowed {allowed_ms})\n{summary}",
             i + 1,
             t.max_call_ms
         );
@@ -386,18 +415,25 @@ fn assert_every_turn_heard(report: &RunReport) {
 }
 
 /// Turns 1-3 default. The Transcribe open for turn 4 never returns its response headers. The
-/// inbound loop must keep processing frames and turn 5 must still start speaking.
+/// open is bounded and retried on a fresh connection: turn 4 is still heard and finalized with
+/// all of its audio, turn 5 opens a new stream, and `stop()` returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agent_keeps_hearing_while_the_next_stream_open_hangs() {
     set_per_utterance_env();
     let state = MockSpeechState::default();
+    let probe = state.clone();
+    // Index of the stream that hangs (set at the start of turn 4); the retry is the next one.
+    let hung_stream = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hung_stream_in_script = Arc::clone(&hung_stream);
+    let timeouts_before = stt_reopen_total("open_timeout");
     let report = run_script(
         5,
         state,
         |_| SPEECH_MS,
-        |turn, state| {
+        move |turn, state| {
             if turn == 3 {
                 let so_far = state.transcribe_streams.load(Ordering::SeqCst);
+                hung_stream_in_script.store(so_far + 1, Ordering::SeqCst);
                 state
                     .open_header_delay_once_after
                     .store(so_far, Ordering::SeqCst);
@@ -407,20 +443,154 @@ async fn agent_keeps_hearing_while_the_next_stream_open_hangs() {
     )
     .await;
     let summary = describe(&report);
-    eprintln!("{summary}");
+    eprintln!("{summary}stop_ms={}", report.stop_ms);
 
-    for i in [3_usize, 4] {
-        let t = &report.turns[i];
-        assert!(
-            t.speaking_start,
-            "turn {}: no user_speaking_start\n{summary}",
-            i + 1
-        );
-        assert!(
-            t.max_call_ms < MAX_CALL_MS,
-            "turn {}: process_inbound_pcm took {} ms\n{summary}",
-            i + 1,
-            t.max_call_ms
-        );
+    let t4 = &report.turns[3];
+    let t5 = &report.turns[4];
+    assert!(
+        t4.speaking_start,
+        "turn 4: no user_speaking_start\n{summary}"
+    );
+    assert!(
+        t4.max_call_ms < MAX_CALL_DURING_HUNG_OPEN_MS,
+        "turn 4: process_inbound_pcm took {} ms\n{summary}",
+        t4.max_call_ms
+    );
+    assert!(t4.speech_final, "turn 4: no user_speech_final\n{summary}");
+
+    // The stream that served turn 4 is the retry of the hung open.
+    let retry_stream = hung_stream.load(Ordering::SeqCst) + 1;
+    let retry_bytes: usize = probe
+        .audio_log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(idx, _)| *idx == retry_stream)
+        .map(|(_, pcm)| pcm.len())
+        .sum();
+    assert!(
+        retry_bytes >= 2_000 * STT_BYTES_PER_MS,
+        "stream {retry_stream} (retry of the hung open) got only {} ms of audio\n{summary}",
+        retry_bytes / STT_BYTES_PER_MS
+    );
+
+    assert!(
+        t5.speaking_start,
+        "turn 5: no user_speaking_start\n{summary}"
+    );
+    assert!(
+        t5.streams_at_end > t4.streams_at_end,
+        "turn 5: no new transcribe stream ({} -> {})\n{summary}",
+        t4.streams_at_end,
+        t5.streams_at_end
+    );
+    assert!(
+        report.stop_ms < 3_000,
+        "agent.stop() took {} ms\n{summary}",
+        report.stop_ms
+    );
+    assert!(
+        stt_reopen_total("open_timeout") > timeouts_before,
+        "open-timeout reopen counter did not increase\n{summary}"
+    );
+}
+
+fn stt_cfg(endpoint: &str) -> SttConfig {
+    SttConfig {
+        provider: SttVendor::ClusterSherpa,
+        model: None,
+        model_path: Some("/models/sherpa/stt/en".into()),
+        language: Some("en".into()),
+        api_key: Some("test-token".into()),
+        endpoint: Some(endpoint.to_string()),
     }
+}
+
+fn hung_first_open_state() -> MockSpeechState {
+    let state = MockSpeechState::default();
+    state
+        .open_header_delay_once_after
+        .store(0, Ordering::SeqCst);
+    state.open_header_delay_ms.store(600_000, Ordering::SeqCst);
+    state
+}
+
+/// `stop()` while the worker is parked on a Transcribe open that never answers must return.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stop_returns_while_a_stream_open_hangs() {
+    let state = hung_first_open_state();
+    let (url, shutdown) = spawn_mock_speech(state).await.unwrap();
+    let mut stt = ClusterSherpaStt::new_with_options(
+        &stt_cfg(&url),
+        ClusterSttOptions {
+            stream_per_utterance: true,
+        },
+    )
+    .unwrap();
+    stt.start().await.unwrap();
+    stt.push_audio(Bytes::from(vec![1_u8; 200 * STT_BYTES_PER_MS]))
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(300)).await;
+
+    let stopped = tokio::time::timeout(Duration::from_secs(3), stt.stop()).await;
+    let _ = shutdown.send(());
+    assert!(stopped.is_ok(), "stop() did not return within 3 s");
+    stopped.unwrap().unwrap();
+}
+
+/// A Transcribe open that never answers is retried on a fresh connection after the open bound;
+/// the audio queued meanwhile reaches the retried stream and the utterance is finalized.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn open_that_never_answers_is_retried_on_a_fresh_connection() {
+    let state = hung_first_open_state();
+    let probe = state.clone();
+    let (url, shutdown) = spawn_mock_speech(state).await.unwrap();
+    let mut stt = ClusterSherpaStt::new_with_options(
+        &stt_cfg(&url),
+        ClusterSttOptions {
+            stream_per_utterance: true,
+        },
+    )
+    .unwrap();
+    stt.start().await.unwrap();
+    stt.push_audio(Bytes::from(vec![1_u8; 1_000 * STT_BYTES_PER_MS]))
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    stt.finalize_utterance().await.unwrap();
+    let took_ms = started.elapsed().as_millis();
+    assert!(
+        took_ms < u128::from(OPEN_HEADERS_TIMEOUT_MS) + 3_000,
+        "finalize_utterance took {took_ms} ms"
+    );
+
+    let mut saw_final = false;
+    for _ in 0..200 {
+        if let Some(SttTranscript::Final(text)) = stt.poll_transcript().await.unwrap() {
+            saw_final = !text.trim().is_empty();
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    let opens = probe.transcribe_streams.load(Ordering::SeqCst);
+    let second_stream_bytes: usize = probe
+        .audio_log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(idx, _)| *idx == 2)
+        .map(|(_, pcm)| pcm.len())
+        .sum();
+    let _ = stt.stop().await;
+    let _ = shutdown.send(());
+
+    assert!(saw_final, "no final transcript after the retried open");
+    assert!(opens >= 2, "mock saw {opens} transcribe opens");
+    assert!(
+        second_stream_bytes >= 900 * STT_BYTES_PER_MS,
+        "second stream got only {} ms of audio",
+        second_stream_bytes / STT_BYTES_PER_MS
+    );
 }

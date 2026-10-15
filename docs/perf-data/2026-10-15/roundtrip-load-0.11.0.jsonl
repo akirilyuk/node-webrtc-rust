@@ -1,0 +1,1 @@
+perf_probe {"name":"roundtrip-load","legs":8,"turns":5,"metrics":{"final_latency_ms_p50":2055.98,"final_latency_ms_p95":2171.35,"tts_start_latency_ms_p50":66.01,"tts_start_latency_ms_p95":471.34,"turn_success_rate":1,"cpu_s_per_session_min":4.41,"event_loop_lag_ms_p99":1.62,"rss_mb_end":862.7,"wall_s":24.3}}

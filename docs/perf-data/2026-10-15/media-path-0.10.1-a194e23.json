@@ -1,0 +1,168 @@
+{
+  "label": "base",
+  "sha": "a194e23",
+  "metrics": {
+    "inbound_frame_allocs": 7.06,
+    "resample_peak_bytes": 4280996,
+    "resample_stream_peak_bytes": 140100,
+    "tts_drain_frames_ns_per_frame": 21448.380573248407,
+    "tts_drain_bytes_copied_per_frame": 6158.286624203822,
+    "idle_agent_cpu_us_per_agent_s": 107.898,
+    "inbound_frame_silence_ns": 2689.9121757814346,
+    "inbound_frame_voiced_ns": 2670.1915495842604,
+    "opus_encode_20ms_ns": 112682.37454829991,
+    "resample_22k_10s_ns": 1049224.6942488262,
+    "resample_stream_22k_10s_ns": 895839.3073770492
+  },
+  "spread_pct": {
+    "inbound_frame_allocs": 0,
+    "resample_peak_bytes": 0,
+    "resample_stream_peak_bytes": 0,
+    "tts_drain_frames_ns_per_frame": 0.4654979786679439,
+    "tts_drain_bytes_copied_per_frame": 0,
+    "idle_agent_cpu_us_per_agent_s": 1.6901128843907995,
+    "inbound_frame_silence_ns": 0.33402823992857755,
+    "inbound_frame_voiced_ns": 1.7242991560567165,
+    "opus_encode_20ms_ns": 0.16562646207966292,
+    "resample_22k_10s_ns": 1.1769847134889857,
+    "resample_stream_22k_10s_ns": 0.17507858299833262
+  },
+  "probes": [
+    {
+      "name": "inbound_frame_allocs",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "inbound_frame_allocs": 7.06
+      }
+    },
+    {
+      "name": "resample",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "resample_peak_bytes": 4280996,
+        "resample_stream_peak_bytes": 140100
+      }
+    },
+    {
+      "name": "tts_drain",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "tts_drain_frames_ns_per_frame": 21605.82484076433,
+        "tts_drain_bytes_copied_per_frame": 6158.286624203822
+      }
+    },
+    {
+      "name": "idle_agents",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "idle_agent_cpu_us_per_agent_s": 106.23800000000001
+      }
+    },
+    {
+      "name": "tts_drain",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "tts_drain_frames_ns_per_frame": 21381.038216560508,
+        "tts_drain_bytes_copied_per_frame": 6158.286624203822
+      }
+    },
+    {
+      "name": "idle_agents",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "idle_agent_cpu_us_per_agent_s": 108.852
+      }
+    },
+    {
+      "name": "tts_drain",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "tts_drain_frames_ns_per_frame": 21400.01433121019,
+        "tts_drain_bytes_copied_per_frame": 6158.286624203822
+      }
+    },
+    {
+      "name": "idle_agents",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "idle_agent_cpu_us_per_agent_s": 105.77799999999999
+      }
+    },
+    {
+      "name": "tts_drain",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "tts_drain_frames_ns_per_frame": 23593.15286624204,
+        "tts_drain_bytes_copied_per_frame": 6158.286624203822
+      }
+    },
+    {
+      "name": "idle_agents",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "idle_agent_cpu_us_per_agent_s": 108.31199999999998
+      }
+    },
+    {
+      "name": "tts_drain",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "tts_drain_frames_ns_per_frame": 22013.535031847136,
+        "tts_drain_bytes_copied_per_frame": 6158.286624203822
+      }
+    },
+    {
+      "name": "idle_agents",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "idle_agent_cpu_us_per_agent_s": 110.744
+      }
+    },
+    {
+      "name": "tts_drain",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "tts_drain_frames_ns_per_frame": 21448.380573248407,
+        "tts_drain_bytes_copied_per_frame": 6158.286624203822
+      }
+    },
+    {
+      "name": "idle_agents",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "idle_agent_cpu_us_per_agent_s": 106.668
+      }
+    },
+    {
+      "name": "tts_drain",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "tts_drain_frames_ns_per_frame": 21386.743630573248,
+        "tts_drain_bytes_copied_per_frame": 6158.286624203822
+      }
+    },
+    {
+      "name": "idle_agents",
+      "sha": "a194e23",
+      "params": {},
+      "metrics": {
+        "idle_agent_cpu_us_per_agent_s": 107.898
+      }
+    }
+  ]
+}

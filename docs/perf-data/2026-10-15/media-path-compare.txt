@@ -1,0 +1,14 @@
+metric                            base       head       delta %  band %  verdict                         
+--------------------------------  ---------  ---------  -------  ------  --------------------------------
+idle_agent_cpu_us_per_agent_s     107.90     123.81     14.7     10.0    FAIL regressed (lower is better)
+inbound_frame_allocs              7.0600     7.0220     -0.5     10.0    ok                              
+inbound_frame_silence_ns          2689.9     2645.8     -1.6     10.0    ok                              
+inbound_frame_voiced_ns           2670.2     2741.8     2.7      10.0    ok                              
+opus_encode_20ms_ns               1.1268e+5  1.1282e+5  0.1      10.0    ok                              
+resample_22k_10s_ns               1.0492e+6  1.0448e+6  -0.4     10.0    ok                              
+resample_peak_bytes               4280996    4280996    0.0      10.0    ok                              
+resample_stream_22k_10s_ns        8.9584e+5  8.9569e+5  -0.0     10.0    ok                              
+resample_stream_peak_bytes        140100     140100     0.0      10.0    ok                              
+tts_drain_bytes_copied_per_frame  6158.3     6159.3     0.0      10.0    ok                              
+tts_drain_frames_ns_per_frame     21448      21493      0.2      10.0    ok                              
+compare-perf: FAIL (see verdict column)

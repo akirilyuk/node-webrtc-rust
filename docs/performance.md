@@ -208,6 +208,42 @@ The causes fixed between those versions:
 
 The two remaining 5/20 sessions were a doubled "eight" on one TTS rendering of "eight, nine" (the received audio has no repeated part, and a replay of it transcribes correctly) and one lost first word after a 1.54 s TTS pause, which the 3 s window above now covers.
 
+## STT off the inbound path (0.11.0)
+
+Up to 0.10.x, `VoiceAgent::process_inbound_pcm` called the STT vendor itself. At the end of an utterance it awaited `finalize_utterance()` while holding the agent's STT lock, and every later frame needed that lock to push audio. A slow final therefore stopped the agent from processing audio: no VAD, no `user_speaking_start` and no barge-in until the vendor answered. The audio itself was not lost (the inbound pump queues it), only late.
+
+Since 0.11.0 each agent has one STT task that owns the provider. `process_inbound_pcm` runs VAD and sends audio and end-of-utterance markers to that task in order, and a second task applies the results (partials, finals, not found) to the utterance they belong to. Providers that can end an utterance without waiting (`FinalizeMode::Deferred`, the cluster client) return from `request_finalize` at once and deliver the final later. The others keep their blocking `finalize_utterance`, which now blocks only the STT task.
+
+```mermaid
+sequenceDiagram
+  participant In as process_inbound_pcm
+  participant STT as STT task (owns the provider)
+  participant V as STT vendor
+  participant Out as result task
+  In->>STT: audio A, end of A
+  STT->>V: push A, request finalize A (returns at once)
+  In->>STT: audio B (VAD and user_speaking_start of B emitted now)
+  V-->>STT: final A, finalize done A
+  STT-->>Out: final A (utterance A), done A
+  Out-->>Out: user_speech_final for A, then B's results
+```
+
+| Test (VoiceAgent + cluster client + mock speech server over gRPC)    | 0.10.1 longest inbound call | 0.11.0 longest inbound call |
+| -------------------------------------------------------------------- | --------------------------: | --------------------------: |
+| 3.3 s late final                                                     |                       3.3 s |                     1–10 ms |
+| 3.3 s late final + 3 s late `Finalized`                              |                       6.3 s |                     1–10 ms |
+| 10 s late final, next utterance spoken 1 s after the first one ended |   about 8 s (finalize wait) |                      ≤ 5 ms |
+| Stream opens refused for 60 s while three utterances are spoken      |      about 60 s (open wait) |                     ≤ 15 ms |
+
+What callers see:
+
+- The next utterance's events can come before the previous utterance's final when that final is slow; finals stay in utterance order, and every utterance event carries its `utteranceId`. Pair `user_speaking_start` / `user_speaking_end` by `utteranceId`.
+- A final that arrives after its utterance already ended (the finalize wait expired and the last partial was used) is not emitted for the next utterance. It is logged and counted in `voice_stt_late_result`.
+- The cluster client's finalize wait (`SPEECH_STT_FINALIZE_WAIT_MS`, 8 s plus queued audio) starts when its stream is open. While opens are refused, the wait is bounded by `sttOpenWaitMaxMs` (120 s).
+- Audio waiting for the STT task counts as decode backlog for the "no partial" safety net, and `voice_stt_actor_backlog_ms` reports it. Nothing is dropped.
+
+Tests: [`slow_final_next_utterance_fullstack_test.rs`](../crates/vendor-cluster-speech/tests/slow_final_next_utterance_fullstack_test.rs), [`refused_open_streak_fullstack_test.rs`](../crates/vendor-cluster-speech/tests/refused_open_streak_fullstack_test.rs), [`stt_actor_agent_order_test.rs`](../crates/speech/tests/stt_actor_agent_order_test.rs) and the Sherpa smoke `start:roundtrip-slow-final`.
+
 ## Tuning
 
 | Variable                            | Default               | What it changes                                                                                                                                     | Recommendation                                                                                                                                                                                                             |

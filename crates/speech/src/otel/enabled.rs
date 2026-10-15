@@ -47,6 +47,8 @@ static VOICE_TURN_RESPONSE: OnceLock<Histogram<f64>> = OnceLock::new();
 static VOICE_TURN_ABANDONED: OnceLock<Counter<u64>> = OnceLock::new();
 static VOICE_BARGE_IN: OnceLock<Counter<u64>> = OnceLock::new();
 static VOICE_VAD_TRANSITIONS: OnceLock<Counter<u64>> = OnceLock::new();
+static VOICE_STT_ACTOR_BACKLOG: OnceLock<Gauge<u64>> = OnceLock::new();
+static VOICE_STT_LATE_RESULT: OnceLock<Counter<u64>> = OnceLock::new();
 
 struct TraceparentExtractor<'a> {
     traceparent: &'a str,
@@ -261,6 +263,26 @@ fn voice_barge_in_counter() -> &'static Counter<u64> {
         ensure_meter()
             .u64_counter("voice_barge_in")
             .with_description("Voice agent barge-in events")
+            .build()
+    })
+}
+
+fn voice_stt_actor_backlog_gauge() -> &'static Gauge<u64> {
+    VOICE_STT_ACTOR_BACKLOG.get_or_init(|| {
+        ensure_meter()
+            .u64_gauge("voice_stt_actor_backlog_ms")
+            .with_description(
+                "Milliseconds of audio queued for or behind the STT actor of an agent",
+            )
+            .build()
+    })
+}
+
+fn voice_stt_late_result_counter() -> &'static Counter<u64> {
+    VOICE_STT_LATE_RESULT.get_or_init(|| {
+        ensure_meter()
+            .u64_counter("voice_stt_late_result")
+            .with_description("STT results that arrived after their utterance was closed")
             .build()
     })
 }
@@ -730,6 +752,23 @@ pub fn record_voice_turn_response_ms(
     if is_enabled() {
         let kv = turn_latency_attrs(project_id, stt_vendor, tts_vendor);
         voice_turn_response_histogram().record(ms, &kv);
+    }
+}
+
+pub fn record_voice_stt_actor_backlog_ms(ms: u64, vendor: &str) {
+    if is_enabled() {
+        let kv = [KeyValue::new("stt_vendor", otel_label(vendor, "unknown"))];
+        voice_stt_actor_backlog_gauge().record(ms, &kv);
+    }
+}
+
+pub fn record_voice_stt_late_result(kind: &str, vendor: &str) {
+    if is_enabled() {
+        let kv = [
+            KeyValue::new("kind", otel_label(kind, "unknown")),
+            KeyValue::new("stt_vendor", otel_label(vendor, "unknown")),
+        ];
+        voice_stt_late_result_counter().add(1, &kv);
     }
 }
 

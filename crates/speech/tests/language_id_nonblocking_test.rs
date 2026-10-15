@@ -329,6 +329,8 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             .unwrap();
     }
 
+    // The STT actor pushes the audio to the provider; wait until it did.
+    assert!(agent.wait_stt_idle(Duration::from_secs(10)).await);
     let bytes_before_lid = *stt_bytes.lock().unwrap();
     assert!(
         bytes_before_lid > 0,
@@ -358,6 +360,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
     );
 
     // STT must keep receiving audio; identify waits for user_speaking_end.
+    assert!(agent.wait_stt_idle(Duration::from_secs(10)).await);
     let bytes_mid = *stt_bytes.lock().unwrap();
     assert!(
         bytes_mid > bytes_before_lid,

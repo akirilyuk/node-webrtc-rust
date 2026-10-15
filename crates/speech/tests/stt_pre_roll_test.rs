@@ -12,6 +12,17 @@ use node_webrtc_rust_speech::stt_pre_roll::stt_pre_roll_capacity_ms;
 use node_webrtc_rust_speech::{VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
 
+/// Waits until the STT actor processed every command sent so far and the result pump emitted
+/// the results (`process_inbound_pcm` no longer emits STT results inline).
+async fn idle(agent: &VoiceAgent) {
+    assert!(
+        agent
+            .wait_stt_idle(std::time::Duration::from_secs(10))
+            .await,
+        "STT actor did not go idle"
+    );
+}
+
 fn loud_stereo_frame() -> Vec<u8> {
     stereo_frame_with_sample(i16::MAX / 3)
 }
@@ -389,6 +400,7 @@ async fn gate_stt_pre_roll_ignores_leading_silence() {
             .await
             .unwrap();
     }
+    idle(&agent).await;
     assert_eq!(
         *bytes.lock().unwrap(),
         0,
@@ -403,6 +415,7 @@ async fn gate_stt_pre_roll_ignores_leading_silence() {
             .await
             .unwrap();
     }
+    idle(&agent).await;
     assert!(
         *bytes.lock().unwrap() >= 640 * 3,
         "speech start should flush only voice frames from pre-roll"
@@ -459,6 +472,7 @@ async fn gate_stt_hold_passes_trailing_speech_after_speech_end() {
             .await
             .unwrap();
     }
+    idle(&agent).await;
     let during_speech = *bytes.lock().unwrap();
     assert!(during_speech > 0, "speech should reach STT");
 
@@ -468,6 +482,7 @@ async fn gate_stt_hold_passes_trailing_speech_after_speech_end() {
             .await
             .unwrap();
     }
+    idle(&agent).await;
     let after_end = *bytes.lock().unwrap();
     assert!(
         after_end > during_speech,
@@ -482,6 +497,7 @@ async fn gate_stt_hold_passes_trailing_speech_after_speech_end() {
             .await
             .unwrap();
     }
+    idle(&agent).await;
     assert!(
         *bytes.lock().unwrap() >= after_end + 2 * 640,
         "trailing speech within gate-hold must still reach STT (both frames, none lost)"
@@ -534,6 +550,7 @@ async fn gate_stt_pending_gate_disabled_waits_for_speech_start() {
         .process_inbound_pcm(Bytes::from(frame.clone()), 20)
         .await
         .unwrap();
+    idle(&agent).await;
     assert_eq!(
         *bytes.lock().unwrap(),
         0,
@@ -546,6 +563,7 @@ async fn gate_stt_pending_gate_disabled_waits_for_speech_start() {
             .await
             .unwrap();
     }
+    idle(&agent).await;
     assert!(
         *bytes.lock().unwrap() >= 640 * 3,
         "STT opens only after SpeechStart when pending gate is disabled"
@@ -599,6 +617,7 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
         .process_inbound_pcm(Bytes::from(frame.clone()), 20)
         .await
         .unwrap();
+    idle(&agent).await;
     assert_eq!(
         *bytes.lock().unwrap(),
         0,
@@ -613,6 +632,7 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
         .process_inbound_pcm(Bytes::from(frame.clone()), 20)
         .await
         .unwrap();
+    idle(&agent).await;
     assert!(
         *bytes.lock().unwrap() >= 640 * 3,
         "SpeechStart should flush pre-roll including prior frames plus current audio"
@@ -623,6 +643,7 @@ async fn gate_stt_pre_roll_includes_frames_before_speech_start() {
         .process_inbound_pcm(Bytes::from(frame), 20)
         .await
         .unwrap();
+    idle(&agent).await;
     assert!(
         *bytes.lock().unwrap() > after_start,
         "subsequent speech frames should stream to STT"
@@ -673,6 +694,7 @@ async fn min_silence_default_300_requires_fifteen_silent_frames_to_end() {
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
             .unwrap();
+        idle(&agent).await;
         while let Ok(event) = rx.try_recv() {
             if event.kind == node_webrtc_rust_speech::events::SpeechEventKind::UserSpeakingEnd {
                 saw_end = true;
@@ -683,6 +705,7 @@ async fn min_silence_default_300_requires_fifteen_silent_frames_to_end() {
             }
         }
     }
+    idle(&agent).await;
     assert!(
         saw_end,
         "expected user_speaking_end after sustained silence"
@@ -734,6 +757,7 @@ async fn gate_stt_defers_user_speaking_end_until_hold_expires() {
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
             .unwrap();
+        idle(&agent).await;
         while let Ok(event) = rx.try_recv() {
             if event.kind == node_webrtc_rust_speech::events::SpeechEventKind::UserSpeakingEnd {
                 end_frame = Some(i);
@@ -741,6 +765,7 @@ async fn gate_stt_defers_user_speaking_end_until_hold_expires() {
         }
     }
 
+    idle(&agent).await;
     assert_eq!(
         end_frame,
         Some(3),
@@ -807,6 +832,7 @@ async fn set_stt_enabled_false_suppresses_speaking_events() {
             _ => {}
         }
     }
+    idle(&agent).await;
     assert!(
         !saw_start && !saw_end,
         "set_stt_enabled(false) must suppress user_speaking_start/end (VAD still runs)"
@@ -890,6 +916,7 @@ async fn gate_stt_hold_cancelled_when_voice_returns_before_expiry() {
             saw_end = true;
         }
     }
+    idle(&agent).await;
     assert!(
         !saw_end,
         "user_speaking_end must not fire when voice resumes during gate hold"
@@ -963,6 +990,7 @@ async fn gate_stt_hold_expiry_finalizes_on_same_frame_without_new_speech() {
             .unwrap();
     }
 
+    idle(&agent).await;
     assert_eq!(
         *finalize_calls.lock().unwrap(),
         1,
@@ -1024,13 +1052,18 @@ async fn gate_stt_hold_skips_finalize_when_poll_already_emitted_final() {
             .await
             .unwrap();
     }
+    // The vendor final is applied by the result pump; let it land before the gate closes
+    // (a real inbound loop is paced by 20 ms frames, a test loop is not).
+    idle(&agent).await;
     for _ in 0..4 {
         agent
             .process_inbound_pcm(Bytes::from(silent.clone()), 20)
             .await
             .unwrap();
+        idle(&agent).await;
     }
 
+    idle(&agent).await;
     assert_eq!(
         *finalize_calls.lock().unwrap(),
         0,
@@ -1099,6 +1132,7 @@ async fn speaking_end_pairs_with_delayed_stt_final() {
             .unwrap();
     }
 
+    idle(&agent).await;
     assert_eq!(*finalize_calls.lock().unwrap(), 1);
 
     let mut events = Vec::new();
@@ -1186,6 +1220,7 @@ async fn speech_start_completes_pending_utterance_before_new_speech() {
             .unwrap();
     }
 
+    idle(&agent).await;
     assert_eq!(
         *finalize_calls.lock().unwrap(),
         0,
@@ -1200,6 +1235,7 @@ async fn speech_start_completes_pending_utterance_before_new_speech() {
             .unwrap();
     }
 
+    idle(&agent).await;
     assert_eq!(
         *finalize_calls.lock().unwrap(),
         1,
@@ -1212,6 +1248,7 @@ async fn speech_start_completes_pending_utterance_before_new_speech() {
             saw_final = true;
         }
     }
+    idle(&agent).await;
     assert!(
         saw_final,
         "user_speech_final must be emitted for the first utterance"
@@ -1282,6 +1319,7 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
             .unwrap();
     }
 
+    idle(&agent).await;
     assert_eq!(
         *finalize_calls.lock().unwrap(),
         1,
@@ -1294,6 +1332,7 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
             saw_speaking_end = true;
         }
     }
+    idle(&agent).await;
     assert!(
         saw_speaking_end,
         "user_speaking_end must accompany finalize"
@@ -1313,6 +1352,7 @@ async fn gate_stt_finalizes_after_pause_without_new_speech_start() {
             .unwrap();
     }
 
+    idle(&agent).await;
     assert_eq!(
         *finalize_calls.lock().unwrap(),
         2,
@@ -1344,6 +1384,7 @@ async fn gate_stt_cold_inbound_pre_roll_pad_to_capacity() {
         }
     }
 
+    idle(&agent).await;
     let recorded = chunks.lock().unwrap();
     assert!(
         !recorded.is_empty(),
@@ -1397,6 +1438,7 @@ async fn gate_stt_brief_gap_pre_roll_flush_not_padded() {
             .await
             .unwrap();
     }
+    idle(&agent).await;
     let after_first = chunks.lock().unwrap().len();
     assert!(after_first > 0, "first phrase must reach STT");
 
@@ -1408,6 +1450,7 @@ async fn gate_stt_brief_gap_pre_roll_flush_not_padded() {
             .unwrap();
     }
 
+    idle(&agent).await;
     let recorded = chunks.lock().unwrap();
     for chunk in recorded.iter().skip(after_first) {
         assert_ne!(
@@ -1467,6 +1510,7 @@ async fn gate_stt_pre_roll_flush_includes_soft_onset_before_vad_speech_start() {
             .unwrap();
     }
 
+    idle(&agent).await;
     let all = concat_stt_chunks(&chunks.lock().unwrap().clone());
     let soft_ref = soft_mono.as_ref();
     assert!(
@@ -1642,6 +1686,7 @@ async fn gate_stt_agent_tts_pre_roll_includes_pre_vad_lead_in() {
             .unwrap();
     }
 
+    idle(&agent_arc).await;
     agent_arc.stop().await.unwrap();
 
     assert!(

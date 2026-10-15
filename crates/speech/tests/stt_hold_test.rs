@@ -365,6 +365,16 @@ async fn speech(agent: &Arc<VoiceAgent>, level: i16, frames: usize) {
             .await
             .unwrap();
     }
+    idle(agent).await;
+}
+
+/// Waits until the STT actor processed every command sent so far and the result pump emitted
+/// the results (`process_inbound_pcm` no longer emits STT results inline).
+async fn idle(agent: &Arc<VoiceAgent>) {
+    assert!(
+        agent.wait_stt_idle(Duration::from_secs(10)).await,
+        "STT actor did not go idle"
+    );
 }
 
 /// Silence long enough to close the utterance (VAD end, gate hold, endpoint tail, finalize).
@@ -377,6 +387,7 @@ async fn close_utterance(agent: &Arc<VoiceAgent>) {
             .unwrap();
     }
     sleep(Duration::from_millis(400)).await;
+    idle(agent).await;
 }
 
 fn drain(rx: &mut Receiver<SpeechEvent>) -> Vec<SpeechEvent> {
@@ -667,6 +678,7 @@ async fn cancel_feeds_buffered_audio_to_old_stt() {
     assert_eq!(factory.pcm("a").len(), a_at_hold);
 
     agent.cancel_stt_hold().await.unwrap();
+    idle(&agent).await;
     let ev = drain(&mut rx);
     let a = levels(&factory.pcm("a"));
     assert!(
@@ -777,7 +789,18 @@ async fn held_replay_without_vendor_final(finalize_fast: bool) -> Vec<SpeechEven
                 .await
                 .unwrap();
         }
-        sleep(Duration::from_millis(1500)).await;
+        // The wall-clock C2 timeout (1500 ms after PCM stopped) closes the utterance, and its
+        // fallback final is emitted by the STT result task one hop later. Wait for that final
+        // (bounded) instead of reading after a fixed sleep, which was a race under CPU load.
+        let mut events = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while finals(&events).is_empty() && tokio::time::Instant::now() < deadline {
+            sleep(Duration::from_millis(20)).await;
+            events.extend(drain(&mut rx));
+        }
+        events.extend(drain(&mut rx));
+        agent.stop().await.unwrap();
+        return events;
     }
     let events = drain(&mut rx);
     agent.stop().await.unwrap();
@@ -933,6 +956,7 @@ async fn late_final_events(delay: Duration) -> Vec<SpeechEvent> {
             .await
             .unwrap();
     }
+    idle(&agent).await;
     let events = drain(&mut rx);
     agent.stop().await.unwrap();
     events

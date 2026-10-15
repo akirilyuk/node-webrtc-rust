@@ -8,6 +8,37 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **speech**: `VoiceAgent` no longer waits for the STT vendor while it processes inbound audio. Every STT call (push, poll, finalize, open, config swap) now runs in one STT task per agent, and `process_inbound_pcm` only hands it the audio in order.
+  - Before, a slow vendor final held the agent's STT lock inside `process_inbound_pcm`. A 3.3 s late final made one inbound call take 3.3 s, and a refused stream open could hold it for up to 120 s. VAD, `user_speaking_start` and barge-in ran late by the whole wait.
+  - Now inbound calls take 1 to 10 ms during a 10 s slow final and during a 60 s streak of refused opens. VAD events of the next utterance arrive within 200 ms of its first voiced frame, and the queued audio still reaches the vendor.
+  - **Rust callers:** STT results (`user_speech_partial`, `user_speech_final`, `user_stt_not_found`) are emitted by the agent's result task, so `process_inbound_pcm` returning no longer means the results of that frame were emitted. A Rust test that asserts events right after feeding frames should call the new `VoiceAgent::wait_stt_idle(timeout)` first. JS hosts consume events asynchronously and need no change.
+- **speech: event order.** The next utterance's events (`vad_triggered`, `user_stt_start`, `user_speaking_start`, …) can arrive before the previous utterance's `user_speaking_end` and final when that final is slow. Finals and `user_stt_not_found` still arrive in utterance order, and the order within one utterance is unchanged.
+  - Every utterance event carries `utteranceId`. That now includes `user_stt_start`, `stt_stream_start`, `stt_stream_end` and `user_stt_end`, and `user_speaking_end` always has it.
+  - Hosts that pair `user_speaking_start` with `user_speaking_end` (for example to meter speech time) should pair them by `utteranceId`.
+- **speech**: a final that arrives after its utterance already ended, for example after the finalize wait gave up and the last partial was used, is attributed to its own utterance. It is logged and counted (`voice_stt_late_result`) and never emitted as the next utterance's final. Before, the agent dropped such results when the next utterance started.
+- **speech**: with `bargeIn.requireSttPartial`, only the utterance the user is speaking right now can interrupt the agent. A late final of an earlier utterance no longer cuts off a reply that started after that utterance ended.
+- **speech: `SttProvider`** gains `finalize_mode()`, `request_finalize()`, `poll_output()` (with `SttOutput::FinalizeDone`) and `finalize_wait_ms()`. The defaults keep the old behaviour, so existing providers compile and work unchanged. A provider that returns `FinalizeMode::Deferred` answers each `request_finalize` later with one `FinalizeDone` marker, after the transcripts of the audio pushed before it.
+- **vendor-cluster-speech**: the cluster STT client is a Deferred provider.
+  - `request_finalize` returns at once instead of waiting up to 120 s for a refused stream open.
+  - In per-utterance mode, audio that follows a finalize before its answer goes to the next stream together with its own finalize, so every turn keeps its own stream and no audio is lost.
+  - After the stream was refused for a while, the finalize wait (`SPEECH_STT_FINALIZE_WAIT_MS`, default 8 s plus queued audio) starts when the open succeeds.
+
+### Added
+
+- **speech**: metrics `voice_stt_actor_backlog_ms` (audio waiting for the STT task) and `voice_stt_late_result` (late or old-model results that were not emitted). A `[speech] stt actor behind by N ms of audio … queued, not dropped` line is logged once per episode above 2 s.
+- **speech**: test hook `SPEECH_STT_TEST_FINAL_DELAY_MS` holds back every STT final by that many ms (process-wide; for tests and examples only).
+
+### CI and tests
+
+- **test**:
+  - `stt_actor_test.rs`: the STT task on its own, with ordering, timeouts, swaps, bounded stop, and no lost audio.
+  - `stt_actor_agent_order_test.rs` and `stt_actor_agent_wiring_test.rs`: a late final lands on its own utterance; VAD and semantic barge-in work while a final is pending; a provider whose calls never return cannot block inbound audio.
+  - `stt_calls_only_in_actor_test.rs`: a scan that fails when anything outside the STT task calls a provider.
+  - `slow_final_next_utterance_fullstack_test.rs` and `refused_open_streak_fullstack_test.rs`: the agent, the cluster client and a mock speech server over gRPC. The existing slow-final full-stack tests now require every inbound call to take less than 1 s.
+- **examples**: Sherpa smoke `start:roundtrip-slow-final`, in the Sherpa E2E list. Over loopback WebRTC with a 6 s held final it checks that the next turn starts on time and that VAD barge-in and semantic barge-in still work while the earlier final is pending.
+
 ## [0.10.1] - 2026-10-15
 
 ### Fixed

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -6,7 +7,7 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use node_webrtc_rust_speech::config::{SttConfig, VoiceSessionContext};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
+use node_webrtc_rust_speech::pipeline::{FinalizeMode, SttOutput, SttProvider, SttTranscript};
 use node_webrtc_rust_speech_proto::v1::speech_client::SpeechClient;
 use node_webrtc_rust_speech_proto::v1::{
     transcribe_request, ModelRef, SessionContext, SttAudio, SttFinalize, SttStop, TranscribeRequest,
@@ -145,8 +146,27 @@ impl OpenStreak {
 
 enum StreamCommand {
     Audio(Bytes),
-    Finalize { done: Arc<Notify> },
+    /// `done` is notified when the matching `Finalize` is answered (legacy blocking finalize);
+    /// `None` for [`SttProvider::request_finalize`], which reads [`SttOutput::FinalizeDone`].
+    Finalize {
+        done: Option<Arc<Notify>>,
+    },
     Stop,
+}
+
+/// Audio and finalize requests that arrived while an earlier finalize was still pending
+/// (per-utterance mode). They are replayed in order on the next stream.
+enum CarryItem {
+    Audio(Bytes),
+    Finalize(Option<Arc<Notify>>),
+}
+
+/// Answer one `Finalize` command: the output marker first, then the legacy waiter.
+fn answer_finalize(done: Option<Arc<Notify>>, out: &mpsc::UnboundedSender<SttOutput>) {
+    let _ = out.send(SttOutput::FinalizeDone);
+    if let Some(done) = done {
+        done.notify_one();
+    }
 }
 
 pub(crate) fn session_context_proto(ctx: &VoiceSessionContext) -> SessionContext {
@@ -204,9 +224,17 @@ fn clear_queued(counter: &AtomicUsize) {
     sub_stt_queued_bytes(left);
 }
 
+/// `SPEECH_STT_FINALIZE_WAIT_MS`, default [`FINALIZE_WAIT_MS`].
+fn finalize_base_wait_ms() -> u64 {
+    std::env::var("SPEECH_STT_FINALIZE_WAIT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(FINALIZE_WAIT_MS)
+}
+
 struct ClusterSherpaSttInner {
     running: bool,
-    transcript_rx: Option<mpsc::UnboundedReceiver<SttTranscript>>,
+    transcript_rx: Option<mpsc::UnboundedReceiver<SttOutput>>,
     cmd_tx: Option<mpsc::UnboundedSender<StreamCommand>>,
     stream_task: Option<JoinHandle<()>>,
     /// `true` once the current stream received `Ready`; `false` while (re)opening or after exit.
@@ -214,6 +242,9 @@ struct ClusterSherpaSttInner {
     pending_audio: BytesMut,
     utterance_active: bool,
     mid_utterance_failure: Option<String>,
+    /// `FinalizeDone` markers drained by `discard_queued_transcripts`; `poll_output` returns
+    /// them first, `poll_transcript` drops them.
+    held_markers: usize,
 }
 
 impl ClusterSherpaStt {
@@ -239,6 +270,7 @@ impl ClusterSherpaStt {
                 pending_audio: BytesMut::new(),
                 utterance_active: false,
                 mid_utterance_failure: None,
+                held_markers: 0,
             })),
             queued_bytes: Arc::new(AtomicUsize::new(0)),
             queued_warned: AtomicBool::new(false),
@@ -368,7 +400,7 @@ async fn stream_worker(
     params: WorkerParams,
     session_ctx: Arc<Mutex<Option<VoiceSessionContext>>>,
     mut cmd_rx: mpsc::UnboundedReceiver<StreamCommand>,
-    transcript_tx: mpsc::UnboundedSender<SttTranscript>,
+    transcript_tx: mpsc::UnboundedSender<SttOutput>,
     ready_tx: &watch::Sender<bool>,
     queued_bytes: Arc<AtomicUsize>,
 ) {
@@ -385,18 +417,19 @@ async fn stream_worker(
     let mut channel = match stt_channel(&endpoint).await {
         Ok(c) => c,
         Err(e) => {
-            let _ = transcript_tx.send(SttTranscript::Final(String::new()));
+            let _ = transcript_tx.send(SttOutput::Transcript(SttTranscript::Final(String::new())));
             eprintln!("[cluster-sherpa] connect failed: {e}");
             return;
         }
     };
-    let mut pending_finalize: Option<Arc<Notify>> = None;
+    let mut pending_finalizes: VecDeque<Option<Arc<Notify>>> = VecDeque::new();
     let mut reopen = true;
     let mut streak = OpenStreak::default();
     // Why the next stream opens: `session_start` | `utterance` | `reopen` (metric attribute).
     let mut open_reason = "session_start";
-    // Audio that arrived while idle; sent right after Start once the open succeeded.
-    let mut carry: Option<Bytes> = None;
+    // Audio (and finalize requests behind it) that arrived while idle or while a finalize was
+    // pending; replayed in order right after Start once the open succeeded.
+    let mut carry: VecDeque<CarryItem> = VecDeque::new();
     while reopen {
         reopen = false;
         if open_reason != "utterance" {
@@ -496,40 +529,78 @@ async fn stream_worker(
         // Close this stream and wait idle for the next audio (per-utterance mode only).
         let mut go_idle = false;
 
-        if let Some(pcm) = carry.take() {
-            utterance_open = true;
-            audio_since_finalize = true;
-            if !send_audio(&req_tx, pcm, &queued_bytes).await {
-                break;
+        let mut carry_send_failed = false;
+        while let Some(item) = carry.pop_front() {
+            match item {
+                CarryItem::Audio(pcm) => {
+                    utterance_open = true;
+                    audio_since_finalize = true;
+                    if !send_audio(&req_tx, pcm, &queued_bytes).await {
+                        carry_send_failed = true;
+                        break;
+                    }
+                }
+                CarryItem::Finalize(done) => {
+                    audio_since_finalize = false;
+                    pending_finalizes.push_back(done);
+                    let fin = TranscribeRequest {
+                        msg: Some(transcribe_request::Msg::Finalize(SttFinalize {})),
+                    };
+                    if req_tx.send(fin).await.is_err() {
+                        if let Some(done) = pending_finalizes.pop_back() {
+                            answer_finalize(done, &transcript_tx);
+                        }
+                        carry_send_failed = true;
+                        break;
+                    }
+                }
             }
         }
 
         loop {
+            if carry_send_failed {
+                break;
+            }
             tokio::select! {
                 cmd = cmd_rx.recv() => {
                     match cmd {
                         Some(StreamCommand::Audio(pcm)) => {
-                            utterance_open = true;
-                            audio_since_finalize = true;
                             idle_deadline
                                 .as_mut()
                                 .reset(tokio::time::Instant::now() + idle_close);
+                            if per_utterance && !pending_finalizes.is_empty() {
+                                // An earlier finalize is still pending on this stream: the next
+                                // utterance goes to its own stream, opened once that finalize is
+                                // answered. Its bytes stay counted in `queued_bytes`.
+                                carry.push_back(CarryItem::Audio(pcm));
+                                continue;
+                            }
+                            utterance_open = true;
+                            audio_since_finalize = true;
                             if !send_audio(&req_tx, pcm, &queued_bytes).await {
                                 break;
                             }
                         }
                         Some(StreamCommand::Finalize { done }) => {
-                            audio_since_finalize = false;
                             idle_deadline
                                 .as_mut()
                                 .reset(tokio::time::Instant::now() + idle_close);
-                            pending_finalize = Some(done);
+                            if !carry.is_empty() {
+                                // It ends the audio queued in `carry`. Sent on this stream it
+                                // would finalize nothing and leave that audio on the next stream
+                                // without an end, so it queues behind the audio and is replayed
+                                // after it.
+                                carry.push_back(CarryItem::Finalize(done));
+                                continue;
+                            }
+                            audio_since_finalize = false;
+                            pending_finalizes.push_back(done);
                             let fin = TranscribeRequest {
                                 msg: Some(transcribe_request::Msg::Finalize(SttFinalize {})),
                             };
                             if req_tx.send(fin).await.is_err() {
-                                if let Some(done) = pending_finalize.take() {
-                                    done.notify_one();
+                                if let Some(done) = pending_finalizes.pop_back() {
+                                    answer_finalize(done, &transcript_tx);
                                 }
                                 break;
                             }
@@ -566,16 +637,20 @@ async fn stream_worker(
                                     } else {
                                         SttTranscript::Partial(t.text)
                                     };
-                                    let _ = transcript_tx.send(tr);
+                                    let _ = transcript_tx.send(SttOutput::Transcript(tr));
                                 }
                                 Some(RMsg::Finalized(_)) => {
-                                    if let Some(done) = pending_finalize.take() {
-                                        done.notify_one();
+                                    if let Some(done) = pending_finalizes.pop_front() {
+                                        answer_finalize(done, &transcript_tx);
                                     }
                                     utterance_open = false;
-                                    // No audio after the Finalize that was just answered: this
-                                    // utterance is over, release the stream.
-                                    if per_utterance && !audio_since_finalize {
+                                    // No audio after the Finalize that was just answered and
+                                    // nothing pending: this utterance is over, release the
+                                    // stream. Carried audio reopens straight away.
+                                    if per_utterance
+                                        && pending_finalizes.is_empty()
+                                        && (!audio_since_finalize || !carry.is_empty())
+                                    {
                                         go_idle = true;
                                         break;
                                     }
@@ -588,7 +663,7 @@ async fn stream_worker(
                                 }
                                 Some(RMsg::Error(e)) => {
                                     if utterance_open {
-                                        let _ = transcript_tx.send(SttTranscript::Final(String::new()));
+                                        let _ = transcript_tx.send(SttOutput::Transcript(SttTranscript::Final(String::new())));
                                     } else {
                                         inc_stt_reopen("idle_error");
                                         open_reason = "reopen";
@@ -610,7 +685,7 @@ async fn stream_worker(
                         }
                         Err(status) => {
                             if utterance_open {
-                                let _ = transcript_tx.send(SttTranscript::Final(String::new()));
+                                let _ = transcript_tx.send(SttOutput::Transcript(SttTranscript::Final(String::new())));
                             } else {
                                 if status.code() == tonic::Code::Unavailable {
                                     inc_stt_reopen("goaway");
@@ -629,10 +704,23 @@ async fn stream_worker(
                     break;
                 }
                 // Per-utterance safety net: no audio for a long time and nothing to finalize.
-                () = &mut idle_deadline, if per_utterance && ready && pending_finalize.is_none() => {
+                () = &mut idle_deadline, if per_utterance && ready && pending_finalizes.is_empty() => {
                     go_idle = true;
                     break;
                 }
+            }
+        }
+
+        // The stream ended with finalizes still unanswered (error, goaway, relocate, ready
+        // timeout, send failure): answer each one so the caller never waits for a marker that
+        // cannot come.
+        if !pending_finalizes.is_empty() {
+            eprintln!(
+                "[cluster-sherpa] stream ended with {} finalize(s) unanswered",
+                pending_finalizes.len()
+            );
+            while let Some(done) = pending_finalizes.pop_front() {
+                answer_finalize(done, &transcript_tx);
             }
         }
 
@@ -644,19 +732,32 @@ async fn stream_worker(
             let _ = req_tx.try_send(stop);
             drop(req_tx);
             drop(grpc);
-            loop {
-                match cmd_rx.recv().await {
-                    Some(StreamCommand::Audio(pcm)) => {
-                        carry = Some(pcm);
-                        open_reason = "utterance";
-                        reopen = true;
-                        break;
+            if !carry.is_empty() {
+                open_reason = "utterance";
+                reopen = true;
+            } else {
+                loop {
+                    match cmd_rx.recv().await {
+                        Some(StreamCommand::Audio(pcm)) => {
+                            carry.push_back(CarryItem::Audio(pcm));
+                            open_reason = "utterance";
+                            reopen = true;
+                            break;
+                        }
+                        // Nothing is open, so there is nothing to finalize.
+                        Some(StreamCommand::Finalize { done }) => {
+                            answer_finalize(done, &transcript_tx);
+                        }
+                        Some(StreamCommand::Stop) | None => return,
                     }
-                    // Nothing is open, so there is nothing to finalize.
-                    Some(StreamCommand::Finalize { done }) => done.notify_one(),
-                    Some(StreamCommand::Stop) | None => return,
                 }
             }
+        }
+    }
+    // The worker ends without a stop: finalizes queued behind carried audio cannot be sent.
+    while let Some(item) = carry.pop_front() {
+        if let CarryItem::Finalize(done) = item {
+            answer_finalize(done, &transcript_tx);
         }
     }
 }
@@ -728,10 +829,43 @@ impl SttProvider for ClusterSherpaStt {
                 message: err,
             });
         }
+        // Markers drained by `discard_queued_transcripts` are for `poll_output` callers only.
+        inner.held_markers = 0;
         if let Some(rx) = inner.transcript_rx.as_mut() {
-            return Ok(rx.try_recv().ok());
+            while let Ok(out) = rx.try_recv() {
+                if let SttOutput::Transcript(tr) = out {
+                    return Ok(Some(tr));
+                }
+            }
         }
         Ok(None)
+    }
+
+    async fn poll_output(&mut self) -> SpeechResult<Option<SttOutput>> {
+        let mut inner = self.inner.lock().await;
+        if let Some(err) = inner.mid_utterance_failure.take() {
+            return Err(SpeechError::Vendor {
+                vendor: "cluster-sherpa".into(),
+                message: err,
+            });
+        }
+        if inner.held_markers > 0 {
+            inner.held_markers -= 1;
+            return Ok(Some(SttOutput::FinalizeDone));
+        }
+        Ok(inner
+            .transcript_rx
+            .as_mut()
+            .and_then(|rx| rx.try_recv().ok()))
+    }
+
+    fn finalize_mode(&self) -> FinalizeMode {
+        FinalizeMode::Deferred
+    }
+
+    fn finalize_wait_ms(&self) -> u64 {
+        let queued_ms = self.queued_bytes.load(Ordering::SeqCst) / STT_BYTES_PER_MS;
+        finalize_base_wait_ms() + queued_ms.min(FINALIZE_QUEUED_WAIT_CAP_MS) as u64
     }
 
     async fn wait_ready(&mut self, timeout: Duration) -> SpeechResult<bool> {
@@ -761,12 +895,44 @@ impl SttProvider for ClusterSherpaStt {
         };
         inner.mid_utterance_failure = None;
         let mut dropped = 0;
+        let mut markers = 0;
         if let Some(rx) = inner.transcript_rx.as_mut() {
-            while rx.try_recv().is_ok() {
-                dropped += 1;
+            let mut drained = Vec::new();
+            while let Ok(out) = rx.try_recv() {
+                drained.push(out);
+            }
+            for out in drained {
+                match out {
+                    SttOutput::Transcript(_) => dropped += 1,
+                    SttOutput::FinalizeDone => markers += 1,
+                }
             }
         }
+        inner.held_markers += markers;
         dropped
+    }
+
+    async fn request_finalize(&mut self) -> SpeechResult<()> {
+        self.flush_pending_audio(true).await?;
+        let mut inner = self.inner.lock().await;
+        // No worker (never started, or it ended and dropped its command channel): no answer
+        // can come, so report it and let the caller close the utterance at once.
+        let sent = inner
+            .cmd_tx
+            .as_ref()
+            .map(|tx| tx.send(StreamCommand::Finalize { done: None }).is_ok())
+            .unwrap_or(false);
+        if !sent {
+            return Err(SpeechError::Vendor {
+                vendor: "cluster-sherpa".into(),
+                message: "STT stream closed".into(),
+            });
+        }
+        inner.utterance_active = false;
+        drop(inner);
+        self.queued_warned.store(false, Ordering::SeqCst);
+        self.queued_error_logged.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
@@ -794,13 +960,10 @@ impl SttProvider for ClusterSherpaStt {
         let cmd_tx = self.inner.lock().await.cmd_tx.clone();
         if let Some(tx) = cmd_tx {
             let _ = tx.send(StreamCommand::Finalize {
-                done: Arc::clone(&notify),
+                done: Some(Arc::clone(&notify)),
             });
         }
-        let base_wait_ms: u64 = std::env::var("SPEECH_STT_FINALIZE_WAIT_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(FINALIZE_WAIT_MS);
+        let base_wait_ms = finalize_base_wait_ms();
         // The Finalize command sits behind any audio still queued for the pod.
         let wait_ms = base_wait_ms + queued_ms_at_call.min(FINALIZE_QUEUED_WAIT_CAP_MS) as u64;
         let waited = tokio::time::timeout(Duration::from_millis(wait_ms), notify.notified())

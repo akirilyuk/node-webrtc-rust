@@ -44,6 +44,10 @@ sherpa_roundtrip_timeout_sec() {
       # ~75s of real-time phases (10s + 16s no-frame waits); 150s in-process wall, one VOICE_DEBUG re-run.
       echo "${CI_SHERPA_C1_TIMEOUTS_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
+    start:roundtrip-slow-final)
+      # ~60s of real-time phases (6s pending finals x 3 phases, model loads); 150s in-process wall, one VOICE_DEBUG re-run.
+      echo "${CI_SHERPA_SLOW_FINAL_ROUNDTRIP_TIMEOUT_SEC:-300}"
+      ;;
     start:roundtrip-load-ci)
       # 4 concurrent legs x 2 turns; 60s setup + per-turn TTS/silence/STT budget in-process.
       echo "${CI_SHERPA_LOAD_ROUNDTRIP_TIMEOUT_SEC:-420}"
@@ -62,6 +66,7 @@ SHERPA_ROUNDTRIP_E2E=(
   start:record
   start:roundtrip-utterance-timing
   start:roundtrip-c1-timeouts
+  start:roundtrip-slow-final
   start:roundtrip-doubled-first-word
   start:roundtrip-two-phrases
   start:roundtrip-barge-in

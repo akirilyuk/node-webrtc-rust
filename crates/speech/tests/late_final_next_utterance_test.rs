@@ -4,7 +4,8 @@
 //! keep queued results.
 //!
 //! The scripted `SttProvider` models the cluster client's transcript channel: results queue inside
-//! the provider and `poll_transcript` pops them; `discard_queued_transcripts` empties the queue.
+//! the provider and `poll_transcript` pops them. The STT actor attributes each result to the
+//! utterance it belongs to by key, so a late final of utterance 1 is ignored, never re-emitted.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -169,6 +170,12 @@ async fn feed(agent: &Arc<VoiceAgent>, frame: &[u8], n: usize) {
             .await
             .unwrap();
     }
+    // STT results are emitted by the agent's result pump, not inline.
+    assert!(
+        agent
+            .wait_stt_idle(std::time::Duration::from_secs(10))
+            .await
+    );
 }
 
 fn texts_of(
@@ -221,12 +228,14 @@ async fn late_final_of_previous_utterance_is_not_emitted_for_next() {
         vec!["one two".to_string(), "three four".to_string()],
         "late final must not be emitted as a turn"
     );
+    // The STT actor attributes the late final to utterance 1 (its finalize was answered), which
+    // already ended in the fallback final, so the late result is ignored; it is never emitted
+    // for utterance 2 and nothing is left queued in the provider. (Before the STT actor the
+    // agent dropped it with `discard_queued_transcripts` when utterance 2 started.)
     let s = script.lock().unwrap();
     assert!(
-        s.discarded >= 1,
-        "the late final must have been dropped by discard_queued_transcripts (calls={}, dropped={})",
-        s.discard_calls,
-        s.discarded
+        s.queue.is_empty(),
+        "the late final must have been consumed (and ignored) by the STT actor"
     );
 }
 

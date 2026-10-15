@@ -60,6 +60,30 @@ pub enum SttTranscript {
     Final(String),
 }
 
+/// One item of an STT provider's output stream ([`SttProvider::poll_output`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SttOutput {
+    Transcript(SttTranscript),
+    /// Answers one [`SttProvider::request_finalize`], in request order. Every transcript of the
+    /// audio pushed before that request was delivered before this marker, and no transcript of
+    /// audio pushed after it is delivered before it.
+    FinalizeDone,
+}
+
+/// How a provider ends an utterance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalizeMode {
+    /// [`SttProvider::finalize_utterance`] returns once the final is queued (a bounded local
+    /// decode or one bounded request). The caller polls the final afterwards.
+    Inline,
+    /// [`SttProvider::request_finalize`] returns at once and the provider delivers
+    /// [`SttOutput::FinalizeDone`] later through [`SttProvider::poll_output`].
+    Deferred,
+}
+
+/// Default for [`SttProvider::finalize_wait_ms`].
+pub const DEFAULT_STT_FINALIZE_WAIT_MS: u64 = 10_000;
+
 /// Speech-to-text provider trait.
 #[allow(clippy::double_must_use)] // async_trait expansion re-adds must_use on boxed futures
 #[async_trait]
@@ -123,6 +147,32 @@ pub trait SttProvider: Send + Sync {
     /// utterance can never be emitted as the new one. Returns how many were dropped.
     fn discard_queued_transcripts(&mut self) -> usize {
         0
+    }
+
+    /// How this provider ends an utterance. Default: [`FinalizeMode::Inline`].
+    fn finalize_mode(&self) -> FinalizeMode {
+        FinalizeMode::Inline
+    }
+
+    /// [`FinalizeMode::Deferred`] providers: queue end-of-utterance and return without waiting
+    /// for the vendor's answer. The answer arrives as [`SttOutput::FinalizeDone`] from
+    /// [`Self::poll_output`]. Default: [`Self::finalize_utterance`] (only meaningful for Inline).
+    async fn request_finalize(&mut self) -> SpeechResult<()> {
+        self.finalize_utterance().await
+    }
+
+    /// Next output in order, including [`SttOutput::FinalizeDone`] markers (Deferred providers
+    /// emit exactly one per [`Self::request_finalize`]). Default: [`Self::poll_transcript`] mapped
+    /// to [`SttOutput::Transcript`].
+    async fn poll_output(&mut self) -> SpeechResult<Option<SttOutput>> {
+        Ok(self.poll_transcript().await?.map(SttOutput::Transcript))
+    }
+
+    /// Longest wait for the answer to one finalize: the [`SttOutput::FinalizeDone`] of a Deferred
+    /// provider, or [`Self::finalize_utterance`] of an Inline one. Default
+    /// [`DEFAULT_STT_FINALIZE_WAIT_MS`].
+    fn finalize_wait_ms(&self) -> u64 {
+        DEFAULT_STT_FINALIZE_WAIT_MS
     }
 }
 

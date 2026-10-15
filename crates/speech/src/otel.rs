@@ -125,7 +125,8 @@ pub use enabled::{
     record_sherpa_tts_phrase_cache_hit, record_sherpa_tts_phrase_cache_miss,
     record_sherpa_tts_queue_wait_ms, record_sherpa_tts_synth_wall_ms, record_stt_latency_ms,
     record_tts_latency_ms, record_vad_transition, record_voice_final_to_audio_ms,
-    record_voice_stt_finalize_ms, record_voice_tts_first_audio_ms, record_voice_tts_first_chunk_ms,
+    record_voice_stt_actor_backlog_ms, record_voice_stt_finalize_ms, record_voice_stt_late_result,
+    record_voice_tts_first_audio_ms, record_voice_tts_first_chunk_ms,
     record_voice_turn_response_abandoned, record_voice_turn_response_ms, set_sherpa_pool_entries,
     set_sherpa_tts_phrase_cache_bytes, set_sherpa_tts_phrase_cache_entries, voice_span,
 };
@@ -240,6 +241,12 @@ pub fn record_voice_turn_response_ms(
     _tts_vendor: &str,
 ) {
 }
+
+#[cfg(not(feature = "otel"))]
+pub fn record_voice_stt_actor_backlog_ms(_ms: u64, _vendor: &str) {}
+
+#[cfg(not(feature = "otel"))]
+pub fn record_voice_stt_late_result(_kind: &str, _vendor: &str) {}
 
 #[cfg(not(feature = "otel"))]
 pub fn record_voice_turn_response_abandoned(_project_id: &str) {}

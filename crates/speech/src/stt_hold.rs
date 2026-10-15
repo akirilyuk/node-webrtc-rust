@@ -109,6 +109,9 @@ pub struct SttHold {
     pub first_closed: bool,
     /// An utterance finalize was requested while held (the old STT never saw it).
     pub finalize_seen: bool,
+    /// STT actor generation (swap counter) when the hold began. Results of that generation
+    /// are old-model results and are ignored while the hold is active.
+    pub gen_at_begin: u64,
     ever_had_audio: bool,
 }
 
@@ -122,6 +125,7 @@ impl SttHold {
             replaces_utterance_id: None,
             first_closed: false,
             finalize_seen: false,
+            gen_at_begin: 0,
             ever_had_audio: false,
         };
         if let Some(seed) = seed {

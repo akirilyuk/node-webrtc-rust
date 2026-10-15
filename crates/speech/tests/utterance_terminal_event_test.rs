@@ -172,6 +172,9 @@ impl Rig {
                 .process_inbound_pcm(Bytes::from(frame.to_vec()), duration_ms)
                 .await
                 .unwrap();
+            // STT results are emitted by the agent's result pump; a real inbound loop is paced
+            // by 20 ms frames, so let the pump catch up after every frame.
+            assert!(self.agent.wait_stt_idle(Duration::from_secs(10)).await);
             self.drain();
         }
     }
@@ -183,6 +186,7 @@ impl Rig {
     }
 
     async fn finish(mut self) -> Vec<SpeechEvent> {
+        assert!(self.agent.wait_stt_idle(Duration::from_secs(10)).await);
         self.agent.stop().await.unwrap();
         self.drain();
         self.seen
@@ -455,19 +459,21 @@ async fn complete_pending_with_no_output_emits_not_found_for_previous_utterance(
         kinds(&events)
     );
     assert_eq!(count(&events, SpeechEventKind::UserSpeechFinal), 0);
-    let first_not_found = position(&events, SpeechEventKind::UserSttNotFound);
-    let second_start = events
+    // Event order contract (STT actor): utterance 2's start events may precede utterance 1's
+    // terminal, because the vendor answers utterance 1 asynchronously. Terminals keep utterance
+    // order, and every event of an utterance carries its id.
+    let not_found: Vec<&SpeechEvent> = events
         .iter()
-        .enumerate()
-        .filter(|(_, e)| e.kind == SpeechEventKind::UserSttStart)
-        .map(|(i, _)| i)
-        .nth(1)
-        .unwrap();
-    assert!(
-        first_not_found < second_start,
-        "first not_found must precede the second user_stt_start, got {:?}",
-        kinds(&events)
-    );
+        .filter(|e| e.kind == SpeechEventKind::UserSttNotFound)
+        .collect();
+    let start_ids: Vec<Option<String>> = events
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserSpeakingStart)
+        .map(|e| e.utterance_id.clone())
+        .collect();
+    assert_eq!(start_ids.len(), 2, "events: {:?}", kinds(&events));
+    assert_eq!(not_found[0].utterance_id, start_ids[0]);
+    assert_eq!(not_found[1].utterance_id, start_ids[1]);
 }
 
 #[tokio::test]
@@ -483,27 +489,29 @@ async fn complete_pending_with_partial_only_emits_forced_final() {
     complete_pending_turn(&mut rig).await;
     let events = rig.finish().await;
 
+    // Event order contract (STT actor): utterance 2's start events may precede utterance 1's
+    // terminal. Terminals keep utterance order and carry their utterance's id.
     let first_final = position(&events, SpeechEventKind::UserSpeechFinal);
-    let second_start = events
+    let start_ids: Vec<Option<String>> = events
         .iter()
-        .enumerate()
-        .filter(|(_, e)| e.kind == SpeechEventKind::UserSttStart)
-        .map(|(i, _)| i)
-        .nth(1)
-        .expect("second utterance must start");
+        .filter(|e| e.kind == SpeechEventKind::UserSpeakingStart)
+        .map(|e| e.utterance_id.clone())
+        .collect();
+    assert_eq!(start_ids.len(), 2, "events: {:?}", kinds(&events));
+    assert_eq!(events[first_final].text.as_deref(), Some("one two"));
+    assert_eq!(events[first_final].utterance_id, start_ids[0]);
+    let second_terminal = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSttNotFound)
+        .expect("utterance 2 ends in not_found");
     assert!(
-        first_final < second_start,
-        "utterance 1 final must precede the second user_stt_start, got {:?}",
+        first_final < second_terminal,
+        "utterance 1 final must precede utterance 2's terminal, got {:?}",
         kinds(&events)
     );
-    assert_eq!(events[first_final].text.as_deref(), Some("one two"));
-    let first_not_found = events
-        .iter()
-        .position(|e| e.kind == SpeechEventKind::UserSttNotFound);
-    assert!(
-        first_not_found.is_none_or(|i| i > second_start),
-        "no not_found for utterance 1, got {:?}",
-        kinds(&events)
+    assert_eq!(
+        events[second_terminal].utterance_id, start_ids[1],
+        "no not_found for utterance 1"
     );
 }
 

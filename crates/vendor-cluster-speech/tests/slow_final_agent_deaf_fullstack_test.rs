@@ -87,6 +87,8 @@ struct RunReport {
     slow_calls: Vec<(u128, u128)>,
     /// How long `agent.stop()` took (capped at its 5 s test bound).
     stop_ms: u128,
+    /// Duration in ms of every `process_inbound_pcm` call, in call order.
+    call_ms: Vec<u128>,
 }
 
 /// Run `turns` scripted turns against a VoiceAgent wired to the mock speech service.
@@ -193,6 +195,7 @@ async fn run_script(
         let mut per_turn_max = vec![0_u128; turns];
         let mut streams_at_end = vec![0_usize; turns];
         let mut slow_calls = Vec::new();
+        let mut call_ms = Vec::new();
         for n in 0..turns * frames_per_turn {
             let turn = n / frames_per_turn;
             let in_turn = n % frames_per_turn;
@@ -227,9 +230,11 @@ async fn run_script(
                 );
                 per_turn_max[turn] = per_turn_max[turn].max(took);
                 slow_calls.push((anchor.elapsed().as_millis() - took, took));
+                call_ms.push(took);
                 break;
             };
             result.unwrap();
+            call_ms.push(took);
             per_turn_max[turn] = per_turn_max[turn].max(took);
             if took > 500 {
                 slow_calls.push((anchor.elapsed().as_millis() - took, took));
@@ -239,10 +244,10 @@ async fn run_script(
         if streams_at_end[last] == 0 {
             streams_at_end[last] = inbound_state.transcribe_streams.load(Ordering::SeqCst);
         }
-        (per_turn_max, streams_at_end, slow_calls)
+        (per_turn_max, streams_at_end, slow_calls, call_ms)
     });
 
-    let (per_turn_max, streams_at_end, slow_calls) = inbound.await.unwrap();
+    let (per_turn_max, streams_at_end, slow_calls, call_ms) = inbound.await.unwrap();
     sleep(Duration::from_millis(300)).await;
     consumer.abort();
     // `stop()` must not hang behind a stuck stream open; bound it so a regression ends the test.
@@ -279,7 +284,19 @@ async fn run_script(
         turns: reports,
         slow_calls,
         stop_ms,
+        call_ms,
     }
+}
+
+/// 99th percentile (nearest rank) of the recorded call durations, `0` when none were recorded.
+fn p99_call_ms(call_ms: &[u128]) -> u128 {
+    if call_ms.is_empty() {
+        return 0;
+    }
+    let mut sorted = call_ms.to_vec();
+    sorted.sort_unstable();
+    let rank = (sorted.len() * 99).div_ceil(100);
+    sorted[rank - 1]
 }
 
 fn describe(report: &RunReport) -> String {
@@ -298,6 +315,11 @@ fn describe(report: &RunReport) -> String {
     out.push_str(&format!(
         "slow calls (start_ms, took_ms): {:?}\n",
         report.slow_calls
+    ));
+    out.push_str(&format!(
+        "process_inbound_pcm calls={} p99_ms={}\n",
+        report.call_ms.len(),
+        p99_call_ms(&report.call_ms)
     ));
     out
 }
@@ -368,9 +390,9 @@ async fn agent_keeps_hearing_after_a_slow_final_on_a_short_turn() {
     assert_every_turn_heard(&report, 3_300);
 }
 
-/// Turn 3 (index 2) carries a slow vendor final of `slow_final_ms` in total; every other turn
-/// must stay under `MAX_CALL_MS`.
-fn assert_every_turn_heard(report: &RunReport, slow_final_ms: u128) {
+/// Turn 3 (index 2) carries a slow vendor final; every turn, that one included, must stay under
+/// `MAX_CALL_MS`. The slow-final length is only documentation at the call sites.
+fn assert_every_turn_heard(report: &RunReport, _slow_final_ms: u128) {
     let summary = describe(report);
     eprintln!("{summary}");
 
@@ -385,14 +407,8 @@ fn assert_every_turn_heard(report: &RunReport, slow_final_ms: u128) {
             "turn {}: no user_speech_final\n{summary}",
             i + 1
         );
-        // A slow vendor final still stalls the inbound call for the delay: finalize runs inline in
-        // process_inbound_pcm (follow-up: move finalize off the inbound path). The agent must
-        // recover afterwards.
-        let allowed_ms = if i == 2 {
-            slow_final_ms + 1_500
-        } else {
-            MAX_CALL_MS
-        };
+        // The inbound path never waits for the STT vendor; a slow final must not slow any call.
+        let allowed_ms = MAX_CALL_MS;
         assert!(
             t.max_call_ms < allowed_ms,
             "turn {}: process_inbound_pcm took {} ms (allowed {allowed_ms})\n{summary}",

@@ -26,19 +26,19 @@
  * sees real silence.
  *
  * Phases (a fresh loopback and echo agent each):
- *   A  next turn on time. P1 "alpha bravo charlie", P2 "delta echo foxtrot" 1.5 s after P1's last
+ *   A  next turn on time. P1 "one two three", P2 "four five six" 1.5 s after P1's last
  *      frame, both inside the 6 s hold. Echo: P2 `user_speaking_start` within 300 ms of its first
- *      voiced frame; P1 final (contains "alpha", id of P1's start) before P2 final (contains
- *      "delta", id of P2's start); P2's `user_speaking_start` comes before P1's final (overlap proof);
+ *      voiced frame; P1 final (contains "three", id of P1's start) before P2 final (contains
+ *      "six", id of P2's start); P2's `user_speaking_start` comes before P1's final (overlap proof);
  *      no `user_stt_not_found`; two replies (two `agent_speaking_start`).
- *   B  VAD barge-in during the slow final (`useVad`, `requireSttPartial: false`). P3 "golf hotel
- *      india"; 1.5 s after P3's last frame (speaker clock) the echo speaks a long filler; 1 s after
- *      the filler starts P4 "juliet kilo lima" is sent over it. Echo: `barge_in` within 300 ms of P4's first
+ *   B  VAD barge-in during the slow final (`useVad`, `requireSttPartial: false`). P3 "one two
+ *      three"; 1.5 s after P3's last frame (speaker clock) the echo speaks a long filler; 1 s after
+ *      the filler starts P4 "four five six" is sent over it. Echo: `barge_in` within 300 ms of P4's first
  *      voiced frame, `agent_speaking_end` within 300 ms of `barge_in`; the speaker receives no
  *      audible agent audio from barge_in + 500 ms to barge_in + 1500 ms; P3 final before P4 final; `barge_in` comes before P3's final.
- *   C  semantic barge-in (`requireSttPartial: true`). Same as B with P5 "mike november oscar" and
- *      P6 "papa quebec romeo". `barge_in` comes after P6's first `user_speech_partial`, which comes
- *      after P5's `user_speech_final`; P6's final contains "papa"; `barge_in` at most
+ *   C  semantic barge-in (`requireSttPartial: true`). Same as B with P5 "one two three" and
+ *      P6 "four five six". `barge_in` comes after P6's first `user_speech_partial`, which comes
+ *      after P5's `user_speech_final`; P6's final contains "six"; `barge_in` at most
  *      6000 + 1500 ms after P6's first voiced frame; P6's `user_speaking_start` comes before P5's
  *      final (overlap proof). The filler is three sentences (about 14 s) so it outlasts the wait.
  *
@@ -104,12 +104,15 @@ import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
 type BargeInSetting = NonNullable<NonNullable<VoiceAgentConfig['vad']>['bargeIn']>
 
 const PHRASES = {
-  P1: 'alpha bravo charlie',
-  P2: 'delta echo foxtrot',
-  P3: 'golf hotel india',
-  P4: 'juliet kilo lima',
-  P5: 'mike november oscar',
-  P6: 'papa quebec romeo',
+  // Number words: Sherpa (kroko) transcribes them reliably from Piper; NATO words like
+  // "delta" / "mike" came back as "fell to" / "like". The checks are about timing, order
+  // and ids, so each phrase is identified by one distinct key word.
+  P1: 'one two three',
+  P2: 'four five six',
+  P3: 'one two three',
+  P4: 'four five six',
+  P5: 'one two three',
+  P6: 'four five six',
 } as const
 type PhraseKey = keyof typeof PHRASES
 
@@ -441,9 +444,9 @@ async function phaseA(
   let p2!: PhraseRef
   await runPhase(h, async () => {
     await h.writer.silence(LEAD_IN_MS)
-    p1 = await h.send('P1', pcm.P1, 'alpha')
+    p1 = await h.send('P1', pcm.P1, 'three')
     await h.writer.silence(P2_GAP_MS)
-    p2 = await h.send('P2', pcm.P2, 'delta')
+    p2 = await h.send('P2', pcm.P2, 'six')
     await h.writer.silenceUntil(
       () =>
         h.count(SPEECH_EVENT_TYPE.userSpeechFinal) >= 2 &&
@@ -582,7 +585,7 @@ async function phaseC(
     },
     earlier: 'P5',
     later: 'P6',
-    laterWord: 'papa',
+    laterWord: 'six',
     pcm,
   })
   return collect(h, [

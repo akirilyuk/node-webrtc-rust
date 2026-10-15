@@ -1,0 +1,5 @@
+# 2026-10-15 23:40:25.550539 t-5-45-0110 runs=3 throttle=5/45 script=start:roundtrip-counting-echo-lid-multi head=0442cf5
+run 1: PASS rc=0 timeout=False thr_at=1.0066821575164795 dur=37s 
+run 2: PASS rc=0 timeout=False thr_at=1.0028700828552246 dur=45s 
+run 3: PASS rc=0 timeout=False thr_at=1.011864185333252 dur=47s 
+DONE fails=0

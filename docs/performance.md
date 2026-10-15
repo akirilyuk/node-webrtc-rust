@@ -338,6 +338,8 @@ The generated reports behind these tables are in [`perf-data/2026-10-10`](perf-d
 | `media-path-2b24d82.json`                                              | Media path benches and probes, every probe run                              |
 | `roundtrip-load-8x5.jsonl`, `roundtrip-load-capacity.jsonl`            | The `perf_probe` lines of the two voice loopback runs                       |
 
+The 0.10.1 vs 0.11.0 comparison (STT task off the inbound path, idle agents, capacity, starvation) is in [`releases/0.11.0.md`](releases/0.11.0.md#measured-0101-vs-0110), with the data in [`perf-data/2026-10-15`](perf-data/2026-10-15/runs.md).
+
 The data behind [Voice media loops in Rust](#voice-media-loops-in-rust-0100) and [Behavior under CPU starvation](#behavior-under-cpu-starvation) is in [`perf-data/2026-10-14`](perf-data/2026-10-14/):
 
 | Files             | Content                                                                                                             |

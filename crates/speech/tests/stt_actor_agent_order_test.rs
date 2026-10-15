@@ -641,11 +641,17 @@ async fn c1_of_b_held_while_a_closing() {
         log.summary()
     );
 
-    release_and_settle(
-        &agent,
-        &gated,
-        vec![final_out("alpha"), SttOutput::FinalizeDone],
-    )
+    // No `wait_stt_idle` here: once A is answered, B's listen window may fire C1 from the
+    // wall-clock ticker at any moment and send B's boundary finalize. A barrier queued behind
+    // that unanswered finalize would wait for it (it timed out under CPU load). Wait for A's
+    // final event instead.
+    gated.release(vec![final_out("alpha"), SttOutput::FinalizeDone]);
+    gated.wait_consumed().await;
+    log.wait_for("A's user_speech_final", |events| {
+        events
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+    })
     .await;
     assert_eq!(log.finals(), vec![("alpha".to_string(), a_id)]);
 
@@ -662,17 +668,19 @@ async fn c1_of_b_held_while_a_closing() {
 
     // The rest of B's close is answered by the vendor; B still has exactly one terminal.
     feed(&agent, &silent, 30).await;
-    let requests = {
-        gated.wait_finalize_requests(2).await;
-        gated.finalize_requests()
-    };
-    // A's marker was released above; every later request gets its marker.
+    // Three finalize requests in total: A, B's C1 boundary (B is still speaking, so B stays
+    // live) and B's gate close in the 30 silent frames (media time, so always reached). Wait
+    // for all three before answering: reading a count the actor is still raising under CPU
+    // load left the last request unanswered.
+    gated.wait_finalize_requests(3).await;
+    // A's marker was released above; answer B's two requests.
     release_and_settle(
         &agent,
         &gated,
-        (0..requests - 1).map(|_| SttOutput::FinalizeDone).collect(),
+        vec![SttOutput::FinalizeDone, SttOutput::FinalizeDone],
     )
     .await;
+    assert_eq!(gated.finalize_requests(), 3, "{}", log.summary());
     assert_eq!(
         log.terminals_of(&b_id),
         vec![SpeechEventKind::UserSttNotFound],

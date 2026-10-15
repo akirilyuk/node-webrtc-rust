@@ -789,7 +789,18 @@ async fn held_replay_without_vendor_final(finalize_fast: bool) -> Vec<SpeechEven
                 .await
                 .unwrap();
         }
-        sleep(Duration::from_millis(1500)).await;
+        // The wall-clock C2 timeout (1500 ms after PCM stopped) closes the utterance, and its
+        // fallback final is emitted by the STT result task one hop later. Wait for that final
+        // (bounded) instead of reading after a fixed sleep, which was a race under CPU load.
+        let mut events = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while finals(&events).is_empty() && tokio::time::Instant::now() < deadline {
+            sleep(Duration::from_millis(20)).await;
+            events.extend(drain(&mut rx));
+        }
+        events.extend(drain(&mut rx));
+        agent.stop().await.unwrap();
+        return events;
     }
     let events = drain(&mut rx);
     agent.stop().await.unwrap();

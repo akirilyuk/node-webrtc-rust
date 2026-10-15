@@ -78,8 +78,9 @@ pub use events::{SpeechEvent, SpeechEventBus, SpeechEventKind};
 pub use node_webrtc_rust_denoise::Stereo48kRnnoise;
 pub use pcm::{pcm_rms_i16, stereo_48k_to_mono_16k};
 pub use pipeline::{
-    tts_stream_chunks_enabled, LanguageIdProvider, LanguageIdResult, SttProvider, SttTranscript,
-    TtsAudioChunk, TtsOpenWait, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
+    tts_stream_chunks_enabled, FinalizeMode, LanguageIdProvider, LanguageIdResult, SttOutput,
+    SttProvider, SttTranscript, TtsAudioChunk, TtsOpenWait, TtsProgressiveSink, TtsProvider,
+    TtsSynthesis, VendorFactory, DEFAULT_STT_FINALIZE_WAIT_MS,
 };
 pub use registry::VendorRegistry;
 pub use session_recorder::{

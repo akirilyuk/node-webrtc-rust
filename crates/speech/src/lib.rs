@@ -56,6 +56,8 @@ pub mod pcm;
 pub mod pipeline;
 pub mod registry;
 pub mod session_recorder;
+#[doc(hidden)]
+pub mod stt_actor;
 pub mod stt_hold;
 pub mod stt_pre_roll;
 pub mod tts_buffer;

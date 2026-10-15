@@ -270,7 +270,7 @@ fn voice_barge_in_counter() -> &'static Counter<u64> {
 fn voice_stt_actor_backlog_gauge() -> &'static Gauge<u64> {
     VOICE_STT_ACTOR_BACKLOG.get_or_init(|| {
         ensure_meter()
-            .u64_gauge("voice.stt.actor_backlog_ms")
+            .u64_gauge("voice_stt_actor_backlog_ms")
             .with_description(
                 "Milliseconds of audio queued for or behind the STT actor of an agent",
             )
@@ -281,7 +281,7 @@ fn voice_stt_actor_backlog_gauge() -> &'static Gauge<u64> {
 fn voice_stt_late_result_counter() -> &'static Counter<u64> {
     VOICE_STT_LATE_RESULT.get_or_init(|| {
         ensure_meter()
-            .u64_counter("voice.stt.late_result")
+            .u64_counter("voice_stt_late_result")
             .with_description("STT results that arrived after their utterance was closed")
             .build()
     })

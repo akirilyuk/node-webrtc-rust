@@ -33,6 +33,9 @@ pub const STT_ACTOR_STOP_MS: u64 = 3_000;
 pub const STT_ACTOR_START_MS: u64 = 15_000;
 /// Interval at which the actor drains provider outputs when no command arrives.
 pub const STT_ACTOR_POLL_MS: u64 = 20;
+/// How long a timed-out finalize keeps attributing late transcripts to its key while the
+/// vendor's own marker is missing; after that the entry is dropped.
+pub const STT_LATE_MARKER_GRACE_MS: u64 = 60_000;
 
 /// Bytes of 16 kHz mono s16le PCM per millisecond.
 const PCM_BYTES_PER_MS: u64 = 32;
@@ -244,6 +247,7 @@ struct Outstanding {
     requested_at: Instant,
     deadline_base_ms: u64,
     timed_out: bool,
+    timed_out_at: Option<Instant>,
 }
 
 struct Actor {
@@ -295,7 +299,7 @@ impl Actor {
                     }
                 }
                 _ = tick.tick() => {
-                    self.drain_outputs(None).await;
+                    self.drain_outputs(self.inline_late_key).await;
                     self.check_backlog(true);
                 }
             }
@@ -440,21 +444,45 @@ impl Actor {
         }
     }
 
-    fn next_deadline(&self) -> Option<Instant> {
+    fn grace_expiry_of_front(&self) -> Option<Instant> {
         self.outstanding
+            .front()
+            .and_then(|o| o.timed_out_at)
+            .map(|at| at + Duration::from_millis(STT_LATE_MARKER_GRACE_MS))
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        let finalize = self
+            .outstanding
             .iter()
             .find(|o| !o.timed_out)
-            .map(|o| self.deadline_of(o))
+            .map(|o| self.deadline_of(o));
+        match (finalize, self.grace_expiry_of_front()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn expire_deadlines(&mut self) {
         let now = Instant::now();
+        // A timed-out front entry whose marker never arrived stops attributing transcripts.
+        while self.grace_expiry_of_front().is_some_and(|at| at <= now) {
+            if let Some(dropped) = self.outstanding.pop_front() {
+                eprintln!(
+                    "[speech] stt finalize marker for {} never arrived within {} ms after its timeout (vendor={}); attribution moves on",
+                    dropped.key,
+                    STT_LATE_MARKER_GRACE_MS,
+                    self.vendor_name()
+                );
+            }
+        }
         while let Some(idx) = self.outstanding.iter().position(|o| !o.timed_out) {
             if self.deadline_of(&self.outstanding[idx]) > now {
                 break;
             }
             let entry = &mut self.outstanding[idx];
             entry.timed_out = true;
+            entry.timed_out_at = Some(now);
             let (key, gen, waited) = (entry.key, entry.gen, entry.requested_at.elapsed());
             eprintln!(
                 "[speech] stt final for {key} not received within {} ms (vendor={}); closing the utterance",
@@ -596,6 +624,7 @@ impl Actor {
             requested_at: Instant::now(),
             deadline_base_ms: wait_ms,
             timed_out: false,
+            timed_out_at: None,
         };
         match provider.finalize_mode() {
             FinalizeMode::Deferred => {

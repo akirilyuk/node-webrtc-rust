@@ -591,3 +591,42 @@ async fn test_final_delay_holds_final_and_marker_but_keeps_accepting_audio() {
         SttTranscript::Partial("b".into()),
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn inline_late_transcript_drained_by_tick_keeps_previous_key() {
+    let (provider, probe) = scripted(FinalizeMode::Inline);
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    expect_done(next_result(&mut rx, 1000).await, 1, 0, false);
+
+    probe.out(final_out("late"));
+    tokio::time::advance(Duration::from_millis(20)).await;
+    expect_transcript(
+        next_result(&mut rx, 1000).await,
+        Some(1),
+        0,
+        SttTranscript::Final("late".into()),
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn lost_marker_after_timeout_is_dropped_after_grace() {
+    let (mut provider, probe) = scripted(FinalizeMode::Deferred);
+    provider.wait_ms = 1_000;
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    probe.finalize_requested.notified().await;
+
+    tokio::time::advance(Duration::from_millis(1_001)).await;
+    expect_done(next_result(&mut rx, 1000).await, 1, 0, true);
+
+    tokio::time::advance(Duration::from_millis(60_000)).await;
+    assert_quiet(&mut rx, 100).await;
+    probe.out(partial("next"));
+    expect_transcript(
+        next_result(&mut rx, 1000).await,
+        None,
+        0,
+        SttTranscript::Partial("next".into()),
+    );
+}

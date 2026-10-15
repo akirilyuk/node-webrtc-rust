@@ -1387,17 +1387,21 @@ async fn c2_does_not_force_during_active_vad_speech() {
 }
 
 async fn run_gated_utterance(agent: &VoiceAgent, loud: &[u8], silent: &[u8]) {
+    // STT results are applied by the result pump, so the test waits for it after every frame
+    // (a real inbound loop is paced by 20 ms frames).
     for _ in 0..6 {
         agent
             .process_inbound_pcm(Bytes::from(loud.to_vec()), 20)
             .await
             .unwrap();
+        assert!(agent.wait_stt_idle(Duration::from_secs(10)).await);
     }
     for _ in 0..25 {
         agent
             .process_inbound_pcm(Bytes::from(silent.to_vec()), 20)
             .await
             .unwrap();
+        assert!(agent.wait_stt_idle(Duration::from_secs(10)).await);
     }
 }
 

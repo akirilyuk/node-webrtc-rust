@@ -24,6 +24,25 @@
 //! | `TtsPhraseCacheHit` | A reply (or one synthesis job of it) was served from the phrase cache (`chars`); no text |
 //! | `AgentSpeakFailed` | One reply could not be synthesized (`reason`); the session keeps running |
 //! | `Error` | Vendor or internal failure |
+//!
+//! ## Event order contract
+//!
+//! STT results (partials, finals, `user_stt_not_found` and the closing events of an utterance) are
+//! applied by the agent's STT result pump, not inline in `process_inbound_pcm`, so a slow vendor
+//! final never stalls VAD or the events of the next utterance. Hosts see this order:
+//!
+//! 1. Within one `utteranceId` the relative order of the events is unchanged for every close path
+//!    (`utterance_terminal_event_test.rs` asserts it).
+//! 2. Utterance N+1's events (`vad_triggered`, `user_stt_start`, `stt_stream_start`,
+//!    `user_speaking_start`, ...) may be emitted before utterance N's `user_speaking_end` /
+//!    terminal event.
+//! 3. Terminal events (`user_speech_final` / `user_stt_not_found`) are emitted in utterance order.
+//! 4. `vad_triggered` and VAD `barge_in` are emitted while the frame that triggers them is
+//!    processed, never delayed by STT.
+//! 5. Replay finals (`replay: true`, `replacesUtteranceId`) may follow later utterances' events.
+//! 6. `utteranceId` is also set on `user_stt_start`, `stt_stream_start`, `stt_stream_end` and
+//!    `user_stt_end` (builder `with_utterance_id`), and `user_speaking_end` always carries the id
+//!    of the utterance it closes.
 
 use crate::config::{SttConfig, TtsConfig};
 

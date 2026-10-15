@@ -208,11 +208,11 @@ describe('AudioMixGraph', () => {
       graph.pushFrame('talker', frame)
     }
     const heard: number[] = []
-    const deadline = Date.now() + 2_000
-    while (heard.length < 10 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      const out = graph.renderOutput('listener')
-      const sample = out.readInt16LE(0)
+    // Render every 20 ms slot explicitly, as the mix pumps do. Sampling the wall-clock render on a
+    // 20 ms timer missed a frame whenever a timer fired late on a loaded host: the slot it skipped
+    // had already played (failed 10 of 20 runs under CPU load).
+    for (let slot = 0; slot < 20 && heard.length < 10; slot++) {
+      const sample = graph.renderOutput('listener', 1000 + slot * 20).readInt16LE(0)
       if (sample !== 0 && heard[heard.length - 1] !== sample) {
         heard.push(sample)
       }

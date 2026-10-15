@@ -72,6 +72,7 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **TTS stream chunks** | `npm run start:roundtrip-tts-stream` — compare `VOICE_TTS_STREAM_CHUNKS` buffered vs streaming first-audio + STT on both paths                                                                                                                                   |
 | **Utterance timing**  | `npm run start:roundtrip-utterance-timing` — `user_speaking_end` → `user_speech_final` within 500 ms (see below)                                                                                                                                                 |
 | **C1 timeouts**       | `npm run start:roundtrip-c1-timeouts` — STT no-partial timeouts: flowing frames close normally, a stopped sender waits for the 12 s bound, a 4.5 s gap mid-phrase is survived (see below)                                                                        |
+| **Slow final**        | `npm run start:roundtrip-slow-final` — next turn and barge-in stay on time while a 6 s STT final is pending (see below)                                                                                                                                          |
 | **Doubled word**      | `npm run start:roundtrip-doubled-first-word` — replay a committed fixture 20x on one reused listener agent; no final may start with "okay okay" (see below)                                                                                                      |
 | **Two phrases**       | `npm run start:roundtrip-two-phrases` — count, pause, second sentence → **2×** `user_speech_final` (see below)                                                                                                                                                   |
 | **Session record**    | `NWR_RECORD_FORMAT=wav npm run start:record` — short counting roundtrip + stereo WAV for listen-back (see below)                                                                                                                                                 |
@@ -385,6 +386,24 @@ npm run start:roundtrip-c1-timeouts --workspace=@node-webrtc-rust/example-voice-
 ```
 
 Runtime is about 75 s. Summary lines look like `[c1-smoke] phase=B notFoundAfterMs=11819 finals=[] PASS`.
+
+## Slow final roundtrip (`start:roundtrip-slow-final`)
+
+[`src/roundtrip-slow-final.ts`](./src/roundtrip-slow-final.ts) checks that a slow STT final does not hold up the next turn or a barge-in. The echo agent runs with `SPEECH_STT_TEST_FINAL_DELAY_MS=6000`, a test-only knob that delays every final of its STT by 6 s. The script sets it itself (not in `package.json`), so it cannot leak into other scripts. Echo agent and speaker share the process; the knob is process-wide, which is harmless because the speaker has no STT: Piper renders each phrase once into PCM, and a single paced writer (frame n due at `anchor + n x 20 ms`) sends it. Assertions use only echo-side speech events and the speaker's send time of each phrase's first voiced frame, plus the RMS of the audio the speaker receives. The echo VAD uses minSilence 500 ms and gate hold 500 ms, so the 1.5 s gap in phase A is a real utterance boundary.
+
+| Phase | Input                                                                                                                                                                                                    | Expected                                                                                                                                                                                                           |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A     | P1 "alpha bravo charlie", then P2 "delta echo foxtrot" 1.5 s after P1's last frame (both inside the 6 s hold); the echo answers each final                                                               | P2 `user_speaking_start` within 300 ms of its first voiced frame; P1 final ("alpha", id of P1's start) before P2 final ("delta", id of P2's start); no `user_stt_not_found`; two `agent_speaking_start`            |
+| B     | VAD barge-in (`useVad`, `requireSttPartial: false`). P3 "golf hotel india"; on its `user_speaking_end` the echo speaks a long filler; 1 s after the filler starts, P4 "juliet kilo lima" is sent over it | `barge_in` within 300 ms of P4's first voiced frame; `agent_speaking_end` within 300 ms of `barge_in`; the speaker receives no audible agent audio from `barge_in` + 500 ms to + 1500 ms; P3 final before P4 final |
+| C     | Semantic barge-in (`requireSttPartial: true`). Same as B with P5 "mike november oscar" and P6 "papa quebec romeo"                                                                                        | `barge_in` after P6's first `user_speech_partial`, which comes after P5's `user_speech_final`; P6 final contains "papa"; `barge_in` at most 6000 + 1500 ms after P6's first voiced frame                           |
+
+The 300 ms bounds hold because the inbound path no longer waits for STT (VAD min-speech is 200 ms, the rest is transport). With the old behavior the next turn started and the barge-in fired about 6 s late. The assertions are pure functions in [`src/roundtrip-slow-final-helpers.ts`](./src/roundtrip-slow-final-helpers.ts), unit-tested in `src/roundtrip-slow-final.test.ts`.
+
+```bash
+npm run start:roundtrip-slow-final --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+Expected result: exit 0 and `Slow-final roundtrip OK`, with a `PASS` line per check (`[slow-final] phase B VAD barge-in on time: PASS`). Runtime is about 60 s. A failure prints `phase A ...`, `phase B ...` or `phase C ...` plus the echo event timeline; a `[host-suspended]` line means the run is inconclusive. The knob exists only in builds that include the STT actor change; without it the finals are not delayed and the phases do not exercise the pending-final path.
 
 ## Doubled first word roundtrip (`start:roundtrip-doubled-first-word`)
 

@@ -996,3 +996,83 @@ async fn stt_gated_barge_in_fires_on_b_partial_after_a_final() {
         .unwrap();
     agent.stop().await.unwrap();
 }
+
+/// Only the live utterance can interrupt the reply. A's words (three, so they qualify at the
+/// default `min_stt_partial_tokens`) were spoken before the reply started; their late final must
+/// not cut it off. B's first partial does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_utterance_final_never_triggers_stt_barge_in() {
+    let factory = GatedFactory::new(60_000);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let agent = make_agent(&factory, barge_vad(true), Some(counting_writer(&calls))).await;
+    let gated = factory.first();
+    let mut log = Log::new(&agent);
+    let loud = loud_stereo_frame();
+
+    speak_and_close(&agent, &gated, 1).await;
+    let a_id = log.start_id(0);
+
+    let speaking = {
+        let agent = Arc::clone(&agent);
+        let text = long_reply();
+        tokio::spawn(async move { agent.send_text_to_tts(&text).await })
+    };
+    log.wait_for("agent_speaking_start", |events| {
+        events
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::AgentSpeakingStart)
+    })
+    .await;
+
+    feed(&agent, &loud, 15).await;
+    let b_id = log.start_id(1);
+
+    release_and_settle(
+        &agent,
+        &gated,
+        vec![final_out("alpha bravo charlie"), SttOutput::FinalizeDone],
+    )
+    .await;
+    assert_eq!(
+        log.finals(),
+        vec![("alpha bravo charlie".to_string(), a_id)],
+        "{}",
+        log.summary()
+    );
+    assert_eq!(
+        log.count(SpeechEventKind::BargeIn),
+        0,
+        "a closing utterance's final must not interrupt the reply: {}",
+        log.summary()
+    );
+    assert_eq!(
+        log.count(SpeechEventKind::AgentSpeakingEnd),
+        0,
+        "the reply is still playing: {}",
+        log.summary()
+    );
+
+    release_and_settle(&agent, &gated, vec![partial_out("delta echo")]).await;
+    let partial_at = log
+        .position(|e| {
+            e.kind == SpeechEventKind::UserSpeechPartial
+                && e.text.as_deref() == Some("delta echo")
+                && e.utterance_id.as_deref() == Some(b_id.as_str())
+        })
+        .unwrap_or_else(|| panic!("B's partial: {}", log.summary()));
+    let barge_at = log
+        .position(|e| e.kind == SpeechEventKind::BargeIn)
+        .unwrap_or_else(|| panic!("barge_in after B's partial: {}", log.summary()));
+    assert!(
+        partial_at < barge_at,
+        "barge_in follows B's partial: {}",
+        log.summary()
+    );
+
+    timeout(Duration::from_secs(10), speaking)
+        .await
+        .expect("send_text_to_tts did not return")
+        .unwrap()
+        .unwrap();
+    agent.stop().await.unwrap();
+}

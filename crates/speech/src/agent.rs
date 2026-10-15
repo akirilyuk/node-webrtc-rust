@@ -2772,6 +2772,12 @@ impl VoiceAgent {
             if !inner.agent_speaking {
                 return Ok(());
             }
+            // Only the live utterance can barge in (stt-gated barge-in, D10). A closing (or
+            // LID-retained) utterance's words were spoken before the current agent reply could
+            // have started being interrupted by them.
+            if inner.live_key() != Some(key) {
+                return Ok(());
+            }
             if !inner.record_ref(key).is_some_and(|r| r.vad_triggered) {
                 return Ok(());
             }

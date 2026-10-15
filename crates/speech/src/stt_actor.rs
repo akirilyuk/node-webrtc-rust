@@ -19,7 +19,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::{interval, sleep_until, timeout, Instant, MissedTickBehavior};
+use tokio::time::{sleep_until, timeout, Instant};
 
 use crate::config::{SttConfig, VoiceSessionContext};
 use crate::error::{SpeechError, SpeechResult};
@@ -31,8 +31,13 @@ use crate::registry::VendorRegistry;
 pub const STT_ACTOR_STOP_MS: u64 = 3_000;
 /// Longest wait for `SttProvider::start`.
 pub const STT_ACTOR_START_MS: u64 = 15_000;
-/// Interval at which the actor drains provider outputs when no command arrives.
+/// Interval at which a busy actor drains provider outputs when no command arrives.
 pub const STT_ACTOR_POLL_MS: u64 = 20;
+/// Interval at which an idle actor (no audio, nothing outstanding) drains provider outputs. It
+/// bounds how late a stray vendor result is picked up.
+pub const STT_ACTOR_IDLE_POLL_MS: u64 = 1_000;
+/// How long after the last audio the actor keeps polling at [`STT_ACTOR_POLL_MS`].
+pub const STT_ACTOR_BUSY_WINDOW_MS: u64 = 10_000;
 /// How long a timed-out finalize keeps attributing late transcripts to its key while the
 /// vendor's own marker is missing; after that the entry is dropped.
 pub const STT_LATE_MARKER_GRACE_MS: u64 = 60_000;
@@ -227,6 +232,7 @@ pub fn spawn_stt_actor(
         gen: 0,
         delayed: VecDeque::new(),
         parked: None,
+        last_audio_at: None,
         backlog_logged: false,
         last_open_pending: false,
     };
@@ -266,6 +272,8 @@ struct Actor {
     delayed: VecDeque<(Instant, SttResult)>,
     /// A `Swap` or `Barrier` waiting for the outstanding finalizes to finish.
     parked: Option<SttCommand>,
+    /// When the last `Audio` command was handled; keeps the actor busy for a while after it.
+    last_audio_at: Option<Instant>,
     backlog_logged: bool,
     /// `open_pending()` as seen by the last `observe_open_transition` call.
     last_open_pending: bool,
@@ -273,8 +281,7 @@ struct Actor {
 
 impl Actor {
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<SttCommand>) {
-        let mut tick = interval(Duration::from_millis(STT_ACTOR_POLL_MS));
-        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut next_poll = Instant::now();
         loop {
             let now = Instant::now();
             let due = self.delayed.front().map(|(at, _)| *at);
@@ -295,15 +302,24 @@ impl Actor {
                             break;
                         }
                         Some(cmd) => {
+                            let was_idle = !self.busy();
                             if !self.handle_command(cmd).await {
                                 break;
+                            }
+                            if was_idle {
+                                // A burst of audio is polled at the busy cadence at once.
+                                next_poll = Instant::now() + Duration::from_millis(STT_ACTOR_POLL_MS);
                             }
                         }
                     }
                 }
-                _ = tick.tick() => {
+                // Idle agents poll once per second so a late vendor result is still drained;
+                // busy agents poll every 20 ms.
+                _ = sleep_until(next_poll) => {
                     self.drain_outputs(self.inline_late_key).await;
                     self.check_backlog(true);
+                    let period = if self.busy() { STT_ACTOR_POLL_MS } else { STT_ACTOR_IDLE_POLL_MS };
+                    next_poll = Instant::now() + Duration::from_millis(period);
                 }
             }
             self.run_parked().await;
@@ -316,6 +332,25 @@ impl Actor {
             .as_ref()
             .map(|p| p.vendor_name())
             .unwrap_or("none")
+    }
+
+    /// True while something can still produce output soon: a finalize, a late result, parked or
+    /// delayed work, recent audio, a pending stream open or a vendor decode backlog.
+    fn busy(&self) -> bool {
+        let recent_audio = self
+            .last_audio_at
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(STT_ACTOR_BUSY_WINDOW_MS));
+        let vendor_backlog = self
+            .provider
+            .as_ref()
+            .is_some_and(|p| p.decode_backlog_ms() > 0);
+        !self.outstanding.is_empty()
+            || self.inline_late_key.is_some()
+            || self.parked.is_some()
+            || !self.delayed.is_empty()
+            || recent_audio
+            || self.open_pending()
+            || vendor_backlog
     }
 
     fn open_pending(&self) -> bool {
@@ -598,6 +633,7 @@ impl Actor {
 
     async fn on_audio(&mut self, pcm: Bytes) {
         let len = pcm.len() as u64;
+        self.last_audio_at = Some(Instant::now());
         if let Some(key) = self.inline_late_key.take() {
             self.drain_outputs(Some(key)).await;
         }

@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-15
+
 ### Changed
 
 - **speech**: `VoiceAgent` no longer waits for the STT vendor while it processes inbound audio. Every STT call (push, poll, finalize, open, config swap) now runs in one STT task per agent, and `process_inbound_pcm` only hands it the audio in order.

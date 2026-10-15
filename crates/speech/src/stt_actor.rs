@@ -31,12 +31,12 @@ use crate::registry::VendorRegistry;
 pub const STT_ACTOR_STOP_MS: u64 = 3_000;
 /// Longest wait for `SttProvider::start`.
 pub const STT_ACTOR_START_MS: u64 = 15_000;
-/// Interval at which a busy actor drains provider outputs when no command arrives.
+/// Interval at which a busy actor drains provider outputs when no command arrives. An idle actor
+/// (nothing outstanding, no work for [`STT_ACTOR_BUSY_WINDOW_MS`]) does not poll at all: it
+/// sleeps until a command or a deadline arrives, and drains leftovers at the next command.
 pub const STT_ACTOR_POLL_MS: u64 = 20;
-/// Interval at which an idle actor (no audio, nothing outstanding) drains provider outputs. It
-/// bounds how late a stray vendor result is picked up.
-pub const STT_ACTOR_IDLE_POLL_MS: u64 = 1_000;
-/// How long after the last audio the actor keeps polling at [`STT_ACTOR_POLL_MS`].
+/// How long after the last audio, finalize request or provider output the actor keeps polling at
+/// [`STT_ACTOR_POLL_MS`].
 pub const STT_ACTOR_BUSY_WINDOW_MS: u64 = 10_000;
 /// How long a timed-out finalize keeps attributing late transcripts to its key while the
 /// vendor's own marker is missing; after that the entry is dropped.
@@ -232,7 +232,7 @@ pub fn spawn_stt_actor(
         gen: 0,
         delayed: VecDeque::new(),
         parked: None,
-        last_audio_at: None,
+        last_work_at: None,
         backlog_logged: false,
         last_open_pending: false,
     };
@@ -272,8 +272,9 @@ struct Actor {
     delayed: VecDeque<(Instant, SttResult)>,
     /// A `Swap` or `Barrier` waiting for the outstanding finalizes to finish.
     parked: Option<SttCommand>,
-    /// When the last `Audio` command was handled; keeps the actor busy for a while after it.
-    last_audio_at: Option<Instant>,
+    /// When the last `Audio` or `EndUtterance` command was handled, or the provider last produced
+    /// an output; keeps the actor busy for a while after it.
+    last_work_at: Option<Instant>,
     backlog_logged: bool,
     /// `open_pending()` as seen by the last `observe_open_transition` call.
     last_open_pending: bool,
@@ -287,6 +288,7 @@ impl Actor {
             let due = self.delayed.front().map(|(at, _)| *at);
             let deadline = self.next_deadline();
             let can_read = self.parked.is_none();
+            let busy = self.busy();
             tokio::select! {
                 biased;
                 _ = sleep_until(due.unwrap_or(now)), if due.is_some() => {
@@ -302,24 +304,31 @@ impl Actor {
                             break;
                         }
                         Some(cmd) => {
-                            let was_idle = !self.busy();
+                            if !busy
+                                && self.last_work_at.is_some()
+                                && matches!(
+                                    cmd,
+                                    SttCommand::Audio(_) | SttCommand::EndUtterance { .. }
+                                )
+                            {
+                                // Leftovers from the quiet period are attributed before new
+                                // audio or a new finalize. A fresh actor has nothing to
+                                // attribute, and the other commands produce no transcripts.
+                                self.drain_outputs(self.inline_late_key).await;
+                            }
                             if !self.handle_command(cmd).await {
                                 break;
                             }
-                            if was_idle {
-                                // A burst of audio is polled at the busy cadence at once.
-                                next_poll = Instant::now() + Duration::from_millis(STT_ACTOR_POLL_MS);
-                            }
+                            next_poll = Instant::now() + Duration::from_millis(STT_ACTOR_POLL_MS);
                         }
                     }
                 }
-                // Idle agents poll once per second so a late vendor result is still drained;
-                // busy agents poll every 20 ms.
-                _ = sleep_until(next_poll) => {
+                // Busy actors poll every 20 ms. An idle actor has no timer at all: it sleeps until
+                // a command or a deadline arrives.
+                _ = sleep_until(next_poll), if busy => {
                     self.drain_outputs(self.inline_late_key).await;
                     self.check_backlog(true);
-                    let period = if self.busy() { STT_ACTOR_POLL_MS } else { STT_ACTOR_IDLE_POLL_MS };
-                    next_poll = Instant::now() + Duration::from_millis(period);
+                    next_poll = Instant::now() + Duration::from_millis(STT_ACTOR_POLL_MS);
                 }
             }
             self.run_parked().await;
@@ -334,21 +343,21 @@ impl Actor {
             .unwrap_or("none")
     }
 
-    /// True while something can still produce output soon: a finalize, a late result, parked or
-    /// delayed work, recent audio, a pending stream open or a vendor decode backlog.
+    /// True while something can still produce output soon: a finalize, parked or delayed work,
+    /// a pending stream open, a vendor decode backlog, or audio, a finalize request or an output
+    /// within the last [`STT_ACTOR_BUSY_WINDOW_MS`]. An actor that is not busy does not poll.
     fn busy(&self) -> bool {
-        let recent_audio = self
-            .last_audio_at
+        let recent_work = self
+            .last_work_at
             .is_some_and(|at| at.elapsed() < Duration::from_millis(STT_ACTOR_BUSY_WINDOW_MS));
         let vendor_backlog = self
             .provider
             .as_ref()
             .is_some_and(|p| p.decode_backlog_ms() > 0);
         !self.outstanding.is_empty()
-            || self.inline_late_key.is_some()
             || self.parked.is_some()
             || !self.delayed.is_empty()
-            || recent_audio
+            || recent_work
             || self.open_pending()
             || vendor_backlog
     }
@@ -449,6 +458,9 @@ impl Actor {
                     }
                 }
             }
+        }
+        if !items.is_empty() {
+            self.last_work_at = Some(Instant::now());
         }
         for item in items {
             match item {
@@ -633,7 +645,7 @@ impl Actor {
 
     async fn on_audio(&mut self, pcm: Bytes) {
         let len = pcm.len() as u64;
-        self.last_audio_at = Some(Instant::now());
+        self.last_work_at = Some(Instant::now());
         if let Some(key) = self.inline_late_key.take() {
             self.drain_outputs(Some(key)).await;
         }
@@ -674,6 +686,7 @@ impl Actor {
     }
 
     async fn on_end_utterance(&mut self, key: u64) {
+        self.last_work_at = Some(Instant::now());
         let gen = self.gen;
         let Some(provider) = self.provider.as_mut() else {
             self.emit(SttResult::FinalizeDone {

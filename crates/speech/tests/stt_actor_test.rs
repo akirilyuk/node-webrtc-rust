@@ -673,6 +673,8 @@ async fn lost_marker_after_timeout_is_dropped_after_grace() {
     tokio::time::advance(Duration::from_millis(60_000)).await;
     assert_quiet(&mut rx, 100).await;
     probe.out(partial("next"));
+    // An idle actor does not poll; the released partial is drained at the next command.
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
     expect_transcript(
         next_result(&mut rx, 1000).await,
         None,
@@ -692,16 +694,14 @@ async fn run_for(ms: u64) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn idle_actor_polls_once_per_second() {
+async fn idle_actor_does_not_poll() {
     let (provider, probe) = scripted(FinalizeMode::Deferred);
     let (handle, _rx) = spawn(provider, options());
     let polls = || probe.polls.load(Ordering::SeqCst);
 
     tokio::task::yield_now().await;
-    let base = polls();
     run_for(5_000).await;
-    let idle = polls() - base;
-    assert!((4..=6).contains(&idle), "idle polls in 5 s: {idle}");
+    assert!(polls() <= 1, "idle polls in 5 s: {}", polls());
 
     let before_audio = polls();
     assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
@@ -709,25 +709,74 @@ async fn idle_actor_polls_once_per_second() {
     let busy = polls() - before_audio;
     assert!(busy >= 40, "busy polls in 1 s: {busy}");
 
-    run_for(STT_ACTOR_BUSY_WINDOW_MS).await;
+    run_for(STT_ACTOR_BUSY_WINDOW_MS + 5_000).await;
     let before_tail = polls();
     run_for(5_000).await;
     let tail = polls() - before_tail;
-    assert!(tail <= 6, "idle polls in the last 5 s: {tail}");
+    assert_eq!(tail, 0, "idle polls in the last 5 s: {tail}");
 }
 
 #[tokio::test(start_paused = true)]
-async fn idle_actor_still_drains_a_late_result_within_a_second() {
+async fn late_result_while_idle_is_drained_at_the_next_command() {
     let (provider, probe) = scripted(FinalizeMode::Deferred);
     let (handle, mut rx) = spawn(provider, options());
     assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
     run_for(STT_ACTOR_BUSY_WINDOW_MS + 2_000).await;
 
     probe.out(partial("late"));
+    run_for(5_000).await;
+    assert!(rx.try_recv().is_err(), "no result is emitted while idle");
+
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
     expect_transcript(
-        next_result(&mut rx, 1_100).await,
+        next_result(&mut rx, 1_000).await,
         None,
         0,
         SttTranscript::Partial("late".into()),
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn start_does_not_poll_before_first_audio() {
+    let (provider, probe) = scripted(FinalizeMode::Deferred);
+    probe.out(partial("queued"));
+    let (handle, mut rx) = spawn(provider, options());
+    let (done, started) = oneshot::channel();
+    assert!(handle.send(SttCommand::Start {
+        ctx: VoiceSessionContext::default(),
+        done,
+    }));
+    started.await.unwrap().unwrap();
+
+    run_for(2_000).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "no transcript before the first audio"
+    );
+    assert_eq!(probe.polls.load(Ordering::SeqCst), 0);
+
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    expect_transcript(
+        next_result(&mut rx, 1_000).await,
+        None,
+        0,
+        SttTranscript::Partial("queued".into()),
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn inline_agent_goes_idle_after_its_last_turn() {
+    let (provider, probe) = scripted(FinalizeMode::Inline);
+    let (handle, mut rx) = spawn(provider, options());
+    let polls = || probe.polls.load(Ordering::SeqCst);
+
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    expect_done(next_result(&mut rx, 1_000).await, 1, 0, false);
+
+    run_for(STT_ACTOR_BUSY_WINDOW_MS + 5_000).await;
+    let before_tail = polls();
+    run_for(5_000).await;
+    let tail = polls() - before_tail;
+    assert_eq!(tail, 0, "idle polls in the last 5 s: {tail}");
 }

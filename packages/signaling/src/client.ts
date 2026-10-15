@@ -19,6 +19,17 @@ import type {
  * Emits `peer-joined`, `offer`, `answer`, and `ice-candidate` events for use
  * with {@link autoNegotiate} or custom negotiation logic.
  */
+/**
+ * Closes a socket the client no longer uses. Closing a socket whose handshake is still pending makes
+ * `ws` emit `error` ("WebSocket was closed before the connection was established") on the next tick;
+ * with the client's listeners removed that would be an uncaught exception, so a no-op listener stays.
+ */
+function discardSocket(ws: WebSocket): void {
+  ws.removeAllListeners()
+  ws.on('error', () => {})
+  ws.close()
+}
+
 export class SignalingClient extends EventEmitter {
   private ws: WebSocket | null = null
   /** This client's peer id (used as the `peerId` field in outbound messages). */
@@ -89,8 +100,7 @@ export class SignalingClient extends EventEmitter {
     }
 
     if (this.ws) {
-      this.ws.removeAllListeners()
-      this.ws.close()
+      discardSocket(this.ws)
       this.ws = null
     }
 
@@ -108,8 +118,7 @@ export class SignalingClient extends EventEmitter {
   disconnect(): void {
     debugFn('signaling::SignalingClient', 'disconnect')
     if (this.ws) {
-      this.ws.removeAllListeners()
-      this.ws.close()
+      discardSocket(this.ws)
       this.ws = null
     }
   }

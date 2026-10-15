@@ -27,6 +27,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - In per-utterance mode, audio that follows a finalize before its answer goes to the next stream together with its own finalize, so every turn keeps its own stream and no audio is lost.
   - After the stream was refused for a while, the finalize wait (`SPEECH_STT_FINALIZE_WAIT_MS`, default 8 s plus queued audio) starts when the open succeeds.
 
+### Fixed
+
+- **signaling**: `SignalingClient.disconnect()`, or a `connect()` that replaces a socket, no longer throws an uncaught "WebSocket was closed before the connection was established" when the WebSocket handshake is still pending. It showed up when a session was torn down during a signaling reconnect.
+
 ### Added
 
 - **speech**: metrics `voice_stt_actor_backlog_ms` (audio waiting for the STT task) and `voice_stt_late_result` (late or old-model results that were not emitted). A `[speech] stt actor behind by N ms of audio … queued, not dropped` line is logged once per episode above 2 s.

@@ -3,18 +3,22 @@ import { describe, expect, it } from 'vitest'
 import {
   AUDIBLE_RMS_THRESHOLD,
   BARGE_MAX_MS,
+  FILLER_AFTER_PHRASE_END_MS,
+  FILLER_TEXT,
   FINAL_DELAY_MS,
   NEXT_TURN_START_MAX_MS,
   SPEAKING_END_AFTER_BARGE_MAX_MS,
   checkAudioSilencedAfterBarge,
   checkFinalOrder,
   checkNextTurnOnTime,
+  checkOverlapsPendingFinal,
   checkNoSttNotFound,
   checkRepliesStarted,
   checkSemanticBargeAfterEarlierFinal,
   checkVadBargeOnTime,
   formatTimeline,
   pcmRms,
+  utteranceIdOf,
   type PhraseRef,
   type ReceivedFrame,
   type SlowFinalEvent,
@@ -36,6 +40,11 @@ describe('constants', () => {
     expect(BARGE_MAX_MS).toBe(300)
     expect(SPEAKING_END_AFTER_BARGE_MAX_MS).toBe(300)
     expect(FINAL_DELAY_MS).toBe(6000)
+    expect(FILLER_AFTER_PHRASE_END_MS).toBe(1500)
+  })
+
+  it('FILLER_TEXT is long enough to outlast the semantic barge-in wait', () => {
+    expect(FILLER_TEXT.split(/\s+/).filter((w) => w.length > 0).length).toBeGreaterThanOrEqual(30)
   })
 })
 
@@ -334,5 +343,61 @@ describe('formatTimeline', () => {
       [{ label: 'P1', sentAtMs: 500 }],
     )
     expect(lines).toEqual(['+500ms [speaker sent P1]', '+9000ms user_speech_final id=u1 "alpha"'])
+  })
+})
+
+describe('checkOverlapsPendingFinal', () => {
+  const events = [
+    ev('user_speaking_start', 700, { utteranceId: 'u1' }),
+    ev('user_speaking_start', 4200, { utteranceId: 'u2' }),
+    ev('barge_in', 4400),
+    ev('user_speech_final', 7500, { utteranceId: 'u1', text: 'alpha' }),
+    ev('user_speech_final', 11_000, { utteranceId: 'u2', text: 'delta' }),
+  ]
+
+  it('passes when the later user_speaking_start precedes the earlier final', () => {
+    expect(checkOverlapsPendingFinal(events, 'user_speaking_start', 'u2', 'u1')).toEqual({
+      ok: true,
+    })
+  })
+
+  it('passes when barge_in (no utterance id) precedes the earlier final', () => {
+    expect(checkOverlapsPendingFinal(events, 'barge_in', undefined, 'u1')).toEqual({ ok: true })
+  })
+
+  it('fails when the later event came after the earlier final (final was never held back)', () => {
+    const late = [
+      ev('user_speaking_start', 700, { utteranceId: 'u1' }),
+      ev('user_speech_final', 1800, { utteranceId: 'u1', text: 'alpha' }),
+      ev('user_speaking_start', 4200, { utteranceId: 'u2' }),
+    ]
+    const r = checkOverlapsPendingFinal(late, 'user_speaking_start', 'u2', 'u1')
+    expect(r.ok).toBe(false)
+    expect(reason(r)).toContain('did not overlap the pending final; the smoke proved nothing')
+  })
+
+  it('fails at equal times, with no later event, and with no earlier final', () => {
+    const tie = [
+      ev('barge_in', 7500),
+      ev('user_speech_final', 7500, { utteranceId: 'u1', text: 'alpha' }),
+    ]
+    expect(checkOverlapsPendingFinal(tie, 'barge_in', undefined, 'u1').ok).toBe(false)
+    const none = checkOverlapsPendingFinal(events, 'barge_in', undefined, 'missing')
+    expect(none.ok).toBe(false)
+    expect(reason(none)).toContain('the smoke proved nothing')
+    const noLater = checkOverlapsPendingFinal(events, 'user_speaking_start', 'nope', 'u1')
+    expect(noLater.ok).toBe(false)
+    expect(reason(noLater)).toContain('the smoke proved nothing')
+  })
+})
+
+describe('utteranceIdOf', () => {
+  it('is the id of the first user_speaking_start at or after the send', () => {
+    const events = [
+      ev('user_speaking_start', 700, { utteranceId: 'u1' }),
+      ev('user_speaking_start', 4200, { utteranceId: 'u2' }),
+    ]
+    expect(utteranceIdOf(events, { label: 'P2', sentAtMs: 4000 })).toBe('u2')
+    expect(utteranceIdOf(events, { label: 'P9', sentAtMs: 9000 })).toBeUndefined()
   })
 })

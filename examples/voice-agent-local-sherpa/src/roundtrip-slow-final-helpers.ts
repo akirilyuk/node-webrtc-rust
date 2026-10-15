@@ -54,6 +54,21 @@ export const SPEAKING_END_AFTER_BARGE_MAX_MS = 300
 export const FINAL_DELAY_MS = 6000
 /** Semantic barge-in may wait for the earlier final (FINAL_DELAY_MS) plus this much. */
 export const SEMANTIC_BARGE_SLACK_MS = 1500
+/**
+ * The echo host starts the filler this long after the speaker's last frame of the earlier phrase:
+ * gate hold 500 + min silence 500 + margin. The finalize has been requested but its final is
+ * still held back by the test delay.
+ */
+export const FILLER_AFTER_PHRASE_END_MS = 1500
+/** One filler sentence (about 5 s of speech). */
+const FILLER_SENTENCE =
+  'one moment please, I am still checking that for you, this takes a few seconds.'
+/**
+ * Long filler: three sentences, at least 14 s of speech, so it is still playing when the semantic
+ * barge-in can fire (earlier final about 6 s after the earlier phrase, then the later phrase's
+ * first partial).
+ */
+export const FILLER_TEXT = `${FILLER_SENTENCE} ${FILLER_SENTENCE} ${FILLER_SENTENCE}`
 /** A received frame with RMS above this counts as audible (normalized 0..1). */
 export const AUDIBLE_RMS_THRESHOLD = 0.02
 /** After `barge_in`, received audio must be silent from this many ms on (network and jitter buffer)... */
@@ -162,6 +177,49 @@ export function checkFinalOrder(params: {
   if (firstFinal > secondFinal || events[firstFinal]!.atMs > events[secondFinal]!.atMs) {
     return fail(
       `${second.label}: final (+${events[secondFinal]!.atMs} ms) arrived before ${first.label}'s final (+${events[firstFinal]!.atMs} ms)`,
+    )
+  }
+  return OK
+}
+
+/** Utterance id of a phrase: the id on the first `user_speaking_start` at or after its send. */
+export function utteranceIdOf(
+  events: readonly SlowFinalEvent[],
+  phrase: PhraseRef,
+): string | undefined {
+  const idx = speakingStartOf(events, phrase)
+  return idx < 0 ? undefined : events[idx]!.utteranceId
+}
+
+/**
+ * Overlap proof: the later event (`user_speaking_start` of the next phrase, or `barge_in`) came
+ * before the earlier utterance's `user_speech_final`. Without this a fast later event could just
+ * mean the final was never held back. When `laterUtteranceId` is set the later event must carry
+ * it (`barge_in` has no utterance id, so pass `undefined` there).
+ */
+export function checkOverlapsPendingFinal(
+  events: readonly SlowFinalEvent[],
+  laterEventType: string,
+  laterUtteranceId: string | undefined,
+  earlierUtteranceId: string | undefined,
+): CheckResult {
+  const suffix = 'did not overlap the pending final; the smoke proved nothing'
+  const later = events.find(
+    (e) =>
+      e.type === laterEventType && (laterUtteranceId == null || e.utteranceId === laterUtteranceId),
+  )
+  if (later == null) return fail(`no ${laterEventType} to compare: ${suffix}`)
+  const earlierFinal =
+    earlierUtteranceId == null
+      ? undefined
+      : events.find(
+          (e) =>
+            e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === earlierUtteranceId,
+        )
+  if (earlierFinal == null) return fail(`no user_speech_final for the earlier phrase: ${suffix}`)
+  if (later.atMs >= earlierFinal.atMs) {
+    return fail(
+      `${laterEventType} at +${later.atMs} ms came at or after the earlier final (+${earlierFinal.atMs} ms), so it ${suffix}`,
     )
   }
   return OK

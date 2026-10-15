@@ -29,16 +29,23 @@
  *   A  next turn on time. P1 "alpha bravo charlie", P2 "delta echo foxtrot" 1.5 s after P1's last
  *      frame, both inside the 6 s hold. Echo: P2 `user_speaking_start` within 300 ms of its first
  *      voiced frame; P1 final (contains "alpha", id of P1's start) before P2 final (contains
- *      "delta", id of P2's start); no `user_stt_not_found`; two replies (two `agent_speaking_start`).
+ *      "delta", id of P2's start); P2's `user_speaking_start` comes before P1's final (overlap proof);
+ *      no `user_stt_not_found`; two replies (two `agent_speaking_start`).
  *   B  VAD barge-in during the slow final (`useVad`, `requireSttPartial: false`). P3 "golf hotel
- *      india"; on P3's `user_speaking_end` the echo speaks a long filler; 1 s after the filler
- *      starts P4 "juliet kilo lima" is sent over it. Echo: `barge_in` within 300 ms of P4's first
+ *      india"; 1.5 s after P3's last frame (speaker clock) the echo speaks a long filler; 1 s after
+ *      the filler starts P4 "juliet kilo lima" is sent over it. Echo: `barge_in` within 300 ms of P4's first
  *      voiced frame, `agent_speaking_end` within 300 ms of `barge_in`; the speaker receives no
- *      audible agent audio from barge_in + 500 ms to barge_in + 1500 ms; P3 final before P4 final.
+ *      audible agent audio from barge_in + 500 ms to barge_in + 1500 ms; P3 final before P4 final; `barge_in` comes before P3's final.
  *   C  semantic barge-in (`requireSttPartial: true`). Same as B with P5 "mike november oscar" and
  *      P6 "papa quebec romeo". `barge_in` comes after P6's first `user_speech_partial`, which comes
  *      after P5's `user_speech_final`; P6's final contains "papa"; `barge_in` at most
- *      6000 + 1500 ms after P6's first voiced frame.
+ *      6000 + 1500 ms after P6's first voiced frame; P6's `user_speaking_start` comes before P5's
+ *      final (overlap proof). The filler is three sentences (about 14 s) so it outlasts the wait.
+ *
+ * Overlap proof: `user_speaking_end` is paired with the final, which the knob delays, so the
+ * filler is not started from it. The echo host speaks it on the speaker's clock, 1.5 s after the
+ * earlier phrase's last frame, and each phase asserts its later event came before the earlier
+ * final. Without that a fast result could mean the final was never held back.
  *
  * VAD: minSilence 500 ms and gate hold 500 ms (not the 1300 / 1000 ms of the shared Sherpa
  * config), so a 1.5 s gap between P1 and P2 is a real utterance boundary.
@@ -73,16 +80,20 @@ import {
 } from './roundtrip-counting.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import {
+  FILLER_AFTER_PHRASE_END_MS,
+  FILLER_TEXT,
   FINAL_DELAY_MS,
   checkAudioSilencedAfterBarge,
   checkFinalOrder,
   checkNextTurnOnTime,
+  checkOverlapsPendingFinal,
   checkNoSttNotFound,
   checkRepliesStarted,
   checkSemanticBargeAfterEarlierFinal,
   checkVadBargeOnTime,
   formatTimeline,
   pcmRms,
+  utteranceIdOf,
   type CheckResult,
   type PhraseRef,
   type ReceivedFrame,
@@ -101,8 +112,6 @@ const PHRASES = {
   P6: 'papa quebec romeo',
 } as const
 type PhraseKey = keyof typeof PHRASES
-
-const FILLER = 'one moment please, I am still checking that for you, this takes a few seconds'
 
 const WARMUP_S = 0.6
 const LEAD_IN_MS = 500
@@ -448,12 +457,26 @@ async function phaseA(
   return collect(h, [
     ['next turn on time', checkNextTurnOnTime({ events: h.events, next: p2 })],
     ['final order', checkFinalOrder({ events: h.events, first: p1, second: p2 })],
+    [
+      'overlaps the pending final',
+      checkOverlapsPendingFinal(
+        h.events,
+        SPEECH_EVENT_TYPE.userSpeakingStart,
+        utteranceIdOf(h.events, p2),
+        utteranceIdOf(h.events, p1),
+      ),
+    ],
     ['no user_stt_not_found', checkNoSttNotFound(h.events)],
     ['two replies', checkRepliesStarted({ events: h.events, expected: 2 })],
   ])
 }
 
-/** Phases B and C share a script: filler on the first `user_speaking_end`, interrupt 1 s in. */
+/**
+ * Phases B and C share a script. The echo host starts the filler on the speaker's clock,
+ * FILLER_AFTER_PHRASE_END_MS after the earlier phrase's last frame (not on `user_speaking_end`,
+ * which is paired with the delayed final), and the later phrase is sent 1 s after the filler's
+ * `agent_speaking_start`.
+ */
 async function bargePhase(params: {
   label: string
   cfg: VoiceAgentConfig
@@ -464,18 +487,18 @@ async function bargePhase(params: {
   pcm: Record<PhraseKey, CapturedFrame[]>
 }): Promise<{ h: PhaseHarness; earlier: PhraseRef; later: PhraseRef }> {
   const h = new PhaseHarness(params.label, params.cfg, params.bargeIn)
-  let fillerSent = false
-  h.onEvent = (event) => {
-    if (event.type === SPEECH_EVENT_TYPE.userSpeakingEnd && !fillerSent) {
-      fillerSent = true
-      speak(h, FILLER)
-    }
-  }
   let earlier!: PhraseRef
   let later!: PhraseRef
   await runPhase(h, async () => {
     await h.writer.silence(LEAD_IN_MS)
     earlier = await h.send(params.earlier, params.pcm[params.earlier])
+    const earlierEndedAtMs = h.clock()
+    await h.writer.silenceUntil(
+      () => h.clock() >= earlierEndedAtMs + FILLER_AFTER_PHRASE_END_MS,
+      PHASE_WAIT_MAX_MS,
+      'the filler start point',
+    )
+    speak(h, FILLER_TEXT)
     await h.writer.silenceUntil(
       () => h.first(SPEECH_EVENT_TYPE.agentSpeakingStart) != null,
       PHASE_WAIT_MAX_MS,
@@ -531,6 +554,15 @@ async function phaseB(
     ['VAD barge-in on time', checkVadBargeOnTime({ events: h.events, interrupt: later })],
     ['agent audio stops', audio],
     ['final order', checkFinalOrder({ events: h.events, first: earlier, second: later })],
+    [
+      'overlaps the pending final',
+      checkOverlapsPendingFinal(
+        h.events,
+        SPEECH_EVENT_TYPE.bargeIn,
+        undefined,
+        utteranceIdOf(h.events, earlier),
+      ),
+    ],
   ])
 }
 
@@ -557,6 +589,15 @@ async function phaseC(
     [
       'semantic barge-in after the earlier final',
       checkSemanticBargeAfterEarlierFinal({ events: h.events, earlier, later }),
+    ],
+    [
+      'overlaps the pending final',
+      checkOverlapsPendingFinal(
+        h.events,
+        SPEECH_EVENT_TYPE.userSpeakingStart,
+        utteranceIdOf(h.events, later),
+        utteranceIdOf(h.events, earlier),
+      ),
     ],
   ])
 }

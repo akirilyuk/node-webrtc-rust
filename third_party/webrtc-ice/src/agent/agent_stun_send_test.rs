@@ -16,8 +16,8 @@ use crate::candidate::candidate_base::*;
 use crate::candidate::candidate_host::*;
 
 /// A UDP conn whose writes never complete, like a socket that stopped reporting writable.
-struct NeverWritableConn {
-    local: SocketAddr,
+pub(crate) struct NeverWritableConn {
+    pub(crate) local: SocketAddr,
 }
 
 #[async_trait]
@@ -51,7 +51,7 @@ impl Conn for NeverWritableConn {
     }
 }
 
-fn host_candidate(
+pub(crate) fn host_candidate(
     addr: SocketAddr,
     conn: Option<Arc<dyn Conn + Send + Sync>>,
 ) -> Arc<dyn Candidate + Send + Sync> {

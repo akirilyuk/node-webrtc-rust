@@ -11,6 +11,7 @@ use stun::message::*;
 use stun::textattrs::*;
 use tokio::time::{Duration, Instant};
 
+use crate::agent::agent_config::NOMINATION_FAILOVER_TIMEOUT;
 use crate::agent::agent_internal::*;
 use crate::candidate::*;
 use crate::control::*;
@@ -104,6 +105,54 @@ impl AgentInternal {
                 );
                 false
             }
+        }
+    }
+
+    /// Nominates the best valid pair when it is nominatable, else pings all candidates.
+    async fn nominate_best_valid_pair_or_ping(&self) {
+        let has_nominated_pair =
+            if let Some(p) = self.agent_conn.get_best_valid_candidate_pair().await {
+                self.is_nominatable(&p.local) && self.is_nominatable(&p.remote)
+            } else {
+                false
+            };
+
+        if has_nominated_pair {
+            if let Some(p) = self.agent_conn.get_best_valid_candidate_pair().await {
+                log::trace!(
+                    "Nominatable pair found, nominating ({}, {})",
+                    p.local,
+                    p.remote
+                );
+                p.nominated.store(true, Ordering::SeqCst);
+                {
+                    let mut nominated_pair = self.nominated_pair.lock().await;
+                    *nominated_pair = Some(p);
+                }
+                *self.nominated_since.lock().await = Some(Instant::now());
+            }
+
+            self.nominate_pair().await;
+        } else {
+            self.ping_all_candidates().await;
+        }
+    }
+
+    /// Controlled side: select the nominated pair, or switch to it when the controlling agent
+    /// nominated a different pair than the one selected before (failover).
+    async fn select_or_switch_pair(&self, p: &Arc<CandidatePair>) {
+        match self.agent_conn.get_selected_pair() {
+            None => self.set_selected_pair(Some(Arc::clone(p))).await,
+            Some(selected) if !Arc::ptr_eq(&selected, p) => {
+                log::debug!(
+                    "[{}]: controlling agent nominated {}; switching from {}",
+                    self.get_name(),
+                    p,
+                    selected
+                );
+                self.set_selected_pair(Some(Arc::clone(p))).await;
+            }
+            Some(_) => {}
         }
     }
 
@@ -222,6 +271,7 @@ impl ControllingSelector for AgentInternal {
             let mut nominated_pair = self.nominated_pair.lock().await;
             *nominated_pair = None;
         }
+        *self.nominated_since.lock().await = None;
         *self.start_time.lock() = Instant::now();
     }
 
@@ -243,33 +293,37 @@ impl ControllingSelector for AgentInternal {
                 self.check_keepalive().await;
             }
         } else if nominated_pair_is_some {
-            self.nominate_pair().await;
-        } else {
-            let has_nominated_pair =
-                if let Some(p) = self.agent_conn.get_best_valid_candidate_pair().await {
-                    self.is_nominatable(&p.local) && self.is_nominatable(&p.remote)
-                } else {
-                    false
+            let nominated_for = {
+                let nominated_since = self.nominated_since.lock().await;
+                nominated_since.map(|since| since.elapsed())
+            };
+
+            if nominated_for.is_some_and(|d| d >= NOMINATION_FAILOVER_TIMEOUT) {
+                // The nominated pair got no success response: its path may be dead on our
+                // side or the peer's (a wedged socket). Mark it failed and nominate the next
+                // valid pair instead of re-nominating the same one forever.
+                let failed = {
+                    let mut nominated_pair = self.nominated_pair.lock().await;
+                    nominated_pair.take()
                 };
-
-            if has_nominated_pair {
-                if let Some(p) = self.agent_conn.get_best_valid_candidate_pair().await {
-                    log::trace!(
-                        "Nominatable pair found, nominating ({}, {})",
-                        p.local,
-                        p.remote
+                *self.nominated_since.lock().await = None;
+                if let Some(pair) = failed {
+                    log::debug!(
+                        "[{}]: nominated pair {} got no success response within {:?}; nominating the next pair",
+                        self.get_name(),
+                        pair,
+                        NOMINATION_FAILOVER_TIMEOUT
                     );
-                    p.nominated.store(true, Ordering::SeqCst);
-                    {
-                        let mut nominated_pair = self.nominated_pair.lock().await;
-                        *nominated_pair = Some(p);
-                    }
+                    pair.state
+                        .store(CandidatePairState::Failed as u8, Ordering::SeqCst);
+                    pair.nominated.store(false, Ordering::SeqCst);
                 }
-
-                self.nominate_pair().await;
+                self.nominate_best_valid_pair_or_ping().await;
             } else {
-                self.ping_all_candidates().await;
+                self.nominate_pair().await;
             }
+        } else {
+            self.nominate_best_valid_pair_or_ping().await;
         }
     }
 
@@ -387,6 +441,7 @@ impl ControllingSelector for AgentInternal {
                             let mut nominated_pair = self.nominated_pair.lock().await;
                             *nominated_pair = Some(p);
                         }
+                        *self.nominated_since.lock().await = Some(Instant::now());
                         self.nominate_pair().await;
                     }
                 } else {
@@ -478,10 +533,8 @@ impl ControlledSelector for AgentInternal {
                     .store(CandidatePairState::Succeeded as u8, Ordering::SeqCst);
                 log::trace!("Found valid candidate pair: {p}");
 
-                if p.nominate_on_binding_success.load(Ordering::SeqCst)
-                    && self.agent_conn.get_selected_pair().is_none()
-                {
-                    self.set_selected_pair(Some(Arc::clone(&p))).await;
+                if p.nominate_on_binding_success.load(Ordering::SeqCst) {
+                    self.select_or_switch_pair(&p).await;
                 }
             } else {
                 // This shouldn't happen
@@ -516,9 +569,7 @@ impl ControlledSelector for AgentInternal {
                     // previously sent by this pair produced a successful response and
                     // generated a valid pair (Section 7.2.5.3.2).  The agent sets the
                     // nominated flag value of the valid pair to true.
-                    if self.agent_conn.get_selected_pair().is_none() {
-                        self.set_selected_pair(Some(Arc::clone(&p))).await;
-                    }
+                    self.select_or_switch_pair(&p).await;
                 } else {
                     // If the received Binding request triggered a new check to be
                     // enqueued in the triggered-check queue (Section 7.3.1.4), once the

@@ -89,6 +89,8 @@ pub(crate) struct AgentConn {
     pub(crate) buffer: Buffer,
     pub(crate) bytes_received: AtomicUsize,
     pub(crate) bytes_sent: AtomicUsize,
+    /// Data writes dropped because the pair's UDP socket did not finish within `DATA_SEND_TIMEOUT`.
+    pub(crate) send_timeouts: AtomicUsize,
     pub(crate) done: AtomicBool,
 }
 
@@ -103,6 +105,7 @@ impl AgentConn {
             buffer: Buffer::new(0, MAX_BUFFER_SIZE),
             bytes_received: AtomicUsize::new(0),
             bytes_sent: AtomicUsize::new(0),
+            send_timeouts: AtomicUsize::new(0),
             done: AtomicBool::new(false),
         }
     }
@@ -204,10 +207,31 @@ impl Conn for AgentConn {
             return Err(util::Error::Other("ErrIceWriteStunMessage".into()));
         }
 
-        let result = if let Some(pair) = self.get_selected_pair() {
-            pair.write(buf).await
-        } else if let Some(pair) = self.get_best_available_candidate_pair().await {
-            pair.write(buf).await
+        let pair = if let Some(pair) = self.get_selected_pair() {
+            Some(pair)
+        } else {
+            self.get_best_available_candidate_pair().await
+        };
+
+        let result = if let Some(pair) = pair {
+            if pair.local.network_type().is_tcp() {
+                // A framed TCP write cannot be cancelled halfway, so only UDP writes are bounded.
+                pair.write(buf).await
+            } else {
+                match tokio::time::timeout(DATA_SEND_TIMEOUT, pair.write(buf)).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        // Dropped like a lost datagram; DTLS and SCTP retransmit.
+                        self.send_timeouts.fetch_add(1, Ordering::SeqCst);
+                        log::trace!(
+                            "data send on {} not done within {:?}, dropped",
+                            pair,
+                            DATA_SEND_TIMEOUT
+                        );
+                        return Ok(buf.len());
+                    }
+                }
+            }
         } else {
             Ok(0)
         };

@@ -22,6 +22,12 @@ pub(crate) const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_millis(200);
 /// cannot go out promptly is treated as a lost datagram.
 pub(crate) const STUN_SEND_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// Upper bound for writing one data datagram (DTLS, SRTP, SCTP) on a UDP candidate pair; a write that is not done in time is dropped like a lost datagram.
+pub(crate) const DATA_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// How long the controlling agent waits for a success response to its nomination before it nominates the next pair.
+pub(crate) const NOMINATION_FAILOVER_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// The interval used to keep candidates alive.
 pub(crate) const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 

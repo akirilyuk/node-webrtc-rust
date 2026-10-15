@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **ice:** a loopback/host connection no longer stays in `checking` when the socket of the nominated pair stops sending (seen on macOS): the controlling agent nominates the next pair after 2 s without an answer, the controlled agent follows a new nomination, and data writes (DTLS, SRTP, SCTP) on a UDP pair are bounded at 100 ms like STUN writes.
+
 ## [0.11.0] - 2026-10-15
 
 ### Changed

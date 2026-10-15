@@ -8,6 +8,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-15
+
+### Fixed
+
+- **vendor-cluster-speech**: a voice session could go deaf for minutes after a slow speech service. In per-utterance mode the next Transcribe open waited for response headers with no deadline. If the stream landed on a frozen speech pod, `finalize_utterance` waited up to 120 s for that open while the agent held its STT lock, so VAD stopped and no speech event followed. The open is now bounded at 5 s (`SPEECH_STT_OPEN_TIMEOUT_MS`): on timeout the client drops the cached channel, dials a new connection and retries, and the utterance audio is kept. `stop()` no longer hangs behind a stuck open (2 s bound, then the worker is aborted). The Synthesize open is bounded at 10 s (`SPEECH_TTS_OPEN_TIMEOUT_MS`). New reopen reason `open_timeout`.
+- **vendor-sherpa-onnx**: local Sherpa STT sometimes repeated the first word of an utterance ("okay okay seven three …" for "Okay. Seven three …", about 2 % of utterances that start with a short word) and lowercased many finals. One recognizer stream was reused across utterances after `InputFinished` and a reset that keeps the encoder state and the last tokens as context. Every utterance now starts on a fresh stream.
+- **bindings / speech**: the native inbound loop read, mixed and teed the caller's audio in the same task that awaited `processInboundPcm`, so a slow STT finalize also held up mixing and the read tee. Reading, the mix-graph push and the read tee now run in their own task; frames reach the agent through an unbounded queue (never dropped). A `[voice] inbound processing behind by N ms` line reports a backlog over 1 s.
+
+### CI and tests
+
+- **test**: `slow_final_agent_deaf_fullstack_test.rs` (VoiceAgent + cluster STT + mock speech server with `final_delay_ms` / `open_header_delay_ms`), `grpc_calls_bounded_test.rs` (scan guard: every `SpeechClient` call is wrapped in `tokio::time::timeout`), `fresh_stream_per_utterance_test.rs` (model-gated, committed fixture), five virtual-time tests for `inbound_pump`.
+- **examples**: Sherpa smoke `start:roundtrip-doubled-first-word`, added to the Sherpa E2E list. It replays a recording that doubled 7 of 20 times on one reused agent, and fails on any doubled final.
+
 ## [0.10.0] - 2026-10-14
 
 ### Changed

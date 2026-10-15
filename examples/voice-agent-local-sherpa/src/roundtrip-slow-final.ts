@@ -6,8 +6,9 @@
  *   - hear the next utterance on time (`user_speaking_start` right after its first voiced frame),
  *   - barge in on time (VAD barge-in and semantic barge-in), and
  *   - deliver finals in utterance order with the matching utterance ids.
- * The inbound path no longer waits for STT, which is why the bounds are 300 ms (VAD min-speech of
- * 200 ms plus transport) and not the 6 s the pending final takes. On the old code the next turn
+ * The inbound path no longer waits for STT, which is why the onset and barge-in bounds are 1000 ms
+ * (VAD min-speech of 200 ms, a soft first phoneme, transport and host jitter) and not the 6 s the
+ * pending final takes. On the old code the next turn
  * started and barge-in fired about 6 s late.
  *
  * The slow final: this script sets `SPEECH_STT_TEST_FINAL_DELAY_MS=6000`, a test-only knob read by
@@ -27,13 +28,13 @@
  *
  * Phases (a fresh loopback and echo agent each):
  *   A  next turn on time. P1 "one two three", P2 "four five six" 1.5 s after P1's last
- *      frame, both inside the 6 s hold. Echo: P2 `user_speaking_start` within 300 ms of its first
+ *      frame, both inside the 6 s hold. Echo: P2 `user_speaking_start` within 1000 ms of its first
  *      voiced frame; P1 final (contains "three", id of P1's start) before P2 final (contains
  *      "six", id of P2's start); P2's `user_speaking_start` comes before P1's final (overlap proof);
  *      no `user_stt_not_found`; two replies (two `agent_speaking_start`).
  *   B  VAD barge-in during the slow final (`useVad`, `requireSttPartial: false`). P3 "one two
  *      three"; 1.5 s after P3's last frame (speaker clock) the echo speaks a long filler; 1 s after
- *      the filler starts P4 "four five six" is sent over it. Echo: `barge_in` within 300 ms of P4's first
+ *      the filler starts P4 "four five six" is sent over it. Echo: `barge_in` within 1000 ms of P4's first
  *      voiced frame, `agent_speaking_end` within 300 ms of `barge_in`; the speaker receives no
  *      audible agent audio from barge_in + 500 ms to barge_in + 1500 ms; P3 final before P4 final; `barge_in` comes before P3's final.
  *   C  semantic barge-in (`requireSttPartial: true`). Same as B with P5 "one two three" and

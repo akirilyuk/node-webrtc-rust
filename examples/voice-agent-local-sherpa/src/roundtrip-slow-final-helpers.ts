@@ -43,11 +43,13 @@ function fail(reason: string): CheckResult {
 /**
  * The echo agent's inbound path no longer waits for STT, so a new utterance's
  * `user_speaking_start` follows the first voiced frame within VAD min-speech plus transport.
- * On the old code it waited for the pending final: about the whole 6 s delay.
+ * On the old code it waited for the pending final: about the whole 6 s delay. 1000 ms keeps a 5 s
+ * margin to that and absorbs VAD min-speech (200 ms), a soft first phoneme ("four") and loopback
+ * jitter on a busy host; 300 ms passed once and missed by 120 ms on the next run.
  */
-export const NEXT_TURN_START_MAX_MS = 300
+export const NEXT_TURN_START_MAX_MS = 1000
 /** `barge_in` (VAD barge-in) after the first voiced frame of the interrupting phrase. */
-export const BARGE_MAX_MS = 300
+export const BARGE_MAX_MS = 1000
 /** `agent_speaking_end` after `barge_in` (the TTS flush). */
 export const SPEAKING_END_AFTER_BARGE_MAX_MS = 300
 /** `SPEECH_STT_TEST_FINAL_DELAY_MS` the echo agent runs with. */

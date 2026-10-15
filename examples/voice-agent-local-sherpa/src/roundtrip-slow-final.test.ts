@@ -36,8 +36,8 @@ function reason(r: { ok: boolean; reason?: string }): string {
 
 describe('constants', () => {
   it('match the documented bounds', () => {
-    expect(NEXT_TURN_START_MAX_MS).toBe(300)
-    expect(BARGE_MAX_MS).toBe(300)
+    expect(NEXT_TURN_START_MAX_MS).toBe(1000)
+    expect(BARGE_MAX_MS).toBe(1000)
     expect(SPEAKING_END_AFTER_BARGE_MAX_MS).toBe(300)
     expect(FINAL_DELAY_MS).toBe(6000)
     expect(FILLER_AFTER_PHRASE_END_MS).toBe(1500)
@@ -70,10 +70,10 @@ describe('checkNextTurnOnTime', () => {
     expect(reason(r)).toContain('P2')
   })
 
-  it('fails at 301 ms and passes at exactly 300 ms', () => {
+  it('fails at 1001 ms and passes at exactly 1000 ms', () => {
     const at = (ms: number) => [ev('user_speaking_start', 4000 + ms, { utteranceId: 'u2' })]
-    expect(checkNextTurnOnTime({ events: at(300), next: p2 }).ok).toBe(true)
-    expect(checkNextTurnOnTime({ events: at(301), next: p2 }).ok).toBe(false)
+    expect(checkNextTurnOnTime({ events: at(1000), next: p2 }).ok).toBe(true)
+    expect(checkNextTurnOnTime({ events: at(1001), next: p2 }).ok).toBe(false)
   })
 })
 

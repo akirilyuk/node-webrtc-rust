@@ -228,6 +228,7 @@ pub fn spawn_stt_actor(
         delayed: VecDeque::new(),
         parked: None,
         backlog_logged: false,
+        last_open_pending: false,
     };
     let join = tokio::spawn(actor.run(cmd_rx));
     (
@@ -266,6 +267,8 @@ struct Actor {
     /// A `Swap` or `Barrier` waiting for the outstanding finalizes to finish.
     parked: Option<SttCommand>,
     backlog_logged: bool,
+    /// `open_pending()` as seen by the last `observe_open_transition` call.
+    last_open_pending: bool,
 }
 
 impl Actor {
@@ -321,7 +324,8 @@ impl Actor {
             .is_some_and(|p| p.stream_open_pending())
     }
 
-    fn publish_status(&self) {
+    fn publish_status(&mut self) {
+        self.observe_open_transition();
         let backlog = self
             .provider
             .as_ref()
@@ -435,6 +439,30 @@ impl Actor {
 
     // ---- deadlines -----------------------------------------------------------------------
 
+    /// Restarts the finalize wait of every outstanding entry when a pending stream open completes.
+    ///
+    /// Catalog `rt.stt-terminal-before-late-final` / `infra.unbounded-external-wait`. While the
+    /// open is refused or slow, the wait is bounded by `open_wait_max_ms`. After the open
+    /// succeeds the vendor gets its normal finalize wait (recomputed with the audio queued now)
+    /// counted from that moment. Without this, the base deadline (counted from the request)
+    /// is long past when the flip happens, and every queued finalize expires before the vendor
+    /// can answer the Finalize that was waiting behind the open.
+    ///
+    /// Called before every expiry decision so a flip is always seen first.
+    fn observe_open_transition(&mut self) {
+        let now_pending = self.open_pending();
+        if self.last_open_pending && !now_pending {
+            if let Some(base) = self.provider.as_ref().map(|p| p.finalize_wait_ms()) {
+                let now = Instant::now();
+                for entry in self.outstanding.iter_mut().filter(|o| !o.timed_out) {
+                    entry.requested_at = now;
+                    entry.deadline_base_ms = base;
+                }
+            }
+        }
+        self.last_open_pending = now_pending;
+    }
+
     fn deadline_of(&self, o: &Outstanding) -> Instant {
         let base = o.requested_at + Duration::from_millis(o.deadline_base_ms);
         if self.open_pending() {
@@ -451,7 +479,8 @@ impl Actor {
             .map(|at| at + Duration::from_millis(STT_LATE_MARKER_GRACE_MS))
     }
 
-    fn next_deadline(&self) -> Option<Instant> {
+    fn next_deadline(&mut self) -> Option<Instant> {
+        self.observe_open_transition();
         let finalize = self
             .outstanding
             .iter()
@@ -464,6 +493,7 @@ impl Actor {
     }
 
     fn expire_deadlines(&mut self) {
+        self.observe_open_transition();
         let now = Instant::now();
         // A timed-out front entry whose marker never arrived stops attributing transcripts.
         while self.grace_expiry_of_front().is_some_and(|at| at <= now) {

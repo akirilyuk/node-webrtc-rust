@@ -353,6 +353,53 @@ async fn open_pending_extends_deadline_up_to_open_wait_max() {
     expect_done(next_result(&mut rx, 1_000).await, 1, 0, true);
 }
 
+/// While a stream open is refused the wait is bounded by `open_wait_max_ms`. When the open
+/// completes the vendor gets its normal finalize wait from that moment, not from the request:
+/// the Finalize that waited behind the open must be able to answer.
+#[tokio::test(start_paused = true)]
+async fn finalize_wait_restarts_when_open_completes() {
+    let (mut provider, probe) = scripted(FinalizeMode::Deferred);
+    provider.wait_ms = 1_000;
+    probe.open_pending.store(true, Ordering::SeqCst);
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    probe.finalize_requested.notified().await;
+
+    // 30 s with the open refused: far past the 1 s finalize wait, still no expiry.
+    assert_quiet(&mut rx, 30_000).await;
+
+    // The open completes. The vendor answers before the restarted wait ends (900 ms, not 999 ms:
+    // the actor notices the flip and polls the provider on its 20 ms tick).
+    probe.open_pending.store(false, Ordering::SeqCst);
+    assert_quiet(&mut rx, 900).await;
+    probe.out(final_out("x"));
+    probe.out(SttOutput::FinalizeDone);
+    expect_transcript(
+        next_result(&mut rx, 1_000).await,
+        Some(1),
+        0,
+        SttTranscript::Final("x".into()),
+    );
+    expect_done(next_result(&mut rx, 1_000).await, 1, 0, false);
+}
+
+/// Same flip, but the vendor never answers: the entry expires one finalize wait after the open
+/// completed (plus at most one actor tick to notice the flip), not earlier.
+#[tokio::test(start_paused = true)]
+async fn finalize_wait_after_open_completes_still_expires() {
+    let (mut provider, probe) = scripted(FinalizeMode::Deferred);
+    provider.wait_ms = 1_000;
+    probe.open_pending.store(true, Ordering::SeqCst);
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    probe.finalize_requested.notified().await;
+
+    assert_quiet(&mut rx, 30_000).await;
+    probe.open_pending.store(false, Ordering::SeqCst);
+    assert_quiet(&mut rx, 990).await;
+    expect_done(next_result(&mut rx, 100).await, 1, 0, true);
+}
+
 #[tokio::test(start_paused = true)]
 async fn swap_waits_for_outstanding_then_applies_in_order() {
     let (old, old_probe) = scripted(FinalizeMode::Deferred);

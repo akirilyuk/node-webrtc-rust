@@ -1,7 +1,7 @@
 //! Per-agent STT actor: ordering, attribution of transcripts to utterances, bounded waits.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ use node_webrtc_rust_speech::pipeline::{
 };
 use node_webrtc_rust_speech::stt_actor::{
     backlog_episode, spawn_stt_actor, SttActorHandle, SttActorOptions, SttCommand, SttResult,
-    STT_ACTOR_STOP_MS,
+    STT_ACTOR_BUSY_WINDOW_MS, STT_ACTOR_STOP_MS,
 };
 use node_webrtc_rust_speech::VendorRegistry;
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -41,6 +41,8 @@ struct Probe {
     pushed: Notify,
     gate: Notify,
     open_pending: AtomicBool,
+    /// Number of `poll_output` calls.
+    polls: AtomicUsize,
 }
 
 impl Probe {
@@ -123,6 +125,7 @@ impl SttProvider for Scripted {
     }
 
     async fn poll_output(&mut self) -> SpeechResult<Option<SttOutput>> {
+        self.probe.polls.fetch_add(1, Ordering::SeqCst);
         Ok(self.probe.state.lock().unwrap().out.pop_front())
     }
 
@@ -675,5 +678,56 @@ async fn lost_marker_after_timeout_is_dropped_after_grace() {
         None,
         0,
         SttTranscript::Partial("next".into()),
+    );
+}
+
+/// Advances paused time in small steps so the actor re-arms its poll deadline between steps.
+async fn run_for(ms: u64) {
+    for _ in 0..(ms / 10) {
+        tokio::time::advance(Duration::from_millis(10)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_actor_polls_once_per_second() {
+    let (provider, probe) = scripted(FinalizeMode::Deferred);
+    let (handle, _rx) = spawn(provider, options());
+    let polls = || probe.polls.load(Ordering::SeqCst);
+
+    tokio::task::yield_now().await;
+    let base = polls();
+    run_for(5_000).await;
+    let idle = polls() - base;
+    assert!((4..=6).contains(&idle), "idle polls in 5 s: {idle}");
+
+    let before_audio = polls();
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    run_for(1_000).await;
+    let busy = polls() - before_audio;
+    assert!(busy >= 40, "busy polls in 1 s: {busy}");
+
+    run_for(STT_ACTOR_BUSY_WINDOW_MS).await;
+    let before_tail = polls();
+    run_for(5_000).await;
+    let tail = polls() - before_tail;
+    assert!(tail <= 6, "idle polls in the last 5 s: {tail}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_actor_still_drains_a_late_result_within_a_second() {
+    let (provider, probe) = scripted(FinalizeMode::Deferred);
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    run_for(STT_ACTOR_BUSY_WINDOW_MS + 2_000).await;
+
+    probe.out(partial("late"));
+    expect_transcript(
+        next_result(&mut rx, 1_100).await,
+        None,
+        0,
+        SttTranscript::Partial("late".into()),
     );
 }

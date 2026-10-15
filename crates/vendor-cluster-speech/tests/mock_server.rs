@@ -29,6 +29,8 @@ pub struct MockSpeechState {
     pub finalize_count: Arc<AtomicUsize>,
     pub relocate_after_finalize: Arc<AtomicBool>,
     pub close_after_finalize: Arc<AtomicBool>,
+    /// While `true`, a `Finalize` ends the response stream without a transcript or `Finalized`.
+    pub drop_stream_on_finalize: Arc<AtomicBool>,
     pub error_on_audio: Arc<AtomicBool>,
     /// First inbound audio emits leftover empty `is_final` (dedicated speech-service class).
     pub leftover_empty_final_on_first_audio: Arc<AtomicBool>,
@@ -229,6 +231,9 @@ impl Speech for MockSpeech {
                     }
                     Some(transcribe_request::Msg::Finalize(SttFinalize {})) => {
                         let finalize_n = state.finalize_count.fetch_add(1, Ordering::SeqCst) + 1;
+                        if state.drop_stream_on_finalize.load(Ordering::SeqCst) {
+                            break;
+                        }
                         let final_delay = state.final_delay_ms.load(Ordering::SeqCst);
                         if final_delay > 0 {
                             tokio::time::sleep(Duration::from_millis(final_delay as u64)).await;

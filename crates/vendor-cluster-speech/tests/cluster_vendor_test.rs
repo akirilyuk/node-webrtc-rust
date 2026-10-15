@@ -476,8 +476,10 @@ async fn per_utterance_audio_while_idle_is_delivered_in_order() {
     let _ = shutdown.send(());
 }
 
+/// Audio that follows a Finalize before its Finalized is carried, together with its own later
+/// Finalize, to the next per-utterance stream: each turn gets its own stream and no audio is lost.
 #[tokio::test]
-async fn per_utterance_audio_after_finalize_before_finalized_stays_on_stream() {
+async fn per_utterance_audio_after_finalize_before_finalized_moves_to_next_stream() {
     let state = MockSpeechState {
         numbered_finals: Arc::new(AtomicBool::new(true)),
         finalized_delay_ms: Arc::new(AtomicUsize::new(500)),
@@ -496,34 +498,29 @@ async fn per_utterance_audio_after_finalize_before_finalized_stays_on_stream() {
     }
     // Audio for the next utterance, after Finalize and before Finalized.
     stt.push_audio(Bytes::from(vec![2_u8; 3200])).await.unwrap();
-    wait_until("worker took the late audio", || {
-        stt.decode_backlog_ms() == 0
-    })
-    .await;
-    // Finalized (500 ms) arrives, then the late audio reaches the server on the same stream.
-    wait_until("late audio delivered", || {
+    // Finalized (500 ms) arrives, the first stream is released, and the late audio reaches the
+    // server on a second stream.
+    wait_until("late audio delivered on the next stream", || {
         state.audio_bytes_received.load(Ordering::SeqCst) == 6400
     })
     .await;
-    sleep(Duration::from_millis(100)).await;
-    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        state.open_transcribe_streams.load(Ordering::SeqCst),
-        1,
-        "stream must not close while audio followed the Finalize"
-    );
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 2);
 
-    // Second finalize on the same stream; now nothing followed it, so the stream is released.
-    state.finalized_delay_ms.store(0, Ordering::SeqCst);
+    // Finalize the second utterance: it gets its own final from the second stream.
     stt.finalize_utterance().await.unwrap();
-    assert!(drain_finals(&mut stt)
-        .await
-        .contains(&"final-2".to_string()));
-    wait_until("stream released after the quiet finalize", || {
+    let finals = drain_finals(&mut stt).await;
+    assert!(finals.contains(&"final-2".to_string()), "{finals:?}");
+    assert!(finals.iter().all(|f| !f.is_empty()), "{finals:?}");
+    wait_until("second stream released after its Finalized", || {
         state.open_transcribe_streams.load(Ordering::SeqCst) == 0
     })
     .await;
-    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 1);
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        state.audio_bytes_received.load(Ordering::SeqCst),
+        6400,
+        "no audio lost"
+    );
     stt.stop().await.unwrap();
     let _ = shutdown.send(());
 }

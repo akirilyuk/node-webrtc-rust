@@ -1046,8 +1046,11 @@ impl VoiceAgent {
                     let replaces = hold.replaces_utterance_id.clone();
                     if live_open {
                         // Utterance still open: its final comes from the live path, flagged as replay.
+                        // Its partial text is kept: `begin_stt_hold` already cleared the old
+                        // model's text and old-model results are ignored while held, so any text
+                        // here is the new model's (a result that raced this release under load
+                        // used to be wiped, and the utterance ended in `user_stt_not_found`).
                         if let Some(live) = inner.live.as_mut() {
-                            live.last_partial_text = None;
                             live.replay_ctx = Some(ReplayFinalContext {
                                 replaces_utterance_id: replaces.clone(),
                                 set_at: tokio::time::Instant::now(),

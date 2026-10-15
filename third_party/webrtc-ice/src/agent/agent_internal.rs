@@ -47,6 +47,8 @@ pub struct AgentInternal {
 
     pub(crate) start_time: SyncMutex<Instant>,
     pub(crate) nominated_pair: Mutex<Option<Arc<CandidatePair>>>,
+    /// When the current `nominated_pair` was set; used to fail over from a nomination that never answers.
+    pub(crate) nominated_since: Mutex<Option<Instant>>,
 
     pub(crate) connection_state: AtomicU8, //ConnectionState,
 
@@ -118,6 +120,7 @@ impl AgentInternal {
 
             start_time: SyncMutex::new(Instant::now()),
             nominated_pair: Mutex::new(None),
+            nominated_since: Mutex::new(None),
 
             connection_state: AtomicU8::new(ConnectionState::New as u8),
 

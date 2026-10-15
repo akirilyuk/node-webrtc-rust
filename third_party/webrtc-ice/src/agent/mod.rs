@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod agent_failover_test;
+#[cfg(test)]
 mod agent_gather_test;
 #[cfg(test)]
 mod agent_stun_send_test;

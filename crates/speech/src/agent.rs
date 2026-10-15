@@ -166,6 +166,78 @@ struct FirstAudioTiming {
     first_chunk_ms: Option<u32>,
 }
 
+/// LID state of one user utterance.
+#[derive(Default)]
+struct UttLid {
+    /// PCM collected for offline spoken-language ID during the current user utterance.
+    pcm_buffer: Vec<u8>,
+    /// Speech from the first voiced frame to the last voiced frame of the utterance, including
+    /// gaps between words; silence after the last voiced frame is not counted. `minSpeechMs`
+    /// compares against this, not the buffer length.
+    voiced_ms: u32,
+    /// Gap (silence while the VAD is still speaking) since the last voiced frame; folded into
+    /// `voiced_ms` only if speech resumes.
+    pending_silence_ms: u32,
+    /// True while buffering user PCM for LID after `user_speaking_start`.
+    buffering: bool,
+    /// Avoid overlapping background LID identify tasks for the same utterance.
+    identify_in_flight: bool,
+    /// LID identify was requested during TTS; run after outbound playback drains.
+    identify_deferred: bool,
+    /// True once inbound speech started or deferred LID for this utterance (skip hang-up force identify).
+    identify_started: bool,
+    /// `language_id_skipped` already emitted for this utterance (exactly once).
+    skip_emitted: bool,
+    /// `user_language` already emitted for this utterance (first outcome reported).
+    language_emitted: bool,
+}
+
+/// STT/turn state of one user utterance. `key` is a per-agent sequence number that identifies
+/// the utterance for asynchronous results (LID now; STT results in the STT actor).
+struct SttUtterance {
+    key: u64,
+    /// Id for the open user utterance (`user_speaking_start` … final).
+    utterance_id: Option<String>,
+    /// STT vendor PCM feed open for the current VAD-triggered utterance.
+    stream_open: bool,
+    /// User STT session open (`user_stt_start` … `user_stt_end` / `user_stt_not_found`).
+    user_stt_session_open: bool,
+    /// `user_speaking_start` already emitted for the current STT utterance.
+    speaking_start_emitted: bool,
+    /// `user_speaking_end` paired with the next `user_speech_final` for this utterance.
+    speaking_end_emitted: bool,
+    /// Set when poll_transcript already emitted user_speech_final for this utterance.
+    final_emitted: bool,
+    /// `user_stt_not_found` already emitted for this utterance (it is emitted at most once).
+    not_found_emitted: bool,
+    /// At least one `user_speech_partial` this utterance.
+    partials_emitted: bool,
+    /// Last partial text for C2 forced final fallback.
+    last_partial_text: Option<String>,
+    /// Set on each VAD `SpeechStart` when `vad.enabled` (barge prerequisite).
+    vad_triggered: bool,
+    lid: UttLid,
+}
+
+impl SttUtterance {
+    fn new(key: u64) -> Self {
+        Self {
+            key,
+            utterance_id: None,
+            stream_open: false,
+            user_stt_session_open: false,
+            speaking_start_emitted: false,
+            speaking_end_emitted: false,
+            final_emitted: false,
+            not_found_emitted: false,
+            partials_emitted: false,
+            last_partial_text: None,
+            vad_triggered: false,
+            lid: UttLid::default(),
+        }
+    }
+}
+
 struct AgentInner {
     config: VoiceAgentConfig,
     attached: bool,
@@ -184,14 +256,6 @@ struct AgentInner {
     stt_finalize_pending: bool,
     /// Endpoint tail + `finalize_utterance` already started for the current pending close.
     stt_endpoint_closing_started: bool,
-    /// Set when poll_transcript already emitted user_speech_final for this utterance.
-    stt_final_emitted_this_utterance: bool,
-    /// `user_stt_not_found` already emitted for this utterance (it is emitted at most once).
-    stt_not_found_emitted_this_utterance: bool,
-    /// `user_speaking_end` paired with the next `user_speech_final` for this utterance.
-    stt_speaking_end_emitted_this_utterance: bool,
-    /// `user_speaking_start` already emitted for the current STT utterance.
-    stt_speaking_start_emitted_this_utterance: bool,
     /// True while agent TTS is synthesizing or playing outbound audio.
     agent_speaking: bool,
     agent_speaking_since: Option<Instant>,
@@ -199,12 +263,6 @@ struct AgentInner {
     pending_first_audio: Option<FirstAudioTiming>,
     /// Turn latency (speech end to first reply audio) bookkeeping for OTel.
     turn_latency: TurnLatencyTracker,
-    /// STT vendor PCM feed open for the current VAD-triggered utterance.
-    stt_stream_open: bool,
-    /// User STT session open (`user_stt_start` … `user_stt_end` / `user_stt_not_found`).
-    user_stt_session_open: bool,
-    /// Set on each VAD `SpeechStart` when `vad.enabled` (barge prerequisite).
-    vad_triggered_this_utterance: bool,
     /// C1 armed when > 0 (wall-clock expiry uses `stt_listen_started_at`).
     stt_listen_deadline_ms: u32,
     /// Wall-clock anchor for C1 from VAD `SpeechStart` (not PCM `duration_ms`).
@@ -225,10 +283,6 @@ struct AgentInner {
     utterance_media_ms: u64,
     /// Start C2 only after gate hold drains when `SpeechEnd` preceded partials.
     defer_utterance_finalize_until_hold: bool,
-    /// Last partial text for C2 forced final fallback.
-    last_partial_text: Option<String>,
-    /// At least one `user_speech_partial` this utterance.
-    partials_emitted_this_utterance: bool,
     /// VAD saw speech during agent TTS; defer immediate flush until STT partial (if required).
     barge_awaiting_stt_partial: bool,
     /// Semantic barge already fired for the current agent playback generation.
@@ -242,35 +296,12 @@ struct AgentInner {
     denoise: Option<Stereo48kRnnoise>,
     /// When false, inbound PCM still runs VAD but skips STT push/poll and speech/STT events.
     stt_enabled: bool,
-    /// PCM collected for offline spoken-language ID during the current user utterance.
-    lid_pcm_buffer: Vec<u8>,
-    /// Speech from the first voiced frame to the last voiced frame of the utterance, including
-    /// gaps between words; silence after the last voiced frame is not counted. `minSpeechMs`
-    /// compares against this, not the buffer length.
-    lid_voiced_ms: u32,
-    /// Gap (silence while the VAD is still speaking) since the last voiced frame; folded into
-    /// `lid_voiced_ms` only if speech resumes.
-    lid_pending_silence_ms: u32,
-    /// True while buffering user PCM for LID after `user_speaking_start`.
-    lid_buffering: bool,
     /// Last emitted ISO 639-1 code (`user_language`); re-emit only when it changes.
     lid_last_emitted: Option<String>,
-    /// Avoid overlapping background LID identify tasks for the same utterance.
-    lid_identify_in_flight: bool,
-    /// LID identify was requested during TTS; run after outbound playback drains.
-    lid_identify_deferred: bool,
-    /// True once inbound speech started or deferred LID for this utterance (skip hang-up force identify).
-    lid_identify_started_this_utterance: bool,
-    /// `language_id_skipped` already emitted for this utterance (exactly once).
-    lid_skip_emitted_this_utterance: bool,
-    /// `user_language` already emitted for this utterance (first outcome reported).
-    lid_language_emitted_this_utterance: bool,
     /// Swapped onto the STT provider after the current utterance finalizes.
     pending_stt_config: Option<SttConfig>,
     /// Swapped onto the TTS provider before the next synthesis job.
     pending_tts_config: Option<TtsConfig>,
-    /// Id for the open user utterance (`user_speaking_start` … final).
-    current_utterance_id: Option<String>,
     /// Post-RNNoise STT feed captured for `replay_last_utterance`.
     utterance_replay_buffer: UtteranceReplayBuffer,
     /// Last finalized utterance eligible for replay.
@@ -284,6 +315,14 @@ struct AgentInner {
     /// Transcripts returned by `SttProvider::push_and_poll`, handled by the next
     /// `poll_stt_transcripts` (before it polls the provider). Cleared wherever STT state resets.
     pending_transcripts: VecDeque<SttTranscript>,
+    /// The user utterance currently being assembled (STT/turn and LID state).
+    live: SttUtterance,
+    /// Next `SttUtterance::key`.
+    next_utterance_key: u64,
+    /// Utterances whose finalize was requested and whose result is still pending (filled by the
+    /// STT actor; always empty until then).
+    #[allow(dead_code)]
+    closing: VecDeque<SttUtterance>,
 }
 
 /// Result of handling one STT transcript.
@@ -447,17 +486,10 @@ impl VoiceAgent {
                 stt_gate_hold_ms: 0,
                 stt_finalize_pending: false,
                 stt_endpoint_closing_started: false,
-                stt_final_emitted_this_utterance: false,
-                stt_not_found_emitted_this_utterance: false,
-                stt_speaking_end_emitted_this_utterance: false,
-                stt_speaking_start_emitted_this_utterance: false,
                 agent_speaking: false,
                 agent_speaking_since: None,
                 pending_first_audio: None,
                 turn_latency: TurnLatencyTracker::new(),
-                stt_stream_open: false,
-                user_stt_session_open: false,
-                vad_triggered_this_utterance: false,
                 stt_listen_deadline_ms: 0,
                 stt_listen_started_at: None,
                 stt_listen_media_ms: 0,
@@ -468,8 +500,6 @@ impl VoiceAgent {
                 last_inbound_pcm_at: None,
                 utterance_media_ms: 0,
                 defer_utterance_finalize_until_hold: false,
-                last_partial_text: None,
-                partials_emitted_this_utterance: false,
                 barge_awaiting_stt_partial: false,
                 stt_barge_fired_this_agent_playback: false,
                 tts_playback_failure_gen: 0,
@@ -478,25 +508,18 @@ impl VoiceAgent {
                 pcm_reader: None,
                 denoise,
                 stt_enabled: true,
-                lid_pcm_buffer: Vec::new(),
-                lid_voiced_ms: 0,
-                lid_pending_silence_ms: 0,
-                lid_buffering: false,
                 lid_last_emitted: None,
-                lid_identify_in_flight: false,
-                lid_identify_deferred: false,
-                lid_identify_started_this_utterance: false,
-                lid_skip_emitted_this_utterance: false,
-                lid_language_emitted_this_utterance: false,
                 pending_stt_config: None,
                 pending_tts_config: None,
-                current_utterance_id: None,
                 utterance_replay_buffer: UtteranceReplayBuffer::new(),
                 last_replay_snapshot: None,
                 replay_final_context: None,
                 stt_hold: None,
                 replay_begun_at_pre_roll: false,
                 pending_transcripts: VecDeque::new(),
+                live: SttUtterance::new(1),
+                next_utterance_key: 2,
+                closing: VecDeque::new(),
             })),
             stt: Mutex::new(stt),
             stt_ready_wait_override_ms: AtomicU64::new(0),
@@ -713,12 +736,12 @@ impl VoiceAgent {
             };
             let mut hold = SttHold::new(options.mode, max_ms, seed.as_deref());
             if open_utterance || Self::utterance_in_progress(&inner) {
-                hold.replaces_utterance_id = inner.current_utterance_id.clone();
+                hold.replaces_utterance_id = inner.live.utterance_id.clone();
             }
             let buffered_ms = hold.buffered_ms();
             inner.stt_hold = Some(hold);
             // Old-model text must not resurface; the last-utterance snapshot is stale after a hold.
-            inner.last_partial_text = None;
+            inner.live.last_partial_text = None;
             inner.last_replay_snapshot = None;
             inner.utterance_replay_buffer.invalidate();
             inner.pending_transcripts.clear();
@@ -792,11 +815,11 @@ impl VoiceAgent {
                 };
                 if pcm.is_empty() {
                     let hold = inner.stt_hold.take().expect("hold present");
-                    let live_open = inner.stt_stream_open || Self::vad_is_speaking(&inner);
+                    let live_open = inner.live.stream_open || Self::vad_is_speaking(&inner);
                     let replaces = hold.replaces_utterance_id.clone();
                     if live_open {
                         // Utterance still open: its final comes from the live path, flagged as replay.
-                        inner.last_partial_text = None;
+                        inner.live.last_partial_text = None;
                         inner.replay_final_context = Some(ReplayFinalContext {
                             replaces_utterance_id: replaces.clone(),
                             set_at: tokio::time::Instant::now(),
@@ -913,7 +936,7 @@ impl VoiceAgent {
                     };
                     if pcm.is_empty() {
                         let hold = inner.stt_hold.take().expect("hold present");
-                        let live_open = inner.stt_stream_open || Self::vad_is_speaking(&inner);
+                        let live_open = inner.live.stream_open || Self::vad_is_speaking(&inner);
                         break (
                             hold.finalize_seen && !live_open && fed_bytes > 0,
                             hold.dropped_ms(),
@@ -948,7 +971,8 @@ impl VoiceAgent {
         let mut inner = self.inner.lock().await;
         inner.utterance_replay_buffer.end_utterance();
         let utterance_id = inner
-            .current_utterance_id
+            .live
+            .utterance_id
             .clone()
             .unwrap_or_else(|| "utt-unknown".into());
         let overflow = inner.utterance_replay_buffer.overflowed();
@@ -1017,9 +1041,9 @@ impl VoiceAgent {
     fn utterance_in_progress(inner: &AgentInner) -> bool {
         // A pending finalize for an utterance whose final was already emitted can never complete
         // (should_finalize_utterance needs !stt_final_emitted); it is not an utterance in progress.
-        (inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance)
-            || inner.vad_triggered_this_utterance
-            || inner.stt_stream_open
+        (inner.stt_finalize_pending && !inner.live.final_emitted)
+            || inner.live.vad_triggered
+            || inner.live.stream_open
             || inner.stt_gate_hold_ms > 0
             || inner.stt_endpoint_closing_started
     }
@@ -1035,17 +1059,17 @@ impl VoiceAgent {
         inner.stt_gate_hold_ms = 0;
         inner.stt_finalize_pending = false;
         inner.stt_endpoint_closing_started = false;
-        inner.stt_final_emitted_this_utterance = false;
-        inner.stt_not_found_emitted_this_utterance = false;
-        inner.stt_speaking_end_emitted_this_utterance = false;
-        inner.stt_speaking_start_emitted_this_utterance = false;
-        inner.stt_stream_open = false;
-        inner.user_stt_session_open = false;
-        inner.vad_triggered_this_utterance = false;
+        inner.live.final_emitted = false;
+        inner.live.not_found_emitted = false;
+        inner.live.speaking_end_emitted = false;
+        inner.live.speaking_start_emitted = false;
+        inner.live.stream_open = false;
+        inner.live.user_stt_session_open = false;
+        inner.live.vad_triggered = false;
         Self::clear_stt_listen_timer(inner);
         Self::clear_utterance_finalize_timer(inner);
-        inner.last_partial_text = None;
-        inner.partials_emitted_this_utterance = false;
+        inner.live.last_partial_text = None;
+        inner.live.partials_emitted = false;
         inner.barge_awaiting_stt_partial = false;
         inner.defer_utterance_finalize_until_hold = false;
         inner.pending_transcripts.clear();
@@ -1178,7 +1202,7 @@ impl VoiceAgent {
 
     /// C2 applies only after the user turn has ended: hold drained and VAD not in speech.
     fn c2_end_of_turn_ready(inner: &AgentInner) -> bool {
-        if !inner.partials_emitted_this_utterance || inner.stt_final_emitted_this_utterance {
+        if !inner.live.partials_emitted || inner.live.final_emitted {
             return false;
         }
         if inner.defer_utterance_finalize_until_hold || inner.stt_gate_hold_ms > 0 {
@@ -1270,7 +1294,7 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             if !inner.running || !inner.config.vad.enabled || !Self::stt_pipeline_active(&inner) {
                 false
-            } else if inner.stt_stream_open && !inner.partials_emitted_this_utterance {
+            } else if inner.live.stream_open && !inner.live.partials_emitted {
                 if Self::c1_hold_for_stt_open(&mut inner, open_pending) {
                     false
                 } else if Self::c1_listen_expired(&inner, backlog_ms, pcm_idle) {
@@ -1484,7 +1508,7 @@ impl VoiceAgent {
         let _ = (synth_join, drain_join);
 
         {
-            let deferred = self.inner.lock().await.lid_identify_deferred;
+            let deferred = self.inner.lock().await.live.lid.identify_deferred;
             if deferred {
                 self.spawn_identify_language(true).await;
             }
@@ -1609,7 +1633,7 @@ impl VoiceAgent {
     /// LID PCM buffer length in bytes (tests).
     #[doc(hidden)]
     pub async fn lid_buffer_len(&self) -> usize {
-        self.inner.lock().await.lid_pcm_buffer.len()
+        self.inner.lock().await.live.lid.pcm_buffer.len()
     }
 
     async fn ensure_tts_synthesis_worker(&self) {
@@ -2406,7 +2430,7 @@ impl VoiceAgent {
             if !inner.agent_speaking {
                 return Ok(());
             }
-            if !inner.vad_triggered_this_utterance {
+            if !inner.live.vad_triggered {
                 return Ok(());
             }
             if !Self::stt_partial_qualifies_for_barge(&inner, partial_text) {
@@ -2455,10 +2479,10 @@ impl VoiceAgent {
     async fn emit_stt_stream_start_if_needed(&self) {
         let emit = {
             let mut inner = self.inner.lock().await;
-            if inner.stt_stream_open {
+            if inner.live.stream_open {
                 false
             } else {
-                inner.stt_stream_open = true;
+                inner.live.stream_open = true;
                 true
             }
         };
@@ -2471,10 +2495,10 @@ impl VoiceAgent {
     async fn emit_user_stt_start_if_needed(&self) {
         let emit = {
             let mut inner = self.inner.lock().await;
-            if inner.user_stt_session_open {
+            if inner.live.user_stt_session_open {
                 false
             } else {
-                inner.user_stt_session_open = true;
+                inner.live.user_stt_session_open = true;
                 true
             }
         };
@@ -2508,14 +2532,14 @@ impl VoiceAgent {
 
         {
             let mut inner = self.inner.lock().await;
-            inner.vad_triggered_this_utterance = true;
+            inner.live.vad_triggered = true;
             inner.c1_backlog_deferred_logged = false;
-            if has_stt && !inner.partials_emitted_this_utterance {
+            if has_stt && !inner.live.partials_emitted {
                 inner.stt_listen_deadline_ms = inner.config.vad.stt_listen_timeout_ms;
                 inner.stt_listen_started_at = Some(Instant::now());
                 inner.stt_listen_media_ms = 0;
             }
-            if !inner.partials_emitted_this_utterance {
+            if !inner.live.partials_emitted {
                 Self::clear_utterance_finalize_timer(&mut inner);
             }
         }
@@ -2560,18 +2584,18 @@ impl VoiceAgent {
     async fn close_stt_stream_not_found(&self) -> SpeechResult<()> {
         let (stream_was_open, session_open, vad_speaking, utterance_id) = {
             let mut inner = self.inner.lock().await;
-            let stream_was_open = inner.stt_stream_open;
-            let session_open = inner.user_stt_session_open;
-            let utterance_id = inner.current_utterance_id.clone();
+            let stream_was_open = inner.live.stream_open;
+            let session_open = inner.live.user_stt_session_open;
+            let utterance_id = inner.live.utterance_id.clone();
             if session_open {
-                inner.stt_not_found_emitted_this_utterance = true;
+                inner.live.not_found_emitted = true;
             }
             let vad_speaking = inner.vad.as_ref().map(|v| v.is_speaking()).unwrap_or(false);
-            inner.stt_stream_open = false;
-            inner.user_stt_session_open = false;
+            inner.live.stream_open = false;
+            inner.live.user_stt_session_open = false;
             Self::clear_stt_listen_timer(&mut inner);
             Self::clear_utterance_finalize_timer(&mut inner);
-            inner.vad_triggered_this_utterance = false;
+            inner.live.vad_triggered = false;
             inner.barge_awaiting_stt_partial = false;
             (stream_was_open, session_open, vad_speaking, utterance_id)
         };
@@ -2590,10 +2614,10 @@ impl VoiceAgent {
         if !vad_speaking {
             let emit_end = {
                 let mut inner = self.inner.lock().await;
-                if inner.stt_speaking_end_emitted_this_utterance {
+                if inner.live.speaking_end_emitted {
                     false
                 } else {
-                    inner.stt_speaking_end_emitted_this_utterance = true;
+                    inner.live.speaking_end_emitted = true;
                     true
                 }
             };
@@ -2610,12 +2634,15 @@ impl VoiceAgent {
         voice_debug("force_close_utterance (C2 timeout or stall)");
         let (last_partial, held) = {
             let inner = self.inner.lock().await;
-            (inner.last_partial_text.clone(), inner.stt_hold.is_some())
+            (
+                inner.live.last_partial_text.clone(),
+                inner.stt_hold.is_some(),
+            )
         };
 
         let needs_finalize = {
             let inner = self.inner.lock().await;
-            inner.stt_stream_open && !inner.stt_final_emitted_this_utterance
+            inner.live.stream_open && !inner.live.final_emitted
         };
         if needs_finalize {
             let tail_ms = {
@@ -2632,19 +2659,19 @@ impl VoiceAgent {
 
         let (emit_stream_end, emit_stt_end, already_final) = {
             let mut inner = self.inner.lock().await;
-            let stream = inner.stt_stream_open;
-            let session = inner.user_stt_session_open;
-            if inner.stt_stream_open {
-                inner.stt_stream_open = false;
+            let stream = inner.live.stream_open;
+            let session = inner.live.user_stt_session_open;
+            if inner.live.stream_open {
+                inner.live.stream_open = false;
             }
-            if inner.user_stt_session_open {
-                inner.user_stt_session_open = false;
+            if inner.live.user_stt_session_open {
+                inner.live.user_stt_session_open = false;
             }
             Self::clear_stt_listen_timer(&mut inner);
             Self::clear_utterance_finalize_timer(&mut inner);
-            inner.vad_triggered_this_utterance = false;
+            inner.live.vad_triggered = false;
             inner.barge_awaiting_stt_partial = false;
-            let already_final = inner.stt_final_emitted_this_utterance;
+            let already_final = inner.live.final_emitted;
             (stream, session, already_final)
         };
         // An utterance with no transcript ends in `user_stt_not_found`, never an empty final.
@@ -2654,9 +2681,9 @@ impl VoiceAgent {
             .unwrap_or(true);
         let not_found_utterance_id = if !already_final && !held && no_transcript {
             let mut inner = self.inner.lock().await;
-            let first = !inner.stt_not_found_emitted_this_utterance;
-            inner.stt_not_found_emitted_this_utterance = true;
-            first.then(|| inner.current_utterance_id.clone())
+            let first = !inner.live.not_found_emitted;
+            inner.live.not_found_emitted = true;
+            first.then(|| inner.live.utterance_id.clone())
         } else {
             None
         };
@@ -2678,11 +2705,11 @@ impl VoiceAgent {
         if !already_final {
             let (emit_speaking_end, final_text) = {
                 let mut inner = self.inner.lock().await;
-                let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
+                let emit_end = !inner.live.speaking_end_emitted;
                 if emit_end {
-                    inner.stt_speaking_end_emitted_this_utterance = true;
+                    inner.live.speaking_end_emitted = true;
                 }
-                inner.stt_final_emitted_this_utterance = true;
+                inner.live.final_emitted = true;
                 inner.stt_finalize_pending = false;
                 inner.stt_endpoint_closing_started = false;
                 (emit_end, last_partial.unwrap_or_default())
@@ -2736,11 +2763,11 @@ impl VoiceAgent {
             let not_found_utterance_id = {
                 let mut inner = self.inner.lock().await;
                 inner.replay_final_context.take();
-                if inner.stt_not_found_emitted_this_utterance {
+                if inner.live.not_found_emitted {
                     None
                 } else {
-                    inner.stt_not_found_emitted_this_utterance = true;
-                    Some(inner.current_utterance_id.clone())
+                    inner.live.not_found_emitted = true;
+                    Some(inner.live.utterance_id.clone())
                 }
             };
             if let Some(utterance_id) = not_found_utterance_id {
@@ -2788,7 +2815,7 @@ impl VoiceAgent {
                 self.clear_utterance_id_after_final().await;
             }
             None => {
-                let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+                let utterance_id = self.inner.lock().await.live.utterance_id.clone();
                 self.emit(SpeechEvent::user_speech_final(text, utterance_id));
                 self.clear_utterance_id_after_final().await;
             }
@@ -2804,9 +2831,9 @@ impl VoiceAgent {
             return;
         }
         // Previous utterance is complete and nothing new started: arming would leave stt_finalize_pending set until the next SpeechStart (blocks update_stt_config / replay_last_utterance).
-        if inner.stt_final_emitted_this_utterance
-            && !inner.stt_stream_open
-            && !inner.vad_triggered_this_utterance
+        if inner.live.final_emitted
+            && !inner.live.stream_open
+            && !inner.live.vad_triggered
             && !inner.stt_finalize_pending
         {
             return;
@@ -2826,29 +2853,27 @@ impl VoiceAgent {
     async fn close_utterance_after_finalize(&self) -> SpeechResult<()> {
         let (emit_stream_end, emit_stt_end, need_forced_final, forced_text, not_found_utterance_id) = {
             let mut inner = self.inner.lock().await;
-            let stream = inner.stt_stream_open;
-            let session = inner.user_stt_session_open;
-            if inner.stt_stream_open {
-                inner.stt_stream_open = false;
+            let stream = inner.live.stream_open;
+            let session = inner.live.user_stt_session_open;
+            if inner.live.stream_open {
+                inner.live.stream_open = false;
             }
-            if inner.user_stt_session_open {
-                inner.user_stt_session_open = false;
+            if inner.live.user_stt_session_open {
+                inner.live.user_stt_session_open = false;
             }
             Self::clear_stt_listen_timer(&mut inner);
             Self::clear_utterance_finalize_timer(&mut inner);
-            inner.vad_triggered_this_utterance = false;
-            let forced_text = inner.last_partial_text.clone().unwrap_or_default();
+            inner.live.vad_triggered = false;
+            let forced_text = inner.live.last_partial_text.clone().unwrap_or_default();
             let has_text = !forced_text.trim().is_empty();
-            let no_final = !inner.stt_final_emitted_this_utterance && inner.stt_hold.is_none();
-            let need_forced = no_final && inner.partials_emitted_this_utterance && has_text;
+            let no_final = !inner.live.final_emitted && inner.stt_hold.is_none();
+            let need_forced = no_final && inner.live.partials_emitted && has_text;
             // No vendor final and no partial text: the utterance ends in `user_stt_not_found`.
-            let not_found = no_final
-                && !has_text
-                && (stream || session)
-                && !inner.stt_not_found_emitted_this_utterance;
+            let not_found =
+                no_final && !has_text && (stream || session) && !inner.live.not_found_emitted;
             let not_found_utterance_id = if not_found {
-                inner.stt_not_found_emitted_this_utterance = true;
-                Some(inner.current_utterance_id.clone())
+                inner.live.not_found_emitted = true;
+                Some(inner.live.utterance_id.clone())
             } else {
                 None
             };
@@ -2877,11 +2902,11 @@ impl VoiceAgent {
         if need_forced_final {
             let emit_speaking_end = {
                 let mut inner = self.inner.lock().await;
-                let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
+                let emit_end = !inner.live.speaking_end_emitted;
                 if emit_end {
-                    inner.stt_speaking_end_emitted_this_utterance = true;
+                    inner.live.speaking_end_emitted = true;
                 }
-                inner.stt_final_emitted_this_utterance = true;
+                inner.live.final_emitted = true;
                 inner.stt_finalize_pending = false;
                 inner.stt_endpoint_closing_started = false;
                 emit_end
@@ -2902,10 +2927,10 @@ impl VoiceAgent {
         } else {
             let emit_speaking_end_at_finalize = {
                 let mut inner = self.inner.lock().await;
-                if inner.stt_speaking_end_emitted_this_utterance {
+                if inner.live.speaking_end_emitted {
                     false
                 } else {
-                    inner.stt_speaking_end_emitted_this_utterance = true;
+                    inner.live.speaking_end_emitted = true;
                     inner.stt_finalize_pending = false;
                     inner.stt_endpoint_closing_started = false;
                     true
@@ -2929,7 +2954,7 @@ impl VoiceAgent {
             if !inner.config.vad.gate_stt || inner.config.stt.is_none() {
                 return Ok(());
             }
-            let needed = inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance;
+            let needed = inner.stt_finalize_pending && !inner.live.final_emitted;
             (
                 needed,
                 stt_endpoint_tail_ms(&inner.config.vad),
@@ -2956,27 +2981,29 @@ impl VoiceAgent {
         inner.stt_gate_hold_ms = 0;
         inner.stt_finalize_pending = false;
         inner.stt_endpoint_closing_started = false;
-        inner.stt_final_emitted_this_utterance = false;
-        inner.stt_not_found_emitted_this_utterance = false;
-        inner.stt_speaking_end_emitted_this_utterance = false;
-        inner.stt_speaking_start_emitted_this_utterance = false;
-        inner.stt_stream_open = false;
-        inner.user_stt_session_open = false;
-        inner.vad_triggered_this_utterance = false;
+        inner.live.final_emitted = false;
+        inner.live.not_found_emitted = false;
+        inner.live.speaking_end_emitted = false;
+        inner.live.speaking_start_emitted = false;
+        inner.live.stream_open = false;
+        inner.live.user_stt_session_open = false;
+        inner.live.vad_triggered = false;
         Self::clear_stt_listen_timer(inner);
         Self::clear_utterance_finalize_timer(inner);
-        inner.last_partial_text = None;
-        inner.partials_emitted_this_utterance = false;
+        inner.live.last_partial_text = None;
+        inner.live.partials_emitted = false;
         inner.utterance_media_ms = 0;
-        inner.lid_pcm_buffer.clear();
-        inner.lid_voiced_ms = 0;
-        inner.lid_pending_silence_ms = 0;
-        inner.lid_buffering = false;
-        inner.lid_identify_in_flight = false;
-        inner.lid_identify_deferred = false;
-        inner.lid_identify_started_this_utterance = false;
-        inner.lid_skip_emitted_this_utterance = false;
-        inner.lid_language_emitted_this_utterance = false;
+        inner.live.key = inner.next_utterance_key;
+        inner.next_utterance_key += 1;
+        inner.live.lid.pcm_buffer.clear();
+        inner.live.lid.voiced_ms = 0;
+        inner.live.lid.pending_silence_ms = 0;
+        inner.live.lid.buffering = false;
+        inner.live.lid.identify_in_flight = false;
+        inner.live.lid.identify_deferred = false;
+        inner.live.lid.identify_started = false;
+        inner.live.lid.skip_emitted = false;
+        inner.live.lid.language_emitted = false;
     }
 
     async fn start_lid_buffering(&self) {
@@ -2988,10 +3015,10 @@ impl VoiceAgent {
             return;
         }
         let mut inner = self.inner.lock().await;
-        inner.lid_pcm_buffer.clear();
-        inner.lid_voiced_ms = 0;
-        inner.lid_pending_silence_ms = 0;
-        inner.lid_buffering = true;
+        inner.live.lid.pcm_buffer.clear();
+        inner.live.lid.voiced_ms = 0;
+        inner.live.lid.pending_silence_ms = 0;
+        inner.live.lid.buffering = true;
     }
 
     async fn append_lid_pcm_if_buffering(
@@ -3003,7 +3030,7 @@ impl VoiceAgent {
     ) {
         let cross_threshold = {
             let mut inner = self.inner.lock().await;
-            if !inner.lid_buffering || !language_id_enabled(&inner.config.language_id) {
+            if !inner.live.lid.buffering || !language_id_enabled(&inner.config.language_id) {
                 return;
             }
             // Bound the buffer to 2x the clip LID will use, keeping the OLDEST audio (the
@@ -3013,19 +3040,28 @@ impl VoiceAgent {
             );
             let cap =
                 (crate::pcm::STT_PCM_SAMPLE_RATE as usize * max_clip_ms as usize * 2 / 1000) * 2;
-            let room = cap.saturating_sub(inner.lid_pcm_buffer.len());
+            let room = cap.saturating_sub(inner.live.lid.pcm_buffer.len());
             let take = room.min(mono_bytes.len());
-            inner.lid_pcm_buffer.extend_from_slice(&mono_bytes[..take]);
+            inner
+                .live
+                .lid
+                .pcm_buffer
+                .extend_from_slice(&mono_bytes[..take]);
             if frame_active {
-                inner.lid_voiced_ms = inner
-                    .lid_voiced_ms
-                    .saturating_add(inner.lid_pending_silence_ms)
+                inner.live.lid.voiced_ms = inner
+                    .live
+                    .lid
+                    .voiced_ms
+                    .saturating_add(inner.live.lid.pending_silence_ms)
                     .saturating_add(duration_ms);
-                inner.lid_pending_silence_ms = 0;
+                inner.live.lid.pending_silence_ms = 0;
             } else if vad_speaking {
                 // Gap inside the utterance; counts only if speech resumes.
-                inner.lid_pending_silence_ms =
-                    inner.lid_pending_silence_ms.saturating_add(duration_ms);
+                inner.live.lid.pending_silence_ms = inner
+                    .live
+                    .lid
+                    .pending_silence_ms
+                    .saturating_add(duration_ms);
             }
             // else: utterance tail / not speaking, never counted.
             // Default (end of utterance): buffer only until user_speaking_end.
@@ -3035,13 +3071,13 @@ impl VoiceAgent {
                 return;
             }
             // Early: exactly one identify per utterance; nothing more once it started/deferred.
-            if early && inner.lid_identify_started_this_utterance {
+            if early && inner.live.lid.identify_started {
                 return;
             }
             let min_ms = resolved_language_id_min_speech_ms(
                 inner.config.language_id.as_ref().expect("enabled"),
             );
-            inner.lid_voiced_ms >= min_ms
+            inner.live.lid.voiced_ms >= min_ms
         };
         if cross_threshold {
             self.spawn_identify_language(false).await;
@@ -3060,10 +3096,10 @@ impl VoiceAgent {
             // will follow for this utterance. Emitted before `user_speaking_end` / the final.
             let mut inner = self.inner.lock().await;
             if language_id_enabled(&inner.config.language_id)
-                && !inner.lid_identify_started_this_utterance
-                && !inner.lid_identify_in_flight
+                && !inner.live.lid.identify_started
+                && !inner.live.lid.identify_in_flight
             {
-                let reason = if inner.lid_pcm_buffer.is_empty() {
+                let reason = if inner.live.lid.pcm_buffer.is_empty() {
                     "no_audio"
                 } else {
                     "too_short"
@@ -3071,15 +3107,15 @@ impl VoiceAgent {
                 self.emit_language_id_skipped_once(&mut inner, reason);
             }
         }
-        let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+        let utterance_id = self.inner.lock().await.live.utterance_id.clone();
         self.emit(SpeechEvent::user_speaking_end(utterance_id));
         let mut inner = self.inner.lock().await;
-        inner.lid_buffering = false;
+        inner.live.lid.buffering = false;
     }
 
     /// Emit `language_id_skipped` once per utterance. Carries buffered speech ms, no transcript.
     fn emit_language_id_skipped_once(&self, inner: &mut AgentInner, reason: &str) {
-        let speech_ms = inner.lid_voiced_ms;
+        let speech_ms = inner.live.lid.voiced_ms;
         self.emit_language_id_skipped_with_ms(inner, reason, speech_ms);
     }
 
@@ -3089,23 +3125,23 @@ impl VoiceAgent {
         reason: &str,
         speech_ms: u32,
     ) {
-        if inner.lid_skip_emitted_this_utterance {
+        if inner.live.lid.skip_emitted {
             return;
         }
-        inner.lid_skip_emitted_this_utterance = true;
+        inner.live.lid.skip_emitted = true;
         voice_debug(format!(
             "emit language_id_skipped: reason={reason} speech_ms={speech_ms}"
         ));
         self.emit(SpeechEvent::language_id_skipped(
             reason,
             speech_ms,
-            inner.current_utterance_id.clone(),
+            inner.live.utterance_id.clone(),
         ));
     }
 
     async fn clear_utterance_id_after_final(&self) {
         let mut inner = self.inner.lock().await;
-        inner.current_utterance_id = None;
+        inner.live.utterance_id = None;
     }
 
     /// Start default-mode LID when eligible. `context` is for debug only.
@@ -3114,8 +3150,8 @@ impl VoiceAgent {
             let inner = self.inner.lock().await;
             language_id_enabled(&inner.config.language_id)
                 && !language_id_continuous(&inner.config.language_id)
-                && !inner.lid_identify_in_flight
-                && (force || !inner.lid_identify_started_this_utterance)
+                && !inner.live.lid.identify_in_flight
+                && (force || !inner.live.lid.identify_started)
         };
         if !eligible {
             return false;
@@ -3127,8 +3163,8 @@ impl VoiceAgent {
                 &inner.config.tts,
             ) && language_id_enabled(&inner.config.language_id)
             {
-                inner.lid_identify_deferred = true;
-                inner.lid_identify_started_this_utterance = true;
+                inner.live.lid.identify_deferred = true;
+                inner.live.lid.identify_started = true;
                 voice_debug(format!("LID at {context} deferred (TTS active)"));
                 self.emit_language_id_skipped_once(&mut inner, "deferred_tts");
                 return false;
@@ -3148,7 +3184,7 @@ impl VoiceAgent {
             let notified = notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if !inner.lock().await.lid_identify_in_flight {
+            if !inner.lock().await.live.lid.identify_in_flight {
                 return;
             }
             notified.await;
@@ -3164,7 +3200,7 @@ impl VoiceAgent {
             ) {
                 return;
             }
-            if !inner.lid_identify_in_flight {
+            if !inner.live.lid.identify_in_flight {
                 return;
             }
             inner
@@ -3198,7 +3234,7 @@ impl VoiceAgent {
         let (in_flight, exclusion) = {
             let guard = inner.lock().await;
             (
-                guard.lid_identify_in_flight,
+                guard.live.lid.identify_in_flight,
                 crate::config::lid_tts_exclusion_enabled(
                     &guard.config.language_id,
                     &guard.config.tts,
@@ -3249,8 +3285,8 @@ impl VoiceAgent {
                 &inner.config.tts,
             ) && language_id_enabled(&inner.config.language_id)
             {
-                inner.lid_identify_deferred = true;
-                inner.lid_identify_started_this_utterance = true;
+                inner.live.lid.identify_deferred = true;
+                inner.live.lid.identify_started = true;
                 voice_debug("LID identify deferred (TTS active)");
                 self.emit_language_id_skipped_once(&mut inner, "deferred_tts");
                 return false;
@@ -3262,11 +3298,11 @@ impl VoiceAgent {
             if !language_id_enabled(&inner.config.language_id) {
                 return false;
             }
-            if inner.lid_identify_in_flight {
-                inner.lid_identify_started_this_utterance = true;
+            if inner.live.lid.identify_in_flight {
+                inner.live.lid.identify_started = true;
                 return false;
             }
-            if inner.lid_identify_started_this_utterance
+            if inner.live.lid.identify_started
                 && !force
                 && !language_id_continuous(&inner.config.language_id)
             {
@@ -3275,12 +3311,12 @@ impl VoiceAgent {
             let min_ms = resolved_language_id_min_speech_ms(
                 inner.config.language_id.as_ref().expect("enabled"),
             );
-            let buffer_len = inner.lid_pcm_buffer.len();
+            let buffer_len = inner.live.lid.pcm_buffer.len();
             let buffered_ms = crate::pcm::duration_ms_from_mono_s16le(
                 buffer_len,
                 crate::pcm::STT_PCM_SAMPLE_RATE,
             );
-            let duration_ms = inner.lid_voiced_ms;
+            let duration_ms = inner.live.lid.voiced_ms;
             if buffer_len == 0 || (!force && duration_ms < min_ms) {
                 if !force && buffer_len > 0 && duration_ms < min_ms {
                     voice_debug(format!(
@@ -3289,11 +3325,11 @@ impl VoiceAgent {
                 }
                 return false;
             }
-            inner.lid_identify_deferred = false;
-            inner.lid_identify_in_flight = true;
-            inner.lid_identify_started_this_utterance = true;
+            inner.live.lid.identify_deferred = false;
+            inner.live.lid.identify_in_flight = true;
+            inner.live.lid.identify_started = true;
             if !language_id_continuous(&inner.config.language_id) {
-                inner.lid_buffering = false;
+                inner.live.lid.buffering = false;
             }
             let sample_rate = crate::pcm::STT_PCM_SAMPLE_RATE;
             let max_clip_ms = crate::config::resolved_lid_max_clip_ms(
@@ -3303,31 +3339,32 @@ impl VoiceAgent {
                 .saturating_mul(max_clip_ms as u64)
                 .saturating_mul(2)
                 / 1000;
-            let buffer = std::mem::take(&mut inner.lid_pcm_buffer);
+            let buffer = std::mem::take(&mut inner.live.lid.pcm_buffer);
             let pcm = if buffer.len() > max_bytes as usize {
                 Bytes::copy_from_slice(&buffer[..max_bytes as usize])
             } else {
                 Bytes::from(buffer)
             };
-            inner.lid_pcm_buffer.clear();
-            inner.lid_voiced_ms = 0;
-            inner.lid_pending_silence_ms = 0;
+            inner.live.lid.pcm_buffer.clear();
+            inner.live.lid.voiced_ms = 0;
+            inner.live.lid.pending_silence_ms = 0;
             let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
             Some((
                 pcm,
                 allowlist_cfg,
                 duration_ms,
-                inner.current_utterance_id.clone(),
+                inner.live.utterance_id.clone(),
+                inner.live.key,
             ))
         };
         if job.is_none() {
             return false;
         }
-        let (pcm, allowlist_cfg, speech_ms, spawn_utterance_id) = job.expect("job");
+        let (pcm, allowlist_cfg, speech_ms, spawn_utterance_id, key) = job.expect("job");
         let agent = self.weak_self.upgrade();
         if agent.is_none() {
             let mut inner = self.inner.lock().await;
-            inner.lid_identify_in_flight = false;
+            inner.live.lid.identify_in_flight = false;
             return false;
         }
         let agent = agent.expect("upgrade");
@@ -3341,9 +3378,16 @@ impl VoiceAgent {
             }
             let agent = upgraded.expect("upgrade");
             let mut inner = agent.inner.lock().await;
+            if inner.live.key != key {
+                // A new utterance started while identify ran: its state is not ours to touch.
+                voice_debug("LID result for a previous utterance ignored");
+                drop(inner);
+                lid_notify.notify_waiters();
+                return;
+            }
             // The first outcome per utterance is always reported: `user_language`, or
             // `language_id_skipped` (`undetermined`) when no usable code came back.
-            let same_utterance = inner.current_utterance_id == spawn_utterance_id;
+            let same_utterance = inner.live.utterance_id == spawn_utterance_id;
             let mut undetermined = false;
             match result {
                 Ok(Some(lang_result)) => {
@@ -3355,16 +3399,16 @@ impl VoiceAgent {
                         voice_debug(format!("LID result {code} not in allowlist — ignored"));
                         undetermined = true;
                     } else if inner.lid_last_emitted.as_deref() == Some(code.as_str())
-                        && inner.lid_language_emitted_this_utterance
+                        && inner.live.lid.language_emitted
                     {
                         voice_debug(format!("LID result {code} unchanged — not re-emitted"));
                     } else {
                         inner.lid_last_emitted = Some(code.clone());
                         if same_utterance {
-                            inner.lid_language_emitted_this_utterance = true;
+                            inner.live.lid.language_emitted = true;
                         }
                         voice_debug(format!("emit user_language: {code}"));
-                        let utterance_id = inner.current_utterance_id.clone();
+                        let utterance_id = inner.live.utterance_id.clone();
                         agent.emit(SpeechEvent::user_language(code, utterance_id));
                     }
                 }
@@ -3378,7 +3422,7 @@ impl VoiceAgent {
             }
             if undetermined {
                 if same_utterance {
-                    if !inner.lid_language_emitted_this_utterance {
+                    if !inner.live.lid.language_emitted {
                         agent.emit_language_id_skipped_with_ms(
                             &mut inner,
                             "undetermined",
@@ -3393,8 +3437,8 @@ impl VoiceAgent {
                     ));
                 }
             }
-            inner.lid_identify_in_flight = false;
-            inner.lid_identify_deferred = false;
+            inner.live.lid.identify_in_flight = false;
+            inner.live.lid.identify_deferred = false;
             lid_notify.notify_waiters();
         });
         true
@@ -3407,7 +3451,7 @@ impl VoiceAgent {
     ) {
         let should_run = {
             let guard = inner.lock().await;
-            language_id_enabled(&guard.config.language_id) && guard.lid_identify_deferred
+            language_id_enabled(&guard.config.language_id) && guard.live.lid.identify_deferred
         };
         if !should_run {
             return;
@@ -3417,7 +3461,7 @@ impl VoiceAgent {
         if let Some(agent) = weak_self.upgrade() {
             if agent.tts_active_for_lid_defer().await {
                 let mut guard = inner.lock().await;
-                guard.lid_identify_deferred = true;
+                guard.live.lid.identify_deferred = true;
                 return;
             }
             voice_debug("LID identify running after TTS drain");
@@ -3431,10 +3475,10 @@ impl VoiceAgent {
             if !inner.stt_enabled {
                 return;
             }
-            if inner.stt_speaking_start_emitted_this_utterance {
+            if inner.live.speaking_start_emitted {
                 false
             } else {
-                inner.stt_speaking_start_emitted_this_utterance = true;
+                inner.live.speaking_start_emitted = true;
                 true
             }
         };
@@ -3442,7 +3486,7 @@ impl VoiceAgent {
             let utterance_id = {
                 let mut inner = self.inner.lock().await;
                 let id = next_utterance_id();
-                inner.current_utterance_id = Some(id.clone());
+                inner.live.utterance_id = Some(id.clone());
                 if inner.replay_begun_at_pre_roll {
                     // Ring already holds the pre-roll/onset audio flushed at SpeechStart.
                     inner.replay_begun_at_pre_roll = false;
@@ -3542,9 +3586,7 @@ impl VoiceAgent {
                     let ctx = inner.otel.session_context.clone();
                     otel::record_gate_hold_start(&ctx, hold_ms);
                     inner.stt_finalize_pending = true;
-                    if inner.partials_emitted_this_utterance
-                        && !inner.stt_final_emitted_this_utterance
-                    {
+                    if inner.live.partials_emitted && !inner.live.final_emitted {
                         inner.defer_utterance_finalize_until_hold = true;
                         inner.utterance_finalize_deadline_ms = 0;
                         inner.utterance_finalize_armed_at = None;
@@ -3558,9 +3600,7 @@ impl VoiceAgent {
                             ""
                         }
                     ));
-                } else if inner.partials_emitted_this_utterance
-                    && !inner.stt_final_emitted_this_utterance
-                {
+                } else if inner.live.partials_emitted && !inner.live.final_emitted {
                     Self::arm_utterance_finalize_timer(&mut inner);
                 }
             } else if inner.stt_gate_hold_ms > 0 && !speech_start {
@@ -3573,7 +3613,7 @@ impl VoiceAgent {
                     let long_pause_before_resume =
                         gate_hold_long_pause_elapsed(hold_total, hold_elapsed);
                     if inner.stt_finalize_pending
-                        && !inner.stt_final_emitted_this_utterance
+                        && !inner.live.final_emitted
                         && long_pause_before_resume
                     {
                         complete_previous_utterance = true;
@@ -3600,8 +3640,8 @@ impl VoiceAgent {
                             "STT gate hold expired — utterance may finalize on next inbound frame",
                         );
                         if inner.defer_utterance_finalize_until_hold
-                            && inner.partials_emitted_this_utterance
-                            && !inner.stt_final_emitted_this_utterance
+                            && inner.live.partials_emitted
+                            && !inner.live.final_emitted
                         {
                             inner.defer_utterance_finalize_until_hold = false;
                             Self::arm_utterance_finalize_timer(&mut inner);
@@ -3639,8 +3679,8 @@ impl VoiceAgent {
             } else {
                 let mut c1 = false;
                 let mut c2 = false;
-                if inner.stt_stream_open
-                    && !inner.partials_emitted_this_utterance
+                if inner.live.stream_open
+                    && !inner.live.partials_emitted
                     && inner.stt_listen_started_at.is_some()
                     && inner.stt_hold.is_none()
                 {
@@ -3739,7 +3779,7 @@ impl VoiceAgent {
             let mut started_new_utterance = false;
             {
                 let mut inner = self.inner.lock().await;
-                if long_pause_new_phrase || inner.stt_final_emitted_this_utterance {
+                if long_pause_new_phrase || inner.live.final_emitted {
                     // A completed final always starts a new utterance — the brief-gap path is only
                     // for mid-phrase pauses (e.g. counting). Leaving `stt_final_emitted` set blocks
                     // C2 arming and `should_finalize_utterance` on turn 2+ (local multi-turn E2E).
@@ -3780,7 +3820,7 @@ impl VoiceAgent {
                     // Cold inbound (no frames before the talker) leaves a short ring at
                     // SpeechStart; streaming recognizers need left context before onset.
                     // Pad only when opening a new STT stream — not for brief-gap continuations.
-                    let new_stream = !inner.stt_stream_open;
+                    let new_stream = !inner.live.stream_open;
                     let mut held_onset = held_onset;
                     if !held_onset.is_empty() {
                         voice_debug(format!(
@@ -3901,11 +3941,11 @@ impl VoiceAgent {
                     {
                         let mut inner = self.inner.lock().await;
                         if !Self::stt_pipeline_active(&inner) {
-                            inner.stt_speaking_start_emitted_this_utterance = false;
-                            inner.stt_speaking_end_emitted_this_utterance = false;
-                            inner.lid_identify_started_this_utterance = false;
-                            inner.lid_identify_in_flight = false;
-                            inner.lid_identify_deferred = false;
+                            inner.live.speaking_start_emitted = false;
+                            inner.live.speaking_end_emitted = false;
+                            inner.live.lid.identify_started = false;
+                            inner.live.lid.identify_in_flight = false;
+                            inner.live.lid.identify_deferred = false;
                         }
                     }
                     // VAD speaking_start is independent of having an STT vendor (tests with
@@ -3962,13 +4002,12 @@ impl VoiceAgent {
         ) = {
             let mut inner = self.inner.lock().await;
             let pending_gate = inner.config.vad.gate_stt_open_on_pending && vad_pending;
-            let utterance_closing =
-                inner.stt_finalize_pending && !inner.stt_final_emitted_this_utterance;
+            let utterance_closing = inner.stt_finalize_pending && !inner.live.final_emitted;
             let vad_enabled = inner.config.vad.enabled;
             let stt_audio_open = if !vad_enabled {
                 true
             } else if gate_stt {
-                if !inner.stt_stream_open {
+                if !inner.live.stream_open {
                     false
                 } else {
                     vad_speaking || inner.stt_gate_hold_ms > 0 || pending_gate || utterance_closing
@@ -3979,7 +4018,7 @@ impl VoiceAgent {
             let stt_poll_open = !gate_stt
                 || stt_audio_open
                 || utterance_closing
-                || inner.stt_stream_open
+                || inner.live.stream_open
                 || inner.utterance_finalize_deadline_ms > 0;
             let should_finalize_utterance = gate_stt
                 && utterance_closing
@@ -3992,7 +4031,7 @@ impl VoiceAgent {
             // closing stream does not count it (it belongs to the stream that starts next).
             let hold_back = gate_stt
                 && stt_active
-                && inner.stt_stream_open
+                && inner.live.stream_open
                 && vad_pending
                 && !vad_speaking
                 && !speech_start
@@ -4017,7 +4056,7 @@ impl VoiceAgent {
             } else if !inner.hold_pending_pcm.is_empty() {
                 // Hold ended without a SpeechStart (finalize, C1/C2, toggle, swap): resolve it.
                 let held = std::mem::take(&mut inner.hold_pending_pcm);
-                if inner.stt_stream_open {
+                if inner.live.stream_open {
                     held_resolved_to_stream = Some(Bytes::from(held));
                 } else if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                     pre_roll.push(&held);
@@ -4132,7 +4171,7 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             if inner.stt_hold.is_some() {
                 // Host hold: keep the PCM for the swapped STT; never feed the old model.
-                let utterance_id = inner.current_utterance_id.clone();
+                let utterance_id = inner.live.utterance_id.clone();
                 let hold = inner.stt_hold.as_mut().expect("checked");
                 if hold.replaces_utterance_id.is_none() {
                     hold.replaces_utterance_id = utterance_id;
@@ -4267,14 +4306,14 @@ impl VoiceAgent {
                 voice_debug(format!("STT partial: {text}"));
                 {
                     let mut inner = self.inner.lock().await;
-                    inner.partials_emitted_this_utterance = true;
-                    inner.last_partial_text = Some(text.clone());
+                    inner.live.partials_emitted = true;
+                    inner.live.last_partial_text = Some(text.clone());
                     Self::clear_stt_listen_timer(&mut inner);
                     Self::refresh_utterance_finalize_after_partial(&mut inner);
                 }
                 self.emit_user_speaking_start_if_needed().await;
                 // Partial must precede barge_in in the event stream (semantic roundtrip E2E).
-                let utterance_id = self.inner.lock().await.current_utterance_id.clone();
+                let utterance_id = self.inner.lock().await.live.utterance_id.clone();
                 self.emit(SpeechEvent::user_speech_partial(text.clone(), utterance_id));
                 self.try_stt_gated_barge_in(&text).await?;
             }
@@ -4297,22 +4336,22 @@ impl VoiceAgent {
                 self.try_stt_gated_barge_in(&text).await?;
                 let (emit_speaking_end, close_stream) = {
                     let mut inner = self.inner.lock().await;
-                    inner.stt_final_emitted_this_utterance = true;
+                    inner.live.final_emitted = true;
                     inner.stt_finalize_pending = false;
                     inner.stt_endpoint_closing_started = false;
                     Self::clear_stt_listen_timer(&mut inner);
                     Self::clear_utterance_finalize_timer(&mut inner);
-                    inner.vad_triggered_this_utterance = false;
-                    let emit_end = !inner.stt_speaking_end_emitted_this_utterance;
+                    inner.live.vad_triggered = false;
+                    let emit_end = !inner.live.speaking_end_emitted;
                     if emit_end {
-                        inner.stt_speaking_end_emitted_this_utterance = true;
+                        inner.live.speaking_end_emitted = true;
                     }
-                    let close_stream = inner.stt_stream_open || inner.user_stt_session_open;
-                    if inner.stt_stream_open {
-                        inner.stt_stream_open = false;
+                    let close_stream = inner.live.stream_open || inner.live.user_stt_session_open;
+                    if inner.live.stream_open {
+                        inner.live.stream_open = false;
                     }
-                    if inner.user_stt_session_open {
-                        inner.user_stt_session_open = false;
+                    if inner.live.user_stt_session_open {
+                        inner.live.user_stt_session_open = false;
                     }
                     (emit_end, close_stream)
                 };

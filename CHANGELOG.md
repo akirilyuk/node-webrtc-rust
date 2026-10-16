@@ -12,7 +12,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **speech:** `agent_speaking_start` carries `sentenceCaseAdjusted` (letters capitalized at the TTS engine input), and `ttsEngineText(text, mode)` returns the exact engine text for traces.
+- **speech:** `agent_speaking_start` carries `sentenceCaseAdjusted` (letters capitalized at the TTS engine input), and `ttsEngineText(text, mode)` returns the exact engine text for traces (#450).
 
 ### Changed
 

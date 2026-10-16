@@ -1,0 +1,5 @@
+# 2026-10-16 15:08:01.546203 starve-5-45-0.9.48 runs=3 throttle=5/45 script=start:roundtrip-counting-echo-lid-multi head=bab93ac
+run 1: FAIL rc=1 timeout=False thr_at=1.01157808303833 dur=136s [voice-debug] JsVoiceAgent native module loaded (rebuild with npm run build:native if missing pipeline logs) | [voice-debug] JsVoiceAgent native module loaded (rebuild with npm run build:native if missing pipeline logs) | [voice-debug] JsVoiceAgent native module loaded (rebuild with npm run build:native if missing pipeline logs) | [voice-debug] JsVoiceAgent native module loaded (rebuild with npm run build:native if missing pipeline logs) | [voice-debug] JsVoiceAgent native module loaded (rebuild with npm run build:native if missing pipeline logs) | [voice-debug] JsVoiceAgent native module loaded (rebuild with npm run build:native if missing pipeline logs)
+run 2: PASS rc=0 timeout=False thr_at=1.0124340057373047 dur=51s 
+run 3: PASS rc=0 timeout=False thr_at=1.0113818645477295 dur=51s 
+DONE fails=1

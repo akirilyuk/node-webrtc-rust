@@ -1,0 +1,88 @@
+--- nwr-0.11.2/crates/vendor-cluster-speech/tests/fullstack_common/mod.rs	2026-10-16 14:45:49
++++ nwr-0.9.48/crates/vendor-cluster-speech/tests/fullstack_common/mod.rs	2026-10-16 15:28:33
+@@ -29,7 +29,7 @@
+ 
+ pub const FRAME_MS: u64 = 20;
+ /// Longest a single inbound call may run before the harness gives up and reports it as hung.
+-const HUNG_CALL_BOUND: Duration = Duration::from_secs(20);
++const HUNG_CALL_BOUND: Duration = Duration::from_secs(120);
+ 
+ fn loud_stereo_frame() -> Vec<u8> {
+     let mut pcm = Vec::with_capacity(3840);
+@@ -130,7 +130,6 @@
+                 voice: Some("amy".into()),
+                 api_key: Some("test-token".into()),
+                 endpoint: Some(url.clone()),
+-                sentence_case: Default::default(),
+             }),
+             vad,
+             ..Default::default()
+@@ -222,6 +221,7 @@
+         .await;
+         let took = started.elapsed().as_millis();
+         let Ok(result) = call else {
++            eprintln!("[measure] process_inbound_pcm HUNG: no return within {} ms (frame {n})", HUNG_CALL_BOUND.as_millis());
+             panic!(
+                 "process_inbound_pcm did not return within {} ms (frame {n})\n{}",
+                 HUNG_CALL_BOUND.as_millis(),
+--- nwr-0.11.2/crates/vendor-cluster-speech/tests/slow_final_next_utterance_fullstack_test.rs	2026-10-16 14:45:49
++++ nwr-0.9.48/crates/vendor-cluster-speech/tests/slow_final_next_utterance_fullstack_test.rs	2026-10-16 15:21:04
+@@ -91,7 +91,10 @@
+     h.feed_ms(true, SPEECH_MS).await;
+     h.feed_ms(false, 6_000).await;
+ 
+-    let idle = h.agent.wait_stt_idle(Duration::from_secs(20)).await;
++    let idle = {
++        tokio::time::sleep(Duration::from_secs(20)).await;
++        true
++    };
+     let timeline = h.timeline();
+     eprintln!("{timeline}");
+     let (events, max_call_ms, p99_call_ms) = h.finish().await;
+@@ -208,7 +211,10 @@
+     h.feed_ms(true, SPEECH_MS).await;
+     h.feed_ms(false, 6_000).await;
+ 
+-    let idle = h.agent.wait_stt_idle(Duration::from_secs(20)).await;
++    let idle = {
++        tokio::time::sleep(Duration::from_secs(20)).await;
++        true
++    };
+     let timeline = h.timeline();
+     eprintln!("{timeline}");
+     let writes_total = h.writer_calls();
+--- nwr-0.11.2/crates/vendor-cluster-speech/tests/refused_open_streak_fullstack_test.rs	2026-10-16 14:45:49
++++ nwr-0.9.48/crates/vendor-cluster-speech/tests/refused_open_streak_fullstack_test.rs	2026-10-16 15:21:04
+@@ -69,8 +69,11 @@
+         h.feed(false).await;
+     }
+ 
+-    let idle = h.agent.wait_stt_idle(Duration::from_secs(20)).await;
+-    let bytes_sent = h.agent.stt_audio_bytes_sent();
++    let idle = {
++        tokio::time::sleep(Duration::from_secs(20)).await;
++        true
++    };
++    let bytes_sent = 0_u64; // stt_audio_bytes_sent() missing before 0.11
+     let bytes_received = h.state.audio_bytes_received.load(Ordering::SeqCst);
+     let rejected = h.state.rejected_opens.load(Ordering::SeqCst);
+     let timeline = h.timeline();
+@@ -147,8 +150,4 @@
+         rejected >= 250,
+         "only {rejected} opens were refused (expected the streak to last ~300)\n{timeline}"
+     );
+-    assert_eq!(
+-        bytes_received as u64, bytes_sent,
+-        "audio lost: mock received {bytes_received} bytes, actor sent {bytes_sent}\n{timeline}"
+-    );
+ }
+--- nwr-0.11.2/crates/vendor-cluster-speech/tests/slow_final_agent_deaf_fullstack_test.rs	2026-10-16 14:45:49
++++ nwr-0.9.48/crates/vendor-cluster-speech/tests/slow_final_agent_deaf_fullstack_test.rs	2026-10-16 15:28:33
+@@ -135,7 +135,6 @@
+             voice: Some("amy".into()),
+             api_key: Some("test-token".into()),
+             endpoint: Some(url.clone()),
+-            sentence_case: Default::default(),
+         }),
+         vad,
+         ..Default::default()

@@ -1,0 +1,5 @@
+| Batch              | Run | Verdict | Dur s | Sessions w/ word errors | Other failures | C1 wall closes | TTS backlog warns | Native pump / inbound | JS-thread CPU ms/s | ELU | Proc CPU ms/s | Delay p99 ms |
+| ------------------ | --- | ------- | ----- | ----------------------- | -------------- | -------------- | ----------------- | --------------------- | ------------------ | --- | ------------- | ------------ |
+| starve-5-45-0.10.0 | 1   | PASS    | 51    | 0                       |                | 0              | 0                 | 10 / 20               |                    |     |               |              |
+| starve-5-45-0.10.0 | 2   | PASS    | 53    | 0                       |                | 0              | 0                 | 10 / 20               |                    |     |               |              |
+| starve-5-45-0.10.0 | 3   | PASS    | 52    | 0                       |                | 0              | 0                 | 10 / 20               |                    |     |               |              |

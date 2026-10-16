@@ -31,15 +31,16 @@ Shared helpers and comments: `src/shared-loopback.ts`, `examples/shared/pcm-stre
 | `start:stream`   | `src/stream.ts`   | `for await … speechEvents()` |
 | `start:barge-in` | `src/barge-in.ts` | VAD + `bargeIn.flushTts`     |
 
-| Vendor     | Command                                                                           | Required env                                         |
-| ---------- | --------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| OpenAI     | `npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent`     | `OPENAI_API_KEY`                                     |
-| Deepgram   | `npm run start:live:deepgram --workspace=@node-webrtc-rust/example-voice-agent`   | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY` (TTS pairing)   |
-| ElevenLabs | `npm run start:live:elevenlabs --workspace=@node-webrtc-rust/example-voice-agent` | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` (STT pairing) |
-| Cartesia   | `npm run start:live:cartesia --workspace=@node-webrtc-rust/example-voice-agent`   | `CARTESIA_API_KEY`, `OPENAI_API_KEY`                 |
-| Fish Audio | `npm run start:live:fishaudio --workspace=@node-webrtc-rust/example-voice-agent`  | `FISH_API_KEY`, `OPENAI_API_KEY` (STT pairing)       |
-| AssemblyAI | `npm run start:live:assemblyai --workspace=@node-webrtc-rust/example-voice-agent` | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY`               |
-| Google     | `npm run start:live:google --workspace=@node-webrtc-rust/example-voice-agent`     | `GOOGLE_APPLICATION_CREDENTIALS`                     |
+| Vendor               | Command                                                                              | Required env                                         |
+| -------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| OpenAI               | `npm run start:live:openai --workspace=@node-webrtc-rust/example-voice-agent`        | `OPENAI_API_KEY`                                     |
+| Deepgram             | `npm run start:live:deepgram --workspace=@node-webrtc-rust/example-voice-agent`      | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY` (TTS pairing)   |
+| ElevenLabs           | `npm run start:live:elevenlabs --workspace=@node-webrtc-rust/example-voice-agent`    | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` (STT pairing) |
+| Cartesia             | `npm run start:live:cartesia --workspace=@node-webrtc-rust/example-voice-agent`      | `CARTESIA_API_KEY`, `OPENAI_API_KEY`                 |
+| Fish Audio           | `npm run start:live:fishaudio --workspace=@node-webrtc-rust/example-voice-agent`     | `FISH_API_KEY`, `OPENAI_API_KEY` (STT pairing)       |
+| Fish Audio STT + TTS | `npm run start:live:fishaudio-stt --workspace=@node-webrtc-rust/example-voice-agent` | `FISH_API_KEY` (VAD-gated STT, finals only)          |
+| AssemblyAI           | `npm run start:live:assemblyai --workspace=@node-webrtc-rust/example-voice-agent`    | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY`               |
+| Google               | `npm run start:live:google --workspace=@node-webrtc-rust/example-voice-agent`        | `GOOGLE_APPLICATION_CREDENTIALS`                     |
 
 ### Official API documentation
 

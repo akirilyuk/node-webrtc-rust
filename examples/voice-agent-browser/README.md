@@ -49,15 +49,16 @@ Presets live in [`examples/shared/voice-vendor-presets.ts`](../shared/voice-vend
 
 ### Supported vendors
 
-| Vendor       | `VOICE_VENDOR` | STT              | TTS              | Required env                           | npm script              |
-| ------------ | -------------- | ---------------- | ---------------- | -------------------------------------- | ----------------------- |
-| OpenAI       | `openai`       | OpenAI           | OpenAI           | `OPENAI_API_KEY`                       | `start:live:openai`     |
-| Deepgram     | `deepgram`     | Deepgram         | OpenAI (pairing) | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`   | `start:live:deepgram`   |
-| ElevenLabs   | `elevenlabs`   | OpenAI (pairing) | ElevenLabs       | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` | `start:live:elevenlabs` |
-| Cartesia     | `cartesia`     | OpenAI (pairing) | Cartesia         | `CARTESIA_API_KEY`, `OPENAI_API_KEY`   | `start:live:cartesia`   |
-| Fish Audio   | `fishaudio`    | OpenAI (pairing) | Fish Audio       | `FISH_API_KEY`, `OPENAI_API_KEY`       | `start:live:fishaudio`  |
-| AssemblyAI   | `assemblyai`   | AssemblyAI       | OpenAI (pairing) | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY` | `start:live:assemblyai` |
-| Google Cloud | `google`       | Google           | Google           | `GOOGLE_APPLICATION_CREDENTIALS`       | `start:live:google`     |
+| Vendor         | `VOICE_VENDOR`  | STT                                    | TTS              | Required env                           | npm script                 |
+| -------------- | --------------- | -------------------------------------- | ---------------- | -------------------------------------- | -------------------------- |
+| OpenAI         | `openai`        | OpenAI                                 | OpenAI           | `OPENAI_API_KEY`                       | `start:live:openai`        |
+| Deepgram       | `deepgram`      | Deepgram                               | OpenAI (pairing) | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`   | `start:live:deepgram`      |
+| ElevenLabs     | `elevenlabs`    | OpenAI (pairing)                       | ElevenLabs       | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` | `start:live:elevenlabs`    |
+| Cartesia       | `cartesia`      | OpenAI (pairing)                       | Cartesia         | `CARTESIA_API_KEY`, `OPENAI_API_KEY`   | `start:live:cartesia`      |
+| Fish Audio     | `fishaudio`     | OpenAI (pairing)                       | Fish Audio       | `FISH_API_KEY`, `OPENAI_API_KEY`       | `start:live:fishaudio`     |
+| Fish Audio STT | `fishaudio-stt` | Fish Audio (`transcribe-1`, VAD-gated) | Fish Audio       | `FISH_API_KEY`                         | `start:live:fishaudio-stt` |
+| AssemblyAI     | `assemblyai`    | AssemblyAI                             | OpenAI (pairing) | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY` | `start:live:assemblyai`    |
+| Google Cloud   | `google`        | Google                                 | Google           | `GOOGLE_APPLICATION_CREDENTIALS`       | `start:live:google`        |
 
 **Pairing note:** Not every vendor supports both STT and TTS in this SDK. Demos pair STT-only vendors with OpenAI TTS (or Google with Google). In production you can mix `VoiceAgentConfig.stt` and `.tts` freely.
 
@@ -100,6 +101,10 @@ CARTESIA_API_KEY=... OPENAI_API_KEY=sk-... \
 FISH_API_KEY=... OPENAI_API_KEY=sk-... \
   npm run start:live:fishaudio --workspace=@node-webrtc-rust/example-voice-agent-browser
 
+# Fish Audio STT (transcribe-1, VAD-gated) + Fish Audio TTS
+FISH_API_KEY=... \
+  npm run start:live:fishaudio-stt --workspace=@node-webrtc-rust/example-voice-agent-browser
+
 # AssemblyAI STT + OpenAI TTS
 ASSEMBLYAI_API_KEY=... OPENAI_API_KEY=sk-... \
   npm run start:live:assemblyai --workspace=@node-webrtc-rust/example-voice-agent-browser
@@ -118,12 +123,12 @@ VOICE_VENDOR=openai OPENAI_API_KEY=sk-... \
 
 ### Optional voice overrides
 
-| Env                   | Used when                                   |
-| --------------------- | ------------------------------------------- |
-| `ELEVENLABS_VOICE_ID` | `VOICE_VENDOR=elevenlabs` (default: Rachel) |
-| `CARTESIA_VOICE_ID`   | `VOICE_VENDOR=cartesia`                     |
-| `FISH_VOICE_ID`       | `VOICE_VENDOR=fishaudio` (optional)         |
-| `GOOGLE_API_KEY`      | Alternative to ADC for some Google setups   |
+| Env                   | Used when                                             |
+| --------------------- | ----------------------------------------------------- |
+| `ELEVENLABS_VOICE_ID` | `VOICE_VENDOR=elevenlabs` (default: Rachel)           |
+| `CARTESIA_VOICE_ID`   | `VOICE_VENDOR=cartesia`                               |
+| `FISH_VOICE_ID`       | `VOICE_VENDOR=fishaudio` / `fishaudio-stt` (optional) |
+| `GOOGLE_API_KEY`      | Alternative to ADC for some Google setups             |
 
 ### Verify live mode
 

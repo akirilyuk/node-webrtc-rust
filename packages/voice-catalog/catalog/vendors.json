@@ -68,13 +68,15 @@
     {
       "id": "fishaudio",
       "label": "Fish Audio",
-      "stt": false,
+      "stt": true,
       "tts": true,
+      "defaultSttModel": "transcribe-1",
       "defaultTtsModel": "drama-3",
-      "sttModels": [],
+      "sttModels": ["transcribe-1"],
       "ttsModels": ["drama-3", "s2.1-pro", "s2.1-pro-free", "s2-pro"],
       "ttsVoices": [],
       "home": "https://docs.fish.audio/",
+      "sttDocs": "https://docs.fish.audio/developer-guide/compat/migrate-from-elevenlabs",
       "ttsDocs": "https://docs.fish.audio/api-reference/endpoint/websocket/tts-live",
       "modelsDocs": "https://docs.fish.audio/developer-guide/models-pricing/models-overview"
     },

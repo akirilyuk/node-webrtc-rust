@@ -13,6 +13,7 @@
  * | elevenlabs | yes        | yes        | Scribe STT + ElevenLabs TTS   |
  * | cartesia   | no         | yes        | OpenAI STT + Cartesia TTS     |
  * | fishaudio  | no         | yes        | OpenAI STT + Fish Audio TTS   |
+ * | fishaudio-stt | yes     | yes        | Fish STT + Fish Audio TTS     |
  * | assemblyai | yes        | no         | AssemblyAI STT + OpenAI TTS   |
  * | google     | yes        | yes        | Google STT + Google TTS       |
  * | groq       | yes        | yes        | Groq Whisper file + Orpheus   |
@@ -37,7 +38,13 @@
  * Official API docs for every provider: `examples/shared/VOICE_VENDOR_REFERENCE.md`
  */
 
-import type { SttConfig, TtsConfig, VoiceAgentConfig } from '@node-webrtc-rust/sdk/voice'
+import {
+  VOICE_AGENT_VAD_PRESET,
+  type SttConfig,
+  type TtsConfig,
+  type VadConfig,
+  type VoiceAgentConfig,
+} from '@node-webrtc-rust/sdk/voice'
 
 export type LiveVendorId =
   | 'openai'
@@ -45,6 +52,7 @@ export type LiveVendorId =
   | 'elevenlabs'
   | 'cartesia'
   | 'fishaudio'
+  | 'fishaudio-stt'
   | 'assemblyai'
   | 'google'
   | 'groq'
@@ -69,10 +77,13 @@ function env(key: string): string | undefined {
   return value && value.trim().length > 0 ? value.trim() : undefined
 }
 
-/** Shared defaults for live demos: VAD + barge-in on, deliver events both ways. */
-function withKeys(stt: SttConfig, tts: TtsConfig): VoiceAgentConfig {
+/**
+ * Shared defaults for live demos: VAD + barge-in on, deliver events both ways. `vad` replaces
+ * the default VAD block (the Fish STT preset passes `VOICE_AGENT_VAD_PRESET` for `gateStt`).
+ */
+function withKeys(stt: SttConfig, tts: TtsConfig, vad?: VadConfig): VoiceAgentConfig {
   return {
-    vad: { enabled: true, bargeIn: { enabled: true, flushTts: true } },
+    vad: vad ?? { enabled: true, bargeIn: { enabled: true, flushTts: true } },
     events: { mode: 'both' },
     stt: {
       ...stt,
@@ -193,6 +204,25 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
     ttsPhrase: 'Fish Audio Drama three live synthesis check.',
     notes:
       'FISH_VOICE_ID optional (Fish default voice when unset). STT uses OpenAI for the demo pairing.',
+  },
+  'fishaudio-stt': {
+    id: 'fishaudio-stt',
+    label: 'Fish Audio STT (transcribe-1) + TTS (Drama 3)',
+    requiredEnv: ['FISH_API_KEY'],
+    config: withKeys(
+      { provider: 'fishaudio', model: 'transcribe-1', apiKey: env('FISH_API_KEY') },
+      {
+        provider: 'fishaudio',
+        model: 'drama-3',
+        voice: process.env.FISH_VOICE_ID ?? 'default',
+        apiKey: env('FISH_API_KEY'),
+      },
+      // gateStt: true streams only VAD-gated speech to Fish, which bills STT for the audio sent.
+      VOICE_AGENT_VAD_PRESET,
+    ),
+    ttsPhrase: 'Fish Audio transcribe and Drama three live check.',
+    notes:
+      'Single FISH_API_KEY. Fish STT returns finals only (manual commit after VAD end, no partials), so semantic barge-in (requireSttPartial) never fires. No language option: Fish auto-detects.',
   },
   assemblyai: {
     id: 'assemblyai',

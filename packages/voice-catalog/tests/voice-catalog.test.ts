@@ -139,7 +139,9 @@ describe('crate-aligned allowlist snapshots', () => {
       's2-pro',
     ])
     expect(ttsModelAllowlist('fishaudio')).not.toContain('s1')
-    expect(getVendor('fishaudio')?.stt).toBe(false)
+    expect(getVendor('fishaudio')?.stt).toBe(true)
+    expect(getVendor('fishaudio')?.defaultSttModel).toBe('transcribe-1')
+    expect(sttModelAllowlist('fishaudio')).toEqual(['transcribe-1'])
   })
 
   test('google STT models', () => {

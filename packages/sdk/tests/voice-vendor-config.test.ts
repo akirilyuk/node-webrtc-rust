@@ -18,8 +18,15 @@ describe('VoiceAgent vendor config surface', () => {
     },
   )
 
-  test('lists ten supported live vendor presets', () => {
-    expect(LIVE_VENDOR_METAS).toHaveLength(10)
+  test('fishaudio-stt preset gates STT on VAD', () => {
+    const cfg = voiceConfigForVendor('fishaudio-stt')
+    expect(cfg.stt.provider).toBe('fishaudio')
+    expect(cfg.stt.model).toBe('transcribe-1')
+    expect('vad' in cfg && cfg.vad.gateStt).toBe(true)
+  })
+
+  test('lists eleven supported live vendor presets', () => {
+    expect(LIVE_VENDOR_METAS).toHaveLength(11)
     expect(LIVE_VENDOR_METAS.map((m) => m.id).sort()).toEqual(
       [
         'assemblyai',
@@ -29,6 +36,7 @@ describe('VoiceAgent vendor config surface', () => {
         'deepgram',
         'elevenlabs',
         'fishaudio',
+        'fishaudio-stt',
         'google',
         'groq',
         'openai',

@@ -3,12 +3,15 @@
  * for SDK tests. Keep in sync when adding vendors.
  */
 
+import { VOICE_AGENT_VAD_PRESET } from '../src/voice'
+
 export type LiveVendorId =
   | 'openai'
   | 'deepgram'
   | 'elevenlabs'
   | 'cartesia'
   | 'fishaudio'
+  | 'fishaudio-stt'
   | 'assemblyai'
   | 'google'
   | 'groq'
@@ -51,6 +54,12 @@ export const LIVE_VENDOR_METAS: LiveVendorPresetMeta[] = [
     id: 'fishaudio',
     requiredEnv: ['FISH_API_KEY', 'OPENAI_API_KEY'],
     sttProvider: 'openai',
+    ttsProvider: 'fishaudio',
+  },
+  {
+    id: 'fishaudio-stt',
+    requiredEnv: ['FISH_API_KEY'],
+    sttProvider: 'fishaudio',
     ttsProvider: 'fishaudio',
   },
   {
@@ -124,6 +133,13 @@ export function voiceConfigForVendor(id: LiveVendorId) {
       return {
         stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
         tts: { provider: 'fishaudio' as const, model: 'drama-3', voice: 'default' },
+      }
+    case 'fishaudio-stt':
+      return {
+        stt: { provider: 'fishaudio' as const, model: 'transcribe-1' },
+        tts: { provider: 'fishaudio' as const, model: 'drama-3', voice: 'default' },
+        // Fish returns finals only and bills STT per streamed audio: gate STT on VAD.
+        vad: VOICE_AGENT_VAD_PRESET,
       }
     case 'assemblyai':
       return {

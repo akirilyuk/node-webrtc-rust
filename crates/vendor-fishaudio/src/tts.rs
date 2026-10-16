@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
+use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, WEBRTC_PCM_SAMPLE_RATE};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
@@ -51,14 +51,6 @@ fn resolve_reference_id(voice: Option<&str>, env_voice: Option<&str>) -> Option<
             .filter(|voice| !voice.is_empty())
             .map(str::to_string),
     }
-}
-
-pub fn unsupported_stt(
-    _config: &SttConfig,
-) -> SpeechResult<Box<dyn node_webrtc_rust_speech::pipeline::SttProvider>> {
-    Err(SpeechError::Config(
-        "Fish Audio does not provide STT".into(),
-    ))
 }
 
 fn into_chunks(outcome: StreamOutcome) -> Vec<TtsAudioChunk> {

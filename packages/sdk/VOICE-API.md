@@ -339,6 +339,7 @@ VoiceAgent always emits the same speech events; vendors differ in **when** parti
 | Pattern                                            | `user_speech_partial`              | Examples                                                                                                                                 |
 | -------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | **Live WebSocket** with documented interim results | Yes, while the user talks          | Deepgram `nova-*` listen, ElevenLabs Scribe, AssemblyAI v3, Google Chirp V2 streaming, AWS Transcribe streaming, Sherpa, OpenAI Realtime |
+| **Live WebSocket, manual commit, finals only**     | No; one final per commit           | Fish Audio `transcribe-1` (ElevenLabs-compatible realtime socket; set `vad.gateStt: true`, billed for the audio streamed)                |
 | **File / REST on utterance end**                   | No until finalize (then one final) | Groq Whisper multipart, Azure REST short audio, Google `latest_long` REST, OpenAI file JSON (`whisper-1`)                                |
 | **File SSE / committed Realtime**                  | Text deltas per vendor rules       | OpenAI file SSE, Realtime committed-turn models                                                                                          |
 

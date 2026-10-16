@@ -107,6 +107,7 @@ export type SttVendor =
   | 'openai'
   | 'deepgram'
   | 'elevenlabs'
+  | 'fishaudio'
   | 'google'
   | 'assemblyai'
   | 'groq'

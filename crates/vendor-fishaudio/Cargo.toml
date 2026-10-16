@@ -4,13 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Fish Audio TTS in-repo WS/HTTP client"
+description = "Fish Audio TTS (WS/HTTP) and realtime STT in-repo clients"
 
 [features]
 default = []
 live = [
+    "dep:base64",
     "dep:reqwest",
-    "dep:serde_json",
     "dep:futures-util",
     "dep:tokio-tungstenite",
     "dep:rmp-serde",
@@ -19,6 +19,7 @@ live = [
 
 [dependencies]
 async-trait = "0.1"
+base64 = { version = "0.22", optional = true }
 bytes = { workspace = true }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
 node-webrtc-rust-speech = { path = "../speech" }
@@ -27,7 +28,7 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 rmp-serde = { version = "1", optional = true }
 serde = { workspace = true }
 serde_bytes = { version = "0.11", optional = true }
-serde_json = { workspace = true, optional = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 

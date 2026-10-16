@@ -286,6 +286,7 @@ export const enum JsSttVendor {
   Openai = 'openai',
   Deepgram = 'deepgram',
   Elevenlabs = 'elevenlabs',
+  Fishaudio = 'fishaudio',
   Google = 'google',
   Assemblyai = 'assemblyai',
   Groq = 'groq',

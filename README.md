@@ -195,7 +195,7 @@ STT and TTS providers are **independently configurable** — mix vendors per ses
 | `deepgram`         | ✓   | —   | `DEEPGRAM_API_KEY`                                                      |
 | `elevenlabs`       | —   | ✓   | `ELEVENLABS_API_KEY`                                                    |
 | `cartesia`         | —   | ✓   | `CARTESIA_API_KEY`                                                      |
-| `fishaudio`        | —   | ✓   | `FISH_API_KEY`                                                          |
+| `fishaudio`        | ✓   | ✓   | `FISH_API_KEY`                                                          |
 | `assemblyai`       | ✓   | —   | `ASSEMBLYAI_API_KEY`                                                    |
 | `google`           | ✓   | ✓   | `GOOGLE_APPLICATION_CREDENTIALS`                                        |
 | **`local-sherpa`** | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` |

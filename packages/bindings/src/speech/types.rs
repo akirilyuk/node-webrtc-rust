@@ -190,6 +190,8 @@ pub enum JsSttVendor {
     Deepgram,
     #[napi(value = "elevenlabs")]
     Elevenlabs,
+    #[napi(value = "fishaudio")]
+    Fishaudio,
     #[napi(value = "google")]
     Google,
     #[napi(value = "assemblyai")]
@@ -215,6 +217,7 @@ impl From<JsSttVendor> for SttVendor {
             JsSttVendor::Openai => Self::Openai,
             JsSttVendor::Deepgram => Self::Deepgram,
             JsSttVendor::Elevenlabs => Self::Elevenlabs,
+            JsSttVendor::Fishaudio => Self::Fishaudio,
             JsSttVendor::Google => Self::Google,
             JsSttVendor::Assemblyai => Self::Assemblyai,
             JsSttVendor::Groq => Self::Groq,

@@ -40,6 +40,7 @@ pub fn default_vendor_registry() -> Arc<VendorRegistry> {
 
     registry.register_tts(TtsVendor::Cartesia, arc_factory(CartesiaFactory));
 
+    registry.register_stt(SttVendor::Fishaudio, arc_factory(FishAudioFactory));
     registry.register_tts(TtsVendor::Fishaudio, arc_factory(FishAudioFactory));
 
     registry.register_stt(SttVendor::Assemblyai, arc_factory(AssemblyAiFactory));

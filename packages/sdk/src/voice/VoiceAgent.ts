@@ -125,6 +125,8 @@ export function sttVendorToJs(vendor: SttConfig['provider']): JsSttVendor {
       return JsSttVendor.Deepgram
     case 'elevenlabs':
       return JsSttVendor.Elevenlabs
+    case 'fishaudio':
+      return JsSttVendor.Fishaudio
     case 'google':
       return JsSttVendor.Google
     case 'assemblyai':
@@ -179,6 +181,7 @@ export const STT_VENDOR_VALUES = [
   'openai',
   'deepgram',
   'elevenlabs',
+  'fishaudio',
   'google',
   'assemblyai',
   'groq',

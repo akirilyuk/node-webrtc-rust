@@ -1,6 +1,6 @@
-use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor};
+use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::error::SpeechError;
-use node_webrtc_rust_speech::pipeline::VendorFactory;
+use node_webrtc_rust_speech::pipeline::{FinalizeMode, VendorFactory};
 use node_webrtc_rust_vendor_fishaudio::FishAudioFactory;
 
 fn config(model: Option<&str>) -> TtsConfig {
@@ -37,17 +37,37 @@ fn fishaudio_factory_rejects_unknown_model() {
     }
 }
 
-#[test]
-fn fishaudio_factory_has_no_stt() {
-    use node_webrtc_rust_speech::config::{SttConfig, SttVendor};
-    let factory = FishAudioFactory;
-    let result = factory.create_stt(&SttConfig {
-        provider: SttVendor::Mock,
-        model: None,
+fn stt_config(model: Option<&str>) -> SttConfig {
+    SttConfig {
+        provider: SttVendor::Fishaudio,
+        model: model.map(str::to_string),
         model_path: None,
         language: None,
-        api_key: None,
+        api_key: Some("test-key".into()),
         endpoint: None,
-    });
-    assert!(matches!(result, Err(SpeechError::Config(_))));
+    }
+}
+
+#[test]
+fn fishaudio_factory_creates_stt_with_transcribe_1() {
+    let factory = FishAudioFactory;
+    for model in [None, Some("transcribe-1")] {
+        let stt = factory
+            .create_stt(&stt_config(model))
+            .unwrap_or_else(|_| panic!("transcribe-1 should be accepted"));
+        assert_eq!(stt.vendor_name(), "fishaudio");
+        assert_eq!(stt.finalize_mode(), FinalizeMode::Deferred);
+    }
+}
+
+#[test]
+fn fishaudio_factory_rejects_unknown_stt_model() {
+    let factory = FishAudioFactory;
+    for model in ["transcribe-1-pro", "transcribe1", "scribe_v2_realtime"] {
+        match factory.create_stt(&stt_config(Some(model))) {
+            Err(SpeechError::Config(message)) => assert!(message.contains(model), "{message}"),
+            Err(other) => panic!("expected Config error, got {other}"),
+            Ok(_) => panic!("STT model {model} must be rejected"),
+        }
+    }
 }

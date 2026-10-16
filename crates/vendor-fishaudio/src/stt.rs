@@ -9,9 +9,10 @@
 //! - Every pending finalize ends with exactly one [`SttOutput::FinalizeDone`], in FIFO order:
 //!   after its `committed_transcript` (preceded by `Transcript(Final)` only when the text is
 //!   non-empty), after a vendor error, or after the socket closed.
-//! - A closed socket surfaces one error, answers every pending finalize and marks the
-//!   connection dead. The next `push_audio` / `request_finalize` reconnects and replays
-//!   nothing.
+//! - A closed socket with a finalize pending or uncommitted audio sent surfaces one error,
+//!   answers every pending finalize and marks the connection dead. An idle close (nothing
+//!   lost) only marks it dead. Either way the next `push_audio` / `request_finalize`
+//!   reconnects and replays nothing.
 //!
 //! Transcript text is never logged or put into an error message.
 #![cfg_attr(not(feature = "live"), allow(dead_code))]
@@ -63,6 +64,9 @@ struct State {
     /// Finalizes sent and not yet answered, oldest first.
     pending: usize,
     connected_at: Option<Instant>,
+    /// Audio pushed on the current connection since the last commit. A socket close loses it
+    /// (so it is an error), and a proactive reconnect never splits that utterance.
+    uncommitted: bool,
 }
 
 struct Shared {
@@ -119,7 +123,9 @@ impl Shared {
         }
     }
 
-    /// The socket closed or failed: one error, then one `FinalizeDone` per pending finalize.
+    /// The socket closed or failed. With a finalize pending or uncommitted audio sent, something
+    /// was lost: one error, then one `FinalizeDone` per pending finalize. An idle close (nothing
+    /// pending, nothing uncommitted) only marks the connection dead; the next push reconnects.
     fn connection_lost(&self, generation: u64, message: String) {
         let mut state = self.lock();
         if state.generation != generation || !state.alive {
@@ -130,11 +136,15 @@ impl Shared {
         state.connected_at = None;
         self.open_pending.store(false, Ordering::SeqCst);
         self.set_ready(false);
+        if state.pending == 0 && !state.uncommitted {
+            return;
+        }
         state.queue.push_back(Item::Failure(message));
         for _ in 0..state.pending {
             state.queue.push_back(Item::Output(SttOutput::FinalizeDone));
         }
         state.pending = 0;
+        state.uncommitted = false;
     }
 }
 
@@ -150,8 +160,6 @@ pub struct FishAudioStt {
     shared: Arc<Shared>,
     tasks: Option<Tasks>,
     running: bool,
-    /// Audio pushed since the last commit. A proactive reconnect never splits an utterance.
-    uncommitted_audio: bool,
 }
 
 impl FishAudioStt {
@@ -173,7 +181,6 @@ impl FishAudioStt {
             }),
             tasks: None,
             running: false,
-            uncommitted_audio: false,
         })
     }
 
@@ -259,6 +266,7 @@ impl FishAudioStt {
             state.outbound = Some(outbound_tx);
             state.connected_at = Some(Instant::now());
             state.pending = 0;
+            state.uncommitted = false;
         }
 
         let reader_shared = self.shared.clone();
@@ -318,19 +326,24 @@ impl FishAudioStt {
         ))
     }
 
-    fn connection_state(&self) -> (bool, usize, Option<Instant>) {
+    fn connection_state(&self) -> (bool, usize, bool, Option<Instant>) {
         let state = self.shared.lock();
-        (state.alive, state.pending, state.connected_at)
+        (
+            state.alive,
+            state.pending,
+            state.uncommitted,
+            state.connected_at,
+        )
     }
 
     /// Reconnects a dead connection, and a connection that reached [`STT_PROACTIVE_RECONNECT`]
     /// while nothing is pending and no utterance is in progress.
     async fn ensure_connected(&mut self, allow_proactive: bool) -> SpeechResult<()> {
-        let (alive, pending, connected_at) = self.connection_state();
+        let (alive, pending, uncommitted, connected_at) = self.connection_state();
         let aged = allow_proactive
             && alive
             && pending == 0
-            && !self.uncommitted_audio
+            && !uncommitted
             && connected_at.is_some_and(|at| at.elapsed() >= STT_PROACTIVE_RECONNECT);
         if !alive || aged {
             self.connect().await?;
@@ -351,8 +364,8 @@ impl SttProvider for FishAudioStt {
             let mut state = self.shared.lock();
             state.queue.clear();
             state.pending = 0;
+            state.uncommitted = false;
         }
-        self.uncommitted_audio = false;
         self.connect().await?;
         self.running = true;
         Ok(())
@@ -372,13 +385,13 @@ impl SttProvider for FishAudioStt {
             return Ok(());
         }
         self.ensure_connected(true).await?;
-        let state = self.shared.lock();
+        let mut state = self.shared.lock();
         if let Some(tx) = &state.outbound {
             // A send error means the socket just died; the close handler already reported it.
-            let _ = tx.send(Outbound::Audio(pcm));
+            if tx.send(Outbound::Audio(pcm)).is_ok() {
+                state.uncommitted = true;
+            }
         }
-        drop(state);
-        self.uncommitted_audio = true;
         Ok(())
     }
 
@@ -451,8 +464,7 @@ impl SttProvider for FishAudioStt {
             return Err(vendor_error("fishaudio stt stream closed"));
         }
         state.pending += 1;
-        drop(state);
-        self.uncommitted_audio = false;
+        state.uncommitted = false;
         Ok(())
     }
 }
@@ -551,6 +563,21 @@ mod tests {
         shared.connection_lost(generation, "closed again".into());
         assert_eq!(drain(&shared), ["error", "done", "done", "done"]);
         assert!(!shared.lock().alive);
+    }
+
+    #[test]
+    fn idle_loss_is_quiet_but_uncommitted_audio_is_an_error() {
+        let shared = shared();
+        let generation = started(&shared, 0);
+        shared.connection_lost(generation, "closed".into());
+        assert!(drain(&shared).is_empty());
+        assert!(!shared.lock().alive);
+
+        let generation = started(&shared, 0);
+        shared.lock().uncommitted = true;
+        shared.connection_lost(generation, "closed".into());
+        assert_eq!(drain(&shared), ["error"]);
+        assert!(!shared.lock().uncommitted);
     }
 
     #[test]

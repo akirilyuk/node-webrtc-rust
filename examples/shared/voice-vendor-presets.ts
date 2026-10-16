@@ -218,11 +218,15 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
         apiKey: env('FISH_API_KEY'),
       },
       // gateStt: true streams only VAD-gated speech to Fish, which bills STT for the audio sent.
-      VOICE_AGENT_VAD_PRESET,
+      // Fish sends no partials, so barge-in must not wait for one (VAD alone interrupts TTS).
+      {
+        ...VOICE_AGENT_VAD_PRESET,
+        bargeIn: { ...VOICE_AGENT_VAD_PRESET.bargeIn, requireSttPartial: false },
+      },
     ),
     ttsPhrase: 'Fish Audio transcribe and Drama three live check.',
     notes:
-      'Single FISH_API_KEY. Fish STT returns finals only (manual commit after VAD end, no partials), so semantic barge-in (requireSttPartial) never fires. No language option: Fish auto-detects.',
+      'Single FISH_API_KEY. Fish STT returns finals only (manual commit after VAD end). Fish STT sends no partial transcripts, so this preset sets bargeIn.requireSttPartial to false; without that, barge-in never fires during agent speech. No language option: Fish auto-detects.',
   },
   assemblyai: {
     id: 'assemblyai',

@@ -138,8 +138,12 @@ export function voiceConfigForVendor(id: LiveVendorId) {
       return {
         stt: { provider: 'fishaudio' as const, model: 'transcribe-1' },
         tts: { provider: 'fishaudio' as const, model: 'drama-3', voice: 'default' },
-        // Fish returns finals only and bills STT per streamed audio: gate STT on VAD.
-        vad: VOICE_AGENT_VAD_PRESET,
+        // Fish returns finals only and bills STT per streamed audio: gate STT on VAD. No
+        // partials either, so barge-in must not wait for one.
+        vad: {
+          ...VOICE_AGENT_VAD_PRESET,
+          bargeIn: { ...VOICE_AGENT_VAD_PRESET.bargeIn, requireSttPartial: false },
+        },
       }
     case 'assemblyai':
       return {

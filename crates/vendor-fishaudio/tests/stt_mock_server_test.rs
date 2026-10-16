@@ -480,6 +480,57 @@ async fn close_with_a_commit_pending_errors_answers_it_and_the_next_push_reconne
     expect_done(&mut stt).await;
 }
 
+/// Nothing was lost: no commit pending, no audio since the last commit. The agent would turn
+/// an error here into an STT error during silence, so the close only marks the socket dead.
+#[tokio::test]
+async fn idle_close_without_pending_audio_is_not_an_error() {
+    let mut mock = Mock::start().await;
+    let (mut stt, conn) = ready_provider(&mut mock).await;
+    drop(conn);
+
+    // 500 ms of real time: only `None`, never an error.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    while tokio::time::Instant::now() < deadline {
+        assert!(stt.poll_output().await.unwrap().is_none());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // The next push reconnects, and the new socket works end to end.
+    within(stt.push_audio(pcm(320, 4))).await.unwrap();
+    let mut second = mock.next_conn().await;
+    within(stt.request_finalize()).await.unwrap();
+    assert_audio_frame(&read_frame(&mut second.ws).await, &pcm(320, 4));
+    assert_commit_frame(&read_frame(&mut second.ws).await);
+    committed(&mut second.ws, "back again").await;
+    expect_final(&mut stt, "back again").await;
+    expect_done(&mut stt).await;
+}
+
+#[tokio::test]
+async fn close_with_uncommitted_audio_surfaces_one_error() {
+    let mut mock = Mock::start().await;
+    let (mut stt, mut conn) = ready_provider(&mut mock).await;
+
+    for seed in 0..3 {
+        within(stt.push_audio(pcm(320, seed))).await.unwrap();
+    }
+    for seed in 0..3 {
+        assert_audio_frame(&read_frame(&mut conn.ws).await, &pcm(320, seed));
+    }
+    drop(conn); // closes before any commit: the three chunks are lost
+
+    let err = next_output(&mut stt)
+        .await
+        .expect_err("lost audio is an error");
+    assert!(err.to_string().contains("fishaudio stt socket"), "{err}");
+    // Exactly one error, then nothing.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+    while tokio::time::Instant::now() < deadline {
+        assert!(stt.poll_output().await.unwrap().is_none());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn reconnect_after_close_sends_no_stale_audio() {
     let mut mock = Mock::start().await;

@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  packages: read # pull the ci-build image from GHCR
 
 concurrency:
   group: vendor-live-fishaudio-${{ github.ref }}
@@ -59,4 +60,4 @@ jobs:
           FISH_API_KEY: ${{ secrets.FISH_AUDIO_API }}
           FISH_LIVE_REQUIRED: '1'
         run: |
-          cargo test -p node-webrtc-rust-vendor-fishaudio --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -E '^fishaudio_' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status
+          cargo test -p node-webrtc-rust-vendor-fishaudio --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'fishaudio_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status

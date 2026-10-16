@@ -99,6 +99,7 @@ mod tests {
             voice: Some("en-US-Neural2-A".into()),
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         })
         .unwrap();
         assert_eq!(tts.language, "en-US");

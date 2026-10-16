@@ -21,6 +21,7 @@ fn deepgram_factory_creates_stt_and_tts() {
         voice: None,
         api_key: Some("test-key".into()),
         endpoint: None,
+        sentence_case: Default::default(),
     });
     assert!(tts.is_ok());
 }

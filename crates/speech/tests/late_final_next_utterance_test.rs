@@ -151,6 +151,7 @@ async fn make_agent(script: &Arc<Mutex<Script>>, gate_hold_ms: u32) -> Arc<Voice
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()

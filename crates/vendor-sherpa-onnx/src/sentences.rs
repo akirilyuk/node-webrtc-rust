@@ -220,9 +220,107 @@ fn split_long(sentence: &str, out: &mut Vec<String>) {
     }
 }
 
+/// Abbreviations (lowercased, without the trailing `.`) that end in `.` without ending a sentence.
+const NON_TERMINAL_ABBREVIATIONS: [&str; 7] = ["mr", "mrs", "ms", "dr", "st", "vs", "etc"];
+
+/// Uppercase the first letter after a sentence end, for the text handed to the TTS engine.
+///
+/// STT finals often start lowercase (`Okay. eight one`). espeak-ng, inside the Piper/VITS
+/// engine, does not end a sentence at `. e`, so the engine renders one sentence: late first
+/// audio and no pause after `Okay.`. With `. E` it renders two.
+///
+/// - After `.`, `!` or `?` followed by one or more whitespace chars, the next char is
+///   uppercased when it is lowercase (`char::to_uppercase`, which may yield several chars).
+/// - Not for an ellipsis (`..` before the terminating `.`), for a token that contains another
+///   `.` (`e.g.`, `i.e.`, `U.S.`), or for `mr`, `mrs`, `ms`, `dr`, `st`, `vs`, `etc`.
+/// - The first char of the text is never changed, and `1.5` is untouched (no whitespace
+///   follows the `.`).
+pub fn capitalize_sentence_starts(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    // Index of the char to uppercase, once the loop reaches it.
+    let mut upper_at: Option<usize> = None;
+    for (i, &c) in chars.iter().enumerate() {
+        if upper_at == Some(i) {
+            out.extend(c.to_uppercase());
+            upper_at = None;
+        } else {
+            out.push(c);
+        }
+        if !matches!(c, '.' | '!' | '?') || !ends_sentence_at(&chars, i) {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j > i + 1 && j < chars.len() && chars[j].is_lowercase() {
+            upper_at = Some(j);
+        }
+    }
+    out
+}
+
+/// Whether the terminator at `chars[i]` can end a sentence (see [`capitalize_sentence_starts`]).
+fn ends_sentence_at(chars: &[char], i: usize) -> bool {
+    if chars[i] != '.' {
+        return true;
+    }
+    if i > 0 && chars[i - 1] == '.' {
+        return false;
+    }
+    let start = chars[..i]
+        .iter()
+        .rposition(|c| c.is_whitespace())
+        .map_or(0, |p| p + 1);
+    let token: String = chars[start..i].iter().collect();
+    if token.contains('.') {
+        return false;
+    }
+    !NON_TERMINAL_ABBREVIATIONS.contains(&token.to_lowercase().as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capitalizes_first_letter_after_sentence_end() {
+        let cases = [
+            ("okay. eight", "okay. Eight"),
+            ("Okay. eight one", "Okay. Eight one"),
+            ("hi! there", "hi! There"),
+            ("really? yes", "really? Yes"),
+            ("a.  b", "a.  B"),
+            ("привет. мир", "привет. Мир"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(capitalize_sentence_starts(input), want, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn leaves_text_without_a_lowercase_sentence_start_unchanged() {
+        for input in [
+            "wait... then",
+            "1.5 apples",
+            "e.g. this",
+            "i.e. that",
+            "Dr. smith",
+            "vs. them",
+            "Okay. Eight",
+            "end.",
+            "你好。世界",
+            "eight one",
+        ] {
+            assert_eq!(capitalize_sentence_starts(input), input, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn multi_char_uppercase_is_applied() {
+        assert_eq!(capitalize_sentence_starts("ok. ß"), "ok. SS");
+    }
 
     #[test]
     fn short_pieces_merge_into_one_sentence() {

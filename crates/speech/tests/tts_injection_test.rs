@@ -76,6 +76,7 @@ async fn tts_injection_emits_agent_speaking_events() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         ..Default::default()
     };
@@ -202,6 +203,7 @@ fn slow_tts_config() -> VoiceAgentConfig {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         ..Default::default()
     }
@@ -313,6 +315,7 @@ fn mock_tts_only_config() -> VoiceAgentConfig {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         ..Default::default()
     }

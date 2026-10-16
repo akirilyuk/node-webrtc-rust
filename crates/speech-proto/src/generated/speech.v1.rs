@@ -138,6 +138,9 @@ pub struct SynthesizeRequest {
     pub speed: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "5")]
     pub ctx: ::core::option::Option<SessionContext>,
+    /// "auto" | "off"; empty = auto (older clients)
+    #[prost(string, tag = "6")]
+    pub sentence_case: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SynthesizeResponse {

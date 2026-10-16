@@ -153,6 +153,7 @@ async fn empty_leftover_final_while_speaking_does_not_drop_real_utterance() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()

@@ -124,6 +124,7 @@ async fn cluster_leftover_empty_final_while_speaking_does_not_drop_real_utteranc
             voice: Some("amy".into()),
             api_key: Some("test-token".into()),
             endpoint: Some(url.clone()),
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()

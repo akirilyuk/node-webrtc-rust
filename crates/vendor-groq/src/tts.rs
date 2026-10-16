@@ -137,6 +137,7 @@ mod tests {
                 voice: None,
                 api_key: Some("k".into()),
                 endpoint: None,
+                sentence_case: Default::default(),
             }),
             Err(SpeechError::Config(_))
         ));

@@ -9,7 +9,7 @@ use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsOpenWait, TtsProgressiveSink, TtsProvider, TtsSynthesis,
 };
 use node_webrtc_rust_speech_proto::v1::speech_client::SpeechClient;
-use node_webrtc_rust_speech_proto::v1::{ModelRef, SynthesizeRequest};
+use node_webrtc_rust_speech_proto::v1::{ModelRef, SessionContext, SynthesizeRequest};
 use tonic::{Code, Request};
 
 use crate::channel::{
@@ -46,6 +46,25 @@ fn vendor_error(status: &tonic::Status) -> SpeechError {
     SpeechError::Vendor {
         vendor: "cluster-sherpa".into(),
         message: status.message().to_string(),
+    }
+}
+
+/// Build the `Synthesize` request for `text` from the TTS config.
+fn synthesize_request(cfg: &TtsConfig, text: &str, ctx: SessionContext) -> SynthesizeRequest {
+    let model_path = cfg
+        .model_path
+        .clone()
+        .unwrap_or_else(|| "/models/sherpa/tts/default".to_string());
+    SynthesizeRequest {
+        model: Some(ModelRef {
+            model_path,
+            catalog_id: String::new(),
+        }),
+        text: text.to_string(),
+        speaker_id: cfg.voice.clone().unwrap_or_default(),
+        speed: cfg.model.clone().unwrap_or_default(),
+        ctx: Some(ctx),
+        sentence_case: cfg.sentence_case.as_wire().to_string(),
     }
 }
 
@@ -100,13 +119,6 @@ impl ClusterSherpaTts {
         let channel = tts_channel(&self.endpoint).await?;
         let mut client =
             SpeechClient::new(channel).max_decoding_message_size(MAX_GRPC_MESSAGE_BYTES);
-        let model_path = self
-            .cfg
-            .model_path
-            .clone()
-            .unwrap_or_else(|| "/models/sherpa/tts/default".to_string());
-        let speaker_id = self.cfg.voice.clone().unwrap_or_default();
-        let speed = self.cfg.model.clone().unwrap_or_default();
         let ctx = self
             .session_ctx
             .lock()
@@ -114,16 +126,7 @@ impl ClusterSherpaTts {
             .as_ref()
             .map(session_context_proto)
             .unwrap_or_default();
-        let req = SynthesizeRequest {
-            model: Some(ModelRef {
-                model_path,
-                catalog_id: String::new(),
-            }),
-            text: text.to_string(),
-            speaker_id,
-            speed,
-            ctx: Some(ctx),
-        };
+        let req = synthesize_request(&self.cfg, text, ctx);
         let cancel = sink.as_ref().map(|s| Arc::clone(&s.cancel));
         let is_cancelled = || {
             cancel
@@ -288,5 +291,51 @@ impl TtsProvider for ClusterSherpaTts {
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<TtsSynthesis> {
         self.stream_synthesis(text, sink).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use node_webrtc_rust_speech::config::{SentenceCase, TtsVendor};
+
+    fn cfg(sentence_case: SentenceCase) -> TtsConfig {
+        TtsConfig {
+            provider: TtsVendor::ClusterSherpa,
+            model: None,
+            model_path: Some("/models/sherpa/tts/vits-piper-en_US-amy-medium".into()),
+            voice: Some("0".into()),
+            api_key: None,
+            endpoint: None,
+            sentence_case,
+        }
+    }
+
+    #[test]
+    fn synthesize_request_carries_sentence_case_off() {
+        let req = synthesize_request(
+            &cfg(SentenceCase::Off),
+            "Okay. eight",
+            SessionContext::default(),
+        );
+        assert_eq!(req.sentence_case, "off");
+        assert_eq!(req.text, "Okay. eight");
+    }
+
+    #[test]
+    fn synthesize_request_carries_sentence_case_auto() {
+        let req = synthesize_request(
+            &cfg(SentenceCase::Auto),
+            "Okay. eight",
+            SessionContext::default(),
+        );
+        assert_eq!(req.sentence_case, "auto");
+    }
+
+    #[test]
+    fn empty_wire_value_from_an_older_client_is_auto() {
+        assert_eq!(SentenceCase::from_wire(""), SentenceCase::Auto);
+        assert_eq!(SentenceCase::from_wire("auto"), SentenceCase::Auto);
+        assert_eq!(SentenceCase::from_wire("off"), SentenceCase::Off);
     }
 }

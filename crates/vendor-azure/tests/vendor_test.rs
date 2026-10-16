@@ -21,6 +21,7 @@ fn azure_factory_creates_providers() {
         voice: None,
         api_key: Some("test-key".into()),
         endpoint: Some("eastus.tts.speech.microsoft.com".into()),
+        sentence_case: Default::default(),
     });
     assert!(tts.is_ok());
 }

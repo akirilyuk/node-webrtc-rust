@@ -33,6 +33,7 @@ async fn stop_returns_when_outbound_writer_is_blocked() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         ..Default::default()
     };

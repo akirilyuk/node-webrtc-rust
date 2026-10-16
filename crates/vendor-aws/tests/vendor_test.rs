@@ -21,6 +21,7 @@ fn aws_factory_creates_providers() {
         voice: None,
         api_key: None,
         endpoint: None,
+        sentence_case: Default::default(),
     });
     assert!(tts.is_ok());
 }

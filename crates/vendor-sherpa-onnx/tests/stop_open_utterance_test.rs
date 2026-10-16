@@ -66,6 +66,7 @@ async fn render_speech(tts_path: &str) -> Vec<u8> {
             voice: Some("0".into()),
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         })
         .expect("create tts");
     let chunks = tts.synthesize(PHRASE).await.expect("synthesize");
@@ -104,6 +105,7 @@ async fn stop_with_open_utterance(
             voice: Some("0".into()),
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: with_lid.then(|| LanguageIdConfig {
             enabled: Some(true),
@@ -262,6 +264,7 @@ async fn stop_while_pumping(pcm: Arc<Vec<u8>>, stop_after: Duration) -> Option<D
             voice: Some("0".into()),
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),

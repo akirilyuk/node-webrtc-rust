@@ -135,6 +135,7 @@ async fn run_script(
             voice: Some("amy".into()),
             api_key: Some("test-token".into()),
             endpoint: Some(url.clone()),
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()

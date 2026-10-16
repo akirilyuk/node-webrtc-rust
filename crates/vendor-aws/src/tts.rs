@@ -126,6 +126,7 @@ mod tests {
                 voice: Some("Siri".into()),
                 api_key: None,
                 endpoint: None,
+                sentence_case: Default::default(),
             }),
             Err(SpeechError::Config(_))
         ));

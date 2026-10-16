@@ -23,6 +23,7 @@ fn google_factory_creates_providers() {
             voice: Some("en-US-Neural2-A".into()),
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         })
         .is_ok());
 }

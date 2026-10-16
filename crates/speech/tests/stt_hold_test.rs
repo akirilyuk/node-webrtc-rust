@@ -323,6 +323,7 @@ fn agent_config(
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         replay,

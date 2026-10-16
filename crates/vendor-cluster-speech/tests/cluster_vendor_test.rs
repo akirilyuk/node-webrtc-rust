@@ -36,6 +36,7 @@ fn tts_cfg(endpoint: &str) -> TtsConfig {
         voice: Some("amy".into()),
         api_key: Some("test-token".into()),
         endpoint: Some(endpoint.to_string()),
+        sentence_case: Default::default(),
     }
 }
 

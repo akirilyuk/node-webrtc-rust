@@ -21,6 +21,7 @@ fn groq_factory_creates_providers() {
         voice: Some("troy".into()),
         api_key: Some("test-key".into()),
         endpoint: None,
+        sentence_case: Default::default(),
     });
     assert!(tts.is_ok());
 }

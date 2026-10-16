@@ -18,6 +18,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **tts:** sentence starts are capitalized at the engine input. The first letter after `. `, `! ` and `? ` is uppercased in the text handed to the Sherpa/Piper engine only; the text you sent and the text in events stay as written. Skipped: ellipses, dotted abbreviations, `Mr. Mrs. Ms. Dr. St. vs. etc.`, decimals, and the first letter of the text. Lowercase continuations such as `Okay. eight one six` reached first audio later (amy-medium: 89 ms down to 34 ms for the first chunk) (#447).
   - New `TtsConfig.sentenceCase` (`'auto'` default, `'off'`) and proto `SynthesizeRequest.sentence_case = 6` (empty means auto).
+  - No capital after a single-letter token (`I.`, `J.`) or before a fragment of fewer than two words, so tiny fragments such as `I. am. happy.` stay one sentence for espeak (#449).
 
 ## [0.11.1] - 2026-10-16
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Native + integration tests — requires linux-gnu .node in packages/bindings/.
-# Expects quality to have passed. Native .node and TS dist may come from CI caches
-# (compile-native / build-ts jobs) or are built here on cache miss.
+# Runs inside the ci-test image. The .node is the release artifact the caller staged
+# (main / release) or is built here as a debug binding (PRs). TS dist may come from the
+# build-ts cache or is built here on cache miss. With TURN_AVAILABLE=1 it starts coturn itself.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -21,20 +22,23 @@ echo "==> ensure native binding"
 shopt -s nullglob
 nodes=(packages/bindings/*.node)
 if [[ ${#nodes[@]} -eq 0 ]]; then
-  if [[ "${CI:-}" == "true" ]]; then
-    echo "No .node in CI workspace — compile-native artifact or cache should have restored it." >&2
-    exit 1
-  fi
-  echo "    no .node in workspace — compiling debug linux-gnu binding (local fallback)"
-  ( cd packages/bindings && npx napi build --target x86_64-unknown-linux-gnu && npm run copy:local-node )
+  echo "    no .node in workspace — building debug x86_64-unknown-linux-gnu binding"
+  bash "$CI_STEP" --timeout "${CI_NATIVE_BUILD_TIMEOUT_SEC:-1200}" "native debug build" -- \
+    bash "$ROOT/scripts/ci/build-native-addon.sh" --target x86_64-unknown-linux-gnu --profile debug
   shopt -s nullglob
   nodes=(packages/bindings/*.node)
   if [[ ${#nodes[@]} -eq 0 ]]; then
-    echo "No .node artifact after fallback compile." >&2
+    echo "No .node artifact after native build." >&2
     exit 1
   fi
 else
-  echo "    using $(basename "${nodes[0]}") (artifact or cache)"
+  echo "    using $(basename "${nodes[0]}") (release artifact or earlier build)"
+fi
+
+if [[ "${TURN_AVAILABLE:-}" == "1" ]]; then
+  echo "==> TURN server (coturn in this container)"
+  bash "$ROOT/scripts/ci/turnserver-ci.sh" start
+  trap 'bash "$ROOT/scripts/ci/turnserver-ci.sh" stop' EXIT
 fi
 
 echo "==> sync workspace bindings for npm test (registry copy under packages/sdk)"
@@ -94,7 +98,7 @@ echo "==> helpers native integration tests"
 # Native transport trace for failures only. The bindings write one bounded file per vitest worker
 # process ({pid}) when WNR_LOG_FILE is set (packages/bindings/src/native_trace.rs: transport
 # targets only, no customer content). The files are an artifact when this step fails
-# (.github/actions/ci-run-integration-tests) and are deleted when it passes.
+# (.github/workflows/reusable-test.yml) and are deleted when it passes.
 # Guard: packages/helpers/tests/native-trace-ci-wiring.test.ts (net.connect-stall-no-timeout).
 NATIVE_TRACE_DIR="$ROOT/.test-logs/native-trace"
 NATIVE_TRACE_RUST_LOG="dtls=trace,webrtc_dtls=trace,webrtc::dtls_transport=trace,webrtc::peer_connection=trace,webrtc::mux=debug,webrtc_ice=trace,webrtc_sctp=trace,webrtc::sctp_transport=trace"
@@ -112,5 +116,8 @@ fi
 
 echo "==> Sherpa roundtrip E2E (all start:roundtrip-*)"
 bash scripts/ci/run-sherpa-example-ci.sh e2e
+
+echo "==> cargo target sizes (build cache sizing)"
+du -sh target third_party/*/target 2>/dev/null || true
 
 echo "==> Integration tests OK"

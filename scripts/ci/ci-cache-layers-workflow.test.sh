@@ -166,43 +166,6 @@ fi
 grep -q 'ensure-gnu-tar-alpine.sh' "$linux" || fail "musl linux build must ensure GNU tar before Actions cache"
 grep -q 'ensure-gnu-tar-alpine.sh' .github/actions/native-binding-cache/action.yml \
   || fail "native-binding-cache must ensure GNU tar before musl restore"
-python3 - "$pr" <<'PY' || fail "PR native path filter over-invalidates Rust builds"
-from pathlib import Path
-import re
-import sys
-
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-match = re.search(
-    r"(?ms)^\s{12}workflows_native:\n(.*?)(?=^\s{12}workflows_test:\n)",
-    text,
-)
-if not match:
-    raise SystemExit("workflows_native filter not found")
-block = match.group(1)
-required = (
-    "scripts/ci/build-native-addon.sh",
-    "scripts/ci/build-sherpa-onnx-musl-libs.sh",
-    "scripts/ci/install-alpine-native-toolchain.sh",
-    "scripts/ci/native-cache-epoch",
-)
-for path in required:
-    if path not in block:
-        raise SystemExit(f"compile-affecting path missing from workflows_native: {path}")
-orchestration_only = (
-    "scripts/ci/native_build_contract.py",
-    "scripts/ci/native-build-fingerprint.sh",
-    "scripts/ci/native-binding-cache-key.sh",
-    "scripts/ci/native-artifact-",
-    "scripts/ci/collect-native-tool-identity.sh",
-    "scripts/ci/resolve-native-main-bundle",
-    "scripts/ci/resolve_native_main_bundle.py",
-    "scripts/ci/plan-native-builds.sh",
-)
-for path in orchestration_only:
-    if path in block:
-        raise SystemExit(f"orchestration-only path triggers native compile: {path}")
-PY
-echo "ok: canonical compile recipe is hashed; orchestration-only edits do not compile"
 
 # --- Cargo: no broad restore-keys on target/; exact save present ---
 if grep -A20 'Restore Cargo target' "$linux" | grep -q 'restore-keys:'; then
@@ -347,7 +310,7 @@ if "workflow_dispatch:" not in on_block:
 # Required checks (main ruleset) must not be gated on the pull_request event.
 if "github.event_name" in pr:
     raise SystemExit("build.yml jobs must not branch on github.event_name (skipped under dispatch)")
-for name in ("Typecheck & lint", "Compile native", "Build TypeScript", "Test"):
+for name in ("Typecheck & lint", "Build TypeScript", "Test"):
     if f"name: {name}\n" not in pr:
         raise SystemExit(f"build.yml missing required check job name: {name}")
 # Every pull_request payload ref needs a dispatch fallback.

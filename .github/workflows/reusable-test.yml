@@ -1,4 +1,4 @@
-name: Reusable — integration tests (host Docker + coturn)
+name: Reusable — integration tests (ci-test container, coturn in-process)
 
 on:
   workflow_call:
@@ -11,18 +11,10 @@ on:
         description: When 'true', exit immediately (docs-only / CI-only skip gates) — job still succeeds for required checks
         type: string
         default: 'false'
-      quality_result:
-        description: Result of the Typecheck & lint job (success required when skip is false)
-        type: string
-        default: skipped
       binding_artifact:
         description: Uploaded .node artifact from compile/build-linux (skip download when empty)
         type: string
         default: ''
-      binding_profile:
-        description: native-binding-cache profile when artifact download is skipped
-        type: string
-        default: debug
       require_binding_artifact:
         description: Fail when the binding artifact is missing (compile/build-linux ran)
         type: string
@@ -40,9 +32,16 @@ jobs:
   test:
     name: Test
     runs-on: self-hosted
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-test:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       TURN_AVAILABLE: '1'
-      CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
     steps:
       # workflow_call coerces booleans; normalize once in bash for reliable step if: gates.
       - name: Resolve integration test gates
@@ -75,55 +74,6 @@ jobs:
             echo "needs_ts=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Require quality passed before integration tests
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && inputs.quality_result != 'success'
-        run: |
-          echo "Typecheck & lint must pass before integration tests (quality=${{ inputs.quality_result }})." >&2
-          exit 1
-
-      - name: Prepare workspace
-        if: steps.gate.outputs.skip != 'true'
-        run: |
-          set -euo pipefail
-          uid="$(id -u)"
-          gid="$(id -g)"
-          declare -a roots=()
-          add_root() {
-            local p="${1:-}"
-            [[ -n "$p" && -d "$p" ]] || return 0
-            local existing
-            for existing in "${roots[@]+"${roots[@]}"}"; do
-              [[ "$existing" == "$p" ]] && return 0
-            done
-            roots+=("$p")
-          }
-          add_root "${RUNNER_WORKSPACE:-}"
-          add_root "${GITHUB_WORKSPACE:-}"
-          if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
-            add_root "$(dirname "${GITHUB_WORKSPACE}")"
-          fi
-          if [[ ${#roots[@]} -eq 0 ]]; then
-            echo "No workspace root to reset (RUNNER_WORKSPACE/GITHUB_WORKSPACE unset)."
-            exit 0
-          fi
-          for root in "${roots[@]}"; do
-            echo "Resetting permissions under ${root} (uid=${uid} gid=${gid})"
-            docker run --rm \
-              -v "${root}:${root}" \
-              alpine:3.20 \
-              sh -c "rm -rf \
-                \"${root}/target\" \
-                \"${root}/node_modules\" \
-                \"${root}/node-webrtc-rust/target\" \
-                \"${root}/node-webrtc-rust/node_modules\" \
-                \"${root}/packages\"/*/node_modules \
-                \"${root}/examples\"/*/node_modules \
-                \"${root}/node-webrtc-rust/packages\"/*/node_modules \
-                \"${root}/node-webrtc-rust/examples\"/*/node_modules \
-                2>/dev/null || true; \
-                chown -R ${uid}:${gid} \"${root}\""
-          done
-
       - uses: actions/checkout@v4
         if: steps.gate.outputs.skip != 'true'
 
@@ -150,58 +100,26 @@ jobs:
           fi
           cp "${nodes[0]}" packages/bindings/
 
-      # GHA cache restore often misses in workflow_call jobs even after a hit in the
-      # caller (compile-native). Artifact download is the reliable same-run path.
-      - uses: ./.github/actions/native-binding-cache
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && (inputs.binding_artifact == '' || steps.binding-artifact.outcome == 'failure')
-        with:
-          target: x86_64-unknown-linux-gnu
-          profile: ${{ inputs.binding_profile }}
-
-      - name: Verify native binding in workspace
-        if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true'
-        run: |
-          shopt -s nullglob
-          files=(packages/bindings/*.node)
-          if [[ ${#files[@]} -eq 0 ]]; then
-            echo "No .node in packages/bindings after artifact/cache restore." >&2
-            exit 1
-          fi
-          echo "Native binding ready: $(basename "${files[0]}")"
-
       - uses: ./.github/actions/ci-cache-ts-dist
         if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_ts == 'true'
         id: ts-cache
         with:
           node_major: '20'
 
-      # Sherpa model weights before Docker E2E — separate from native/Cargo caches.
-      - uses: ./.github/actions/ci-cache-sherpa-models
-        id: sherpa-cache
-        if: steps.gate.outputs.skip != 'true'
-
-      - uses: ./.github/actions/ci-run-integration-tests
+      - name: Run integration tests (ci-test container, coturn in-process)
         id: integration
         if: steps.gate.outputs.skip != 'true'
-        with:
-          test_script: ${{ inputs.test_script }}
-          ci_image: ${{ env.CI_IMAGE }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          ts_dist_cache_hit: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
+        env:
+          TS_DIST_CACHE_HIT: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
+        run: bash "${{ inputs.test_script }}"
 
-      # The download happens inside ci-build, where npm is available. Save only
-      # after successful integration so partial/corrupt model dirs never persist.
-      - name: Save repaired/downloaded Sherpa model dirs
-        if: |
-          steps.gate.outputs.skip != 'true' &&
-          steps.integration.outcome == 'success' &&
-          (
-            steps.sherpa-cache.outputs.cache-hit != 'true' ||
-            steps.sherpa-cache.outputs.cache-valid != 'true'
-          )
-        uses: actions/cache/save@v4
+      # Native DTLS/ICE trace written by scripts/ci/run-pr-integration.sh. The script deletes the
+      # directory when the helpers integration step passes, so files exist only after that step failed.
+      - name: Upload native trace (helpers integration failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          path: |
-            examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
-            examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low
-          key: ${{ steps.sherpa-cache.outputs.cache-key }}
+          name: native-trace-${{ github.run_id }}
+          path: .test-logs/native-trace
+          if-no-files-found: ignore
+          retention-days: 7

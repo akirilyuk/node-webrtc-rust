@@ -18,6 +18,7 @@ const EXPECTED_VENDOR_IDS = [
   'deepgram',
   'elevenlabs',
   'cartesia',
+  'fishaudio',
   'assemblyai',
   'google',
   'groq',

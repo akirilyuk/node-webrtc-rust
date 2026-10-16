@@ -14,6 +14,7 @@ members = [
     "crates/vendor-elevenlabs",
     "crates/vendor-google",
     "crates/vendor-cartesia",
+    "crates/vendor-fishaudio",
     "crates/vendor-assemblyai",
     "crates/vendor-groq",
     "crates/vendor-azure",

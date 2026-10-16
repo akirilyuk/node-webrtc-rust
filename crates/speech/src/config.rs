@@ -372,6 +372,7 @@ pub enum TtsVendor {
     Elevenlabs,
     Google,
     Cartesia,
+    Fishaudio,
     Groq,
     Azure,
     Aws,
@@ -392,6 +393,7 @@ impl TtsVendor {
             Self::Elevenlabs => "elevenlabs",
             Self::Google => "google",
             Self::Cartesia => "cartesia",
+            Self::Fishaudio => "fishaudio",
             Self::Groq => "groq",
             Self::Azure => "azure",
             Self::Aws => "aws",
@@ -955,6 +957,14 @@ mod vendor_wire_tests {
             assert_eq!(parsed.as_str(), json.trim_matches('"'));
             assert_eq!(serde_json::to_string(&parsed).unwrap(), json);
         }
+    }
+
+    #[test]
+    fn fishaudio_tts_vendor_serde_round_trip() {
+        let parsed: TtsVendor = serde_json::from_str("\"fishaudio\"").unwrap();
+        assert_eq!(parsed, TtsVendor::Fishaudio);
+        assert_eq!(parsed.as_str(), "fishaudio");
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"fishaudio\"");
     }
 }
 

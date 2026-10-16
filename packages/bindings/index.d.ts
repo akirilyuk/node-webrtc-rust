@@ -302,6 +302,7 @@ export const enum JsTtsVendor {
   Elevenlabs = 'elevenlabs',
   Google = 'google',
   Cartesia = 'cartesia',
+  Fishaudio = 'fishaudio',
   Groq = 'groq',
   Azure = 'azure',
   Aws = 'aws',

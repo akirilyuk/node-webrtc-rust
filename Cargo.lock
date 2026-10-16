@@ -3764,6 +3764,7 @@ dependencies = [
  "node-webrtc-rust-vendor-cluster-speech",
  "node-webrtc-rust-vendor-deepgram",
  "node-webrtc-rust-vendor-elevenlabs",
+ "node-webrtc-rust-vendor-fishaudio",
  "node-webrtc-rust-vendor-google",
  "node-webrtc-rust-vendor-groq",
  "node-webrtc-rust-vendor-mock",

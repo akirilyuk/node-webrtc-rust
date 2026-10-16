@@ -12,6 +12,7 @@ use node_webrtc_rust_vendor_cartesia::CartesiaFactory;
 use node_webrtc_rust_vendor_cluster_speech::ClusterSherpaFactory;
 use node_webrtc_rust_vendor_deepgram::DeepgramFactory;
 use node_webrtc_rust_vendor_elevenlabs::ElevenLabsFactory;
+use node_webrtc_rust_vendor_fishaudio::FishAudioFactory;
 use node_webrtc_rust_vendor_google::GoogleFactory;
 use node_webrtc_rust_vendor_groq::GroqFactory;
 use node_webrtc_rust_vendor_mock::MockFactory;
@@ -38,6 +39,8 @@ pub fn default_vendor_registry() -> Arc<VendorRegistry> {
     registry.register_tts(TtsVendor::Google, arc_factory(GoogleFactory));
 
     registry.register_tts(TtsVendor::Cartesia, arc_factory(CartesiaFactory));
+
+    registry.register_tts(TtsVendor::Fishaudio, arc_factory(FishAudioFactory));
 
     registry.register_stt(SttVendor::Assemblyai, arc_factory(AssemblyAiFactory));
 

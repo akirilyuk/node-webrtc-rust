@@ -12,6 +12,7 @@
  * | deepgram   | yes        | yes        | Deepgram listen + Aura TTS    |
  * | elevenlabs | yes        | yes        | Scribe STT + ElevenLabs TTS   |
  * | cartesia   | no         | yes        | OpenAI STT + Cartesia TTS     |
+ * | fishaudio  | no         | yes        | OpenAI STT + Fish Audio TTS   |
  * | assemblyai | yes        | no         | AssemblyAI STT + OpenAI TTS   |
  * | google     | yes        | yes        | Google STT + Google TTS       |
  * | groq       | yes        | yes        | Groq Whisper file + Orpheus   |
@@ -43,6 +44,7 @@ export type LiveVendorId =
   | 'deepgram'
   | 'elevenlabs'
   | 'cartesia'
+  | 'fishaudio'
   | 'assemblyai'
   | 'google'
   | 'groq'
@@ -92,6 +94,8 @@ function resolveTtsApiKey(tts: TtsConfig): string | undefined {
       return env('ELEVENLABS_API_KEY')
     case 'cartesia':
       return env('CARTESIA_API_KEY')
+    case 'fishaudio':
+      return env('FISH_API_KEY')
     case 'google':
       return env('GOOGLE_API_KEY')
     case 'groq':
@@ -172,6 +176,23 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
     ),
     ttsPhrase: 'Cartesia sonic live synthesis check.',
     notes: 'Set CARTESIA_VOICE_ID to your Cartesia voice id. STT uses OpenAI for the demo pairing.',
+  },
+  fishaudio: {
+    id: 'fishaudio',
+    label: 'Fish Audio TTS (Drama 3)',
+    requiredEnv: ['FISH_API_KEY', 'OPENAI_API_KEY'],
+    config: withKeys(
+      { provider: 'openai', model: 'whisper-1', language: 'en' },
+      {
+        provider: 'fishaudio',
+        model: 'drama-3',
+        voice: process.env.FISH_VOICE_ID ?? 'default',
+        apiKey: env('FISH_API_KEY'),
+      },
+    ),
+    ttsPhrase: 'Fish Audio Drama three live synthesis check.',
+    notes:
+      'FISH_VOICE_ID optional (Fish default voice when unset). STT uses OpenAI for the demo pairing.',
   },
   assemblyai: {
     id: 'assemblyai',

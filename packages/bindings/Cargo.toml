@@ -28,6 +28,7 @@ node-webrtc-rust-vendor-assemblyai = { path = "../../crates/vendor-assemblyai" }
 node-webrtc-rust-vendor-aws = { path = "../../crates/vendor-aws", features = ["live"] }
 node-webrtc-rust-vendor-azure = { path = "../../crates/vendor-azure", features = ["live"] }
 node-webrtc-rust-vendor-cartesia = { path = "../../crates/vendor-cartesia", features = ["live"] }
+node-webrtc-rust-vendor-fishaudio = { path = "../../crates/vendor-fishaudio", features = ["live"] }
 node-webrtc-rust-vendor-deepgram = { path = "../../crates/vendor-deepgram", features = ["live"] }
 node-webrtc-rust-vendor-elevenlabs = { path = "../../crates/vendor-elevenlabs", features = ["live"] }
 node-webrtc-rust-vendor-google = { path = "../../crates/vendor-google", features = ["live"] }

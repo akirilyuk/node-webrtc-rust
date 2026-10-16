@@ -130,6 +130,18 @@ describe('crate-aligned allowlist snapshots', () => {
     ])
   })
 
+  test('fishaudio models', () => {
+    expect(getVendor('fishaudio')?.defaultTtsModel).toBe('drama-3')
+    expect(ttsModelAllowlist('fishaudio')).toEqual([
+      'drama-3',
+      's2.1-pro',
+      's2.1-pro-free',
+      's2-pro',
+    ])
+    expect(ttsModelAllowlist('fishaudio')).not.toContain('s1')
+    expect(getVendor('fishaudio')?.stt).toBe(false)
+  })
+
   test('google STT models', () => {
     expect(sttModelAllowlist('google')).toEqual(['chirp_3', 'chirp_2', 'telephony', 'latest_long'])
   })

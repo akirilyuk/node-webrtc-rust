@@ -157,6 +157,8 @@ export function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
       return JsTtsVendor.Google
     case 'cartesia':
       return JsTtsVendor.Cartesia
+    case 'fishaudio':
+      return JsTtsVendor.Fishaudio
     case 'groq':
       return JsTtsVendor.Groq
     case 'azure':
@@ -194,6 +196,7 @@ export const TTS_VENDOR_VALUES = [
   'elevenlabs',
   'google',
   'cartesia',
+  'fishaudio',
   'groq',
   'azure',
   'aws',

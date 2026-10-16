@@ -8,6 +8,7 @@ export type LiveVendorId =
   | 'deepgram'
   | 'elevenlabs'
   | 'cartesia'
+  | 'fishaudio'
   | 'assemblyai'
   | 'google'
   | 'groq'
@@ -45,6 +46,12 @@ export const LIVE_VENDOR_METAS: LiveVendorPresetMeta[] = [
     requiredEnv: ['CARTESIA_API_KEY', 'OPENAI_API_KEY'],
     sttProvider: 'openai',
     ttsProvider: 'cartesia',
+  },
+  {
+    id: 'fishaudio',
+    requiredEnv: ['FISH_API_KEY', 'OPENAI_API_KEY'],
+    sttProvider: 'openai',
+    ttsProvider: 'fishaudio',
   },
   {
     id: 'assemblyai',
@@ -112,6 +119,11 @@ export function voiceConfigForVendor(id: LiveVendorId) {
       return {
         stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
         tts: { provider: 'cartesia' as const, model: 'sonic-3', voice: 'default' },
+      }
+    case 'fishaudio':
+      return {
+        stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
+        tts: { provider: 'fishaudio' as const, model: 'drama-3', voice: 'default' },
       }
     case 'assemblyai':
       return {

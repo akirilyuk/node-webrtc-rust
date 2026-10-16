@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **tts:** Fish Audio TTS vendor `fishaudio` (Drama 3 default, `drama-3`). WebSocket streaming with HTTP fallback; set `FISH_API_KEY` and optionally `FISH_VOICE_ID`. New crate `vendor-fishaudio`, `TtsVendor::Fishaudio`, and a `fishaudio` entry in `@node-webrtc-rust/voice-catalog`.
+
 ## [0.11.2] - 2026-10-16
 
 ### Added

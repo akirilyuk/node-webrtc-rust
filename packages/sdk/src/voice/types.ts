@@ -123,6 +123,7 @@ export type TtsVendor =
   | 'elevenlabs'
   | 'google'
   | 'cartesia'
+  | 'fishaudio'
   | 'groq'
   | 'azure'
   | 'aws'

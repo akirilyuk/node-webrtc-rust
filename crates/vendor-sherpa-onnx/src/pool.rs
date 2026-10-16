@@ -755,6 +755,7 @@ mod tests {
             voice: Some("0".into()),
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         };
         let config_b = TtsConfig {
             provider: node_webrtc_rust_speech::config::TtsVendor::LocalSherpa,
@@ -763,6 +764,7 @@ mod tests {
             voice: Some("1".into()),
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         };
         assert_eq!(
             tts_pool_key(&config_a).unwrap(),

@@ -147,6 +147,7 @@ fn agent_config() -> VoiceAgentConfig {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         ..Default::default()
     }

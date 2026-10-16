@@ -62,8 +62,10 @@ struct Measurement {
 
 fn frame_rms(frame: &[u8]) -> f64 {
     let samples: Vec<f64> = frame
-        .chunks_exact(2)
-        .map(|b| f64::from(i16::from_le_bytes([b[0], b[1]])))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| f64::from(i16::from_le_bytes(*b)))
         .collect();
     if samples.is_empty() {
         return 0.0;
@@ -77,11 +79,11 @@ fn longest_silence_ms(pcm: &[u8]) -> usize {
     let last = WINDOW_END_MS / FRAME_MS;
     let mut longest = 0usize;
     let mut run = 0usize;
-    for (index, frame) in pcm.chunks_exact(FRAME_BYTES).enumerate() {
+    for (index, frame) in pcm.as_chunks::<FRAME_BYTES>().0.iter().enumerate() {
         if index < first || index >= last {
             continue;
         }
-        if frame_rms(frame) < SILENT_RMS {
+        if frame_rms(&frame[..]) < SILENT_RMS {
             run += 1;
             longest = longest.max(run);
         } else {
@@ -147,6 +149,7 @@ async fn casing_after_first_sentence_changes_first_audio_and_pause() {
         voice: Some("0".into()),
         api_key: None,
         endpoint: None,
+        sentence_case: Default::default(),
     };
     let tts = SherpaFactory.create_tts(&config).expect("create TTS");
     tts.bind_session_context(&VoiceSessionContext {

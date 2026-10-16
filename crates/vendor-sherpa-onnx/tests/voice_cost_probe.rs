@@ -138,6 +138,7 @@ fn tts_config(model_path: &str) -> TtsConfig {
         voice: Some("0".into()),
         api_key: None,
         endpoint: None,
+        sentence_case: Default::default(),
     }
 }
 

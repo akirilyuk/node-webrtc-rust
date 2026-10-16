@@ -107,6 +107,7 @@ async fn make_agent(first_chunk_delay: Duration) -> (Arc<VoiceAgent>, Arc<Atomic
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         ..Default::default()
     };

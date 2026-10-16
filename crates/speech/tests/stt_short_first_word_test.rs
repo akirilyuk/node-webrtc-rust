@@ -181,6 +181,7 @@ async fn make_agent(alpha_log: Arc<Mutex<Vec<usize>>>) -> Arc<VoiceAgent> {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()

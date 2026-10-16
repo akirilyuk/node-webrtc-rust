@@ -171,6 +171,7 @@ mod tests {
                 voice: Some("unknown".into()),
                 api_key: Some("k".into()),
                 endpoint: Some("eastus.tts.speech.microsoft.com".into()),
+                sentence_case: Default::default(),
             }),
             Err(SpeechError::Config(_))
         ));

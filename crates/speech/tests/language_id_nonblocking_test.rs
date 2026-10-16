@@ -222,6 +222,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -296,6 +297,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -647,6 +649,7 @@ fn agent_with_overlap_tracking_lid(
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -962,6 +965,7 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -1056,6 +1060,7 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
                 voice: None,
                 api_key: None,
                 endpoint: None,
+                sentence_case: Default::default(),
             }),
             language_id: Some(LanguageIdConfig {
                 enabled: Some(true),
@@ -1245,6 +1250,7 @@ fn agent_with_counting_lid_timing_min(
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -1414,6 +1420,7 @@ fn agent_with_timed_overlap_lid(
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -1970,6 +1977,7 @@ async fn lid_error_does_not_block_final() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),
@@ -2118,6 +2126,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
                 voice: None,
                 api_key: None,
                 endpoint: None,
+                sentence_case: Default::default(),
             }),
             language_id: Some(LanguageIdConfig {
                 enabled: Some(true),
@@ -2400,6 +2409,7 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
                 voice: None,
                 api_key: None,
                 endpoint: None,
+                sentence_case: Default::default(),
             }),
             language_id: Some(LanguageIdConfig {
                 enabled: Some(true),

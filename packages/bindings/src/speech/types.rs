@@ -4,8 +4,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
-    NoiseSuppressionProvider, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
-    VoiceAgentConfig, VoiceSessionContext,
+    NoiseSuppressionProvider, SentenceCase, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig,
+    VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -307,6 +307,8 @@ pub struct JsTtsConfig {
     pub api_key: Option<String>,
     pub endpoint: Option<String>,
     pub post_utterance_silence_ms: Option<u32>,
+    /// `"auto"` (default) or `"off"`; see `SentenceCase`.
+    pub sentence_case: Option<String>,
 }
 
 impl From<JsTtsConfig> for TtsConfig {
@@ -318,6 +320,11 @@ impl From<JsTtsConfig> for TtsConfig {
             voice: value.voice,
             api_key: value.api_key,
             endpoint: value.endpoint,
+            sentence_case: value
+                .sentence_case
+                .as_deref()
+                .map(SentenceCase::from_wire)
+                .unwrap_or_default(),
         }
     }
 }

@@ -50,6 +50,7 @@ fn speaker_config() -> VoiceAgentConfig {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()
@@ -267,6 +268,7 @@ async fn agent_playback_guard_suppresses_early_barge_in() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()
@@ -347,6 +349,7 @@ async fn use_vad_false_skips_auto_barge_on_speech_start() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()
@@ -426,6 +429,7 @@ async fn speech_end_during_agent_speaking_defers_finalize_until_playback_ends() 
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()
@@ -570,6 +574,7 @@ async fn stt_partial_gated_barge_flushes_agent_tts_after_partial() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()
@@ -665,6 +670,7 @@ async fn stt_partial_gated_barge_ignores_vad_without_transcript() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()
@@ -1439,6 +1445,7 @@ async fn second_turn_stt_finalizes_after_prior_utterance_final() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()
@@ -1512,6 +1519,7 @@ async fn barge_disabled_stt_on_vad_during_agent_tts() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()

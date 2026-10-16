@@ -478,6 +478,7 @@ mod tests {
             voice: Some(voice.into()),
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }
     }
 

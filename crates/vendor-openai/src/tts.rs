@@ -514,6 +514,7 @@ mod tests {
             voice: None,
             api_key: Some("test".into()),
             endpoint: None,
+            sentence_case: Default::default(),
         })
         .unwrap();
         assert_eq!(tts.model, "tts-1");

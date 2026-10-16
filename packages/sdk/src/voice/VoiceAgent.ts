@@ -112,6 +112,7 @@ function toJsTtsConfig(tts: TtsConfig): JsTtsConfig {
     apiKey: tts.apiKey,
     endpoint: tts.endpoint,
     postUtteranceSilenceMs: tts.postUtteranceSilenceMs,
+    sentenceCase: tts.sentenceCase,
   }
 }
 

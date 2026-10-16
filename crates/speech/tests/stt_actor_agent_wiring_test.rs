@@ -267,6 +267,7 @@ async fn agent_with(
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: language_id_config,
         vad,

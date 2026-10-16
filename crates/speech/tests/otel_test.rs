@@ -30,6 +30,7 @@ fn mock_agent() -> std::sync::Arc<VoiceAgent> {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         ..Default::default()
     };

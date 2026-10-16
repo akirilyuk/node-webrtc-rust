@@ -315,6 +315,8 @@ export interface JsTtsConfig {
   apiKey?: string
   endpoint?: string
   postUtteranceSilenceMs?: number
+  /** `"auto"` (default) or `"off"`; see `SentenceCase`. */
+  sentenceCase?: string
 }
 export const enum JsNoiseSuppressionProvider {
   None = 'none',

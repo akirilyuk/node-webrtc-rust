@@ -63,6 +63,7 @@ fn tts_config(model: &str) -> TtsConfig {
         voice: Some("alloy".into()),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         endpoint: None,
+        sentence_case: Default::default(),
     }
 }
 

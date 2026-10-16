@@ -419,6 +419,42 @@ pub struct SttConfig {
     pub endpoint: Option<String>,
 }
 
+/// Whether the TTS engine input gets sentence-start capitalization.
+///
+/// STT finals often start lowercase (`Okay. eight one`). The Piper/VITS engine (espeak-ng)
+/// does not treat `. e` as a sentence end, so it renders one sentence with a late first
+/// chunk and no pause.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SentenceCase {
+    /// The first letter after `. `, `! `, `? ` is uppercased in the text handed to the TTS
+    /// engine only; the caller's text is unchanged everywhere else.
+    #[default]
+    Auto,
+    /// The engine gets the text as given.
+    Off,
+}
+
+impl SentenceCase {
+    /// Wire value used by the cluster speech protocol (`"auto"` | `"off"`).
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Off => "off",
+        }
+    }
+
+    /// Parse the wire value: `"off"` is [`SentenceCase::Off`], anything else (including an
+    /// empty string from older clients) is [`SentenceCase::Auto`].
+    pub fn from_wire(value: &str) -> Self {
+        if value.trim().eq_ignore_ascii_case("off") {
+            Self::Off
+        } else {
+            Self::Auto
+        }
+    }
+}
+
 /// TTS vendor configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -434,6 +470,9 @@ pub struct TtsConfig {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Sentence-start capitalization of the text handed to the TTS engine. See [`SentenceCase`].
+    #[serde(default)]
+    pub sentence_case: SentenceCase,
 }
 
 /// Options for [`crate::agent::VoiceAgent::update_tts_config`].
@@ -769,6 +808,7 @@ mod language_id_config_tests {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         });
         let mock = Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -777,6 +817,7 @@ mod language_id_config_tests {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         });
         let cluster = Some(TtsConfig {
             provider: TtsVendor::ClusterSherpa,
@@ -785,6 +826,7 @@ mod language_id_config_tests {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         });
         assert!(lid_tts_exclusion_enabled(&Some(lid.clone()), &local));
         assert!(!lid_tts_exclusion_enabled(&Some(lid.clone()), &mock));
@@ -850,6 +892,26 @@ mod language_id_config_tests {
 #[cfg(test)]
 mod vendor_wire_tests {
     use super::*;
+
+    #[test]
+    fn tts_config_sentence_case_defaults_to_auto() {
+        let cfg: TtsConfig = serde_json::from_str(r#"{"provider":"mock"}"#).unwrap();
+        assert_eq!(cfg.sentence_case, SentenceCase::Auto);
+    }
+
+    #[test]
+    fn tts_config_sentence_case_off_deserializes() {
+        let cfg: TtsConfig =
+            serde_json::from_str(r#"{"provider":"mock","sentenceCase":"off"}"#).unwrap();
+        assert_eq!(cfg.sentence_case, SentenceCase::Off);
+    }
+
+    #[test]
+    fn tts_config_sentence_case_bogus_is_rejected() {
+        let err =
+            serde_json::from_str::<TtsConfig>(r#"{"provider":"mock","sentenceCase":"bogus"}"#);
+        assert!(err.is_err());
+    }
 
     #[test]
     fn stt_tts_endpoint_serde_omits_when_none() {
@@ -983,6 +1045,7 @@ impl Default for VoiceAgentConfig {
                 voice: None,
                 api_key: None,
                 endpoint: None,
+                sentence_case: Default::default(),
             }),
             language_id: None,
             post_utterance_silence_ms: None,

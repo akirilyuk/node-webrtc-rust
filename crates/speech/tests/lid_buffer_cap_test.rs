@@ -139,6 +139,7 @@ fn agent_with_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),

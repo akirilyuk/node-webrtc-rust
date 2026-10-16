@@ -72,8 +72,8 @@ pub use config::{
     resolve_min_stt_partial_tokens, resolved_language_id_min_speech_ms,
     resolved_post_utterance_silence_ms, stt_partial_token_count, BargeInConfig, EventDeliveryMode,
     EventsConfig, LanguageIdConfig, NoiseSuppressionConfig, NoiseSuppressionProvider,
-    SendTextToTtsOptions, SttConfig, SttVendor, TtsConfig, TtsVendor, UpdateTtsConfigOptions,
-    VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    SendTextToTtsOptions, SentenceCase, SttConfig, SttVendor, TtsConfig, TtsVendor,
+    UpdateTtsConfigOptions, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 pub use error::{SpeechError, SpeechResult};
 pub use events::{SpeechEvent, SpeechEventBus, SpeechEventKind};

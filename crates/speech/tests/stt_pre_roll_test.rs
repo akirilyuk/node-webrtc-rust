@@ -1651,6 +1651,7 @@ async fn gate_stt_agent_tts_pre_roll_includes_pre_vad_lead_in() {
             voice: None,
             api_key: None,
             endpoint: None,
+            sentence_case: Default::default(),
         }),
         vad,
         ..Default::default()

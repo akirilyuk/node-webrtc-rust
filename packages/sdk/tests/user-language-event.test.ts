@@ -111,11 +111,55 @@ describe('agent_speaking_start timing on the wire', () => {
     expect(msg.firstAudioMs).toBe(240)
   })
 
+  test('forwards sentenceCaseAdjusted when set', () => {
+    const msg = speechEventToControlMessage({
+      type: 'agent_speaking_start',
+      sentenceCaseAdjusted: 2,
+    })
+    expect(msg.sentenceCaseAdjusted).toBe(2)
+    expect(JSON.parse(JSON.stringify(msg)).sentenceCaseAdjusted).toBe(2)
+  })
+
+  test('forwards a zero sentenceCaseAdjusted', () => {
+    const msg = speechEventToControlMessage({
+      type: 'agent_speaking_start',
+      sentenceCaseAdjusted: 0,
+    })
+    expect(JSON.parse(JSON.stringify(msg)).sentenceCaseAdjusted).toBe(0)
+  })
+
   test('leaves them unset when the event carries no timing', () => {
     const msg = speechEventToControlMessage({ type: 'agent_speaking_start' })
     expect(msg.firstChunkMs).toBeUndefined()
     expect(msg.firstAudioMs).toBeUndefined()
+    expect(msg.sentenceCaseAdjusted).toBeUndefined()
     expect(JSON.parse(JSON.stringify(msg))).not.toHaveProperty('firstAudioMs')
+    expect(JSON.parse(JSON.stringify(msg))).not.toHaveProperty('sentenceCaseAdjusted')
+  })
+})
+
+describe('agent_speaking_start sentenceCaseAdjusted', () => {
+  test('native event passes sentenceCaseAdjusted through, including 0', () => {
+    const start = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.AgentSpeakingStart,
+      sentenceCaseAdjusted: 2,
+    })
+    expect(start.sentenceCaseAdjusted).toBe(2)
+    const zero = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.AgentSpeakingStart,
+      sentenceCaseAdjusted: 0,
+    })
+    expect(zero.sentenceCaseAdjusted).toBe(0)
+  })
+
+  test('accepts snake_case and leaves it unset when absent', () => {
+    const snake = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.AgentSpeakingStart,
+      sentence_case_adjusted: 3,
+    } as Parameters<typeof fromJsSpeechEvent>[0])
+    expect(snake.sentenceCaseAdjusted).toBe(3)
+    const plain = fromJsSpeechEvent({ eventType: JsSpeechEventType.AgentSpeakingStart })
+    expect(plain.sentenceCaseAdjusted).toBeUndefined()
   })
 })
 

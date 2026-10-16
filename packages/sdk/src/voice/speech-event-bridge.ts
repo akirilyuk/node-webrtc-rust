@@ -56,6 +56,8 @@ export interface VoiceControlSpeechEventMessage {
   firstChunkMs?: number
   /** `agent_speaking_start`: speak request to first outbound PCM frame (ms). */
   firstAudioMs?: number
+  /** `agent_speaking_start`: letters capitalized at the TTS engine input for this reply. */
+  sentenceCaseAdjusted?: number
   /** `tts_wait`: synthesis start waited this long on refusals (ms). */
   waitMs?: number
   /** `tts_wait`: refused attempts that were retried. */
@@ -113,6 +115,7 @@ export function speechEventToControlMessage(
     droppedMs: event.droppedMs,
     firstChunkMs: event.firstChunkMs,
     firstAudioMs: event.firstAudioMs,
+    sentenceCaseAdjusted: event.sentenceCaseAdjusted,
     waitMs: event.waitMs,
     attempts: event.attempts,
     chars: event.chars,

@@ -53,6 +53,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         speech_ms: event.speech_ms,
         first_chunk_ms: event.first_chunk_ms,
         first_audio_ms: event.first_audio_ms,
+        sentence_case_adjusted: event.sentence_case_adjusted,
         wait_ms: event.wait_ms,
         attempts: event.attempts,
         chars: event.chars,
@@ -148,13 +149,16 @@ mod speech_event_to_js_tests {
         let js = speech_event_to_js(SpeechEvent::agent_speaking_start_with_timing(
             Some(240),
             Some(180),
+            Some(2),
         ));
         assert_eq!(js.event_type, JsSpeechEventType::AgentSpeakingStart);
         assert_eq!(js.first_audio_ms, Some(240));
         assert_eq!(js.first_chunk_ms, Some(180));
+        assert_eq!(js.sentence_case_adjusted, Some(2));
 
         let plain = speech_event_to_js(SpeechEvent::agent_speaking_start());
         assert_eq!(plain.first_audio_ms, None);
         assert_eq!(plain.first_chunk_ms, None);
+        assert_eq!(plain.sentence_case_adjusted, None);
     }
 }

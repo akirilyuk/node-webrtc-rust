@@ -570,6 +570,8 @@ pub struct JsSpeechEvent {
     pub first_chunk_ms: Option<u32>,
     /// `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply.
     pub first_audio_ms: Option<u32>,
+    /// `agent_speaking_start`: letters capitalized at the TTS engine input for this reply (sentenceCase); absent when the TTS vendor does not apply it.
+    pub sentence_case_adjusted: Option<u32>,
     /// `tts_wait`: ms the synthesis start waited on refusals.
     pub wait_ms: Option<u32>,
     /// `tts_wait`: refused attempts that were retried.

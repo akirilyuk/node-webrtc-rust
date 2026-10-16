@@ -43,6 +43,7 @@
 //! | [`pcm`] | Resample and duration helpers |
 //! | [`tts_buffer`] | Outbound TTS PCM queue |
 //! | [`tts_cache`] | Runner-side TTS phrase cache (`CachingTtsProvider`) |
+//! | [`tts_text`] | Engine input text (sentence-start capitalization) and its letter count |
 //!
 //! Debug: set env `VOICE_DEBUG=1` for stderr `[voice-debug]` lines.
 
@@ -62,6 +63,7 @@ pub mod stt_hold;
 pub mod stt_pre_roll;
 pub mod tts_buffer;
 pub mod tts_cache;
+pub mod tts_text;
 pub(crate) mod turn_latency;
 pub mod utterance_replay;
 pub mod vad;

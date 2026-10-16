@@ -16,7 +16,7 @@ use crate::config::{
     effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
     language_id_early, language_id_enabled, resolved_language_id_min_speech_ms,
     resolved_post_utterance_silence_ms, EventDeliveryMode, NoiseSuppressionProvider,
-    SendTextToTtsOptions, SttConfig, TtsConfig, UpdateTtsConfigOptions, VadConfig,
+    SendTextToTtsOptions, SttConfig, TtsConfig, TtsVendor, UpdateTtsConfigOptions, VadConfig,
     VoiceAgentConfig, VoiceSessionContext,
 };
 use crate::error::{SpeechError, SpeechResult};
@@ -38,7 +38,8 @@ use crate::stt_hold::{
 };
 use crate::stt_pre_roll::{ShortBurstRetainer, SttPreRollBuffer, SHORT_BURST_SEPARATOR_MS};
 use crate::tts_buffer::TtsBuffer;
-use crate::tts_cache::wrap_tts_for_agent;
+use crate::tts_cache::{normalize_phrase_text, wrap_tts_for_agent};
+use crate::tts_text::prepare_engine_text;
 use crate::turn_latency::TurnLatencyTracker;
 use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
 use crate::vad::{handle_barge_in, VadEngine, VadTransition};
@@ -168,6 +169,24 @@ struct FirstAudioTiming {
     requested_at: Instant,
     /// Speak request to first PCM chunk from the TTS vendor, once that chunk arrived.
     first_chunk_ms: Option<u32>,
+    /// Letters capitalized at the TTS engine input for this reply (`None` for non-Sherpa vendors).
+    sentence_case_adjusted: Option<u32>,
+}
+
+/// Letters the Sherpa TTS engine input gets capitalized for `text` under `config`.
+///
+/// `Some(count)` when the active TTS vendor applies sentence-start capitalization (local Sherpa
+/// and the in-cluster Sherpa transport; both normalise whitespace first), `None` otherwise or
+/// when no TTS is configured.
+pub fn sentence_case_adjusted_for(config: Option<&TtsConfig>, text: &str) -> Option<u32> {
+    let config = config?;
+    match config.provider {
+        TtsVendor::LocalSherpa | TtsVendor::ClusterSherpa => {
+            let normalized = normalize_phrase_text(text);
+            Some(prepare_engine_text(&normalized, config.sentence_case).adjusted)
+        }
+        _ => None,
+    }
 }
 
 /// LID state of one user utterance.
@@ -2119,7 +2138,7 @@ impl VoiceAgent {
         if let Some(agent) = weak_self.upgrade() {
             agent.apply_pending_tts_config_if_any().await?;
         }
-        Self::begin_first_audio_timing(inner, requested_at).await;
+        Self::begin_first_audio_timing(inner, requested_at, text).await;
         if tts_stream_chunks_enabled() {
             Self::run_tts_synthesis_job_streaming(
                 text,
@@ -2491,12 +2510,19 @@ impl VoiceAgent {
     /// A reply queued while the agent is already speaking produces no new `agent_speaking_start`,
     /// so only a job that starts on an idle agent gets pending timing. Overwrites a stale entry
     /// left by an earlier job that never reached playback.
-    async fn begin_first_audio_timing(inner: &Arc<Mutex<AgentInner>>, requested_at: Instant) {
+    async fn begin_first_audio_timing(
+        inner: &Arc<Mutex<AgentInner>>,
+        requested_at: Instant,
+        text: &str,
+    ) {
         let mut guard = inner.lock().await;
         if !guard.agent_speaking {
+            let sentence_case_adjusted =
+                sentence_case_adjusted_for(guard.config.tts.as_ref(), text);
             guard.pending_first_audio = Some(FirstAudioTiming {
                 requested_at,
                 first_chunk_ms: None,
+                sentence_case_adjusted,
             });
         }
     }
@@ -5062,7 +5088,7 @@ impl VoiceAgent {
             }
             *played_any = true;
             if !*agent_start_emitted {
-                let (first_audio_ms, first_chunk_ms) = {
+                let (first_audio_ms, first_chunk_ms, sentence_case_adjusted) = {
                     let mut guard = inner.lock().await;
                     let timing = guard.pending_first_audio.take();
                     let first_audio_ms = timing.map(|t| Self::elapsed_ms_u32(t.requested_at));
@@ -5097,11 +5123,16 @@ impl VoiceAgent {
                     guard.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
                     guard.short_burst.clear();
                     guard.hold_pending_pcm.clear();
-                    (first_audio_ms, timing.and_then(|t| t.first_chunk_ms))
+                    (
+                        first_audio_ms,
+                        timing.and_then(|t| t.first_chunk_ms),
+                        timing.and_then(|t| t.sentence_case_adjusted),
+                    )
                 };
                 event_bus.emit(SpeechEvent::agent_speaking_start_with_timing(
                     first_audio_ms,
                     first_chunk_ms,
+                    sentence_case_adjusted,
                 ));
                 voice_debug("agent_speaking_start (first outbound PCM frame)");
                 *agent_start_emitted = true;

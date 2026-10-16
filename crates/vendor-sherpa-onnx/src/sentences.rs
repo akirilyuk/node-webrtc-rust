@@ -4,6 +4,9 @@
 //! TTS permit and an engine on its own, so a short reply queued behind a long
 //! one waits for one sentence instead of the whole text.
 
+use node_webrtc_rust_speech::config::SentenceCase;
+use node_webrtc_rust_speech::tts_text::prepare_engine_text;
+
 /// Upper bound (in chars) for one synthesised piece. The ORT arena grows to the
 /// longest input it has seen, so very long inputs are cut at a comma or a space.
 pub const MAX_SENTENCE_CHARS: usize = 300;
@@ -220,99 +223,16 @@ fn split_long(sentence: &str, out: &mut Vec<String>) {
     }
 }
 
-/// Abbreviations (lowercased, without the trailing `.`) that end in `.` without ending a sentence.
-const NON_TERMINAL_ABBREVIATIONS: [&str; 7] = ["mr", "mrs", "ms", "dr", "st", "vs", "etc"];
-
-/// Uppercase the first letter after a sentence end, for the text handed to the TTS engine.
+/// Sentence-start capitalization for the TTS engine input (`SentenceCase::Auto`).
 ///
-/// STT finals often start lowercase (`Okay. eight one`). espeak-ng, inside the Piper/VITS
-/// engine, does not end a sentence at `. e`, so the engine renders one sentence: late first
-/// audio and no pause after `Okay.`. With `. E` it renders two.
-///
-/// - After `.`, `!` or `?` followed by one or more whitespace chars, the next char is
-///   uppercased when it is lowercase (`char::to_uppercase`, which may yield several chars).
-/// - Not for an ellipsis (`..` before the terminating `.`), for a token that contains another
-///   `.` (`e.g.`, `i.e.`, `U.S.`), or for `mr`, `mrs`, `ms`, `dr`, `st`, `vs`, `etc`.
-/// - Not after a single-letter token (`I.`, `J.`, `a.`), and not before a fragment of fewer
-///   than 2 words (text up to and including the next `.`, `!`, `?`, or the end). These tiny
-///   pieces stay merged in [`split_sentences`], and a capital would make espeak split them
-///   again (`I. Am. Happy.` is heard as `Ing have been`).
-/// - The first char of the text is never changed, and `1.5` is untouched (no whitespace
-///   follows the `.`).
+/// Thin wrapper over [`node_webrtc_rust_speech::tts_text::prepare_engine_text`]; the rules
+/// (exclusions, tiny fragments) are documented and tested there. The TTS adapter calls
+/// `prepare_engine_text` directly; this wrapper stays for callers of the old name.
+#[allow(dead_code)]
 pub fn capitalize_sentence_starts(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
-    // Index of the char to uppercase, once the loop reaches it.
-    let mut upper_at: Option<usize> = None;
-    for (i, &c) in chars.iter().enumerate() {
-        if upper_at == Some(i) {
-            out.extend(c.to_uppercase());
-            upper_at = None;
-        } else {
-            out.push(c);
-        }
-        if !matches!(c, '.' | '!' | '?') || !ends_sentence_at(&chars, i) {
-            continue;
-        }
-        let mut j = i + 1;
-        while j < chars.len() && chars[j].is_whitespace() {
-            j += 1;
-        }
-        if j > i + 1
-            && j < chars.len()
-            && chars[j].is_lowercase()
-            && !is_single_letter_token(&chars, i)
-            && fragment_word_count(&chars, j) >= MIN_CAPITALIZED_FRAGMENT_WORDS
-        {
-            upper_at = Some(j);
-        }
-    }
-    out
-}
-
-/// A following fragment needs at least this many words to get a capital (see
-/// [`capitalize_sentence_starts`]).
-const MIN_CAPITALIZED_FRAGMENT_WORDS: usize = 2;
-
-/// Whether the token that ends at the terminator `chars[i]` (terminator excluded) is one letter.
-fn is_single_letter_token(chars: &[char], i: usize) -> bool {
-    let start = chars[..i]
-        .iter()
-        .rposition(|c| c.is_whitespace())
-        .map_or(0, |p| p + 1);
-    i - start == 1 && chars[start].is_alphabetic()
-}
-
-/// Words in `chars[from..]` up to and including the next `.`, `!` or `?` (or the end).
-fn fragment_word_count(chars: &[char], from: usize) -> usize {
-    let end = chars[from..]
-        .iter()
-        .position(|c| matches!(c, '.' | '!' | '?'))
-        .map_or(chars.len(), |p| from + p + 1);
-    chars[from..end]
-        .iter()
-        .collect::<String>()
-        .split_whitespace()
-        .count()
-}
-
-/// Whether the terminator at `chars[i]` can end a sentence (see [`capitalize_sentence_starts`]).
-fn ends_sentence_at(chars: &[char], i: usize) -> bool {
-    if chars[i] != '.' {
-        return true;
-    }
-    if i > 0 && chars[i - 1] == '.' {
-        return false;
-    }
-    let start = chars[..i]
-        .iter()
-        .rposition(|c| c.is_whitespace())
-        .map_or(0, |p| p + 1);
-    let token: String = chars[start..i].iter().collect();
-    if token.contains('.') {
-        return false;
-    }
-    !NON_TERMINAL_ABBREVIATIONS.contains(&token.to_lowercase().as_str())
+    prepare_engine_text(text, SentenceCase::Auto)
+        .text
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -320,80 +240,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capitalizes_first_letter_after_sentence_end() {
-        let cases = [
-            ("okay. eight one", "okay. Eight one"),
-            ("Okay. eight one", "Okay. Eight one"),
-            (
-                "Okay. eight one six three ten",
-                "Okay. Eight one six three ten",
-            ),
-            ("Stop. now please", "Stop. Now please"),
-            ("ab.  cd ef", "ab.  Cd ef"),
-            ("привет. мир тут", "привет. Мир тут"),
-        ];
-        for (input, want) in cases {
-            assert_eq!(capitalize_sentence_starts(input), want, "input {input:?}");
-        }
-    }
-
-    #[test]
-    fn leaves_text_without_a_lowercase_sentence_start_unchanged() {
-        for input in [
-            "wait... then",
-            "1.5 apples",
-            "e.g. this",
-            "i.e. that",
-            "Dr. smith",
-            "vs. them",
-            "Okay. Eight",
-            "end.",
-            "你好。世界",
-            "eight one",
-        ] {
-            assert_eq!(capitalize_sentence_starts(input), input, "input {input:?}");
-        }
-    }
-
-    #[test]
-    fn single_letter_token_before_terminator_is_not_a_sentence_end() {
-        for input in [
-            "I. am. happy.",
-            "J. smith said hello",
-            "a.  b c",
-            "I. am here today",
-        ] {
-            assert_eq!(capitalize_sentence_starts(input), input, "input {input:?}");
-        }
-    }
-
-    #[test]
-    fn fragment_of_fewer_than_two_words_is_not_capitalized() {
-        for input in [
-            "really? yes",
-            "hi! there",
-            "okay. eight",
-            "привет. мир",
-            "Okay. eight.",
-        ] {
-            assert_eq!(capitalize_sentence_starts(input), input, "input {input:?}");
-        }
-    }
-
-    #[test]
-    fn tiny_fragments_stay_merged_for_espeak() {
-        // `split_sentences` keeps `I. am. happy.` as one piece because espeak reads it as one
-        // sentence. A capital after each `.` would make espeak split it into three again.
-        assert_eq!(capitalize_sentence_starts("I. am. happy."), "I. am. happy.");
-        assert_eq!(split_sentences("I. am. happy."), vec!["I. am. happy."]);
-    }
-
-    #[test]
-    fn multi_char_uppercase_is_applied() {
+    fn capitalize_wrapper_matches_auto_engine_text() {
         assert_eq!(
-            capitalize_sentence_starts("ok. ß and more"),
-            "ok. SS and more"
+            capitalize_sentence_starts("Okay. eight one six three ten"),
+            "Okay. Eight one six three ten"
         );
+    }
+
+    #[test]
+    fn tiny_fragments_stay_merged_in_the_splitter() {
+        // Pairs with `tiny_fragments_stay_merged_for_espeak` in `tts_text.rs`: the splitter keeps
+        // `I. am. happy.` whole, and the capitalizer leaves it without capitals.
+        assert_eq!(split_sentences("I. am. happy."), vec!["I. am. happy."]);
+        assert_eq!(capitalize_sentence_starts("I. am. happy."), "I. am. happy.");
     }
 
     #[test]

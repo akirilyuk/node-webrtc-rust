@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **speech:** `agent_speaking_start` carries `sentenceCaseAdjusted` (letters capitalized at the TTS engine input), and `ttsEngineText(text, mode)` returns the exact engine text for traces.
+
 ## [0.11.1] - 2026-10-16
 
 ### Fixed

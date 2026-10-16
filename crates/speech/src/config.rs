@@ -428,7 +428,8 @@ pub struct SttConfig {
 #[serde(rename_all = "lowercase")]
 pub enum SentenceCase {
     /// The first letter after `. `, `! `, `? ` is uppercased in the text handed to the TTS
-    /// engine only; the caller's text is unchanged everywhere else.
+    /// engine only; the caller's text is unchanged everywhere else. Not after a single letter
+    /// (`I.`) and not before a fragment of fewer than 2 words, which stay merged for espeak.
     #[default]
     Auto,
     /// The engine gets the text as given.

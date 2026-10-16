@@ -159,7 +159,8 @@ export interface TtsConfig {
   postUtteranceSilenceMs?: number
   /**
    * `'auto'` (default): the first letter after `. `, `! `, `? ` is uppercased in the text handed
-   * to the TTS engine only; the caller's text is unchanged everywhere else. Local Sherpa/Piper
+   * to the TTS engine only; the caller's text is unchanged everywhere else (not after a single
+   * letter like "I." and not before a fragment of fewer than 2 words). Local Sherpa/Piper
    * does not end a sentence at `. e`, so lowercase STT finals ("Okay. eight one") would be
    * rendered as one sentence with late first audio and no pause.
    * `'off'`: the engine gets the text as given.

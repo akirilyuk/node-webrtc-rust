@@ -75,30 +75,20 @@ flowchart TD
 
 ### 1. Detect changes
 
-[`compute-pr-job-gates.sh`](compute-pr-job-gates.sh) sets `run_compile` / `run_test` / … from:
+[`compute-pr-job-gates.sh "$PR_BASE_SHA" "$PR_HEAD_SHA"`](compute-pr-job-gates.sh) sets `run_compile` / `run_build_ts` / `run_test` / `run_quality` from:
 
 1. **`merge-base..pull_request.head.sha`** (full PR diff — not `github.sha`, which is a synthetic merge commit)
 2. **Files in the latest head commit** (`git diff-tree`) so a push that only edits `crates/speech/**` still forces native compile + integration tests
-3. **`dorny/paths-filter` `native` / `workflows_native`** as a fallback
 
-Local check: `bash scripts/ci/compute-pr-job-gates.test.sh`
+There is no path-filter action. One run per branch: the concurrency group is keyed on the head repo + branch, so a dispatched run and a pull_request run of the same branch collapse. Rules:
 
-Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with these outputs:
+- **Docs only** (`*.md`, `docs/**`, `.cursor/**`, `LICENSE*`): quality only (Prettier covers Markdown). No compile, build-ts or test.
+- **Everything else**: full pipeline (compile native + build-ts + test + quality). Tests always need a freshly compiled `.node`, so `run_test` implies `run_compile`.
+- **Version-only** (`package.json` / `package-lock.json` diffs that only change our own `@node-webrtc-rust/*` versions, checked by [`version-only-diff.py`](version-only-diff.py)): quality + build-ts only. Any third-party version change, new dependency, other file, or invalid JSON runs the full pipeline. `main` still runs the full suite after merge.
 
-| Output             | Paths (summary)                                                                                      |
-| ------------------ | ---------------------------------------------------------------------------------------------------- |
-| `native`           | `Cargo.*`, `crates/**`, `packages/bindings/**` (excluding generated `.node` / loader and `**/*.md`)  |
-| `typescript`       | `packages/sdk/**`, `packages/signaling/**`, lockfile, tsconfigs, eslint, prettier (excluding `*.md`) |
-| `helpers`          | `packages/helpers/**`, `examples/voice-agent-local-sherpa-multi-client/**` (excluding `*.md`)        |
-| `examples`         | `examples/**` (excluding `*.md`)                                                                     |
-| `workflows`        | `.github/**`, `docker/ci/**`, `scripts/ci/**` (excluding `*.md`) — **quality** only (cheap)          |
-| `workflows_native` | Native compile actions, `native-binding-cache`, `docker/ci/**`, cache-key + surface verify scripts   |
-| `workflows_test`   | Integration-test action, `reusable-test.yml`, `run-pr-integration.sh`, Sherpa CI scripts             |
-| `workflows_ts`     | `ci-cache-ts-dist`, `build-ts-workspace.sh`, TS dist cache key / release TS verify scripts           |
+The script also prints `version_only=true|false`.
 
-If `code` is false (docs-only), **Typecheck & lint**, **Compile native**, **Build TypeScript**, and **Test** still run as required checks but exit immediately (skip notice). No checkout, setup-node, artifact download, or integration tests.
-
-Markdown under `docs/**` and any `**/*.md` file do not set `code=true` — README edits under `crates/**` or `examples/**` no longer trigger heavy jobs.
+Local check (hermetic, builds its own temp git repos): `bash scripts/ci/compute-pr-job-gates.test.sh`
 
 ### 2. Package-lock optional bindings (always)
 
@@ -109,7 +99,7 @@ Markdown under `docs/**` and any `**/*.md` file do not set `code=true` — READM
 ### 3. Typecheck & lint
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **When:** `code` OR `workflows` — otherwise the job succeeds immediately after a skip notice (no checkout or setup-node).
+- **When:** `run_quality` (every diff, including docs-only PRs, which run quality only) — otherwise the job succeeds immediately after a skip notice (no checkout or setup-node).
 - **When running:** [`run-pr-quality.sh`](run-pr-quality.sh) on self-hosted runner.
 - **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
 - **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh), `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
@@ -122,7 +112,7 @@ Must pass before compile / TS build / test. Runs **in parallel** with compile-na
 ### 4. Compile native
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **When:** `native` OR `workflows_native` — otherwise the job succeeds immediately after a skip notice (no checkout, no compile).
+- **When:** `run_compile_native` (`run_compile`: everything except docs-only and version-only diffs) — otherwise the job succeeds immediately after a skip notice (no checkout, no compile).
 - **When compiling:** requires **Typecheck & lint** success.
 - **Runner:** `ci-build` container
 - **Target:** `x86_64-unknown-linux-gnu` debug
@@ -135,7 +125,7 @@ Uploads `bindings-x86_64-unknown-linux-gnu` for the Test job when compile-native
 ### 5. Build TypeScript
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **When:** `typescript` OR `helpers` OR `examples` OR `workflows_ts` — otherwise the job succeeds immediately after a skip notice (no checkout, setup-node, or cache).
+- **When:** `run_build_ts` — otherwise the job succeeds immediately after a skip notice (no checkout, setup-node, or cache).
 - **When building:** requires **Typecheck & lint** success.
 - **Needs:** quality only (runs **in parallel** with compile-native — TS build does not need `.node`)
 - **Runner:** `self-hosted` + `setup-node`
@@ -148,7 +138,7 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 
 - **Always runs** on every PR (for branch-protection required checks).
 - **Required check name:** a thin `Test` job in [`build.yml`](../../.github/workflows/build.yml) propagates the reusable workflow result. `workflow_call` jobs alone report as `Integration tests / Test`, which does **not** satisfy the required `Test` context.
-- **When:** no source path filter matched — succeeds immediately (`skip: 'true'`). CI-only YAML edits do not run integration tests.
+- **When:** tests are not skipped (`skip_test` false, or compile ran) — otherwise it succeeds immediately (`skip: 'true'`), e.g. docs-only and version-only PRs.
 - **When source code changed:** requires **Typecheck & lint** success (when it ran); restores `.node` / TS `dist/` only when needed.
 - **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (called as **Integration tests**)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
@@ -507,6 +497,8 @@ bash scripts/ci/ts-dist-cache-key.test.sh
 bash scripts/ci/sherpa-models-cache.test.sh
 bash scripts/ci/ci-cache-layers-workflow.test.sh
 bash scripts/ci/cargo-via-ci-image.test.sh
+bash scripts/ci/compute-pr-job-gates.test.sh
+bash scripts/ci/pr-workflow-gates.test.sh
 ```
 
 Wired at the top of [`verify-checks.sh`](verify-checks.sh).

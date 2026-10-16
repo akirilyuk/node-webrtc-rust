@@ -17,7 +17,7 @@
 #   bash scripts/ci/run-pr-test-job-docker.sh --quality   # quality job first, then test
 #
 # Env:
-#   CI_IMAGE_LOCAL              docker image (default ghcr.io/akirilyuk/node-webrtc-rust/ci-test:latest)
+#   CI_IMAGE_LOCAL              docker image (default ghcr.io/akirilyuk/node-webrtc-rust/ci-build:test)
 #   CI_STEP_LOG_TS=1            timestamp each ci-step line
 #   CI_PR_TEST_SKIP_COTURN=1    do not set TURN_AVAILABLE (no TURN — not full parity)
 set -euo pipefail
@@ -25,7 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-IMAGE="${CI_IMAGE_LOCAL:-ghcr.io/akirilyuk/node-webrtc-rust/ci-test:latest}"
+IMAGE="${CI_IMAGE_LOCAL:-ghcr.io/akirilyuk/node-webrtc-rust/ci-build:test}"
 RUN_QUALITY=false
 
 if [[ "${1:-}" == "--quality" ]]; then

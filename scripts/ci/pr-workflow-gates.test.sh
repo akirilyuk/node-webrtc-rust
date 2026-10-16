@@ -68,8 +68,8 @@ fi
 
 # Integration job: ci-test container + in-process coturn.
 reusable=".github/workflows/reusable-test.yml"
-if ! grep -Fq 'image: ghcr.io/${{ github.repository }}/ci-test:' "$reusable"; then
-  echo "$reusable: the test job must run in container image ghcr.io/\${{ github.repository }}/ci-test:*" >&2
+if ! grep -Fq 'image: ghcr.io/${{ github.repository }}/ci-build:test' "$reusable"; then
+  echo "$reusable: the test job must run in container image ghcr.io/\${{ github.repository }}/ci-build:test (Dockerfile.test)" >&2
   exit 1
 fi
 if ! grep -Eq "^[[:space:]]*TURN_AVAILABLE:[[:space:]]*'1'" "$reusable"; then

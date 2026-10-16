@@ -33,7 +33,7 @@ jobs:
     name: Test
     runs-on: self-hosted
     container:
-      image: ghcr.io/${{ github.repository }}/ci-test:latest
+      image: ghcr.io/${{ github.repository }}/ci-build:test
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

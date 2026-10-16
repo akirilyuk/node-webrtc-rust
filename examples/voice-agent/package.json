@@ -12,6 +12,7 @@
     "start:live:deepgram": "tsx src/live-vendor.ts deepgram",
     "start:live:elevenlabs": "tsx src/live-vendor.ts elevenlabs",
     "start:live:cartesia": "tsx src/live-vendor.ts cartesia",
+    "start:live:fishaudio": "tsx src/live-vendor.ts fishaudio",
     "start:live:assemblyai": "tsx src/live-vendor.ts assemblyai",
     "start:live:google": "tsx src/live-vendor.ts google",
     "typecheck": "tsc --noEmit"

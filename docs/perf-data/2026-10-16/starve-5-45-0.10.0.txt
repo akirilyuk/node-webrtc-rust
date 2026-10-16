@@ -1,0 +1,5 @@
+# 2026-10-16 15:12:00.548815 starve-5-45-0.10.0 runs=3 throttle=5/45 script=start:roundtrip-counting-echo-lid-multi head=5f9c228
+run 1: PASS rc=0 timeout=False thr_at=1.002255916595459 dur=51s 
+run 2: PASS rc=0 timeout=False thr_at=1.0059499740600586 dur=53s 
+run 3: PASS rc=0 timeout=False thr_at=1.006525993347168 dur=52s 
+DONE fails=0

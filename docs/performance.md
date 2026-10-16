@@ -2,7 +2,81 @@
 
 This page covers the library's offline speech engines (Sherpa-ONNX streaming speech-to-text and Piper/Melo text-to-speech) and the media path around them. The speech engine numbers were measured in a CPU-limited container, so they are per CPU and scale with the CPUs you give a process. The media path benchmarks and the voice loopback ran natively on the host. Every table can be reproduced with the commands in [Reproduce](#reproduce), and the raw reports are in [`perf-data/2026-10-10`](perf-data/2026-10-10/).
 
-**Test machine:** Apple M4 Pro (14 cores, 48 GiB, macOS 15.7.7), measured on 2026-10-10 with library version 0.9.40. The speech engine probes ran in an arm64 Linux container on Docker Desktop 28.5.1, whose VM has 2 CPUs and 3.8 GiB of memory. Each probe got its own container with `--cpus 1` (`--cpus 2` for the thread sweep). The image is built from [`scripts/perf/voice-cost.Dockerfile`](../scripts/perf/voice-cost.Dockerfile) (`rust:1.99-bookworm`). Every speech engine number is the median of 3 runs. The media path benchmarks and the voice loopback ran on the host without a CPU limit.
+The first three sections compare releases 0.9.48, 0.10.0 and 0.11.2 and list the reliability fixes of the last weeks. The sections after them describe the speech engines and the media path in detail.
+
+## 0.9.48 → 0.10.0 → 0.11.2
+
+All three releases ran on the same machine on the same day (2026-10-16, Apple M4 Pro, AC power, no sleep in the window), using the published `@node-webrtc-rust/bindings-darwin-arm64` addon of each version. Versions alternated from run to run, so drift on the host hits all three alike. Every failed run is counted; nothing was re-run. Data: [`perf-data/2026-10-16`](perf-data/2026-10-16/runs.md).
+
+![JS main-thread CPU for 10 voice sessions: 0.9.48 56 ms/s, 0.10.0 19 ms/s, 0.11.2 19 ms/s](perf-data/charts/js-thread-10-sessions.svg)
+
+0.10.0 moved the per-frame voice loops (inbound audio, client mix pump, speech events) from the Node.js main thread into Rust tasks ([details](#voice-media-loops-in-rust-0100)). A host with 10 concurrent voice sessions now spends 19 ms of main-thread CPU per second instead of 56, and the whole process uses 580–586 ms/s instead of 697 (−16 %).
+
+![Runs where every turn was heard correctly, per test and version](perf-data/charts/clean-runs.svg)
+
+0.9.48 failed 4 of 11 runs on a lost, doubled or misheard word: 7 sessions with a doubled "nine" in one 10-session run, 1 misheard turn in 40, a misheard turn at the 20-leg capacity step, and a lost "Okay" while starved of CPU. 0.10.0 failed 1 (a misheard turn at 20 legs). 0.11.2 passed all 11. Three runs per test is a small sample; the deterministic tests linked in [Reliability fixes](#reliability-fixes) are what prove each fix.
+
+![Final latency p95 per number of concurrent voice loopbacks, per version](perf-data/charts/capacity-curve.svg)
+
+At 40 concurrent speaker/listener loopbacks in one process, final-transcript latency p95 was 3081 ms on 0.9.48 (over the budget), 2897 ms on 0.10.0 and 2403 ms on 0.11.2. 0.11.2 was the only version that reached 40 legs within the budget in both capacity rounds.
+
+![Longest blocked process_inbound_pcm call while the STT vendor is slow](perf-data/charts/slow-stt-inbound-block.svg)
+
+Up to 0.10.x the agent waited for the STT vendor's final while holding the lock every audio frame needs, so a slow final stopped VAD, `user_speaking_start` and barge-in for the whole wait: one inbound call took 3.3 s to 57 s on 0.9.48 and 0.10.0. Since 0.11.0 a per-agent STT task owns the vendor, and no inbound call took 1 ms or more on 0.11.2 ([details](#stt-off-the-inbound-path-0110)). The 0.11.2 tests were copied into the older checkouts with compile fixes only; the edits are in [`perf-data/2026-10-16/slow-stt`](perf-data/2026-10-16/slow-stt/README.md).
+
+Medians (the last row counts runs):
+
+| Measurement                                         |      0.9.48 |      0.10.0 |      0.11.2 |
+| --------------------------------------------------- | ----------: | ----------: | ----------: |
+| 10 voice sessions: JS main-thread CPU (ms/s)        |          56 |          19 |          19 |
+| 10 voice sessions: process CPU, all threads (ms/s)  |         697 |         580 |         586 |
+| 10 voice sessions: event-loop utilization           |       0.077 |       0.029 |       0.030 |
+| Loopback 8 legs × 5 turns: CPU s per session-minute |        4.46 |        4.15 |        4.06 |
+| Loopback 8 legs × 5 turns: final p50 / p95 (ms)     | 2052 / 2186 | 2055 / 2176 | 2046 / 2184 |
+| Loopback 8 legs × 5 turns: event-loop lag p99 (ms)  |        1.84 |        1.41 |        1.42 |
+| Capacity: legs within the latency budget (2 rounds) |      32, 16 |      16, 40 |      40, 40 |
+| Capacity: CPU s per session-minute at 32 legs       |        3.48 |        3.13 |        3.11 |
+| Runs with a lost, doubled or misheard word (all 11) |           4 |           1 |           0 |
+
+Final latency is the same on all three (about 2 s, set by the VAD end-of-turn wait), so the gains are CPU, main-thread headroom and correctness. The 16-leg capacity results are rounds that stopped on one misheard turn at the 20-leg step, not on latency.
+
+## Reliability fixes
+
+Each fix below has a test that fails without it.
+
+| Release | Problem                                                                                                                                                                            | Measured                                                                                      | Test                                                                                                                                                      |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0.9.26  | Cluster STT dropped audio when the speech server was slow; cancelled TTS was cached truncated; a `VoiceAgent` dropped without `stop()` was never freed; messages over 4 MiB failed | 5 library bugs, each reproduced by a red test first                                           | [Reliability under load](#reliability-under-load)                                                                                                         |
+| 0.9.41  | DTLS server never resent its last handshake flight, so one lost datagram left the client stuck in `connecting` with ICE connected                                                  | 200 concurrent handshakes: 6 / 23 / 59 stuck at 2 / 10 / 30 % loss, now 0 up to 50 % loss     | seeded loss/reorder tests in `third_party/dtls`                                                                                                           |
+| 0.9.42  | The mix graph kept only the latest frame per source, so bunched frames were lost and 60 ms packets played as silence                                                               | 5–36 of 150 frames lost even when paced, 0 gaps and 0 duplicates after                        | `crates/conference/tests/mix_frame_continuity.rs`                                                                                                         |
+| 0.9.45  | After a gate-hold split, the next phrase's first frames went to both STT streams ("alpha onset" + "onset bravo")                                                                   | deterministic test 0/10 → 120/120                                                             | `crates/speech/tests/stt_split_onset_test.rs`                                                                                                             |
+| 0.9.46  | One wedged UDP socket blocked a STUN write and stopped every ICE connectivity check                                                                                                | macOS connect stalls from about 1 in 200–800 to 5 in 3,000; Linux 0 in 3,600                  | `third_party/webrtc-ice/src/agent/agent_stun_send_test.rs`                                                                                                |
+| 0.9.47  | A turn could end with `user_speaking_end` and no final and no `user_stt_not_found`                                                                                                 | every utterance ends with exactly one terminal event                                          | `crates/speech/tests/utterance_terminal_event_test.rs`                                                                                                    |
+| 0.10.0  | Words lost under CPU starvation: the client-mix pump dropped agent speech, the "no partial" net closed a live stream, a short first word fell out of the pre-roll                  | see [Behavior under CPU starvation](#behavior-under-cpu-starvation)                           | `crates/speech/tests/c1_reader_stall_test.rs`, smoke `start:roundtrip-c1-timeouts`                                                                        |
+| 0.10.1  | A cluster STT stream open that never answered left the session deaf until the idle timeout; Sherpa reused a finished stream and doubled the first word ("okay okay")               | doubled first word 7/20 → 0/20 runs; in deployment load runs 36 of 1,604 replies → 0 of 2,653 | `slow_final_agent_deaf_fullstack_test.rs`, `grpc_calls_bounded_test.rs`, `fresh_stream_per_utterance_test.rs`, smoke `start:roundtrip-doubled-first-word` |
+| 0.11.0  | A slow STT final or refused stream open blocked VAD, speech events and barge-in                                                                                                    | longest blocked inbound call 3.3–57 s → under 1 ms (chart above)                              | [STT off the inbound path](#stt-off-the-inbound-path-0110)                                                                                                |
+| 0.11.1  | The controlling ICE agent re-nominated a dead candidate pair forever; DTLS writes over it never returned                                                                           | fails over after 2 s; data writes bounded at 100 ms                                           | `third_party/webrtc-ice/src/agent/agent_failover_test.rs`                                                                                                 |
+| 0.11.2  | A reply starting with a lowercase word after a one-word sentence ("Okay. eight …") was spoken as one run-on sentence: slower first audio, and listeners' STT dropped the next word | in deployment load runs, reply p50 283 → 143 ms; dropped "eight" after "Okay." 53 → 4 per run | `crates/vendor-sherpa-onnx/src/sentences.rs` › `tiny_fragments_stay_merged_for_espeak`                                                                    |
+
+![Stuck DTLS handshakes out of 200, by packet loss, crates.io dtls vs patched](perf-data/charts/dtls-lossy-handshakes.svg)
+
+**DTLS and ICE upstream.** Both network fixes are in vendored copies of the webrtc-rs crates (`third_party/dtls`, `third_party/webrtc-ice`) and were proposed upstream: [webrtc-rs/webrtc#921](https://github.com/webrtc-rs/webrtc/pull/921) (resend the final flight when the peer retransmits, RFC 6347 §4.2.4) and [webrtc-rs/webrtc#937](https://github.com/webrtc-rs/webrtc/pull/937) (bound STUN writes so one wedged socket cannot stop connectivity checks). The DTLS bug sits in `dtls` 0.17.1 and 0.17.2: the server marks the handshake done right after sending flight 6, and its read loop then discards the client's retransmitted flight 5 instead of answering it. Every 0.9.41+ release has the patch, so all three versions in the comparison above have it.
+
+## Word errors in deployment load tests
+
+The library also runs in VoiceThere's voice load tests: 45 or 30 simulated callers at once, each a headless WebRTC client on this SDK, talking for 10 minutes to an echo agent (about 1,700 turns for 45 callers). The caller speaks a random counting phrase, the server transcribes it, and the agent speaks back "Okay. <what it heard>".
+
+Every run is scored by word error rate: both texts are lowercased and stripped of punctuation, aligned word by word (Levenshtein), and WER = (substitutions + deletions + insertions) / reference words. A turn with no final counts as all deletions, and finals the client rejected and retried are scored too, so a lost turn can't make the number look better. The published tier folds true homophones of number words only (`to`/`too` → `two`, `for` → `four`, `ate` → `eight`, `won` → `one`). Deletions (lost words) and insertions (doubled words) are reported on their own, because they are what a caller notices.
+
+| 45 callers, ~1,700 turns per run  | First run, 2026-10-06 | 0.10.0, 2026-10-14 | 0.10.1, 2026-10-15 | 0.11.1, 2026-10-15 | 0.11.2, 2026-10-16 |
+| --------------------------------- | --------------------: | -----------------: | -----------------: | -----------------: | -----------------: |
+| Clean conversations               |                 29/45 |       40/45, 42/45 |              45/45 |              45/45 |              45/45 |
+| Server STT lost / doubled words   |               57 / 43 |     32 / 0, 38 / 1 |              0 / 0 |              1 / 1 |              4 / 0 |
+| Server STT WER (homophone-folded) |                       |       2.11, 2.71 % |             1.66 % |             1.42 % |             1.73 % |
+
+The 2026-10-06 run predates the folded tier; its WER with the test's mishear tolerance was 1.67 %, against 0.21–0.30 % for the 0.10.1 and 0.11.1 runs. The two 0.10.0 runs hit a minute of slow STT finals, and some sessions went deaf after one of them: those sessions' unanswered turns are the lost words. 0.10.1 fixed that (the hung stream open is bounded and retried), and 0.11.0 removed the stall itself. The 0.11.2 run uses the product's default VAD timing instead of the load preset. The 30-caller run on 0.11.2 had 0 lost and 0 doubled words (folded WER 1.31 %). The remaining substitutions are model mishears ("june" for "two"). The speech is synthetic Piper audio with number words only, so these numbers compare releases with each other, not with published STT benchmarks.
+
+**Test machine (detailed sections below):** Apple M4 Pro (14 cores, 48 GiB, macOS 15.7.7), measured on 2026-10-10 with library version 0.9.40. The speech engine probes ran in an arm64 Linux container on Docker Desktop 28.5.1, whose VM has 2 CPUs and 3.8 GiB of memory. Each probe got its own container with `--cpus 1` (`--cpus 2` for the thread sweep). The image is built from [`scripts/perf/voice-cost.Dockerfile`](../scripts/perf/voice-cost.Dockerfile) (`rust:1.99-bookworm`). Every speech engine number is the median of 3 runs. The media path benchmarks and the voice loopback ran on the host without a CPU limit.
 
 ## Speech-to-text (Sherpa-ONNX streaming)
 
@@ -188,6 +262,8 @@ Workload: the `start:roundtrip-counting-echo-lid-multi` example (10 concurrent v
 
 The JS main thread now spends about 2 % of one core on 10 voice sessions, down from about 11 % (−81 %). Total process CPU dropped 6–9 %, mostly because TTS frames are no longer Opus-encoded into an unsent sidecar track. The event-loop delay is dominated by the 10 ms timer resolution and did not change.
 
+The "JS loops" row is the 0.10.0 build with the fallback switches, which costs more than the 0.9.48 release itself. Measured release against release, the main thread went from 56 to 19 ms/s ([comparison](#0948--0100--0112)).
+
 Per-run data: [`perf-data/2026-10-14/runs.md`](perf-data/2026-10-14/runs.md) and the raw probe lines in [`perf-data/2026-10-14/probe-lines.txt`](perf-data/2026-10-14/probe-lines.txt).
 
 ## Behavior under CPU starvation
@@ -311,6 +387,21 @@ npm run start:roundtrip-load --workspace=@node-webrtc-rust/example-voice-agent-l
 SHERPA_LOAD_CAPACITY=1 SHERPA_LOAD_TURNS=2 npm run start:roundtrip-load --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
+### Comparing releases
+
+The [release comparison](#0948--0100--0112) ran each release from a detached checkout of its `release/<version>` tag, with the published addon in place of a local Rust build:
+
+```bash
+V=0.11.2
+git worktree add --detach ../nwr-$V release/$V && cd ../nwr-$V
+npm ci
+npm pack @node-webrtc-rust/bindings-darwin-arm64@$V && tar -xzf node-webrtc-rust-bindings-darwin-arm64-$V.tgz
+cp package/*.node packages/bindings/node-webrtc-rust.darwin-arm64.node
+bash scripts/ci/build-ts-workspace.sh
+```
+
+Then run the JS main-thread probe below, `start:roundtrip-load` in both modes, and the starvation harness, alternating versions between runs. Charts are rendered from `charts.json` with `node scripts/perf/perf-charts.mjs docs/perf-data/2026-10-16/charts.json docs/perf-data/charts`.
+
 ### JS main-thread cost (0.10.0 media loops)
 
 The probe is a preload, so it measures any Node.js process without code changes. For the 10-session example, match the echo-server child:
@@ -326,6 +417,8 @@ PERF_PROBE=1 PERF_PROBE_MATCH=roundtrip-counting-echo-lid-multi-echo-server.ts \
 Read the last `cum_js_thread_cpu_ms_per_s` value. Turn the example's PCM capture off (`SHERPA_MULTI_PCM_CAPTURE=0`): its capture tee adds a JS callback per frame and peer. Do not attach a CPU profiler while measuring, because the inspector profiler inflates event-loop utilization several times. On macOS, set `WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1` if the application firewall drops UDP on the LAN interface.
 
 ## Raw data
+
+The release comparison (0.9.48, 0.10.0, 0.11.2) is in [`perf-data/2026-10-16`](perf-data/2026-10-16/runs.md): one row per run in `runs.md`, the probe lines (`js-thread-*`, `roundtrip-load-*`, `roundtrip-capacity-*`), the starvation summaries (`starve-5-45-*`), the addon checksums and `charts.json`.
 
 The generated reports behind these tables are in [`perf-data/2026-10-10`](perf-data/2026-10-10/):
 

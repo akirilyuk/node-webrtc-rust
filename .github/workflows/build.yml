@@ -8,9 +8,11 @@ on:
   # attached to the branch head SHA, so its check names satisfy the main ruleset.
   workflow_dispatch:
 
-# New pushes to the same PR cancel the in-flight run and start a fresh one.
+# One run per branch: release.yml dispatches this workflow on bot lock-sync PR branches and the
+# same branch can also get pull_request runs; keying on the branch (and head repo, so fork PRs with
+# the same branch name do not cancel each other) makes the newer run cancel the older one.
 concurrency:
-  group: build-pr-${{ github.event.pull_request.number || github.ref }}
+  group: build-pr-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -88,15 +90,6 @@ jobs:
     name: Detect changes
     runs-on: self-hosted
     outputs:
-      code: ${{ steps.filter.outputs.code }}
-      native: ${{ steps.filter.outputs.native }}
-      typescript: ${{ steps.filter.outputs.typescript }}
-      helpers: ${{ steps.filter.outputs.helpers }}
-      examples: ${{ steps.filter.outputs.examples }}
-      workflows: ${{ steps.filter.outputs.workflows }}
-      workflows_native: ${{ steps.filter.outputs.workflows_native }}
-      workflows_test: ${{ steps.filter.outputs.workflows_test }}
-      workflows_ts: ${{ steps.filter.outputs.workflows_ts }}
       skip_test: ${{ steps.pr_gates.outputs.skip_test }}
       skip_quality: ${{ steps.pr_gates.outputs.skip_quality }}
       run_compile: ${{ steps.pr_gates.outputs.run_compile }}
@@ -154,77 +147,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          token: ${{ github.token }}
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!docs/**'
-            native:
-              - 'Cargo.toml'
-              - 'rust-toolchain.toml'
-              - 'Cargo.lock'
-              - 'crates/**'
-              - 'packages/bindings/**'
-              - '!**/*.md'
-              - '!packages/bindings/*.node'
-              - '!packages/bindings/index.d.ts'
-              - '!packages/bindings/index.js'
-            typescript:
-              - 'packages/sdk/**'
-              - 'packages/signaling/**'
-              - 'packages/helpers/**'
-              - 'package.json'
-              - 'package-lock.json'
-              - '**/tsconfig*.json'
-              - 'eslint.config.js'
-              - '.prettierrc*'
-              - '!**/*.md'
-            helpers:
-              - 'packages/helpers/**'
-              - 'examples/voice-agent-local-sherpa-multi-client/**'
-              - '!**/*.md'
-            examples:
-              - 'examples/**'
-              - '!**/*.md'
-            workflows:
-              - '.github/**'
-              - 'docker/ci/**'
-              - 'scripts/ci/**'
-              - '!**/*.md'
-            workflows_native:
-              - '.github/actions/ci-build-native-*'
-              - '.github/actions/native-binding-cache/**'
-              - 'docker/ci/**'
-              - 'scripts/ci/build-native-addon.sh'
-              - 'scripts/ci/build-sherpa-onnx-musl-libs.sh'
-              - 'scripts/ci/install-alpine-native-toolchain.sh'
-              - 'scripts/ci/native-cache-epoch'
-              - 'scripts/ci/verify-native-binding-surface.mjs'
-            workflows_test:
-              - '.github/actions/ci-run-integration-tests/**'
-              - '.github/actions/ci-cache-sherpa-models/**'
-              - '.github/workflows/reusable-test.yml'
-              - 'scripts/ci/run-pr-integration.sh'
-              - 'scripts/ci/run-rust-lint.sh'
-              - 'scripts/ci/run-pr-tests-full.sh'
-              - 'scripts/ci/run-sherpa-example-ci.sh'
-              - 'scripts/ci/run-sherpa-roundtrip-e2e.sh'
-              - 'scripts/ci/run-pr-test-job-docker.sh'
-              - 'scripts/ci/compute-pr-job-gates.sh'
-              - 'scripts/ci/ensure-sherpa-models.sh'
-              - 'scripts/ci/validate-sherpa-model-dirs.sh'
-              - 'scripts/ci/sherpa-models-cache-key.sh'
-            workflows_ts:
-              - '.github/actions/ci-cache-ts-dist/**'
-              - 'scripts/ci/build-ts-workspace.sh'
-              - 'scripts/ci/ensure-ts-dist.sh'
-              - 'scripts/ci/verify-release-publish-ts.sh'
-              - 'scripts/ci/ts-dist-cache-key.sh'
-
       - name: Compute PR job gates
         id: pr_gates
         env:
@@ -232,14 +154,8 @@ jobs:
           # clone via fetch-depth: 0) and the dispatched branch tip.
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha || 'origin/main' }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          FILTER_NATIVE: ${{ steps.filter.outputs.native }}
-          FILTER_WORKFLOWS_NATIVE: ${{ steps.filter.outputs.workflows_native }}
         run: |
-          bash scripts/ci/compute-pr-job-gates.sh \
-            "$PR_BASE_SHA" \
-            "$PR_HEAD_SHA" \
-            "$FILTER_NATIVE" \
-            "$FILTER_WORKFLOWS_NATIVE" >> "$GITHUB_OUTPUT"
+          bash scripts/ci/compute-pr-job-gates.sh "$PR_BASE_SHA" "$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       # Compute on the self-hosted runner (bash 5). compile-native runs inside the
       # ci-build container where `${var,,}` and other bash-4+ syntax is unavailable.
@@ -248,15 +164,13 @@ jobs:
         env:
           RUN_COMPILE: ${{ steps.pr_gates.outputs.run_compile }}
           SKIP_TEST: ${{ steps.pr_gates.outputs.skip_test }}
-          FILTER_NATIVE: ${{ steps.filter.outputs.native }}
-          FILTER_WORKFLOWS_NATIVE: ${{ steps.filter.outputs.workflows_native }}
         run: |
-          if [ "$RUN_COMPILE" = "true" ] || [ "$FILTER_NATIVE" = "true" ] || [ "$FILTER_WORKFLOWS_NATIVE" = "true" ]; then
+          if [ "$RUN_COMPILE" = "true" ]; then
             echo "run_compile_native=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_compile_native=false" >> "$GITHUB_OUTPUT"
           fi
-          if [ "$SKIP_TEST" != "true" ] || [ "$RUN_COMPILE" = "true" ] || [ "$FILTER_NATIVE" = "true" ]; then
+          if [ "$SKIP_TEST" != "true" ] || [ "$RUN_COMPILE" = "true" ]; then
             echo "run_integration_test=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_integration_test=false" >> "$GITHUB_OUTPUT"

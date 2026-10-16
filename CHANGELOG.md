@@ -8,9 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-16
+
 ### Added
 
 - **speech:** `agent_speaking_start` carries `sentenceCaseAdjusted` (letters capitalized at the TTS engine input), and `ttsEngineText(text, mode)` returns the exact engine text for traces.
+
+### Changed
+
+- **tts:** sentence starts are capitalized at the engine input. The first letter after `. `, `! ` and `? ` is uppercased in the text handed to the Sherpa/Piper engine only; the text you sent and the text in events stay as written. Skipped: ellipses, dotted abbreviations, `Mr. Mrs. Ms. Dr. St. vs. etc.`, decimals, and the first letter of the text. Lowercase continuations such as `Okay. eight one six` reached first audio later (amy-medium: 89 ms down to 34 ms for the first chunk).
+  - New `TtsConfig.sentenceCase` (`'auto'` default, `'off'`) and proto `SynthesizeRequest.sentence_case = 6` (empty means auto).
 
 ## [0.11.1] - 2026-10-16
 

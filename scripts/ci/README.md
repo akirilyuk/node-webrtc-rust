@@ -75,30 +75,20 @@ flowchart TD
 
 ### 1. Detect changes
 
-[`compute-pr-job-gates.sh`](compute-pr-job-gates.sh) sets `run_compile` / `run_test` / … from:
+[`compute-pr-job-gates.sh "$PR_BASE_SHA" "$PR_HEAD_SHA"`](compute-pr-job-gates.sh) sets `run_compile` / `run_build_ts` / `run_test` / `run_quality` from:
 
 1. **`merge-base..pull_request.head.sha`** (full PR diff — not `github.sha`, which is a synthetic merge commit)
 2. **Files in the latest head commit** (`git diff-tree`) so a push that only edits `crates/speech/**` still forces native compile + integration tests
-3. **`dorny/paths-filter` `native` / `workflows_native`** as a fallback
 
-Local check: `bash scripts/ci/compute-pr-job-gates.test.sh`
+There is no path-filter action. Rules:
 
-Uses [`dorny/paths-filter@v3`](https://github.com/dorny/paths-filter) with these outputs:
+- **Docs only** (`*.md`, `docs/**`, `.cursor/**`, `LICENSE*`): quality only (Prettier covers Markdown). No compile, build-ts or test.
+- **Everything else**: full pipeline (compile native + build-ts + test + quality). Tests always need a freshly compiled `.node`, so `run_test` implies `run_compile`.
+- **Version-only** (`package.json` / `package-lock.json` diffs that only change our own `@node-webrtc-rust/*` versions, checked by [`version-only-diff.py`](version-only-diff.py)): quality + build-ts only. Any third-party version change, new dependency, other file, or invalid JSON runs the full pipeline. `main` still runs the full suite after merge.
 
-| Output             | Paths (summary)                                                                                      |
-| ------------------ | ---------------------------------------------------------------------------------------------------- |
-| `native`           | `Cargo.*`, `crates/**`, `packages/bindings/**` (excluding generated `.node` / loader and `**/*.md`)  |
-| `typescript`       | `packages/sdk/**`, `packages/signaling/**`, lockfile, tsconfigs, eslint, prettier (excluding `*.md`) |
-| `helpers`          | `packages/helpers/**`, `examples/voice-agent-local-sherpa-multi-client/**` (excluding `*.md`)        |
-| `examples`         | `examples/**` (excluding `*.md`)                                                                     |
-| `workflows`        | `.github/**`, `docker/ci/**`, `scripts/ci/**` (excluding `*.md`) — **quality** only (cheap)          |
-| `workflows_native` | Native compile actions, `native-binding-cache`, `docker/ci/**`, cache-key + surface verify scripts   |
-| `workflows_test`   | Integration-test action, `reusable-test.yml`, `run-pr-integration.sh`, Sherpa CI scripts             |
-| `workflows_ts`     | `ci-cache-ts-dist`, `build-ts-workspace.sh`, TS dist cache key / release TS verify scripts           |
+The script also prints `version_only=true|false`.
 
-If `code` is false (docs-only), **Typecheck & lint**, **Compile native**, **Build TypeScript**, and **Test** still run as required checks but exit immediately (skip notice). No checkout, setup-node, artifact download, or integration tests.
-
-Markdown under `docs/**` and any `**/*.md` file do not set `code=true` — README edits under `crates/**` or `examples/**` no longer trigger heavy jobs.
+Local check (hermetic, builds its own temp git repos): `bash scripts/ci/compute-pr-job-gates.test.sh`
 
 ### 2. Package-lock optional bindings (always)
 

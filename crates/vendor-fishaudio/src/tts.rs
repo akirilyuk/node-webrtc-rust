@@ -65,21 +65,23 @@ fn into_chunks(outcome: StreamOutcome) -> Vec<TtsAudioChunk> {
     }]
 }
 
-/// Keeps the HTTP error text and appends why the WebSocket attempt was abandoned.
+/// Keeps the primary transport's error text and appends why the other transport was tried
+/// first and abandoned, e.g. `(after http failure: ...)`. Only vendor messages are combined,
+/// so request text never ends up in the result.
 #[cfg(feature = "live")]
-fn with_ws_context(http: SpeechError, ws: &SpeechError) -> SpeechError {
-    match (http, ws) {
+fn with_context(primary: SpeechError, other_label: &str, other: &SpeechError) -> SpeechError {
+    match (primary, other) {
         (
             SpeechError::Vendor { vendor, message },
             SpeechError::Vendor {
-                message: ws_message,
+                message: other_message,
                 ..
             },
         ) => SpeechError::Vendor {
             vendor,
-            message: format!("{message} (after ws failure: {ws_message})"),
+            message: format!("{message} (after {other_label} failure: {other_message})"),
         },
-        (http, _) => http,
+        (primary, _) => primary,
     }
 }
 
@@ -101,26 +103,29 @@ impl TtsProvider for FishAudioTts {
         let reference_id = self.reference_id();
         let reference_id = reference_id.as_deref();
 
+        // Chunked HTTP is the default: the agent hands whole sentences, so the WebSocket's
+        // text-streaming input buys nothing, and HTTP reached the first audio chunk sooner
+        // in live measurements (291-658 ms vs 963-1035 ms, 2026-10-16).
         #[cfg(feature = "live")]
         let outcome = match self
             .client
-            .synthesize_ws(text, reference_id, &self.model, sink.as_ref())
+            .synthesize_http(text, reference_id, &self.model, sink.as_ref())
             .await
         {
             Ok(outcome) => outcome,
             // Documented fallback, only while no audio reached the sink: a retry after audio
             // started would play the start of the utterance twice.
-            Err(ws) if !ws.emitted_any => {
+            Err(http) if !http.emitted_any => {
                 match self
                     .client
-                    .synthesize_http(text, reference_id, &self.model, sink.as_ref())
+                    .synthesize_ws(text, reference_id, &self.model, sink.as_ref())
                     .await
                 {
                     Ok(outcome) => outcome,
-                    Err(http) => return Err(with_ws_context(http.error, &ws.error)),
+                    Err(ws) => return Err(with_context(ws.error, "http", &http.error)),
                 }
             }
-            Err(ws) => return Err(ws.error),
+            Err(http) => return Err(http.error),
         };
 
         #[cfg(not(feature = "live"))]

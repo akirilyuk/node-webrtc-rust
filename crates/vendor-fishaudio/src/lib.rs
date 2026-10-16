@@ -19,7 +19,7 @@ pub use stt_matrix::{
 };
 
 /// Test-only access to the two transports, used by `tests/live_test.rs` to pin which path
-/// produced the audio (the provider silently falls back from WS to HTTP). Not public API.
+/// produced the audio (the provider silently falls back from HTTP to WS). Not public API.
 #[cfg(feature = "live")]
 #[doc(hidden)]
 pub mod __test {
@@ -41,7 +41,7 @@ pub mod __test {
             FishAudioClient::new(api_key, base_url).map(Self)
         }
 
-        /// `wss://…/v1/tts/live` only, no HTTP fallback. Returns 48 kHz stereo s16le.
+        /// `wss://…/v1/tts/live` only, no fallback to HTTP. Returns 48 kHz stereo s16le.
         pub async fn synthesize_ws(
             &self,
             text: &str,

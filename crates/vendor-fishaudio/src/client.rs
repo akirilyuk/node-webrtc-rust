@@ -1,5 +1,5 @@
-//! Fish Audio TTS clients: WebSocket live (`/v1/tts/live`, MessagePack) and chunked HTTP
-//! (`POST /v1/tts`).
+//! Fish Audio TTS clients: chunked HTTP (`POST /v1/tts`, the default transport) and WebSocket
+//! live (`/v1/tts/live`, MessagePack, the fallback).
 //!
 //! WebSocket: <https://docs.fish.audio/api-reference/endpoint/websocket/tts-live>
 //! HTTP: <https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech>

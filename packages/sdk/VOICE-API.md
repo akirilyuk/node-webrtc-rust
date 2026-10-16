@@ -349,10 +349,10 @@ VoiceAgent always emits the same speech events; vendors differ in **when** parti
 
 ### TTS: progressive vs full-body
 
-| Pattern                  | Playback                                          | Examples                                                                                                                             |
-| ------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| **Progressive**          | PCM chunks before the HTTP/WS response completes  | OpenAI chunked PCM, Deepgram Aura/Flux speak WS, ElevenLabs HTTP `/stream`, Google `StreamingSynthesize`, Cartesia WS, Fish Audio WS |
-| **Full-body then frame** | Entire audio buffered, then 20 ms outbound frames | Groq Orpheus WAV, Azure REST, Polly `SynthesizeSpeech`, ElevenLabs `eleven_v3`, many fallbacks                                       |
+| Pattern                  | Playback                                          | Examples                                                                                                                                       |
+| ------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Progressive**          | PCM chunks before the HTTP/WS response completes  | OpenAI chunked PCM, Deepgram Aura/Flux speak WS, ElevenLabs HTTP `/stream`, Google `StreamingSynthesize`, Cartesia WS, Fish Audio chunked HTTP |
+| **Full-body then frame** | Entire audio buffered, then 20 ms outbound frames | Groq Orpheus WAV, Azure REST, Polly `SynthesizeSpeech`, ElevenLabs `eleven_v3`, many fallbacks                                                 |
 
 `sendTextToTTS` enqueues on the outbound track at 20 ms cadence regardless; progressive vendors start playback sooner.
 

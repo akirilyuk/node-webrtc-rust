@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **tts:** Fish Audio TTS vendor `fishaudio` (Drama 3 default, `drama-3`). WebSocket streaming with HTTP fallback; set `FISH_API_KEY` and optionally `FISH_VOICE_ID`. New crate `vendor-fishaudio`, `TtsVendor::Fishaudio`, and a `fishaudio` entry in `@node-webrtc-rust/voice-catalog`.
+- **tts:** Fish Audio TTS vendor `fishaudio` (Drama 3 default, `drama-3`). Chunked HTTP streaming with WebSocket fallback; set `FISH_API_KEY` and optionally `FISH_VOICE_ID`. New crate `vendor-fishaudio`, `TtsVendor::Fishaudio`, and a `fishaudio` entry in `@node-webrtc-rust/voice-catalog`.
 - **stt:** Fish Audio realtime STT (`fishaudio`, `transcribe-1`) over Fish's ElevenLabs-compatible socket. Manual commit after VAD end, finals only (no partials), reconnects after the 3600 s connection cap. `SttVendor::Fishaudio`, `fishaudio-stt` example preset (uses `VOICE_AGENT_VAD_PRESET`, so only VAD-gated audio is streamed and billed).
 
 ## [0.11.2] - 2026-10-16

@@ -18,11 +18,12 @@ pub struct CartesiaTts {
 impl CartesiaTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
         Ok(Self {
-            client: CartesiaClient::new(
+            client: CartesiaClient::with_endpoint(
                 config
                     .api_key
                     .clone()
                     .or_else(|| std::env::var("CARTESIA_API_KEY").ok()),
+                config.endpoint.clone(),
             ),
             model: config
                 .model

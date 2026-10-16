@@ -4,9 +4,12 @@
 //! WebSocket: <https://docs.cartesia.ai/api-reference/tts/websocket>
 
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+#[cfg(feature = "live")]
 use node_webrtc_rust_speech::pipeline::TtsProgressiveSink;
 
-use crate::matrix::{validate_model_id, websocket_url, DEFAULT_API_VERSION};
+#[cfg(feature = "live")]
+use crate::matrix::websocket_url;
+use crate::matrix::{validate_model_id, DEFAULT_API_VERSION, DEFAULT_BASE_URL};
 
 pub struct CartesiaClient {
     api_key: Option<String>,
@@ -15,10 +18,20 @@ pub struct CartesiaClient {
 }
 
 impl CartesiaClient {
+    #[cfg(test)]
     pub fn new(api_key: Option<String>) -> Self {
+        Self::with_endpoint(api_key, None)
+    }
+
+    /// `endpoint` replaces the default `https://api.cartesia.ai` (REST base; WS is derived).
+    pub fn with_endpoint(api_key: Option<String>, endpoint: Option<String>) -> Self {
+        let base_url = endpoint
+            .filter(|value| !value.is_empty())
+            .map(|value| value.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         Self {
             api_key,
-            base_url: "https://api.cartesia.ai".to_string(),
+            base_url,
             api_version: DEFAULT_API_VERSION.to_string(),
         }
     }
@@ -95,7 +108,7 @@ impl CartesiaClient {
 
         #[cfg(not(feature = "live"))]
         {
-            let _ = (text, voice, model, &self.base_url);
+            let _ = (text, voice, model, &self.base_url, &self.api_version);
             let _ = self.api_key()?;
             Err(SpeechError::Vendor {
                 vendor: "cartesia".into(),
@@ -133,7 +146,7 @@ impl CartesiaClient {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
-        let url = websocket_url(&self.api_version);
+        let url = websocket_url(&self.base_url, &self.api_version);
         let mut request = url
             .into_client_request()
             .map_err(|err| SpeechError::Vendor {

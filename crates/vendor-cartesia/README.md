@@ -16,6 +16,10 @@ Cartesia TTS only (no STT) for `@node-webrtc-rust/sdk` VoiceAgent.
 | ------------------ | ---------------- |
 | `CARTESIA_API_KEY` | Cartesia API key |
 
+### Endpoint override
+
+`TtsConfig.endpoint` (for example `http://127.0.0.1:<port>`) replaces `https://api.cartesia.ai`. REST becomes `{endpoint}/tts/bytes` and WebSocket becomes `ws://…/tts/websocket?cartesia_version=…` (`https` maps to `wss`, `http` to `ws`). Unset keeps the default host. The local mock-server tests use this.
+
 ## Streaming decisions (TTS)
 
 | Choice      | What we implemented                                           | Why                                                                     |

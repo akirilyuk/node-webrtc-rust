@@ -12,10 +12,8 @@ cd "$ROOT"
 echo "==> release-tag local CI run_step self-test"
 bash scripts/ci/run-release-tag-local-ci.sh --self-test
 
-echo "==> PR gate tests (job gates, workflow path filters, concurrency)"
-bash scripts/ci/compute-pr-job-gates.test.sh
-bash scripts/ci/pr-workflow-gates.test.sh
-bash scripts/ci/ci-test-image-models.test.sh
+echo "==> CI shell tests (scripts/ci/*.test.sh)"
+bash scripts/ci/run-ci-shell-tests.sh
 
 echo "==> validate package-lock optional bindings"
 bash scripts/ci/validate-package-lock-optional-bindings.sh

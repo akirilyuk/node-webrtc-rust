@@ -25,4 +25,15 @@ if ! (( lint < fmt )); then
   exit 1
 fi
 
+# Every scripts/ci/*.test.sh runs in the quality job through one runner call (not a hand-kept list),
+# so a new shell test cannot stay local-only (ci.local-gate-not-in-ci).
+if ! grep -Eq '^bash scripts/ci/run-ci-shell-tests\.sh$' "$GATE"; then
+  echo "$GATE must call 'bash scripts/ci/run-ci-shell-tests.sh'" >&2
+  exit 1
+fi
+if grep -Eq '^bash scripts/ci/[A-Za-z0-9_-]+\.test\.sh' "$GATE"; then
+  echo "$GATE must not call individual *.test.sh files; run-ci-shell-tests.sh discovers them" >&2
+  exit 1
+fi
+
 echo "run-pr-quality.test.sh: OK"

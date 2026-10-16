@@ -100,4 +100,17 @@ if ! grep -Eq "trap '.*turnserver-ci\.sh\"? stop.*' EXIT" "$integration"; then
   exit 1
 fi
 
+# run-ci-shell-tests.sh discovers tests by glob; the only test names in it are SKIP entries
+# (ci.local-gate-not-in-ci: a hand-kept list lets a new *.test.sh stay local-only).
+runner="scripts/ci/run-ci-shell-tests.sh"
+if ! grep -Fq 'scripts/ci/*.test.sh' "$runner" || ! grep -Eq 'for f in scripts/ci/\*\.test\.sh' "$runner"; then
+  echo "$runner: must discover tests with 'for f in scripts/ci/*.test.sh'" >&2
+  exit 1
+fi
+if grep -En '[A-Za-z0-9_-]+\.test\.sh' "$runner" | grep -Ev '^[0-9]+:[[:space:]]*(#|"[A-Za-z0-9_-]+\.test\.sh\|)' | grep -Ev '\*\.test\.sh|\$name|\.test\.sh\)|scripts/ci/\$' >/dev/null; then
+  echo "$runner: names a test outside the SKIP map; tests are discovered by glob:" >&2
+  grep -En '[A-Za-z0-9_-]+\.test\.sh' "$runner" | grep -Ev '^[0-9]+:[[:space:]]*(#|"[A-Za-z0-9_-]+\.test\.sh\|)' | grep -Ev '\*\.test\.sh|\$name|\.test\.sh\)|scripts/ci/\$' >&2
+  exit 1
+fi
+
 echo "pr-workflow-gates.test.sh: OK"

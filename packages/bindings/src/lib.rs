@@ -41,10 +41,10 @@ pub use rtp_receiver::JsRtpReceiver;
 pub use rtp_sender::JsRtpSender;
 pub use rtp_transceiver::{JsRTCRtpTransceiverInit, JsRtpTransceiver};
 pub use speech::{
-    preload_language_id, JsBargeInConfig, JsEventDeliveryMode, JsSessionAudioFormat,
-    JsSessionFinalizeResult, JsSessionRecorder, JsSpeechEvent, JsSpeechEventType, JsSttConfig,
-    JsSttVendor, JsTtsConfig, JsTtsVendor, JsVadConfig, JsVadSampleRate, JsVoiceAgent,
-    JsVoiceAgentConfig,
+    preload_language_id, tts_engine_text, JsBargeInConfig, JsEventDeliveryMode,
+    JsSessionAudioFormat, JsSessionFinalizeResult, JsSessionRecorder, JsSpeechEvent,
+    JsSpeechEventType, JsSttConfig, JsSttVendor, JsTtsConfig, JsTtsEngineText, JsTtsVendor,
+    JsVadConfig, JsVadSampleRate, JsVoiceAgent, JsVoiceAgentConfig,
 };
 
 #[napi]

@@ -387,6 +387,12 @@ export interface SpeechEvent {
    * playing.
    */
   firstAudioMs?: number
+  /**
+   * `agent_speaking_start`: letters capitalized at the TTS engine input for this reply
+   * (`sentenceCase`). Unset when the TTS vendor does not apply it (only Sherpa does); `0` when
+   * nothing needed a capital or `sentenceCase` is `off`.
+   */
+  sentenceCaseAdjusted?: number
   /** `tts_wait`: ms the synthesis start waited on refusals before it succeeded. */
   waitMs?: number
   /** `tts_wait`: refused attempts that were retried. */

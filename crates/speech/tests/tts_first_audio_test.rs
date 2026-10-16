@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    SendTextToTtsOptions, SttConfig, TtsConfig, TtsVendor, VoiceAgentConfig,
+    SendTextToTtsOptions, SentenceCase, SttConfig, TtsConfig, TtsVendor, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::error::SpeechResult;
 use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
@@ -89,10 +89,19 @@ impl VendorFactory for DelayedFactory {
 }
 
 async fn make_agent(first_chunk_delay: Duration) -> (Arc<VoiceAgent>, Arc<AtomicBool>) {
+    make_agent_with_vendor(TtsVendor::Mock, SentenceCase::default(), first_chunk_delay).await
+}
+
+/// Same fake TTS registered under `vendor`, so the agent sees that vendor in its config.
+async fn make_agent_with_vendor(
+    vendor: TtsVendor,
+    sentence_case: SentenceCase,
+    first_chunk_delay: Duration,
+) -> (Arc<VoiceAgent>, Arc<AtomicBool>) {
     let synth_started = Arc::new(AtomicBool::new(false));
     let mut registry = VendorRegistry::new();
     registry.register_tts(
-        TtsVendor::Mock,
+        vendor,
         Arc::new(DelayedFactory {
             first_chunk_delay,
             synth_started: Arc::clone(&synth_started),
@@ -101,13 +110,13 @@ async fn make_agent(first_chunk_delay: Duration) -> (Arc<VoiceAgent>, Arc<Atomic
     let config = VoiceAgentConfig {
         stt: None,
         tts: Some(TtsConfig {
-            provider: TtsVendor::Mock,
+            provider: vendor,
             model: None,
             model_path: None,
             voice: None,
             api_key: None,
             endpoint: None,
-            sentence_case: Default::default(),
+            sentence_case,
         }),
         ..Default::default()
     };
@@ -251,6 +260,94 @@ async fn barge_in_clears_pending_first_audio() {
         first_audio_ms + 20 <= since_first_request,
         "first_audio_ms={first_audio_ms} must be measured from the second request \
          (elapsed since first request: {since_first_request})"
+    );
+    agent.stop().await.unwrap();
+}
+
+/// `agent_speaking_start` reports how many letters the TTS engine input gets capitalized, for
+/// vendors that apply sentence-start capitalization (local and in-cluster Sherpa).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_speaking_start_carries_sentence_case_adjusted_for_sherpa() {
+    for vendor in [TtsVendor::LocalSherpa, TtsVendor::ClusterSherpa] {
+        let (agent, _) =
+            make_agent_with_vendor(vendor, SentenceCase::Auto, Duration::from_millis(5)).await;
+        let mut events = agent.subscribe_events();
+
+        agent
+            .send_text_to_tts(&unique_text("Okay. eight one six three ten"))
+            .await
+            .unwrap();
+        let start = next_speaking_start(&mut events).await;
+        assert_eq!(start.sentence_case_adjusted, Some(1), "vendor {vendor:?}");
+        agent.stop().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sentence_case_off_reports_zero_adjusted() {
+    let (agent, _) = make_agent_with_vendor(
+        TtsVendor::LocalSherpa,
+        SentenceCase::Off,
+        Duration::from_millis(5),
+    )
+    .await;
+    let mut events = agent.subscribe_events();
+
+    agent
+        .send_text_to_tts(&unique_text("Okay. eight one six three ten"))
+        .await
+        .unwrap();
+    let start = next_speaking_start(&mut events).await;
+    assert_eq!(start.sentence_case_adjusted, Some(0));
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_sherpa_vendor_has_no_sentence_case_adjusted() {
+    let (agent, _) = make_agent(Duration::from_millis(5)).await;
+    let mut events = agent.subscribe_events();
+
+    agent
+        .send_text_to_tts(&unique_text("Okay. eight one six three ten"))
+        .await
+        .unwrap();
+    let start = next_speaking_start(&mut events).await;
+    assert_eq!(start.sentence_case_adjusted, None);
+    agent.stop().await.unwrap();
+}
+
+/// A reply served from the phrase cache is the same text, so it reports the same count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phrase_cache_hit_reply_still_reports_sentence_case_adjusted() {
+    let (agent, synth_started) = make_agent_with_vendor(
+        TtsVendor::LocalSherpa,
+        SentenceCase::Auto,
+        Duration::from_millis(5),
+    )
+    .await;
+    let mut events = agent.subscribe_events();
+    let text = unique_text("Okay. eight one six three ten cached");
+
+    agent.send_text_to_tts(&text).await.unwrap();
+    assert_eq!(
+        next_speaking_start(&mut events)
+            .await
+            .sentence_case_adjusted,
+        Some(1)
+    );
+    agent.wait_tts_playback_idle().await.unwrap();
+    synth_started.store(false, Ordering::SeqCst);
+
+    agent.send_text_to_tts(&text).await.unwrap();
+    assert_eq!(
+        next_speaking_start(&mut events)
+            .await
+            .sentence_case_adjusted,
+        Some(1)
+    );
+    assert!(
+        !synth_started.load(Ordering::SeqCst),
+        "the second reply must come from the phrase cache, not the vendor"
     );
     agent.stop().await.unwrap();
 }

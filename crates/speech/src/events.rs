@@ -13,7 +13,7 @@
 //! | `UserSpeechFinal` | STT `finalize_utterance` — primary turn boundary for LLM |
 //! | `UserLanguage` | Offline spoken-language ID on buffered user PCM |
 //! | `LanguageIdSkipped` | Utterance closed (or LID deferred for TTS) without an identify running; no `user_language` will follow unless a deferred identify later runs |
-//! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound; carries `first_chunk_ms` / `first_audio_ms` when timed |
+//! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound; carries `first_chunk_ms` / `first_audio_ms` when timed, and `sentence_case_adjusted` for Sherpa TTS |
 //! | `AgentSpeakingEnd` | TTS queue drained — **only on the agent that plays TTS** |
 //! | `VadTriggered` | VAD `SpeechStart` when `vad.enabled` — opens STT listen for this utterance |
 //! | `SttStreamStart` / `SttStreamEnd` | STT vendor PCM feed opened / closed for an utterance |
@@ -119,6 +119,9 @@ pub struct SpeechEvent {
     pub first_chunk_ms: Option<u32>,
     /// `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply.
     pub first_audio_ms: Option<u32>,
+    /// `agent_speaking_start`: letters capitalized at the TTS engine input for this reply
+    /// (sentenceCase); None when the TTS vendor does not apply it.
+    pub sentence_case_adjusted: Option<u32>,
     /// `tts_wait`: ms the synthesis start waited on refusals.
     pub wait_ms: Option<u32>,
     /// `tts_wait`: refused attempts that were retried.
@@ -149,6 +152,7 @@ impl SpeechEvent {
             speech_ms: None,
             first_chunk_ms: None,
             first_audio_ms: None,
+            sentence_case_adjusted: None,
             wait_ms: None,
             attempts: None,
             chars: None,
@@ -258,14 +262,17 @@ impl SpeechEvent {
         Self::base(SpeechEventKind::AgentSpeakingStart)
     }
 
-    /// `agent_speaking_start` carrying time-to-first-audio timing for the reply that started playback.
+    /// `agent_speaking_start` carrying time-to-first-audio timing and the engine-input
+    /// capitalization count for the reply that started playback.
     pub fn agent_speaking_start_with_timing(
         first_audio_ms: Option<u32>,
         first_chunk_ms: Option<u32>,
+        sentence_case_adjusted: Option<u32>,
     ) -> Self {
         let mut ev = Self::base(SpeechEventKind::AgentSpeakingStart);
         ev.first_audio_ms = first_audio_ms;
         ev.first_chunk_ms = first_chunk_ms;
+        ev.sentence_case_adjusted = sentence_case_adjusted;
         ev
     }
 
@@ -443,8 +450,10 @@ mod user_language_event_tests {
         assert_eq!(plain.kind, SpeechEventKind::AgentSpeakingStart);
         assert_eq!(plain.first_audio_ms, None);
         assert_eq!(plain.first_chunk_ms, None);
+        assert_eq!(plain.sentence_case_adjusted, None);
 
-        let timed = SpeechEvent::agent_speaking_start_with_timing(Some(240), Some(180));
+        let timed = SpeechEvent::agent_speaking_start_with_timing(Some(240), Some(180), Some(2));
+        assert_eq!(timed.sentence_case_adjusted, Some(2));
         assert_eq!(timed.kind, SpeechEventKind::AgentSpeakingStart);
         assert_eq!(timed.first_audio_ms, Some(240));
         assert_eq!(timed.first_chunk_ms, Some(180));

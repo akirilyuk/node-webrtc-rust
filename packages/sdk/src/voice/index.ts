@@ -16,6 +16,8 @@ export { VoiceAgent } from './VoiceAgent.js'
 
 /** Load the shared spoken-language-ID model once per process (host boot). */
 export { preloadLanguageId } from './preload.js'
+export { ttsEngineText } from './tts-engine-text.js'
+export type { TtsEngineText } from './tts-engine-text.js'
 
 /** Stable event name constants for tests and harnesses. */
 export { SPEECH_EVENT_TYPE } from './types.js'

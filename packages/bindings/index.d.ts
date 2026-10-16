@@ -229,6 +229,17 @@ export interface JsSessionFinalizeResult {
   outboundFrames: number
   inboundFrames: number
 }
+/** The text a Sherpa TTS engine receives for a reply, and how many letters were uppercased. */
+export interface JsTtsEngineText {
+  text: string
+  adjusted: number
+}
+/**
+ * Exact engine text for `text` under `mode` (`"auto"` default, or `"off"`). Does not synthesize.
+ *
+ * Whitespace is normalised first, as the Sherpa TTS adapters do before the engine sees the text.
+ */
+export declare function ttsEngineText(text: string, mode?: string | undefined | null): JsTtsEngineText
 export const enum JsEventDeliveryMode {
   Callback = 'callback',
   Stream = 'stream',
@@ -404,6 +415,8 @@ export interface JsSpeechEvent {
   firstChunkMs?: number
   /** `agent_speaking_start`: ms from the speak request to the first outbound PCM frame of that reply. */
   firstAudioMs?: number
+  /** `agent_speaking_start`: letters capitalized at the TTS engine input for this reply (sentenceCase); absent when the TTS vendor does not apply it. */
+  sentenceCaseAdjusted?: number
   /** `tts_wait`: ms the synthesis start waited on refusals. */
   waitMs?: number
   /** `tts_wait`: refused attempts that were retried. */

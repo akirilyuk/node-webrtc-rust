@@ -278,6 +278,7 @@ export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     speech_ms?: number
     first_chunk_ms?: number
     first_audio_ms?: number
+    sentence_case_adjusted?: number
     wait_ms?: number
   }
   return {
@@ -302,6 +303,8 @@ export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     speechMs: event.speechMs ?? extended.speech_ms ?? undefined,
     firstChunkMs: event.firstChunkMs ?? extended.first_chunk_ms ?? undefined,
     firstAudioMs: event.firstAudioMs ?? extended.first_audio_ms ?? undefined,
+    sentenceCaseAdjusted:
+      event.sentenceCaseAdjusted ?? extended.sentence_case_adjusted ?? undefined,
     waitMs: event.waitMs ?? extended.wait_ms ?? undefined,
     attempts: event.attempts ?? undefined,
     chars: event.chars ?? undefined,

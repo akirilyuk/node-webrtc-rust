@@ -22,12 +22,12 @@ Cartesia TTS only (no STT) for `@node-webrtc-rust/sdk` VoiceAgent.
 
 ## Streaming decisions (TTS)
 
-| Choice      | What we implemented                                           | Why                                                                     |
-| ----------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Default     | WS `/tts/websocket` contexts (`chunk` / `done`)               | Official WebSocket API; progressive PCM for VoiceAgent.                 |
-| Fallback    | REST `/tts/bytes`                                             | Documented non-WS path if WS is unavailable.                            |
-| Models      | `sonic-3` (default), `sonic-3.5`, `sonic-3.6`, `sonic-latest` | Current WS `model_id` enum. Legacy `sonic-english` is **not** accepted. |
-| API version | `2026-08-14` (`cartesia_version` query)                       | Documented AsyncAPI version at implementation time.                     |
+| Choice      | What we implemented                                                                                                            | Why                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Default     | WS `/tts/websocket` contexts (`chunk` / `done`)                                                                                | Official WebSocket API; progressive PCM for VoiceAgent.                 |
+| Fallback    | REST `/tts/bytes` only when the WS failed before any audio reached the sink; a WS failure after audio is returned as an error. | Falling back after audio would play the utterance twice.                |
+| Models      | `sonic-3` (default), `sonic-3.5`, `sonic-3.6`, `sonic-latest`                                                                  | Current WS `model_id` enum. Legacy `sonic-english` is **not** accepted. |
+| API version | `2026-08-14` (`cartesia_version` query)                                                                                        | Documented AsyncAPI version at implementation time.                     |
 
 STT: this vendor is TTS-only. Pair with another STT provider.
 
@@ -35,4 +35,5 @@ STT: this vendor is TTS-only. Pair with another STT provider.
 
 ```bash
 cargo test -p node-webrtc-rust-vendor-cartesia --lib
+cargo test -p node-webrtc-rust-vendor-cartesia --features live --test mock_server_test
 ```

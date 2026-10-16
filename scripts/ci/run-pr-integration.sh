@@ -44,7 +44,7 @@ echo "==> Rust fmt + clippy (toolchain pinned in rust-toolchain.toml)"
 bash "$CI_STEP" --timeout "${CI_RUST_LINT_TIMEOUT_SEC:-1500}" "rust lint" -- \
   bash scripts/ci/run-rust-lint.sh
 
-echo "==> cargo test (core, mixer, conference, speech)"
+echo "==> cargo test (core, mixer, conference, speech, vendor-cartesia)"
 echo "    (compiles Rust test deps on cold cache — separate from the .node binding above)"
 # opus_sdp_fmtp_omits_maxaveragebitrate_when_env_unset uses OnceLock. A developer
 # shell with WEBRTC_OPUS_BITRATE_BPS=192000 (common locally) fails those tests even
@@ -63,6 +63,10 @@ bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" --
   cargo test -p node-webrtc-rust-conference
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
   cargo test -p node-webrtc-rust-speech
+# Cloud TTS vendors are not live-tested in CI; this local mock server is the guard for the
+# Cartesia sink contract (each chunk to the sink once, no fallback after audio).
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-cartesia" -- \
+  cargo test -p node-webrtc-rust-vendor-cartesia --features live
 # Vendored dtls (third_party/dtls) is not a workspace member, so `-p` cannot reach it. Guards
 # net.final-flight-not-resent (seeded loss/reorder handshake test).
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendored dtls" -- \

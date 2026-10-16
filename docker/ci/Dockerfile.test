@@ -1,0 +1,40 @@
+# CI test image: ci-build + coturn + Sherpa model weights for the integration suite.
+# Separate from docker/ci/Dockerfile on purpose: ci-build's content digest is a native
+# build fingerprint input, and test assets must not invalidate native caches.
+ARG CI_BUILD_IMAGE=ghcr.io/akirilyuk/node-webrtc-rust/ci-build:latest
+FROM ${CI_BUILD_IMAGE}
+
+# coturn: TURN server for integration tests, started inside the job container
+# (no sidecar container, no Docker daemon needed on Kubernetes runners).
+RUN apt-get update && apt-get install -y --no-install-recommends coturn bzip2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v turnserver
+
+# Sherpa models via the same download scripts as local dev. Only the scripts and
+# catalogs are copied, so source edits elsewhere do not rebuild this layer.
+COPY examples/shared/sherpa-local-model-catalog.json examples/shared/sherpa-tts-model-catalog.json /opt/nwr-model-src/examples/shared/
+COPY examples/voice-agent-local-sherpa/scripts/download-stt.mjs examples/voice-agent-local-sherpa/scripts/download-tts.mjs examples/voice-agent-local-sherpa/scripts/download-lid.mjs examples/voice-agent-local-sherpa/scripts/sherpa-model-catalog.mjs examples/voice-agent-local-sherpa/scripts/sherpa-tts-model-catalog.mjs /opt/nwr-model-src/examples/voice-agent-local-sherpa/scripts/
+RUN set -eux \
+    && cd /opt/nwr-model-src/examples/voice-agent-local-sherpa \
+    && node scripts/download-stt.mjs --lang=en \
+    && node scripts/download-tts.mjs --lang=en \
+    && node scripts/download-lid.mjs \
+    && node scripts/download-tts.mjs --lang=de \
+    && node scripts/download-tts.mjs --lang=es \
+    && rm -f .models/*.tar.bz2 \
+    && mkdir -p /opt/sherpa-models \
+    && mv .models/* /opt/sherpa-models/ \
+    && rm -rf /opt/nwr-model-src \
+    && for f in encoder.onnx decoder.onnx joiner.onnx tokens.txt; do \
+         test -s "/opt/sherpa-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/$f"; \
+       done \
+    && for d in /opt/sherpa-models/vits-piper-en_US-amy-low \
+                /opt/sherpa-models/vits-piper-de_DE-thorsten-medium \
+                /opt/sherpa-models/vits-piper-es-glados-medium \
+                /opt/sherpa-models/sherpa-onnx-whisper-tiny; do \
+         test -d "$d"; \
+         ls "$d"/*.onnx >/dev/null; \
+         find "$d" -maxdepth 1 -name '*.onnx' -size +0 | grep -q .; \
+       done
+
+ENV NWR_CI_SHERPA_MODELS=/opt/sherpa-models

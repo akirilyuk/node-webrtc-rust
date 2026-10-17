@@ -150,6 +150,11 @@ impl SttProvider for AzureStt {
         "azure"
     }
 
+    /// Azure STT transcribes one uploaded utterance and returns only a final.
+    fn emits_partials(&self) -> bool {
+        false
+    }
+
     fn decode_backlog_ms(&self) -> u32 {
         if self.commit_waiting.load(Ordering::Relaxed) {
             self.frozen_backlog_ms.load(Ordering::Relaxed)
@@ -322,6 +327,20 @@ async fn http_short_audio_recognize(
 mod tests {
     use super::*;
     use node_webrtc_rust_speech::config::SttVendor;
+
+    #[test]
+    fn provider_never_emits_partials() {
+        let stt = AzureStt::new(&SttConfig {
+            provider: SttVendor::Azure,
+            model: None,
+            model_path: None,
+            language: Some("en-US".into()),
+            api_key: Some("k".into()),
+            endpoint: Some("res.cognitiveservices.azure.com".into()),
+        })
+        .unwrap();
+        assert!(!stt.emits_partials());
+    }
 
     #[test]
     fn rejects_undocumented_mode() {

@@ -7,7 +7,7 @@
  * - `scripts/ci/run-pr-integration.sh` sets WNR_LOG_FILE (per worker `{pid}`) and a RUST_LOG that
  *   covers dtls, webrtc_dtls, webrtc::dtls_transport and webrtc_ice at trace for the helpers
  *   integration step, and deletes the files when the step passes;
- * - `.github/actions/ci-run-integration-tests/action.yml` uploads them with `if: failure()`;
+ * - `.github/workflows/reusable-test.yml` uploads them with `if: failure()`;
  * - the bindings only install the logger when WNR_LOG_FILE is set, and only for transport crates.
  * The env gating itself is executed in `native-trace-gating.integration.test.ts`.
  */
@@ -21,7 +21,7 @@ const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), 'utf8')
 
 describe('native trace CI wiring', () => {
   const script = read('scripts/ci/run-pr-integration.sh')
-  const action = read('.github/actions/ci-run-integration-tests/action.yml')
+  const action = read('.github/workflows/reusable-test.yml')
   const trace = read('packages/bindings/src/native_trace.rs')
   const runtime = read('packages/bindings/src/runtime.rs')
 

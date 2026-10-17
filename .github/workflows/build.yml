@@ -26,7 +26,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  CI_IMAGE: ghcr.io/${{ github.repository }}/ci-build:latest
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
   OPUS_STATIC: '1'
 
@@ -90,13 +89,8 @@ jobs:
     name: Detect changes
     runs-on: self-hosted
     outputs:
-      skip_test: ${{ steps.pr_gates.outputs.skip_test }}
-      skip_quality: ${{ steps.pr_gates.outputs.skip_quality }}
-      run_compile: ${{ steps.pr_gates.outputs.run_compile }}
       run_build_ts: ${{ steps.pr_gates.outputs.run_build_ts }}
-      run_test: ${{ steps.pr_gates.outputs.run_test }}
       run_quality: ${{ steps.pr_gates.outputs.run_quality }}
-      run_compile_native: ${{ steps.job_gates.outputs.run_compile_native }}
       run_integration_test: ${{ steps.job_gates.outputs.run_integration_test }}
       needs_native_for_test: ${{ steps.pr_gates.outputs.needs_native }}
       needs_ts_for_test: ${{ steps.pr_gates.outputs.needs_ts }}
@@ -157,20 +151,12 @@ jobs:
         run: |
           bash scripts/ci/compute-pr-job-gates.sh "$PR_BASE_SHA" "$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
 
-      # Compute on the self-hosted runner (bash 5). compile-native runs inside the
-      # ci-build container where `${var,,}` and other bash-4+ syntax is unavailable.
-      - name: Derive compile and integration job gates
+      - name: Derive integration job gate
         id: job_gates
         env:
-          RUN_COMPILE: ${{ steps.pr_gates.outputs.run_compile }}
           SKIP_TEST: ${{ steps.pr_gates.outputs.skip_test }}
         run: |
-          if [ "$RUN_COMPILE" = "true" ]; then
-            echo "run_compile_native=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_compile_native=false" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "$SKIP_TEST" != "true" ] || [ "$RUN_COMPILE" = "true" ]; then
+          if [ "$SKIP_TEST" != "true" ]; then
             echo "run_integration_test=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_integration_test=false" >> "$GITHUB_OUTPUT"
@@ -252,64 +238,9 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: bash scripts/ci/run-pr-quality.sh
 
-  compile-native:
-    name: Compile native
-    needs: [changes, validate-package-lock, quality]
-    if: |
-      always() &&
-      !cancelled() &&
-      needs.validate-package-lock.result == 'success'
-    runs-on: self-hosted
-    outputs:
-      ran_compile: ${{ steps.gate.outputs.run }}
-    container:
-      image: ghcr.io/${{ github.repository }}/ci-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Skip when no native or native-CI changes
-        id: gate
-        run: |
-          if [ "${{ needs.changes.outputs.run_compile_native }}" = "true" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping native compile — no Rust/bindings or native-build CI changes in this PR."
-          fi
-
-      - name: Require quality passed before native compile
-        if: steps.gate.outputs.run == 'true' && needs.quality.outputs.ran_quality == 'true' && needs.quality.result != 'success'
-        run: |
-          echo "Typecheck & lint must pass before native compile (quality=${{ needs.quality.result }})." >&2
-          exit 1
-
-      - uses: actions/checkout@v4
-        if: steps.gate.outputs.run == 'true'
-
-      # Restore+validate (not probe-only). reusable-test is workflow_call and often
-      # cannot restore GHA caches that compile can see — always artifact-handoff to Test.
-      - uses: ./.github/actions/native-binding-cache
-        if: steps.gate.outputs.run == 'true'
-        id: native-cache
-        with:
-          target: x86_64-unknown-linux-gnu
-          profile: debug
-
-      - uses: ./.github/actions/ci-build-native-linux
-        if: steps.gate.outputs.run == 'true'
-        with:
-          target: x86_64-unknown-linux-gnu
-          profile: debug
-          cache_prefix: v1-pr-debug
-          skip_build_on_cache_hit: 'true'
-          native_cache_hit: ${{ steps.native-cache.outputs.cache-hit }}
-          binding_cache_key: ${{ steps.native-cache.outputs.cache-key }}
-          upload_artifact: 'true'
-
   build-ts:
     name: Build TypeScript
-    needs: [changes, validate-package-lock, quality]
+    needs: [changes, validate-package-lock]
     if: |
       always() &&
       !cancelled() &&
@@ -327,12 +258,6 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping TypeScript build — no TS/examples or TS-build CI changes in this PR."
           fi
-
-      - name: Require quality passed before TypeScript build
-        if: steps.gate.outputs.run == 'true' && needs.quality.outputs.ran_quality == 'true' && needs.quality.result != 'success'
-        run: |
-          echo "Typecheck & lint must pass before TypeScript build (quality=${{ needs.quality.result }})." >&2
-          exit 1
 
       - name: Prepare workspace
         if: steps.gate.outputs.run == 'true'
@@ -404,36 +329,36 @@ jobs:
   # a thin gate job PRs stick on "Expected — Waiting for status to be reported".
   integration-test:
     name: Integration tests
-    needs: [changes, validate-package-lock, quality, compile-native, build-ts]
+    needs: [changes, validate-package-lock, build-ts]
     if: |
       always() &&
       !cancelled() &&
       needs.validate-package-lock.result == 'success' &&
-      needs.compile-native.result != 'failure' &&
       needs.build-ts.result != 'failure'
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
       skip: ${{ needs.changes.outputs.run_integration_test != 'true' && 'true' || 'false' }}
-      quality_result: ${{ needs.quality.result }}
-      binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'bindings-x86_64-unknown-linux-gnu' || '' }}
-      binding_profile: debug
-      require_binding_artifact: ${{ needs.compile-native.outputs.ran_compile == 'true' && 'true' || 'false' }}
-      needs_native_binding: ${{ (needs.changes.outputs.run_compile_native == 'true' || needs.changes.outputs.needs_native_for_test == 'true') && 'true' || 'false' }}
+      needs_native_binding: ${{ needs.changes.outputs.needs_native_for_test == 'true' && 'true' || 'false' }}
       needs_ts_dist: ${{ needs.changes.outputs.needs_ts_for_test == 'true' && 'true' || 'false' }}
     secrets: inherit
 
   test:
     name: Test
-    needs: [integration-test]
+    needs: [quality, build-ts, integration-test]
     if: always() && !cancelled()
     runs-on: self-hosted
     steps:
-      - name: Require integration tests
+      - name: Require lint, TypeScript build and integration tests
         run: |
-          result="${{ needs.integration-test.result }}"
-          echo "integration-test result: ${result}"
-          if [[ "${result}" == "success" ]]; then
+          quality="${{ needs.quality.result }}"
+          build_ts="${{ needs.build-ts.result }}"
+          integration="${{ needs.integration-test.result }}"
+          echo "quality result: ${quality}"
+          echo "build-ts result: ${build_ts}"
+          echo "integration-test result: ${integration}"
+          # quality always runs and reports success when its gate skips the work.
+          if [[ "${quality}" == "success" && ( "${build_ts}" == "success" || "${build_ts}" == "skipped" ) && "${integration}" == "success" ]]; then
             exit 0
           fi
           exit 1

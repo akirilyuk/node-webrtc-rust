@@ -2,12 +2,12 @@
 # Guards the native trace-on-failure wiring (error type net.connect-stall-no-timeout):
 # - run-pr-integration.sh sets WNR_LOG_FILE / RUST_LOG only around the helpers integration step,
 #   keeps the trace dir on failure and deletes it on success;
-# - the integration action uploads it as an artifact with `if: failure()` only.
+# - the reusable integration workflow (reusable-test.yml) uploads it as an artifact with `if: failure()` only.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/scripts/ci/run-pr-integration.sh"
-ACTION="$ROOT/.github/actions/ci-run-integration-tests/action.yml"
+WORKFLOW="$ROOT/.github/workflows/reusable-test.yml"
 
 fail() { echo "native-trace-wiring.test.sh: $*" >&2; exit 1; }
 count() { grep -c -E "$1" "$2" || true; }
@@ -37,11 +37,11 @@ grep -q '  rm -rf "\$NATIVE_TRACE_DIR"' "$SCRIPT" || fail "trace dir is not dele
 grep -q 'exit "\$helpers_rc"' "$SCRIPT" || fail "failure must exit with the step's status"
 
 # Artifact upload: failure only, 7 days.
-grep -q 'actions/upload-artifact@v4' "$ACTION" || fail "upload-artifact@v4 missing"
-up="$(grep -n 'upload-artifact@v4' "$ACTION" | cut -d: -f1)"
-sed -n "$((up - 3)),$((up + 8))p" "$ACTION" | grep -q 'if: failure()' || fail "upload must be if: failure()"
-grep -q 'name: native-trace-\${{ github.run_id }}' "$ACTION" || fail "artifact name must be native-trace-<run_id>"
-grep -q 'path: .test-logs/native-trace' "$ACTION" || fail "artifact path"
-grep -q 'retention-days: 7' "$ACTION" || fail "retention-days: 7 missing"
+grep -q 'actions/upload-artifact@v4' "$WORKFLOW" || fail "upload-artifact@v4 missing"
+up="$(grep -n 'upload-artifact@v4' "$WORKFLOW" | cut -d: -f1)"
+sed -n "$((up - 3)),$((up + 8))p" "$WORKFLOW" | grep -q 'if: failure()' || fail "upload must be if: failure()"
+grep -q 'name: native-trace-\${{ github.run_id }}' "$WORKFLOW" || fail "artifact name must be native-trace-<run_id>"
+grep -q 'path: .test-logs/native-trace' "$WORKFLOW" || fail "artifact path"
+grep -q 'retention-days: 7' "$WORKFLOW" || fail "retention-days: 7 missing"
 
 echo "native-trace-wiring.test.sh: OK"

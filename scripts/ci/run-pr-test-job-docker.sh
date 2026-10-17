@@ -1,37 +1,36 @@
 #!/usr/bin/env bash
 # Optional local mirror of the GitHub Actions PR **Test** job using Docker:
-#   coturn sidecar + ci-build container + run-pr-integration.sh
+#   ci-test container + run-pr-integration.sh
+#
+# CI runs the same script inside ghcr.io/<owner>/node-webrtc-rust/ci-test (ci-build + coturn +
+# Sherpa models). run-pr-integration.sh starts turnserver itself (scripts/ci/turnserver-ci.sh)
+# and builds the debug linux-gnu .node when packages/bindings has none, so this wrapper only
+# mounts the repo and sets TURN_AVAILABLE=1 / CI=true.
 #
 # Prefer the host path instead:
 #   npm run build:native && npm run ci:verify:pr-full
 #
-# Use this script only when debugging remote ci-build container / coturn differences.
+# Use this script only when debugging ci-test container differences.
 #
 # Usage (from repo root):
 #   bash scripts/ci/run-pr-test-job-docker.sh
 #   bash scripts/ci/run-pr-test-job-docker.sh --quality   # quality job first, then test
 #
 # Env:
-#   CI_IMAGE_LOCAL              docker image tag (default node-webrtc-rust-ci-build:local)
+#   CI_IMAGE_LOCAL              docker image (default ghcr.io/akirilyuk/node-webrtc-rust/ci-build:test)
 #   CI_STEP_LOG_TS=1            timestamp each ci-step line
-#   CI_PR_TEST_SKIP_COTURN=1    run in ci-build only (no TURN — not full parity)
+#   CI_PR_TEST_SKIP_COTURN=1    do not set TURN_AVAILABLE (no TURN — not full parity)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-IMAGE="${CI_IMAGE_LOCAL:-node-webrtc-rust-ci-build:local}"
-COTURN_NAME="coturn-pr-local-$$"
+IMAGE="${CI_IMAGE_LOCAL:-ghcr.io/akirilyuk/node-webrtc-rust/ci-build:test}"
 RUN_QUALITY=false
 
 if [[ "${1:-}" == "--quality" ]]; then
   RUN_QUALITY=true
 fi
-
-cleanup() {
-  docker rm -f "$COTURN_NAME" 2>/dev/null || true
-}
-trap cleanup EXIT
 
 echo "==> PR Test job (local Docker parity)"
 echo "    image: $IMAGE"
@@ -40,67 +39,26 @@ echo "    logs: [ci-step] START/OK/FAIL — set CI_STEP_LOG_TS=1 for UTC timesta
 echo "    Sherpa E2E: [topology] signaling/agent/user + [speech] per role on stderr"
 echo ""
 
-echo "==> Building CI Docker image (if needed): $IMAGE"
-docker build -t "$IMAGE" "$ROOT/docker/ci"
-
-ensure_linux_gnu_node() {
-  shopt -s nullglob
-  local gnu=(packages/bindings/*linux-gnu*.node packages/bindings/node-webrtc-rust.linux-x64-gnu.node)
-  if [[ ${#gnu[@]} -gt 0 ]]; then
-    echo "==> Native binding: using $(basename "${gnu[0]}")"
-    return 0
-  fi
-  echo "==> No linux-gnu .node — compiling debug x86_64-unknown-linux-gnu in ci-build"
-  docker run --rm \
-    -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    -e OPUS_STATIC=1 \
-    -v "$ROOT:/workspace" \
-    -w /workspace/packages/bindings \
-    "$IMAGE" \
-    bash -lc 'npm ci --ignore-scripts && npx napi build --target x86_64-unknown-linux-gnu && npm run copy:local-node'
-  shopt -s nullglob
-  gnu=(packages/bindings/*linux-gnu*.node packages/bindings/node-webrtc-rust.linux-x64-gnu.node)
-  if [[ ${#gnu[@]} -eq 0 ]]; then
-    echo "linux-gnu .node still missing after container compile." >&2
-    exit 1
-  fi
-  echo "==> Native binding ready: $(basename "${gnu[0]}")"
-}
-
-ensure_linux_gnu_node
+echo "==> Pulling CI image: $IMAGE"
+docker pull "$IMAGE"
 
 run_in_ci_container() {
   local script="$1"
-  # Host node_modules (e.g. darwin esbuild) breaks when bind-mounted into linux ci-build.
+  # Host node_modules (e.g. darwin esbuild) breaks when bind-mounted into linux ci-test.
   local pre="bash scripts/ci/npm-ci-workspace.sh && "
+  local turn_env=()
   if [[ "${CI_PR_TEST_SKIP_COTURN:-}" == "1" ]]; then
-    echo "==> Running in ci-build (TURN skipped — not full CI parity)"
-    docker run --rm \
-      -v "$ROOT:/workspace" \
-      -w /workspace \
-      -e CI_STEP_LOG_TS="${CI_STEP_LOG_TS:-}" \
-      -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
-      -e OPUS_STATIC=1 \
-      "$IMAGE" \
-      bash -lc "${pre}bash $script"
-    return
+    echo "==> Running in ci-test (TURN skipped — not full CI parity)"
+  else
+    echo "==> Running in ci-test (coturn started in-container by run-pr-integration.sh)"
+    turn_env=(-e TURN_AVAILABLE=1)
   fi
 
-  echo "==> Starting coturn sidecar ($COTURN_NAME) — same as GitHub Actions Test job"
-  docker rm -f "$COTURN_NAME" 2>/dev/null || true
-  # pinned: coturn :latest (4.18+) rejects --no-dtls / -L host:port; upgrade the args before unpinning
-  docker run -d --name "$COTURN_NAME" coturn/coturn:4.17.2@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e \
-    turnserver -n -L 0.0.0.0:3478 -a \
-    -u testuser:testpass -r test.local \
-    --min-port 49152 --max-port 65535 \
-    --no-tls --no-dtls --log-file=stdout -v \
-    --allow-loopback-peers \
-    --external-ip=127.0.0.1/127.0.0.1
-
-  docker run --rm --network "container:${COTURN_NAME}" \
+  docker run --rm \
     -v "$ROOT:/workspace" \
     -w /workspace \
-    -e TURN_AVAILABLE=1 \
+    "${turn_env[@]+"${turn_env[@]}"}" \
+    -e CI=true \
     -e CI_STEP_LOG_TS="${CI_STEP_LOG_TS:-}" \
     -e CMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -e OPUS_STATIC=1 \

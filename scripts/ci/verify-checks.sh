@@ -30,12 +30,10 @@ fi
 echo "==> native build contract (fingerprint / manifest / release targets / resolver / caches)"
 run "bash scripts/ci/run-ci-shell-tests.sh"
 # Skipped by run-ci-shell-tests.sh on the CI host (no cargo / ripgrep there); run them here.
-run "bash scripts/ci/build-native-addon.test.sh"
 run "bash scripts/ci/native-build-fingerprint.test.sh"
 run "bash scripts/ci/native-artifact-manifest.test.sh"
 run "bash scripts/ci/native-artifact-bundle.test.sh"
 run "bash scripts/ci/resolve-native-main-bundle.test.sh"
-run "bash scripts/ci/check-release-targets.test.sh"
 run "bash scripts/ci/native-binding-cache-key.test.sh"
 
 echo "==> npm ci"

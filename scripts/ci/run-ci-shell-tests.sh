@@ -6,17 +6,14 @@
 # (ci.local-gate-not-in-ci). The PR quality job (run-pr-quality.sh) and verify-checks.sh both call
 # this script, so a new *.test.sh is gated in CI the moment it is added. Do not list tests by name
 # anywhere else; add a SKIP entry here, with a concrete reason, only for a test that cannot run on
-# the quality host (self-hosted Linux, Node 20, git, python3; no Rust toolchain, no ripgrep).
+# the quality host (self-hosted Linux, Node 20, git, python3; no Rust toolchain, no ripgrep: use grep).
 #
 # SKIP entries are "<test file name>|<reason>". A stale entry (file missing) fails the run.
 # (A plain array, not an associative one: macOS /bin/bash is 3.2.)
 set -uo pipefail
 
 SKIP=(
-  "bindings-napi-surface.test.sh|calls ripgrep (rg), which is not installed on the CI host or ci-build image"
-  "build-native-addon.test.sh|calls ripgrep (rg), which is not installed on the CI host or ci-build image"
-  "check-release-targets.test.sh|calls ripgrep (rg), which is not installed on the CI host or ci-build image"
-  "native-artifact-bundle.test.sh|calls ripgrep (rg), which is not installed on the CI host or ci-build image"
+  "native-artifact-bundle.test.sh|needs a Rust toolchain: the bundle script runs native_build_contract.py (cargo metadata)"
   "native-artifact-manifest.test.sh|needs a Rust toolchain: native_build_contract.py runs cargo metadata"
   "native-binding-cache-key.test.sh|needs a Rust toolchain: native_build_contract.py runs cargo metadata"
   "native-build-fingerprint.test.sh|needs a Rust toolchain: native_build_contract.py runs cargo metadata"

@@ -69,7 +69,7 @@ Model `transcribe-1`, over Fish's ElevenLabs-compatible realtime socket (the onl
 
 What this means for a VoiceAgent:
 
-- **No partials.** Fish returns one final per commit, so `user_speech_partial` never fires. Fish STT sends no partial transcripts: set `bargeIn.requireSttPartial: false` (it lives under `vad.bargeIn`), or barge-in never fires during agent speech. The final arrives after the VAD end plus Fish's processing time.
+- **No partials.** Fish returns one final per commit, so `user_speech_partial` never fires. The provider reports `emits_partials() == false`, and the agent adapts without configuration: C1 (`sttListenTimeoutMs`, no partial after `vad_triggered`) is not armed, so a long utterance is no longer cut at 4 s and its final is delivered; `bargeIn.requireSttPartial` (under `vad.bargeIn`) is treated as `false`, so barge-in during agent speech uses VAD alone. This is read when the user starts speaking, so `updateStt` to or from Fish takes effect mid-session. The final arrives after the VAD end plus Fish's processing time; an empty commit still ends the turn with `user_stt_not_found`.
 - **Set `vad.gateStt: true`** (`VOICE_AGENT_VAD_PRESET`). STT is billed for the audio streamed; with the gate only speech and its hold window reach Fish. Streaming continuously is the caller's choice and is billed accordingly.
 - No client-side limiter. Over the tier's concurrency limit Fish refuses the open and the error surfaces.
 - Transcript text is never logged and never appears in an error message.

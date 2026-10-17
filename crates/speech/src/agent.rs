@@ -762,6 +762,12 @@ impl VoiceAgent {
             .map(Arc::clone)
     }
 
+    /// The active STT provider emits `SttTranscript::Partial` (`true` before the actor exists).
+    /// Read at each decision so an `update_stt` swap takes effect mid-session.
+    fn stt_emits_partials(&self) -> bool {
+        self.actor().is_none_or(|actor| actor.emits_partials())
+    }
+
     /// Queued audio plus the vendor's own decode backlog; `0` before the actor exists.
     fn stt_backlog_ms(&self) -> u32 {
         self.actor().map_or(0, |actor| actor.backlog_ms())
@@ -2904,6 +2910,10 @@ impl VoiceAgent {
 
         voice_debug("emit vad_triggered (VAD SpeechStart)");
         self.emit(SpeechEvent::vad_triggered());
+        // A finals-only provider (Fish, Groq, ...) answers only after finalize: C1 would cut a
+        // long utterance before it, and no partial will ever qualify a barge-in.
+        let emits_partials = self.stt_emits_partials();
+        let require_stt_partial = barge_in.require_stt_partial && emits_partials;
         if has_stt {
             self.emit_user_stt_start_if_needed().await;
             self.emit_stt_stream_start_if_needed().await;
@@ -2917,7 +2927,7 @@ impl VoiceAgent {
                 rec.partials_emitted
             };
             inner.c1_backlog_deferred_logged = false;
-            if has_stt && !partials_emitted {
+            if has_stt && !partials_emitted && emits_partials {
                 inner.stt_listen_deadline_ms = inner.config.vad.stt_listen_timeout_ms;
                 inner.stt_listen_started_at = Some(Instant::now());
                 inner.stt_listen_media_ms = 0;
@@ -2939,14 +2949,16 @@ impl VoiceAgent {
                 ));
                 return Ok(());
             }
-            if barge_in.require_stt_partial && has_stt {
+            if require_stt_partial && has_stt {
                 let mut inner = self.inner.lock().await;
                 inner.barge_awaiting_stt_partial = true;
                 voice_debug("barge-in deferred until qualifying STT partial (require_stt_partial)");
                 return Ok(());
             }
-            if !barge_in.require_stt_partial || !has_stt {
-                voice_debug("immediate barge-in on VAD SpeechStart (require_stt_partial=false)");
+            if !require_stt_partial || !has_stt {
+                voice_debug(format!(
+                    "immediate barge-in on VAD SpeechStart (require_stt_partial={require_stt_partial}, emits_partials={emits_partials})"
+                ));
                 handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
                 self.cancel_pending_tts_synthesis().await;
                 if barge_in.flush_tts {

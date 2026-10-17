@@ -19,6 +19,10 @@ Deepgram listen (STT) and speak (TTS) for `@node-webrtc-rust/sdk` VoiceAgent.
 
 `config.apiKey` overrides the env var.
 
+### Endpoint override
+
+`TtsConfig.endpoint` (for example `http://127.0.0.1:<port>`) replaces `https://api.deepgram.com` for TTS. REST becomes `{endpoint}/v1/speak?…` (or `/v2/speak` for Flux) and WebSocket uses the same base with `https` mapped to `wss` and `http` to `ws`. Unset keeps the default host. The local mock-server tests use this. STT is unaffected.
+
 ## Streaming decisions (STT)
 
 | Choice              | What we implemented                                            | Why                                                                                                                           |
@@ -39,8 +43,13 @@ PCM: 16 kHz mono linear16 (VoiceAgent STT rate).
 
 Default speak model: `aura-asteria-en`.
 
+### Timeouts
+
+Connect 10 s (also bounds each WS control send), first audio 15 s, between audio frames 10 s, REST total 60 s. A WebSocket that closes or errors before `Flushed` is an error, never a partial success.
+
 ## Tests
 
 ```bash
 cargo test -p node-webrtc-rust-vendor-deepgram --lib
+cargo test -p node-webrtc-rust-vendor-deepgram --features live --test mock_server_test
 ```

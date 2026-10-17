@@ -9,11 +9,18 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 use crate::tts_matrix::{
     default_speak_model, flush_json, speak_json, tts_progressive_transport, v1_speak_rest_url,
     v1_speak_websocket_url, v2_speak_rest_url, v2_speak_websocket_url, TtsProgressiveTransport,
+    DEFAULT_BASE_URL,
+};
+#[cfg(feature = "live")]
+use crate::tts_matrix::{
+    CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
 };
 
 pub struct DeepgramTts {
     api_key: Option<String>,
     model: String,
+    /// REST base (`TtsConfig.endpoint` or [`DEFAULT_BASE_URL`]); the WS host is derived from it.
+    base_url: String,
 }
 
 impl DeepgramTts {
@@ -29,6 +36,14 @@ impl DeepgramTts {
                 .clone()
                 .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok()),
             model,
+            base_url: config
+                .endpoint
+                .as_deref()
+                .map(str::trim)
+                .map(|value| value.trim_end_matches('/'))
+                .filter(|value| !value.is_empty())
+                .unwrap_or(DEFAULT_BASE_URL)
+                .to_string(),
         })
     }
 
@@ -49,7 +64,7 @@ impl TtsProvider for DeepgramTts {
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
-        self.synthesize_rest(text, None).await
+        self.synthesize_rest(text).await
     }
 
     async fn synthesize_progressive(
@@ -65,13 +80,13 @@ impl TtsProvider for DeepgramTts {
                 }
                 #[cfg(not(feature = "live"))]
                 {
-                    let chunks = self.synthesize_rest(text, sink.as_ref()).await?;
+                    let chunks = self.synthesize_rest(text).await?;
                     emit_chunks(sink.as_ref(), &chunks);
                     Ok(chunks)
                 }
             }
             TtsProgressiveTransport::RestFullBody => {
-                let chunks = self.synthesize_rest(text, sink.as_ref()).await?;
+                let chunks = self.synthesize_rest(text).await?;
                 emit_chunks(sink.as_ref(), &chunks);
                 Ok(chunks)
             }
@@ -80,22 +95,26 @@ impl TtsProvider for DeepgramTts {
 }
 
 impl DeepgramTts {
-    async fn synthesize_rest(
-        &self,
-        text: &str,
-        _sink: Option<&TtsProgressiveSink>,
-    ) -> SpeechResult<Vec<TtsAudioChunk>> {
+    async fn synthesize_rest(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         #[cfg(feature = "live")]
         {
             let api_key = self.api_key()?;
             let url = if self.model.starts_with("flux-") {
-                v2_speak_rest_url(&self.model).map_err(SpeechError::Config)?
+                v2_speak_rest_url(&self.base_url, &self.model).map_err(SpeechError::Config)?
             } else {
-                v1_speak_rest_url(&self.model).map_err(SpeechError::Config)?
+                v1_speak_rest_url(&self.base_url, &self.model).map_err(SpeechError::Config)?
             };
             let body = serde_json::json!({ "text": text });
 
-            let response = reqwest::Client::new()
+            let http = reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(HTTP_TOTAL_TIMEOUT)
+                .build()
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "deepgram".into(),
+                    message: format!("deepgram http client build failed: {err}"),
+                })?;
+            let response = http
                 .post(url)
                 .header("Authorization", format!("Token {api_key}"))
                 .header("Content-Type", "application/json")
@@ -120,11 +139,7 @@ impl DeepgramTts {
                 vendor: "deepgram".into(),
                 message: err.to_string(),
             })?;
-            let chunk = pcm_chunk_from_mono(mono.as_ref());
-            if let Some(s) = _sink {
-                let _ = s.send(chunk.clone());
-            }
-            Ok(vec![chunk])
+            Ok(vec![pcm_chunk_from_mono(mono.as_ref())])
         }
 
         #[cfg(not(feature = "live"))]
@@ -151,11 +166,17 @@ impl DeepgramTts {
 
         let api_key = self.api_key()?;
         let url = if self.model.starts_with("flux-") {
-            v2_speak_websocket_url(&self.model).map_err(SpeechError::Config)?
+            v2_speak_websocket_url(&self.base_url, &self.model).map_err(SpeechError::Config)?
         } else {
-            v1_speak_websocket_url(&self.model).map_err(SpeechError::Config)?
+            v1_speak_websocket_url(&self.base_url, &self.model).map_err(SpeechError::Config)?
         };
 
+        let connect_timed_out = || {
+            vendor_error(format!(
+                "deepgram ws connect timed out after {} ms",
+                CONNECT_TIMEOUT.as_millis()
+            ))
+        };
         let mut request = url
             .into_client_request()
             .map_err(|err| SpeechError::Vendor {
@@ -172,38 +193,59 @@ impl DeepgramTts {
                 })?,
         );
 
-        let (ws, _) = connect_async(request)
+        let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
             .await
+            .map_err(|_| connect_timed_out())?
             .map_err(|err| SpeechError::Vendor {
                 vendor: "deepgram".into(),
                 message: err.to_string(),
             })?;
         let (mut ws_tx, mut ws_rx) = ws.split();
 
-        ws_tx
-            .send(Message::Text(speak_json(text).into()))
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "deepgram".into(),
-                message: err.to_string(),
-            })?;
-        ws_tx
-            .send(Message::Text(flush_json().into()))
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "deepgram".into(),
-                message: err.to_string(),
-            })?;
+        for control in [speak_json(text), flush_json().to_string()] {
+            tokio::time::timeout(CONNECT_TIMEOUT, ws_tx.send(Message::Text(control.into())))
+                .await
+                .map_err(|_| connect_timed_out())?
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "deepgram".into(),
+                    message: err.to_string(),
+                })?;
+        }
 
         let mut mono = Vec::new();
-        let mut turn_done = false;
-        while let Some(msg) = ws_rx.next().await {
-            let Ok(msg) = msg else { break };
+        let mut received_audio = false;
+        loop {
+            let (bound, bound_message) = if received_audio {
+                (CHUNK_IDLE_TIMEOUT, "stalled")
+            } else {
+                (FIRST_AUDIO_TIMEOUT, "first audio timed out")
+            };
+            let next = tokio::time::timeout(bound, ws_rx.next())
+                .await
+                .map_err(|_| {
+                    vendor_error(format!(
+                        "deepgram ws {bound_message} after {} ms",
+                        bound.as_millis()
+                    ))
+                })?;
             if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
                 break;
             }
+            let msg = match next {
+                None | Some(Ok(Message::Close(_))) => {
+                    return Err(vendor_error("deepgram ws closed before Flushed"))
+                }
+                Some(Err(err)) => {
+                    return Err(vendor_error(format!("deepgram ws read failed: {err}")))
+                }
+                Some(Ok(msg)) => msg,
+            };
+            let mut turn_done = false;
             match msg {
                 Message::Binary(chunk) => {
+                    if !chunk.is_empty() {
+                        received_audio = true;
+                    }
                     mono.extend_from_slice(&chunk);
                     if let Some(s) = sink.as_ref() {
                         let audio = pcm_chunk_from_mono(&chunk);
@@ -224,14 +266,10 @@ impl DeepgramTts {
                                 .get("description")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("Deepgram speak error");
-                            return Err(SpeechError::Vendor {
-                                vendor: "deepgram".into(),
-                                message: description.to_string(),
-                            });
+                            return Err(vendor_error(description));
                         }
                     }
                 }
-                Message::Close(_) => break,
                 _ => {}
             }
             if turn_done {
@@ -239,7 +277,7 @@ impl DeepgramTts {
             }
         }
 
-        let _ = ws_tx.send(Message::Close(None)).await;
+        let _ = tokio::time::timeout(CONNECT_TIMEOUT, ws_tx.send(Message::Close(None))).await;
         if mono.is_empty() {
             return Err(SpeechError::Vendor {
                 vendor: "deepgram".into(),
@@ -247,6 +285,14 @@ impl DeepgramTts {
             });
         }
         Ok(vec![pcm_chunk_from_mono(&mono)])
+    }
+}
+
+#[cfg(feature = "live")]
+fn vendor_error(message: impl Into<String>) -> SpeechError {
+    SpeechError::Vendor {
+        vendor: "deepgram".into(),
+        message: message.into(),
     }
 }
 

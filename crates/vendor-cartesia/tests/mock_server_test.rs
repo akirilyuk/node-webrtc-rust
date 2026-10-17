@@ -501,3 +501,90 @@ async fn rest_path_sends_the_utterance_to_the_sink_once() {
     assert_eq!(returned_total, sink_total);
     assert_eq!(mock.rest_count(), 1);
 }
+
+/// The clock is paused only around the wait: connecting runs on the real clock, because
+/// auto-advance fires a connect timeout while loopback I/O is still pending. On the
+/// current-thread test runtime the client arms its first-audio timer in the same poll that
+/// flushes the generation request, before the server task can read it. So when the server
+/// reports "read", the timer is already armed and `advance` is enough.
+#[tokio::test]
+async fn ws_that_never_sends_audio_times_out_and_falls_back_to_rest() {
+    let (read_tx, read_rx) = oneshot::channel::<()>();
+    let mock = Mock::start(
+        script(|_ws, _ctx| async move {
+            let _ = read_tx.send(());
+            std::future::pending::<()>().await;
+        }),
+        rest_ok(CHUNK_BYTES),
+    )
+    .await;
+    let provider = mock.provider();
+    let mut rig = sink_rig();
+    let sink = rig.sink.clone();
+
+    let call =
+        tokio::spawn(async move { provider.synthesize_progressive("hello", Some(sink)).await });
+
+    tokio::time::timeout(BOUND, read_rx)
+        .await
+        .expect("server never read the generation request")
+        .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(15)).await;
+    tokio::time::resume();
+
+    let result = tokio::time::timeout(BOUND, call)
+        .await
+        .expect("synthesize hung after the first-audio bound")
+        .unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    let sunk = drain(&mut rig.rx);
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(sunk[0].pcm.len(), CHUNK_BYTES * 2);
+    assert_eq!(mock.ws_count(), 1);
+    assert_eq!(mock.rest_count(), 1);
+}
+
+#[tokio::test]
+async fn ws_that_stalls_after_audio_times_out() {
+    let mock = Mock::start(
+        script(|mut ws, ctx| async move {
+            ws.send(chunk_msg(&ctx, 1)).await.unwrap();
+            std::future::pending::<()>().await;
+        }),
+        rest_ok(CHUNK_BYTES),
+    )
+    .await;
+    let provider = mock.provider();
+    let mut rig = sink_rig();
+    let sink = rig.sink.clone();
+
+    let call =
+        tokio::spawn(async move { provider.synthesize_progressive("hello", Some(sink)).await });
+
+    // Receiving the first chunk means the client already armed the idle timer in the same poll.
+    let first = tokio::time::timeout(BOUND, rig.rx.recv())
+        .await
+        .expect("first chunk timed out")
+        .expect("first chunk");
+    assert_eq!(first.pcm.len(), CHUNK_BYTES * 2);
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::time::resume();
+
+    let result = tokio::time::timeout(BOUND, call)
+        .await
+        .expect("synthesize hung after the idle bound")
+        .unwrap();
+    match result {
+        Err(SpeechError::Vendor { message, .. }) => {
+            assert_eq!(message, "cartesia ws stalled after 10000 ms");
+        }
+        other => panic!("expected a stall error, got {other:?}"),
+    }
+    assert_eq!(mock.rest_count(), 0);
+    assert!(
+        drain(&mut rig.rx).is_empty(),
+        "exactly one chunk reached the sink"
+    );
+}

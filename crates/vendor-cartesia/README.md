@@ -20,6 +20,10 @@ Cartesia TTS only (no STT) for `@node-webrtc-rust/sdk` VoiceAgent.
 
 `TtsConfig.endpoint` (for example `http://127.0.0.1:<port>`) replaces `https://api.cartesia.ai`. REST becomes `{endpoint}/tts/bytes` and WebSocket becomes `ws://…/tts/websocket?cartesia_version=…` (`https` maps to `wss`, `http` to `ws`). Unset keeps the default host. The local mock-server tests use this.
 
+### Timeouts
+
+Connect 10 s, first audio 15 s, between chunks 10 s, REST total 60 s. A WS first-audio timeout falls back to REST (nothing reached the sink); a stall after audio is an error.
+
 ## Streaming decisions (TTS)
 
 | Choice      | What we implemented                                                                                                            | Why                                                                     |

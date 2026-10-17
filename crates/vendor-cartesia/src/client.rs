@@ -7,9 +7,11 @@ use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 #[cfg(feature = "live")]
 use node_webrtc_rust_speech::pipeline::TtsProgressiveSink;
 
-#[cfg(feature = "live")]
-use crate::matrix::websocket_url;
 use crate::matrix::{validate_model_id, DEFAULT_API_VERSION, DEFAULT_BASE_URL};
+#[cfg(feature = "live")]
+use crate::matrix::{
+    websocket_url, CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
+};
 
 pub struct CartesiaClient {
     api_key: Option<String>,
@@ -102,7 +104,15 @@ impl CartesiaClient {
                 }
             });
 
-            let response = reqwest::Client::new()
+            let http = reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(HTTP_TOTAL_TIMEOUT)
+                .build()
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "cartesia".into(),
+                    message: format!("cartesia http client build failed: {err}"),
+                })?;
+            let response = http
                 .post(format!("{}/tts/bytes", self.base_url))
                 .header("X-API-Key", api_key)
                 .header("Cartesia-Version", &self.api_version)
@@ -202,8 +212,15 @@ impl CartesiaClient {
                 .map_err(|_| early(vendor_err("invalid Cartesia-Version header value")))?,
         );
 
-        let (ws, _) = connect_async(request)
+        let connect_timed_out = || {
+            early(vendor_err(format!(
+                "cartesia ws connect timed out after {} ms",
+                CONNECT_TIMEOUT.as_millis()
+            )))
+        };
+        let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
             .await
+            .map_err(|_| connect_timed_out())?
             .map_err(|err| early(vendor_err(err.to_string())))?;
         let (mut ws_tx, mut ws_rx) = ws.split();
 
@@ -219,15 +236,35 @@ impl CartesiaClient {
             "context_id": context_id,
             "continue": false
         });
-        ws_tx
-            .send(Message::Text(gen.to_string().into()))
-            .await
-            .map_err(|err| early(vendor_err(err.to_string())))?;
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            ws_tx.send(Message::Text(gen.to_string().into())),
+        )
+        .await
+        .map_err(|_| connect_timed_out())?
+        .map_err(|err| early(vendor_err(err.to_string())))?;
 
         let mut mono = Vec::new();
         let mut emitted_any = false;
+        let mut received_audio = false;
         loop {
-            let next = ws_rx.next().await;
+            let (bound, bound_message) = if received_audio {
+                (CHUNK_IDLE_TIMEOUT, "stalled")
+            } else {
+                (FIRST_AUDIO_TIMEOUT, "first audio timed out")
+            };
+            let next = match tokio::time::timeout(bound, ws_rx.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    return Err(WsFailure {
+                        error: vendor_err(format!(
+                            "cartesia ws {bound_message} after {} ms",
+                            bound.as_millis()
+                        )),
+                        emitted_any,
+                    })
+                }
+            };
             if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
                 let _ =
                     tokio::time::timeout(std::time::Duration::from_secs(2), ws_tx.close()).await;
@@ -282,6 +319,9 @@ impl CartesiaClient {
                             emitted_any,
                         })?;
                         mono.extend_from_slice(&bytes);
+                        if !bytes.is_empty() {
+                            received_audio = true;
+                        }
                         if let Some(s) = sink.as_ref() {
                             let duration_ms =
                                 duration_ms_from_mono_s16le(bytes.len(), WEBRTC_PCM_SAMPLE_RATE);

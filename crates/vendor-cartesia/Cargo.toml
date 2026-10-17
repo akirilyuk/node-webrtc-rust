@@ -29,3 +29,7 @@ serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
+
+[dev-dependencies]
+# `test-util` gives `tokio::time::pause`/`advance` for the timeout tests.
+tokio = { workspace = true, features = ["test-util"] }

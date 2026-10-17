@@ -8,6 +8,7 @@ pub const WS_DOC: &str = "https://docs.cartesia.ai/api-reference/tts/websocket";
 pub const BYTES_DOC: &str = "https://docs.cartesia.ai/api-reference/tts/bytes";
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
@@ -27,6 +28,15 @@ pub const DEFAULT_BASE_URL: &str = "https://api.cartesia.ai";
 
 /// Documented `Cartesia-Version` / `cartesia_version` query (WS AsyncAPI).
 pub const DEFAULT_API_VERSION: &str = "2026-08-14";
+
+/// TCP + TLS + WebSocket handshake (also bounds the WS generation send and the HTTP connect).
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Wait for the first audio frame.
+pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
+/// Wait between audio frames once audio has started.
+pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Whole REST request, headers through the last body byte.
+pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsDeliveryPlan {

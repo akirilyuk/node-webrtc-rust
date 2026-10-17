@@ -113,9 +113,10 @@ impl TtsProvider for FishAudioTts {
             .await
         {
             Ok(outcome) => outcome,
-            // Documented fallback, only while no audio reached the sink: a retry after audio
-            // started would play the start of the utterance twice.
-            Err(http) if !http.emitted_any => {
+            // Documented fallback, only while no audio reached the sink (a retry after audio
+            // started would play the start of the utterance twice) and only for failures the
+            // other transport can fix: not for a 4xx about the request, key or credit.
+            Err(http) if !http.emitted_any && http.allows_ws_fallback() => {
                 match self
                     .client
                     .synthesize_ws(text, reference_id, &self.model, sink.as_ref())

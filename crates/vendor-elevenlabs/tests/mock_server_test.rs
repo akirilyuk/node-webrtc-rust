@@ -398,16 +398,21 @@ async fn cancel_before_any_audio_does_not_fall_back() {
 }
 
 /// The clock is paused only around the wait: connecting runs on the real clock, because
-/// auto-advance fires a connect timeout while loopback I/O is still pending. The server
-/// signals after it flushed the chunked headers; the client then awaits the first body chunk
-/// under its first-audio timer, so `advance` is enough once the client has read the headers.
+/// auto-advance fires a connect timeout while loopback I/O is still pending.
+///
+/// The server answers nothing, not even headers. The client's first-audio timer around
+/// `send()` was armed before the request was written, so it is armed whenever the server
+/// reports "request read". Withholding the headers keeps the test deterministic: if the
+/// server sent headers and then signalled, the client could still be waking up to read them
+/// when the clock moves, and it would arm its body timer after `advance` (a 15 s real wait).
 #[tokio::test]
 async fn http_stream_that_never_sends_audio_times_out() {
-    let (head_tx, head_rx) = oneshot::channel::<()>();
+    let (read_tx, read_rx) = oneshot::channel::<()>();
     let mock = Mock::start(
-        script(|mut stream| async move {
-            write_chunked_head(&mut stream).await;
-            let _ = head_tx.send(());
+        script(|stream| async move {
+            // Hold the socket open: a dropped socket would be a read error, not a silent server.
+            let _stream = stream;
+            let _ = read_tx.send(());
             std::future::pending::<()>().await;
         }),
         vec![7u8; CHUNK_BYTES],
@@ -421,9 +426,9 @@ async fn http_stream_that_never_sends_audio_times_out() {
     let call =
         tokio::spawn(async move { provider.synthesize_progressive("hello", Some(sink)).await });
 
-    tokio::time::timeout(BOUND, head_rx)
+    tokio::time::timeout(BOUND, read_rx)
         .await
-        .expect("server never answered")
+        .expect("server never read the request")
         .unwrap();
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(15)).await;

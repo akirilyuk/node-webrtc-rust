@@ -511,7 +511,9 @@ async fn rest_path_sends_the_utterance_to_the_sink_once() {
 async fn ws_that_never_sends_audio_times_out_and_falls_back_to_rest() {
     let (read_tx, read_rx) = oneshot::channel::<()>();
     let mock = Mock::start(
-        script(|_ws, _ctx| async move {
+        script(|ws, _ctx| async move {
+            // Hold the socket open: a dropped socket would be a read error, not a silent server.
+            let _ws = ws;
             let _ = read_tx.send(());
             std::future::pending::<()>().await;
         }),

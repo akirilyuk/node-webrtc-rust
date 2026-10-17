@@ -270,8 +270,10 @@ impl ElevenLabsTts {
         })
     }
 
+    /// Direct ElevenLabs stream-input WebSocket synthesis. Not selected by
+    /// `tts_progressive_transport` today; public so the mock-server tests can exercise it.
     #[cfg(feature = "live")]
-    async fn synthesize_websocket_stream(
+    pub async fn synthesize_websocket_stream(
         &self,
         text: &str,
         sink: Option<TtsProgressiveSink>,
@@ -288,78 +290,108 @@ impl ElevenLabsTts {
         let url = websocket_stream_input_url(&self.base_url, &voice_id, &self.model);
         let mut request = url
             .into_client_request()
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "elevenlabs".into(),
-                message: err.to_string(),
-            })?;
-        request
-            .headers_mut()
-            .insert("xi-api-key", api_key.parse().unwrap());
+            .map_err(|err| vendor_error(err.to_string()))?;
+        request.headers_mut().insert(
+            "xi-api-key",
+            api_key
+                .parse()
+                .map_err(|_| vendor_error("invalid ELEVENLABS_API_KEY header value"))?,
+        );
 
-        let (ws, _) = connect_async(request)
+        let connect_timeout = || {
+            vendor_error(format!(
+                "elevenlabs ws connect timed out after {} ms",
+                CONNECT_TIMEOUT.as_millis()
+            ))
+        };
+        let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
             .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "elevenlabs".into(),
-                message: err.to_string(),
-            })?;
+            .map_err(|_| connect_timeout())?
+            .map_err(|err| vendor_error(err.to_string()))?;
         let (mut ws_tx, mut ws_rx) = ws.split();
 
-        ws_tx
-            .send(Message::Text(
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            ws_tx.send(Message::Text(
                 serde_json::json!({
                     "text": " ",
                     "voice_settings": {"stability": 0.5, "similarity_boost": 0.8, "use_speaker_boost": false},
                 })
                 .to_string()
                 .into(),
-            ))
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "elevenlabs".into(),
-                message: err.to_string(),
-            })?;
-        ws_tx
-            .send(Message::Text(
+            )),
+        )
+        .await
+        .map_err(|_| connect_timeout())?
+        .map_err(|err| vendor_error(err.to_string()))?;
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            ws_tx.send(Message::Text(
                 serde_json::json!({"text": text, "flush": true})
                     .to_string()
                     .into(),
-            ))
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "elevenlabs".into(),
-                message: err.to_string(),
-            })?;
-        ws_tx
-            .send(Message::Text(
+            )),
+        )
+        .await
+        .map_err(|_| connect_timeout())?
+        .map_err(|err| vendor_error(err.to_string()))?;
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            ws_tx.send(Message::Text(
                 serde_json::json!({"text": ""}).to_string().into(),
-            ))
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "elevenlabs".into(),
-                message: err.to_string(),
-            })?;
+            )),
+        )
+        .await
+        .map_err(|_| connect_timeout())?
+        .map_err(|err| vendor_error(err.to_string()))?;
 
         let mut mono = Vec::new();
-        while let Some(msg) = ws_rx.next().await {
-            if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
-                break;
-            }
-            let Ok(Message::Text(raw)) = msg else { break };
-            let value: serde_json::Value =
-                serde_json::from_str(&raw).map_err(|err| SpeechError::Vendor {
-                    vendor: "elevenlabs".into(),
-                    message: err.to_string(),
+        loop {
+            let (bound, bound_message) = if mono.is_empty() {
+                (FIRST_AUDIO_TIMEOUT, "first audio timed out")
+            } else {
+                (CHUNK_IDLE_TIMEOUT, "stalled")
+            };
+            let next = tokio::time::timeout(bound, ws_rx.next())
+                .await
+                .map_err(|_| {
+                    vendor_error(format!(
+                        "elevenlabs ws {bound_message} after {} ms",
+                        bound.as_millis()
+                    ))
                 })?;
+            if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
+                let _ = tokio::time::timeout(CONNECT_TIMEOUT, ws_tx.close()).await;
+                return Ok(vec![pcm_chunk_from_mono(&mono)]);
+            }
+            let raw = match next {
+                None => return Err(vendor_error("elevenlabs ws closed before isFinal")),
+                Some(Ok(Message::Close(frame))) => {
+                    // The close reason is WebSocket protocol, not an ElevenLabs field.
+                    let reason = frame
+                        .map(|f| f.reason.to_string())
+                        .filter(|r| !r.is_empty());
+                    return Err(vendor_error(match reason {
+                        Some(reason) => format!("elevenlabs ws closed before isFinal: {reason}"),
+                        None => "elevenlabs ws closed before isFinal".to_string(),
+                    }));
+                }
+                Some(Err(err)) => {
+                    return Err(vendor_error(format!("elevenlabs ws read failed: {err}")))
+                }
+                Some(Ok(Message::Text(raw))) => raw,
+                // Ping/Pong are answered by tungstenite; Binary/Frame are not part of this API.
+                Some(Ok(_)) => continue,
+            };
+            let value: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|err| vendor_error(err.to_string()))?;
             if value.get("isFinal").and_then(|v| v.as_bool()) == Some(true) {
                 break;
             }
             if let Some(audio_b64) = value.get("audio").and_then(|v| v.as_str()) {
                 let bytes = STANDARD
                     .decode(audio_b64)
-                    .map_err(|err| SpeechError::Vendor {
-                        vendor: "elevenlabs".into(),
-                        message: err.to_string(),
-                    })?;
+                    .map_err(|err| vendor_error(err.to_string()))?;
                 mono.extend_from_slice(&bytes);
                 if let Some(s) = sink.as_ref() {
                     let _ = s.send(pcm_chunk_from_mono(&bytes));

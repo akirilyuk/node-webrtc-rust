@@ -14,3 +14,4 @@ pub use stt_matrix::{
     default_stt_model, realtime_websocket_url, validate_stt_model, DEFAULT_STT_MODEL,
     REALTIME_STT_DOC,
 };
+pub use tts::ElevenLabsTts;

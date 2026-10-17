@@ -4,9 +4,14 @@
 //! WebSocket: <https://docs.cartesia.ai/api-reference/tts/websocket>
 
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+#[cfg(feature = "live")]
 use node_webrtc_rust_speech::pipeline::TtsProgressiveSink;
 
-use crate::matrix::{validate_model_id, websocket_url, DEFAULT_API_VERSION};
+use crate::matrix::{validate_model_id, DEFAULT_API_VERSION, DEFAULT_BASE_URL};
+#[cfg(feature = "live")]
+use crate::matrix::{
+    websocket_url, CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
+};
 
 pub struct CartesiaClient {
     api_key: Option<String>,
@@ -14,11 +19,48 @@ pub struct CartesiaClient {
     api_version: String,
 }
 
+#[cfg(feature = "live")]
+fn vendor_err(message: impl Into<String>) -> SpeechError {
+    SpeechError::Vendor {
+        vendor: "cartesia".into(),
+        message: message.into(),
+    }
+}
+
+/// Result of a WebSocket synthesis that reached `done` (or was cancelled by the sink).
+#[cfg(feature = "live")]
+pub struct WsOutcome {
+    /// All mono s16le 48 kHz PCM received.
+    pub mono: Vec<u8>,
+    /// At least one chunk was accepted by the sink.
+    pub emitted_any: bool,
+    /// Stopped early because the sink was cancelled.
+    pub cancelled: bool,
+}
+
+/// A WebSocket synthesis that failed.
+#[cfg(feature = "live")]
+pub struct WsFailure {
+    pub error: SpeechError,
+    /// Audio already reached the sink before the failure; the caller must not fall back.
+    pub emitted_any: bool,
+}
+
 impl CartesiaClient {
+    #[cfg(test)]
     pub fn new(api_key: Option<String>) -> Self {
+        Self::with_endpoint(api_key, None)
+    }
+
+    /// `endpoint` replaces the default `https://api.cartesia.ai` (REST base; WS is derived).
+    pub fn with_endpoint(api_key: Option<String>, endpoint: Option<String>) -> Self {
+        let base_url = endpoint
+            .filter(|value| !value.is_empty())
+            .map(|value| value.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         Self {
             api_key,
-            base_url: "https://api.cartesia.ai".to_string(),
+            base_url,
             api_version: DEFAULT_API_VERSION.to_string(),
         }
     }
@@ -62,7 +104,15 @@ impl CartesiaClient {
                 }
             });
 
-            let response = reqwest::Client::new()
+            let http = reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(HTTP_TOTAL_TIMEOUT)
+                .build()
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "cartesia".into(),
+                    message: format!("cartesia http client build failed: {err}"),
+                })?;
+            let response = http
                 .post(format!("{}/tts/bytes", self.base_url))
                 .header("X-API-Key", api_key)
                 .header("Cartesia-Version", &self.api_version)
@@ -95,7 +145,7 @@ impl CartesiaClient {
 
         #[cfg(not(feature = "live"))]
         {
-            let _ = (text, voice, model, &self.base_url);
+            let _ = (text, voice, model, &self.base_url, &self.api_version);
             let _ = self.api_key()?;
             Err(SpeechError::Vendor {
                 vendor: "cartesia".into(),
@@ -111,19 +161,31 @@ impl CartesiaClient {
         voice: &str,
         model: &str,
         sink: Option<TtsProgressiveSink>,
-    ) -> SpeechResult<Vec<u8>> {
+    ) -> Result<WsOutcome, WsFailure> {
         use futures_util::{SinkExt, StreamExt};
+        use node_webrtc_rust_speech::pcm::{
+            duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
+        };
+        use node_webrtc_rust_speech::pipeline::TtsAudioChunk;
         use tokio_tungstenite::{
             connect_async,
             tungstenite::{client::IntoClientRequest, Message},
         };
 
-        validate_model_id(model).map_err(SpeechError::Config)?;
-        let api_key = self.api_key()?;
+        // Failures before the first chunk cannot have reached the sink.
+        let early = |error: SpeechError| WsFailure {
+            error,
+            emitted_any: false,
+        };
+
+        validate_model_id(model)
+            .map_err(SpeechError::Config)
+            .map_err(early)?;
+        let api_key = self.api_key().map_err(early)?;
         if voice == "default" {
-            return Err(SpeechError::Config(
+            return Err(early(SpeechError::Config(
                 "set tts.voice or CARTESIA_VOICE_ID to a Cartesia voice id".into(),
-            ));
+            )));
         }
 
         let context_id = format!(
@@ -133,26 +195,33 @@ impl CartesiaClient {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
-        let url = websocket_url(&self.api_version);
+        let url = websocket_url(&self.base_url, &self.api_version);
         let mut request = url
             .into_client_request()
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "cartesia".into(),
-                message: err.to_string(),
-            })?;
-        request
-            .headers_mut()
-            .insert("X-API-Key", api_key.parse().unwrap());
-        request
-            .headers_mut()
-            .insert("Cartesia-Version", self.api_version.parse().unwrap());
+            .map_err(|err| early(vendor_err(err.to_string())))?;
+        request.headers_mut().insert(
+            "X-API-Key",
+            api_key
+                .parse()
+                .map_err(|_| early(vendor_err("invalid CARTESIA_API_KEY header value")))?,
+        );
+        request.headers_mut().insert(
+            "Cartesia-Version",
+            self.api_version
+                .parse()
+                .map_err(|_| early(vendor_err("invalid Cartesia-Version header value")))?,
+        );
 
-        let (ws, _) = connect_async(request)
+        let connect_timed_out = || {
+            early(vendor_err(format!(
+                "cartesia ws connect timed out after {} ms",
+                CONNECT_TIMEOUT.as_millis()
+            )))
+        };
+        let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
             .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "cartesia".into(),
-                message: err.to_string(),
-            })?;
+            .map_err(|_| connect_timed_out())?
+            .map_err(|err| early(vendor_err(err.to_string())))?;
         let (mut ws_tx, mut ws_rx) = ws.split();
 
         let gen = serde_json::json!({
@@ -167,55 +236,111 @@ impl CartesiaClient {
             "context_id": context_id,
             "continue": false
         });
-        ws_tx
-            .send(Message::Text(gen.to_string().into()))
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "cartesia".into(),
-                message: err.to_string(),
-            })?;
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            ws_tx.send(Message::Text(gen.to_string().into())),
+        )
+        .await
+        .map_err(|_| connect_timed_out())?
+        .map_err(|err| early(vendor_err(err.to_string())))?;
 
         let mut mono = Vec::new();
-        while let Some(msg) = ws_rx.next().await {
+        let mut emitted_any = false;
+        let mut received_audio = false;
+        loop {
+            let (bound, bound_message) = if received_audio {
+                (CHUNK_IDLE_TIMEOUT, "stalled")
+            } else {
+                (FIRST_AUDIO_TIMEOUT, "first audio timed out")
+            };
+            let next = match tokio::time::timeout(bound, ws_rx.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    return Err(WsFailure {
+                        error: vendor_err(format!(
+                            "cartesia ws {bound_message} after {} ms",
+                            bound.as_millis()
+                        )),
+                        emitted_any,
+                    })
+                }
+            };
             if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
-                break;
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), ws_tx.close()).await;
+                return Ok(WsOutcome {
+                    mono,
+                    emitted_any,
+                    cancelled: true,
+                });
             }
-            let Ok(Message::Text(raw)) = msg else { break };
-            let value: serde_json::Value =
-                serde_json::from_str(&raw).map_err(|err| SpeechError::Vendor {
-                    vendor: "cartesia".into(),
-                    message: err.to_string(),
-                })?;
-            if value.get("type").and_then(|v| v.as_str()) == Some("done")
-                && value.get("done").and_then(|v| v.as_bool()) == Some(true)
-            {
-                break;
-            }
-            if value.get("type").and_then(|v| v.as_str()) == Some("chunk") {
-                if let Some(data_b64) = value.get("data").and_then(|v| v.as_str()) {
-                    use base64::{engine::general_purpose::STANDARD, Engine as _};
-                    let bytes = STANDARD
-                        .decode(data_b64)
-                        .map_err(|err| SpeechError::Vendor {
-                            vendor: "cartesia".into(),
-                            message: err.to_string(),
+            let raw = match next {
+                None | Some(Ok(Message::Close(_))) => {
+                    return Err(WsFailure {
+                        error: vendor_err("cartesia ws closed before done"),
+                        emitted_any,
+                    })
+                }
+                Some(Err(err)) => {
+                    return Err(WsFailure {
+                        error: vendor_err(err.to_string()),
+                        emitted_any,
+                    })
+                }
+                Some(Ok(Message::Text(raw))) => raw,
+                // Ping/Pong are answered by tungstenite; Binary/Frame are not part of the
+                // Cartesia TTS WS API.
+                Some(Ok(_)) => continue,
+            };
+            let value: serde_json::Value = serde_json::from_str(&raw).map_err(|err| WsFailure {
+                error: vendor_err(err.to_string()),
+                emitted_any,
+            })?;
+            match value.get("type").and_then(|v| v.as_str()) {
+                Some("done") if value.get("done").and_then(|v| v.as_bool()) == Some(true) => {
+                    break;
+                }
+                Some("error") => {
+                    let message = value
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| value.get("title").and_then(|v| v.as_str()))
+                        .unwrap_or("cartesia ws error");
+                    return Err(WsFailure {
+                        error: vendor_err(message),
+                        emitted_any,
+                    });
+                }
+                Some("chunk") => {
+                    if let Some(data_b64) = value.get("data").and_then(|v| v.as_str()) {
+                        use base64::{engine::general_purpose::STANDARD, Engine as _};
+                        let bytes = STANDARD.decode(data_b64).map_err(|err| WsFailure {
+                            error: vendor_err(err.to_string()),
+                            emitted_any,
                         })?;
-                    mono.extend_from_slice(&bytes);
-                    if let Some(s) = sink.as_ref() {
-                        use node_webrtc_rust_speech::pcm::{
-                            duration_ms_from_mono_s16le, mono_s16le_to_stereo,
-                            WEBRTC_PCM_SAMPLE_RATE,
-                        };
-                        use node_webrtc_rust_speech::pipeline::TtsAudioChunk;
-                        let duration_ms =
-                            duration_ms_from_mono_s16le(bytes.len(), WEBRTC_PCM_SAMPLE_RATE);
-                        let pcm = mono_s16le_to_stereo(&bytes);
-                        let _ = s.send(TtsAudioChunk { pcm, duration_ms });
+                        mono.extend_from_slice(&bytes);
+                        if !bytes.is_empty() {
+                            received_audio = true;
+                        }
+                        if let Some(s) = sink.as_ref() {
+                            let duration_ms =
+                                duration_ms_from_mono_s16le(bytes.len(), WEBRTC_PCM_SAMPLE_RATE);
+                            let pcm = mono_s16le_to_stereo(&bytes);
+                            if s.send(TtsAudioChunk { pcm, duration_ms }) {
+                                emitted_any = true;
+                            }
+                        }
                     }
                 }
+                // timestamps, phoneme_timestamps, flush_done, ...
+                _ => {}
             }
         }
-        Ok(mono)
+        Ok(WsOutcome {
+            mono,
+            emitted_any,
+            cancelled: false,
+        })
     }
 }
 

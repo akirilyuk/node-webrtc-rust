@@ -18,11 +18,12 @@ pub struct CartesiaTts {
 impl CartesiaTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
         Ok(Self {
-            client: CartesiaClient::new(
+            client: CartesiaClient::with_endpoint(
                 config
                     .api_key
                     .clone()
                     .or_else(|| std::env::var("CARTESIA_API_KEY").ok()),
+                config.endpoint.clone(),
             ),
             model: config
                 .model
@@ -63,39 +64,26 @@ impl TtsProvider for CartesiaTts {
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
         let voice = self.voice_id();
-        let mono = match crate::matrix::tts_delivery_plan(&self.model) {
-            TtsDeliveryPlan::WebSocketContexts => {
-                #[cfg(feature = "live")]
-                {
-                    match self
-                        .client
-                        .synthesize_websocket(text, &voice, &self.model, sink.clone())
-                        .await
-                    {
-                        Ok(bytes) => bytes,
-                        Err(_) => {
-                            self.client
-                                .synthesize_text(text, &voice, &self.model)
-                                .await?
-                        }
-                    }
-                }
-                #[cfg(not(feature = "live"))]
-                {
-                    self.client
-                        .synthesize_text(text, &voice, &self.model)
-                        .await?
-                }
+        if crate::matrix::tts_delivery_plan(&self.model) == TtsDeliveryPlan::WebSocketContexts {
+            #[cfg(feature = "live")]
+            match self
+                .client
+                .synthesize_websocket(text, &voice, &self.model, sink.clone())
+                .await
+            {
+                // WS already sent every chunk to the sink; never re-send.
+                Ok(outcome) => return Ok(vec![chunk_from_mono(&outcome.mono)]),
+                // Audio already played: falling back would play the utterance again.
+                Err(failure) if failure.emitted_any => return Err(failure.error),
+                // Nothing reached the sink: REST below.
+                Err(_) => {}
             }
-            TtsDeliveryPlan::RestBytes => {
-                self.client
-                    .synthesize_text(text, &voice, &self.model)
-                    .await?
-            }
-        };
-        let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
-        let pcm = mono_s16le_to_stereo(&mono);
-        let chunks = vec![TtsAudioChunk { pcm, duration_ms }];
+        }
+        let mono = self
+            .client
+            .synthesize_text(text, &voice, &self.model)
+            .await?;
+        let chunks = vec![chunk_from_mono(&mono)];
         if let Some(s) = sink {
             for chunk in &chunks {
                 if !s.send(chunk.clone()) {
@@ -104,5 +92,12 @@ impl TtsProvider for CartesiaTts {
             }
         }
         Ok(chunks)
+    }
+}
+
+fn chunk_from_mono(mono: &[u8]) -> TtsAudioChunk {
+    TtsAudioChunk {
+        pcm: mono_s16le_to_stereo(mono),
+        duration_ms: duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE),
     }
 }

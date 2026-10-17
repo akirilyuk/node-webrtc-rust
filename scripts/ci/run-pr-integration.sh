@@ -66,7 +66,7 @@ if suite_enabled rust; then
   bash "$CI_STEP" --timeout "${CI_RUST_LINT_TIMEOUT_SEC:-1500}" "rust lint" -- \
     bash scripts/ci/run-rust-lint.sh
 
-  echo "==> cargo test (core, mixer, conference, speech)"
+  echo "==> cargo test (core, mixer, conference, speech, cloud TTS vendors)"
   echo "    (compiles Rust test deps on cold cache — separate from the .node binding above)"
   # opus_sdp_fmtp_omits_maxaveragebitrate_when_env_unset uses OnceLock. A developer
   # shell with WEBRTC_OPUS_BITRATE_BPS=192000 (common locally) fails those tests even
@@ -86,6 +86,14 @@ if suite_enabled rust; then
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
     cargo test -p node-webrtc-rust-speech
   # Streaming TTS vendors: their mock-server tests (one-send-path-per-unit) only run with `live`.
+  # Cloud vendors are not live-tested in CI, so these local mock servers are the only guard of the
+  # sink contract (each chunk to the sink once, no fallback after audio) and the wait bounds.
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-cartesia" -- \
+    cargo test -p node-webrtc-rust-vendor-cartesia --features live
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-deepgram" -- \
+    cargo test -p node-webrtc-rust-vendor-deepgram --features live
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-elevenlabs" -- \
+    cargo test -p node-webrtc-rust-vendor-elevenlabs --features live
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-fishaudio" -- \
     cargo test -p node-webrtc-rust-vendor-fishaudio --features live -- --test-threads=1
   # Vendored dtls (third_party/dtls) is not a workspace member, so `-p` cannot reach it. Guards

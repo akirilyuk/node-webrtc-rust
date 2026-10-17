@@ -18,6 +18,7 @@ const EXPECTED_VENDOR_IDS = [
   'deepgram',
   'elevenlabs',
   'cartesia',
+  'fishaudio',
   'assemblyai',
   'google',
   'groq',
@@ -127,6 +128,20 @@ describe('crate-aligned allowlist snapshots', () => {
       'sonic-3',
       'sonic-latest',
     ])
+  })
+
+  test('fishaudio models', () => {
+    expect(getVendor('fishaudio')?.defaultTtsModel).toBe('drama-3')
+    expect(ttsModelAllowlist('fishaudio')).toEqual([
+      'drama-3',
+      's2.1-pro',
+      's2.1-pro-free',
+      's2-pro',
+    ])
+    expect(ttsModelAllowlist('fishaudio')).not.toContain('s1')
+    expect(getVendor('fishaudio')?.stt).toBe(true)
+    expect(getVendor('fishaudio')?.defaultSttModel).toBe('transcribe-1')
+    expect(sttModelAllowlist('fishaudio')).toEqual(['transcribe-1'])
   })
 
   test('google STT models', () => {

@@ -18,8 +18,16 @@ describe('VoiceAgent vendor config surface', () => {
     },
   )
 
-  test('lists nine supported live vendor presets', () => {
-    expect(LIVE_VENDOR_METAS).toHaveLength(9)
+  test('fishaudio-stt preset gates STT on VAD and barges in on VAD', () => {
+    const cfg = voiceConfigForVendor('fishaudio-stt')
+    expect(cfg.stt.provider).toBe('fishaudio')
+    expect(cfg.stt.model).toBe('transcribe-1')
+    expect('vad' in cfg && cfg.vad.gateStt).toBe(true)
+    expect('vad' in cfg && cfg.vad.bargeIn.requireSttPartial).toBe(false)
+  })
+
+  test('lists eleven supported live vendor presets', () => {
+    expect(LIVE_VENDOR_METAS).toHaveLength(11)
     expect(LIVE_VENDOR_METAS.map((m) => m.id).sort()).toEqual(
       [
         'assemblyai',
@@ -28,6 +36,8 @@ describe('VoiceAgent vendor config surface', () => {
         'cartesia',
         'deepgram',
         'elevenlabs',
+        'fishaudio',
+        'fishaudio-stt',
         'google',
         'groq',
         'openai',

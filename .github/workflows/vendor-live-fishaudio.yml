@@ -1,0 +1,63 @@
+name: Vendor live — Fish Audio
+
+# Runs the Fish Audio Drama 3 live tests (crates/vendor-fishaudio/tests/live_test.rs) against
+# the real API. The API key is the repo secret FISH_AUDIO_API, mapped to the library's
+# FISH_API_KEY env var (the name Fish documents).
+#
+# Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
+# runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
+# from branches of this repo and manual dispatches run the job.
+#
+# A missing key fails the job (first step, and FISH_LIVE_REQUIRED=1 makes the tests panic
+# instead of skipping), so a skipped live test can never show green.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/vendor-fishaudio/**'
+      - '.github/workflows/vendor-live-fishaudio.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read # pull the ci-build image from GHCR
+
+concurrency:
+  group: vendor-live-fishaudio-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: Fish Audio live
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
+    # ci-run-integration-tests docker run).
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require Fish key
+        env:
+          FISH_API_KEY: ${{ secrets.FISH_AUDIO_API }}
+        run: |
+          if [ -z "$FISH_API_KEY" ]; then
+            echo "::error::secret FISH_AUDIO_API is empty"
+            exit 1
+          fi
+
+      - name: Drama 3 live tests
+        shell: bash
+        env:
+          FISH_API_KEY: ${{ secrets.FISH_AUDIO_API }}
+          FISH_LIVE_REQUIRED: '1'
+        run: |
+          cargo test -p node-webrtc-rust-vendor-fishaudio --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'fishaudio_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status

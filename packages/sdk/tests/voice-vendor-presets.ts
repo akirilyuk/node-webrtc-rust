@@ -3,11 +3,15 @@
  * for SDK tests. Keep in sync when adding vendors.
  */
 
+import { VOICE_AGENT_VAD_PRESET } from '../src/voice'
+
 export type LiveVendorId =
   | 'openai'
   | 'deepgram'
   | 'elevenlabs'
   | 'cartesia'
+  | 'fishaudio'
+  | 'fishaudio-stt'
   | 'assemblyai'
   | 'google'
   | 'groq'
@@ -45,6 +49,18 @@ export const LIVE_VENDOR_METAS: LiveVendorPresetMeta[] = [
     requiredEnv: ['CARTESIA_API_KEY', 'OPENAI_API_KEY'],
     sttProvider: 'openai',
     ttsProvider: 'cartesia',
+  },
+  {
+    id: 'fishaudio',
+    requiredEnv: ['FISH_API_KEY', 'OPENAI_API_KEY'],
+    sttProvider: 'openai',
+    ttsProvider: 'fishaudio',
+  },
+  {
+    id: 'fishaudio-stt',
+    requiredEnv: ['FISH_API_KEY'],
+    sttProvider: 'fishaudio',
+    ttsProvider: 'fishaudio',
   },
   {
     id: 'assemblyai',
@@ -112,6 +128,22 @@ export function voiceConfigForVendor(id: LiveVendorId) {
       return {
         stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
         tts: { provider: 'cartesia' as const, model: 'sonic-3', voice: 'default' },
+      }
+    case 'fishaudio':
+      return {
+        stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
+        tts: { provider: 'fishaudio' as const, model: 'drama-3', voice: 'default' },
+      }
+    case 'fishaudio-stt':
+      return {
+        stt: { provider: 'fishaudio' as const, model: 'transcribe-1' },
+        tts: { provider: 'fishaudio' as const, model: 'drama-3', voice: 'default' },
+        // Fish returns finals only and bills STT per streamed audio: gate STT on VAD. No
+        // partials either, so barge-in must not wait for one.
+        vad: {
+          ...VOICE_AGENT_VAD_PRESET,
+          bargeIn: { ...VOICE_AGENT_VAD_PRESET.bargeIn, requireSttPartial: false },
+        },
       }
     case 'assemblyai':
       return {

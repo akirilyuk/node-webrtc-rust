@@ -63,6 +63,9 @@ bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" --
   cargo test -p node-webrtc-rust-conference
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
   cargo test -p node-webrtc-rust-speech
+# Streaming TTS vendors: their mock-server tests (one-send-path-per-unit) only run with `live`.
+bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-fishaudio" -- \
+  cargo test -p node-webrtc-rust-vendor-fishaudio --features live -- --test-threads=1
 # Vendored dtls (third_party/dtls) is not a workspace member, so `-p` cannot reach it. Guards
 # net.final-flight-not-resent (seeded loss/reorder handshake test).
 bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendored dtls" -- \

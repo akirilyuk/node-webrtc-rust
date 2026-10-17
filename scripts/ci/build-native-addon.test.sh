@@ -37,10 +37,10 @@ rm -f "$TMP/npx.out" "$TMP/npm.out"
 CMAKE_POLICY_VERSION_MINIMUM=runner-value OPUS_STATIC=runner-value run_recipe \
   --target x86_64-unknown-linux-gnu \
   --profile debug
-rg -q '^napi build --target x86_64-unknown-linux-gnu$' "$TMP/npx.out"
-rg -q '^run copy:local-node$' "$TMP/npm.out"
-rg -q '^CMAKE=3.5$' "$TMP/npx.out"
-rg -q '^OPUS=1$' "$TMP/npx.out"
+grep -qE '^napi build --target x86_64-unknown-linux-gnu$' "$TMP/npx.out"
+grep -qE '^run copy:local-node$' "$TMP/npm.out"
+grep -qE '^CMAKE=3.5$' "$TMP/npx.out"
+grep -qE '^OPUS=1$' "$TMP/npx.out"
 echo "ok: Linux debug args + local copy"
 
 echo "==> Linux release platform recipe"
@@ -48,8 +48,8 @@ rm -f "$TMP/npx.out" "$TMP/npm.out"
 run_recipe \
   --target x86_64-unknown-linux-musl \
   --profile release
-rg -q '^napi build --target x86_64-unknown-linux-musl --release --features otel,rnnoise --platform$' "$TMP/npx.out"
-rg -q '^SHERPA=/opt/sherpa-musl/lib$' "$TMP/npx.out"
+grep -qE '^napi build --target x86_64-unknown-linux-musl --release --features otel,rnnoise --platform$' "$TMP/npx.out"
+grep -qE '^SHERPA=/opt/sherpa-musl/lib$' "$TMP/npx.out"
 test ! -e "$TMP/npm.out"
 echo "ok: Linux release args + Sherpa environment"
 
@@ -58,7 +58,7 @@ rm -f "$TMP/npx.out" "$TMP/npm.out"
 run_recipe \
   --target x86_64-apple-darwin \
   --profile release
-rg -q '^napi build --target x86_64-apple-darwin --release --features otel,rnnoise --platform$' "$TMP/npx.out"
+grep -qE '^napi build --target x86_64-apple-darwin --release --features otel,rnnoise --platform$' "$TMP/npx.out"
 test ! -e "$TMP/npm.out"
 echo "ok: host args preserve matrix build arguments"
 

@@ -43,16 +43,16 @@ PR and main build workflows use GitHub `concurrency` with `cancel-in-progress: t
 
 ## Runners
 
-| Platform               | `runs-on`                                  | Workflows                                                                                       |
-| ---------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| Linux x64 (gnu + musl) | `self-hosted` + `ci-build` container       | PR compile-native, Linux x64 release matrix, integration tests, CI image build, release publish |
-| Linux arm64 (gnu)      | `ubuntu-24.04-arm` (GitHub-hosted, native) | Linux release matrix only                                                                       |
-| macOS                  | `macos-latest`                             | Release host matrix (darwin x64 + arm64)                                                        |
-| Windows                | `windows-latest`                           | Release host matrix (x64)                                                                       |
+| Platform               | `runs-on`                                  | Workflows                                                                                          |
+| ---------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| Linux x64 (gnu + musl) | `self-hosted` + `ci-build` container       | Linux x64 release matrix, integration tests (`ci-test` container), CI image build, release publish |
+| Linux arm64 (gnu)      | `ubuntu-24.04-arm` (GitHub-hosted, native) | Linux release matrix only                                                                          |
+| macOS                  | `macos-latest`                             | Release host matrix (darwin x64 + arm64)                                                           |
+| Windows                | `windows-latest`                           | Release host matrix (x64)                                                                          |
 
 **Linux gnu x64** builds natively on the self-hosted runner without `napi --zig` so Sherpa/ONNX static objects link correctly (`__cpu_features2`). **Linux x64 musl** builds natively in **`ghcr.io/.../ci-build-alpine:latest`** with **musl Sherpa shared libs** (`build-sherpa-onnx-musl-libs.sh` + Alpine `onnxruntime-dev`); `vendor-sherpa-onnx` selects `sherpa-onnx/shared` via `target_env = "musl"` — the default `sherpa-onnx-sys` glibc static prebuilts fail on Alpine (`__strdup: symbol not found`). CI sets `SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib` **only on the musl job** (gnu/arm64 must not export an empty value). CI runs `verify-musl-runtime.sh` after musl builds. **Linux arm64 gnu** builds on GitHub-hosted ARM runners (native compile, no Zig cross) to avoid build-script `ring` arch mismatches.
 
-The self-hosted runner must have **Docker** (runner user in the `docker` group). Container jobs and test `docker run` leave root-owned files; host jobs run an inline **Docker `chown`** prepare step before checkout (no passwordless sudo required).
+The self-hosted runner must have **Docker** (runner user in the `docker` group). Container jobs run as root and leave root-owned files; host jobs run an inline **Docker `chown`** prepare step before checkout (no passwordless sudo required).
 
 ---
 
@@ -62,15 +62,16 @@ The self-hosted runner must have **Docker** (runner user in the `docker` group).
 flowchart TD
   changes[Detect changes]
   quality[Typecheck and lint]
-  compile[Compile native]
   ts[Build TypeScript]
+  integ["Integration tests (ci-test container)"]
   test[Test]
 
   changes --> quality
-  quality --> compile
-  quality --> ts
-  compile --> test
+  changes --> ts
+  ts --> integ
+  quality --> test
   ts --> test
+  integ --> test
 ```
 
 ### 1. Detect changes
@@ -78,12 +79,12 @@ flowchart TD
 [`compute-pr-job-gates.sh "$PR_BASE_SHA" "$PR_HEAD_SHA"`](compute-pr-job-gates.sh) sets `run_compile` / `run_build_ts` / `run_test` / `run_quality` from:
 
 1. **`merge-base..pull_request.head.sha`** (full PR diff — not `github.sha`, which is a synthetic merge commit)
-2. **Files in the latest head commit** (`git diff-tree`) so a push that only edits `crates/speech/**` still forces native compile + integration tests
+2. **Files in the latest head commit** (`git diff-tree`) so a push that only edits `crates/speech/**` still forces the integration tests (which build the native binding)
 
 There is no path-filter action. One run per branch: the concurrency group is keyed on the head repo + branch, so a dispatched run and a pull_request run of the same branch collapse. Rules:
 
-- **Docs only** (`*.md`, `docs/**`, `.cursor/**`, `LICENSE*`): quality only (Prettier covers Markdown). No compile, build-ts or test.
-- **Everything else**: full pipeline (compile native + build-ts + test + quality). Tests always need a freshly compiled `.node`, so `run_test` implies `run_compile`.
+- **Docs only** (`*.md`, `docs/**`, `.cursor/**`, `LICENSE*`): quality only (Prettier covers Markdown). No build-ts or integration tests.
+- **Everything else**: full pipeline (build-ts + integration + quality). Integration builds its own debug `.node`, so `run_test` implies `run_compile` in the gate output.
 - **Version-only** (`package.json` / `package-lock.json` diffs that only change our own `@node-webrtc-rust/*` versions, checked by [`version-only-diff.py`](version-only-diff.py)): quality + build-ts only. Any third-party version change, new dependency, other file, or invalid JSON runs the full pipeline. `main` still runs the full suite after merge.
 
 The script also prints `version_only=true|false`.
@@ -105,29 +106,17 @@ Local check (hermetic, builds its own temp git repos): `bash scripts/ci/compute-
 - **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh), `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
 - Runs [`build-ts-workspace.sh`](build-ts-workspace.sh) inside [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh) when sdk/signaling/helpers `dist/` is missing (fresh CI checkout). Job 4 still builds once for Test cache.
 
-Must pass before compile / TS build / test. Runs **in parallel** with compile-native when both are needed.
+`Build TypeScript` and the integration job do not wait for this job; the `Test` gate requires it (see [Test](#6-test)). A lint failure therefore still blocks merge, but does not delay the build or the tests.
 
-**Compile native** runs when Rust/bindings or byte-affecting compile recipe/toolchain paths change. Cache, manifest, bundle, resolver, planner, and fingerprint implementation edits do **not** trigger Rust compilation or alter the native digest. Cache keys use `native-v3-{profile}-{target}-{input_digest}` from [`native-build-fingerprint.sh`](native-build-fingerprint.sh) / [`native_build_contract.py`](native_build_contract.py) (see [Native fingerprint & provenance](#native-fingerprint--provenance-foundation)). No `restore-keys` prefix fallback. After restore, `verify-native-binding-surface.mjs --target <triple>` checks the platform `.node` for that matrix row (runtime on matching host arch, static string scan for cross-compiles); stale caches are deleted and compile runs. TS-only PRs skip compile and reuse a validated cache in Test. Same-repo PRs have `actions: write` so compile/TS/Sherpa misses can save caches; fork PR caches stay isolated from the base branch by GitHub.
+### 4. Native binding (no separate job on PRs)
 
-### 4. Compile native
-
-- **Always runs** on every PR (for branch-protection required checks).
-- **When:** `run_compile_native` (`run_compile`: everything except docs-only and version-only diffs) — otherwise the job succeeds immediately after a skip notice (no checkout, no compile).
-- **When compiling:** requires **Typecheck & lint** success.
-- **Runner:** `ci-build` container
-- **Target:** `x86_64-unknown-linux-gnu` debug
-- **Cache:** [`native-binding-cache`](../../.github/actions/native-binding-cache) restores + validates a prior `.node`. On hit, [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) skips `napi build` but still **uploads the artifact** for Test (`workflow_call` jobs often cannot restore the same GHA cache). On miss, compile, save cache, upload. Cache key fingerprints bindings Rust sources, every `path = "../../crates/…"` dep, `Cargo.lock`, committed NAPI surface (`index.d.ts`, `index.js`), and bindings `package.json` **excluding top-level `version`**. No `restore-keys` prefix fallback.
-- **npm:** no GHA `~/.npm` cache — bindings `npm ci --omit=optional` only installs `@napi-rs/cli` (~6MB, typically &lt;1s). Caching `~/.npm` previously re-uploaded multi-GB polluted stores in Post.
-- **Action:** [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) — host-style build runs `copy:local-node` so `index.js` loads the fresh `.node` instead of stale optional npm packages
-
-Uploads `bindings-x86_64-unknown-linux-gnu` for the Test job when compile-native ran.
+There is no `Compile native` job on PRs. The integration job builds the debug `x86_64-unknown-linux-gnu` binding itself when `packages/bindings/*.node` is missing: [`run-pr-integration.sh`](run-pr-integration.sh) runs [`build-native-addon.sh`](build-native-addon.sh) (`--profile debug`, which also runs `copy:local-node`) under `ci-step` with a 1200 s cap (`CI_NATIVE_BUILD_TIMEOUT_SEC`). Main and release still build release bindings in their own jobs and pass the artifact in, so the script uses it as is. Cache keys for release bindings use `native-v3-{profile}-{target}-{input_digest}` from [`native-build-fingerprint.sh`](native-build-fingerprint.sh) / [`native_build_contract.py`](native_build_contract.py) (see [Native fingerprint & provenance](#native-fingerprint--provenance-foundation)).
 
 ### 5. Build TypeScript
 
 - **Always runs** on every PR (for branch-protection required checks).
 - **When:** `run_build_ts` — otherwise the job succeeds immediately after a skip notice (no checkout, setup-node, or cache).
-- **When building:** requires **Typecheck & lint** success.
-- **Needs:** quality only (runs **in parallel** with compile-native — TS build does not need `.node`)
+- **Needs:** package-lock validation only. It starts without waiting for **Typecheck & lint**.
 - **Runner:** `self-hosted` + `setup-node`
 - **Cache:** [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) → `packages/sdk/dist`, `packages/signaling/dist`, `packages/helpers/dist`
 - **On cache miss:** `npm ci`, `fix-rollup-native.sh`, [`build-ts-workspace.sh`](build-ts-workspace.sh) (sdk core → signaling → full sdk → helpers)
@@ -137,37 +126,39 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 ### 6. Test
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **Required check name:** a thin `Test` job in [`build.yml`](../../.github/workflows/build.yml) propagates the reusable workflow result. `workflow_call` jobs alone report as `Integration tests / Test`, which does **not** satisfy the required `Test` context.
-- **When:** tests are not skipped (`skip_test` false, or compile ran) — otherwise it succeeds immediately (`skip: 'true'`), e.g. docs-only and version-only PRs.
-- **When source code changed:** requires **Typecheck & lint** success (when it ran); restores `.node` / TS `dist/` only when needed.
-- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (called as **Integration tests**)
+- **Required check name:** a thin `Test` job in [`build.yml`](../../.github/workflows/build.yml) gates on the reusable workflow. `workflow_call` jobs alone report as `Integration tests / Test`, which does **not** satisfy the required `Test` context. The gate requires `Typecheck & lint` = success, `Build TypeScript` = success or skipped, and `Integration tests` = success.
+- **When:** tests are not skipped (`skip_test` false) — otherwise the integration job succeeds immediately (`skip: 'true'`), e.g. docs-only and version-only PRs.
+- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (called as **Integration tests**), runs in the `ci-test` container (`container:` job, no `docker` calls in steps)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 
-Before tests, the test job receives the native binding as follows:
+Inside the job:
 
-1. **Primary:** download `bindings-x86_64-unknown-linux-gnu` when **compile-native** ran (`ran_compile`). Compile restores from GHA cache on hit (skips `napi build`) or compiles on miss, then always uploads the artifact — required because `reusable-test` (`workflow_call`) often cannot restore the same GHA cache.
-2. **Fallback:** [`native-binding-cache`](../../.github/actions/native-binding-cache) when compile was gated off (docs-only / TS-only / test-CI-only).
-3. **Verify:** assert `packages/bindings/*.node` exists before tests (no silent `napi build` in CI).
-4. TS `dist/` via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) (`ts_dist_profile: pr` on PR builds).
+1. **Native binding:** PRs build the debug `.node` in the job (see above). Main and release pass the release artifact (`binding_artifact`), which the workflow stages into `packages/bindings/`.
+2. **TURN:** with `TURN_AVAILABLE=1` the script starts coturn via [`turnserver-ci.sh`](turnserver-ci.sh) (`start`, bounded 10 s wait; a trap runs `stop` on exit). If something already listens on `127.0.0.1:3478` it is reused.
+3. **TS `dist/`** via [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) (`ts_dist_profile: pr` on PR builds).
+4. **Sherpa models** come from the image (`NWR_CI_SHERPA_MODELS=/opt/sherpa-models`, linked by `ensure-sherpa-models.sh`); there is no model cache step.
 
-Jobs do not share a workspace on self-hosted runners (each job checks out fresh). Artifact handoff is ~162 MB. **`cargo test`** runs inside the ci-build container and compiles Rust **test** deps in a separate profile from the NAPI addon — there is no `target/` handoff between jobs; compile-native’s Cargo `target/` cache applies only on cache-miss builds in that job.
-
-**Last resort locally only** (not CI — `run-pr-integration.sh` exits if `.node` is missing when `CI=true`):
-
-- Compile debug `.node` if missing
-- Run `build:ts` if `dist/` missing
+The job runs as root in the container and checkout cleans the workspace. **`cargo test`** compiles Rust **test** deps in a separate profile from the NAPI addon; there is no `target/` handoff between jobs. At the end the script prints `du -sh target third_party/*/target` to size a future build cache.
 
 Local contract checks: `bash scripts/ci/native-build-fingerprint.test.sh`, `bash scripts/ci/native-artifact-manifest.test.sh`, `bash scripts/ci/check-release-targets.test.sh`, `bash scripts/ci/native-binding-cache-key.test.sh`
 
-Test execution: runner **host Docker** → pinned `coturn/coturn:4.17.2` (by digest) sidecar → tests run inside prebuilt `ci-build` via `docker run --network container:coturn`. A prepare step resets workspace ownership before checkout (container jobs write root-owned files).
+**TURN test networking:** peers and coturn run in the same job container, so traffic stays on loopback. coturn uses UDP/TCP **3478** for TURN control and **49152–65535** for relay allocations inside the container only. CI enables `--allow-loopback-peers` because both WebRTC peers run on the same host. The `pr-workflow-gates.test.sh` guard keeps `TURN_AVAILABLE: '1'` in the workflow so `packages/sdk/tests/turn.test.ts` cannot silently skip.
 
-**TURN test networking:** peers and coturn share the test container network namespace (`--network container:coturn`). Traffic stays on loopback / Docker — **no inbound ports on the host firewall** (80/443 nginx is unrelated). coturn uses UDP/TCP **3478** for TURN control and **49152–65535** for relay allocations inside the container only. CI enables `--allow-loopback-peers` because both WebRTC peers run on the same host.
+### Path-based test suites (PRs)
+
+The integration job runs three suites, each with its own cost: **rust** (Rust fmt + clippy and every `cargo test` step, including the vendored `dtls` and `webrtc-ice` crates and the bench check), **node** (`npm test`, the native exports check, helpers native integration; needs TURN) and **sherpa** ([`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh)). Node and sherpa need the debug `.node` and the TS `dist/`; rust needs neither.
+
+On PRs, [`compute-pr-job-gates.sh`](compute-pr-job-gates.sh) emits `test_suites` (a comma list in the order `rust,node,sherpa`, empty when no tests run). `build.yml` passes it to [`reusable-test.yml`](../../.github/workflows/reusable-test.yml), which exports it as `CI_TEST_SUITES` for [`run-pr-integration.sh`](run-pr-integration.sh).
+
+- The map is [`pr-test-suites.map`](pr-test-suites.map): one rule per line, `<bash-glob> <suites>`. The first matching rule wins and `*` matches `/`. Docs paths are ignored; a changed path with no rule runs all three suites. A malformed line fails the gate script (exit 1).
+- `build-main.yml`, `release.yml`, local runs and the release-tag local gate never set `CI_TEST_SUITES`, so they always run everything.
+- A new crate, package, example or vendored directory needs a `<dir>/*` line in the map. [`pr-test-suites-map.test.sh`](pr-test-suites-map.test.sh) fails otherwise, and also fails on a rule that matches no tracked file.
 
 ### Sherpa roundtrip E2E (integration job)
 
 After `cargo test`, `npm test`, and helpers `test:integration`, [`run-pr-integration.sh`](run-pr-integration.sh) runs [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh):
 
-1. Download STT (`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`) and TTS (`vits-piper-en_US-amy-low`) into `examples/voice-agent-local-sherpa/.models/`
+1. Link the STT (`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`) and TTS (`vits-piper-en_US-amy-low`) models from the image into `examples/voice-agent-local-sherpa/.models/` (downloaded locally if missing)
 2. Set `SHERPA_STT_MODEL_PATH` / `SHERPA_TTS_MODEL_PATH`
 3. Run ignored Rust vendor tests that need those weights: `cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_cancel_not_cached_test -- --ignored` (asserts a cancelled synthesis is not cached). Timeout **420s** (`CI_SHERPA_RUST_IGNORED_TIMEOUT_SEC`). Models-only path: `bash scripts/ci/run-sherpa-example-ci.sh rust`.
 4. Run each `start:roundtrip*` script in order (exit on first failure). Each step uses [`run-sherpa-roundtrip-e2e.sh`](run-sherpa-roundtrip-e2e.sh): streams **`[speech]` events** (browser parity) with **`[voice-debug]` / topology off**; **automatic re-run with `VOICE_DEBUG=1`** if that pass fails. Wrapped in [`run-with-timeout.sh`](run-with-timeout.sh) (default **180s** per script; override `CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC`). Model downloads cap at **900s** (`CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC`). The re-run only gets the time left under the step cap (`SHERPA_ROUNDTRIP_STEP_TIMEOUT_SEC` -> `SHERPA_ROUNDTRIP_WALL_MAX_MS`) and is skipped when under 45s is left. A script's in-process wall-clock limit must fit in its step cap; `examples/voice-agent-local-sherpa/src/roundtrip-ci-step-budget.test.ts` (part of `run-sherpa-example-ci.sh vitest`) fails otherwise. `run-sherpa-example-ci.sh step-timeouts` prints every cap.
@@ -208,7 +199,7 @@ npm run ci:verify:checks                       # full suite incl. format + relea
 CI_STEP_LOG_TS=1 npm run ci:verify:pr-full     # UTC timestamps on [ci-step] lines
 ```
 
-**Optional Docker parity** (coturn + ci-build container — only when debugging remote runner differences):
+**Optional Docker parity** (`ci-test` image, coturn started in-container — only when debugging remote runner differences):
 
 ```bash
 cd node-webrtc-rust
@@ -313,7 +304,7 @@ Release prep on git uses `SKIP_LOCK_REFRESH=1` with [`bump-workspace-versions.sh
 
 | Image                                                     | Dockerfile                                                         | Used for                                                                  |
 | --------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| `ghcr.io/<owner>/node-webrtc-rust/ci-build:latest`        | [`docker/ci/Dockerfile`](../../docker/ci/Dockerfile)               | glibc native builds (Linux gnu x64), PR compile-native, integration tests |
+| `ghcr.io/<owner>/node-webrtc-rust/ci-build:latest`        | [`docker/ci/Dockerfile`](../../docker/ci/Dockerfile)               | glibc native builds (Linux gnu x64), release builds                       |
 | `ghcr.io/<owner>/node-webrtc-rust/ci-build-alpine:latest` | [`docker/ci/Dockerfile.alpine`](../../docker/ci/Dockerfile.alpine) | **musl** native builds (`x86_64-unknown-linux-musl`)                      |
 | `ghcr.io/<owner>/node-webrtc-rust/ci-build:test`          | [`docker/ci/Dockerfile.test`](../../docker/ci/Dockerfile.test)     | `ci-build` + coturn + Sherpa models (integration tests on ephemeral pods) |
 
@@ -376,7 +367,7 @@ After publish: `bash scripts/ci/refresh-package-lock-optional-bindings.sh` (or m
 | [`run-sherpa-roundtrip-e2e.sh`](run-sherpa-roundtrip-e2e.sh)                                                                            | via `run-sherpa-example-ci.sh e2e`                      | CI pass streams `[speech]` events; `[voice-debug]` off unless re-run on failure                                                                                  |
 | [`ci-step.sh`](ci-step.sh)                                                                                                              | integration + Sherpa E2E                                | `[ci-step] START/OK/FAIL` banners; optional `--timeout` via [`run-with-timeout.sh`](run-with-timeout.sh)                                                         |
 | [`run-with-timeout.sh`](run-with-timeout.sh)                                                                                            | via `ci-step.sh`                                        | GNU `timeout` / `gtimeout` wall-clock cap per step                                                                                                               |
-| [`run-pr-test-job-docker.sh`](run-pr-test-job-docker.sh)                                                                                | `npm run ci:verify:pr-test:docker`                      | **Optional** coturn + ci-build container → `run-pr-integration.sh`                                                                                               |
+| [`run-pr-test-job-docker.sh`](run-pr-test-job-docker.sh)                                                                                | `npm run ci:verify:pr-test:docker`                      | **Optional** `ci-test` container (starts coturn itself) → `run-pr-integration.sh`                                                                                |
 | [`run-pr-tests-full.sh`](run-pr-tests-full.sh)                                                                                          | `npm run ci:verify:pr-full`                             | quality + integration (host)                                                                                                                                     |
 | [`run-pr-integration.sh`](run-pr-integration.sh)                                                                                        | main + release test                                     | integration only (after quality job)                                                                                                                             |
 | [`verify-checks.sh`](verify-checks.sh)                                                                                                  | `npm run ci:verify:checks*`                             | Local mirror of quality + integration                                                                                                                            |
@@ -497,7 +488,6 @@ bash scripts/ci/resolve-native-main-bundle.test.sh
 bash scripts/ci/check-release-targets.test.sh
 bash scripts/ci/native-binding-cache-key.test.sh
 bash scripts/ci/ts-dist-cache-key.test.sh
-bash scripts/ci/sherpa-models-cache.test.sh
 bash scripts/ci/ci-cache-layers-workflow.test.sh
 bash scripts/ci/cargo-via-ci-image.test.sh
 bash scripts/ci/compute-pr-job-gates.test.sh
@@ -509,16 +499,15 @@ Wired at the top of [`verify-checks.sh`](verify-checks.sh).
 
 ## Caching architecture (layers, retention, trust)
 
-| Layer                            | Key / identity                                                              | Paths                                                                   | Retention / eviction                              | Trust                                                                                                                                                                                                                                  |
-| -------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Native `.node` (accelerator)** | `native-v3-{profile}-{target}-{input_digest}`                               | `packages/bindings/*.node` + `native-manifests/<target>.json`           | GHA cache (LRU / org limits)                      | Exact key + surface verify + provenance; miss → compile                                                                                                                                                                                |
-| **`native-main-bundle`**         | Aggregate digest in `meta.json`                                             | workflow artifact                                                       | **90 days**                                       | Only from successful `build-main.yml` on `main`; release validates vs current contract                                                                                                                                                 |
-| **`native-smoke-bundle`**        | Same assemble/validate                                                      | smoke artifact                                                          | **14 days**                                       | Manual smoke only — **not** consumed by release                                                                                                                                                                                        |
-| **Cargo `target/` (Linux)**      | `cargo-tgt-v1-{profile}-{target}-{cache_prefix}-{hash(lock+docker inputs)}` | `target/`                                                               | GHA cache; **exact key only** (no `restore-keys`) | Saves after miss; workspace `rm -rf target` after save; never cross-target prefix restore (Sherpa/stale safeguard)                                                                                                                     |
-| **Cargo registry**               | Swatinem `cargo-reg-v1-…` (Linux) / `cargo-v1-…` (host)                     | registry/git (Swatinem)                                                 | GHA via Swatinem                                  | Linux: registry only (`cache-targets: false`). Host: registry **+** that target’s `target/` in **one** Swatinem entry (no overlapping `actions/cache` for `target/`)                                                                   |
-| **TS `dist/`**                   | `ts-dist-v2-node{major}-{digest}`                                           | sdk/signaling/helpers `dist/`                                           | GHA cache                                         | Digest = manifests + lock + build scripts + sources + tsconfigs + Node major. No pr/release namespace (identical outputs). [`ensure-ts-dist.sh`](ensure-ts-dist.sh) requires stamp + required `index.js` or rebuilds                   |
-| **Sherpa models**                | `sherpa-models-v1-{digest}`                                                 | English STT/TTS dirs under `examples/voice-agent-local-sherpa/.models/` | GHA cache                                         | Separate from native/Cargo. Host restores + validates without Node; corrupt/missing dirs are cleared, downloaded inside `ci-build` by [`ensure-sherpa-models.sh`](ensure-sherpa-models.sh), then saved only after integration succeeds |
-| **Docker BuildKit**              | scopes `ci-build-glibc` / `ci-build-alpine`                                 | Buildx GHA cache                                                        | GHA BuildKit cache                                | Distinct scopes so glibc/Alpine layers never collide. Images tagged `:latest` **and** `:{github.sha}`; fingerprints use content/@sha256                                                                                                |
+| Layer                            | Key / identity                                                              | Paths                                                         | Retention / eviction                              | Trust                                                                                                                                                                                                                |
+| -------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Native `.node` (accelerator)** | `native-v3-{profile}-{target}-{input_digest}`                               | `packages/bindings/*.node` + `native-manifests/<target>.json` | GHA cache (LRU / org limits)                      | Exact key + surface verify + provenance; miss → compile                                                                                                                                                              |
+| **`native-main-bundle`**         | Aggregate digest in `meta.json`                                             | workflow artifact                                             | **90 days**                                       | Only from successful `build-main.yml` on `main`; release validates vs current contract                                                                                                                               |
+| **`native-smoke-bundle`**        | Same assemble/validate                                                      | smoke artifact                                                | **14 days**                                       | Manual smoke only — **not** consumed by release                                                                                                                                                                      |
+| **Cargo `target/` (Linux)**      | `cargo-tgt-v1-{profile}-{target}-{cache_prefix}-{hash(lock+docker inputs)}` | `target/`                                                     | GHA cache; **exact key only** (no `restore-keys`) | Saves after miss; workspace `rm -rf target` after save; never cross-target prefix restore (Sherpa/stale safeguard)                                                                                                   |
+| **Cargo registry**               | Swatinem `cargo-reg-v1-…` (Linux) / `cargo-v1-…` (host)                     | registry/git (Swatinem)                                       | GHA via Swatinem                                  | Linux: registry only (`cache-targets: false`). Host: registry **+** that target’s `target/` in **one** Swatinem entry (no overlapping `actions/cache` for `target/`)                                                 |
+| **TS `dist/`**                   | `ts-dist-v2-node{major}-{digest}`                                           | sdk/signaling/helpers `dist/`                                 | GHA cache                                         | Digest = manifests + lock + build scripts + sources + tsconfigs + Node major. No pr/release namespace (identical outputs). [`ensure-ts-dist.sh`](ensure-ts-dist.sh) requires stamp + required `index.js` or rebuilds |
+| **Docker BuildKit**              | scopes `ci-build-glibc` / `ci-build-alpine`                                 | Buildx GHA cache                                              | GHA BuildKit cache                                | Distinct scopes so glibc/Alpine layers never collide. Images tagged `:latest` **and** `:{github.sha}`; fingerprints use content/@sha256                                                                              |
 
 ### Intentional non-caches
 
@@ -538,12 +527,10 @@ Wired at the top of [`verify-checks.sh`](verify-checks.sh).
 
 ## Composite actions
 
-| Action                                                                       | Purpose                                                                                         |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| [`native-binding-cache`](../../.github/actions/native-binding-cache)         | Per-target `native-v3` restore/validate; outputs `cache-key` for save                           |
-| [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux)       | Restore/build/verify/manifest/**save**/upload Linux `.node`; exact Cargo `target/` restore+save |
-| [`ci-build-native-host`](../../.github/actions/ci-build-native-host)         | Same semantics for macOS/Windows (Swatinem registry+target)                                     |
-| [`plan-native-builds`](../../.github/actions/plan-native-builds)             | Exact per-target cache probe + matrices + summary                                               |
-| [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist)                 | sdk/signaling/helpers `dist/` cache (`ts-dist-v2-node20-*`)                                     |
-| [`ci-cache-sherpa-models`](../../.github/actions/ci-cache-sherpa-models)     | Restore/validate English Sherpa models before Docker; caller saves repaired downloads afterward |
-| [`ci-run-integration-tests`](../../.github/actions/ci-run-integration-tests) | GHCR login, coturn sidecar, ci-build test run                                                   |
+| Action                                                                 | Purpose                                                                                         |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [`native-binding-cache`](../../.github/actions/native-binding-cache)   | Per-target `native-v3` restore/validate; outputs `cache-key` for save                           |
+| [`ci-build-native-linux`](../../.github/actions/ci-build-native-linux) | Restore/build/verify/manifest/**save**/upload Linux `.node`; exact Cargo `target/` restore+save |
+| [`ci-build-native-host`](../../.github/actions/ci-build-native-host)   | Same semantics for macOS/Windows (Swatinem registry+target)                                     |
+| [`plan-native-builds`](../../.github/actions/plan-native-builds)       | Exact per-target cache probe + matrices + summary                                               |
+| [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist)           | sdk/signaling/helpers `dist/` cache (`ts-dist-v2-node20-*`)                                     |

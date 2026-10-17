@@ -5,6 +5,11 @@
 #      needs `predicate-quantifier: every`.
 #   2. The build.yml concurrency group is keyed on the branch, not the PR number, so a
 #      workflow_dispatch run and a pull_request run of the same branch cancel each other.
+#   3. The integration job runs in the ci-test container with coturn started in-process: the
+#      container image and TURN_AVAILABLE are set (turn.test.ts cannot silently skip), no job step
+#      calls `docker run` (Kubernetes runner pods have no Docker daemon), and run-pr-integration.sh
+#      starts and stops turnserver itself.
+#   4. Path-based suite selection (CI_TEST_SUITES / test_suites): empty means every suite.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -59,6 +64,72 @@ if ! grep -Eq '^[[:space:]]*group:.*github\.head_ref \|\| github\.ref_name' "$bu
 fi
 if grep -q 'pull_request.number' "$build"; then
   echo "$build: must not key concurrency on pull_request.number (dispatched and PR runs would not collapse)" >&2
+  exit 1
+fi
+
+# Integration job: ci-test container + in-process coturn.
+reusable=".github/workflows/reusable-test.yml"
+if ! grep -Fq 'image: ghcr.io/${{ github.repository }}/ci-build:test' "$reusable"; then
+  echo "$reusable: the test job must run in container image ghcr.io/\${{ github.repository }}/ci-build:test (Dockerfile.test)" >&2
+  exit 1
+fi
+if ! grep -Eq "^[[:space:]]*TURN_AVAILABLE:[[:space:]]*'1'" "$reusable"; then
+  echo "$reusable: must set TURN_AVAILABLE: '1' (packages/sdk/tests/turn.test.ts skips silently without it)" >&2
+  exit 1
+fi
+if grep -Eq '^[^#]*docker run' "$reusable"; then
+  echo "$reusable: must not call 'docker run' (Kubernetes runners have no Docker daemon)" >&2
+  exit 1
+fi
+# build.yml: the only allowed 'docker run' is the host permission reset in steps named
+# 'Prepare workspace' (host jobs, not the integration job). Any other step must not use Docker.
+if awk '
+  /^      - / { in_prepare = ($0 ~ /name: Prepare workspace/) }
+  /^[^#]*docker run/ && !in_prepare { print FILENAME ":" NR ": " $0; found = 1 }
+  END { exit found ? 0 : 1 }
+' "$build" >&2; then
+  echo "$build: 'docker run' outside a 'Prepare workspace' step (Kubernetes runners have no Docker daemon)" >&2
+  exit 1
+fi
+integration="scripts/ci/run-pr-integration.sh"
+if ! grep -Eq 'turnserver-ci\.sh"? start' "$integration"; then
+  echo "$integration: must call turnserver-ci.sh start (coturn runs inside the ci-test container)" >&2
+  exit 1
+fi
+if ! grep -Eq "trap '.*turnserver-ci\.sh\"? stop.*' EXIT" "$integration"; then
+  echo "$integration: must install a trap that calls turnserver-ci.sh stop" >&2
+  exit 1
+fi
+
+# Path-based suite selection: empty CI_TEST_SUITES means every suite, and the PR workflow passes the
+# computed list through the reusable workflow's test_suites input (default '' = all).
+if ! grep -Eq '^suite_enabled\(\)' "$integration" || ! grep -Fq -- '-z "$CI_TEST_SUITES"' "$integration"; then
+  echo "$integration: must define suite_enabled() with the empty-means-all rule (-z \"\$CI_TEST_SUITES\")" >&2
+  exit 1
+fi
+if ! grep -Fq 'CI_TEST_SUITES: ${{ inputs.test_suites }}' "$reusable"; then
+  echo "$reusable: must pass CI_TEST_SUITES: \${{ inputs.test_suites }} to the test script" >&2
+  exit 1
+fi
+if ! awk '
+  /^      test_suites:/ { in_input = 1; next }
+  in_input && /^        default:/ { print; exit }
+  in_input && /^      [a-z_]+:/ { exit }
+' "$reusable" | grep -Eq "default:[[:space:]]*''"; then
+  echo "$reusable: input test_suites must default to '' (empty = all suites)" >&2
+  exit 1
+fi
+
+# run-ci-shell-tests.sh discovers tests by glob; the only test names in it are SKIP entries
+# (ci.local-gate-not-in-ci: a hand-kept list lets a new *.test.sh stay local-only).
+runner="scripts/ci/run-ci-shell-tests.sh"
+if ! grep -Fq 'scripts/ci/*.test.sh' "$runner" || ! grep -Eq 'for f in scripts/ci/\*\.test\.sh' "$runner"; then
+  echo "$runner: must discover tests with 'for f in scripts/ci/*.test.sh'" >&2
+  exit 1
+fi
+if grep -En '[A-Za-z0-9_-]+\.test\.sh' "$runner" | grep -Ev '^[0-9]+:[[:space:]]*(#|"[A-Za-z0-9_-]+\.test\.sh\|)' | grep -Ev '\*\.test\.sh|\$name|\.test\.sh\)|scripts/ci/\$' >/dev/null; then
+  echo "$runner: names a test outside the SKIP map; tests are discovered by glob:" >&2
+  grep -En '[A-Za-z0-9_-]+\.test\.sh' "$runner" | grep -Ev '^[0-9]+:[[:space:]]*(#|"[A-Za-z0-9_-]+\.test\.sh\|)' | grep -Ev '\*\.test\.sh|\$name|\.test\.sh\)|scripts/ci/\$' >&2
   exit 1
 fi
 

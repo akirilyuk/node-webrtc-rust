@@ -1,0 +1,57 @@
+# Path -> integration test suites for PR runs (scripts/ci/compute-pr-job-gates.sh).
+#
+# One rule per line: <bash-glob> <suites>. Suites are a comma list of rust, node, sherpa.
+# The first matching rule wins. A path with no matching rule runs all three suites.
+# Globs are matched with bash [[ "$path" == $glob ]], so '*' also matches '/'.
+# main, release and local runs ignore this file (CI_TEST_SUITES unset = everything).
+# Guard: scripts/ci/pr-test-suites-map.test.sh (every crate/package/example/vendored dir needs a line).
+
+# Cloud vendor crates: not used by the local Sherpa roundtrips; linked into the bindings (node tests).
+crates/vendor-assemblyai/* rust,node
+crates/vendor-aws/* rust,node
+crates/vendor-azure/* rust,node
+crates/vendor-cartesia/* rust,node
+crates/vendor-cluster-speech/* rust,node
+crates/vendor-deepgram/* rust,node
+crates/vendor-elevenlabs/* rust,node
+crates/vendor-fishaudio/* rust,node
+crates/vendor-google/* rust,node
+crates/vendor-groq/* rust,node
+crates/vendor-mock/* rust,node
+crates/vendor-openai/* rust,node
+
+# Everything else native affects every block (transport, speech, Sherpa vendor, bindings).
+crates/conference/* rust,node,sherpa
+crates/core/* rust,node,sherpa
+crates/denoise/* rust,node,sherpa
+crates/mixer/* rust,node,sherpa
+crates/player/* rust,node,sherpa
+crates/signaling/* rust,node,sherpa
+crates/speech-proto/* rust,node,sherpa
+crates/speech/* rust,node,sherpa
+crates/vendor-sherpa-onnx/* rust,node,sherpa
+crates/voice-catalog/* rust,node,sherpa
+third_party/dtls/* rust,node,sherpa
+third_party/webrtc-ice/* rust,node,sherpa
+packages/bindings/* rust,node,sherpa
+
+# TS packages: the Sherpa example depends on helpers, sdk, signaling and voice-catalog.
+packages/helpers/* node,sherpa
+packages/sdk/* node,sherpa
+packages/signaling/* node,sherpa
+packages/voice-catalog/* node,sherpa
+
+# Examples: their own vitest runs under npm test; the Sherpa roundtrips live in voice-agent-local-sherpa (+ shared).
+examples/voice-agent-local-sherpa/* node,sherpa
+examples/shared/* node,sherpa
+examples/README.md node
+examples/audio-cosine/* node
+examples/browser-cosine-chat/* node
+examples/conference-room-manual-signaling/* node
+examples/conference-room/* node
+examples/peer-connection/* node
+examples/voice-agent-browser/* node
+examples/voice-agent-echo-pod/* node
+examples/voice-agent-local-sherpa-multi-client/* node
+examples/voice-agent-multi-session-pod/* node
+examples/voice-agent/* node

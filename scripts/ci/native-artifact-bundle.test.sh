@@ -24,7 +24,7 @@ if bash scripts/ci/native-artifact-bundle.sh assemble \
   echo "FAIL: assemble accepted incomplete target set" >&2
   exit 1
 fi
-rg -q 'missing directory' "$TMP/bundle-incomplete.err"
+grep -qE 'missing directory' "$TMP/bundle-incomplete.err"
 echo "ok: incomplete assemble rejected"
 
 echo "==> noncanonical target binary rejected"
@@ -36,7 +36,7 @@ if bash scripts/ci/native-artifact-bundle.sh assemble \
   echo "FAIL: assemble accepted a noncanonical target binary" >&2
   exit 1
 fi
-rg -q 'canonical .node missing' "$TMP/bundle-canonical.err"
+grep -qE 'canonical .node missing' "$TMP/bundle-canonical.err"
 rm -f "$ART/bindings-x86_64-unknown-linux-gnu/wrong-target.node"
 echo "ok: canonical target filename required"
 
@@ -84,7 +84,7 @@ if NATIVE_TOOL_MODE=unresolved bash scripts/ci/native-artifact-bundle.sh validat
   echo "FAIL: validate accepted tampered bundled .node via stale producer path" >&2
   exit 1
 fi
-rg -q 'sha256 mismatch' "$TMP/bundle-node-tamper.err"
+grep -qE 'sha256 mismatch' "$TMP/bundle-node-tamper.err"
 echo "ok: bundled .node tamper rejected"
 
 echo "==> checksum tamper rejected"
@@ -104,7 +104,7 @@ if NATIVE_TOOL_MODE=unresolved bash scripts/ci/native-artifact-bundle.sh validat
   echo "FAIL: validate accepted tampered checksum" >&2
   exit 1
 fi
-rg -q 'sha256 mismatch|validate-bundle|validate-manifest' "$TMP/bundle-tamper.err"
+grep -qE 'sha256 mismatch|validate-bundle|validate-manifest' "$TMP/bundle-tamper.err"
 echo "ok: tampered checksum rejected"
 
 echo "==> bundle metadata drift rejected"
@@ -124,7 +124,7 @@ if NATIVE_TOOL_MODE=unresolved bash scripts/ci/native-artifact-bundle.sh validat
   echo "FAIL: validate accepted metadata/manifest checksum drift" >&2
   exit 1
 fi
-rg -q 'meta/manifest node sha256 drift' "$TMP/bundle-meta-tamper.err"
+grep -qE 'meta/manifest node sha256 drift' "$TMP/bundle-meta-tamper.err"
 echo "ok: metadata/manifest drift rejected"
 
 echo "==> stage-bundle produces bindings-* dirs"
@@ -155,7 +155,7 @@ if NATIVE_TOOL_MODE=unresolved python3 scripts/ci/native_build_contract.py stage
   echo "FAIL: stage accepted tampered node_basename" >&2
   exit 1
 fi
-rg -q 'node_basename mismatch' "$TMP/bundle-stage-tamper.err"
+grep -qE 'node_basename mismatch' "$TMP/bundle-stage-tamper.err"
 test ! -e "$TMP/escape.node"
 echo "ok: staged paths use canonical target mapping"
 

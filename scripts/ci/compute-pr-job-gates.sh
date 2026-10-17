@@ -11,6 +11,10 @@
 #   - Version-only diff (only package.json / package-lock.json, and only our own
 #     @node-webrtc-rust/* versions change; see version-only-diff.py): quality + build-ts only.
 #     main still runs the full suite after merge.
+#   - When tests run, test_suites (comma list of rust,node,sherpa) is the union over the changed
+#     non-docs paths of scripts/ci/pr-test-suites.map (first matching rule wins, unmapped path =
+#     all three). Empty when no tests run. The PR workflow passes it as CI_TEST_SUITES; main,
+#     release and local runs leave it unset and run everything.
 #
 # Uses merge-base..head for the full PR diff AND files touched by the latest head commit
 # so a push that only edits crates/speech still forces native compile + integration tests.
@@ -24,6 +28,7 @@ run_compile=false
 run_build_ts=false
 run_test=false
 run_quality=false
+code_paths=()
 
 classify_path() {
   local path="$1"
@@ -39,6 +44,7 @@ classify_path() {
   run_build_ts=true
   run_test=true
   run_quality=true
+  code_paths+=("$path")
 }
 
 merge_base="$(git merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA" 2>/dev/null || echo "$PR_BASE_SHA")"
@@ -66,6 +72,67 @@ if [[ "$run_test" == true ]] && command -v python3 >/dev/null 2>&1; then
   fi
 fi
 
+# Union of suites over the changed code paths, from pr-test-suites.map. Fails closed (exit 1) on a
+# missing file or a malformed rule line.
+compute_test_suites() {
+  local map="$SCRIPT_DIR/pr-test-suites.map"
+  local globs=() suites=()
+  local line glob rule_suites extra s parts
+  if [[ ! -f "$map" ]]; then
+    echo "compute-pr-job-gates: missing suite map $map" >&2
+    exit 1
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    glob="" rule_suites="" extra=""
+    read -r glob rule_suites extra <<<"$line"
+    if [[ -z "$glob" || -z "$rule_suites" || -n "$extra" ]]; then
+      echo "compute-pr-job-gates: malformed rule in $map (want '<glob> <suites>'): $line" >&2
+      exit 1
+    fi
+    IFS=',' read -ra parts <<<"$rule_suites"
+    for s in "${parts[@]}"; do
+      case "$s" in
+        rust | node | sherpa) ;;
+        *)
+          echo "compute-pr-job-gates: unknown suite '$s' in $map: $line" >&2
+          exit 1
+          ;;
+      esac
+    done
+    globs+=("$glob")
+    suites+=("$rule_suites")
+  done <"$map"
+
+  local want_rust=false want_node=false want_sherpa=false
+  local path i matched rs
+  for path in "${code_paths[@]+"${code_paths[@]}"}"; do
+    matched="rust,node,sherpa"
+    for i in "${!globs[@]}"; do
+      # shellcheck disable=SC2053
+      if [[ "$path" == ${globs[$i]} ]]; then
+        matched="${suites[$i]}"
+        break
+      fi
+    done
+    rs=",$matched,"
+    [[ "$rs" == *",rust,"* ]] && want_rust=true
+    [[ "$rs" == *",node,"* ]] && want_node=true
+    [[ "$rs" == *",sherpa,"* ]] && want_sherpa=true
+  done
+  local out=""
+  [[ "$want_rust" == true ]] && out="rust"
+  [[ "$want_node" == true ]] && out="${out:+$out,}node"
+  [[ "$want_sherpa" == true ]] && out="${out:+$out,}sherpa"
+  echo "$out"
+}
+
+test_suites=""
+if [[ "$run_test" == true ]]; then
+  test_suites="$(compute_test_suites)"
+fi
+
 emit_bool() {
   local name="$1"
   local value="$2"
@@ -81,6 +148,7 @@ emit_bool run_build_ts "$run_build_ts"
 emit_bool run_test "$run_test"
 emit_bool run_quality "$run_quality"
 emit_bool version_only "$version_only"
+echo "test_suites=${test_suites}"
 
 if [[ "$run_test" == true ]]; then
   echo "skip_test=false"
@@ -98,4 +166,4 @@ else
   echo "skip_quality=true"
 fi
 
-echo "::notice::PR gates merge_base=${merge_base:0:12} head=${PR_HEAD_SHA:0:12} — compile=${run_compile} build_ts=${run_build_ts} test=${run_test} quality=${run_quality} version_only=${version_only}"
+echo "::notice::PR gates merge_base=${merge_base:0:12} head=${PR_HEAD_SHA:0:12} — compile=${run_compile} build_ts=${run_build_ts} test=${run_test} quality=${run_quality} version_only=${version_only} test_suites=${test_suites}"

@@ -94,6 +94,7 @@ jobs:
       run_integration_test: ${{ steps.job_gates.outputs.run_integration_test }}
       needs_native_for_test: ${{ steps.pr_gates.outputs.needs_native }}
       needs_ts_for_test: ${{ steps.pr_gates.outputs.needs_ts }}
+      test_suites: ${{ steps.pr_gates.outputs.test_suites }}
     steps:
       - name: Prepare workspace
         run: |
@@ -341,6 +342,7 @@ jobs:
       skip: ${{ needs.changes.outputs.run_integration_test != 'true' && 'true' || 'false' }}
       needs_native_binding: ${{ needs.changes.outputs.needs_native_for_test == 'true' && 'true' || 'false' }}
       needs_ts_dist: ${{ needs.changes.outputs.needs_ts_for_test == 'true' && 'true' || 'false' }}
+      test_suites: ${{ needs.changes.outputs.test_suites }}
     secrets: inherit
 
   test:

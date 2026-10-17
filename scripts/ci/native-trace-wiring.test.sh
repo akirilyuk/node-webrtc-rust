@@ -16,7 +16,7 @@ count() { grep -c -E "$1" "$2" || true; }
 [[ "$(count '^[^#]* RUST_LOG=' "$SCRIPT")" == 1 ]] || fail "RUST_LOG must be set exactly once in $SCRIPT"
 
 # Both variables are applied on the one command that runs the helpers integration step.
-step="$(grep -n -E '^if WNR_LOG_FILE=.*RUST_LOG=' "$SCRIPT" | cut -d: -f1)"
+step="$(grep -n -E '^[[:space:]]*if WNR_LOG_FILE=.*RUST_LOG=' "$SCRIPT" | cut -d: -f1)"
 [[ -n "$step" ]] || fail "WNR_LOG_FILE and RUST_LOG must prefix the helpers integration command"
 sed -n "$((step)),$((step + 2))p" "$SCRIPT" | grep -q '"helpers integration"' \
   || fail "the env prefix is not on the helpers integration step"
@@ -25,7 +25,7 @@ grep -q 'test:integration --workspace=@node-webrtc-rust/helpers; then' "$SCRIPT"
 
 # Per-process file name, no global level.
 grep -q 'WNR_LOG_FILE="\$NATIVE_TRACE_DIR/native-{pid}.log"' "$SCRIPT" || fail "{pid} path missing"
-rust_log="$(grep -E '^NATIVE_TRACE_RUST_LOG=' "$SCRIPT" | sed -E 's/^[^"]*"([^"]*)".*/\1/')"
+rust_log="$(grep -E '^[[:space:]]*NATIVE_TRACE_RUST_LOG=' "$SCRIPT" | sed -E 's/^[^"]*"([^"]*)".*/\1/')"
 for target in dtls webrtc_dtls webrtc::dtls_transport webrtc_ice webrtc_sctp; do
   [[ ",$rust_log," == *",$target=trace,"* ]] || fail "RUST_LOG lacks $target=trace"
 done

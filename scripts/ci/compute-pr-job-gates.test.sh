@@ -25,6 +25,18 @@ assert_contains() {
   fi
 }
 
+# assert_suites <output> <expected>: the output has exactly one test_suites= line with this value.
+assert_suites() {
+  local out="$1" expected="$2" lines
+  lines="$(grep -E '^test_suites=' <<<"$out" || true)"
+  if [[ "$lines" != "test_suites=$expected" ]]; then
+    echo "expected exactly: test_suites=$expected" >&2
+    echo "got: ${lines:-<none>}" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+}
+
 assert_not_contains() {
   local haystack="$1" needle="$2"
   if [[ "$haystack" == *"$needle"* ]]; then
@@ -111,6 +123,7 @@ assert_contains "$out" "run_build_ts=false"
 assert_contains "$out" "run_test=false"
 assert_contains "$out" "skip_test=true"
 assert_contains "$out" "version_only=false"
+assert_suites "$out" ""
 echo "ok: docs-only diff (incl. docs/perf-data) -> quality only"
 
 # --- 2. crates change -----------------------------------------------------------------------
@@ -164,6 +177,7 @@ assert_contains "$out" "run_test=false"
 assert_contains "$out" "skip_test=true"
 assert_contains "$out" "run_build_ts=true"
 assert_contains "$out" "run_quality=true"
+assert_suites "$out" ""
 echo "ok: version-only lock PR -> quality + build-ts only"
 
 # --- 8. third-party bump is not version-only ------------------------------------------------
@@ -217,5 +231,48 @@ assert_contains "$out" "version_only=false"
 assert_contains "$out" "run_test=true"
 assert_not_contains "$out" "version_only=true"
 echo "ok: invalid JSON -> full pipeline"
+
+# --- 12. path-based suite selection (scripts/ci/pr-test-suites.map) -------------------------
+out="$(run_paths_case suites_sdk packages/sdk/src/x.ts)"
+assert_suites "$out" "node,sherpa"
+out="$(run_paths_case suites_example examples/audio-cosine/src/x.ts)"
+assert_suites "$out" "node"
+out="$(run_paths_case suites_vendor crates/vendor-openai/src/x.rs)"
+assert_suites "$out" "rust,node"
+out="$(run_paths_case suites_core crates/core/src/x.rs)"
+assert_suites "$out" "rust,node,sherpa"
+out="$(run_paths_case suites_union examples/audio-cosine/src/x.ts crates/vendor-openai/src/x.rs)"
+assert_suites "$out" "rust,node"
+out="$(run_paths_case suites_unmapped scripts/perf/x.mjs)"
+assert_suites "$out" "rust,node,sherpa"
+out="$(run_paths_case suites_workflow .github/workflows/build.yml)"
+assert_suites "$out" "rust,node,sherpa"
+# A docs file next to a mapped code path does not widen the selection.
+out="$(run_paths_case suites_docs_mixed docs/a.md examples/audio-cosine/src/x.ts)"
+assert_suites "$out" "node"
+echo "ok: test_suites follows the path map (union, unmapped = all, docs ignored)"
+
+# --- 13. malformed map fails closed ---------------------------------------------------------
+dir="$(make_repo badmap)"
+base="$(git -C "$dir" rev-parse HEAD)"
+commit_files "$dir" "change" crates/core/src/x.rs
+head="$(git -C "$dir" rev-parse HEAD)"
+for bad in "crates/core/* rust,node extra" "crates/core/*" "crates/core/* rust,bogus"; do
+  scripts_copy="$tmp/badmap-scripts"
+  rm -rf "$scripts_copy"
+  mkdir -p "$scripts_copy"
+  cp "$GATES" "$ROOT/scripts/ci/version-only-diff.py" "$scripts_copy/"
+  printf '# comment\n\n%s\n' "$bad" >"$scripts_copy/pr-test-suites.map"
+  if (cd "$dir" && bash "$scripts_copy/compute-pr-job-gates.sh" "$base" "$head") >/dev/null 2>"$tmp/badmap.err"; then
+    echo "expected malformed map line to fail: $bad" >&2
+    exit 1
+  fi
+  grep -q 'compute-pr-job-gates:' "$tmp/badmap.err" || {
+    echo "expected an error message for: $bad" >&2
+    cat "$tmp/badmap.err" >&2
+    exit 1
+  }
+done
+echo "ok: malformed map line -> exit non-zero"
 
 echo "compute-pr-job-gates.test.sh: all checks passed"

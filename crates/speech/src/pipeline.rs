@@ -135,6 +135,13 @@ pub trait SttProvider: Send + Sync {
         0
     }
 
+    /// `false` when this provider never emits `SttTranscript::Partial` for its configured model
+    /// (finals only after `finalize`). The agent then skips the C1 no-partial listen timeout and
+    /// treats `bargeIn.requireSttPartial` as false. Default `true`.
+    fn emits_partials(&self) -> bool {
+        true
+    }
+
     /// `true` from the start of a stream open until the server answers Ready, including while a
     /// refused open is retried (e.g. a speech pod at its stream cap). Audio stays queued;
     /// VoiceAgent waits instead of ending the turn (C1).

@@ -107,7 +107,6 @@ pub enum SttResult {
 }
 
 /// Live counters the agent reads without a round trip.
-#[derive(Default)]
 pub struct SttActorStatus {
     /// Audio sent via [`SttActorHandle::send_audio`] and not yet pushed to the provider.
     pub queued_audio_bytes: AtomicU64,
@@ -121,6 +120,23 @@ pub struct SttActorStatus {
     pub outstanding_finalizes: AtomicUsize,
     /// Bumped by every applied `Swap`; starts at 0.
     pub generation: AtomicU64,
+    /// `SttProvider::emits_partials` of the active provider. `true` until a provider has been
+    /// started; stored after every successful start and every applied `Swap`.
+    pub emits_partials: AtomicBool,
+}
+
+impl Default for SttActorStatus {
+    fn default() -> Self {
+        Self {
+            queued_audio_bytes: AtomicU64::new(0),
+            audio_bytes_pushed: AtomicU64::new(0),
+            vendor_backlog_ms: AtomicU32::new(0),
+            open_pending: AtomicBool::new(false),
+            outstanding_finalizes: AtomicUsize::new(0),
+            generation: AtomicU64::new(0),
+            emits_partials: AtomicBool::new(true),
+        }
+    }
 }
 
 /// Agent-side handle to a running STT actor.
@@ -154,6 +170,11 @@ impl SttActorHandle {
     /// Queued audio (32 bytes per ms at 16 kHz mono s16le) plus the vendor's own backlog.
     pub fn backlog_ms(&self) -> u32 {
         backlog_ms_of(&self.status)
+    }
+
+    /// Whether the active provider emits `SttTranscript::Partial` (`true` before the first start).
+    pub fn emits_partials(&self) -> bool {
+        self.status.emits_partials.load(Ordering::SeqCst)
     }
 }
 
@@ -616,7 +637,13 @@ impl Actor {
                 let result = match self.provider.as_mut() {
                     Some(provider) => {
                         provider.bind_session_context(&ctx);
-                        start_bounded(provider.as_mut()).await
+                        let started = start_bounded(provider.as_mut()).await;
+                        if started.is_ok() {
+                            self.status
+                                .emits_partials
+                                .store(provider.emits_partials(), Ordering::SeqCst);
+                        }
+                        started
                     }
                     None => Ok(()),
                 };
@@ -808,6 +835,9 @@ impl Actor {
         if let Some(old) = self.provider.as_mut() {
             stop_bounded(old.as_mut()).await;
         }
+        self.status
+            .emits_partials
+            .store(new.emits_partials(), Ordering::SeqCst);
         self.provider = Some(new);
         self.gen += 1;
         self.status.generation.store(self.gen, Ordering::SeqCst);

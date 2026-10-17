@@ -984,6 +984,13 @@ impl SttProvider for OpenAiStt {
         "openai"
     }
 
+    /// The Realtime model (`gpt-live-transcribe`) streams deltas while the user speaks. File
+    /// models upload once on `finalize_utterance`, so no partial (not even the SSE deltas) exists
+    /// before the utterance ends.
+    fn emits_partials(&self) -> bool {
+        matches!(self.transport, Transport::Realtime(_))
+    }
+
     fn decode_backlog_ms(&self) -> u32 {
         match &self.transport {
             Transport::Http(http) => http.decode_backlog_ms(),
@@ -1323,6 +1330,21 @@ mod tests {
 
     fn pcm_above_min_batch() -> Bytes {
         Bytes::from(vec![0_u8; STT_MIN_BATCH_BYTES + 64])
+    }
+
+    #[test]
+    fn only_the_realtime_model_emits_partials() {
+        for model in [
+            "whisper-1",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-transcribe",
+            "gpt-transcribe",
+        ] {
+            let stt = OpenAiStt::new(&test_stt_config(model, None)).expect("stt");
+            assert!(!stt.emits_partials(), "{model} uploads once on finalize");
+        }
+        let live = OpenAiStt::new(&test_stt_config("gpt-live-transcribe", None)).expect("stt");
+        assert!(live.emits_partials());
     }
 
     #[test]

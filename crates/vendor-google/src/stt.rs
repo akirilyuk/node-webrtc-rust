@@ -65,6 +65,12 @@ impl SttProvider for GoogleStt {
         "google"
     }
 
+    /// Only V2 `StreamingRecognize` (interim results) emits partials; the V1 REST `recognize`
+    /// path returns one final per utterance.
+    fn emits_partials(&self) -> bool {
+        cfg!(feature = "live") && stt_uses_v2_streaming(self.transport)
+    }
+
     async fn start(&mut self) -> SpeechResult<()> {
         let mut state = self.state.lock().await;
         state.running = true;
@@ -182,6 +188,33 @@ impl SttProvider for GoogleStt {
 mod tests {
     use super::*;
     use node_webrtc_rust_speech::config::SttVendor;
+
+    fn config(model: &str, endpoint: Option<&str>) -> SttConfig {
+        SttConfig {
+            provider: SttVendor::Google,
+            model: Some(model.into()),
+            model_path: None,
+            language: Some("en-US".into()),
+            api_key: None,
+            endpoint: endpoint.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn v1_rest_model_never_emits_partials() {
+        let stt = GoogleStt::new(&config("latest_long", None)).unwrap();
+        assert!(!stt.emits_partials());
+    }
+
+    #[test]
+    fn v2_streaming_model_emits_partials_when_live() {
+        let stt = GoogleStt::new(&config(
+            "chirp_3",
+            Some("projects/p/locations/l/recognizers/r"),
+        ))
+        .unwrap();
+        assert_eq!(stt.emits_partials(), cfg!(feature = "live"));
+    }
 
     #[test]
     fn chirp_requires_v2_locator() {

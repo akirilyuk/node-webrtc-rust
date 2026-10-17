@@ -358,6 +358,11 @@ impl SttProvider for FishAudioStt {
         "fishaudio"
     }
 
+    /// `transcribe-1` returns text only on `commit` (`Committed`), never an interim result.
+    fn emits_partials(&self) -> bool {
+        false
+    }
+
     async fn start(&mut self) -> SpeechResult<()> {
         self.close_connection().await;
         {
@@ -524,6 +529,12 @@ mod tests {
                 Err(SpeechError::Config(_))
             ));
         }
+    }
+
+    #[test]
+    fn provider_never_emits_partials() {
+        let stt = FishAudioStt::new(&config(None)).unwrap();
+        assert!(!stt.emits_partials());
     }
 
     #[test]

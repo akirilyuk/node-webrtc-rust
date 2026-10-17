@@ -513,6 +513,113 @@ async fn http_error_before_audio_falls_back_to_ws() {
     assert_eq!(frames[1]["text"], "Fallback text.");
 }
 
+/// A WS handler that must never run: any handshake is counted by `Mock::ws_hits`.
+fn ws_that_would_serve_audio() -> WsHandler {
+    Box::new(|mut conn| {
+        Box::pin(async move {
+            let _ = read_client_events(&mut conn.ws).await;
+            send_audio(&mut conn.ws, &pcm(960, 9)).await;
+            send_finish(&mut conn.ws, "stop").await;
+        })
+    })
+}
+
+fn http_answering(status: u16, reason: &'static str, body: &'static str) -> HttpHandler {
+    Box::new(move |mut req| {
+        Box::pin(async move {
+            write_status(&mut req.stream, status, reason, body).await;
+        })
+    })
+}
+
+#[tokio::test]
+async fn http_400_does_not_fall_back_to_ws() {
+    let http = http_answering(
+        400,
+        "Bad Request",
+        r#"{"status":400,"message":"Reference not found","reason":null}"#,
+    );
+    let mock = Mock::start(Some(ws_that_would_serve_audio()), Some(http)).await;
+    let tts = provider(&mock.endpoint(), Some("voice-1"));
+
+    let err = within(tts.synthesize("Hello."))
+        .await
+        .expect_err("a 400 is returned as is");
+    match err {
+        SpeechError::Vendor { vendor, message } => {
+            assert_eq!(vendor, "fishaudio");
+            assert!(message.contains("400"), "{message}");
+            assert!(message.contains("Reference not found"), "{message}");
+            assert!(!message.contains("after http failure"), "{message}");
+        }
+        other => panic!("expected vendor error, got {other}"),
+    }
+    assert_eq!(mock.http_hits(), 1);
+    assert_eq!(mock.ws_hits(), 0, "no WebSocket handshake after a 4xx");
+}
+
+#[tokio::test]
+async fn http_client_errors_never_fall_back_to_ws() {
+    for (status, reason) in [
+        (401_u16, "Unauthorized"),
+        (402, "Payment Required"),
+        (403, "Forbidden"),
+        (404, "Not Found"),
+    ] {
+        let http: HttpHandler = Box::new(move |mut req| {
+            Box::pin(async move {
+                let body = format!(r#"{{"status":{status},"message":"nope","reason":null}}"#);
+                write_status(&mut req.stream, status, reason, &body).await;
+            })
+        });
+        let mock = Mock::start(Some(ws_that_would_serve_audio()), Some(http)).await;
+        let tts = provider(&mock.endpoint(), Some("voice-1"));
+        let err = within(tts.synthesize("Hello."))
+            .await
+            .expect_err("a client error is returned as is");
+        assert!(
+            err.to_string()
+                .contains(&format!("fishaudio http {status}")),
+            "{err}"
+        );
+        assert_eq!(mock.ws_hits(), 0, "status {status} must not fall back");
+    }
+}
+
+#[tokio::test]
+async fn http_503_still_falls_back_to_ws() {
+    let http = http_answering(
+        503,
+        "Service Unavailable",
+        r#"{"status":503,"message":"Server overloaded","reason":null}"#,
+    );
+    let mock = Mock::start(Some(ws_that_would_serve_audio()), Some(http)).await;
+    let tts = provider(&mock.endpoint(), Some("voice-1"));
+
+    let returned = within(tts.synthesize("Hello."))
+        .await
+        .expect("the WebSocket fallback serves the audio");
+    assert_eq!(returned.len(), 1);
+    assert_eq!(mock.http_hits(), 1);
+    assert_eq!(mock.ws_hits(), 1);
+}
+
+#[tokio::test]
+async fn http_429_still_falls_back_to_ws() {
+    let http = http_answering(
+        429,
+        "Too Many Requests",
+        r#"{"status":429,"message":"Slow down","reason":null}"#,
+    );
+    let mock = Mock::start(Some(ws_that_would_serve_audio()), Some(http)).await;
+    let tts = provider(&mock.endpoint(), Some("voice-1"));
+
+    within(tts.synthesize("Hello."))
+        .await
+        .expect("the WebSocket fallback serves the audio");
+    assert_eq!(mock.ws_hits(), 1);
+}
+
 #[tokio::test]
 async fn http_error_after_audio_does_not_fall_back() {
     let http: HttpHandler = Box::new(move |mut req| {
@@ -556,9 +663,9 @@ async fn both_transports_fail() {
         Box::pin(async move {
             write_status(
                 &mut req.stream,
-                402,
-                "Payment Required",
-                r#"{"status":402,"message":"No payment","reason":null}"#,
+                503,
+                "Service Unavailable",
+                r#"{"status":503,"message":"Server overloaded","reason":null}"#,
             )
             .await;
         })
@@ -575,7 +682,7 @@ async fn both_transports_fail() {
             assert_eq!(vendor, "fishaudio");
             assert!(message.contains("fishaudio ws connect failed"), "{message}");
             assert!(
-                message.contains("(after http failure: fishaudio http 402: No payment)"),
+                message.contains("(after http failure: fishaudio http 503: Server overloaded)"),
                 "{message}"
             );
             assert!(!message.contains("Pay up."), "{message}");

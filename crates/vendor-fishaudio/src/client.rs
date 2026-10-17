@@ -98,6 +98,22 @@ pub(crate) struct StreamOutcome {
 pub(crate) struct StreamFailure {
     pub error: SpeechError,
     pub emitted_any: bool,
+    /// HTTP status of a non-2xx answer; `None` for transport errors, timeouts, WebSocket
+    /// failures and local errors.
+    pub http_status: Option<u16>,
+}
+
+impl StreamFailure {
+    /// The other transport may be tried for this failure. A client error about the request, the
+    /// key or the credit (any 4xx except 429) fails the same way on the WebSocket, so it is
+    /// returned as is. Connect and transport errors, timeouts, 429 and 5xx may fall back.
+    #[cfg(feature = "live")]
+    pub(crate) fn allows_ws_fallback(&self) -> bool {
+        match self.http_status {
+            None | Some(429) => true,
+            Some(status) => status >= 500,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -107,6 +123,8 @@ struct StreamState {
     emitted_any: bool,
     cancelled: bool,
     received_audio: bool,
+    /// Set by `http_run` when the server answers with a non-2xx status.
+    http_status: Option<u16>,
 }
 
 impl StreamState {
@@ -206,6 +224,7 @@ impl FishAudioClient {
                 Err(error) => Err(StreamFailure {
                     error,
                     emitted_any: state.emitted_any,
+                    http_status: state.http_status,
                 }),
             }
         }
@@ -235,6 +254,7 @@ impl FishAudioClient {
                 Err(error) => Err(StreamFailure {
                     error,
                     emitted_any: state.emitted_any,
+                    http_status: state.http_status,
                 }),
             }
         }
@@ -245,6 +265,7 @@ impl FishAudioClient {
                 return Err(StreamFailure {
                     error,
                     emitted_any: false,
+                    http_status: None,
                 });
             }
             Err(requires_live())
@@ -257,6 +278,7 @@ fn requires_live() -> StreamFailure {
     StreamFailure {
         error: vendor_error("live Fish Audio TTS requires `--features live` on vendor-fishaudio"),
         emitted_any: false,
+        http_status: None,
     }
 }
 
@@ -430,6 +452,7 @@ impl FishAudioClient {
 
         let status = response.status();
         if !status.is_success() {
+            state.http_status = Some(status.as_u16());
             let raw = bounded(deadline, CHUNK_IDLE_TIMEOUT, "stalled", response.text())
                 .await?
                 .unwrap_or_default();

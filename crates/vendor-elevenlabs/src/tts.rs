@@ -189,8 +189,10 @@ impl ElevenLabsTts {
                 FIRST_AUDIO_TIMEOUT.as_millis()
             ))
         };
-        let response = tokio::time::timeout(
-            FIRST_AUDIO_TIMEOUT,
+        // One deadline covers the response headers and the first audio chunk together.
+        let first_audio_deadline = tokio::time::Instant::now() + FIRST_AUDIO_TIMEOUT;
+        let response = tokio::time::timeout_at(
+            first_audio_deadline,
             http.post(url)
                 .header("xi-api-key", api_key)
                 .header("Content-Type", "application/json")
@@ -204,7 +206,10 @@ impl ElevenLabsTts {
 
         if !response.status().is_success() {
             let status = response.status();
-            let message = response.text().await.unwrap_or_else(|_| status.to_string());
+            let message = match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, response.text()).await {
+                Ok(Ok(text)) => text,
+                _ => status.to_string(),
+            };
             return Err(vendor_error(message));
         }
 
@@ -212,19 +217,20 @@ impl ElevenLabsTts {
         let mut mono = Vec::new();
         let mut cancelled = false;
         loop {
-            let (bound, bound_message) = if mono.is_empty() {
-                (FIRST_AUDIO_TIMEOUT, "first audio timed out")
+            let next = if mono.is_empty() {
+                tokio::time::timeout_at(first_audio_deadline, stream.next())
+                    .await
+                    .map_err(|_| first_audio_timed_out())?
             } else {
-                (CHUNK_IDLE_TIMEOUT, "stalled")
+                tokio::time::timeout(CHUNK_IDLE_TIMEOUT, stream.next())
+                    .await
+                    .map_err(|_| {
+                        vendor_error(format!(
+                            "elevenlabs http stalled after {} ms",
+                            CHUNK_IDLE_TIMEOUT.as_millis()
+                        ))
+                    })?
             };
-            let next = tokio::time::timeout(bound, stream.next())
-                .await
-                .map_err(|_| {
-                    vendor_error(format!(
-                        "elevenlabs http {bound_message} after {} ms",
-                        bound.as_millis()
-                    ))
-                })?;
             if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
                 cancelled = true;
                 break;

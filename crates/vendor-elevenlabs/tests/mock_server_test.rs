@@ -453,6 +453,87 @@ async fn http_stream_that_never_sends_audio_times_out() {
     assert_eq!(mock.full_hits(), 0);
 }
 
+/// The 15 s first-audio deadline is armed before the request is written, so it holds whether
+/// the client is still in `send()` or already waiting for the first body chunk when the clock
+/// advances.
+#[tokio::test]
+async fn http_stream_headers_without_audio_times_out() {
+    let (head_tx, head_rx) = oneshot::channel::<()>();
+    let mock = Mock::start(
+        script(|mut stream| async move {
+            write_chunked_head(&mut stream).await;
+            let _ = head_tx.send(());
+            std::future::pending::<()>().await;
+        }),
+        vec![7u8; CHUNK_BYTES],
+    )
+    .await;
+    let provider = mock.provider(None);
+    let mut rig = sink_rig();
+    let sink = rig.sink.clone();
+
+    let call =
+        tokio::spawn(async move { provider.synthesize_progressive("hello", Some(sink)).await });
+
+    tokio::time::timeout(BOUND, head_rx)
+        .await
+        .expect("server never answered")
+        .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(15)).await;
+    tokio::time::resume();
+
+    let result = tokio::time::timeout(BOUND, call)
+        .await
+        .expect("synthesize hung after the first-audio bound")
+        .unwrap();
+    match result {
+        Err(SpeechError::Vendor { message, .. }) => {
+            assert_eq!(
+                message,
+                "elevenlabs http first audio timed out after 15000 ms"
+            );
+        }
+        other => panic!("expected a first-audio timeout, got {other:?}"),
+    }
+    assert_eq!(mock.full_hits(), 0);
+    assert!(drain(&mut rig.rx).is_empty());
+}
+
+#[tokio::test]
+async fn http_error_status_returns_the_body_as_the_error() {
+    let mock = Mock::start(
+        script(|mut stream| async move {
+            stream
+                .write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\nConnection: close\r\n\r\nboom",
+                )
+                .await
+                .unwrap();
+            let _ = stream.shutdown().await;
+        }),
+        vec![7u8; CHUNK_BYTES],
+    )
+    .await;
+    let provider = mock.provider(None);
+    let rig = sink_rig();
+
+    let result = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out");
+
+    match result {
+        Err(SpeechError::Vendor { message, .. }) => {
+            assert!(message.contains("boom"), "{message}");
+        }
+        other => panic!("expected a vendor error, got {other:?}"),
+    }
+    assert_eq!(mock.full_hits(), 0);
+}
+
 #[tokio::test]
 async fn http_stream_that_stalls_after_audio_times_out() {
     let mock = Mock::start(

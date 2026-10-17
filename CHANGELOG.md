@@ -8,10 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-10-17
+
 ### Fixed
 
+- **elevenlabs:** stream-input WebSocket: a close or socket error before `isFinal` is now an error instead of a partial clip reported as complete; connect, sends and reads are bounded (10 s connect, 15 s first audio, 10 s between chunks) (#464).
 - **speech:** finals-only STT vendors (Fish `transcribe-1`, Groq, Azure, OpenAI file models, Google `latest_long`) no longer lose long utterances to C1. New `SttProvider::emits_partials()` (default `true`, published by the STT actor after start and every `updateStt`); when it is `false` the agent does not arm `sttListenTimeoutMs`, so the utterance ends through gate hold and finalize instead of `stt_stream_end{listen_timeout}` plus `user_stt_not_found`, and `bargeIn.requireSttPartial` counts as `false` so VAD barge-in works for these vendors.
-- **fishaudio:** TTS no longer falls back to the WebSocket after an HTTP 4xx (400, 401, 402, 403, 404, any 4xx except 429). The HTTP error is returned at once instead of a WebSocket failure 15 s later; connect and transport errors, timeouts, 429 and 5xx still fall back.
+- **fishaudio:** TTS no longer falls back to the WebSocket after an HTTP 4xx (400, 401, 402, 403, 404, any 4xx except 429). The HTTP error is returned at once instead of a WebSocket failure 15 s later (#463); connect and transport errors, timeouts, 429 and 5xx still fall back.
 
 ## [0.11.3] - 2026-10-17
 

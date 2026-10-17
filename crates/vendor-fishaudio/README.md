@@ -74,6 +74,10 @@ What this means for a VoiceAgent:
 - No client-side limiter. Over the tier's concurrency limit Fish refuses the open and the error surfaces.
 - Transcript text is never logged and never appears in an error message.
 
+### Long turns
+
+Fish STT sends no partial transcripts, so nothing is transcribed while the user speaks. The turn is committed when VAD sees a pause (`vad.minSilenceDurationMs`, default 1300 ms, plus the gate hold), and the final arrives about 0.5 s later. There is no maximum utterance length: a user who talks without pausing gets one transcript when they stop, and the agent's reply waits for it. Audio is still streamed live, so the commit does not upload anything extra. Fish limits buffered audio per commit to 100 MiB (about 54 minutes at 16 kHz). Use a streaming STT vendor if you need live text.
+
 ## Tests
 
 ```bash

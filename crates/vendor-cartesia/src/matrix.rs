@@ -30,12 +30,16 @@ pub const DEFAULT_BASE_URL: &str = "https://api.cartesia.ai";
 pub const DEFAULT_API_VERSION: &str = "2026-08-14";
 
 /// TCP + TLS + WebSocket handshake (also bounds the WS generation send and the HTTP connect).
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Wait for the first audio frame.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
 /// Wait between audio frames once audio has started.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whole REST request, headers through the last body byte.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

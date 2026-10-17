@@ -6,9 +6,14 @@ use node_webrtc_rust_speech::pcm::{
 };
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
+#[cfg(feature = "live")]
+use crate::matrix::{
+    full_body_url, CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
+};
 use crate::matrix::{
     http_stream_url, tts_delivery_plan, tts_progressive_transport, tts_websocket_allowed,
-    websocket_stream_input_url, TtsDeliveryPlan, TtsProgressiveTransport, DEFAULT_MODEL_ID,
+    websocket_stream_input_url, TtsDeliveryPlan, TtsProgressiveTransport, DEFAULT_BASE_URL,
+    DEFAULT_MODEL_ID,
 };
 
 const DEFAULT_VOICE_ID: &str = "EXAVITQu4vr4xnSDxMaL";
@@ -17,6 +22,9 @@ pub struct ElevenLabsTts {
     api_key: Option<String>,
     model: String,
     voice: Option<String>,
+    /// REST base (`TtsConfig.endpoint` or [`DEFAULT_BASE_URL`]); the WS host is derived from it.
+    #[cfg_attr(not(feature = "live"), allow(dead_code))]
+    base_url: String,
 }
 
 impl ElevenLabsTts {
@@ -31,6 +39,14 @@ impl ElevenLabsTts {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
             voice: config.voice.clone(),
+            base_url: config
+                .endpoint
+                .as_deref()
+                .map(str::trim)
+                .map(|value| value.trim_end_matches('/'))
+                .filter(|value| !value.is_empty())
+                .unwrap_or(DEFAULT_BASE_URL)
+                .to_string(),
         })
     }
 
@@ -93,15 +109,20 @@ impl ElevenLabsTts {
         {
             let api_key = self.api_key()?;
             let voice_id = self.voice_id();
-            let url = format!(
-                "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_48000"
-            );
+            let url = full_body_url(&self.base_url, &voice_id);
             let body = serde_json::json!({
                 "text": text,
                 "model_id": self.model,
             });
 
-            let response = reqwest::Client::new()
+            let http = reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(HTTP_TOTAL_TIMEOUT)
+                .build()
+                .map_err(|err| {
+                    vendor_error(format!("elevenlabs http client build failed: {err}"))
+                })?;
+            let response = http
                 .post(url)
                 .header("xi-api-key", api_key)
                 .header("Content-Type", "application/json")
@@ -151,44 +172,65 @@ impl ElevenLabsTts {
 
         let api_key = self.api_key()?;
         let voice_id = self.voice_id();
-        let url = http_stream_url(&voice_id);
+        let url = http_stream_url(&self.base_url, &voice_id);
         let body = serde_json::json!({
             "text": text,
             "model_id": self.model,
         });
 
-        let response = reqwest::Client::new()
-            .post(url)
-            .header("xi-api-key", api_key)
-            .header("Content-Type", "application/json")
-            .header("Accept", "audio/pcm")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "elevenlabs".into(),
-                message: err.to_string(),
-            })?;
+        // No total timeout here: it would cut a long utterance. Each wait is bounded instead.
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|err| vendor_error(format!("elevenlabs http client build failed: {err}")))?;
+        let first_audio_timed_out = || {
+            vendor_error(format!(
+                "elevenlabs http first audio timed out after {} ms",
+                FIRST_AUDIO_TIMEOUT.as_millis()
+            ))
+        };
+        let response = tokio::time::timeout(
+            FIRST_AUDIO_TIMEOUT,
+            http.post(url)
+                .header("xi-api-key", api_key)
+                .header("Content-Type", "application/json")
+                .header("Accept", "audio/pcm")
+                .json(&body)
+                .send(),
+        )
+        .await
+        .map_err(|_| first_audio_timed_out())?
+        .map_err(|err| vendor_error(err.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let message = response.text().await.unwrap_or_else(|_| status.to_string());
-            return Err(SpeechError::Vendor {
-                vendor: "elevenlabs".into(),
-                message,
-            });
+            return Err(vendor_error(message));
         }
 
         let mut stream = response.bytes_stream();
         let mut mono = Vec::new();
-        while let Some(item) = stream.next().await {
+        let mut cancelled = false;
+        loop {
+            let (bound, bound_message) = if mono.is_empty() {
+                (FIRST_AUDIO_TIMEOUT, "first audio timed out")
+            } else {
+                (CHUNK_IDLE_TIMEOUT, "stalled")
+            };
+            let next = tokio::time::timeout(bound, stream.next())
+                .await
+                .map_err(|_| {
+                    vendor_error(format!(
+                        "elevenlabs http {bound_message} after {} ms",
+                        bound.as_millis()
+                    ))
+                })?;
             if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
+                cancelled = true;
                 break;
             }
-            let chunk = item.map_err(|err| SpeechError::Vendor {
-                vendor: "elevenlabs".into(),
-                message: err.to_string(),
-            })?;
+            let Some(item) = next else { break };
+            let chunk = item.map_err(|err| vendor_error(err.to_string()))?;
             mono.extend_from_slice(&chunk);
             if let Some(s) = sink.as_ref() {
                 let audio = pcm_chunk_from_mono(&chunk);
@@ -196,9 +238,16 @@ impl ElevenLabsTts {
             }
         }
 
+        if cancelled {
+            // A cancelled utterance must not be re-synthesized by the full-body fallback.
+            return Ok(vec![pcm_chunk_from_mono(&mono)]);
+        }
         if mono.is_empty() && matches!(tts_delivery_plan(&self.model), TtsDeliveryPlan::HttpStream)
         {
-            return self.synthesize_full_body(text).await;
+            // The stream produced no audio; the full body's audio reaches the sink once, here.
+            let chunks = self.synthesize_full_body(text).await?;
+            emit_chunks(sink.as_ref(), &chunks);
+            return Ok(chunks);
         }
         Ok(vec![pcm_chunk_from_mono(&mono)])
     }
@@ -230,7 +279,7 @@ impl ElevenLabsTts {
 
         let api_key = self.api_key()?;
         let voice_id = self.voice_id();
-        let url = websocket_stream_input_url(&voice_id, &self.model);
+        let url = websocket_stream_input_url(&self.base_url, &voice_id, &self.model);
         let mut request = url
             .into_client_request()
             .map_err(|err| SpeechError::Vendor {
@@ -312,6 +361,14 @@ impl ElevenLabsTts {
             }
         }
         Ok(vec![pcm_chunk_from_mono(&mono)])
+    }
+}
+
+#[cfg(feature = "live")]
+fn vendor_error(message: impl Into<String>) -> SpeechError {
+    SpeechError::Vendor {
+        vendor: "elevenlabs".into(),
+        message: message.into(),
     }
 }
 

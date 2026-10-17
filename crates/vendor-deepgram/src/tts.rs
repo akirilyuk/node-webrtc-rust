@@ -20,6 +20,7 @@ pub struct DeepgramTts {
     api_key: Option<String>,
     model: String,
     /// REST base (`TtsConfig.endpoint` or [`DEFAULT_BASE_URL`]); the WS host is derived from it.
+    #[cfg_attr(not(feature = "live"), allow(dead_code))]
     base_url: String,
 }
 

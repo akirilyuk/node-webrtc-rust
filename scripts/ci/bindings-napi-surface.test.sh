@@ -19,14 +19,14 @@ chmod +x "$SCRIPT"
 echo "==> snapshot + restore no-op when unchanged"
 bash "$SCRIPT" snapshot
 out="$(bash "$SCRIPT" restore)"
-rg -q 'already matches snapshot' <<<"$out"
+grep -qE 'already matches snapshot' <<<"$out"
 
 echo "==> restore undoes drift from snapshot (no git required)"
 backup="$(mktemp)"
 cp "$INDEX" "$backup"
 printf '\n// drift probe\n' >>"$INDEX"
 bash "$SCRIPT" restore >/tmp/napi-surface-restore.out
-rg -q 'restored' /tmp/napi-surface-restore.out
+grep -qE 'restored' /tmp/napi-surface-restore.out
 cmp -s "$backup" "$INDEX"
 cp "$backup" "$INDEX"
 rm -f "$backup"
@@ -45,15 +45,15 @@ cp "$SCRIPT" "$iso/scripts/ci/"
     echo "FAIL: restore succeeded without snapshot outside git" >&2
     exit 1
   fi
-  rg -q 'no snapshot' /tmp/napi-surface-nosnap.err
+  grep -qE 'no snapshot' /tmp/napi-surface-nosnap.err
 )
 rm -rf "$iso"
 export NAPI_SURFACE_SNAPSHOT_DIR="$SNAP"
 echo "ok: missing snapshot fails outside git"
 
 echo "==> write-native-artifact-manifest restores only when snapshot dir exists"
-rg -q 'bindings-napi-surface.sh restore' "$WRITE_MANIFEST"
-rg -q 'napi-surface-snapshot' "$WRITE_MANIFEST"
+grep -qE 'bindings-napi-surface.sh restore' "$WRITE_MANIFEST"
+grep -qE 'napi-surface-snapshot' "$WRITE_MANIFEST"
 
 
 echo "==> linux/host: snapshot before build, restore after, before manifest"

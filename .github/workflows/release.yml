@@ -7,6 +7,8 @@ name: Release
 # Native reuse: prefer a validated native-main-bundle from a successful Build & Test (main)
 # run (exact SHA, then matching aggregate fingerprint). Missing/invalid → rebuild matrix.
 # Integration tests skip only when this exact SHA already passed main.
+# The tag is usually pushed while build-main is still running, so `wait-main` waits (bounded,
+# GitHub-hosted, never fails the release) for it before `plan` looks for a reusable run.
 
 on:
   push:
@@ -72,9 +74,28 @@ jobs:
 
       - run: bash scripts/ci/run-pr-quality.sh
 
+  # Wait (bounded) for build-main on the tag commit so `plan` can reuse its native bundle and
+  # skip the integration suite. GitHub-hosted: the wait must not hold a self-hosted runner.
+  wait-main:
+    name: Wait for main CI on the tag commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for build-main on this commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MAIN_CI_WAIT_TIMEOUT_SEC: '2700'
+        run: bash scripts/ci/wait-for-main-ci.sh "${{ github.sha }}"
+
   plan:
     name: Plan native builds
-    needs: [validate-package-lock, quality]
+    needs: [validate-package-lock, quality, wait-main]
+    # A failed or skipped wait must never block a release; the other needs still must pass.
+    if: ${{ !cancelled() && needs.validate-package-lock.result == 'success' && needs.quality.result == 'success' }}
     runs-on: self-hosted
     outputs:
       linux_x64_matrix: ${{ steps.matrices.outputs.linux_x64_matrix }}

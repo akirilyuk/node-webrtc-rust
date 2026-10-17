@@ -61,7 +61,7 @@ PY
 
 echo "==> loader may advertise fallbacks beyond the six (not a release-contract failure)"
 # index.js requires android/freebsd/etc. — check must still pass (already did above).
-if ! rg -q "bindings-android-arm64" packages/bindings/index.js; then
+if ! grep -qE "bindings-android-arm64" packages/bindings/index.js; then
   echo "FAIL: expected loader fallback require for sanity of this test" >&2
   exit 1
 fi

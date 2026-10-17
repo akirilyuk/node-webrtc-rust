@@ -119,5 +119,44 @@ bash scripts/ci/run-sherpa-example-ci.sh e2e
 
 echo "==> cargo target sizes (build cache sizing)"
 du -sh target third_party/*/target 2>/dev/null || true
+# Cheap breakdown (always): which part of target/debug is worth caching.
+for d in deps build .fingerprint incremental; do
+  [[ -d "target/debug/$d" ]] && du -sh "target/debug/$d" 2>/dev/null || true
+done
+if [[ -d target/debug/deps ]]; then
+  lib_size="$(find target/debug/deps -maxdepth 1 -type f \( -name '*.rlib' -o -name '*.rmeta' -o -name '*.so' -o -name '*.d' \) -print0 \
+    | du -ch --files0-from=- 2>/dev/null | tail -1 | cut -f1 || true)"
+  other_size="$(find target/debug/deps -maxdepth 1 -type f ! \( -name '*.rlib' -o -name '*.rmeta' -o -name '*.so' -o -name '*.d' \) -print0 \
+    | du -ch --files0-from=- 2>/dev/null | tail -1 | cut -f1 || true)"
+  echo "target/debug/deps library artifacts (rlib/rmeta/so/d): ${lib_size:-n/a}"
+  echo "target/debug/deps everything else (test/bench executables): ${other_size:-n/a}"
+fi
+# Compressed size of the snapshot a build cache would hold (libraries + build scripts +
+# fingerprints, no test executables, no incremental). Push runs only (or CI_TARGET_SNAPSHOT_PROBE=1)
+# so PR runs do not pay for it. Never fails the run.
+if [[ "${GITHUB_EVENT_NAME:-}" == "push" || "${CI_TARGET_SNAPSHOT_PROBE:-}" == "1" ]]; then
+  if [[ -d target/debug/deps ]]; then
+    snapshot_list="$(mktemp)"
+    {
+      [[ -d target/debug/build ]] && echo "debug/build"
+      [[ -d target/debug/.fingerprint ]] && echo "debug/.fingerprint"
+      find target/debug -maxdepth 1 -type f -name '*.d' | sed 's#^target/##'
+      find target/debug/deps -maxdepth 1 -type f \( -name '*.rlib' -o -name '*.rmeta' -o -name '*.so' -o -name '*.d' \) | sed 's#^target/##'
+    } >"$snapshot_list"
+    snapshot_out="$(mktemp)"
+    snapshot_start=$SECONDS
+    # The command writes the byte count to a file: ci-step.sh prints its own banners on stdout.
+    bash "$CI_STEP" --timeout 300 "target snapshot probe" -- \
+      bash -c 'tar -C target -cf - -T "$1" 2>/dev/null | xz -T0 -1 | wc -c >"$2"' _ "$snapshot_list" "$snapshot_out" || true
+    snapshot_bytes="$(tr -dc '0-9' <"$snapshot_out" 2>/dev/null || true)"
+    if [[ -n "$snapshot_bytes" ]]; then
+      echo "trimmed snapshot (xz -1): $((snapshot_bytes / 1048576)) MiB ($((SECONDS - snapshot_start))s)"
+    else
+      echo "trimmed snapshot (xz -1): probe failed or timed out ($((SECONDS - snapshot_start))s)"
+    fi
+    rm -f "$snapshot_out"
+    rm -f "$snapshot_list"
+  fi
+fi
 
 echo "==> Integration tests OK"

@@ -9,6 +9,7 @@
 #      container image and TURN_AVAILABLE are set (turn.test.ts cannot silently skip), no job step
 #      calls `docker run` (Kubernetes runner pods have no Docker daemon), and run-pr-integration.sh
 #      starts and stops turnserver itself.
+#   4. Path-based suite selection (CI_TEST_SUITES / test_suites): empty means every suite.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -97,6 +98,25 @@ if ! grep -Eq 'turnserver-ci\.sh"? start' "$integration"; then
 fi
 if ! grep -Eq "trap '.*turnserver-ci\.sh\"? stop.*' EXIT" "$integration"; then
   echo "$integration: must install a trap that calls turnserver-ci.sh stop" >&2
+  exit 1
+fi
+
+# Path-based suite selection: empty CI_TEST_SUITES means every suite, and the PR workflow passes the
+# computed list through the reusable workflow's test_suites input (default '' = all).
+if ! grep -Eq '^suite_enabled\(\)' "$integration" || ! grep -Fq -- '-z "$CI_TEST_SUITES"' "$integration"; then
+  echo "$integration: must define suite_enabled() with the empty-means-all rule (-z \"\$CI_TEST_SUITES\")" >&2
+  exit 1
+fi
+if ! grep -Fq 'CI_TEST_SUITES: ${{ inputs.test_suites }}' "$reusable"; then
+  echo "$reusable: must pass CI_TEST_SUITES: \${{ inputs.test_suites }} to the test script" >&2
+  exit 1
+fi
+if ! awk '
+  /^      test_suites:/ { in_input = 1; next }
+  in_input && /^        default:/ { print; exit }
+  in_input && /^      [a-z_]+:/ { exit }
+' "$reusable" | grep -Eq "default:[[:space:]]*''"; then
+  echo "$reusable: input test_suites must default to '' (empty = all suites)" >&2
   exit 1
 fi
 

@@ -144,6 +144,16 @@ Local contract checks: `bash scripts/ci/native-build-fingerprint.test.sh`, `bash
 
 **TURN test networking:** peers and coturn run in the same job container, so traffic stays on loopback. coturn uses UDP/TCP **3478** for TURN control and **49152–65535** for relay allocations inside the container only. CI enables `--allow-loopback-peers` because both WebRTC peers run on the same host. The `pr-workflow-gates.test.sh` guard keeps `TURN_AVAILABLE: '1'` in the workflow so `packages/sdk/tests/turn.test.ts` cannot silently skip.
 
+### Path-based test suites (PRs)
+
+The integration job runs three suites, each with its own cost: **rust** (Rust fmt + clippy and every `cargo test` step, including the vendored `dtls` and `webrtc-ice` crates and the bench check), **node** (`npm test`, the native exports check, helpers native integration; needs TURN) and **sherpa** ([`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh)). Node and sherpa need the debug `.node` and the TS `dist/`; rust needs neither.
+
+On PRs, [`compute-pr-job-gates.sh`](compute-pr-job-gates.sh) emits `test_suites` (a comma list in the order `rust,node,sherpa`, empty when no tests run). `build.yml` passes it to [`reusable-test.yml`](../../.github/workflows/reusable-test.yml), which exports it as `CI_TEST_SUITES` for [`run-pr-integration.sh`](run-pr-integration.sh).
+
+- The map is [`pr-test-suites.map`](pr-test-suites.map): one rule per line, `<bash-glob> <suites>`. The first matching rule wins and `*` matches `/`. Docs paths are ignored; a changed path with no rule runs all three suites. A malformed line fails the gate script (exit 1).
+- `build-main.yml`, `release.yml`, local runs and the release-tag local gate never set `CI_TEST_SUITES`, so they always run everything.
+- A new crate, package, example or vendored directory needs a `<dir>/*` line in the map. [`pr-test-suites-map.test.sh`](pr-test-suites-map.test.sh) fails otherwise, and also fails on a rule that matches no tracked file.
+
 ### Sherpa roundtrip E2E (integration job)
 
 After `cargo test`, `npm test`, and helpers `test:integration`, [`run-pr-integration.sh`](run-pr-integration.sh) runs [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh):

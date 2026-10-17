@@ -27,6 +27,10 @@ on:
         description: When 'true', restore TS dist cache before integration tests
         type: string
         default: 'false'
+      test_suites:
+        description: Comma list of rust,node,sherpa to run (path-based selection on PRs); empty = all
+        type: string
+        default: ''
 
 jobs:
   test:
@@ -111,6 +115,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         env:
           TS_DIST_CACHE_HIT: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
+          CI_TEST_SUITES: ${{ inputs.test_suites }}
         run: bash "${{ inputs.test_script }}"
 
       # Native DTLS/ICE trace written by scripts/ci/run-pr-integration.sh. The script deletes the

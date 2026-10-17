@@ -41,6 +41,8 @@ ElevenLabs Scribe realtime STT and TTS for `@node-webrtc-rust/sdk` VoiceAgent.
 
 `tts_progressive_transport` only returns the full-body POST (`eleven_v3`) or the HTTP stream, so the WebSocket `stream-input` path exists in the code but is not selected in production. If the HTTP stream yields no audio, the full-body POST is used as a fallback and its audio reaches the sink once; a cancelled utterance never falls back.
 
+The WebSocket path treats a close frame, a closed stream or a socket error before `{"isFinal": true}` as an error (the audio received so far has already reached the sink), and it is bounded like the HTTP path (connect and sends 10 s, first audio 15 s, between messages 10 s). `ElevenLabsTts::synthesize_websocket_stream` is public so the mock-server tests can call it directly.
+
 Default TTS model: `eleven_multilingual_v2`.
 
 ### Timeouts

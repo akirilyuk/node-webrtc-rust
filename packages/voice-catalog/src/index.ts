@@ -7,6 +7,7 @@ export type VoiceVendorId =
   | 'deepgram'
   | 'elevenlabs'
   | 'cartesia'
+  | 'fishaudio'
   | 'assemblyai'
   | 'google'
   | 'groq'

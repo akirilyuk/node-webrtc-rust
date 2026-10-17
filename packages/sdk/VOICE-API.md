@@ -336,11 +336,12 @@ VoiceAgent always emits the same speech events; vendors differ in **when** parti
 
 ### STT: partials vs finalize-only
 
-| Pattern                                            | `user_speech_partial`              | Examples                                                                                                                                 |
-| -------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| **Live WebSocket** with documented interim results | Yes, while the user talks          | Deepgram `nova-*` listen, ElevenLabs Scribe, AssemblyAI v3, Google Chirp V2 streaming, AWS Transcribe streaming, Sherpa, OpenAI Realtime |
-| **File / REST on utterance end**                   | No until finalize (then one final) | Groq Whisper multipart, Azure REST short audio, Google `latest_long` REST, OpenAI file JSON (`whisper-1`)                                |
-| **File SSE / committed Realtime**                  | Text deltas per vendor rules       | OpenAI file SSE, Realtime committed-turn models                                                                                          |
+| Pattern                                            | `user_speech_partial`              | Examples                                                                                                                                                                                                                                              |
+| -------------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Live WebSocket** with documented interim results | Yes, while the user talks          | Deepgram `nova-*` listen, ElevenLabs Scribe, AssemblyAI v3, Google Chirp V2 streaming, AWS Transcribe streaming, Sherpa, OpenAI Realtime                                                                                                              |
+| **Live WebSocket, manual commit, finals only**     | No; one final per commit           | Fish Audio `transcribe-1` (ElevenLabs-compatible realtime socket; set `vad.gateStt: true`, billed for the audio streamed. Fish STT sends no partial transcripts: set `bargeIn.requireSttPartial: false`, or barge-in never fires during agent speech) |
+| **File / REST on utterance end**                   | No until finalize (then one final) | Groq Whisper multipart, Azure REST short audio, Google `latest_long` REST, OpenAI file JSON (`whisper-1`)                                                                                                                                             |
+| **File SSE / committed Realtime**                  | Text deltas per vendor rules       | OpenAI file SSE, Realtime committed-turn models                                                                                                                                                                                                       |
 
 `poll_transcript` in Rust vendors blocks until an in-flight file POST or WS commit finishes so `finalize_utterance` can return without stalling the inbound PCM loop.
 
@@ -348,10 +349,10 @@ VoiceAgent always emits the same speech events; vendors differ in **when** parti
 
 ### TTS: progressive vs full-body
 
-| Pattern                  | Playback                                          | Examples                                                                                                              |
-| ------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **Progressive**          | PCM chunks before the HTTP/WS response completes  | OpenAI chunked PCM, Deepgram Aura/Flux speak WS, ElevenLabs HTTP `/stream`, Google `StreamingSynthesize`, Cartesia WS |
-| **Full-body then frame** | Entire audio buffered, then 20 ms outbound frames | Groq Orpheus WAV, Azure REST, Polly `SynthesizeSpeech`, ElevenLabs `eleven_v3`, many fallbacks                        |
+| Pattern                  | Playback                                          | Examples                                                                                                                                       |
+| ------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Progressive**          | PCM chunks before the HTTP/WS response completes  | OpenAI chunked PCM, Deepgram Aura/Flux speak WS, ElevenLabs HTTP `/stream`, Google `StreamingSynthesize`, Cartesia WS, Fish Audio chunked HTTP |
+| **Full-body then frame** | Entire audio buffered, then 20 ms outbound frames | Groq Orpheus WAV, Azure REST, Polly `SynthesizeSpeech`, ElevenLabs `eleven_v3`, many fallbacks                                                 |
 
 `sendTextToTTS` enqueues on the outbound track at 20 ms cadence regardless; progressive vendors start playback sooner.
 

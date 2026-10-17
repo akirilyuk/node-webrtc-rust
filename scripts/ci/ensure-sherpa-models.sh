@@ -23,6 +23,23 @@ fail() {
   exit 1
 }
 
+# ci-test image bakes the model dirs under $NWR_CI_SHERPA_MODELS (docker/ci/Dockerfile.test).
+# Link them into the example's .models/ so every consumer finds them at the usual paths.
+link_baked_models() {
+  local root="${NWR_CI_SHERPA_MODELS:-}"
+  [[ -n "$root" && -d "$root" ]] || return 0
+  local models_dir="$ROOT/examples/voice-agent-local-sherpa/.models" name
+  mkdir -p "$models_dir"
+  for name in "$(basename "$STT_DIR")" "$(basename "$TTS_DIR")" \
+    sherpa-onnx-whisper-tiny vits-piper-de_DE-thorsten-medium vits-piper-es-glados-medium; do
+    if [[ ! -e "$models_dir/$name" && -d "$root/$name" ]]; then
+      ln -s "$root/$name" "$models_dir/$name"
+      echo "==> Sherpa model from image: $name"
+    fi
+  done
+}
+link_baked_models
+
 if bash "$VALIDATE"; then
   echo "==> Sherpa models OK (cache or prior download)"
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then

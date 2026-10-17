@@ -1,6 +1,11 @@
 name: CI Docker image
 
 # Rebuild and publish CI containers from the `ci` branch (or `main` when Dockerfiles change).
+# PRs touching the image inputs get a build-only check (nothing is pushed).
+# The test image (docker/ci/Dockerfile.test: `ci-build` + coturn + Sherpa model weights) is
+# pushed as the `test` / `test-<sha>` tags of the existing `ci-build` package: the workflow
+# token can push to existing GHCR packages but may not create new ones. It is not a native
+# fingerprint input (fingerprints hash docker/ci/Dockerfile only), so it has no content digest.
 # Workflows may pull `:latest` for convenience, but native fingerprints use content/@sha256
 # image contracts — never treat mutable `latest` as identity.
 
@@ -8,10 +13,33 @@ on:
   push:
     branches: [ci, main]
     paths:
+      - '.github/workflows/ci-image.yml'
       - 'docker/ci/**'
       - 'scripts/ci/install-alpine-native-toolchain.sh'
       - 'scripts/ci/build-sherpa-onnx-musl-libs.sh'
       - 'scripts/ci/ci-image-content-digest.sh'
+      - 'examples/shared/sherpa-local-model-catalog.json'
+      - 'examples/shared/sherpa-tts-model-catalog.json'
+      - 'examples/voice-agent-local-sherpa/scripts/download-stt.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/download-tts.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/download-lid.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/sherpa-model-catalog.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/sherpa-tts-model-catalog.mjs'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/ci-image.yml'
+      - 'docker/ci/**'
+      - 'scripts/ci/install-alpine-native-toolchain.sh'
+      - 'scripts/ci/build-sherpa-onnx-musl-libs.sh'
+      - 'scripts/ci/ci-image-content-digest.sh'
+      - 'examples/shared/sherpa-local-model-catalog.json'
+      - 'examples/shared/sherpa-tts-model-catalog.json'
+      - 'examples/voice-agent-local-sherpa/scripts/download-stt.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/download-tts.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/download-lid.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/sherpa-model-catalog.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/sherpa-tts-model-catalog.mjs'
   workflow_dispatch:
 
 concurrency:
@@ -23,6 +51,8 @@ env:
   CI_ALPINE_IMAGE: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
   CI_IMAGE_SHA: ghcr.io/${{ github.repository }}/ci-build:${{ github.sha }}
   CI_ALPINE_IMAGE_SHA: ghcr.io/${{ github.repository }}/ci-build-alpine:${{ github.sha }}
+  CI_TEST_IMAGE: ghcr.io/${{ github.repository }}/ci-build:test
+  CI_TEST_IMAGE_SHA: ghcr.io/${{ github.repository }}/ci-build:test-${{ github.sha }}
 
 jobs:
   build-and-push:
@@ -34,6 +64,7 @@ jobs:
     outputs:
       glibc_digest: ${{ steps.meta.outputs.glibc_digest }}
       alpine_digest: ${{ steps.meta.outputs.alpine_digest }}
+      test_digest: ${{ steps.meta.outputs.test_digest }}
       glibc_content: ${{ steps.meta.outputs.glibc_content }}
       alpine_content: ${{ steps.meta.outputs.alpine_content }}
     steps:
@@ -63,7 +94,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: docker/ci
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ${{ env.CI_IMAGE }}
             ${{ env.CI_IMAGE_SHA }}
@@ -76,12 +107,27 @@ jobs:
         with:
           context: .
           file: docker/ci/Dockerfile.alpine
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ${{ env.CI_ALPINE_IMAGE }}
             ${{ env.CI_ALPINE_IMAGE_SHA }}
           cache-from: type=gha,scope=ci-build-alpine
           cache-to: type=gha,mode=max,scope=ci-build-alpine
+
+      - name: Build and push CI test image (models + coturn)
+        id: test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/ci/Dockerfile.test
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            CI_BUILD_IMAGE=${{ github.event_name == 'pull_request' && env.CI_IMAGE || env.CI_IMAGE_SHA }}
+          tags: |
+            ${{ env.CI_TEST_IMAGE }}
+            ${{ env.CI_TEST_IMAGE_SHA }}
+          cache-from: type=gha,scope=ci-test
+          cache-to: type=gha,mode=max,scope=ci-test
 
       - name: Record image contract
         id: meta
@@ -92,10 +138,12 @@ jobs:
           alpine_content="$(bash scripts/ci/ci-image-content-digest.sh alpine)"
           glibc_digest="${{ steps.glibc.outputs.digest }}"
           alpine_digest="${{ steps.alpine.outputs.digest }}"
+          test_digest="${{ steps.test.outputs.digest }}"
           echo "glibc_content=${glibc_content}" >> "$GITHUB_OUTPUT"
           echo "alpine_content=${alpine_content}" >> "$GITHUB_OUTPUT"
           echo "glibc_digest=${glibc_digest}" >> "$GITHUB_OUTPUT"
           echo "alpine_digest=${alpine_digest}" >> "$GITHUB_OUTPUT"
+          echo "test_digest=${test_digest}" >> "$GITHUB_OUTPUT"
           {
             echo "## CI image contract"
             echo ""
@@ -105,5 +153,7 @@ jobs:
             echo "- alpine_sha_tag: \`${{ env.CI_ALPINE_IMAGE_SHA }}\`"
             echo "- alpine_digest: \`${alpine_digest}\`"
             echo "- alpine_content: \`${alpine_content}\`"
+            echo "- test_sha_tag: \`${{ env.CI_TEST_IMAGE_SHA }}\`"
+            echo "- test_digest: \`${test_digest}\`"
             echo "- note: \`latest\` is convenience-only; native digests use content/@sha256"
           } >> "$GITHUB_STEP_SUMMARY"

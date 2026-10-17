@@ -315,9 +315,12 @@ Release prep on git uses `SKIP_LOCK_REFRESH=1` with [`bump-workspace-versions.sh
 | --------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
 | `ghcr.io/<owner>/node-webrtc-rust/ci-build:latest`        | [`docker/ci/Dockerfile`](../../docker/ci/Dockerfile)               | glibc native builds (Linux gnu x64), PR compile-native, integration tests |
 | `ghcr.io/<owner>/node-webrtc-rust/ci-build-alpine:latest` | [`docker/ci/Dockerfile.alpine`](../../docker/ci/Dockerfile.alpine) | **musl** native builds (`x86_64-unknown-linux-musl`)                      |
+| `ghcr.io/<owner>/node-webrtc-rust/ci-build:test`          | [`docker/ci/Dockerfile.test`](../../docker/ci/Dockerfile.test)     | `ci-build` + coturn + Sherpa models (integration tests on ephemeral pods) |
 
 **ci-build:** Ubuntu 24.04, Node 20, Rust 1.99.0 (pinned in `rust-toolchain.toml`) + Linux cross targets, Zig (napi `--zig` for non-gnu targets).  
 **ci-build-alpine:** Node 24 Alpine, Rust + musl toolchain via [`install-alpine-native-toolchain.sh`](install-alpine-native-toolchain.sh).
+
+**ci-test** (tag `ci-build:test` / `ci-build:test-<sha>`; the workflow token cannot create a new GHCR package, so it shares the existing `ci-build` package): `ci-build` plus coturn (`turnserver` runs inside the job container, no sidecar) and the five Sherpa model dirs the integration suite uses (en Kroko STT, en amy-low TTS, Whisper tiny LID, de thorsten-medium and es glados-medium TTS) under `/opt/sherpa-models`, exported as `NWR_CI_SHERPA_MODELS`. [`ensure-sherpa-models.sh`](ensure-sherpa-models.sh) symlinks them into the example's `.models/` when the variable is set; unset (plain `ci-build`, local dev) it behaves as before. It is a separate Dockerfile on purpose: the `ci-build` content digest (`ci-image-content-digest.sh glibc`) is a native build fingerprint input, so model changes must not touch `docker/ci/Dockerfile`. PRs that touch the image inputs run a build-only check in the CI Docker image workflow (nothing is pushed; the base is the published `ci-build:latest`). Guard: [`ci-test-image-models.test.sh`](ci-test-image-models.test.sh).
 
 Rebuild when either Dockerfile (or the Alpine install script) changes:
 
@@ -499,6 +502,7 @@ bash scripts/ci/ci-cache-layers-workflow.test.sh
 bash scripts/ci/cargo-via-ci-image.test.sh
 bash scripts/ci/compute-pr-job-gates.test.sh
 bash scripts/ci/pr-workflow-gates.test.sh
+bash scripts/ci/ci-test-image-models.test.sh
 ```
 
 Wired at the top of [`verify-checks.sh`](verify-checks.sh).

@@ -1,7 +1,7 @@
 {
   "name": "@node-webrtc-rust/example-voice-agent",
   "private": true,
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "VoiceAgent demo: mock STT/TTS, VAD, barge-in, callback and stream events",
   "type": "module",
   "scripts": {
@@ -12,15 +12,17 @@
     "start:live:deepgram": "tsx src/live-vendor.ts deepgram",
     "start:live:elevenlabs": "tsx src/live-vendor.ts elevenlabs",
     "start:live:cartesia": "tsx src/live-vendor.ts cartesia",
+    "start:live:fishaudio": "tsx src/live-vendor.ts fishaudio",
+    "start:live:fishaudio-stt": "tsx src/live-vendor.ts fishaudio-stt",
     "start:live:assemblyai": "tsx src/live-vendor.ts assemblyai",
     "start:live:google": "tsx src/live-vendor.ts google",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@node-webrtc-rust/helpers": "0.11.2",
-    "@node-webrtc-rust/sdk": "0.11.2",
-    "@node-webrtc-rust/signaling": "0.11.2",
-    "@node-webrtc-rust/voice-catalog": "0.11.2"
+    "@node-webrtc-rust/helpers": "0.11.3",
+    "@node-webrtc-rust/sdk": "0.11.3",
+    "@node-webrtc-rust/signaling": "0.11.3",
+    "@node-webrtc-rust/voice-catalog": "0.11.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

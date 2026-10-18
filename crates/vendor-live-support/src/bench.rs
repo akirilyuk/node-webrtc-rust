@@ -6,7 +6,7 @@ use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::STT_WORDS;
-use crate::stt::measure_stt;
+use crate::stt::{measure_stt, open_stt, run_utterance};
 use crate::tts::measure_tts;
 
 /// Short reply (about 3 words).
@@ -114,6 +114,47 @@ pub async fn bench_stt(
     Ok(())
 }
 
+/// STT bench for a vendor whose session accepts several utterances (docs-confirmed). Each run is
+/// a fresh provider: a `cold` sample (the open included in `open_ms`) and then a `warm` sample,
+/// a second utterance on the same open session.
+pub async fn bench_stt_warm(
+    vendor: &str,
+    transport: &str,
+    model: &str,
+    make_provider: impl Fn() -> Box<dyn SttProvider>,
+    audio: &[u8],
+    runs: usize,
+) -> SpeechResult<()> {
+    for run in 0..runs {
+        let mut provider = make_provider();
+        let outcome = async {
+            let open_ms = open_stt(provider.as_mut()).await?;
+            let mut cold = run_utterance(provider.as_mut(), audio, &STT_WORDS).await?;
+            cold.open_ms = open_ms;
+            let warm = run_utterance(provider.as_mut(), audio, &STT_WORDS).await?;
+            Ok::<_, node_webrtc_rust_speech::error::SpeechError>((cold, warm))
+        }
+        .await;
+        let http_version = provider.last_transport();
+        let _ = provider.stop().await;
+        let (cold, warm) = outcome?;
+        for (phase, sample) in [("cold", cold), ("warm", warm)] {
+            emit(&BenchRecord {
+                vendor: vendor.into(),
+                leg: "stt".into(),
+                transport: transport.into(),
+                model: model.into(),
+                phase: phase.into(),
+                text: "phrase".into(),
+                run,
+                http_version: http_version.clone(),
+                metrics: serde_json::to_value(sample).expect("sample serializes"),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +176,75 @@ mod tests {
         let back: BenchRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back, record);
         assert!(json.contains("\"http_version\":\"h2\""));
+    }
+
+    /// Counts finalizes; every finalize answers with a final for the phrase.
+    struct Fake {
+        queue: std::collections::VecDeque<node_webrtc_rust_speech::pipeline::SttTranscript>,
+        finalizes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        starts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl SttProvider for Fake {
+        fn vendor_name(&self) -> &'static str {
+            "fake"
+        }
+        async fn start(&mut self) -> SpeechResult<()> {
+            self.starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn stop(&mut self) -> SpeechResult<()> {
+            Ok(())
+        }
+        async fn push_audio(&mut self, _pcm: bytes::Bytes) -> SpeechResult<()> {
+            Ok(())
+        }
+        async fn poll_transcript(
+            &mut self,
+        ) -> SpeechResult<Option<node_webrtc_rust_speech::pipeline::SttTranscript>> {
+            Ok(self.queue.pop_front())
+        }
+        async fn finalize_utterance(&mut self) -> SpeechResult<()> {
+            self.finalizes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.queue
+                .push_back(node_webrtc_rust_speech::pipeline::SttTranscript::Final(
+                    crate::audio::STT_PHRASE.into(),
+                ));
+            Ok(())
+        }
+        fn emits_partials(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn warm_bench_runs_two_utterances_on_one_open_session() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let finalizes = Arc::new(AtomicUsize::new(0));
+        let starts = Arc::new(AtomicUsize::new(0));
+        let (f, st) = (finalizes.clone(), starts.clone());
+        bench_stt_warm(
+            "fake",
+            "websocket",
+            "m",
+            move || {
+                Box::new(Fake {
+                    queue: Default::default(),
+                    finalizes: f.clone(),
+                    starts: st.clone(),
+                })
+            },
+            &crate::stt_fixture_stereo_48k(),
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(starts.load(Ordering::SeqCst), 2, "one open per run");
+        assert_eq!(finalizes.load(Ordering::SeqCst), 4, "cold + warm per run");
     }
 
     #[test]

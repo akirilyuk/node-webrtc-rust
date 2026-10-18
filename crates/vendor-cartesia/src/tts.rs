@@ -38,13 +38,25 @@ impl CartesiaTts {
         })
     }
 
-    fn voice_id(&self) -> String {
-        self.voice
-            .clone()
-            .filter(|voice| !voice.is_empty())
-            .or_else(|| std::env::var("CARTESIA_VOICE_ID").ok())
-            .unwrap_or_else(|| "default".to_string())
+    /// `tts.voice`, else `CARTESIA_VOICE_ID`. Cartesia has no default voice.
+    fn voice_id(&self) -> SpeechResult<String> {
+        resolve_voice(
+            self.voice.as_deref(),
+            std::env::var("CARTESIA_VOICE_ID").ok(),
+        )
     }
+}
+
+/// The voice id from the config, else the environment value. Neither set (or empty) is a config
+/// error: Cartesia documents no default voice.
+fn resolve_voice(configured: Option<&str>, env: Option<String>) -> SpeechResult<String> {
+    configured
+        .map(str::to_string)
+        .filter(|voice| !voice.is_empty())
+        .or_else(|| env.filter(|voice| !voice.is_empty()))
+        .ok_or_else(|| {
+            SpeechError::Config("set tts.voice or CARTESIA_VOICE_ID to a Cartesia voice id".into())
+        })
 }
 
 pub fn unsupported_stt(
@@ -72,7 +84,7 @@ impl TtsProvider for CartesiaTts {
         text: &str,
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
-        let voice = self.voice_id();
+        let voice = self.voice_id()?;
         if self.transport == SpeechTransport::Websocket
             && crate::matrix::tts_delivery_plan(&self.model) == TtsDeliveryPlan::WebSocketContexts
         {
@@ -86,23 +98,16 @@ impl TtsProvider for CartesiaTts {
                 Ok(outcome) => return Ok(vec![chunk_from_mono(&outcome.mono)]),
                 // Audio already played: falling back would play the utterance again.
                 Err(failure) if failure.emitted_any => return Err(failure.error),
-                // Nothing reached the sink: REST below.
+                // Nothing reached the sink: the streamed REST body below.
                 Err(_) => {}
             }
         }
+        // The REST body goes to the sink as it arrives, each chunk once.
         let mono = self
             .client
-            .synthesize_text(text, &voice, &self.model)
+            .synthesize_text(text, &voice, &self.model, sink.as_ref())
             .await?;
-        let chunks = vec![chunk_from_mono(&mono)];
-        if let Some(s) = sink {
-            for chunk in &chunks {
-                if !s.send(chunk.clone()) {
-                    break;
-                }
-            }
-        }
-        Ok(chunks)
+        Ok(vec![chunk_from_mono(&mono)])
     }
 }
 
@@ -110,5 +115,29 @@ fn chunk_from_mono(mono: &[u8]) -> TtsAudioChunk {
     TtsAudioChunk {
         pcm: mono_s16le_to_stereo(mono),
         duration_ms: duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voice_comes_from_config_then_env() {
+        assert_eq!(resolve_voice(Some("a"), Some("b".into())).unwrap(), "a");
+        assert_eq!(resolve_voice(None, Some("b".into())).unwrap(), "b");
+        assert_eq!(resolve_voice(Some(""), Some("b".into())).unwrap(), "b");
+    }
+
+    #[test]
+    fn no_voice_anywhere_is_a_config_error_naming_the_variable() {
+        for (configured, env) in [(None, None), (Some(""), Some(String::new()))] {
+            match resolve_voice(configured, env) {
+                Err(SpeechError::Config(message)) => {
+                    assert!(message.contains("CARTESIA_VOICE_ID"), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 }

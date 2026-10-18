@@ -2,6 +2,8 @@ mod client;
 mod factory;
 mod matrix;
 mod tts;
+#[cfg(feature = "live")]
+mod ws_connect;
 
 #[cfg(feature = "live")]
 pub use client::{WsFailure, WsOutcome};

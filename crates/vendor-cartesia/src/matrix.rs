@@ -63,6 +63,10 @@ pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long an idle pooled REST connection is kept for the next request.
 pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// A kept TTS WebSocket is reused only if it finished an utterance within this window. The docs
+/// give no idle timeout or maximum connection age for the TTS WebSocket, so this is our bound.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const WS_IDLE_REUSE: Duration = Duration::from_secs(60);
 /// TCP keepalive on pooled REST connections.
 pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 

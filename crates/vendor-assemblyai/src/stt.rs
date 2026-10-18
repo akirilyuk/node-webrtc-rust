@@ -26,6 +26,7 @@ impl AssemblyAiStt {
                     .clone()
                     .or_else(|| std::env::var("ASSEMBLYAI_API_KEY").ok()),
                 speech_model,
+                config.endpoint.clone(),
             )?,
             running: false,
         })
@@ -77,7 +78,12 @@ impl SttProvider for AssemblyAiStt {
     }
 
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
-        // Documented v3: `{"type":"Terminate"}` finalizes the open turn (disconnect also sends it).
-        Ok(())
+        // Documented v3 `ForceEndpoint` ends the open turn and keeps the session, so the next
+        // utterance reuses the socket. (`Terminate` also finalizes, but closes the session; stop()
+        // sends it.)
+        if !self.running {
+            return Ok(());
+        }
+        self.client.force_endpoint().await
     }
 }

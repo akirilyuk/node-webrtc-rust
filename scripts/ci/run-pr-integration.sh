@@ -89,7 +89,9 @@ if suite_enabled rust; then
   # Cloud vendors are not live-tested in CI, so these local mock servers are the only guard of the
   # sink contract (each chunk to the sink once, no fallback after audio) and the wait bounds.
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-cartesia" -- \
-    cargo test -p node-webrtc-rust-vendor-cartesia --features live
+    cargo test -p node-webrtc-rust-vendor-cartesia --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-assemblyai" -- \
+    cargo test -p node-webrtc-rust-vendor-assemblyai --features live --lib --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-deepgram" -- \
     cargo test -p node-webrtc-rust-vendor-deepgram --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-elevenlabs" -- \

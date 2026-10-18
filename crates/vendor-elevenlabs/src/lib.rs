@@ -3,6 +3,8 @@ mod matrix;
 mod stt;
 mod stt_matrix;
 mod tts;
+#[cfg(feature = "live")]
+mod ws_connect;
 
 pub use factory::ElevenLabsFactory;
 pub use matrix::{

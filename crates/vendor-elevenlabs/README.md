@@ -39,7 +39,7 @@ ElevenLabs Scribe realtime STT and TTS for `@node-webrtc-rust/sdk` VoiceAgent.
 | WebSocket `stream-input` | Implemented and **allowed** except `eleven_v3`               | Official realtime TTS WS.                                                                         |
 | `eleven_v3`              | Full-body `POST …/text-to-speech/{voice_id}` only            | **Documented:** `stream-input` does not support `eleven_v3`. We do not send that model on the WS. |
 
-`tts_progressive_transport` only returns the full-body POST (`eleven_v3`) or the HTTP stream, so the WebSocket `stream-input` path exists in the code but is not selected in production. If the HTTP stream yields no audio, the full-body POST is used as a fallback and its audio reaches the sink once; a cancelled utterance never falls back.
+The WebSocket `stream-input` path is selected with the `websocket` customer transport (never for `eleven_v3`). If the HTTP stream yields no audio, the full-body POST is used as a fallback and its audio reaches the sink once; a cancelled utterance never falls back.
 
 The WebSocket path treats a close frame, a closed stream or a socket error before `{"isFinal": true}` as an error (the audio received so far has already reached the sink), and it is bounded like the HTTP path (connect and sends 10 s, first audio 15 s, between messages 10 s). `ElevenLabsTts::synthesize_websocket_stream` is public so the mock-server tests can call it directly.
 
@@ -63,5 +63,23 @@ Config: `tts.transport`: `auto` (default), `http` or `websocket`. `stt.transport
 TTS `http` (chunked `…/stream`, or the full-body POST for `eleven_v3`) and TTS `websocket` (`…/stream-input`). `websocket` is rejected at construction for models the socket does not support (`eleven_v3`). STT is always the Scribe realtime WebSocket.
 
 `auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `websocket`. Default measured in a later change.
+
+### WebSocket streaming and reuse
+
+`stream-input` forwards every `audio` message to the sink as it arrives (each chunk once) and ends on `isFinal` ("Indicates if the generation is complete"). A close frame, a closed stream or a read error before `isFinal` is an error. One socket per utterance is kept on purpose: the sequence is `InitializeConnection` (`" "`), `{"text": ..., "flush": true}`, then the documented closing message (empty text) "to close the WebSocket connection after sending the last text message". The multi-context socket (`multi-stream-input`, `context_id`, `close_context`, `isFinal` "for the context") is a reference page only; the model list it supports and its per-context end marker are not published in a form that can be checked, so it is not used, and the socket is not reused. The connection also closes after 20 s of inactivity by default (`inactivity_timeout`).
+
+### Connect bound
+
+Every WebSocket connect (TTS and STT) is bounded at 10 s with the error `elevenlabs <tts|stt> websocket connect timed out after 10 s`; each control send is bounded at 10 s (`elevenlabs tts websocket send timed out after 10 s`).
+
+### Live tests and bench
+
+```bash
+# from node-webrtc-rust/
+ELEVENLABS_API_KEY=... cargo test -p node-webrtc-rust-vendor-elevenlabs --features live --test live_test -- --nocapture --test-threads=1
+NWR_BENCH_RUNS=3 ELEVENLABS_API_KEY=... cargo test -p node-webrtc-rust-vendor-elevenlabs --features live --test live_bench -- --nocapture --test-threads=1
+```
+
+Without the key both skip; `ELEVENLABS_LIVE_REQUIRED=1` turns a missing key into a panic (CI sets it, `.github/workflows/vendor-live-elevenlabs.yml`). The bench runs through `vendor-bench.yml`.
 
 HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.

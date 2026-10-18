@@ -14,10 +14,7 @@ use crate::stt_matrix::{
 #[cfg(feature = "live")]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "live")]
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{client::IntoClientRequest, Message},
-};
+use tokio_tungstenite::tungstenite::Message;
 
 enum OutboundMessage {
     Audio(Bytes),
@@ -98,26 +95,7 @@ impl SttProvider for ElevenLabsStt {
             let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<OutboundMessage>();
             let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttTranscript>();
 
-            let mut request = url
-                .into_client_request()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "elevenlabs".into(),
-                    message: err.to_string(),
-                })?;
-            request.headers_mut().insert(
-                "xi-api-key",
-                api_key.parse().map_err(|err| SpeechError::Vendor {
-                    vendor: "elevenlabs".into(),
-                    message: format!("invalid xi-api-key header: {err}"),
-                })?,
-            );
-
-            let (ws, _) = connect_async(request)
-                .await
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "elevenlabs".into(),
-                    message: err.to_string(),
-                })?;
+            let ws = crate::ws_connect::connect(url, &api_key, "stt").await?;
             if let Ok(mut guard) = self.last_transport.lock() {
                 *guard = Some("ws".into());
             }

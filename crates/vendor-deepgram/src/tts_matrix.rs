@@ -23,6 +23,14 @@ pub const DEFAULT_BASE_URL: &str = "https://api.deepgram.com";
 /// TCP + TLS + WebSocket handshake (also bounds each WS control send and the HTTP connect).
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bound on the WebSocket TCP + TLS + upgrade handshake (`infra.unbounded-external-wait`).
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one speak socket is reused. Deepgram: "An active websocket has a 60-minute timeout
+/// period from the initial connection" (streaming TTS guide), so a socket older than this is
+/// replaced before the server would cut it mid-utterance.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const WS_MAX_AGE: Duration = Duration::from_secs(55 * 60);
 /// Wait for the first audio frame.
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
@@ -174,6 +182,12 @@ pub fn v2_speak_websocket_url(base_url: &str, model: &str) -> Result<String, Str
 /// Flux `/v2/speak` JSON control messages (also used on `/v1/speak` for `Speak` / `Flush`).
 pub fn speak_json(text: &str) -> String {
     serde_json::json!({ "type": "Speak", "text": text }).to_string()
+}
+
+/// Documented `Clear` message: drops the text the server still has queued.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub fn clear_json() -> &'static str {
+    r#"{"type":"Clear"}"#
 }
 
 pub fn flush_json() -> &'static str {

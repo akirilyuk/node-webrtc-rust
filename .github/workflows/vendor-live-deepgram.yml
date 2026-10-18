@@ -1,0 +1,63 @@
+name: Vendor live — Deepgram
+
+# Runs the Deepgram live tests (crates/vendor-deepgram/tests/live_test.rs) against the real API.
+# The API key is the repo secret DEEPGRAM_LIVE_KEY, mapped to the library's DEEPGRAM_API_KEY env var.
+#
+# Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
+# runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
+# from branches of this repo and manual dispatches run the job.
+#
+# A missing key fails the job (first step, and DEEPGRAM_LIVE_REQUIRED=1 makes the tests panic
+# instead of skipping), so a skipped live test can never show green.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/vendor-deepgram/**'
+      - 'crates/vendor-live-support/**'
+      - '.github/workflows/vendor-live-deepgram.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read # pull the ci-build image from GHCR
+
+concurrency:
+  group: vendor-live-deepgram-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: Deepgram live
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
+    # ci-run-integration-tests docker run).
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require Deepgram key
+        env:
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_LIVE_KEY }}
+        run: |
+          if [ -z "$DEEPGRAM_API_KEY" ]; then
+            echo "::error::secret DEEPGRAM_LIVE_KEY is empty"
+            exit 1
+          fi
+
+      - name: Deepgram live tests
+        shell: bash
+        env:
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_LIVE_KEY }}
+          DEEPGRAM_LIVE_REQUIRED: '1'
+        run: |
+          cargo test -p node-webrtc-rust-vendor-deepgram --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'deepgram_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status

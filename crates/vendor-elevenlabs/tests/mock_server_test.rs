@@ -1141,3 +1141,36 @@ fn unsupported_stt_transport_fails_at_construction() {
         Ok(_) => panic!("http STT must be rejected"),
     }
 }
+
+/// A server that accepts the TCP connection and never completes the WebSocket upgrade: the
+/// connect fails at the named 10 s bound (`infra.unbounded-external-wait`).
+#[tokio::test(start_paused = true)]
+async fn tts_websocket_connect_that_never_handshakes_is_bounded() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _conn = listener.accept().await;
+        std::future::pending::<()>().await;
+    });
+    let provider = ElevenLabsFactory
+        .create_tts(&TtsConfig {
+            provider: TtsVendor::Elevenlabs,
+            model: None,
+            model_path: None,
+            voice: Some("voice-1".into()),
+            api_key: Some("k".into()),
+            endpoint: Some(endpoint),
+            sentence_case: Default::default(),
+            transport: Some(SpeechTransport::Websocket),
+        })
+        .unwrap();
+    match provider.synthesize_progressive("hello", None).await {
+        Err(SpeechError::Vendor { message, .. }) => {
+            assert_eq!(
+                message,
+                "elevenlabs tts websocket connect timed out after 10 s"
+            );
+        }
+        other => panic!("expected a connect timeout, got {other:?}"),
+    }
+}

@@ -3,6 +3,8 @@ mod matrix;
 mod stt;
 mod tts;
 mod tts_matrix;
+#[cfg(feature = "live")]
+mod ws_connect;
 
 pub use factory::DeepgramFactory;
 pub use matrix::{

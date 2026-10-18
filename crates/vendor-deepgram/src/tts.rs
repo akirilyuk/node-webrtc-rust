@@ -7,14 +7,14 @@ use node_webrtc_rust_speech::pcm::{
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 use crate::tts_matrix::{
-    default_speak_model, flush_json, resolve_tts_transport, speak_json, tts_progressive_transport,
-    v1_speak_rest_url, v1_speak_websocket_url, v2_speak_rest_url, v2_speak_websocket_url,
-    TtsProgressiveTransport, DEFAULT_BASE_URL,
+    clear_json, default_speak_model, flush_json, resolve_tts_transport, speak_json,
+    tts_progressive_transport, v1_speak_rest_url, v1_speak_websocket_url, v2_speak_rest_url,
+    v2_speak_websocket_url, TtsProgressiveTransport, DEFAULT_BASE_URL,
 };
 #[cfg(feature = "live")]
 use crate::tts_matrix::{
     CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
-    POOL_IDLE_TIMEOUT, TCP_KEEPALIVE,
+    POOL_IDLE_TIMEOUT, TCP_KEEPALIVE, WS_CONNECT_TIMEOUT, WS_MAX_AGE,
 };
 
 pub struct DeepgramTts {
@@ -31,6 +31,9 @@ pub struct DeepgramTts {
     http: reqwest::Client,
     /// How the last request reached Deepgram: `ws`, `h2` or `http/1.1`.
     last_transport: std::sync::Mutex<Option<String>>,
+    /// The Aura speak socket kept open across utterances (see `synthesize_websocket`).
+    #[cfg(feature = "live")]
+    ws: tokio::sync::Mutex<Option<WsConn>>,
 }
 
 impl DeepgramTts {
@@ -68,6 +71,8 @@ impl DeepgramTts {
                     message: format!("deepgram http client build failed: {err}"),
                 })?,
             last_transport: std::sync::Mutex::new(None),
+            #[cfg(feature = "live")]
+            ws: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -99,7 +104,7 @@ impl TtsProvider for DeepgramTts {
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
-        self.synthesize_rest(text).await
+        self.synthesize_rest(text, None).await
     }
 
     async fn synthesize_progressive(
@@ -108,10 +113,8 @@ impl TtsProvider for DeepgramTts {
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
         if self.transport == SpeechTransport::Http {
-            // Explicit `http`: the REST endpoint, full body today (streaming comes later).
-            let chunks = self.synthesize_rest(text).await?;
-            emit_chunks(sink.as_ref(), &chunks);
-            return Ok(chunks);
+            // Explicit `http`: the REST body goes to the sink as it arrives, each chunk once.
+            return self.synthesize_rest(text, sink.as_ref()).await;
         }
         match tts_progressive_transport(&self.model).map_err(SpeechError::Config)? {
             TtsProgressiveTransport::WebSocketV1 | TtsProgressiveTransport::WebSocketV2 => {
@@ -121,22 +124,25 @@ impl TtsProvider for DeepgramTts {
                 }
                 #[cfg(not(feature = "live"))]
                 {
-                    let chunks = self.synthesize_rest(text).await?;
-                    emit_chunks(sink.as_ref(), &chunks);
-                    Ok(chunks)
+                    self.synthesize_rest(text, sink.as_ref()).await
                 }
             }
             TtsProgressiveTransport::RestFullBody => {
-                let chunks = self.synthesize_rest(text).await?;
-                emit_chunks(sink.as_ref(), &chunks);
-                Ok(chunks)
+                self.synthesize_rest(text, sink.as_ref()).await
             }
         }
     }
 }
 
 impl DeepgramTts {
-    async fn synthesize_rest(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+    /// `POST /v1/speak` (or `/v2/speak`). The response body is forwarded to `sink` as it arrives,
+    /// each chunk once; the return value is the same audio. A body error after audio reached the
+    /// sink is an error and nothing is retried (`one-send-path-per-unit.md`).
+    async fn synthesize_rest(
+        &self,
+        text: &str,
+        sink: Option<&TtsProgressiveSink>,
+    ) -> SpeechResult<Vec<TtsAudioChunk>> {
         #[cfg(feature = "live")]
         {
             let api_key = self.api_key()?;
@@ -147,18 +153,25 @@ impl DeepgramTts {
             };
             let body = serde_json::json!({ "text": text });
 
-            let response = self
-                .http
-                .post(url)
-                .header("Authorization", format!("Token {api_key}"))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "deepgram".into(),
-                    message: err.to_string(),
-                })?;
+            let first_audio_deadline = tokio::time::Instant::now() + FIRST_AUDIO_TIMEOUT;
+            let first_audio_timed_out = || {
+                vendor_error(format!(
+                    "deepgram http first audio timed out after {} ms",
+                    FIRST_AUDIO_TIMEOUT.as_millis()
+                ))
+            };
+            let mut response = tokio::time::timeout_at(
+                first_audio_deadline,
+                self.http
+                    .post(url)
+                    .header("Authorization", format!("Token {api_key}"))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send(),
+            )
+            .await
+            .map_err(|_| first_audio_timed_out())?
+            .map_err(|err| vendor_error(err.to_string()))?;
 
             self.note_transport(if response.version() == reqwest::Version::HTTP_2 {
                 "h2"
@@ -168,22 +181,60 @@ impl DeepgramTts {
             if !response.status().is_success() {
                 let status = response.status();
                 let message = response.text().await.unwrap_or_else(|_| status.to_string());
-                return Err(SpeechError::Vendor {
-                    vendor: "deepgram".into(),
-                    message,
-                });
+                return Err(vendor_error(message));
             }
 
-            let mono = response.bytes().await.map_err(|err| SpeechError::Vendor {
-                vendor: "deepgram".into(),
-                message: err.to_string(),
-            })?;
-            Ok(vec![pcm_chunk_from_mono(mono.as_ref())])
+            let mut mono = Vec::new();
+            let mut wav = WavHeaderSkip::default();
+            // An odd trailing byte of one body chunk is the first half of the next sample.
+            let mut carry: Option<u8> = None;
+            loop {
+                let next = if mono.is_empty() {
+                    tokio::time::timeout_at(first_audio_deadline, response.chunk())
+                        .await
+                        .map_err(|_| first_audio_timed_out())?
+                } else {
+                    tokio::time::timeout(CHUNK_IDLE_TIMEOUT, response.chunk())
+                        .await
+                        .map_err(|_| {
+                            vendor_error(format!(
+                                "deepgram http stalled after {} ms",
+                                CHUNK_IDLE_TIMEOUT.as_millis()
+                            ))
+                        })?
+                };
+                if sink.is_some_and(TtsProgressiveSink::is_cancelled) {
+                    break;
+                }
+                // A body that ends early or errors (reset, bad chunk framing, short
+                // Content-Length) is an error, never partial success.
+                let Some(chunk) = next.map_err(|err| vendor_error(err.to_string()))? else {
+                    break;
+                };
+                let mut bytes = wav.feed(chunk.to_vec());
+                if let Some(first) = carry.take() {
+                    bytes.insert(0, first);
+                }
+                if bytes.len() % 2 == 1 {
+                    carry = bytes.pop();
+                }
+                if bytes.is_empty() {
+                    continue;
+                }
+                mono.extend_from_slice(&bytes);
+                if let Some(s) = sink {
+                    let _ = s.send(pcm_chunk_from_mono(&bytes));
+                }
+            }
+            if mono.is_empty() {
+                return Err(vendor_error("Deepgram speak REST returned no audio"));
+            }
+            Ok(vec![pcm_chunk_from_mono(&mono)])
         }
 
         #[cfg(not(feature = "live"))]
         {
-            let _ = (text, self.api_key()?);
+            let _ = (text, sink, self.api_key()?);
             Err(SpeechError::Vendor {
                 vendor: "deepgram".into(),
                 message: "live Deepgram TTS requires `--features live` on vendor-deepgram".into(),
@@ -192,139 +243,268 @@ impl DeepgramTts {
     }
 
     #[cfg(feature = "live")]
+    async fn open_socket(&self, url: &str, api_key: &str) -> SpeechResult<WsConn> {
+        let ws = crate::ws_connect::connect(url.to_string(), api_key, "tts").await?;
+        self.note_transport("ws");
+        Ok(WsConn {
+            ws,
+            opened: tokio::time::Instant::now(),
+        })
+    }
+
+    /// Speak WebSocket. Aura (`/v1/speak`) keeps one socket per provider across utterances: the
+    /// docs describe repeated `Speak` + `Flush` on one open connection, each flush answered by a
+    /// `Flushed`. The socket is opened on the first utterance, reused while open, replaced when
+    /// it is older than [`WS_MAX_AGE`] or the server closed it, and never reused after an error
+    /// or a cancel. Flux (`/v2/speak`) ends an utterance with `SpeechMetadata`, which is not
+    /// documented as a per-flush marker, so it keeps one socket per utterance.
+    #[cfg(feature = "live")]
     async fn synthesize_websocket(
         &self,
         text: &str,
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::{
-            connect_async,
-            tungstenite::{client::IntoClientRequest, Message},
-        };
-
         let api_key = self.api_key()?;
-        let url = if self.model.starts_with("flux-") {
+        let flux = self.model.starts_with("flux-");
+        let url = if flux {
             v2_speak_websocket_url(&self.base_url, &self.model).map_err(SpeechError::Config)?
         } else {
             v1_speak_websocket_url(&self.base_url, &self.model).map_err(SpeechError::Config)?
         };
+        let reusable = !flux;
 
-        let connect_timed_out = || {
-            vendor_error(format!(
-                "deepgram ws connect timed out after {} ms",
-                CONNECT_TIMEOUT.as_millis()
-            ))
+        // Held for the whole utterance: one provider speaks one utterance at a time.
+        let mut slot = self.ws.lock().await;
+        let mut reused = false;
+        let mut conn = match slot.take() {
+            Some(conn) if reusable && conn.opened.elapsed() < WS_MAX_AGE => {
+                reused = true;
+                conn
+            }
+            Some(old) => {
+                close_quietly(old).await;
+                self.open_socket(&url, &api_key).await?
+            }
+            None => self.open_socket(&url, &api_key).await?,
         };
-        let mut request = url
-            .into_client_request()
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "deepgram".into(),
-                message: err.to_string(),
-            })?;
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Token {api_key}")
-                .parse()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "deepgram".into(),
-                    message: format!("invalid auth header: {err}"),
-                })?,
-        );
 
-        let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| connect_timed_out())?
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "deepgram".into(),
-                message: err.to_string(),
-            })?;
-        self.note_transport("ws");
-        let (mut ws_tx, mut ws_rx) = ws.split();
-
-        for control in [speak_json(text), flush_json().to_string()] {
-            tokio::time::timeout(CONNECT_TIMEOUT, ws_tx.send(Message::Text(control.into())))
-                .await
-                .map_err(|_| connect_timed_out())?
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "deepgram".into(),
-                    message: err.to_string(),
-                })?;
-        }
-
-        let mut mono = Vec::new();
-        let mut received_audio = false;
-        loop {
-            let (bound, bound_message) = if received_audio {
-                (CHUNK_IDLE_TIMEOUT, "stalled")
-            } else {
-                (FIRST_AUDIO_TIMEOUT, "first audio timed out")
-            };
-            let next = tokio::time::timeout(bound, ws_rx.next())
-                .await
-                .map_err(|_| {
-                    vendor_error(format!(
-                        "deepgram ws {bound_message} after {} ms",
-                        bound.as_millis()
-                    ))
-                })?;
-            if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
-                break;
-            }
-            let msg = match next {
-                None | Some(Ok(Message::Close(_))) => {
-                    return Err(vendor_error("deepgram ws closed before Flushed"))
-                }
-                Some(Err(err)) => {
-                    return Err(vendor_error(format!("deepgram ws read failed: {err}")))
-                }
-                Some(Ok(msg)) => msg,
-            };
-            let mut turn_done = false;
-            match msg {
-                Message::Binary(chunk) => {
-                    if !chunk.is_empty() {
-                        received_audio = true;
-                    }
-                    mono.extend_from_slice(&chunk);
-                    if let Some(s) = sink.as_ref() {
-                        let audio = pcm_chunk_from_mono(&chunk);
-                        let _ = s.send(audio);
-                    }
-                }
-                Message::Text(raw) => {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                        let msg_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        if msg_type == "SpeechMetadata"
-                            || msg_type == "Flushed"
-                            || msg_type == "Cleared"
-                        {
-                            turn_done = true;
-                        }
-                        if msg_type == "Error" {
-                            let description = value
-                                .get("description")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Deepgram speak error");
-                            return Err(vendor_error(description));
-                        }
-                    }
-                }
-                _ => {}
-            }
-            if turn_done {
-                break;
+        let mut result = run_utterance(&mut conn.ws, text, sink.as_ref()).await;
+        if let Err(fail) = &result {
+            // The server closed the idle socket: nothing reached the sink, so one fresh
+            // socket may retry. After audio the error is returned (`one-send-path-per-unit`).
+            if reused && fail.dead && !fail.audio {
+                drop(conn);
+                conn = self.open_socket(&url, &api_key).await?;
+                result = run_utterance(&mut conn.ws, text, sink.as_ref()).await;
             }
         }
-
-        let _ = tokio::time::timeout(CONNECT_TIMEOUT, ws_tx.send(Message::Close(None))).await;
-        if mono.is_empty() {
-            return Err(SpeechError::Vendor {
-                vendor: "deepgram".into(),
-                message: "Deepgram speak websocket returned no audio".into(),
-            });
+        match result {
+            Ok((mono, UttEnd::Done)) if reusable => {
+                *slot = Some(conn);
+                Ok(vec![pcm_chunk_from_mono(&mono)])
+            }
+            Ok((mono, _)) => {
+                close_quietly(conn).await;
+                Ok(vec![pcm_chunk_from_mono(&mono)])
+            }
+            Err(fail) => {
+                drop(conn);
+                Err(fail.err)
+            }
         }
-        Ok(vec![pcm_chunk_from_mono(&mono)])
+    }
+}
+
+/// An open speak socket and when it was opened.
+#[cfg(feature = "live")]
+struct WsConn {
+    ws: crate::ws_connect::Socket,
+    opened: tokio::time::Instant,
+}
+
+#[cfg(feature = "live")]
+async fn close_quietly(mut conn: WsConn) {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let _ = tokio::time::timeout(WS_CONNECT_TIMEOUT, conn.ws.send(Message::Close(None))).await;
+}
+
+#[cfg(feature = "live")]
+enum UttEnd {
+    /// `Flushed` arrived; the socket is idle and may serve the next utterance.
+    Done,
+    /// The sink was cancelled; leftover audio may still be in flight, so the socket is closed.
+    Cancelled,
+}
+
+#[cfg(feature = "live")]
+struct UttFail {
+    err: SpeechError,
+    /// Audio of this utterance already reached the sink.
+    audio: bool,
+    /// The socket was closed or broken (send or read failed), as opposed to a timeout or a
+    /// vendor `Error` message.
+    dead: bool,
+}
+
+/// One `Speak` + `Flush` on an open socket, up to its `Flushed`.
+#[cfg(feature = "live")]
+async fn run_utterance(
+    ws: &mut crate::ws_connect::Socket,
+    text: &str,
+    sink: Option<&TtsProgressiveSink>,
+) -> Result<(Vec<u8>, UttEnd), UttFail> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let fail = |message: String, audio: bool, dead: bool| UttFail {
+        err: vendor_error(message),
+        audio,
+        dead,
+    };
+
+    for control in [speak_json(text), flush_json().to_string()] {
+        match tokio::time::timeout(WS_CONNECT_TIMEOUT, ws.send(Message::Text(control.into()))).await
+        {
+            Err(_) => {
+                return Err(fail(
+                    format!(
+                        "deepgram tts websocket send timed out after {} s",
+                        WS_CONNECT_TIMEOUT.as_secs()
+                    ),
+                    false,
+                    false,
+                ))
+            }
+            Ok(Err(err)) => return Err(fail(err.to_string(), false, true)),
+            Ok(Ok(())) => {}
+        }
+    }
+
+    let mut mono = Vec::new();
+    let mut received_audio = false;
+    loop {
+        let (bound, bound_message) = if received_audio {
+            (CHUNK_IDLE_TIMEOUT, "stalled")
+        } else {
+            (FIRST_AUDIO_TIMEOUT, "first audio timed out")
+        };
+        let next = tokio::time::timeout(bound, ws.next()).await.map_err(|_| {
+            fail(
+                format!("deepgram ws {bound_message} after {} ms", bound.as_millis()),
+                received_audio,
+                false,
+            )
+        })?;
+        if sink.is_some_and(TtsProgressiveSink::is_cancelled) {
+            // Documented `Clear` drops what the server still has queued; the socket is not
+            // reused after a cancel in any case.
+            let _ = tokio::time::timeout(
+                WS_CONNECT_TIMEOUT,
+                ws.send(Message::Text(clear_json().to_string().into())),
+            )
+            .await;
+            if mono.is_empty() {
+                return Err(fail(
+                    "deepgram ws cancelled before audio".into(),
+                    false,
+                    false,
+                ));
+            }
+            return Ok((mono, UttEnd::Cancelled));
+        }
+        let msg = match next {
+            None | Some(Ok(Message::Close(_))) => {
+                return Err(fail(
+                    "deepgram ws closed before Flushed".into(),
+                    received_audio,
+                    true,
+                ))
+            }
+            Some(Err(err)) => {
+                return Err(fail(
+                    format!("deepgram ws read failed: {err}"),
+                    received_audio,
+                    true,
+                ))
+            }
+            Some(Ok(msg)) => msg,
+        };
+        let mut turn_done = false;
+        match msg {
+            Message::Binary(chunk) => {
+                if !chunk.is_empty() {
+                    received_audio = true;
+                }
+                mono.extend_from_slice(&chunk);
+                if let Some(s) = sink {
+                    let _ = s.send(pcm_chunk_from_mono(&chunk));
+                }
+            }
+            Message::Text(raw) => {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    let msg_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if msg_type == "SpeechMetadata"
+                        || msg_type == "Flushed"
+                        || msg_type == "Cleared"
+                    {
+                        turn_done = true;
+                    }
+                    if msg_type == "Error" {
+                        let description = value
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Deepgram speak error");
+                        return Err(fail(description.to_string(), received_audio, false));
+                    }
+                }
+            }
+            _ => {}
+        }
+        if turn_done {
+            break;
+        }
+    }
+    if mono.is_empty() {
+        return Err(fail(
+            "Deepgram speak websocket returned no audio".into(),
+            false,
+            false,
+        ));
+    }
+    Ok((mono, UttEnd::Done))
+}
+
+/// Drops the container header the REST endpoint may put in front of the PCM. Deepgram: linear16
+/// supports containers `wav` (default) and `none`, "When using the wav container, the response
+/// includes standard container metadata" (media output settings). The request keeps the query
+/// as it was, so a canonical 44-byte RIFF/WAVE header is skipped when the body starts with one.
+#[derive(Default)]
+struct WavHeaderSkip {
+    head: Vec<u8>,
+    decided: bool,
+}
+
+impl WavHeaderSkip {
+    fn feed(&mut self, incoming: Vec<u8>) -> Vec<u8> {
+        if self.decided {
+            return incoming;
+        }
+        self.head.extend_from_slice(&incoming);
+        if self.head.len() < 12 {
+            return Vec::new();
+        }
+        let wav = &self.head[0..4] == b"RIFF" && &self.head[8..12] == b"WAVE";
+        if wav && self.head.len() < 44 {
+            return Vec::new();
+        }
+        self.decided = true;
+        let all = std::mem::take(&mut self.head);
+        if wav {
+            all[44..].to_vec()
+        } else {
+            all
+        }
     }
 }
 
@@ -340,14 +520,6 @@ fn pcm_chunk_from_mono(mono: &[u8]) -> TtsAudioChunk {
     let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
     let pcm = mono_s16le_to_stereo(mono);
     TtsAudioChunk { pcm, duration_ms }
-}
-
-fn emit_chunks(sink: Option<&TtsProgressiveSink>, chunks: &[TtsAudioChunk]) {
-    if let Some(s) = sink {
-        for chunk in chunks {
-            let _ = s.send(chunk.clone());
-        }
-    }
 }
 
 #[cfg(test)]

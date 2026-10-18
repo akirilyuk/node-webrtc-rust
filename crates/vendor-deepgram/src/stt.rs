@@ -13,10 +13,7 @@ use crate::matrix::{
 #[cfg(feature = "live")]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "live")]
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{client::IntoClientRequest, Message},
-};
+use tokio_tungstenite::tungstenite::Message;
 
 pub struct DeepgramStt {
     api_key: Option<String>,
@@ -92,28 +89,7 @@ impl SttProvider for DeepgramStt {
             let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Bytes>();
             let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttTranscript>();
 
-            let mut request = url
-                .into_client_request()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "deepgram".into(),
-                    message: err.to_string(),
-                })?;
-            request.headers_mut().insert(
-                "Authorization",
-                format!("Token {api_key}")
-                    .parse()
-                    .map_err(|err| SpeechError::Vendor {
-                        vendor: "deepgram".into(),
-                        message: format!("invalid auth header: {err}"),
-                    })?,
-            );
-
-            let (ws, _) = connect_async(request)
-                .await
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "deepgram".into(),
-                    message: err.to_string(),
-                })?;
+            let ws = crate::ws_connect::connect(url, &api_key, "stt").await?;
             if let Ok(mut guard) = self.last_transport.lock() {
                 *guard = Some("ws".into());
             }

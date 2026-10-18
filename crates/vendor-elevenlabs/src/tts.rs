@@ -9,7 +9,7 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 #[cfg(feature = "live")]
 use crate::matrix::{
     full_body_url, CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
-    POOL_IDLE_TIMEOUT, TCP_KEEPALIVE,
+    POOL_IDLE_TIMEOUT, TCP_KEEPALIVE, WS_CONNECT_TIMEOUT,
 };
 use crate::matrix::{
     http_stream_url, resolve_tts_transport, tts_delivery_plan, tts_progressive_transport_for,
@@ -318,39 +318,23 @@ impl ElevenLabsTts {
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::{
-            connect_async,
-            tungstenite::{client::IntoClientRequest, Message},
-        };
+        use tokio_tungstenite::tungstenite::Message;
 
         let api_key = self.api_key()?;
         let voice_id = self.voice_id();
         let url = websocket_stream_input_url(&self.base_url, &voice_id, &self.model);
-        let mut request = url
-            .into_client_request()
-            .map_err(|err| vendor_error(err.to_string()))?;
-        request.headers_mut().insert(
-            "xi-api-key",
-            api_key
-                .parse()
-                .map_err(|_| vendor_error("invalid ELEVENLABS_API_KEY header value"))?,
-        );
-
-        let connect_timeout = || {
-            vendor_error(format!(
-                "elevenlabs ws connect timed out after {} ms",
-                CONNECT_TIMEOUT.as_millis()
-            ))
-        };
-        let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| connect_timeout())?
-            .map_err(|err| vendor_error(err.to_string()))?;
+        let ws = crate::ws_connect::connect(url, &api_key, "tts").await?;
         self.note_transport("ws");
         let (mut ws_tx, mut ws_rx) = ws.split();
+        let connect_timeout = || {
+            vendor_error(format!(
+                "elevenlabs tts websocket send timed out after {} s",
+                WS_CONNECT_TIMEOUT.as_secs()
+            ))
+        };
 
         tokio::time::timeout(
-            CONNECT_TIMEOUT,
+            WS_CONNECT_TIMEOUT,
             ws_tx.send(Message::Text(
                 serde_json::json!({
                     "text": " ",
@@ -364,7 +348,7 @@ impl ElevenLabsTts {
         .map_err(|_| connect_timeout())?
         .map_err(|err| vendor_error(err.to_string()))?;
         tokio::time::timeout(
-            CONNECT_TIMEOUT,
+            WS_CONNECT_TIMEOUT,
             ws_tx.send(Message::Text(
                 serde_json::json!({"text": text, "flush": true})
                     .to_string()
@@ -375,7 +359,7 @@ impl ElevenLabsTts {
         .map_err(|_| connect_timeout())?
         .map_err(|err| vendor_error(err.to_string()))?;
         tokio::time::timeout(
-            CONNECT_TIMEOUT,
+            WS_CONNECT_TIMEOUT,
             ws_tx.send(Message::Text(
                 serde_json::json!({"text": ""}).to_string().into(),
             )),
@@ -400,7 +384,7 @@ impl ElevenLabsTts {
                     ))
                 })?;
             if sink.as_ref().is_some_and(TtsProgressiveSink::is_cancelled) {
-                let _ = tokio::time::timeout(CONNECT_TIMEOUT, ws_tx.close()).await;
+                let _ = tokio::time::timeout(WS_CONNECT_TIMEOUT, ws_tx.close()).await;
                 return Ok(vec![pcm_chunk_from_mono(&mono)]);
             }
             let raw = match next {

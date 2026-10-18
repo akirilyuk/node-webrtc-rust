@@ -23,6 +23,10 @@ pub const DEFAULT_BASE_URL: &str = "https://api.elevenlabs.io";
 /// TCP + TLS connect of every HTTP request.
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// TCP + TLS + WebSocket upgrade handshake, and each WebSocket control send
+/// (`infra.unbounded-external-wait`).
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Wait for the response headers and the first audio body chunk.
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);

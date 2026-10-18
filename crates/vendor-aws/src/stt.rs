@@ -217,7 +217,6 @@ impl AwsStt {
         let language_code = self.language_code.clone();
         let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<Bytes>();
         let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttItem>();
-        let lazy = first.is_some();
         if let Some(first) = first {
             let _ = pcm_tx.send(first);
         }
@@ -242,24 +241,13 @@ impl AwsStt {
             .media_encoding(MediaEncoding::Pcm)
             .audio_stream(audio_stream)
             .send();
-        let response = if lazy {
-            // Mid-session opens run inside push_audio: bound them like the connect.
-            tokio::time::timeout(crate::matrix::CONNECT_TIMEOUT, open)
-                .await
-                .map_err(|_| SpeechError::Vendor {
-                    vendor: "aws".into(),
-                    message: format!(
-                        "transcribe stream open timed out after {} ms",
-                        crate::matrix::CONNECT_TIMEOUT.as_millis()
-                    ),
-                })?
-        } else {
-            open.await
-        }
-        .map_err(|err| SpeechError::Vendor {
-            vendor: "aws".into(),
-            message: aws_sdk_transcribestreaming::error::DisplayErrorContext(&err).to_string(),
-        })?;
+        // Both the first open (`start`) and a mid-session open (`push_audio`) are bounded.
+        let response = bound_open(crate::matrix::CONNECT_TIMEOUT, open)
+            .await?
+            .map_err(|err| SpeechError::Vendor {
+                vendor: "aws".into(),
+                message: aws_sdk_transcribestreaming::error::DisplayErrorContext(&err).to_string(),
+            })?;
 
         if let Ok(mut guard) = self.last_transport.lock() {
             *guard = Some("h2".into());
@@ -289,6 +277,24 @@ impl AwsStt {
         inner.running = true;
         Ok(())
     }
+}
+
+/// Runs a stream open under `bound`. A service that never answers is a named error, not a hang
+/// (`infra.unbounded-external-wait`).
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+async fn bound_open<T>(
+    bound: std::time::Duration,
+    open: impl std::future::Future<Output = T>,
+) -> SpeechResult<T> {
+    tokio::time::timeout(bound, open)
+        .await
+        .map_err(|_| SpeechError::Vendor {
+            vendor: "aws".into(),
+            message: format!(
+                "transcribe stream open timed out after {} ms",
+                bound.as_millis()
+            ),
+        })
 }
 
 /// Forwards one `recv()` result of the transcript event stream. True while the stream goes on.
@@ -622,6 +628,30 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("boom"), "{err}");
         assert_eq!(pending.len(), 1, "the partial before the error is kept");
+    }
+
+    /// The first open (`start`) goes through the same bound as the lazy re-open.
+    #[tokio::test]
+    async fn stream_open_that_never_answers_is_a_named_timeout_error() {
+        let started = std::time::Instant::now();
+        let err = bound_open(
+            std::time::Duration::from_millis(100),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("transcribe stream open timed out after 100 ms"),
+            "{err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(
+            bound_open(std::time::Duration::from_secs(5), async { 7 })
+                .await
+                .unwrap(),
+            7
+        );
     }
 
     /// A service that never closes is bounded by the finalize wait, as an `Err`.

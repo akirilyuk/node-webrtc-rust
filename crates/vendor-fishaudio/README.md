@@ -96,3 +96,5 @@ TTS `http` (chunked `POST /v1/tts`, with the documented WebSocket fallback while
 `auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `websocket`. Default measured in a later change.
 
 HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.
+
+TTS output is now upsampled from 24 kHz to 48 kHz stereo with linear interpolation (`MonoToStereo48k`, one instance per synthesis, tail flushed once unless the sink was cancelled) instead of sample repetition. Adds `tests/live_bench.rs`.

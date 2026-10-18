@@ -445,7 +445,7 @@ async fn http_streams_chunks_to_the_sink_before_the_body_ends() {
     });
 
     let first = within(rx.recv()).await.expect("first sink chunk");
-    assert_eq!(first.pcm.len(), 960 * 2 * 2);
+    assert_eq!(first.pcm.len(), 960 * 2 * 2 - 8);
     assert!(
         !call.is_finished(),
         "first chunk arrived before the body ended"
@@ -457,7 +457,11 @@ async fn http_streams_chunks_to_the_sink_before_the_body_ends() {
     while let Ok(chunk) = rx.try_recv() {
         sunk.push(chunk);
     }
-    assert_eq!(sunk.len(), 3, "each http chunk reaches the sink once");
+    assert_eq!(
+        sunk.len(),
+        4,
+        "each http chunk reaches the sink once, plus the interpolation tail"
+    );
     assert_eq!(returned.len(), 1);
     assert_eq!(returned[0].pcm.len(), 3 * 960 * 2 * 2);
     let sink_total: Vec<u8> = sunk.iter().flat_map(|c| c.pcm.to_vec()).collect();
@@ -516,7 +520,11 @@ async fn http_error_before_audio_falls_back_to_ws() {
     while let Ok(chunk) = rx.try_recv() {
         sunk.push(chunk);
     }
-    assert_eq!(sunk.len(), 2, "the sink got each WS chunk once");
+    assert_eq!(
+        sunk.len(),
+        3,
+        "the sink got each WS chunk once, plus the interpolation tail"
+    );
     assert_eq!(mock.http_hits(), 1);
     assert_eq!(mock.ws_hits(), 1);
 
@@ -739,7 +747,7 @@ async fn cancel_stops_reading_and_closes_the_connection() {
     });
 
     let first = within(rx.recv()).await.expect("first chunk");
-    assert_eq!(first.pcm.len(), 960 * 2 * 2);
+    assert_eq!(first.pcm.len(), 960 * 2 * 2 - 8);
     cancel.store(true, Ordering::SeqCst);
     go_tx.send(()).unwrap();
 
@@ -749,7 +757,7 @@ async fn cancel_stops_reading_and_closes_the_connection() {
         "a cancelled synthesis is not cacheable"
     );
     assert_eq!(synthesis.chunks.len(), 1);
-    assert_eq!(synthesis.chunks[0].pcm.len(), 960 * 2 * 2);
+    assert_eq!(synthesis.chunks[0].pcm.len(), 960 * 2 * 2 - 8);
     within(closed_rx)
         .await
         .expect("server observed the connection close");
@@ -824,7 +832,7 @@ async fn ws_streams_chunks_to_the_sink_before_finish() {
     });
 
     let first = within(rx.recv()).await.expect("first sink chunk");
-    assert_eq!(first.pcm.len(), 960 * 2 * 2);
+    assert_eq!(first.pcm.len(), 960 * 2 * 2 - 8);
     assert!(!call.is_finished(), "first chunk arrived before finish");
     release_tx.send(()).unwrap();
 
@@ -833,7 +841,11 @@ async fn ws_streams_chunks_to_the_sink_before_finish() {
     while let Ok(chunk) = rx.try_recv() {
         sunk.push(chunk);
     }
-    assert_eq!(sunk.len(), 3, "each audio event reaches the sink once");
+    assert_eq!(
+        sunk.len(),
+        4,
+        "each audio event reaches the sink once, plus the interpolation tail"
+    );
     assert_eq!(returned.len(), 3 * 960 * 2 * 2);
     let sink_total: Vec<u8> = sunk.iter().flat_map(|c| c.pcm.to_vec()).collect();
     assert_eq!(sink_total, returned, "sink total = returned");
@@ -992,7 +1004,11 @@ async fn explicit_websocket_transport_uses_the_ws_endpoint_only() {
     while let Ok(chunk) = rx.try_recv() {
         sunk.push(chunk);
     }
-    assert_eq!(sunk.len(), 1, "the WS chunk reaches the sink once");
+    assert_eq!(
+        sunk.len(),
+        2,
+        "the WS chunk reaches the sink once, plus the interpolation tail"
+    );
     assert_eq!(returned.len(), 1);
     assert_eq!(mock.ws_hits(), 1);
     assert_eq!(
@@ -1092,4 +1108,60 @@ async fn one_second_of_source_audio_is_one_second_of_48k_stereo() {
         sunk.push(chunk);
     }
     assert_chunks_match_source("fishaudio_http_sink", &sunk, 1000);
+}
+
+/// A 24 kHz ramp served in odd-sized chunks: the 48 kHz output has no step or repeat at a chunk
+/// boundary (it is monotonic) and is exactly twice as long.
+#[tokio::test]
+async fn fish_chunked_synthesis_has_no_discontinuity_at_chunk_boundaries() {
+    let ramp: Vec<u8> = (0..2400i32)
+        .flat_map(|i| ((i * 10 - 12_000) as i16).to_le_bytes())
+        .collect();
+    let served = ramp.clone();
+    let http: HttpHandler = Box::new(move |mut req| {
+        let served = served.clone();
+        Box::pin(async move {
+            write_chunked_head(&mut req.stream).await;
+            let mut rest = served.as_slice();
+            for size in [1001usize, 777, 3, 1, 1500].iter().cycle() {
+                if rest.is_empty() {
+                    break;
+                }
+                let n = (*size).min(rest.len());
+                write_chunk(&mut req.stream, &rest[..n]).await;
+                rest = &rest[n..];
+            }
+            write_chunked_end(&mut req.stream).await;
+        })
+    });
+    let mock = Mock::start(None, Some(http)).await;
+    let (sink, mut rx, _cancel) = sink();
+    let chunks = within(
+        provider(&mock.endpoint(), Some("voice-1")).synthesize_progressive("hello", Some(sink)),
+    )
+    .await
+    .unwrap();
+    let mut sunk = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        sunk.push(chunk);
+    }
+    assert!(sunk.len() > 2, "the audio arrived in several chunks");
+    let all: Vec<u8> = sunk.iter().flat_map(|c| c.pcm.to_vec()).collect();
+    assert_eq!(
+        all,
+        chunks[0].pcm.to_vec(),
+        "sink bytes equal returned bytes"
+    );
+    let left: Vec<i16> = all
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|f| i16::from_le_bytes([f[0], f[1]]))
+        .collect();
+    assert_eq!(left.len(), 2400 * 2);
+    assert!(left.windows(2).all(|w| w[0] <= w[1]), "not monotonic");
+    assert!(
+        left.windows(2).filter(|w| w[0] < w[1]).count() >= 2399,
+        "samples were repeated instead of interpolated"
+    );
 }

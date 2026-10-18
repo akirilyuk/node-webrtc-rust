@@ -6,8 +6,12 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
-use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider};
-use node_webrtc_rust_vendor_live_support::http_mock::{pcm_16bit_mono, MockHttp, Reply};
+use node_webrtc_rust_speech::pipeline::{
+    SttProvider, SttTranscript, TtsAudioChunk, TtsProgressiveSink, TtsProvider,
+};
+use node_webrtc_rust_vendor_live_support::http_mock::{
+    chunked_head, pcm_16bit_mono, script, write_chunk, MockHttp, Reply,
+};
 use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use node_webrtc_rust_vendor_openai::{OpenAiStt, OpenAiTts, HTTP_TOTAL_TIMEOUT};
 
@@ -165,4 +169,62 @@ async fn one_second_of_24k_pcm_is_one_second_of_48k_stereo() {
     assert_chunks_match_source("openai", &chunks, 1000);
     let bytes: usize = chunks.iter().map(|c| c.pcm.len()).sum();
     assert_eq!(bytes, 192_000);
+}
+
+/// A 24 kHz ramp served in odd-sized chunks: the 48 kHz output has no step or repeat at a chunk
+/// boundary (it is monotonic), is exactly twice as long, and each chunk reaches the sink once.
+#[tokio::test]
+async fn openai_chunked_synthesis_has_no_discontinuity_at_chunk_boundaries() {
+    use tokio::io::AsyncWriteExt;
+
+    let ramp: Vec<u8> = (0..2400i32)
+        .flat_map(|i| ((i * 10 - 12_000) as i16).to_le_bytes())
+        .collect();
+    let mock = MockHttp::start(Reply::Script(script(move |mut stream| {
+        let ramp = ramp.clone();
+        async move {
+            let _ = stream.write_all(&chunked_head("audio/pcm")).await;
+            let mut rest = ramp.as_slice();
+            for size in [1001usize, 777, 3, 1, 1500].iter().cycle() {
+                if rest.is_empty() {
+                    break;
+                }
+                let n = (*size).min(rest.len());
+                write_chunk(&mut stream, &rest[..n]).await;
+                rest = &rest[n..];
+            }
+            let _ = stream.write_all(b"0\r\n\r\n").await;
+        }
+    })))
+    .await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TtsAudioChunk>();
+    let sink = TtsProgressiveSink {
+        tx,
+        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let chunks = tts(&mock.base_url())
+        .synthesize_progressive("hello", Some(sink))
+        .await
+        .unwrap();
+    let mut sunk = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        sunk.push(chunk);
+    }
+    assert!(sunk.len() > 2, "the audio arrived in several chunks");
+    let all: Vec<u8> = sunk.iter().flat_map(|c| c.pcm.to_vec()).collect();
+    let returned: Vec<u8> = chunks.iter().flat_map(|c| c.pcm.to_vec()).collect();
+    assert_eq!(all, returned, "sink bytes equal returned bytes");
+    let left: Vec<i16> = all
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|f| i16::from_le_bytes([f[0], f[1]]))
+        .collect();
+    assert_eq!(left.len(), 2400 * 2);
+    assert!(left.windows(2).all(|w| w[0] <= w[1]), "not monotonic");
+    assert!(
+        left.windows(2).filter(|w| w[0] < w[1]).count() >= 2399,
+        "samples were repeated instead of interpolated"
+    );
 }

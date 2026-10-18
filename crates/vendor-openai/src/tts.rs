@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo};
+use node_webrtc_rust_speech::pcm::{duration_ms_from_stereo_48k, MonoToStereo48k};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 #[cfg(feature = "live")]
 use serde_json::Value;
@@ -157,10 +157,8 @@ impl OpenAiTts {
                         message: err.to_string(),
                     })?;
 
-            let mono_24k = response.bytes;
-            let duration_ms =
-                duration_ms_from_mono_s16le(mono_24k.len(), OPENAI_TTS_PCM_SAMPLE_RATE);
-            let pcm = mono_24k_s16le_to_stereo_48k(mono_24k.as_ref());
+            let pcm = mono_24k_s16le_to_stereo_48k(response.bytes.as_ref())?;
+            let duration_ms = duration_ms_from_stereo_48k(pcm.len());
             Ok(vec![TtsAudioChunk { pcm, duration_ms }])
         }
 
@@ -230,7 +228,10 @@ impl OpenAiTts {
             return Err(StreamAttempt::UseFullBody);
         }
 
-        let mut pending = Vec::new();
+        // One interpolator per synthesis: it carries the last sample and any odd byte across
+        // network chunks, so chunk boundaries are seamless.
+        let mut up =
+            MonoToStereo48k::new(OPENAI_TTS_PCM_SAMPLE_RATE).map_err(StreamAttempt::Failed)?;
         let mut chunks = Vec::new();
         let mut forward = true;
         let mut stream = response.bytes_stream();
@@ -241,14 +242,11 @@ impl OpenAiTts {
                     message: format!("speech stream read: {err}"),
                 })
             })?;
-            pending.extend_from_slice(&bytes);
-            let aligned = take_even_s16le(&mut pending);
-            if aligned.is_empty() {
+            let pcm = bytes::Bytes::from(up.push(&bytes));
+            if pcm.is_empty() {
                 continue;
             }
-            let duration_ms =
-                duration_ms_from_mono_s16le(aligned.len(), OPENAI_TTS_PCM_SAMPLE_RATE);
-            let pcm = mono_24k_s16le_to_stereo_48k(&aligned);
+            let duration_ms = duration_ms_from_stereo_48k(pcm.len());
             let chunk = TtsAudioChunk { pcm, duration_ms };
             if forward {
                 if let Some(sink) = sink {
@@ -259,7 +257,20 @@ impl OpenAiTts {
             }
             chunks.push(chunk);
         }
-        if chunks.is_empty() {
+        // The tail of the last sample, once, unless the sink was cancelled.
+        let cancelled = !forward || sink.is_some_and(TtsProgressiveSink::is_cancelled);
+        if !cancelled {
+            let pcm = bytes::Bytes::from(up.finish());
+            if !pcm.is_empty() {
+                let duration_ms = duration_ms_from_stereo_48k(pcm.len());
+                let chunk = TtsAudioChunk { pcm, duration_ms };
+                if let Some(sink) = sink {
+                    let _ = sink.send(chunk.clone());
+                }
+                chunks.push(chunk);
+            }
+        }
+        if chunks.is_empty() && !cancelled {
             return Err(StreamAttempt::UseFullBody);
         }
         Ok(chunks)
@@ -311,7 +322,7 @@ impl OpenAiTts {
             });
         }
 
-        let mut pending_pcm = Vec::new();
+        let mut up = MonoToStereo48k::new(OPENAI_TTS_PCM_SAMPLE_RATE)?;
         let mut chunks = Vec::new();
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
@@ -358,16 +369,11 @@ impl OpenAiTts {
                                     vendor: "openai".into(),
                                     message: format!("speech.audio.delta base64: {err}"),
                                 })?;
-                            pending_pcm.extend_from_slice(&decoded);
-                            let aligned = take_even_s16le(&mut pending_pcm);
-                            if aligned.is_empty() {
+                            let pcm = bytes::Bytes::from(up.push(&decoded));
+                            if pcm.is_empty() {
                                 continue;
                             }
-                            let duration_ms = duration_ms_from_mono_s16le(
-                                aligned.len(),
-                                OPENAI_TTS_PCM_SAMPLE_RATE,
-                            );
-                            let pcm = mono_24k_s16le_to_stereo_48k(&aligned);
+                            let duration_ms = duration_ms_from_stereo_48k(pcm.len());
                             chunks.push(TtsAudioChunk { pcm, duration_ms });
                         }
                         Some("speech.audio.done") => {}
@@ -376,12 +382,13 @@ impl OpenAiTts {
                 }
             }
         }
-        let aligned = take_even_s16le(&mut pending_pcm);
-        if !aligned.is_empty() {
-            let duration_ms =
-                duration_ms_from_mono_s16le(aligned.len(), OPENAI_TTS_PCM_SAMPLE_RATE);
-            let pcm = mono_24k_s16le_to_stereo_48k(&aligned);
-            chunks.push(TtsAudioChunk { pcm, duration_ms });
+        let tail = bytes::Bytes::from(up.finish());
+        if !tail.is_empty() {
+            let duration_ms = duration_ms_from_stereo_48k(tail.len());
+            chunks.push(TtsAudioChunk {
+                pcm: tail,
+                duration_ms,
+            });
         }
         if chunks.is_empty() {
             return Err(SpeechError::Vendor {
@@ -421,14 +428,6 @@ fn emit_chunks(sink: Option<&TtsProgressiveSink>, chunks: &[TtsAudioChunk]) {
     }
 }
 
-/// Pop a whole number of 16-bit samples, leaving a trailing odd byte in `buf`.
-fn take_even_s16le(buf: &mut Vec<u8>) -> Vec<u8> {
-    let even = buf.len() - (buf.len() % 2);
-    let out = buf[..even].to_vec();
-    buf.drain(..even);
-    out
-}
-
 fn api_root(endpoint: &Option<String>) -> String {
     endpoint
         .as_deref()
@@ -463,14 +462,14 @@ fn parse_speech_model(model: &str) -> SpeechModel {
     }
 }
 
-/// Upsample mono 24 kHz s16le to stereo 48 kHz for WebRTC outbound tracks.
-fn mono_24k_s16le_to_stereo_48k(mono_24k: &[u8]) -> bytes::Bytes {
-    let mut mono_48k = Vec::with_capacity(mono_24k.len() * 2);
-    for sample in mono_24k.as_chunks::<2>().0 {
-        mono_48k.extend_from_slice(sample);
-        mono_48k.extend_from_slice(sample);
-    }
-    mono_s16le_to_stereo(&mono_48k)
+/// One-shot conversion of a whole mono 24 kHz s16le body to stereo 48 kHz (linear
+/// interpolation, tail flushed).
+#[cfg(feature = "live")]
+fn mono_24k_s16le_to_stereo_48k(mono_24k: &[u8]) -> SpeechResult<bytes::Bytes> {
+    let mut up = MonoToStereo48k::new(OPENAI_TTS_PCM_SAMPLE_RATE)?;
+    let mut out = up.push(mono_24k);
+    out.extend(up.finish());
+    Ok(bytes::Bytes::from(out))
 }
 
 #[cfg(test)]
@@ -479,19 +478,12 @@ mod tests {
     use crate::matrix::{tts_delivery_plan, TtsStreamFormat};
     use node_webrtc_rust_speech::config::TtsVendor;
 
+    #[cfg(feature = "live")]
     #[test]
     fn upsample_doubles_byte_length_before_stereo() {
         let mono_24k = vec![0_u8; 480];
-        let stereo_48k = mono_24k_s16le_to_stereo_48k(&mono_24k);
+        let stereo_48k = mono_24k_s16le_to_stereo_48k(&mono_24k).unwrap();
         assert_eq!(stereo_48k.len(), 480 * 2 * 2);
-    }
-
-    #[test]
-    fn take_even_s16le_keeps_trailing_odd_byte() {
-        let mut buf = vec![1, 2, 3];
-        let even = take_even_s16le(&mut buf);
-        assert_eq!(even, vec![1, 2]);
-        assert_eq!(buf, vec![3]);
     }
 
     #[cfg(feature = "live")]

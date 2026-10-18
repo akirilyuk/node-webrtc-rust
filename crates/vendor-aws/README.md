@@ -75,3 +75,5 @@ NWR_BENCH_RUNS=3 AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_REGION=... 
 ```
 
 All three variables must be set; otherwise the tests skip before any SDK client is built (so `~/.aws` is never read). `AWS_LIVE_REQUIRED=1` turns a missing variable into a panic that names it (CI sets it, `.github/workflows/vendor-live-aws.yml`; secrets `AWS_LIVE_ACCESS_KEY_ID`, `AWS_LIVE_SECRET_ACCESS_KEY` and `AWS_LIVE_REGION`). The STT test synthesizes its phrase with Polly. The bench runs through `vendor-bench.yml`.
+
+Transcribe stream opens are bounded: the first open in `start()` now uses the same 10 s connect bound as the lazy re-open in `push_audio`, and a service that never answers is a `transcribe stream open timed out after 10000 ms` error.

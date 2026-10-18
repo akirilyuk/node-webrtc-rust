@@ -9,7 +9,7 @@
 #![cfg_attr(not(feature = "live"), allow(dead_code))]
 
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
-use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, WEBRTC_PCM_SAMPLE_RATE};
+use node_webrtc_rust_speech::pcm::duration_ms_from_stereo_48k;
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink};
 use serde::Serialize;
 
@@ -116,7 +116,6 @@ impl StreamFailure {
     }
 }
 
-#[derive(Default)]
 struct StreamState {
     assembler: Pcm24kAssembler,
     pcm: Vec<u8>,
@@ -128,6 +127,17 @@ struct StreamState {
 }
 
 impl StreamState {
+    fn new() -> SpeechResult<Self> {
+        Ok(Self {
+            assembler: Pcm24kAssembler::new()?,
+            pcm: Vec::new(),
+            emitted_any: false,
+            cancelled: false,
+            received_audio: false,
+            http_status: None,
+        })
+    }
+
     /// Converts one network chunk and hands it to the sink exactly once.
     /// Returns `false` when the sink was cancelled and reading must stop.
     fn push(&mut self, bytes: &[u8], sink: Option<&TtsProgressiveSink>) -> bool {
@@ -144,7 +154,7 @@ impl StreamState {
         }
         self.pcm.extend_from_slice(&pcm);
         if let Some(sink) = sink {
-            let duration_ms = duration_ms_from_mono_s16le(pcm.len() / 2, WEBRTC_PCM_SAMPLE_RATE);
+            let duration_ms = duration_ms_from_stereo_48k(pcm.len());
             if !sink.send(TtsAudioChunk { pcm, duration_ms }) {
                 self.cancelled = true;
                 return false;
@@ -161,8 +171,28 @@ impl StreamState {
         self.cancelled
     }
 
-    fn into_outcome(mut self) -> StreamOutcome {
-        self.assembler.finish();
+    /// Flushes the interpolator's tail once, at the end of the stream, to the sink and the
+    /// collected bytes. Skipped when the sink was cancelled.
+    fn finish(&mut self, sink: Option<&TtsProgressiveSink>) {
+        if self.cancelled_by(sink) {
+            return;
+        }
+        let pcm = self.assembler.finish();
+        if pcm.is_empty() {
+            return;
+        }
+        self.pcm.extend_from_slice(&pcm);
+        if let Some(sink) = sink {
+            let duration_ms = duration_ms_from_stereo_48k(pcm.len());
+            if sink.send(TtsAudioChunk { pcm, duration_ms }) {
+                self.emitted_any = true;
+            } else {
+                self.cancelled = true;
+            }
+        }
+    }
+
+    fn into_outcome(self) -> StreamOutcome {
         StreamOutcome {
             mono_48k_stereo: self.pcm,
             emitted_any: self.emitted_any,
@@ -234,12 +264,19 @@ impl FishAudioClient {
     ) -> Result<StreamOutcome, StreamFailure> {
         #[cfg(feature = "live")]
         {
-            let mut state = StreamState::default();
+            let mut state = StreamState::new().map_err(|error| StreamFailure {
+                error,
+                emitted_any: false,
+                http_status: None,
+            })?;
             match self
                 .ws_run(text, reference_id, model, sink, &mut state)
                 .await
             {
-                Ok(()) => Ok(state.into_outcome()),
+                Ok(()) => {
+                    state.finish(sink);
+                    Ok(state.into_outcome())
+                }
                 Err(error) => Err(StreamFailure {
                     error,
                     emitted_any: state.emitted_any,
@@ -264,12 +301,19 @@ impl FishAudioClient {
     ) -> Result<StreamOutcome, StreamFailure> {
         #[cfg(feature = "live")]
         {
-            let mut state = StreamState::default();
+            let mut state = StreamState::new().map_err(|error| StreamFailure {
+                error,
+                emitted_any: false,
+                http_status: None,
+            })?;
             match self
                 .http_run(text, reference_id, model, sink, &mut state)
                 .await
             {
-                Ok(()) => Ok(state.into_outcome()),
+                Ok(()) => {
+                    state.finish(sink);
+                    Ok(state.into_outcome())
+                }
                 Err(error) => Err(StreamFailure {
                     error,
                     emitted_any: state.emitted_any,
@@ -603,13 +647,14 @@ mod tests {
             tx,
             cancel: cancel.clone(),
         };
-        let mut state = StreamState::default();
+        let mut state = StreamState::new().unwrap();
         assert!(state.push(&[0_u8; 480], Some(&sink)));
         assert!(state.push(&[0_u8; 3], Some(&sink)));
         assert!(state.push(&[0_u8; 3], Some(&sink)));
         let first = rx.try_recv().unwrap();
-        assert_eq!(first.pcm.len(), 1920);
-        assert_eq!(first.duration_ms, 10);
+        // The first source sample is held until the second arrives: 239 intervals of 8 bytes.
+        assert_eq!(first.pcm.len(), 1912);
+        assert_eq!(first.duration_ms, 9);
         assert_eq!(rx.try_recv().unwrap().pcm.len(), 8);
         assert_eq!(rx.try_recv().unwrap().pcm.len(), 16);
         assert!(rx.try_recv().is_err(), "no re-send of the full buffer");
@@ -617,9 +662,12 @@ mod tests {
 
         cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(!state.push(&[0_u8; 480], Some(&sink)));
+        // A cancelled stream sends no tail.
+        state.finish(Some(&sink));
+        assert!(rx.try_recv().is_err());
         let outcome = state.into_outcome();
         assert!(outcome.cancelled);
-        assert_eq!(outcome.mono_48k_stereo.len(), 1920 + 8 + 16);
+        assert_eq!(outcome.mono_48k_stereo.len(), 1912 + 8 + 16);
     }
 
     #[test]

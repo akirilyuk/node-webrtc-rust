@@ -118,3 +118,5 @@ TTS is the streamed `audio/speech` HTTP response.
 `auto` resolves to the catalog default, which is today's behaviour: TTS `http`. Default measured in a later change.
 
 HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1. Connect timeout 10 s, whole-request timeout 60 s, idle pool 90 s, TCP keepalive 30 s. Requests made through the `async-openai` client (TTS full-body fallback, file-JSON STT) use the same pooled client but `last_transport()` reports `sdk` for them, because that client does not expose the response's HTTP version.
+
+TTS output is now upsampled from 24 kHz to 48 kHz stereo with linear interpolation (`MonoToStereo48k`, one instance per synthesis) instead of sample repetition, so chunk boundaries are seamless. Adds `tests/live_test.rs` (workflow `vendor-live-openai.yml`) and `tests/live_bench.rs`.

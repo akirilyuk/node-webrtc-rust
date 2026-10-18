@@ -1,9 +1,6 @@
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::SpeechResult;
-use node_webrtc_rust_speech::pcm::{
-    duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
-};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 use crate::matrix::voice_supports_streaming_synthesize;
@@ -22,6 +19,12 @@ pub struct GoogleTts {
     grpc: tokio::sync::OnceCell<google_cloud_texttospeech_v1::client::TextToSpeech>,
     #[cfg(feature = "live")]
     rest_url_override: Option<String>,
+    /// Explicit `config.api_key`: REST paths only (`crate::auth`).
+    #[cfg(feature = "live")]
+    api_key: Option<String>,
+    /// `GOOGLE_APPLICATION_CREDENTIALS` at construction: the only credential of the gRPC path.
+    #[cfg(feature = "live")]
+    credentials_file: Option<String>,
     last_transport: std::sync::Mutex<Option<String>>,
 }
 
@@ -47,8 +50,20 @@ impl GoogleTts {
             grpc: tokio::sync::OnceCell::new(),
             #[cfg(feature = "live")]
             rest_url_override: None,
+            #[cfg(feature = "live")]
+            api_key: crate::auth::clean(config.api_key.as_deref()),
+            #[cfg(feature = "live")]
+            credentials_file: crate::auth::credentials_file_from_env(),
             last_transport: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Test hook: pretend `GOOGLE_APPLICATION_CREDENTIALS` is unset.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __without_service_account(mut self) -> Self {
+        self.credentials_file = None;
+        self
     }
 
     /// Test hook: REST `text:synthesize` goes to this URL (plain `http://` mock server) with a
@@ -93,7 +108,9 @@ impl TtsProvider for GoogleTts {
             if voice_supports_streaming_synthesize(&self.voice) {
                 let client = self
                     .grpc
-                    .get_or_try_init(tts_live::build_grpc_client)
+                    .get_or_try_init(|| {
+                        tts_live::build_grpc_client(self.credentials_file.as_deref(), &self.voice)
+                    })
                     .await?;
                 return tts_live::streaming_synthesize(
                     client,
@@ -105,22 +122,27 @@ impl TtsProvider for GoogleTts {
                 )
                 .await;
             }
-            let mono = tts_live::synthesize_linear16(
+            // REST returns the whole synthesis in one JSON body; it is cut into sink-sized
+            // chunks so playback can start and be cancelled in pieces.
+            let stereo = tts_live::synthesize_linear16(
                 &self.http,
                 &self.last_transport,
                 self.rest_url_override.as_deref(),
+                self.api_key.as_deref(),
                 text,
                 &self.voice,
                 &self.language,
             )
             .await?;
-            let chunks = vec![pcm_chunk_from_mono(&mono)];
-            if let Some(s) = sink {
-                for chunk in &chunks {
-                    if !s.send(chunk.clone()) {
+            let mut chunks = Vec::new();
+            for chunk in tts_live::stereo_chunks(&stereo) {
+                if let Some(s) = sink.as_ref() {
+                    if s.is_cancelled() || !s.send(chunk.clone()) {
+                        chunks.push(chunk);
                         break;
                     }
                 }
+                chunks.push(chunk);
             }
             return Ok(chunks);
         }
@@ -134,12 +156,6 @@ impl TtsProvider for GoogleTts {
             })
         }
     }
-}
-
-fn pcm_chunk_from_mono(mono: &[u8]) -> TtsAudioChunk {
-    let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
-    let pcm = mono_s16le_to_stereo(mono);
-    TtsAudioChunk { pcm, duration_ms }
 }
 
 #[cfg(test)]

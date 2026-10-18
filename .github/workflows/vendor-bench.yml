@@ -112,6 +112,8 @@ jobs:
           flag="$(echo "$VENDOR" | tr a-z A-Z)_LIVE_REQUIRED"
           if [ "$VENDOR" = "fishaudio" ]; then flag="FISH_LIVE_REQUIRED"; fi
           echo "$flag=1" >> "$GITHUB_ENV"
+          # Google has two credential paths with their own flag (live_test.rs, live_bench.rs).
+          if [ "$VENDOR" = "google" ]; then echo "GOOGLE_SA_LIVE_REQUIRED=1" >> "$GITHUB_ENV"; fi
           echo "NWR_BENCH_RUNS=${RUNS:-5}" >> "$GITHUB_ENV"
 
       - name: Bench

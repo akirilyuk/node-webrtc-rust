@@ -109,7 +109,7 @@ async fn stt_v1_rest_server_that_never_answers_is_dropped_within_the_bound() {
         .await
         .unwrap();
     provider.finalize_utterance().await.unwrap();
-    // The request task swallows the error, so observe the client dropping the connection.
+    // The client drops the connection at the bound, and the failure is reported loudly.
     let started = Instant::now();
     while mock.closed() == 0 {
         assert!(
@@ -119,7 +119,13 @@ async fn stt_v1_rest_server_that_never_answers_is_dropped_within_the_bound() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(mock.requests(), 1);
-    assert_eq!(provider.poll_transcript().await.unwrap(), None);
+    let mut failure = None;
+    while failure.is_none() && started.elapsed() < Duration::from_secs(5) {
+        failure = provider.poll_transcript().await.err();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let message = failure.expect("the failed request is reported").to_string();
+    assert!(message.contains("speech:recognize failed"), "{message}");
 }
 
 #[test]

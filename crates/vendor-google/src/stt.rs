@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::matrix::{
-    default_stt_model, parse_v2_locator, require_v2_locator_for_streaming, stt_default_transport,
-    stt_uses_v2_streaming, GoogleSttV2Locator, SttDefaultTransport,
+    default_stt_model, resolve_v2_locator, stt_default_transport, stt_uses_v2_streaming,
+    GoogleSttV2Locator, SttDefaultTransport,
 };
 
 #[cfg(feature = "live")]
@@ -29,6 +29,15 @@ pub struct GoogleStt {
     grpc: tokio::sync::OnceCell<google_cloud_speech_v2::client::Speech>,
     #[cfg(feature = "live")]
     rest_url_override: Option<String>,
+    /// Explicit `config.api_key`: REST paths only (`crate::auth`).
+    #[cfg(feature = "live")]
+    api_key: Option<String>,
+    /// `GOOGLE_APPLICATION_CREDENTIALS` at construction: the only credential of the gRPC path.
+    #[cfg(feature = "live")]
+    credentials_file: Option<String>,
+    /// Failure of the last V1 request, reported once by `poll_transcript` (named, no secrets).
+    #[cfg(feature = "live")]
+    rest_error: Arc<std::sync::Mutex<Option<String>>>,
     last_transport: Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -36,6 +45,9 @@ struct GoogleSttState {
     running: bool,
     buffered: Vec<u8>,
     transcript_rx: Option<mpsc::UnboundedReceiver<SttTranscript>>,
+    /// V2: the sender every stream of this provider reports to (one receiver across streams).
+    #[cfg(feature = "live")]
+    transcript_tx: Option<mpsc::UnboundedSender<SttTranscript>>,
     #[cfg(feature = "live")]
     v2_handle: Option<stt_live::V2StreamHandle>,
 }
@@ -48,8 +60,10 @@ impl GoogleStt {
             .clone()
             .unwrap_or_else(|| default_stt_model().to_string());
         let transport = stt_default_transport(&model).map_err(SpeechError::Config)?;
-        let v2_locator = parse_v2_locator(config);
-        require_v2_locator_for_streaming(&model, &v2_locator).map_err(SpeechError::Config)?;
+        let v2_locator = resolve_v2_locator(&model, config.endpoint.as_deref(), |name| {
+            std::env::var(name).ok()
+        })
+        .map_err(SpeechError::Config)?;
         Ok(Self {
             language: config
                 .language
@@ -63,6 +77,8 @@ impl GoogleStt {
                 buffered: Vec::new(),
                 transcript_rx: None,
                 #[cfg(feature = "live")]
+                transcript_tx: None,
+                #[cfg(feature = "live")]
                 v2_handle: None,
             })),
             #[cfg(feature = "live")]
@@ -71,8 +87,55 @@ impl GoogleStt {
             grpc: tokio::sync::OnceCell::new(),
             #[cfg(feature = "live")]
             rest_url_override: None,
+            #[cfg(feature = "live")]
+            api_key: crate::auth::clean(config.api_key.as_deref()),
+            #[cfg(feature = "live")]
+            credentials_file: crate::auth::credentials_file_from_env(),
+            #[cfg(feature = "live")]
+            rest_error: Arc::new(std::sync::Mutex::new(None)),
             last_transport: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Test hook: pretend `GOOGLE_APPLICATION_CREDENTIALS` is unset.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __without_service_account(mut self) -> Self {
+        self.credentials_file = None;
+        self
+    }
+
+    /// Opens one V2 stream for the next utterance; results go to the provider's channel.
+    #[cfg(feature = "live")]
+    async fn open_v2_stream(&self, state: &mut GoogleSttState) -> SpeechResult<()> {
+        let locator = self.v2_locator.clone().ok_or_else(|| {
+            SpeechError::Config("missing Google V2 recognizer configuration".into())
+        })?;
+        let tx = state
+            .transcript_tx
+            .clone()
+            .ok_or_else(|| SpeechError::Stt("google stt: provider is not started".into()))?;
+        if let Some(old) = state.v2_handle.take() {
+            old.stop().await;
+        }
+        let client = self
+            .grpc
+            .get_or_try_init(|| {
+                stt_live::build_grpc_client(self.credentials_file.as_deref(), &locator, &self.model)
+            })
+            .await?;
+        state.v2_handle = Some(
+            stt_live::start_v2_streaming(
+                client,
+                &self.last_transport,
+                &locator,
+                &self.model,
+                &self.language,
+                tx,
+            )
+            .await?,
+        );
+        Ok(())
     }
 
     /// Test hook: V1 `speech:recognize` goes to this URL (plain `http://` mock server) with a
@@ -110,32 +173,32 @@ impl SttProvider for GoogleStt {
     }
 
     async fn start(&mut self) -> SpeechResult<()> {
-        let mut state = self.state.lock().await;
-        state.running = true;
-        state.buffered.clear();
-        state.transcript_rx = None;
         #[cfg(feature = "live")]
         {
-            state.v2_handle = None;
-            if stt_uses_v2_streaming(self.transport) {
-                let locator = self.v2_locator.clone().ok_or_else(|| {
-                    SpeechError::Config("missing Google V2 recognizer configuration".into())
-                })?;
-                let client = self
-                    .grpc
-                    .get_or_try_init(stt_live::build_grpc_client)
-                    .await?;
-                let (rx, handle) = stt_live::start_v2_streaming(
-                    client,
-                    &self.last_transport,
-                    &locator,
-                    &self.model,
-                    &self.language,
-                )
-                .await?;
-                state.transcript_rx = Some(rx);
-                state.v2_handle = Some(handle);
+            let mut state = self.state.lock().await;
+            state.running = true;
+            state.buffered.clear();
+            if let Some(old) = state.v2_handle.take() {
+                old.stop().await;
             }
+            if stt_uses_v2_streaming(self.transport) {
+                let (tx, rx) = mpsc::unbounded_channel();
+                state.transcript_tx = Some(tx);
+                state.transcript_rx = Some(rx);
+                if let Err(err) = self.open_v2_stream(&mut state).await {
+                    state.running = false;
+                    return Err(err);
+                }
+            } else {
+                state.transcript_rx = None;
+            }
+        }
+        #[cfg(not(feature = "live"))]
+        {
+            let mut state = self.state.lock().await;
+            state.running = true;
+            state.buffered.clear();
+            state.transcript_rx = None;
         }
         Ok(())
     }
@@ -147,6 +210,7 @@ impl SttProvider for GoogleStt {
         state.transcript_rx = None;
         #[cfg(feature = "live")]
         {
+            state.transcript_tx = None;
             if let Some(handle) = state.v2_handle.take() {
                 handle.stop().await;
             }
@@ -161,10 +225,15 @@ impl SttProvider for GoogleStt {
         }
         #[cfg(feature = "live")]
         if stt_uses_v2_streaming(self.transport) {
+            // The previous utterance's stream is spent after its finalize: the next utterance
+            // opens a new one on the same client.
+            if state.v2_handle.as_ref().is_none_or(|h| h.is_spent()) {
+                self.open_v2_stream(&mut state).await?;
+            }
             if let Some(handle) = &state.v2_handle {
                 handle.push_audio(pcm).await?;
-                return Ok(());
             }
+            return Ok(());
         }
         state.buffered.extend_from_slice(pcm.as_ref());
         Ok(())
@@ -180,6 +249,15 @@ impl SttProvider for GoogleStt {
                 return Ok(Some(t));
             }
         }
+        #[cfg(feature = "live")]
+        {
+            if let Some(handle) = &state.v2_handle {
+                handle.take_error()?;
+            }
+            if let Some(message) = self.rest_error.lock().ok().and_then(|mut g| g.take()) {
+                return Err(SpeechError::Stt(message));
+            }
+        }
         Ok(None)
     }
 
@@ -191,7 +269,9 @@ impl SttProvider for GoogleStt {
                     let state = self.state.lock().await;
                     state.v2_handle.clone()
                 } {
-                    handle.finalize_stream().await?;
+                    handle
+                        .finalize_stream(std::time::Duration::from_millis(self.finalize_wait_ms()))
+                        .await?;
                     return Ok(());
                 }
             }
@@ -211,19 +291,31 @@ impl SttProvider for GoogleStt {
             let http = self.http.clone();
             let transport = self.last_transport.clone();
             let url_override = self.rest_url_override.clone();
+            let api_key = self.api_key.clone();
+            let model = self.model.clone();
+            let rest_error = self.rest_error.clone();
             let (tx, rx) = mpsc::unbounded_channel();
             tokio::spawn(async move {
                 let result = stt_live::v1_recognize(
                     &http,
                     &transport,
                     url_override.as_deref(),
+                    api_key.as_deref(),
                     pcm,
                     &language,
+                    &model,
                 )
                 .await;
-                if let Ok(text) = result {
-                    if !text.trim().is_empty() {
-                        let _ = tx.send(SttTranscript::Final(text));
+                match result {
+                    Ok(text) => {
+                        if !text.trim().is_empty() {
+                            let _ = tx.send(SttTranscript::Final(text));
+                        }
+                    }
+                    Err(err) => {
+                        if let Ok(mut slot) = rest_error.lock() {
+                            *slot = Some(format!("google stt: speech:recognize failed: {err}"));
+                        }
                     }
                 }
             });
@@ -273,21 +365,5 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(stt.emits_partials(), cfg!(feature = "live"));
-    }
-
-    #[test]
-    fn chirp_requires_v2_locator() {
-        assert!(matches!(
-            GoogleStt::new(&SttConfig {
-                provider: SttVendor::Google,
-                model: Some("chirp_3".into()),
-                model_path: None,
-                language: Some("en-US".into()),
-                api_key: None,
-                endpoint: None,
-                transport: None,
-            }),
-            Err(SpeechError::Config(_))
-        ));
     }
 }

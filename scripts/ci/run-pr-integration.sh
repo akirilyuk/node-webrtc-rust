@@ -110,7 +110,7 @@ if suite_enabled rust; then
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-openai" -- \
     cargo test -p node-webrtc-rust-vendor-openai --features live --lib --test vendor_test --test http_pool_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-google" -- \
-    cargo test -p node-webrtc-rust-vendor-google --features live --lib --test vendor_test --test http_pool_test
+    cargo test -p node-webrtc-rust-vendor-google --features live --lib --test vendor_test --test http_pool_test --test mock_server_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-aws" -- \
     cargo test -p node-webrtc-rust-vendor-aws --features live --lib --test mock_server_test --test vendor_test
   # Shared live-test/bench support: unit tests, the VAD gate test, and the workflow lockstep guard

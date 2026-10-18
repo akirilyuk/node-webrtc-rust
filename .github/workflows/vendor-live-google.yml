@@ -1,0 +1,93 @@
+name: Vendor live — Google
+
+# Runs the Google live tests (crates/vendor-google/tests/live_test.rs) against the real APIs, on
+# both credential paths. The repo secrets are mapped to the library's env vars:
+#   GOOGLE_LIVE_API_KEY              -> GOOGLE_API_KEY (REST: latest_long, Neural2)
+#   GOOGLE_LIVE_PROJECT_ID           -> GOOGLE_CLOUD_PROJECT
+#   GOOGLE_LIVE_SERVICE_ACCOUNT_JSON -> a file under $RUNNER_TEMP, GOOGLE_APPLICATION_CREDENTIALS
+#                                       points at it (gRPC: V2 chirp_3, Chirp 3 HD streaming)
+#
+# Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
+# runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
+# from branches of this repo and manual dispatches run the job.
+#
+# A missing secret fails the job (first step, and GOOGLE_LIVE_REQUIRED=1 / GOOGLE_SA_LIVE_REQUIRED=1
+# make the tests panic instead of skipping), so a skipped live test can never show green.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/vendor-google/**'
+      - 'crates/vendor-live-support/**'
+      - '.github/workflows/vendor-live-google.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read # pull the ci-build image from GHCR
+
+concurrency:
+  group: vendor-live-google-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: Google live
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
+    # ci-run-integration-tests docker run).
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write the service account file
+        shell: bash
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_LIVE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            umask 077
+            printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gcp-sa.json"
+            chmod 600 "$RUNNER_TEMP/gcp-sa.json"
+            echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-sa.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Require the Google API key, project and service account
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_LIVE_API_KEY }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_LIVE_PROJECT_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_LIVE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          empty=""
+          if [ -z "$GOOGLE_API_KEY" ]; then
+            empty="$empty GOOGLE_LIVE_API_KEY"
+          fi
+          if [ -z "$GOOGLE_CLOUD_PROJECT" ]; then
+            empty="$empty GOOGLE_LIVE_PROJECT_ID"
+          fi
+          if [ -z "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            empty="$empty GOOGLE_LIVE_SERVICE_ACCOUNT_JSON"
+          fi
+          if [ -n "$empty" ]; then
+            echo "::error::empty secrets:$empty"
+            exit 1
+          fi
+
+      - name: Google live tests
+        shell: bash
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_LIVE_API_KEY }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_LIVE_PROJECT_ID }}
+          GOOGLE_LIVE_REQUIRED: '1'
+          GOOGLE_SA_LIVE_REQUIRED: '1'
+        run: |
+          cargo test -p node-webrtc-rust-vendor-google --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'google_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status

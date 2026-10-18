@@ -8,7 +8,6 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use node_webrtc_rust_speech::config::SttConfig;
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
 /// TCP connect bound of the pooled REST client (`infra.unbounded-external-wait`).
@@ -64,33 +63,78 @@ pub fn stt_uses_v2_streaming(transport: SttDefaultTransport) -> bool {
     matches!(transport, SttDefaultTransport::V2StreamingRecognize)
 }
 
-/// Resolve V2 recognizer path from `SttConfig.endpoint` (`projects/…/locations/…/recognizers/…`)
-/// or `GOOGLE_CLOUD_PROJECT`, `GOOGLE_SPEECH_LOCATION`, `GOOGLE_SPEECH_RECOGNIZER`.
-pub fn parse_v2_locator(config: &SttConfig) -> Option<GoogleSttV2Locator> {
-    if let Some(endpoint) = config
-        .endpoint
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if let Some(loc) = parse_recognizer_resource(endpoint) {
-            return Some(loc);
+/// Location used when none is configured. Chirp 3 page: "Chirp 3 is available in the following
+/// Google Cloud regions, with more planned: `us (multi-region)` GA, `eu (multi-region)` GA". The
+/// recognizers page documents `projects/{PROJECT_ID}/locations/global/recognizers/_` for other
+/// models, but `global` is not a Chirp 3 location, so the default is `us`.
+pub const DEFAULT_V2_LOCATION: &str = "us";
+/// The recognizer id for a request without a stored recognizer. Recognizers page: "Recognizers
+/// are optional in recognition requests. To make a request without a recognizer, use the
+/// recognizer resource ID `_` in the location you are making a request." The model and language
+/// travel in the inline `config` of the first `StreamingRecognizeRequest`.
+pub const IMPLICIT_RECOGNIZER: &str = "_";
+
+/// Resolves the V2 recognizer for a streaming model, from `endpoint`
+/// (`projects/{p}/locations/{l}/recognizers/{r}`) or the env names below (read through `env`).
+///
+/// - `GOOGLE_CLOUD_PROJECT` (required without an endpoint)
+/// - `GOOGLE_SPEECH_LOCATION` (default [`DEFAULT_V2_LOCATION`])
+/// - `GOOGLE_SPEECH_RECOGNIZER` (default [`IMPLICIT_RECOGNIZER`])
+///
+/// `Ok(None)` for models that do not stream through V2.
+pub(crate) fn resolve_v2_locator(
+    model: &str,
+    endpoint: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<GoogleSttV2Locator>, String> {
+    if !stt_uses_v2_streaming(stt_default_transport(model)?) {
+        return Ok(None);
+    }
+    let value = |name: &str| {
+        env(name)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(endpoint) = endpoint.map(str::trim).filter(|s| !s.is_empty()) {
+        return parse_recognizer_resource(endpoint).map(Some).ok_or_else(|| {
+            format!(
+                "Google STT endpoint must be projects/{{project}}/locations/{{location}}/recognizers/{{recognizer}}; see {STT_V2_RECOGNIZER_DOC}"
+            )
+        });
+    }
+    let project = value("GOOGLE_CLOUD_PROJECT").ok_or_else(|| {
+        format!(
+            "Google STT model `{model}` streams through V2 and needs a project: set \
+             GOOGLE_CLOUD_PROJECT (or stt.endpoint = projects/…/locations/…/recognizers/…). \
+             See {STT_V2_RECOGNIZER_DOC} and {STT_V2_STREAMING_DOC}"
+        )
+    })?;
+    Ok(Some(GoogleSttV2Locator {
+        project,
+        location: value("GOOGLE_SPEECH_LOCATION").unwrap_or_else(|| DEFAULT_V2_LOCATION.into()),
+        recognizer: value("GOOGLE_SPEECH_RECOGNIZER").unwrap_or_else(|| IMPLICIT_RECOGNIZER.into()),
+    }))
+}
+
+impl GoogleSttV2Locator {
+    /// `projects/{project}/locations/{location}/recognizers/{recognizer}`.
+    pub fn resource_name(&self) -> String {
+        format!(
+            "projects/{}/locations/{}/recognizers/{}",
+            self.project, self.location, self.recognizer
+        )
+    }
+
+    /// gRPC endpoint for the location. Streaming guide: "us-speech.googleapis.com for us"; the
+    /// regional endpoints page lists `https://eu-speech.googleapis.com` and
+    /// `https://us-speech.googleapis.com`. `global` uses the default endpoint (`None`).
+    pub fn endpoint(&self) -> Option<String> {
+        if self.location == "global" {
+            None
+        } else {
+            Some(format!("https://{}-speech.googleapis.com", self.location))
         }
     }
-    let project = std::env::var("GOOGLE_CLOUD_PROJECT")
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    let location = std::env::var("GOOGLE_SPEECH_LOCATION")
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    let recognizer = std::env::var("GOOGLE_SPEECH_RECOGNIZER")
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    Some(GoogleSttV2Locator {
-        project,
-        location,
-        recognizer,
-    })
 }
 
 fn parse_recognizer_resource(path: &str) -> Option<GoogleSttV2Locator> {
@@ -110,24 +154,6 @@ fn parse_recognizer_resource(path: &str) -> Option<GoogleSttV2Locator> {
     None
 }
 
-pub fn require_v2_locator_for_streaming(
-    model: &str,
-    locator: &Option<GoogleSttV2Locator>,
-) -> Result<(), String> {
-    if !stt_uses_v2_streaming(stt_default_transport(model)?) {
-        return Ok(());
-    }
-    if locator.is_some() {
-        return Ok(());
-    }
-    Err(format!(
-        "Google STT model `{model}` requires V2 StreamingRecognize with a recognizer \
-         (set stt.endpoint to projects/…/locations/…/recognizers/… or \
-         GOOGLE_CLOUD_PROJECT, GOOGLE_SPEECH_LOCATION, GOOGLE_SPEECH_RECOGNIZER). \
-         See {STT_V2_RECOGNIZER_DOC} and {STT_V2_STREAMING_DOC}"
-    ))
-}
-
 /// Streaming Cloud TTS is only compatible with Chirp 3 HD voice names (doc quickstart).
 pub fn voice_supports_streaming_synthesize(voice: &str) -> bool {
     voice.contains("Chirp3-HD")
@@ -140,8 +166,6 @@ pub fn default_stt_model() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use node_webrtc_rust_speech::config::SttVendor;
-
     #[test]
     fn chirp_uses_v2_streaming() {
         assert_eq!(
@@ -178,15 +202,80 @@ mod tests {
         assert_eq!(loc.recognizer, "my-rec");
     }
 
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| (*v).to_string())
+        }
+    }
+
     #[test]
-    fn streaming_model_requires_locator() {
-        assert!(require_v2_locator_for_streaming("chirp_3", &None).is_err());
-        let loc = GoogleSttV2Locator {
-            project: "p".into(),
-            location: "us".into(),
-            recognizer: "r".into(),
-        };
-        assert!(require_v2_locator_for_streaming("chirp_3", &Some(loc)).is_ok());
+    fn implicit_recognizer_defaults_to_the_chirp_3_location() {
+        let loc = resolve_v2_locator("chirp_3", None, env(&[("GOOGLE_CLOUD_PROJECT", "proj")]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loc.resource_name(),
+            "projects/proj/locations/us/recognizers/_"
+        );
+        assert_eq!(
+            loc.endpoint().as_deref(),
+            Some("https://us-speech.googleapis.com")
+        );
+    }
+
+    #[test]
+    fn env_overrides_location_and_recognizer() {
+        let loc = resolve_v2_locator(
+            "chirp_3",
+            None,
+            env(&[
+                ("GOOGLE_CLOUD_PROJECT", "proj"),
+                ("GOOGLE_SPEECH_LOCATION", "eu"),
+                ("GOOGLE_SPEECH_RECOGNIZER", "mine"),
+            ]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            loc.resource_name(),
+            "projects/proj/locations/eu/recognizers/mine"
+        );
+        assert_eq!(
+            loc.endpoint().as_deref(),
+            Some("https://eu-speech.googleapis.com")
+        );
+    }
+
+    #[test]
+    fn endpoint_wins_over_env_and_global_uses_the_default_endpoint() {
+        let loc = resolve_v2_locator(
+            "chirp_3",
+            Some("projects/p/locations/global/recognizers/r"),
+            env(&[("GOOGLE_CLOUD_PROJECT", "other")]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(loc.project, "p");
+        assert_eq!(loc.endpoint(), None);
+    }
+
+    #[test]
+    fn missing_project_is_a_named_error() {
+        let err = resolve_v2_locator("chirp_3", None, env(&[])).unwrap_err();
+        assert!(err.contains("GOOGLE_CLOUD_PROJECT"), "{err}");
+        assert!(err.contains("chirp_3"), "{err}");
+    }
+
+    #[test]
+    fn malformed_endpoint_is_an_error_and_v1_models_need_no_locator() {
+        assert!(resolve_v2_locator("chirp_3", Some("nonsense"), env(&[])).is_err());
+        assert_eq!(
+            resolve_v2_locator("latest_long", None, env(&[])).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -197,21 +286,6 @@ mod tests {
                 "missing row for `{model}`"
             );
         }
-    }
-
-    #[test]
-    fn parse_v2_from_stt_config_endpoint() {
-        let config = SttConfig {
-            provider: SttVendor::Google,
-            model: Some("chirp_3".into()),
-            model_path: None,
-            language: Some("en-US".into()),
-            api_key: None,
-            endpoint: Some("projects/p/locations/eu/recognizers/_".into()),
-            transport: None,
-        };
-        let loc = parse_v2_locator(&config).expect("locator");
-        assert_eq!(loc.location, "eu");
     }
 }
 

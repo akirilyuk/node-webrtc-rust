@@ -19,6 +19,7 @@ use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
 };
 use node_webrtc_rust_vendor_cartesia::CartesiaFactory;
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -1129,4 +1130,16 @@ async fn missing_voice_is_a_config_error_before_any_request() {
         }
         assert_eq!(mock.ws_count() + mock.rest_count(), 0);
     }
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of 48 kHz mono from `/tts/bytes` is 1000 ms and
+/// 192000 bytes of 48 kHz stereo.
+#[tokio::test]
+async fn one_second_of_source_audio_is_one_second_of_48k_stereo() {
+    let mock = Mock::start(None, rest_ok(96_000)).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_chunks_match_source("cartesia_http", &chunks, 1000);
+    assert_chunks_match_source("cartesia_http_sink", &sunk, 1000);
+    assert_eq!(sink_bytes(&chunks), 192_000);
 }

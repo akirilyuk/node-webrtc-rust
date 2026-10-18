@@ -19,6 +19,7 @@ use node_webrtc_rust_vendor_groq::{GroqStt, GroqTts};
 use node_webrtc_rust_vendor_live_support::http_mock::{
     chunked_head, pcm_16bit_mono, script, wav_16bit_mono, write_chunk, MockHttp, Reply,
 };
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
@@ -178,25 +179,29 @@ async fn header_and_samples_split_at_odd_byte_boundaries_stay_sample_aligned() {
     assert_eq!(left, pcm);
 }
 
+/// Catalog `audio.sample-rate-mismatch`: 1 s of WAV at any documented rate is about 1000 ms and
+/// 192000 bytes of 48 kHz stereo.
 #[tokio::test]
-async fn a_24k_wav_is_repeated_to_48k_with_its_real_duration() {
-    let wav = wav_16bit_mono(24_000, 200);
-    let mock = MockHttp::start(Reply::ok("audio/wav", wav)).await;
-    let chunks = tts(&mock).synthesize("hello").await.unwrap();
-    let ms: u32 = chunks.iter().map(|c| c.duration_ms).sum();
-    // Each chunk's duration is floored to whole milliseconds.
-    assert!((200 - chunks.len() as u32..=200).contains(&ms), "{ms} ms");
-    // 200 ms at 48 kHz stereo s16le.
-    assert_eq!(bytes_of(&chunks), 48_000 * 200 / 1000 * 4);
+async fn one_second_of_wav_is_one_second_of_48k_stereo_at_every_rate() {
+    for rate in [8_000, 16_000, 22_050, 24_000, 44_100, 48_000] {
+        let mock = MockHttp::start(Reply::ok("audio/wav", wav_16bit_mono(rate, 1000))).await;
+        let chunks = tts(&mock).synthesize("hello").await.unwrap();
+        assert_chunks_match_source(&format!("groq_{rate}"), &chunks, 1000);
+        let bytes = bytes_of(&chunks);
+        assert!(
+            (191_000..=193_000).contains(&bytes),
+            "{rate} Hz: {bytes} bytes"
+        );
+    }
 }
 
 #[tokio::test]
-async fn a_sample_rate_that_does_not_divide_48k_is_a_named_error() {
-    let mock = MockHttp::start(Reply::ok("audio/wav", wav_16bit_mono(22_050, 100))).await;
+async fn a_sample_rate_outside_8k_to_48k_is_a_named_error() {
+    let mock = MockHttp::start(Reply::ok("audio/wav", wav_16bit_mono(96_000, 100))).await;
     match tts(&mock).synthesize("hello").await {
         Err(SpeechError::Vendor { message, .. }) => {
             assert!(
-                message.contains("22050 Hz does not divide 48000"),
+                message.contains("unsupported TTS sample rate 96000"),
                 "{message}"
             )
         }

@@ -4,9 +4,7 @@ use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 #[cfg(feature = "live")]
-use node_webrtc_rust_speech::pcm::{
-    duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
-};
+use node_webrtc_rust_speech::pcm::{duration_ms_from_stereo_48k, MonoToStereo48k};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 #[cfg(feature = "live")]
@@ -155,6 +153,7 @@ impl GroqTts {
             }
 
             let mut wav = WavStream::new();
+            let mut resampler: Option<MonoToStereo48k> = None;
             let mut out: Vec<TtsAudioChunk> = Vec::new();
             // An odd trailing byte of one body chunk is the first half of the next sample.
             let mut carry: Option<u8> = None;
@@ -192,11 +191,28 @@ impl GroqTts {
                     continue;
                 }
                 let rate = wav.rate().expect("rate is known once data bytes arrive");
-                let audio = agent_chunk(&bytes, rate).map_err(vendor_err)?;
-                if let Some(s) = sink {
-                    let _ = s.send(audio.clone());
+                let up = match resampler.as_mut() {
+                    Some(up) => up,
+                    None => resampler.insert(
+                        MonoToStereo48k::new(rate)
+                            .map_err(|err| vendor_err(format!("Groq TTS WAV: {err}")))?,
+                    ),
+                };
+                if let Some(audio) = audio_chunk(up.push(&bytes)) {
+                    if let Some(s) = sink {
+                        let _ = s.send(audio.clone());
+                    }
+                    out.push(audio);
                 }
-                out.push(audio);
+            }
+            // The body ended normally: flush the interpolator's held last sample.
+            if !sink.is_some_and(TtsProgressiveSink::is_cancelled) {
+                if let Some(audio) = resampler.as_mut().and_then(|up| audio_chunk(up.finish())) {
+                    if let Some(s) = sink {
+                        let _ = s.send(audio.clone());
+                    }
+                    out.push(audio);
+                }
             }
             if out.is_empty() {
                 return Err(vendor_err(if wav.in_data() {
@@ -226,29 +242,16 @@ fn vendor_err(message: impl Into<String>) -> SpeechError {
     }
 }
 
-/// Mono s16le at `rate` Hz as the agent's 48 kHz stereo. Rates that divide 48 kHz are repeated
-/// sample by sample (no resampler exists in this workspace for TTS); any other rate is refused.
+/// 48 kHz stereo bytes as a sink chunk; `None` for no bytes.
 #[cfg(feature = "live")]
-fn agent_chunk(mono: &[u8], rate: u32) -> Result<TtsAudioChunk, String> {
-    if rate == 0 || !WEBRTC_PCM_SAMPLE_RATE.is_multiple_of(rate) {
-        return Err(format!(
-            "Groq TTS WAV sample rate {rate} Hz does not divide 48000 Hz"
-        ));
+fn audio_chunk(stereo: Vec<u8>) -> Option<TtsAudioChunk> {
+    if stereo.is_empty() {
+        return None;
     }
-    let factor = (WEBRTC_PCM_SAMPLE_RATE / rate) as usize;
-    let duration_ms = duration_ms_from_mono_s16le(mono.len(), rate);
-    let pcm = if factor == 1 {
-        mono_s16le_to_stereo(mono)
-    } else {
-        let mut stretched = Vec::with_capacity(mono.len() * factor);
-        for sample in mono.as_chunks::<2>().0 {
-            for _ in 0..factor {
-                stretched.extend_from_slice(sample);
-            }
-        }
-        mono_s16le_to_stereo(&stretched)
-    };
-    Ok(TtsAudioChunk { pcm, duration_ms })
+    Some(TtsAudioChunk {
+        duration_ms: duration_ms_from_stereo_48k(stereo.len()),
+        pcm: bytes::Bytes::from(stereo),
+    })
 }
 
 #[cfg(test)]

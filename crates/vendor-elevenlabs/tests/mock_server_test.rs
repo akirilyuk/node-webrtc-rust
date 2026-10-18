@@ -23,6 +23,7 @@ use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
 };
 use node_webrtc_rust_vendor_elevenlabs::{ElevenLabsFactory, ElevenLabsTts};
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -1219,4 +1220,46 @@ async fn http_stream_with_odd_chunk_sizes_stays_sample_aligned() {
     let sink_total: usize = sunk.iter().map(|c| c.pcm.len()).sum();
     let returned_total: usize = chunks.iter().map(|c| c.pcm.len()).sum();
     assert_eq!(sink_total, returned_total);
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of `pcm_48000` mono is 1000 ms and 192000 bytes of
+/// 48 kHz stereo, on the HTTP stream and the WebSocket.
+#[tokio::test]
+async fn one_second_of_source_audio_is_one_second_of_48k_stereo() {
+    let mock = Mock::start(
+        script(|mut stream| async move {
+            write_chunked_head(&mut stream).await;
+            for fill in 0..100u8 {
+                write_chunk(&mut stream, &vec![fill | 1; CHUNK_BYTES]).await;
+            }
+            write_chunked_end(&mut stream).await;
+        }),
+        vec![7u8; CHUNK_BYTES],
+    )
+    .await;
+    let mut rig = sink_rig();
+    let chunks = mock
+        .provider(None)
+        .synthesize_progressive("hello", Some(rig.sink.clone()))
+        .await
+        .unwrap();
+    assert_chunks_match_source("elevenlabs_http", &chunks, 1000);
+    assert_chunks_match_source("elevenlabs_http_sink", &drain(&mut rig.rx), 1000);
+
+    let mock = Mock::start_ws(ws_script(|mut ws| async move {
+        for fill in 0..100u8 {
+            ws.send(audio_msg(fill | 1)).await.unwrap();
+        }
+        ws.send(final_msg()).await.unwrap();
+        let _ = ws.close(None).await;
+    }))
+    .await;
+    let mut rig = sink_rig();
+    let chunks = mock
+        .elevenlabs()
+        .synthesize_websocket_stream("hello", Some(rig.sink.clone()))
+        .await
+        .unwrap();
+    assert_chunks_match_source("elevenlabs_ws", &chunks, 1000);
+    assert_chunks_match_source("elevenlabs_ws_sink", &drain(&mut rig.rx), 1000);
 }

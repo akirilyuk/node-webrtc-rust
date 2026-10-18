@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 #[cfg(feature = "live")]
-use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo};
+use node_webrtc_rust_speech::pcm::{duration_ms_from_stereo_48k, MonoToStereo48k};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 use crate::matrix::{default_tts_voice, validate_tts_voice};
@@ -154,6 +154,7 @@ impl AwsTts {
             }
 
             let mut out: Vec<TtsAudioChunk> = Vec::new();
+            let mut up = MonoToStereo48k::new(POLLY_PCM_RATE)?;
             // An odd trailing byte of one body chunk is the first half of the next sample.
             let mut carry: Option<u8> = None;
             loop {
@@ -188,11 +189,20 @@ impl AwsTts {
                 if bytes.is_empty() {
                     continue;
                 }
-                let audio = agent_chunk(&bytes);
-                if let Some(s) = sink {
-                    let _ = s.send(audio.clone());
+                if let Some(audio) = audio_chunk(up.push(&bytes)) {
+                    if let Some(s) = sink {
+                        let _ = s.send(audio.clone());
+                    }
+                    out.push(audio);
                 }
-                out.push(audio);
+            }
+            if !sink.is_some_and(TtsProgressiveSink::is_cancelled) {
+                if let Some(audio) = audio_chunk(up.finish()) {
+                    if let Some(s) = sink {
+                        let _ = s.send(audio.clone());
+                    }
+                    out.push(audio);
+                }
             }
             if out.is_empty() {
                 return Err(vendor_err("Polly returned no audio"));
@@ -218,20 +228,17 @@ fn vendor_err(message: impl Into<String>) -> SpeechError {
     }
 }
 
-/// 16 kHz mono s16le (Polly `pcm` only allows 8000 and 16000 Hz) as the agent's 48 kHz stereo.
-/// Each sample is repeated three times; no resampler exists in this workspace for TTS.
+/// 48 kHz stereo bytes as a sink chunk; `None` for no bytes. Polly `pcm` only allows 8000 and
+/// 16000 Hz, so the 16 kHz stream is interpolated to 48 kHz by [`MonoToStereo48k`].
 #[cfg(feature = "live")]
-fn agent_chunk(mono_16k: &[u8]) -> TtsAudioChunk {
-    let mut stretched = Vec::with_capacity(mono_16k.len() * 3);
-    for sample in mono_16k.as_chunks::<2>().0 {
-        for _ in 0..3 {
-            stretched.extend_from_slice(sample);
-        }
+fn audio_chunk(stereo: Vec<u8>) -> Option<TtsAudioChunk> {
+    if stereo.is_empty() {
+        return None;
     }
-    TtsAudioChunk {
-        duration_ms: duration_ms_from_mono_s16le(mono_16k.len(), POLLY_PCM_RATE),
-        pcm: mono_s16le_to_stereo(&stretched),
-    }
+    Some(TtsAudioChunk {
+        duration_ms: duration_ms_from_stereo_48k(stereo.len()),
+        pcm: bytes::Bytes::from(stereo),
+    })
 }
 
 #[cfg(feature = "live")]

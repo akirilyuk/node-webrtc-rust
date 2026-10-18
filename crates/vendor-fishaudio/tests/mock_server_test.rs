@@ -24,6 +24,7 @@ use node_webrtc_rust_speech::pipeline::{
 };
 use node_webrtc_rust_vendor_fishaudio::__test::Client;
 use node_webrtc_rust_vendor_fishaudio::FishAudioFactory;
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -1063,4 +1064,32 @@ async fn auto_transport_is_the_catalog_default_http() {
     assert_eq!(mock.http_hits(), 1);
     assert_eq!(mock.ws_hits(), 0);
     assert_eq!(tts.last_transport().as_deref(), Some("http/1.1"));
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of 24 kHz mono (48000 bytes) is 1000 ms and 192000
+/// bytes of 48 kHz stereo.
+#[tokio::test]
+async fn one_second_of_source_audio_is_one_second_of_48k_stereo() {
+    let http: HttpHandler = Box::new(|mut req| {
+        Box::pin(async move {
+            write_chunked_head(&mut req.stream).await;
+            for seed in 0..50u8 {
+                write_chunk(&mut req.stream, &pcm(960, seed)).await;
+            }
+            write_chunked_end(&mut req.stream).await;
+        })
+    });
+    let mock = Mock::start(None, Some(http)).await;
+    let (sink, mut rx, _cancel) = sink();
+    let chunks = within(
+        provider(&mock.endpoint(), Some("voice-1")).synthesize_progressive("hello", Some(sink)),
+    )
+    .await
+    .unwrap();
+    assert_chunks_match_source("fishaudio_http", &chunks, 1000);
+    let mut sunk = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        sunk.push(chunk);
+    }
+    assert_chunks_match_source("fishaudio_http_sink", &sunk, 1000);
 }

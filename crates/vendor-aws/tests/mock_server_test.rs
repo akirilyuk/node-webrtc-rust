@@ -12,8 +12,9 @@ use node_webrtc_rust_speech::error::SpeechError;
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 use node_webrtc_rust_vendor_aws::AwsTts;
 use node_webrtc_rust_vendor_live_support::http_mock::{
-    chunked_head, script, write_chunk, MockHttp, Reply,
+    chunked_head, pcm_16bit_mono, script, write_chunk, MockHttp, Reply,
 };
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
@@ -91,8 +92,16 @@ async fn audio_stream_reaches_the_sink_before_the_response_ends() {
         .await
         .expect("no chunk before the body ended")
         .expect("first chunk");
-    assert_eq!(first.pcm[0], 1);
-    assert_eq!(first.duration_ms, 20);
+    assert_eq!(
+        first.pcm[0], 1,
+        "the first output sample is the first source sample"
+    );
+    // 320 source samples give 319 x 3 interpolated frames now; the held last sample comes at the end.
+    assert!(
+        (19..=20).contains(&first.duration_ms),
+        "{}",
+        first.duration_ms
+    );
     assert!(!call.is_finished(), "the call must still be running");
     go_tx.send(()).unwrap();
 
@@ -101,9 +110,13 @@ async fn audio_stream_reaches_the_sink_before_the_response_ends() {
         .expect("call timed out")
         .unwrap()
         .expect("synthesize failed");
-    let second = rx.recv().await.expect("second chunk");
-    assert_eq!(second.pcm[0], 2);
-    assert!(rx.try_recv().is_err(), "each chunk exactly once");
+    let mut sunk = vec![first];
+    while let Ok(chunk) = rx.try_recv() {
+        sunk.push(chunk);
+    }
+    assert!(sunk.len() >= 2, "both body chunks reached the sink");
+    let sink_bytes: usize = bytes_of(&sunk);
+    assert_eq!(sink_bytes, bytes_of(&chunks), "each chunk exactly once");
     // 16 kHz mono becomes 48 kHz stereo: x3 samples, x2 channels.
     assert_eq!(bytes_of(&chunks), 2 * CHUNK_BYTES * 6);
     assert_eq!(mock.requests(), 1);
@@ -133,8 +146,9 @@ async fn odd_chunk_sizes_stay_sample_aligned_and_in_order() {
     let sunk = drain(&mut rx);
     assert_eq!(bytes_of(&sunk), pcm.len() * 6);
     assert_eq!(bytes_of(&returned), bytes_of(&sunk), "one send path");
-    assert!(sunk.iter().all(|c| c.pcm.len() % 12 == 0), "sample aligned");
-    // Each mono sample appears three times per channel, in order.
+    assert!(sunk.iter().all(|c| c.pcm.len() % 4 == 0), "frame aligned");
+    // Position 0 of each source interval is exact, so every third output frame is a source
+    // sample, in order; the last sample is held through the tail.
     let stereo: Vec<u8> = sunk.iter().flat_map(|c| c.pcm.to_vec()).collect();
     let left: Vec<u8> = stereo
         .as_chunks::<4>()
@@ -142,13 +156,21 @@ async fn odd_chunk_sizes_stay_sample_aligned_and_in_order() {
         .iter()
         .flat_map(|s| [s[0], s[1]])
         .collect();
-    let expect: Vec<u8> = pcm
+    let source: Vec<i16> = pcm
         .as_chunks::<2>()
         .0
         .iter()
-        .flat_map(|s| [s[0], s[1], s[0], s[1], s[0], s[1]])
+        .map(|b| i16::from_le_bytes(*b))
         .collect();
-    assert_eq!(left, expect);
+    assert_eq!(left.len(), source.len() * 3 * 2);
+    let anchors: Vec<i16> = left
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b))
+        .step_by(3)
+        .collect();
+    assert_eq!(anchors, source);
 }
 
 #[tokio::test]
@@ -248,4 +270,16 @@ async fn a_stream_that_stalls_after_audio_is_an_error() {
         other => panic!("{other:?}"),
     }
     assert_eq!(drain(&mut rig.rx).len(), 1);
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of 16 kHz mono from Polly is about 1000 ms and
+/// 192000 bytes of 48 kHz stereo (before the fix it was 64000 bytes played as 48 kHz, three
+/// times too fast).
+#[tokio::test]
+async fn one_second_of_16k_pcm_is_one_second_of_48k_stereo() {
+    let mock = MockHttp::start(Reply::ok("audio/pcm", pcm_16bit_mono(16_000, 1000))).await;
+    let chunks = tts(&mock).synthesize("hello").await.unwrap();
+    assert_chunks_match_source("aws", &chunks, 1000);
+    let bytes = bytes_of(&chunks);
+    assert!((191_000..=193_000).contains(&bytes), "{bytes} bytes");
 }

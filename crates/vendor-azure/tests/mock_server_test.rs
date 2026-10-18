@@ -19,6 +19,7 @@ use node_webrtc_rust_vendor_azure::{AzureStt, AzureTts};
 use node_webrtc_rust_vendor_live_support::http_mock::{
     chunked_head, pcm_16bit_mono, script, write_chunk, MockHttp, Reply,
 };
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
@@ -360,4 +361,14 @@ async fn stt_no_speech_statuses_are_no_final_and_no_error() {
             "{status}"
         );
     }
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of `raw-48khz-16bit-mono-pcm` is 1000 ms and
+/// 192000 bytes of 48 kHz stereo.
+#[tokio::test]
+async fn one_second_of_48k_pcm_is_one_second_of_48k_stereo() {
+    let mock = MockHttp::start(Reply::ok("audio/basic", pcm_16bit_mono(48_000, 1000))).await;
+    let chunks = tts(&mock).synthesize("hello").await.unwrap();
+    assert_chunks_match_source("azure", &chunks, 1000);
+    assert_eq!(bytes_of(&chunks), 192_000);
 }

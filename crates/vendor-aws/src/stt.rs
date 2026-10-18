@@ -34,6 +34,8 @@ struct AwsSttInner {
     pcm_tx: Option<mpsc::UnboundedSender<Bytes>>,
     transcript_rx: Option<mpsc::UnboundedReceiver<SttItem>>,
     reader_task: Option<tokio::task::JoinHandle<()>>,
+    /// Results already taken off the stream (by a finalize or a stream switch), polled first.
+    pending: std::collections::VecDeque<SttItem>,
 }
 
 impl AwsStt {
@@ -51,6 +53,7 @@ impl AwsStt {
                 pcm_tx: None,
                 transcript_rx: None,
                 reader_task: None,
+                pending: std::collections::VecDeque::new(),
             })),
             #[cfg(feature = "live")]
             client: tokio::sync::OnceCell::new(),
@@ -70,58 +73,11 @@ impl SttProvider for AwsStt {
     }
 
     async fn start(&mut self) -> SpeechResult<()> {
+        self.stop().await?;
         #[cfg(feature = "live")]
         {
-            use aws_sdk_transcribestreaming::primitives::event_stream::EventStreamSender;
-            use aws_sdk_transcribestreaming::types::MediaEncoding;
-
-            let language_code = self.language_code.clone();
-            let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<Bytes>();
-            let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttItem>();
-
-            let audio_stream = EventStreamSender::from(PcmAudioStream { rx: pcm_rx });
-
-            let client = self
-                .client
-                .get_or_init(|| async {
-                    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-                        .timeout_config(crate::matrix::transcribe_timeouts())
-                        .load()
-                        .await;
-                    aws_sdk_transcribestreaming::Client::new(&config)
-                })
-                .await;
-            let language = language_code_to_aws(&language_code).map_err(SpeechError::Config)?;
-
-            let response = client
-                .start_stream_transcription()
-                .language_code(language)
-                .media_sample_rate_hertz(16_000)
-                .media_encoding(MediaEncoding::Pcm)
-                .audio_stream(audio_stream)
-                .send()
-                .await
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "aws".into(),
-                    message: err.to_string(),
-                })?;
-
-            if let Ok(mut guard) = self.last_transport.lock() {
-                *guard = Some("h2".into());
-            }
-            let mut transcript_stream = response.transcript_result_stream;
-
-            let reader_task = tokio::spawn(async move {
-                // A stream that ends with an error (reset, service exception, bad frame) is
-                // reported to the next poll; `Ok(None)` is the service closing it normally.
-                while forward_event(&transcript_tx, transcript_stream.recv().await) {}
-            });
-
-            let mut inner = self.state.lock().await;
-            inner.running = true;
-            inner.pcm_tx = Some(pcm_tx);
-            inner.transcript_rx = Some(transcript_rx);
-            inner.reader_task = Some(reader_task);
+            self.open_stream(None).await?;
+            self.state.lock().await.running = true;
             return Ok(());
         }
 
@@ -142,18 +98,35 @@ impl SttProvider for AwsStt {
             task.abort();
         }
         inner.transcript_rx = None;
+        inner.pending.clear();
         Ok(())
     }
 
+    /// Audio after a finalize (or after the service closed the stream) opens a new stream,
+    /// because Transcribe takes one stream per session and a stream that was ended cannot be
+    /// reused. The chunk is queued before the open so the service has audio to read.
     async fn push_audio(&mut self, pcm: Bytes) -> SpeechResult<()> {
-        let inner = self.state.lock().await;
-        if !inner.running {
+        let needs_stream = {
+            let inner = self.state.lock().await;
+            if !inner.running {
+                return Ok(());
+            }
+            !inner
+                .pcm_tx
+                .as_ref()
+                .is_some_and(|tx| tx.send(pcm.clone()).is_ok())
+        };
+        if !needs_stream {
             return Ok(());
         }
-        if let Some(tx) = &inner.pcm_tx {
-            let _ = tx.send(pcm);
+        #[cfg(feature = "live")]
+        {
+            self.open_stream(Some(pcm)).await
         }
-        Ok(())
+        #[cfg(not(feature = "live"))]
+        {
+            Ok(())
+        }
     }
 
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
@@ -161,14 +134,160 @@ impl SttProvider for AwsStt {
         if !inner.running {
             return Ok(None);
         }
-        if let Some(rx) = inner.transcript_rx.as_mut() {
-            return match rx.try_recv() {
-                Ok(Ok(transcript)) => Ok(Some(transcript)),
-                Ok(Err(err)) => Err(err),
-                Err(_) => Ok(None),
-            };
+        let item = match inner.pending.pop_front() {
+            Some(item) => item,
+            None => match inner.transcript_rx.as_mut().map(|rx| rx.try_recv()) {
+                Some(Ok(item)) => item,
+                _ => return Ok(None),
+            },
+        };
+        item.map(Some)
+    }
+
+    /// Ends the utterance by ending the stream. Transcribe documents it: "To end your stream,
+    /// send an empty audio event to Amazon Transcribe. Create the audio event exactly like any
+    /// other, except with an empty payload." (streaming-setting-up, HTTP/2 steps), and "To
+    /// indicate the audio stream is complete, send an end frame (an empty data frame)". Closing
+    /// the input stream makes the SDK send that end frame. The service then returns the
+    /// remaining results, the last one with `IsPartial: false`, and closes its side; those
+    /// results wait for `poll_transcript`. The wait is bounded by [`Self::finalize_wait_ms`] and
+    /// a stream error or a timeout is an `Err`. The stream is spent after this: the next
+    /// `push_audio` opens a new one ("Amazon Transcribe only supports one stream per HTTP/2
+    /// session").
+    async fn finalize_utterance(&mut self) -> SpeechResult<()> {
+        let wait = std::time::Duration::from_millis(self.finalize_wait_ms());
+        let mut inner = self.state.lock().await;
+        if !inner.running {
+            return Ok(());
         }
-        Ok(None)
+        let Some(tx) = inner.pcm_tx.take() else {
+            return Ok(());
+        };
+        let AwsSttInner {
+            transcript_rx,
+            pending,
+            ..
+        } = &mut *inner;
+        let Some(rx) = transcript_rx.as_mut() else {
+            return Ok(());
+        };
+        end_utterance(tx, rx, pending, wait).await
+    }
+}
+
+/// Sends the empty audio event, drops the input (the SDK sends the end frame), and moves every
+/// result into `pending` until the service closes its side. `Err` when a stream error arrived
+/// or when the service did not close in `wait`.
+async fn end_utterance(
+    pcm_tx: mpsc::UnboundedSender<Bytes>,
+    rx: &mut mpsc::UnboundedReceiver<SttItem>,
+    pending: &mut std::collections::VecDeque<SttItem>,
+    wait: std::time::Duration,
+) -> SpeechResult<()> {
+    let _ = pcm_tx.send(Bytes::new());
+    drop(pcm_tx);
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Err(_) => {
+                return Err(SpeechError::Vendor {
+                    vendor: "aws".into(),
+                    message: format!(
+                        "transcribe did not finish the stream within {} ms of the end frame",
+                        wait.as_millis()
+                    ),
+                });
+            }
+            // The service closed the stream: every result was delivered.
+            Ok(None) => return Ok(()),
+            Ok(Some(Ok(transcript))) => pending.push_back(Ok(transcript)),
+            // The error is reported by this call, once; results before it stay queued.
+            Ok(Some(Err(err))) => return Err(err),
+        }
+    }
+}
+
+#[cfg(feature = "live")]
+impl AwsStt {
+    /// Opens a Transcribe stream and installs its channels. `first` is queued before the open.
+    async fn open_stream(&mut self, first: Option<Bytes>) -> SpeechResult<()> {
+        use aws_sdk_transcribestreaming::primitives::event_stream::EventStreamSender;
+        use aws_sdk_transcribestreaming::types::MediaEncoding;
+
+        let language_code = self.language_code.clone();
+        let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttItem>();
+        let lazy = first.is_some();
+        if let Some(first) = first {
+            let _ = pcm_tx.send(first);
+        }
+        let audio_stream = EventStreamSender::from(PcmAudioStream { rx: pcm_rx });
+
+        let client = self
+            .client
+            .get_or_init(|| async {
+                let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                    .timeout_config(crate::matrix::transcribe_timeouts())
+                    .load()
+                    .await;
+                aws_sdk_transcribestreaming::Client::new(&config)
+            })
+            .await;
+        let language = language_code_to_aws(&language_code).map_err(SpeechError::Config)?;
+
+        let open = client
+            .start_stream_transcription()
+            .language_code(language)
+            .media_sample_rate_hertz(16_000)
+            .media_encoding(MediaEncoding::Pcm)
+            .audio_stream(audio_stream)
+            .send();
+        let response = if lazy {
+            // Mid-session opens run inside push_audio: bound them like the connect.
+            tokio::time::timeout(crate::matrix::CONNECT_TIMEOUT, open)
+                .await
+                .map_err(|_| SpeechError::Vendor {
+                    vendor: "aws".into(),
+                    message: format!(
+                        "transcribe stream open timed out after {} ms",
+                        crate::matrix::CONNECT_TIMEOUT.as_millis()
+                    ),
+                })?
+        } else {
+            open.await
+        }
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "aws".into(),
+            message: aws_sdk_transcribestreaming::error::DisplayErrorContext(&err).to_string(),
+        })?;
+
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some("h2".into());
+        }
+        let mut transcript_stream = response.transcript_result_stream;
+
+        let reader_task = tokio::spawn(async move {
+            // A stream that ends with an error (reset, service exception, bad frame) is
+            // reported to the next poll; `Ok(None)` is the service closing it normally.
+            while forward_event(&transcript_tx, transcript_stream.recv().await) {}
+        });
+
+        let mut inner = self.state.lock().await;
+        if let Some(old) = inner.reader_task.take() {
+            old.abort();
+        }
+        // Results of the previous stream that were not polled yet stay in `pending`.
+        let old_rx = inner.transcript_rx.take();
+        if let Some(mut old_rx) = old_rx {
+            while let Ok(item) = old_rx.try_recv() {
+                inner.pending.push_back(item);
+            }
+        }
+        inner.pcm_tx = Some(pcm_tx);
+        inner.transcript_rx = Some(transcript_rx);
+        inner.reader_task = Some(reader_task);
+        inner.running = true;
+        Ok(())
     }
 }
 
@@ -378,5 +497,149 @@ mod tests {
         ));
         assert!(matches!(stt.poll_transcript().await, Ok(None)));
         assert!(stt.emits_partials());
+    }
+
+    /// Fake service: reads the input like the SDK would and answers when the input ends.
+    fn fake_service(
+        mut pcm_rx: mpsc::UnboundedReceiver<Bytes>,
+        tx: mpsc::UnboundedSender<SttItem>,
+        reply: Vec<SttItem>,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        Arc<std::sync::Mutex<Vec<usize>>>,
+    ) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_task = seen.clone();
+        let task = tokio::spawn(async move {
+            while let Some(chunk) = pcm_rx.recv().await {
+                seen_task.lock().unwrap().push(chunk.len());
+            }
+            // The input closed: the end frame reached the service. Answer, then close.
+            for item in reply {
+                let _ = tx.send(item);
+            }
+        });
+        (task, seen)
+    }
+
+    fn stt_for_tests() -> AwsStt {
+        AwsStt::new(&SttConfig {
+            provider: SttVendor::Aws,
+            model: None,
+            model_path: None,
+            language: None,
+            api_key: None,
+            endpoint: None,
+            transport: None,
+        })
+        .unwrap()
+    }
+
+    /// The input ends with an empty audio event, then closes; the results the service sends
+    /// before it closes are returned by `poll_transcript`, the last one a final.
+    #[tokio::test]
+    async fn finalize_ends_the_input_and_the_final_is_returned() {
+        let mut stt = stt_for_tests();
+        let (pcm_tx, pcm_rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (service, seen) = fake_service(
+            pcm_rx,
+            tx,
+            vec![
+                Ok(SttTranscript::Partial("the quick".into())),
+                Ok(SttTranscript::Final("the quick brown fox".into())),
+            ],
+        );
+        {
+            let mut inner = stt.state.lock().await;
+            inner.running = true;
+            inner.pcm_tx = Some(pcm_tx);
+            inner.transcript_rx = Some(rx);
+        }
+        stt.push_audio(Bytes::from(vec![1u8; 640])).await.unwrap();
+        stt.finalize_utterance().await.unwrap();
+        service.await.unwrap();
+        // 640 audio bytes, then the empty event.
+        assert_eq!(*seen.lock().unwrap(), vec![640, 0]);
+        assert!(stt.state.lock().await.pcm_tx.is_none(), "input is closed");
+        assert!(matches!(
+            stt.poll_transcript().await,
+            Ok(Some(SttTranscript::Partial(t))) if t == "the quick"
+        ));
+        assert!(matches!(
+            stt.poll_transcript().await,
+            Ok(Some(SttTranscript::Final(t))) if t == "the quick brown fox"
+        ));
+        assert!(matches!(stt.poll_transcript().await, Ok(None)));
+    }
+
+    /// After a finalize the stream is spent: the next push finds no input and has to open a
+    /// new stream (the SDK open itself is the live test's part).
+    #[tokio::test]
+    async fn push_after_finalize_needs_a_new_stream() {
+        let mut stt = stt_for_tests();
+        let (pcm_tx, pcm_rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (service, _seen) = fake_service(pcm_rx, tx, vec![]);
+        {
+            let mut inner = stt.state.lock().await;
+            inner.running = true;
+            inner.pcm_tx = Some(pcm_tx);
+            inner.transcript_rx = Some(rx);
+        }
+        stt.finalize_utterance().await.unwrap();
+        service.await.unwrap();
+        let inner = stt.state.lock().await;
+        assert!(
+            inner.pcm_tx.is_none(),
+            "no input channel after the finalize"
+        );
+        assert!(inner.running, "the provider is still running");
+        drop(inner);
+        // A second finalize with no stream is a no-op, not an error.
+        stt.finalize_utterance().await.unwrap();
+    }
+
+    /// A stream error while waiting for the final is an `Err` from the finalize, and results
+    /// before it are still delivered.
+    #[tokio::test]
+    async fn finalize_returns_a_stream_error() {
+        let (pcm_tx, _pcm_rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _ = tx.send(Ok(SttTranscript::Partial("a".into())));
+        let _ = tx.send(Err(SpeechError::Vendor {
+            vendor: "aws".into(),
+            message: "boom".into(),
+        }));
+        let mut pending = std::collections::VecDeque::new();
+        let err = end_utterance(
+            pcm_tx,
+            &mut rx,
+            &mut pending,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("boom"), "{err}");
+        assert_eq!(pending.len(), 1, "the partial before the error is kept");
+    }
+
+    /// A service that never closes is bounded by the finalize wait, as an `Err`.
+    #[tokio::test]
+    async fn finalize_is_bounded_when_the_service_never_closes() {
+        let (pcm_tx, _pcm_rx) = mpsc::unbounded_channel();
+        let (_tx, mut rx) = mpsc::unbounded_channel::<SttItem>();
+        let mut pending = std::collections::VecDeque::new();
+        let started = std::time::Instant::now();
+        let err = end_utterance(
+            pcm_tx,
+            &mut rx,
+            &mut pending,
+            std::time::Duration::from_millis(200),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("within 200 ms"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

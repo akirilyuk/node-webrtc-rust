@@ -20,6 +20,7 @@ use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
 };
 use node_webrtc_rust_vendor_deepgram::DeepgramFactory;
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -915,4 +916,29 @@ async fn rest_body_that_is_a_wav_container_is_an_error_and_nothing_reaches_the_s
         other => panic!("expected a vendor error, got {other:?}"),
     }
     assert!(drain(&mut rig.rx).is_empty(), "nothing reaches the sink");
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of 48 kHz mono linear16 (`sample_rate=48000`) is
+/// 1000 ms and 192000 bytes of 48 kHz stereo, on both transports.
+#[tokio::test]
+async fn one_second_of_source_audio_is_one_second_of_48k_stereo() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; 96_000])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_chunks_match_source("deepgram_http", &chunks, 1000);
+    assert_chunks_match_source("deepgram_http_sink", &sunk, 1000);
+    assert_eq!(sink_bytes(&chunks), 192_000);
+
+    let ws = script(|mut ws| async move {
+        for fill in 0..100u8 {
+            ws.send(audio_msg(fill)).await.unwrap();
+        }
+        ws.send(flushed_msg()).await.unwrap();
+        let _ = ws.close(None).await;
+    });
+    let mock = Mock::start_with_rest(ws, None).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_chunks_match_source("deepgram_ws", &chunks, 1000);
+    assert_chunks_match_source("deepgram_ws_sink", &sunk, 1000);
 }

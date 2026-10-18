@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 #[cfg(feature = "live")]
-use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo};
+use node_webrtc_rust_speech::pcm::{duration_ms_from_stereo_48k, MonoToStereo48k};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 #[cfg(feature = "live")]
@@ -202,6 +202,8 @@ impl AzureTts {
             }
 
             let mut out: Vec<TtsAudioChunk> = Vec::new();
+            // 48000 Hz is a passthrough that only duplicates the channel.
+            let mut up = MonoToStereo48k::new(AZURE_TTS_PCM_RATE)?;
             // An odd trailing byte of one body chunk is the first half of the next sample.
             let mut carry: Option<u8> = None;
             loop {
@@ -237,14 +239,20 @@ impl AzureTts {
                 if bytes.is_empty() {
                     continue;
                 }
-                let audio = TtsAudioChunk {
-                    duration_ms: duration_ms_from_mono_s16le(bytes.len(), AZURE_TTS_PCM_RATE),
-                    pcm: mono_s16le_to_stereo(&bytes),
-                };
-                if let Some(s) = sink {
-                    let _ = s.send(audio.clone());
+                if let Some(audio) = audio_chunk(up.push(&bytes)) {
+                    if let Some(s) = sink {
+                        let _ = s.send(audio.clone());
+                    }
+                    out.push(audio);
                 }
-                out.push(audio);
+            }
+            if !sink.is_some_and(TtsProgressiveSink::is_cancelled) {
+                if let Some(audio) = audio_chunk(up.finish()) {
+                    if let Some(s) = sink {
+                        let _ = s.send(audio.clone());
+                    }
+                    out.push(audio);
+                }
             }
             if out.is_empty() {
                 return Err(vendor_err("Azure TTS returned no audio"));
@@ -260,6 +268,18 @@ impl AzureTts {
             })
         }
     }
+}
+
+/// 48 kHz stereo bytes as a sink chunk; `None` for no bytes.
+#[cfg(feature = "live")]
+fn audio_chunk(stereo: Vec<u8>) -> Option<TtsAudioChunk> {
+    if stereo.is_empty() {
+        return None;
+    }
+    Some(TtsAudioChunk {
+        duration_ms: duration_ms_from_stereo_48k(stereo.len()),
+        pcm: bytes::Bytes::from(stereo),
+    })
 }
 
 #[cfg(feature = "live")]

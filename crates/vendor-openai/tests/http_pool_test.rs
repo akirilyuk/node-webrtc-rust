@@ -8,6 +8,7 @@ use bytes::Bytes;
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript, TtsProvider};
 use node_webrtc_rust_vendor_live_support::http_mock::{pcm_16bit_mono, MockHttp, Reply};
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use node_webrtc_rust_vendor_openai::{OpenAiStt, OpenAiTts, HTTP_TOTAL_TIMEOUT};
 
 fn tts(base: &str) -> OpenAiTts {
@@ -153,4 +154,15 @@ async fn stt_server_that_never_answers_ends_within_the_bound() {
 #[test]
 fn default_total_timeout_is_bounded() {
     assert_eq!(HTTP_TOTAL_TIMEOUT, Duration::from_secs(60));
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of 24 kHz mono `pcm` is 1000 ms and 192000 bytes of
+/// 48 kHz stereo.
+#[tokio::test]
+async fn one_second_of_24k_pcm_is_one_second_of_48k_stereo() {
+    let mock = MockHttp::start(Reply::ok("audio/pcm", pcm_16bit_mono(24_000, 1000))).await;
+    let chunks = tts(&mock.base_url()).synthesize("hello").await.unwrap();
+    assert_chunks_match_source("openai", &chunks, 1000);
+    let bytes: usize = chunks.iter().map(|c| c.pcm.len()).sum();
+    assert_eq!(bytes, 192_000);
 }

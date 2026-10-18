@@ -104,6 +104,33 @@ pub async fn measure_tts(provider: &dyn TtsProvider, text: &str) -> SpeechResult
     })
 }
 
+/// True when `bytes` of 48 kHz stereo s16le (192 bytes per ms) last `audio_ms` within
+/// `max(20 ms, 2 %)`.
+pub fn duration_matches_bytes(bytes: usize, audio_ms: u64) -> bool {
+    let from_bytes = bytes as f64 / 192.0;
+    let tolerance = (audio_ms as f64 * 0.02).max(20.0);
+    (from_bytes - audio_ms as f64).abs() <= tolerance
+}
+
+/// Catalog `audio.sample-rate-mismatch` guard for mock-server tests: the chunks a provider
+/// returned (or sent to the sink) for `source_ms` of vendor audio must declare that duration, and
+/// their bytes (48 kHz stereo s16le, 192 bytes per ms) must last the same, both within
+/// `max(20 ms, 2 %)`. Audio forwarded at the vendor's own rate fails the second check.
+pub fn assert_chunks_match_source(label: &str, chunks: &[TtsAudioChunk], source_ms: u64) {
+    let declared: u64 = chunks.iter().map(|c| u64::from(c.duration_ms)).sum();
+    let bytes: usize = chunks.iter().map(|c| c.pcm.len()).sum();
+    let tolerance = (source_ms as f64 * 0.02).max(20.0);
+    assert!(
+        (declared as f64 - source_ms as f64).abs() <= tolerance,
+        "{label}: chunks declare {declared} ms for {source_ms} ms of source audio"
+    );
+    assert!(
+        duration_matches_bytes(bytes, declared),
+        "{label}: {bytes} bytes are {:.0} ms of 48 kHz stereo but the chunks declare {declared} ms (sample rate mismatch)",
+        bytes as f64 / 192.0
+    );
+}
+
 /// The streaming contract (`contract.duplicate-emit`): streamed in at least two chunks, the first
 /// before the call returned, sink bytes equal returned bytes, sane duration and level.
 /// Prints `<label>_ttfa_ms <n>`.
@@ -121,6 +148,20 @@ pub fn assert_tts_contract(label: &str, sample: &TtsSample) {
     assert_eq!(
         sample.bytes, sample.returned_bytes,
         "{label}: sink bytes differ from returned bytes"
+    );
+    // Catalog `audio.sample-rate-mismatch`: the bytes are 48 kHz stereo s16le (192 bytes per ms),
+    // so they must add up to the duration the chunks declare. Audio forwarded at its own rate
+    // (16 kHz mono played as 48 kHz) is a third as long as it claims.
+    println!(
+        "{label}_bytes_per_ms {:.1}",
+        sample.bytes as f64 / sample.audio_ms.max(1) as f64
+    );
+    assert!(
+        duration_matches_bytes(sample.bytes, sample.audio_ms),
+        "{label}: {} bytes are {:.0} ms of 48 kHz stereo but the chunks declare {} ms (sample rate mismatch)",
+        sample.bytes,
+        sample.bytes as f64 / 192.0,
+        sample.audio_ms
     );
     assert!(
         (1500..=15000).contains(&sample.audio_ms),
@@ -232,8 +273,8 @@ mod tests {
             audio_ms: 3000,
             chunks: 6,
             stall_ms: 0,
-            bytes: 1000,
-            returned_bytes: 1000,
+            bytes: 576_000,
+            returned_bytes: 576_000,
             first_before_return: true,
             rms: 1500.0,
         }
@@ -250,6 +291,49 @@ mod tests {
         let mut s = sample();
         s.bytes = 2000;
         assert_tts_contract("dup", &s);
+    }
+
+    #[test]
+    #[should_panic(expected = "sample rate mismatch")]
+    fn contract_rejects_audio_at_the_wrong_rate() {
+        // 3 s of 16 kHz mono forwarded as if it were 48 kHz stereo: a third of the bytes.
+        let mut s = sample();
+        s.bytes = 192_000;
+        s.returned_bytes = 192_000;
+        assert_tts_contract("fast", &s);
+    }
+
+    fn chunk(bytes: usize, ms: u32) -> TtsAudioChunk {
+        TtsAudioChunk {
+            pcm: bytes::Bytes::from(vec![0u8; bytes]),
+            duration_ms: ms,
+        }
+    }
+
+    #[test]
+    fn chunks_match_source_accepts_1s_of_48k_stereo() {
+        assert_chunks_match_source("ok", &[chunk(96_000, 500), chunk(96_000, 500)], 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "sample rate mismatch")]
+    fn chunks_match_source_rejects_16k_mono_sent_as_48k() {
+        // 1 s of 16 kHz mono is 32000 bytes; doubled to stereo that is 64000, not 192000.
+        assert_chunks_match_source("fast", &[chunk(64_000, 1000)], 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "declare")]
+    fn chunks_match_source_rejects_a_wrong_declared_duration() {
+        assert_chunks_match_source("short", &[chunk(64_000, 333)], 1000);
+    }
+
+    #[test]
+    fn duration_tolerance_is_two_percent_or_20_ms() {
+        assert!(duration_matches_bytes(192 * 1019, 1000));
+        assert!(!duration_matches_bytes(192 * 1021, 1000));
+        assert!(duration_matches_bytes(192 * 120, 100));
+        assert!(!duration_matches_bytes(192 * 121, 100));
     }
 
     #[test]

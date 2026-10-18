@@ -1,8 +1,8 @@
 //! Latency bench against the real API (`vendor-bench.yml`, or locally). Prints one
 //! `vendor_bench <json>` line per sample; never a key or a transcript.
 //!
-//! Transcribe is one long event stream per provider and has no finalize, so a second utterance would
-//! share one stream with the first: the bench measures `cold` only (a new provider and stream per run).
+//! Transcribe ends its stream at every finalize and each utterance opens a new one, so a second
+//! utterance on the same provider is not a warm connection: the bench measures `cold` only.
 //!
 //! `NWR_BENCH_RUNS` sets the runs (default 5). Without AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION the bench skips, unless
 //! `AWS_LIVE_REQUIRED=1`.

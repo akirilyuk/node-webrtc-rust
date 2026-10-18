@@ -147,6 +147,7 @@ impl OpenAiStt {
         force_realtime: bool,
         force_http_file_sse: Option<bool>,
     ) -> SpeechResult<Self> {
+        crate::matrix::check_stt_transport(config.transport)?;
         let api_key = config
             .api_key
             .clone()
@@ -1325,6 +1326,7 @@ mod tests {
             language: Some("en".into()),
             api_key: Some("test-key".into()),
             endpoint,
+            transport: None,
         }
     }
 

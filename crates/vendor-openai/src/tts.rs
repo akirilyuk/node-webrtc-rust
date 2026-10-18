@@ -45,6 +45,7 @@ pub struct OpenAiTts {
 
 impl OpenAiTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
+        crate::matrix::check_tts_transport(config.transport)?;
         Ok(Self {
             api_key: config
                 .api_key
@@ -515,6 +516,7 @@ mod tests {
             api_key: Some("test".into()),
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         })
         .unwrap();
         assert_eq!(tts.model, "tts-1");

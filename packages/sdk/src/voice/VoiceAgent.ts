@@ -92,7 +92,8 @@ function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
   }
 }
 
-function toJsSttConfig(stt: SttConfig): JsSttConfig {
+/** @internal Maps the SDK STT config onto the NAPI object (exported for tests). */
+export function toJsSttConfig(stt: SttConfig): JsSttConfig {
   return {
     provider: sttVendorToJs(stt.provider),
     model: stt.model,
@@ -100,10 +101,12 @@ function toJsSttConfig(stt: SttConfig): JsSttConfig {
     language: stt.language,
     apiKey: stt.apiKey,
     endpoint: stt.endpoint,
+    transport: stt.transport,
   }
 }
 
-function toJsTtsConfig(tts: TtsConfig): JsTtsConfig {
+/** @internal Maps the SDK TTS config onto the NAPI object (exported for tests). */
+export function toJsTtsConfig(tts: TtsConfig): JsTtsConfig {
   return {
     provider: ttsVendorToJs(tts.provider),
     model: tts.model,
@@ -113,6 +116,7 @@ function toJsTtsConfig(tts: TtsConfig): JsTtsConfig {
     endpoint: tts.endpoint,
     postUtteranceSilenceMs: tts.postUtteranceSilenceMs,
     sentenceCase: tts.sentenceCase,
+    transport: tts.transport,
   }
 }
 

@@ -131,6 +131,7 @@ fn config(endpoint: &str) -> SttConfig {
         language: None,
         api_key: Some("test-key".into()),
         endpoint: Some(endpoint.to_string()),
+        transport: None,
     }
 }
 

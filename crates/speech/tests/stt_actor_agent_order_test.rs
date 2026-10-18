@@ -275,6 +275,7 @@ fn stt_config(language: &str) -> SttConfig {
         language: Some(language.into()),
         api_key: None,
         endpoint: None,
+        transport: None,
     }
 }
 
@@ -299,6 +300,7 @@ async fn make_agent(
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         vad,
         ..Default::default()

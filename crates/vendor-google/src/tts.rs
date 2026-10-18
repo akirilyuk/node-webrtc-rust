@@ -18,6 +18,7 @@ pub struct GoogleTts {
 
 impl GoogleTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
+        crate::matrix::check_tts_transport(config.transport)?;
         let voice = config
             .voice
             .clone()
@@ -100,6 +101,7 @@ mod tests {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         })
         .unwrap();
         assert_eq!(tts.language, "en-US");

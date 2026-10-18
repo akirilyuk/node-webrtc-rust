@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use node_webrtc_rust_speech::config::TtsConfig;
+use node_webrtc_rust_speech::config::{SpeechTransport, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{
     duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
@@ -11,9 +11,9 @@ use crate::matrix::{
     full_body_url, CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
 };
 use crate::matrix::{
-    http_stream_url, tts_delivery_plan, tts_progressive_transport, tts_websocket_allowed,
-    websocket_stream_input_url, TtsDeliveryPlan, TtsProgressiveTransport, DEFAULT_BASE_URL,
-    DEFAULT_MODEL_ID,
+    http_stream_url, resolve_tts_transport, tts_delivery_plan, tts_progressive_transport_for,
+    tts_websocket_allowed, websocket_stream_input_url, TtsDeliveryPlan, TtsProgressiveTransport,
+    DEFAULT_BASE_URL, DEFAULT_MODEL_ID,
 };
 
 const DEFAULT_VOICE_ID: &str = "EXAVITQu4vr4xnSDxMaL";
@@ -22,6 +22,8 @@ pub struct ElevenLabsTts {
     api_key: Option<String>,
     model: String,
     voice: Option<String>,
+    /// Resolved customer transport (`http` = chunked HTTP, `websocket` = stream-input socket).
+    transport: SpeechTransport,
     /// REST base (`TtsConfig.endpoint` or [`DEFAULT_BASE_URL`]); the WS host is derived from it.
     #[cfg_attr(not(feature = "live"), allow(dead_code))]
     base_url: String,
@@ -29,16 +31,19 @@ pub struct ElevenLabsTts {
 
 impl ElevenLabsTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
+        let model = config
+            .model
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string());
+        let transport = resolve_tts_transport(&model, config.transport)?;
         Ok(Self {
             api_key: config
                 .api_key
                 .clone()
                 .or_else(|| std::env::var("ELEVENLABS_API_KEY").ok()),
-            model: config
-                .model
-                .clone()
-                .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+            model,
             voice: config.voice.clone(),
+            transport,
             base_url: config
                 .endpoint
                 .as_deref()
@@ -83,7 +88,7 @@ impl TtsProvider for ElevenLabsTts {
         text: &str,
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
-        match tts_progressive_transport(&self.model) {
+        match tts_progressive_transport_for(&self.model, self.transport) {
             TtsProgressiveTransport::FullBodyPost => {
                 let chunks = self.synthesize_full_body(text).await?;
                 emit_chunks(sink.as_ref(), &chunks);
@@ -270,8 +275,8 @@ impl ElevenLabsTts {
         })
     }
 
-    /// Direct ElevenLabs stream-input WebSocket synthesis. Not selected by
-    /// `tts_progressive_transport` today; public so the mock-server tests can exercise it.
+    /// Direct ElevenLabs stream-input WebSocket synthesis. Selected by the `websocket` customer
+    /// transport; public so the mock-server tests can exercise it directly.
     #[cfg(feature = "live")]
     pub async fn synthesize_websocket_stream(
         &self,
@@ -441,6 +446,7 @@ mod tests {
             api_key: Some("test".into()),
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         })
         .unwrap();
         assert_eq!(tts.voice_id(), DEFAULT_VOICE_ID);

@@ -39,6 +39,7 @@ struct GroqSttInner {
 
 impl GroqStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        crate::matrix::check_stt_transport(config.transport)?;
         let model = config
             .model
             .clone()
@@ -315,6 +316,7 @@ mod tests {
             language: None,
             api_key: Some("k".into()),
             endpoint: None,
+            transport: None,
         })
         .unwrap();
         assert!(!stt.emits_partials());
@@ -330,6 +332,7 @@ mod tests {
                 language: None,
                 api_key: Some("k".into()),
                 endpoint: None,
+                transport: None,
             }),
             Err(SpeechError::Config(_))
         ));

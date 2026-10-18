@@ -20,6 +20,7 @@ pub struct GroqTts {
 
 impl GroqTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
+        crate::matrix::check_tts_transport(config.transport)?;
         let model = config
             .model
             .clone()
@@ -138,6 +139,7 @@ mod tests {
                 api_key: Some("k".into()),
                 endpoint: None,
                 sentence_case: Default::default(),
+                transport: None,
             }),
             Err(SpeechError::Config(_))
         ));

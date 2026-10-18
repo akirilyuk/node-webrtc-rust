@@ -12,6 +12,7 @@ fn config(model: Option<&str>) -> TtsConfig {
         api_key: Some("test-key".into()),
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     }
 }
 
@@ -45,6 +46,7 @@ fn stt_config(model: Option<&str>) -> SttConfig {
         language: None,
         api_key: Some("test-key".into()),
         endpoint: None,
+        transport: None,
     }
 }
 
@@ -69,5 +71,19 @@ fn fishaudio_factory_rejects_unknown_stt_model() {
             Err(other) => panic!("expected Config error, got {other}"),
             Ok(_) => panic!("STT model {model} must be rejected"),
         }
+    }
+}
+
+#[test]
+fn fishaudio_factory_rejects_unsupported_stt_transport() {
+    let factory = FishAudioFactory;
+    let mut cfg = stt_config(None);
+    cfg.transport = Some(node_webrtc_rust_speech::config::SpeechTransport::Http);
+    match factory.create_stt(&cfg) {
+        Err(SpeechError::Config(message)) => {
+            assert!(message.contains("allowed: auto, websocket"), "{message}")
+        }
+        Err(other) => panic!("expected Config error, got {other}"),
+        Ok(_) => panic!("http STT must be rejected"),
     }
 }

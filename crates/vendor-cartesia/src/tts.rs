@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use node_webrtc_rust_speech::config::{SttConfig, TtsConfig};
+use node_webrtc_rust_speech::config::{SpeechTransport, SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{
     duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
@@ -7,16 +7,20 @@ use node_webrtc_rust_speech::pcm::{
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 use crate::client::CartesiaClient;
-use crate::matrix::{TtsDeliveryPlan, DEFAULT_MODEL_ID};
+use crate::matrix::{resolve_tts_transport, TtsDeliveryPlan, DEFAULT_MODEL_ID};
 
 pub struct CartesiaTts {
     client: CartesiaClient,
     model: String,
     voice: Option<String>,
+    /// Resolved customer transport: `Websocket` = WS with the no-audio REST fallback,
+    /// `Http` = REST only.
+    transport: SpeechTransport,
 }
 
 impl CartesiaTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
+        let transport = resolve_tts_transport(config.transport)?;
         Ok(Self {
             client: CartesiaClient::with_endpoint(
                 config
@@ -30,6 +34,7 @@ impl CartesiaTts {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
             voice: config.voice.clone(),
+            transport,
         })
     }
 
@@ -64,7 +69,9 @@ impl TtsProvider for CartesiaTts {
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
         let voice = self.voice_id();
-        if crate::matrix::tts_delivery_plan(&self.model) == TtsDeliveryPlan::WebSocketContexts {
+        if self.transport == SpeechTransport::Websocket
+            && crate::matrix::tts_delivery_plan(&self.model) == TtsDeliveryPlan::WebSocketContexts
+        {
             #[cfg(feature = "live")]
             match self
                 .client

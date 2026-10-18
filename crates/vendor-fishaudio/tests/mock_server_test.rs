@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor};
+use node_webrtc_rust_speech::config::{SpeechTransport, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::error::SpeechError;
 use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, VendorFactory,
@@ -328,7 +328,12 @@ fn pcm(len: usize, seed: u8) -> Vec<u8> {
     (0..len).map(|i| seed.wrapping_add(i as u8) | 1).collect()
 }
 
-fn config(endpoint: &str, voice: Option<&str>, model: Option<&str>) -> TtsConfig {
+fn config(
+    endpoint: &str,
+    voice: Option<&str>,
+    model: Option<&str>,
+    transport: Option<SpeechTransport>,
+) -> TtsConfig {
     TtsConfig {
         provider: TtsVendor::Fishaudio,
         model: model.map(str::to_string),
@@ -337,12 +342,21 @@ fn config(endpoint: &str, voice: Option<&str>, model: Option<&str>) -> TtsConfig
         api_key: Some("test-key".into()),
         endpoint: Some(endpoint.to_string()),
         sentence_case: Default::default(),
+        transport,
     }
 }
 
 fn provider(endpoint: &str, voice: Option<&str>) -> Box<dyn TtsProvider> {
+    provider_with(endpoint, voice, None)
+}
+
+fn provider_with(
+    endpoint: &str,
+    voice: Option<&str>,
+    transport: Option<SpeechTransport>,
+) -> Box<dyn TtsProvider> {
     FishAudioFactory
-        .create_tts(&config(endpoint, voice, None))
+        .create_tts(&config(endpoint, voice, None, transport))
         .unwrap_or_else(|_| panic!("create_tts"))
 }
 
@@ -748,8 +762,12 @@ async fn unknown_model_is_never_sent() {
     let http: HttpHandler = Box::new(|_req| Box::pin(async {}));
     let mock = Mock::start(Some(ws), Some(http)).await;
 
-    let result =
-        FishAudioFactory.create_tts(&config(&mock.endpoint(), Some("voice-1"), Some("s1-mini")));
+    let result = FishAudioFactory.create_tts(&config(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some("s1-mini"),
+        None,
+    ));
     match result {
         Err(SpeechError::Config(message)) => {
             assert!(
@@ -938,4 +956,109 @@ async fn ws_that_never_sends_audio_times_out() {
     assert!(waited < Duration::from_secs(25), "{waited:?}");
     assert_eq!(mock.http_hits(), 0, "the direct WS call never touches HTTP");
     assert!(!message.contains("Never answered."), "{message}");
+}
+
+// -- customer transport selection --
+
+fn http_serving_audio() -> HttpHandler {
+    Box::new(|mut req| {
+        Box::pin(async move {
+            write_chunked_head(&mut req.stream).await;
+            write_chunk(&mut req.stream, &pcm(960, 1)).await;
+            write_chunked_end(&mut req.stream).await;
+        })
+    })
+}
+
+#[tokio::test]
+async fn explicit_websocket_transport_uses_the_ws_endpoint_only() {
+    let mock = Mock::start(
+        Some(ws_that_would_serve_audio()),
+        Some(http_serving_audio()),
+    )
+    .await;
+    let tts = provider_with(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some(SpeechTransport::Websocket),
+    );
+    let (sink, mut rx, _cancel) = sink();
+
+    let returned = within(tts.synthesize_progressive("Hello.", Some(sink)))
+        .await
+        .expect("websocket synth");
+    let mut sunk = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        sunk.push(chunk);
+    }
+    assert_eq!(sunk.len(), 1, "the WS chunk reaches the sink once");
+    assert_eq!(returned.len(), 1);
+    assert_eq!(mock.ws_hits(), 1);
+    assert_eq!(
+        mock.http_hits(),
+        0,
+        "websocket never touches the HTTP endpoint"
+    );
+}
+
+#[tokio::test]
+async fn explicit_websocket_failure_does_not_fall_back_to_http() {
+    // The WebSocket handshake is refused (no WS handler), the HTTP endpoint would serve audio.
+    let mock = Mock::start(None, Some(http_serving_audio())).await;
+    let tts = provider_with(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some(SpeechTransport::Websocket),
+    );
+    let (sink, mut rx, _cancel) = sink();
+
+    let result = within(tts.synthesize_progressive("Hello.", Some(sink))).await;
+    assert!(result.is_err(), "a WS failure is the result: {result:?}");
+    assert!(rx.try_recv().is_err(), "nothing reached the sink");
+    assert_eq!(
+        mock.http_hits(),
+        0,
+        "no HTTP fallback after an explicit websocket"
+    );
+}
+
+#[tokio::test]
+async fn explicit_http_transport_keeps_the_documented_ws_fallback() {
+    let http = http_answering(503, "Service Unavailable", r#"{"status":503}"#);
+    let mock = Mock::start(Some(ws_that_would_serve_audio()), Some(http)).await;
+    let tts = provider_with(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some(SpeechTransport::Http),
+    );
+    let (sink, mut rx, _cancel) = sink();
+
+    let returned = within(tts.synthesize_progressive("Hello.", Some(sink)))
+        .await
+        .expect("fallback serves the audio");
+    assert_eq!(returned.len(), 1);
+    assert!(rx.try_recv().is_ok());
+    assert_eq!(mock.http_hits(), 1);
+    assert_eq!(mock.ws_hits(), 1);
+}
+
+#[tokio::test]
+async fn auto_transport_is_the_catalog_default_http() {
+    let mock = Mock::start(
+        Some(ws_that_would_serve_audio()),
+        Some(http_serving_audio()),
+    )
+    .await;
+    let tts = provider_with(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some(SpeechTransport::Auto),
+    );
+    let (sink, _rx, _cancel) = sink();
+
+    within(tts.synthesize_progressive("Hello.", Some(sink)))
+        .await
+        .expect("http synth");
+    assert_eq!(mock.http_hits(), 1);
+    assert_eq!(mock.ws_hits(), 0);
 }

@@ -1,16 +1,19 @@
 use async_trait::async_trait;
-use node_webrtc_rust_speech::config::TtsConfig;
+use node_webrtc_rust_speech::config::{SpeechTransport, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, WEBRTC_PCM_SAMPLE_RATE};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 use crate::client::{FishAudioClient, StreamOutcome};
-use crate::matrix::{validate_model_id, DEFAULT_MODEL_ID};
+use crate::matrix::{resolve_tts_transport, validate_model_id, DEFAULT_MODEL_ID};
 
 pub struct FishAudioTts {
     client: FishAudioClient,
     model: String,
     voice: Option<String>,
+    /// Resolved customer transport: `Http` = chunked HTTP with the documented WS fallback,
+    /// `Websocket` = socket only, no fallback.
+    transport: SpeechTransport,
 }
 
 impl FishAudioTts {
@@ -21,6 +24,7 @@ impl FishAudioTts {
             .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string());
         // Fish silently falls back to `s2.1-pro` for an unknown model, so never send one.
         validate_model_id(&model).map_err(SpeechError::Config)?;
+        let transport = resolve_tts_transport(config.transport)?;
         Ok(Self {
             client: FishAudioClient::new(
                 config
@@ -31,6 +35,7 @@ impl FishAudioTts {
             )?,
             model,
             voice: config.voice.clone(),
+            transport,
         })
     }
 
@@ -102,6 +107,17 @@ impl TtsProvider for FishAudioTts {
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
         let reference_id = self.reference_id();
         let reference_id = reference_id.as_deref();
+
+        if self.transport == SpeechTransport::Websocket {
+            // Explicit `websocket`: the socket only. No fallback to HTTP, so a failure is the
+            // WebSocket's own error and nothing is retried on the other transport.
+            let outcome = self
+                .client
+                .synthesize_ws(text, reference_id, &self.model, sink.as_ref())
+                .await
+                .map_err(|failure| failure.error)?;
+            return Ok(into_chunks(outcome));
+        }
 
         // Chunked HTTP is the default: the agent hands whole sentences, so the WebSocket's
         // text-streaming input buys nothing, and HTTP reached the first audio chunk sooner

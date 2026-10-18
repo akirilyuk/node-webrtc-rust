@@ -142,6 +142,14 @@ export interface SttConfig {
   apiKey?: string
   /** @internal gRPC speech-service / pool Service URL (runner only). */
   endpoint?: string
+  /**
+   * Transport to the vendor API: `'websocket'`, `'http'` (streamed HTTP; HTTP/2 when the vendor
+   * negotiates it, else HTTP/1.1) or `'auto'` (default: the vendor default from
+   * `@node-webrtc-rust/voice-catalog`, `defaultSttTransport`). A value the vendor does not offer
+   * for this leg fails the config; the voice catalog `sttTransports(vendor)` / `ttsTransports(vendor)`
+   * list what is allowed.
+   */
+  transport?: 'auto' | 'websocket' | 'http'
 }
 
 export interface TtsConfig {
@@ -154,6 +162,14 @@ export interface TtsConfig {
   apiKey?: string
   /** @internal gRPC speech-service / pool Service URL (runner only). */
   endpoint?: string
+  /**
+   * Transport to the vendor API: `'websocket'`, `'http'` (streamed HTTP; HTTP/2 when the vendor
+   * negotiates it, else HTTP/1.1) or `'auto'` (default: the vendor default from
+   * `@node-webrtc-rust/voice-catalog`, `defaultTtsTransport`). A value the vendor does not offer
+   * for this leg fails the config; the voice catalog `sttTransports(vendor)` / `ttsTransports(vendor)`
+   * list what is allowed.
+   */
+  transport?: 'auto' | 'websocket' | 'http'
   /**
    * Real-time silence (ms) on outbound audio after each TTS utterance. `0` disables.
    * When unset, derived from VAD gate hold + min silence + 250 ms.

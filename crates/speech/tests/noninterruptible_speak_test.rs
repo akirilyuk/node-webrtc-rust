@@ -52,6 +52,7 @@ fn config() -> VoiceAgentConfig {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         vad,
         ..Default::default()

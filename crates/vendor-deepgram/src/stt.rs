@@ -6,7 +6,9 @@ use node_webrtc_rust_speech::pipeline::{SttProvider, SttTranscript};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::matrix::{default_listen_model, listen_websocket_url, parse_listen_results_message};
+use crate::matrix::{
+    default_listen_model, listen_websocket_url, parse_listen_results_message, resolve_stt_transport,
+};
 
 #[cfg(feature = "live")]
 use futures_util::{SinkExt, StreamExt};
@@ -33,6 +35,8 @@ struct DeepgramSttInner {
 
 impl DeepgramStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        // The only STT transport is the WebSocket; an unsupported value fails the config here.
+        resolve_stt_transport(config.transport)?;
         let model = config
             .model
             .clone()
@@ -196,6 +200,7 @@ mod tests {
                 language: None,
                 api_key: Some("k".into()),
                 endpoint: None,
+                transport: None,
             }),
             Err(SpeechError::Config(_))
         ));

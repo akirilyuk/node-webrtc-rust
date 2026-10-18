@@ -164,6 +164,8 @@ pub struct FishAudioStt {
 
 impl FishAudioStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        // The only STT transport is the WebSocket; an unsupported value fails the config here.
+        crate::stt_matrix::resolve_stt_transport(config.transport)?;
         let model = config
             .model
             .clone()
@@ -487,6 +489,7 @@ mod tests {
             language: None,
             api_key: Some("k".into()),
             endpoint: None,
+            transport: None,
         }
     }
 

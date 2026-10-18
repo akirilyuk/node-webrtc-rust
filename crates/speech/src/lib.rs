@@ -61,6 +61,7 @@ pub mod session_recorder;
 pub mod stt_actor;
 pub mod stt_hold;
 pub mod stt_pre_roll;
+pub mod transport;
 pub mod tts_buffer;
 pub mod tts_cache;
 pub mod tts_text;
@@ -74,8 +75,9 @@ pub use config::{
     resolve_min_stt_partial_tokens, resolved_language_id_min_speech_ms,
     resolved_post_utterance_silence_ms, stt_partial_token_count, BargeInConfig, EventDeliveryMode,
     EventsConfig, LanguageIdConfig, NoiseSuppressionConfig, NoiseSuppressionProvider,
-    SendTextToTtsOptions, SentenceCase, SttConfig, SttVendor, TtsConfig, TtsVendor,
-    UpdateTtsConfigOptions, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    SendTextToTtsOptions, SentenceCase, SpeechTransport, SttConfig, SttVendor, TtsConfig,
+    TtsVendor, UpdateTtsConfigOptions, VadConfig, VadSampleRate, VoiceAgentConfig,
+    VoiceSessionContext,
 };
 pub use error::{SpeechError, SpeechResult};
 pub use events::{SpeechEvent, SpeechEventBus, SpeechEventKind};
@@ -94,6 +96,7 @@ pub use session_recorder::{
     SessionFinalizeResult, SessionRecorder, SessionRecorderError, SESSION_AUDIO_CHANNELS,
     SESSION_AUDIO_SAMPLE_RATE, SESSION_RECORDER_DEFAULT_OPUS_BITRATE_BPS,
 };
+pub use transport::resolve_transport;
 pub use tts_buffer::TtsBuffer;
 pub use utterance_replay::SPEECH_REPLAY_MAX_MS;
 pub use vad::{handle_barge_in, VadEngine, VadTransition, VoiceActivityDetector};

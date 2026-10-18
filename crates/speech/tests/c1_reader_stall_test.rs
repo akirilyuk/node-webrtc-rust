@@ -155,6 +155,7 @@ async fn make_agent() -> Arc<VoiceAgent> {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -164,6 +165,7 @@ async fn make_agent() -> Arc<VoiceAgent> {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         vad,
         ..Default::default()

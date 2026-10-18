@@ -6,6 +6,11 @@
 
 use std::time::Duration;
 
+use node_webrtc_rust_speech::config::SpeechTransport;
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::resolve_transport;
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
 pub const V1_SPEAK_DOC: &str = "https://developers.deepgram.com/reference/text-to-speech/speak";
 pub const V2_SPEAK_DOC: &str = "https://developers.deepgram.com/docs/flux-tts/overview";
 #[allow(dead_code)] // documentation reference, kept next to the other doc URLs
@@ -49,6 +54,23 @@ pub enum TtsProgressiveTransport {
     /// Full-body REST when progressive socket is unavailable without `live`.
     #[allow(dead_code)] // documented fallback, selected only without `live`
     RestFullBody,
+}
+
+/// TTS transports this crate implements. Lockstep with `voice_catalog::tts_transports("deepgram")`.
+pub fn implemented_tts_transports() -> &'static [&'static str] {
+    &["websocket", "http"]
+}
+
+/// Resolve `TtsConfig.transport` against the voice catalog (`None` / `auto` = catalog default).
+pub fn resolve_tts_transport(requested: Option<SpeechTransport>) -> SpeechResult<SpeechTransport> {
+    resolve_transport(
+        "deepgram",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("deepgram"),
+        voice_catalog::default_tts_transport("deepgram"),
+    )?
+    .ok_or_else(|| SpeechError::Config("deepgram tts has no catalog default transport".into()))
 }
 
 pub fn default_speak_model() -> &'static str {
@@ -183,6 +205,31 @@ mod tests {
         assert_eq!(
             tts_progressive_transport("flux-haley-en").unwrap(),
             TtsProgressiveTransport::WebSocketV2
+        );
+    }
+
+    #[test]
+    fn implemented_transports_match_the_catalog() {
+        let mut implemented = implemented_tts_transports().to_vec();
+        let mut catalog = voice_catalog::tts_transports("deepgram").to_vec();
+        implemented.sort_unstable();
+        catalog.sort_unstable();
+        assert_eq!(implemented, catalog);
+    }
+
+    #[test]
+    fn auto_and_none_resolve_to_the_catalog_default() {
+        assert_eq!(
+            resolve_tts_transport(None).unwrap(),
+            SpeechTransport::Websocket
+        );
+        assert_eq!(
+            resolve_tts_transport(Some(SpeechTransport::Auto)).unwrap(),
+            SpeechTransport::Websocket
+        );
+        assert_eq!(
+            resolve_tts_transport(Some(SpeechTransport::Http)).unwrap(),
+            SpeechTransport::Http
         );
     }
 

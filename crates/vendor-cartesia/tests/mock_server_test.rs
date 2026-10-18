@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
-use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor};
+use node_webrtc_rust_speech::config::{SpeechTransport, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::error::SpeechError;
 use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
@@ -100,6 +100,10 @@ impl Mock {
     }
 
     fn provider(&self) -> Box<dyn TtsProvider> {
+        self.provider_with(None)
+    }
+
+    fn provider_with(&self, transport: Option<SpeechTransport>) -> Box<dyn TtsProvider> {
         CartesiaFactory
             .create_tts(&TtsConfig {
                 provider: TtsVendor::Cartesia,
@@ -109,6 +113,7 @@ impl Mock {
                 api_key: Some("test-key".into()),
                 endpoint: Some(self.endpoint.clone()),
                 sentence_case: Default::default(),
+                transport,
             })
             .unwrap()
     }
@@ -589,4 +594,56 @@ async fn ws_that_stalls_after_audio_times_out() {
         drain(&mut rig.rx).is_empty(),
         "exactly one chunk reached the sink"
     );
+}
+
+fn ws_ok_script() -> Option<WsScript> {
+    script(|mut ws, ctx| async move {
+        ws.send(chunk_msg(&ctx, 1)).await.unwrap();
+        ws.send(done_msg(&ctx)).await.unwrap();
+        let _ = ws.close(None).await;
+    })
+}
+
+async fn run_progressive(provider: &dyn TtsProvider) -> Vec<TtsAudioChunk> {
+    let mut rig = sink_rig();
+    tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out")
+    .expect("synthesize failed");
+    drain(&mut rig.rx)
+}
+
+#[tokio::test]
+async fn explicit_websocket_transport_uses_the_ws_endpoint() {
+    let mock = Mock::start(ws_ok_script(), rest_fail()).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count(), 1);
+    assert_eq!(mock.rest_count(), 0);
+}
+
+#[tokio::test]
+async fn explicit_http_transport_uses_rest_only() {
+    // The WS script would succeed, so any WS attempt shows up in the counters.
+    let mock = Mock::start(ws_ok_script(), rest_ok(CHUNK_BYTES)).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1, "the REST body reaches the sink exactly once");
+    assert_eq!(sunk[0].pcm.len(), CHUNK_BYTES * 2);
+    assert_eq!(mock.ws_count(), 0, "http never opens the WebSocket");
+    assert_eq!(mock.rest_count(), 1);
+}
+
+#[tokio::test]
+async fn auto_transport_is_the_catalog_default_websocket() {
+    let mock = Mock::start(ws_ok_script(), rest_fail()).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Auto));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count(), 1);
+    assert_eq!(mock.rest_count(), 0);
 }

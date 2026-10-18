@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor};
+use node_webrtc_rust_speech::config::{
+    SpeechTransport, SttConfig, SttVendor, TtsConfig, TtsVendor,
+};
 use node_webrtc_rust_speech::error::SpeechError;
 use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
@@ -34,18 +36,27 @@ struct Mock {
     ws_count: Arc<AtomicUsize>,
     http_count: Arc<AtomicUsize>,
     ws_uris: Arc<Mutex<Vec<String>>>,
+    http_uris: Arc<Mutex<Vec<String>>>,
 }
 
 impl Mock {
-    /// `ws`: script run after the `Speak` and `Flush` messages arrived.
+    /// `ws`: script run after the `Speak` and `Flush` messages arrived. REST answers 500.
     async fn start(ws: WsScript) -> Self {
+        Self::start_with_rest(ws, None).await
+    }
+
+    /// Like [`Mock::start`], and `rest_body` (when set) is the 200 body of any REST request.
+    async fn start_with_rest(ws: WsScript, rest_body: Option<Vec<u8>>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         let ws_count = Arc::new(AtomicUsize::new(0));
         let http_count = Arc::new(AtomicUsize::new(0));
         let ws_uris = Arc::new(Mutex::new(Vec::new()));
+        let http_uris = Arc::new(Mutex::new(Vec::new()));
+        let rest_body = Arc::new(rest_body);
         let script = Arc::new(Mutex::new(Some(ws)));
         {
+            let http_uris = http_uris.clone();
             let ws_count = ws_count.clone();
             let http_count = http_count.clone();
             let ws_uris = ws_uris.clone();
@@ -58,6 +69,8 @@ impl Mock {
                     let http_count = http_count.clone();
                     let ws_uris = ws_uris.clone();
                     let script = script.clone();
+                    let http_uris = http_uris.clone();
+                    let rest_body = rest_body.clone();
                     tokio::spawn(async move {
                         if peek_is_websocket_upgrade(&stream).await {
                             ws_count.fetch_add(1, Ordering::SeqCst);
@@ -67,7 +80,7 @@ impl Mock {
                             }
                         } else {
                             http_count.fetch_add(1, Ordering::SeqCst);
-                            handle_http_refused(stream).await;
+                            handle_http(stream, http_uris, rest_body).await;
                         }
                     });
                 }
@@ -78,10 +91,15 @@ impl Mock {
             ws_count,
             http_count,
             ws_uris,
+            http_uris,
         }
     }
 
     fn provider(&self) -> Box<dyn TtsProvider> {
+        self.provider_with(None)
+    }
+
+    fn provider_with(&self, transport: Option<SpeechTransport>) -> Box<dyn TtsProvider> {
         DeepgramFactory
             .create_tts(&TtsConfig {
                 provider: TtsVendor::Deepgram,
@@ -91,6 +109,7 @@ impl Mock {
                 api_key: Some("test-key".into()),
                 endpoint: Some(self.endpoint.clone()),
                 sentence_case: Default::default(),
+                transport,
             })
             .unwrap()
     }
@@ -109,8 +128,12 @@ async fn peek_is_websocket_upgrade(stream: &TcpStream) -> bool {
     }
 }
 
-/// REST is never selected for the default model; answer 500 so a regression shows up.
-async fn handle_http_refused(mut stream: TcpStream) {
+/// REST: 200 with `rest_body` when configured, else 500 so a regression shows up.
+async fn handle_http(
+    mut stream: TcpStream,
+    uris: Arc<Mutex<Vec<String>>>,
+    rest_body: Arc<Option<Vec<u8>>>,
+) {
     let mut tmp = [0u8; 4096];
     let mut data = Vec::new();
     while !data.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -120,11 +143,27 @@ async fn handle_http_refused(mut stream: TcpStream) {
         }
         data.extend_from_slice(&tmp[..n]);
     }
-    let _ = stream
-        .write_all(
-            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        )
-        .await;
+    let head = String::from_utf8_lossy(&data).to_string();
+    if let Some(target) = head.split_whitespace().nth(1) {
+        uris.lock().unwrap().push(target.to_string());
+    }
+    match rest_body.as_ref() {
+        Some(body) => {
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/l16\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes()).await;
+            let _ = stream.write_all(body).await;
+        }
+        None => {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+        }
+    }
     let _ = stream.shutdown().await;
 }
 
@@ -424,4 +463,78 @@ async fn ws_that_stalls_after_audio_times_out() {
         drain(&mut rig.rx).is_empty(),
         "exactly one chunk reached the sink"
     );
+}
+
+fn ws_ok_script() -> WsScript {
+    script(|mut ws| async move {
+        ws.send(audio_msg(1)).await.unwrap();
+        ws.send(flushed_msg()).await.unwrap();
+        let _ = ws.close(None).await;
+    })
+}
+
+async fn run_once(provider: &dyn TtsProvider) -> (Vec<TtsAudioChunk>, Vec<TtsAudioChunk>) {
+    let mut rig = sink_rig();
+    let chunks = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out")
+    .expect("synthesize failed");
+    (chunks, drain(&mut rig.rx))
+}
+
+#[tokio::test]
+async fn explicit_websocket_transport_uses_the_ws_endpoint() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; CHUNK_BYTES])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    let (_, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count.load(Ordering::SeqCst), 1);
+    assert_eq!(mock.http_count.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn explicit_http_transport_uses_the_rest_endpoint() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; CHUNK_BYTES])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(mock.ws_count.load(Ordering::SeqCst), 0, "no WebSocket");
+    assert_eq!(mock.http_count.load(Ordering::SeqCst), 1);
+    let uris = mock.http_uris.lock().unwrap().clone();
+    assert!(uris[0].starts_with("/v1/speak"), "{}", uris[0]);
+    // The REST body reaches the sink exactly once and equals what is returned.
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(sunk[0].pcm.len(), CHUNK_BYTES * 2);
+    let returned: usize = chunks.iter().map(|c| c.pcm.len()).sum();
+    assert_eq!(returned, sunk[0].pcm.len());
+}
+
+#[tokio::test]
+async fn auto_transport_is_the_catalog_default_websocket() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; CHUNK_BYTES])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Auto));
+    let (_, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count.load(Ordering::SeqCst), 1);
+    assert_eq!(mock.http_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn unsupported_stt_transport_fails_at_construction() {
+    let result = DeepgramFactory.create_stt(&SttConfig {
+        provider: SttVendor::Deepgram,
+        model: None,
+        model_path: None,
+        language: None,
+        api_key: Some("k".into()),
+        endpoint: None,
+        transport: Some(SpeechTransport::Http),
+    });
+    match result {
+        Err(SpeechError::Config(message)) => assert!(message.contains("allowed: auto, websocket")),
+        Err(other) => panic!("expected a Config error, got {other:?}"),
+        Ok(_) => panic!("http STT must be rejected"),
+    }
 }

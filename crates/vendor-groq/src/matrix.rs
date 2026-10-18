@@ -104,3 +104,70 @@ mod tests {
         assert_eq!(text, "hello");
     }
 }
+
+/// Validate `TtsConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_tts_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "groq",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("groq"),
+        voice_catalog::default_tts_transport("groq"),
+    )
+    .map(|_| ())
+}
+
+/// Validate `SttConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_stt_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "groq",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("groq"),
+        voice_catalog::default_stt_transport("groq"),
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use node_webrtc_rust_speech::config::SpeechTransport;
+    use node_webrtc_rust_speech::error::SpeechError;
+
+    #[test]
+    fn tts_transport_accepts_auto_and_http_and_rejects_websocket() {
+        assert_eq!(voice_catalog::tts_transports("groq"), &["http"]);
+        assert!(check_tts_transport(None).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Http)).is_ok());
+        match check_tts_transport(Some(SpeechTransport::Websocket)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "groq tts transport 'websocket' is not supported; allowed: auto, http"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stt_transport_accepts_auto_and_http_and_rejects_websocket() {
+        assert_eq!(voice_catalog::stt_transports("groq"), &["http"]);
+        assert!(check_stt_transport(None).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Http)).is_ok());
+        match check_stt_transport(Some(SpeechTransport::Websocket)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "groq stt transport 'websocket' is not supported; allowed: auto, http"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
+}

@@ -55,3 +55,11 @@ Connect 10 s, first audio (response headers and first body chunk) 15 s, between 
 cargo test -p node-webrtc-rust-vendor-elevenlabs --lib
 cargo test -p node-webrtc-rust-vendor-elevenlabs --features live --test mock_server_test
 ```
+
+## Transport
+
+Config: `tts.transport`: `auto` (default), `http` or `websocket`. `stt.transport`: `auto` or `websocket`. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+TTS `http` (chunked `…/stream`, or the full-body POST for `eleven_v3`) and TTS `websocket` (`…/stream-input`). `websocket` is rejected at construction for models the socket does not support (`eleven_v3`). STT is always the Scribe realtime WebSocket.
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `websocket`. Default measured in a later change.

@@ -50,3 +50,11 @@ cargo test -p node-webrtc-rust-vendor-aws --lib
 ```
 
 Live tests require AWS credentials and are skipped in CI when unset.
+
+## Transport
+
+Config: `tts.transport` and `stt.transport`: `auto` (default) or `http`. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+Polly and Transcribe streaming go through the AWS SDK over HTTP.
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `http`. Default measured in a later change.

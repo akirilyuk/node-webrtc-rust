@@ -122,6 +122,7 @@ impl Harness {
                 language: Some("en".into()),
                 api_key: Some("test-token".into()),
                 endpoint: Some(url.clone()),
+                transport: None,
             }),
             tts: Some(TtsConfig {
                 provider: TtsVendor::ClusterSherpa,
@@ -131,6 +132,7 @@ impl Harness {
                 api_key: Some("test-token".into()),
                 endpoint: Some(url.clone()),
                 sentence_case: Default::default(),
+                transport: None,
             }),
             vad,
             ..Default::default()

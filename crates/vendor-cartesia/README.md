@@ -41,3 +41,11 @@ STT: this vendor is TTS-only. Pair with another STT provider.
 cargo test -p node-webrtc-rust-vendor-cartesia --lib
 cargo test -p node-webrtc-rust-vendor-cartesia --features live --test mock_server_test
 ```
+
+## Transport
+
+Config: `tts.transport`: `auto` (default), `websocket` or `http`. Cartesia has no STT. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+TTS `websocket` (contexts socket, with the existing REST fallback only while no audio reached the sink). TTS `http` (REST bytes only, the body is read in full before it is sent to the sink today).
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `websocket`. Default measured in a later change.

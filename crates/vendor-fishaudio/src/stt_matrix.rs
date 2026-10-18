@@ -14,10 +14,30 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use node_webrtc_rust_speech::config::SpeechTransport;
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::resolve_transport;
 use node_webrtc_rust_voice_catalog as voice_catalog;
 use serde::Deserialize;
 
 use crate::matrix::DEFAULT_BASE_URL;
+
+/// STT transports this crate implements. Lockstep with `voice_catalog::stt_transports("fishaudio")`.
+pub fn implemented_stt_transports() -> &'static [&'static str] {
+    &["websocket"]
+}
+
+/// Resolve `SttConfig.transport` against the voice catalog (`None` / `auto` = catalog default).
+pub fn resolve_stt_transport(requested: Option<SpeechTransport>) -> SpeechResult<SpeechTransport> {
+    resolve_transport(
+        "fishaudio",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("fishaudio"),
+        voice_catalog::default_stt_transport("fishaudio"),
+    )?
+    .ok_or_else(|| SpeechError::Config("fishaudio stt has no catalog default transport".into()))
+}
 
 /// Compat guide that documents the realtime STT socket.
 pub static STT_DOC: LazyLock<&'static str> = LazyLock::new(|| {
@@ -131,6 +151,30 @@ pub fn parse_server_message(raw: &str) -> ServerMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn implemented_transports_match_the_catalog() {
+        let mut implemented = implemented_stt_transports().to_vec();
+        let mut catalog = voice_catalog::stt_transports("fishaudio").to_vec();
+        implemented.sort_unstable();
+        catalog.sort_unstable();
+        assert_eq!(implemented, catalog);
+    }
+
+    #[test]
+    fn stt_transport_auto_is_websocket_and_http_is_rejected() {
+        assert_eq!(
+            resolve_stt_transport(None).unwrap(),
+            SpeechTransport::Websocket
+        );
+        match resolve_stt_transport(Some(SpeechTransport::Http)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "fishaudio stt transport 'http' is not supported; allowed: auto, websocket"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn default_model_is_transcribe_1() {

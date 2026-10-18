@@ -197,8 +197,78 @@ mod tests {
             language: Some("en-US".into()),
             api_key: None,
             endpoint: Some("projects/p/locations/eu/recognizers/_".into()),
+            transport: None,
         };
         let loc = parse_v2_locator(&config).expect("locator");
         assert_eq!(loc.location, "eu");
+    }
+}
+
+/// Validate `TtsConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_tts_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "google",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("google"),
+        voice_catalog::default_tts_transport("google"),
+    )
+    .map(|_| ())
+}
+
+/// Validate `SttConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_stt_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "google",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("google"),
+        voice_catalog::default_stt_transport("google"),
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use node_webrtc_rust_speech::config::SpeechTransport;
+    use node_webrtc_rust_speech::error::SpeechError;
+
+    #[test]
+    fn tts_transport_is_decided_by_the_model() {
+        assert!(check_tts_transport(None).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(voice_catalog::tts_transports("google").is_empty());
+        for requested in [SpeechTransport::Http, SpeechTransport::Websocket] {
+            match check_tts_transport(Some(requested)) {
+                Err(SpeechError::Config(message)) => assert_eq!(
+                    message,
+                    "google tts transport is decided by the model; use auto"
+                ),
+                other => panic!("expected a Config error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stt_transport_is_decided_by_the_model() {
+        assert!(check_stt_transport(None).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(voice_catalog::stt_transports("google").is_empty());
+        for requested in [SpeechTransport::Http, SpeechTransport::Websocket] {
+            match check_stt_transport(Some(requested)) {
+                Err(SpeechError::Config(message)) => assert_eq!(
+                    message,
+                    "google stt transport is decided by the model; use auto"
+                ),
+                other => panic!("expected a Config error, got {other:?}"),
+            }
+        }
     }
 }

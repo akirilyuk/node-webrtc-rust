@@ -14,6 +14,7 @@ pub struct AssemblyAiStt {
 
 impl AssemblyAiStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        crate::matrix::check_stt_transport(config.transport)?;
         let speech_model = config
             .model
             .clone()

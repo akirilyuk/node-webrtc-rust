@@ -108,3 +108,11 @@ Live matrix (`tests/live_openai_matrix.rs`, `OPENAI_LIVE=1`):
 | TTS SSE allow (`gpt-4o-mini-tts`) / deny (`tts-1`, `tts-1-hd`)                   | `live_tts_sse_allow_and_deny`                       |
 
 Optional: `gpt-4o-mini-tts-2025-12-15` is exercised inside `live_tts_audio_and_progressive` when the API accepts that model id.
+
+## Transport
+
+Config: `tts.transport`: `auto` (default) or `http`. `stt.transport`: `auto` only; the STT model decides between file upload and the realtime socket. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+TTS is the streamed `audio/speech` HTTP response.
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `http`. Default measured in a later change.

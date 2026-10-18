@@ -244,6 +244,7 @@ async fn transcribe_1_live_vad_gated_roundtrip() {
         language: None,
         api_key: Some(key),
         endpoint: None,
+        transport: None,
     })
     .unwrap_or_else(|err| panic!("stt config: {err}"));
     stt.start()

@@ -150,6 +150,7 @@ async fn casing_after_first_sentence_changes_first_audio_and_pause() {
         api_key: None,
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     };
     let tts = SherpaFactory.create_tts(&config).expect("create TTS");
     tts.bind_session_context(&VoiceSessionContext {

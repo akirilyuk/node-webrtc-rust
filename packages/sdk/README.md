@@ -132,6 +132,7 @@ interface VoiceAgentConfig {
     modelPath?: string // local-sherpa: ONNX model directory
     language?: string
     apiKey?: string // or env var — see vendor table
+    transport?: 'auto' | 'websocket' | 'http' // see "Transport" below (default 'auto')
   }
   tts?: {
     provider:
@@ -146,6 +147,7 @@ interface VoiceAgentConfig {
     modelPath?: string // local-sherpa: Piper/VITS directory
     voice?: string
     apiKey?: string
+    transport?: 'auto' | 'websocket' | 'http' // see "Transport" below (default 'auto')
   }
   events?: {
     mode?: 'callback' | 'stream' | 'both' // default 'both'
@@ -171,6 +173,23 @@ Providers are **mix-and-match** per session. **Official API docs:** [`examples/s
 | `aws`          | ✓   | ✓   | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`              | [Transcribe stream](https://docs.aws.amazon.com/transcribe/latest/dg/streaming-setting-up.html) · [Polly](https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html)                                                                                                                                    |
 | `local-sherpa` | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` | [Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/) · [Models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)                                                                                                                                                                                      |
 | `mock`         | ✓   | ✓   | _(none — use for CI/local)_                                             | —                                                                                                                                                                                                                                                                                                                   |
+
+#### Transport
+
+`stt.transport` / `tts.transport` choose how a cloud vendor is reached: `'websocket'`, `'http'` (streamed HTTP; HTTP/2 when the vendor negotiates it, otherwise HTTP/1.1) or `'auto'` (default, the vendor default listed in `@node-webrtc-rust/voice-catalog`). A value the vendor does not offer for that leg fails the config, naming the allowed values. Today's defaults are unchanged; they are measured against the vendors' live APIs in a later change.
+
+| Vendor                 | TTS (default first)        | STT                        |
+| ---------------------- | -------------------------- | -------------------------- |
+| `deepgram`             | `websocket`, `http`        | `websocket`                |
+| `elevenlabs`           | `http`, `websocket`        | `websocket`                |
+| `cartesia`             | `websocket`, `http`        | — (no cloud STT)           |
+| `fishaudio`            | `http`, `websocket`        | `websocket`                |
+| `openai`               | `http`                     | the model decides (`auto`) |
+| `assemblyai`           | —                          | `websocket`                |
+| `groq`, `azure`, `aws` | `http`                     | `http`                     |
+| `google`               | the voice decides (`auto`) | the model decides (`auto`) |
+
+Query the same lists in code with `ttsTransports(vendor)`, `sttTransports(vendor)`, `defaultTtsTransport(vendor)` and `defaultSttTransport(vendor)` from `@node-webrtc-rust/voice-catalog`.
 
 #### Internal vendors
 

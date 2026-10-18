@@ -119,6 +119,7 @@ async fn make_agent(fail_first: usize) -> Arc<VoiceAgent> {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         ..Default::default()
     };

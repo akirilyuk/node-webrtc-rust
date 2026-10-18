@@ -194,6 +194,7 @@ fn stt_config() -> SttConfig {
         language: None,
         api_key: None,
         endpoint: None,
+        transport: None,
     }
 }
 

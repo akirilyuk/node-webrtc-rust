@@ -25,6 +25,7 @@ fn stt_cfg(endpoint: &str) -> SttConfig {
         language: Some("en".into()),
         api_key: Some("test-token".into()),
         endpoint: Some(endpoint.to_string()),
+        transport: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn tts_cfg(endpoint: &str) -> TtsConfig {
         api_key: Some("test-token".into()),
         endpoint: Some(endpoint.to_string()),
         sentence_case: Default::default(),
+        transport: None,
     }
 }
 
@@ -190,6 +192,7 @@ async fn endpoint_precedence_env_fallback() {
         language: Some("en".into()),
         api_key: Some("t".into()),
         endpoint: None,
+        transport: None,
     };
     let mut stt = ClusterSherpaStt::new(&cfg).unwrap();
     stt.start().await.unwrap();

@@ -37,6 +37,7 @@ struct AzureSttInner {
 
 impl AzureStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        crate::matrix::check_stt_transport(config.transport)?;
         let mode = config
             .model
             .clone()
@@ -337,6 +338,7 @@ mod tests {
             language: Some("en-US".into()),
             api_key: Some("k".into()),
             endpoint: Some("res.cognitiveservices.azure.com".into()),
+            transport: None,
         })
         .unwrap();
         assert!(!stt.emits_partials());
@@ -352,6 +354,7 @@ mod tests {
                 language: Some("en-US".into()),
                 api_key: Some("k".into()),
                 endpoint: Some("res.cognitiveservices.azure.com".into()),
+                transport: None,
             }),
             Err(SpeechError::Config(_))
         ));

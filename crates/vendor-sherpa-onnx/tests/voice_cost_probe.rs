@@ -139,6 +139,7 @@ fn tts_config(model_path: &str) -> TtsConfig {
         api_key: None,
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     }
 }
 
@@ -275,6 +276,7 @@ fn stt_config(model_path: &str) -> SttConfig {
         language: Some("en".into()),
         api_key: None,
         endpoint: None,
+        transport: None,
     }
 }
 

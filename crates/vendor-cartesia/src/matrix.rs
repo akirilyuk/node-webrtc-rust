@@ -10,7 +10,27 @@ pub const BYTES_DOC: &str = "https://docs.cartesia.ai/api-reference/tts/bytes";
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use node_webrtc_rust_speech::config::SpeechTransport;
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::resolve_transport;
 use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// TTS transports this crate implements. Lockstep with `voice_catalog::tts_transports("cartesia")`.
+pub fn implemented_tts_transports() -> &'static [&'static str] {
+    &["websocket", "http"]
+}
+
+/// Resolve `TtsConfig.transport` against the voice catalog (`None` / `auto` = catalog default).
+pub fn resolve_tts_transport(requested: Option<SpeechTransport>) -> SpeechResult<SpeechTransport> {
+    resolve_transport(
+        "cartesia",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("cartesia"),
+        voice_catalog::default_tts_transport("cartesia"),
+    )?
+    .ok_or_else(|| SpeechError::Config("cartesia tts has no catalog default transport".into()))
+}
 
 /// Default from current WebSocket `model_id` enum (not legacy `sonic-english`).
 pub fn default_model_id() -> &'static str {
@@ -78,6 +98,31 @@ pub fn websocket_url(base_url: &str, api_version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn implemented_transports_match_the_catalog() {
+        let mut implemented = implemented_tts_transports().to_vec();
+        let mut catalog = voice_catalog::tts_transports("cartesia").to_vec();
+        implemented.sort_unstable();
+        catalog.sort_unstable();
+        assert_eq!(implemented, catalog);
+    }
+
+    #[test]
+    fn auto_is_websocket_and_http_is_selectable() {
+        assert_eq!(
+            resolve_tts_transport(None).unwrap(),
+            SpeechTransport::Websocket
+        );
+        assert_eq!(
+            resolve_tts_transport(Some(SpeechTransport::Auto)).unwrap(),
+            SpeechTransport::Websocket
+        );
+        assert_eq!(
+            resolve_tts_transport(Some(SpeechTransport::Http)).unwrap(),
+            SpeechTransport::Http
+        );
+    }
 
     #[test]
     fn default_model_in_documented_set() {

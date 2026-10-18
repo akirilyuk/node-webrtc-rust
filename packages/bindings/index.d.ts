@@ -319,6 +319,8 @@ export interface JsSttConfig {
   language?: string
   apiKey?: string
   endpoint?: string
+  /** `"auto"`, `"websocket"` or `"http"`; omitted = `"auto"` (the voice-catalog default). */
+  transport?: string
 }
 export interface JsTtsConfig {
   provider: JsTtsVendor
@@ -330,6 +332,8 @@ export interface JsTtsConfig {
   postUtteranceSilenceMs?: number
   /** `"auto"` (default) or `"off"`; see `SentenceCase`. */
   sentenceCase?: string
+  /** `"auto"`, `"websocket"` or `"http"`; omitted = `"auto"` (the voice-catalog default). */
+  transport?: string
 }
 export const enum JsNoiseSuppressionProvider {
   None = 'none',

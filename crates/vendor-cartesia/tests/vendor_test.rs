@@ -13,6 +13,7 @@ fn cartesia_factory_creates_tts() {
         api_key: Some("test-key".into()),
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     });
     assert!(tts.is_ok());
 }

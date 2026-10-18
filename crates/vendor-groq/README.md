@@ -48,3 +48,11 @@ cargo test -p node-webrtc-rust-vendor-groq --lib
 ```
 
 Live tests (optional): set `GROQ_API_KEY` — not required for CI unit/matrix tests.
+
+## Transport
+
+Config: `tts.transport` and `stt.transport`: `auto` (default) or `http`. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+Both legs are plain HTTP requests.
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `http`. Default measured in a later change.

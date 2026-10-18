@@ -2,9 +2,9 @@
 //! Local mock ElevenLabs server (HTTP/1.1 and WebSocket on one port). Guards the sink contract
 //! of `TtsProvider`: each PCM chunk reaches the progressive sink exactly once, the empty-stream
 //! fallback reaches the sink, a cancel never falls back, and every wait is bounded. The
-//! WebSocket stream-input path is not selected by `tts_progressive_transport`; its tests call
-//! `ElevenLabsTts::synthesize_websocket_stream` directly and guard that a close or socket error
-//! before `isFinal` is an error.
+//! WebSocket stream-input path is selected by the `websocket` customer transport; most of its
+//! tests call `ElevenLabsTts::synthesize_websocket_stream` directly and guard that a close or
+//! socket error before `isFinal` is an error.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
-use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor};
+use node_webrtc_rust_speech::config::{
+    SpeechTransport, SttConfig, SttVendor, TtsConfig, TtsVendor,
+};
 use node_webrtc_rust_speech::error::SpeechError;
 use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
@@ -165,11 +167,20 @@ impl Mock {
             api_key: Some("test-key".into()),
             endpoint: Some(self.endpoint.clone()),
             sentence_case: Default::default(),
+            transport: None,
         })
         .unwrap()
     }
 
     fn provider(&self, model: Option<&str>) -> Box<dyn TtsProvider> {
+        self.provider_with(model, None)
+    }
+
+    fn provider_with(
+        &self,
+        model: Option<&str>,
+        transport: Option<SpeechTransport>,
+    ) -> Box<dyn TtsProvider> {
         ElevenLabsFactory
             .create_tts(&TtsConfig {
                 provider: TtsVendor::Elevenlabs,
@@ -179,6 +190,7 @@ impl Mock {
                 api_key: Some("test-key".into()),
                 endpoint: Some(self.endpoint.clone()),
                 sentence_case: Default::default(),
+                transport,
             })
             .unwrap()
     }
@@ -1015,4 +1027,115 @@ async fn ws_that_stalls_after_audio_times_out() {
         drain(&mut rig.rx).is_empty(),
         "exactly one chunk reached the sink"
     );
+}
+
+fn http_stream_script() -> Option<StreamScript> {
+    script(|mut stream| async move {
+        write_chunked_head(&mut stream).await;
+        write_chunk(&mut stream, &vec![1u8; CHUNK_BYTES]).await;
+        write_chunked_end(&mut stream).await;
+    })
+}
+
+fn ws_ok_script() -> WsScript {
+    ws_script(|mut ws| async move {
+        ws.send(audio_msg(1)).await.unwrap();
+        ws.send(final_msg()).await.unwrap();
+        let _ = ws.close(None).await;
+    })
+}
+
+async fn run_progressive(provider: &dyn TtsProvider) -> Vec<TtsAudioChunk> {
+    let mut rig = sink_rig();
+    tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out")
+    .expect("synthesize failed");
+    drain(&mut rig.rx)
+}
+
+#[tokio::test]
+async fn explicit_websocket_transport_goes_to_the_ws_endpoint() {
+    let mock = Mock::start_with(
+        http_stream_script(),
+        Some(ws_ok_script()),
+        vec![7u8; CHUNK_BYTES],
+    )
+    .await;
+    let provider = mock.provider_with(None, Some(SpeechTransport::Websocket));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1, "the WS audio reaches the sink once");
+    assert_eq!(mock.ws_hits(), 1);
+    assert_eq!(mock.stream_hits(), 0);
+    assert_eq!(mock.full_hits(), 0);
+}
+
+#[tokio::test]
+async fn explicit_http_transport_goes_to_the_stream_endpoint() {
+    let mock = Mock::start_with(
+        http_stream_script(),
+        Some(ws_ok_script()),
+        vec![7u8; CHUNK_BYTES],
+    )
+    .await;
+    let provider = mock.provider_with(None, Some(SpeechTransport::Http));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.stream_hits(), 1);
+    assert_eq!(mock.ws_hits(), 0);
+}
+
+#[tokio::test]
+async fn auto_transport_is_the_catalog_default_http() {
+    let mock = Mock::start_with(
+        http_stream_script(),
+        Some(ws_ok_script()),
+        vec![7u8; CHUNK_BYTES],
+    )
+    .await;
+    let provider = mock.provider_with(None, Some(SpeechTransport::Auto));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.stream_hits(), 1);
+    assert_eq!(mock.ws_hits(), 0);
+}
+
+#[test]
+fn websocket_transport_is_rejected_for_eleven_v3_at_construction() {
+    let result = ElevenLabsFactory.create_tts(&TtsConfig {
+        provider: TtsVendor::Elevenlabs,
+        model: Some("eleven_v3".into()),
+        model_path: None,
+        voice: None,
+        api_key: Some("k".into()),
+        endpoint: None,
+        sentence_case: Default::default(),
+        transport: Some(SpeechTransport::Websocket),
+    });
+    match result {
+        Err(SpeechError::Config(message)) => assert!(message.contains("eleven_v3"), "{message}"),
+        Err(other) => panic!("expected a Config error, got {other:?}"),
+        Ok(_) => panic!("websocket + eleven_v3 must be rejected"),
+    }
+}
+
+#[test]
+fn unsupported_stt_transport_fails_at_construction() {
+    let result = ElevenLabsFactory.create_stt(&SttConfig {
+        provider: SttVendor::Elevenlabs,
+        model: None,
+        model_path: None,
+        language: None,
+        api_key: Some("k".into()),
+        endpoint: None,
+        transport: Some(SpeechTransport::Http),
+    });
+    match result {
+        Err(SpeechError::Config(message)) => assert!(message.contains("allowed: auto, websocket")),
+        Err(other) => panic!("expected a Config error, got {other:?}"),
+        Ok(_) => panic!("http STT must be rejected"),
+    }
 }

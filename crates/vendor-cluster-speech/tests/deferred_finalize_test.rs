@@ -26,6 +26,7 @@ fn stt_cfg(endpoint: &str) -> SttConfig {
         language: Some("en".into()),
         api_key: Some("test-token".into()),
         endpoint: Some(endpoint.to_string()),
+        transport: None,
     }
 }
 

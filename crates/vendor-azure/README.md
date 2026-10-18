@@ -53,3 +53,11 @@ REST SSML with `X-Microsoft-OutputFormat: riff-16khz-16bit-mono-pcm`. Full-body 
 ```bash
 cargo test -p node-webrtc-rust-vendor-azure --lib
 ```
+
+## Transport
+
+Config: `tts.transport` and `stt.transport`: `auto` (default) or `http`. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+Both legs are REST requests (the realtime speech API is SDK-only).
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `http`. Default measured in a later change.

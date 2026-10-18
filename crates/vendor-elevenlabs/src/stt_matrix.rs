@@ -6,7 +6,27 @@
 
 use std::sync::LazyLock;
 
+use node_webrtc_rust_speech::config::SpeechTransport;
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::resolve_transport;
 use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// STT transports this crate implements. Lockstep with `voice_catalog::stt_transports("elevenlabs")`.
+pub fn implemented_stt_transports() -> &'static [&'static str] {
+    &["websocket"]
+}
+
+/// Resolve `SttConfig.transport` against the voice catalog (`None` / `auto` = catalog default).
+pub fn resolve_stt_transport(requested: Option<SpeechTransport>) -> SpeechResult<SpeechTransport> {
+    resolve_transport(
+        "elevenlabs",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("elevenlabs"),
+        voice_catalog::default_stt_transport("elevenlabs"),
+    )?
+    .ok_or_else(|| SpeechError::Config("elevenlabs stt has no catalog default transport".into()))
+}
 
 pub static REALTIME_STT_DOC: LazyLock<&'static str> = LazyLock::new(|| {
     voice_catalog::stt_docs_url("elevenlabs").expect("elevenlabs stt docs in voice catalog")
@@ -85,6 +105,30 @@ pub fn parse_realtime_message(
 mod tests {
     use super::*;
     use node_webrtc_rust_speech::pipeline::SttTranscript;
+
+    #[test]
+    fn implemented_transports_match_the_catalog() {
+        let mut implemented = implemented_stt_transports().to_vec();
+        let mut catalog = voice_catalog::stt_transports("elevenlabs").to_vec();
+        implemented.sort_unstable();
+        catalog.sort_unstable();
+        assert_eq!(implemented, catalog);
+    }
+
+    #[test]
+    fn stt_transport_auto_is_websocket_and_http_is_rejected() {
+        assert_eq!(
+            resolve_stt_transport(None).unwrap(),
+            SpeechTransport::Websocket
+        );
+        match resolve_stt_transport(Some(SpeechTransport::Http)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "elevenlabs stt transport 'http' is not supported; allowed: auto, websocket"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn only_scribe_v2_realtime_allowed() {

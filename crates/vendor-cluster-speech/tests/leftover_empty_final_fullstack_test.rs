@@ -52,6 +52,7 @@ fn stt_cfg(endpoint: &str) -> node_webrtc_rust_speech::SttConfig {
         language: Some("en".into()),
         api_key: Some("test-token".into()),
         endpoint: Some(endpoint.to_string()),
+        transport: None,
     }
 }
 
@@ -125,6 +126,7 @@ async fn cluster_leftover_empty_final_while_speaking_does_not_drop_real_utteranc
             api_key: Some("test-token".into()),
             endpoint: Some(url.clone()),
             sentence_case: Default::default(),
+            transport: None,
         }),
         vad,
         ..Default::default()

@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::stt_matrix::{
     default_stt_model, input_audio_chunk_json, parse_realtime_message, realtime_websocket_url,
-    validate_stt_model,
+    resolve_stt_transport, validate_stt_model,
 };
 
 #[cfg(feature = "live")]
@@ -41,6 +41,8 @@ struct ElevenLabsSttInner {
 
 impl ElevenLabsStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        // The only STT transport is the WebSocket; an unsupported value fails the config here.
+        resolve_stt_transport(config.transport)?;
         let model = config
             .model
             .clone()
@@ -223,6 +225,7 @@ mod tests {
                 language: None,
                 api_key: Some("k".into()),
                 endpoint: None,
+                transport: None,
             }),
             Err(SpeechError::Config(_))
         ));

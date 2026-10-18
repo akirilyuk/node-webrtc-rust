@@ -5,7 +5,27 @@
 
 use std::sync::LazyLock;
 
+use node_webrtc_rust_speech::config::SpeechTransport;
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::resolve_transport;
 use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// STT transports this crate implements. Lockstep with `voice_catalog::stt_transports("deepgram")`.
+pub fn implemented_stt_transports() -> &'static [&'static str] {
+    &["websocket"]
+}
+
+/// Resolve `SttConfig.transport` against the voice catalog (`None` / `auto` = catalog default).
+pub fn resolve_stt_transport(requested: Option<SpeechTransport>) -> SpeechResult<SpeechTransport> {
+    resolve_transport(
+        "deepgram",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("deepgram"),
+        voice_catalog::default_stt_transport("deepgram"),
+    )?
+    .ok_or_else(|| SpeechError::Config("deepgram stt has no catalog default transport".into()))
+}
 
 /// Documented `model` query values for `wss://api.deepgram.com/v1/listen`.
 pub static DOCUMENTED_LISTEN_MODELS: LazyLock<&'static [&'static str]> =
@@ -71,6 +91,34 @@ pub fn parse_listen_results_message(
 mod tests {
     use super::*;
     use node_webrtc_rust_speech::pipeline::SttTranscript;
+
+    #[test]
+    fn implemented_transports_match_the_catalog() {
+        let mut implemented = implemented_stt_transports().to_vec();
+        let mut catalog = voice_catalog::stt_transports("deepgram").to_vec();
+        implemented.sort_unstable();
+        catalog.sort_unstable();
+        assert_eq!(implemented, catalog);
+    }
+
+    #[test]
+    fn stt_transport_auto_is_websocket_and_http_is_rejected() {
+        assert_eq!(
+            resolve_stt_transport(None).unwrap(),
+            SpeechTransport::Websocket
+        );
+        assert_eq!(
+            resolve_stt_transport(Some(SpeechTransport::Auto)).unwrap(),
+            SpeechTransport::Websocket
+        );
+        match resolve_stt_transport(Some(SpeechTransport::Http)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "deepgram stt transport 'http' is not supported; allowed: auto, websocket"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn nova_models_allowed() {

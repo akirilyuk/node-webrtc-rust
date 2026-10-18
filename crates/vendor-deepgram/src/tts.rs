@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use node_webrtc_rust_speech::config::TtsConfig;
+use node_webrtc_rust_speech::config::{SpeechTransport, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{
     duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
@@ -7,9 +7,9 @@ use node_webrtc_rust_speech::pcm::{
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 use crate::tts_matrix::{
-    default_speak_model, flush_json, speak_json, tts_progressive_transport, v1_speak_rest_url,
-    v1_speak_websocket_url, v2_speak_rest_url, v2_speak_websocket_url, TtsProgressiveTransport,
-    DEFAULT_BASE_URL,
+    default_speak_model, flush_json, resolve_tts_transport, speak_json, tts_progressive_transport,
+    v1_speak_rest_url, v1_speak_websocket_url, v2_speak_rest_url, v2_speak_websocket_url,
+    TtsProgressiveTransport, DEFAULT_BASE_URL,
 };
 #[cfg(feature = "live")]
 use crate::tts_matrix::{
@@ -19,6 +19,8 @@ use crate::tts_matrix::{
 pub struct DeepgramTts {
     api_key: Option<String>,
     model: String,
+    /// Resolved transport: `Websocket` streams progressively, `Http` posts to the REST endpoint.
+    transport: SpeechTransport,
     /// REST base (`TtsConfig.endpoint` or [`DEFAULT_BASE_URL`]); the WS host is derived from it.
     #[cfg_attr(not(feature = "live"), allow(dead_code))]
     base_url: String,
@@ -31,12 +33,14 @@ impl DeepgramTts {
             .clone()
             .unwrap_or_else(|| default_speak_model().to_string());
         crate::tts_matrix::validate_speak_model(&model).map_err(SpeechError::Config)?;
+        let transport = resolve_tts_transport(config.transport)?;
         Ok(Self {
             api_key: config
                 .api_key
                 .clone()
                 .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok()),
             model,
+            transport,
             base_url: config
                 .endpoint
                 .as_deref()
@@ -73,6 +77,12 @@ impl TtsProvider for DeepgramTts {
         text: &str,
         sink: Option<TtsProgressiveSink>,
     ) -> SpeechResult<Vec<TtsAudioChunk>> {
+        if self.transport == SpeechTransport::Http {
+            // Explicit `http`: the REST endpoint, full body today (streaming comes later).
+            let chunks = self.synthesize_rest(text).await?;
+            emit_chunks(sink.as_ref(), &chunks);
+            return Ok(chunks);
+        }
         match tts_progressive_transport(&self.model).map_err(SpeechError::Config)? {
             TtsProgressiveTransport::WebSocketV1 | TtsProgressiveTransport::WebSocketV2 => {
                 #[cfg(feature = "live")]
@@ -327,6 +337,7 @@ mod tests {
                 api_key: Some("k".into()),
                 endpoint: None,
                 sentence_case: Default::default(),
+                transport: None,
             }),
             Err(SpeechError::Config(_))
         ));
@@ -343,6 +354,7 @@ mod tests {
                 api_key: Some("k".into()),
                 endpoint: None,
                 sentence_case: Default::default(),
+                transport: None,
             })
             .is_ok());
         }

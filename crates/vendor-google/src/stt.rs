@@ -33,6 +33,7 @@ struct GoogleSttState {
 
 impl GoogleStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        crate::matrix::check_stt_transport(config.transport)?;
         let model = config
             .model
             .clone()
@@ -197,6 +198,7 @@ mod tests {
             language: Some("en-US".into()),
             api_key: None,
             endpoint: endpoint.map(str::to_string),
+            transport: None,
         }
     }
 
@@ -226,6 +228,7 @@ mod tests {
                 language: Some("en-US".into()),
                 api_key: None,
                 endpoint: None,
+                transport: None,
             }),
             Err(SpeechError::Config(_))
         ));

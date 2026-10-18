@@ -39,6 +39,12 @@ struct VendorEntryRaw {
     stt_models: Vec<String>,
     tts_models: Vec<String>,
     tts_voices: Vec<String>,
+    #[serde(default)]
+    stt_transports: Vec<String>,
+    #[serde(default)]
+    tts_transports: Vec<String>,
+    default_stt_transport: Option<String>,
+    default_tts_transport: Option<String>,
     home: Option<String>,
     stt_docs: Option<String>,
     tts_docs: Option<String>,
@@ -59,6 +65,10 @@ pub struct VendorEntry {
     pub stt_docs: Option<&'static str>,
     pub tts_docs: Option<&'static str>,
     pub models_docs: Option<&'static str>,
+    pub default_stt_transport: Option<&'static str>,
+    pub default_tts_transport: Option<&'static str>,
+    stt_transports: &'static [&'static str],
+    tts_transports: &'static [&'static str],
     stt_models: &'static [&'static str],
     tts_models: &'static [&'static str],
     tts_voices: &'static [&'static str],
@@ -75,6 +85,16 @@ impl VendorEntry {
 
     pub fn tts_voices(&self) -> &'static [&'static str] {
         self.tts_voices
+    }
+
+    /// Transports the customer may pick for STT (`websocket` / `http`). Empty when the model decides.
+    pub fn stt_transports(&self) -> &'static [&'static str] {
+        self.stt_transports
+    }
+
+    /// Transports the customer may pick for TTS (`websocket` / `http`). Empty when the voice or model decides.
+    pub fn tts_transports(&self) -> &'static [&'static str] {
+        self.tts_transports
     }
 }
 
@@ -120,6 +140,10 @@ fn catalog() -> &'static Catalog {
                 stt_docs: raw.stt_docs.map(leak_str),
                 tts_docs: raw.tts_docs.map(leak_str),
                 models_docs: raw.models_docs.map(leak_str),
+                default_stt_transport: raw.default_stt_transport.map(leak_str),
+                default_tts_transport: raw.default_tts_transport.map(leak_str),
+                stt_transports: leak_str_slice(&raw.stt_transports),
+                tts_transports: leak_str_slice(&raw.tts_transports),
                 stt_models: leak_str_slice(&raw.stt_models),
                 tts_models: leak_str_slice(&raw.tts_models),
                 tts_voices: leak_str_slice(&raw.tts_voices),
@@ -171,6 +195,26 @@ pub fn default_tts_voice(vendor_id: &str) -> Option<&'static str> {
     vendor(vendor_id).and_then(|v| v.default_tts_voice)
 }
 
+/// Selectable STT transports for a vendor (empty when none, or the vendor is unknown).
+pub fn stt_transports(vendor_id: &str) -> &'static [&'static str] {
+    vendor(vendor_id).map(|v| v.stt_transports()).unwrap_or(&[])
+}
+
+/// Selectable TTS transports for a vendor (empty when none, or the vendor is unknown).
+pub fn tts_transports(vendor_id: &str) -> &'static [&'static str] {
+    vendor(vendor_id).map(|v| v.tts_transports()).unwrap_or(&[])
+}
+
+/// Transport used by `auto` for STT (today's behaviour). `None` when the vendor has no selectable STT transport.
+pub fn default_stt_transport(vendor_id: &str) -> Option<&'static str> {
+    vendor(vendor_id).and_then(|v| v.default_stt_transport)
+}
+
+/// Transport used by `auto` for TTS (today's behaviour). `None` when the vendor has no selectable TTS transport.
+pub fn default_tts_transport(vendor_id: &str) -> Option<&'static str> {
+    vendor(vendor_id).and_then(|v| v.default_tts_transport)
+}
+
 pub fn stt_docs_url(vendor_id: &str) -> Option<&'static str> {
     vendor(vendor_id).and_then(|v| v.stt_docs)
 }
@@ -203,6 +247,58 @@ mod tests {
         assert_eq!(voices.len(), 761);
         assert!(voices.contains(&"en-US-JennyNeural"));
         assert!(voices.contains(&"en-US-Ava:DragonHDLatestNeural"));
+    }
+
+    #[test]
+    fn deepgram_lists_two_tts_transports() {
+        assert_eq!(tts_transports("deepgram"), &["websocket", "http"]);
+        assert_eq!(default_tts_transport("deepgram"), Some("websocket"));
+        assert_eq!(stt_transports("deepgram"), &["websocket"]);
+    }
+
+    #[test]
+    fn google_has_no_selectable_transport() {
+        assert!(tts_transports("google").is_empty());
+        assert!(stt_transports("google").is_empty());
+        assert_eq!(default_tts_transport("google"), None);
+        assert_eq!(default_stt_transport("google"), None);
+    }
+
+    #[test]
+    fn unknown_vendor_has_no_transports() {
+        assert!(tts_transports("not-a-vendor").is_empty());
+        assert!(stt_transports("not-a-vendor").is_empty());
+        assert_eq!(default_tts_transport("not-a-vendor"), None);
+    }
+
+    #[test]
+    fn default_transport_is_in_list_for_every_vendor() {
+        for v in catalog().vendors.iter() {
+            for (leg, list, def) in [
+                ("tts", v.tts_transports(), v.default_tts_transport),
+                ("stt", v.stt_transports(), v.default_stt_transport),
+            ] {
+                for t in list {
+                    assert!(
+                        matches!(*t, "websocket" | "http"),
+                        "{} {leg} transport {t}",
+                        v.id
+                    );
+                }
+                match def {
+                    Some(d) => assert!(
+                        list.contains(&d),
+                        "{} default {leg} transport {d} not in {list:?}",
+                        v.id
+                    ),
+                    None => assert!(
+                        list.is_empty(),
+                        "{} has {leg} transports but no default",
+                        v.id
+                    ),
+                }
+            }
+        }
     }
 
     #[test]

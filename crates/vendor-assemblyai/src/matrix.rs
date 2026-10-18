@@ -85,3 +85,40 @@ mod tests {
         assert_eq!(fin, SttTranscript::Final("hello world".into()));
     }
 }
+
+/// Validate `SttConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_stt_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "assemblyai",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("assemblyai"),
+        voice_catalog::default_stt_transport("assemblyai"),
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use node_webrtc_rust_speech::config::SpeechTransport;
+    use node_webrtc_rust_speech::error::SpeechError;
+
+    #[test]
+    fn stt_transport_accepts_auto_and_websocket_and_rejects_http() {
+        assert_eq!(voice_catalog::stt_transports("assemblyai"), &["websocket"]);
+        assert!(check_stt_transport(None).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Websocket)).is_ok());
+        match check_stt_transport(Some(SpeechTransport::Http)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "assemblyai stt transport 'http' is not supported; allowed: auto, websocket"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
+}

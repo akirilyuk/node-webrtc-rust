@@ -52,6 +52,7 @@ fn stt_config(model: &str) -> SttConfig {
         language,
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         endpoint: None,
+        transport: None,
     }
 }
 
@@ -64,6 +65,7 @@ fn tts_config(model: &str) -> TtsConfig {
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     }
 }
 

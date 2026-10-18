@@ -16,14 +16,20 @@ import {
 
 describe('roundtrip-counting helpers', () => {
   it('postTtsSilenceSeconds uses hold + minSilence (not Rust endpoint tail)', () => {
-    const config = { vad: VOICE_AGENT_VAD_PRESET }
+    // Pinned: the arithmetic below is for 1300/1000, independent of the library defaults.
+    const config = {
+      vad: { ...VOICE_AGENT_VAD_PRESET, minSilenceDurationMs: 1300, sttGateHoldMs: 1000 },
+    }
     expect(postTtsSilenceSeconds(config)).toBeCloseTo(2.55, 2)
     expect(endpointTailMs(config)).toBe(600)
     expect(sttFinalizeWaitMs(config)).toBe(1850)
   })
 
   it('interPhaseSttDrainSeconds includes endpoint tail for between-phase STT close', () => {
-    const config = { vad: VOICE_AGENT_VAD_PRESET }
+    // Pinned: the arithmetic below is for 1300/1000, independent of the library defaults.
+    const config = {
+      vad: { ...VOICE_AGENT_VAD_PRESET, minSilenceDurationMs: 1300, sttGateHoldMs: 1000 },
+    }
     expect(interPhaseSttDrainSeconds(config)).toBeCloseTo(3.15, 2)
   })
 

@@ -253,6 +253,7 @@ impl ElevenLabsTts {
 
         let mut stream = response.bytes_stream();
         let mut mono = Vec::new();
+        let mut carry: Option<u8> = None;
         let mut cancelled = false;
         loop {
             let next = if mono.is_empty() {
@@ -275,10 +276,32 @@ impl ElevenLabsTts {
             }
             let Some(item) = next else { break };
             let chunk = item.map_err(|err| vendor_error(err.to_string()))?;
-            mono.extend_from_slice(&chunk);
+            // An odd trailing byte is the first half of the next sample: carry it over, or
+            // every later sample would shift by one byte.
+            let mut bytes = chunk.to_vec();
+            if let Some(first) = carry.take() {
+                bytes.insert(0, first);
+            }
+            if bytes.len() % 2 == 1 {
+                carry = bytes.pop();
+            }
+            if bytes.is_empty() {
+                continue;
+            }
+            mono.extend_from_slice(&bytes);
             if let Some(s) = sink.as_ref() {
-                let audio = pcm_chunk_from_mono(&chunk);
+                let audio = pcm_chunk_from_mono(&bytes);
                 let _ = s.send(audio);
+            }
+        }
+        if carry.is_some() && !cancelled {
+            // A stream that ends mid-sample: the half sample cannot be played.
+            if std::env::var("VOICE_DEBUG")
+                .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+            {
+                eprintln!(
+                    "[voice-debug] elevenlabs http stream ended on an odd byte; dropped 1 byte"
+                );
             }
         }
 

@@ -863,18 +863,12 @@ async fn rest_body_error_after_audio_is_an_error_without_a_retry() {
 }
 
 #[tokio::test]
-async fn rest_wav_header_and_odd_chunk_sizes_do_not_reach_the_sink() {
-    let mut header = b"RIFF\x24\x00\x00\x00WAVEfmt ".to_vec();
-    header.resize(44, 0);
-    let mock = Mock::start_rest_script(Arc::new(move |mut stream: TcpStream| {
-        let header = header.clone();
+async fn rest_odd_chunk_sizes_stay_sample_aligned() {
+    let mock = Mock::start_rest_script(Arc::new(|mut stream: TcpStream| {
         Box::pin(async move {
             stream.write_all(chunked_head()).await.unwrap();
-            // 44 header bytes + 1921 audio bytes, split at odd offsets.
-            let mut body = header;
-            body.extend(std::iter::repeat_n(9u8, 1920 + 1));
-            body.truncate(44 + 1920);
-            for part in [&body[..20], &body[20..45], &body[45..1001], &body[1001..]] {
+            let body = vec![9u8; 1920];
+            for part in [&body[..21], &body[21..25], &body[25..1001], &body[1001..]] {
                 write_chunk(&mut stream, part).await;
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -885,7 +879,40 @@ async fn rest_wav_header_and_odd_chunk_sizes_do_not_reach_the_sink() {
     .await;
     let provider = mock.provider_with(Some(SpeechTransport::Http));
     let (chunks, sunk) = run_once(provider.as_ref()).await;
-    assert_eq!(sink_bytes(&sunk), 1920 * 2, "header bytes are not audio");
+    assert_eq!(sink_bytes(&sunk), 1920 * 2);
     assert_eq!(sink_bytes(&chunks), sink_bytes(&sunk));
     assert!(sunk.iter().all(|c| c.pcm.len() % 4 == 0), "sample aligned");
+}
+
+#[tokio::test]
+async fn rest_request_asks_for_container_none() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; CHUNK_BYTES])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let _ = run_once(provider.as_ref()).await;
+    let uris = mock.http_uris.lock().unwrap().clone();
+    assert!(uris[0].contains("encoding=linear16"), "{}", uris[0]);
+    assert!(uris[0].contains("container=none"), "{}", uris[0]);
+}
+
+#[tokio::test]
+async fn rest_body_that_is_a_wav_container_is_an_error_and_nothing_reaches_the_sink() {
+    let mut body = b"RIFF\x24\x00\x00\x00WAVEfmt ".to_vec();
+    body.resize(44 + CHUNK_BYTES, 3);
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(body)).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let mut rig = sink_rig();
+    let result = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("call timed out");
+    match result {
+        Err(SpeechError::Vendor { message, .. }) => assert_eq!(
+            message,
+            "deepgram rest returned a wav container; expected raw linear16 (container=none)"
+        ),
+        other => panic!("expected a vendor error, got {other:?}"),
+    }
+    assert!(drain(&mut rig.rx).is_empty(), "nothing reaches the sink");
 }

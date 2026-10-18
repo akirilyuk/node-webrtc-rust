@@ -134,8 +134,11 @@ pub fn v1_speak_rest_url(base_url: &str, model: &str) -> Result<String, String> 
             "model `{model}` is not served on /v1/speak (Aura only)"
         ));
     }
+    // Deepgram, "Media output settings": "Linear16 supports two container formats: wav (default)
+    // and none". Without `container=none` the REST body starts with a WAV header, which would be
+    // played as audio. `/v2/speak` documents no `container` parameter, so Flux is left as is.
     Ok(format!(
-        "{}/v1/speak?model={model}&encoding=linear16&sample_rate=48000",
+        "{}/v1/speak?model={model}&encoding=linear16&sample_rate=48000&container=none",
         base_url.trim_end_matches('/')
     ))
 }
@@ -254,10 +257,10 @@ mod tests {
     }
 
     #[test]
-    fn default_urls_unchanged() {
+    fn rest_url_requests_raw_linear16() {
         assert_eq!(
             v1_speak_rest_url(DEFAULT_BASE_URL, "aura-asteria-en").unwrap(),
-            "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=48000"
+            "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=48000&container=none"
         );
         assert_eq!(
             v1_speak_websocket_url(DEFAULT_BASE_URL, "aura-asteria-en").unwrap(),
@@ -281,7 +284,7 @@ mod tests {
         );
         assert_eq!(
             v1_speak_rest_url("http://127.0.0.1:9/", "aura-asteria-en").unwrap(),
-            "http://127.0.0.1:9/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=48000"
+            "http://127.0.0.1:9/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=48000&container=none"
         );
     }
 }

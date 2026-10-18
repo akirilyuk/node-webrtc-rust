@@ -185,7 +185,7 @@ impl DeepgramTts {
             }
 
             let mut mono = Vec::new();
-            let mut wav = WavHeaderSkip::default();
+            let mut riff = RiffGuard::default();
             // An odd trailing byte of one body chunk is the first half of the next sample.
             let mut carry: Option<u8> = None;
             loop {
@@ -211,7 +211,7 @@ impl DeepgramTts {
                 let Some(chunk) = next.map_err(|err| vendor_error(err.to_string()))? else {
                     break;
                 };
-                let mut bytes = wav.feed(chunk.to_vec());
+                let mut bytes = riff.feed(chunk.to_vec())?;
                 if let Some(first) = carry.take() {
                     bytes.insert(0, first);
                 }
@@ -475,36 +475,32 @@ async fn run_utterance(
     Ok((mono, UttEnd::Done))
 }
 
-/// Drops the container header the REST endpoint may put in front of the PCM. Deepgram: linear16
-/// supports containers `wav` (default) and `none`, "When using the wav container, the response
-/// includes standard container metadata" (media output settings). The request keeps the query
-/// as it was, so a canonical 44-byte RIFF/WAVE header is skipped when the body starts with one.
+/// Fails loudly when the REST body is a WAV container. The request sends `container=none`; a
+/// `RIFF` start means that parameter was not honoured, and the header must not be played as audio.
+#[cfg(feature = "live")]
 #[derive(Default)]
-struct WavHeaderSkip {
+struct RiffGuard {
     head: Vec<u8>,
     decided: bool,
 }
 
-impl WavHeaderSkip {
-    fn feed(&mut self, incoming: Vec<u8>) -> Vec<u8> {
+#[cfg(feature = "live")]
+impl RiffGuard {
+    fn feed(&mut self, incoming: Vec<u8>) -> SpeechResult<Vec<u8>> {
         if self.decided {
-            return incoming;
+            return Ok(incoming);
         }
         self.head.extend_from_slice(&incoming);
-        if self.head.len() < 12 {
-            return Vec::new();
-        }
-        let wav = &self.head[0..4] == b"RIFF" && &self.head[8..12] == b"WAVE";
-        if wav && self.head.len() < 44 {
-            return Vec::new();
+        if self.head.len() < 4 {
+            return Ok(Vec::new());
         }
         self.decided = true;
-        let all = std::mem::take(&mut self.head);
-        if wav {
-            all[44..].to_vec()
-        } else {
-            all
+        if self.head.starts_with(b"RIFF") {
+            return Err(vendor_error(
+                "deepgram rest returned a wav container; expected raw linear16 (container=none)",
+            ));
         }
+        Ok(std::mem::take(&mut self.head))
     }
 }
 

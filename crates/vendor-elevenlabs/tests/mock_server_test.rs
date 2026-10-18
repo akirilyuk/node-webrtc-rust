@@ -1174,3 +1174,49 @@ async fn tts_websocket_connect_that_never_handshakes_is_bounded() {
         other => panic!("expected a connect timeout, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn http_stream_with_odd_chunk_sizes_stays_sample_aligned() {
+    // A known ramp of 16-bit samples, split into 3- and 5-byte chunks (every split lands
+    // mid-sample at least once).
+    let samples: Vec<u8> = (0u16..32).flat_map(|n| (n * 100).to_le_bytes()).collect();
+    let wire = samples.clone();
+    let mock = Mock::start(
+        script(move |mut stream| async move {
+            write_chunked_head(&mut stream).await;
+            let mut rest = wire.as_slice();
+            let mut size = 3;
+            while !rest.is_empty() {
+                let take = size.min(rest.len());
+                write_chunk(&mut stream, &rest[..take]).await;
+                rest = &rest[take..];
+                size = if size == 3 { 5 } else { 3 };
+            }
+            write_chunked_end(&mut stream).await;
+        }),
+        vec![7u8; CHUNK_BYTES],
+    )
+    .await;
+    let provider = mock.provider(None);
+    let mut rig = sink_rig();
+
+    let chunks = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out")
+    .expect("synthesize failed");
+
+    let sunk = drain(&mut rig.rx);
+    // Stereo output duplicates every mono sample: fold it back to compare with the ramp.
+    let mono_back: Vec<u8> = sunk
+        .iter()
+        .flat_map(|c| c.pcm.chunks(4).flat_map(|frame| frame[..2].to_vec()))
+        .collect();
+    assert_eq!(mono_back, samples, "sink audio equals the ramp");
+    assert!(sunk.iter().all(|c| c.pcm.len() % 4 == 0));
+    let sink_total: usize = sunk.iter().map(|c| c.pcm.len()).sum();
+    let returned_total: usize = chunks.iter().map(|c| c.pcm.len()).sum();
+    assert_eq!(sink_total, returned_total);
+}

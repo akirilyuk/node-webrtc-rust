@@ -124,7 +124,7 @@ interface VoiceAgentConfig {
     }
     gateStt?: boolean // only feed STT while gate is open (default false)
     gateSttOpenOnPending?: boolean // also open gate during VAD pending speech (default true)
-    sttGateHoldMs?: number // keep feeding STT after speech end (default 1000)
+    sttGateHoldMs?: number // keep feeding STT after speech end (default 400)
   }
   stt?: {
     provider: 'openai' | 'deepgram' | 'google' | 'assemblyai' | 'local-sherpa' | 'mock'

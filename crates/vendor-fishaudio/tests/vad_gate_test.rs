@@ -2,7 +2,7 @@
 //! `live` feature: it runs in normal CI.
 //!
 //! The gate uses the voice agent's default energy VAD (threshold 0.15, 250 ms min speech,
-//! 1300 ms min silence, 300 ms pre-roll). A speech segment therefore ends 1300 ms after the
+//! 1100 ms min silence, 300 ms pre-roll). A speech segment therefore ends 1100 ms after the
 //! last voiced frame, so the trailing silence in these clips is longer than that.
 
 mod common;
@@ -11,7 +11,7 @@ use common::vad_gate::{silence_stereo_48k, tone_stereo_48k, vad_gated_frames, FR
 use node_webrtc_rust_speech::config::VadConfig;
 
 /// Default `min_silence_duration_ms`: the VAD hangover after the last voiced frame.
-const HANGOVER_MS: u32 = 1300;
+const HANGOVER_MS: u32 = 1100;
 const PRE_ROLL_MS: u32 = 300;
 
 fn clip(parts: &[Vec<u8>]) -> Vec<u8> {

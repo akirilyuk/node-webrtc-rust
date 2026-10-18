@@ -263,9 +263,9 @@ fn default_min_speech_ms() -> u32 {
     250
 }
 
-// Brief gaps inside a phrase: ~1.3 s silence before "maybe done", then sttGateHold grace.
+// Brief gaps inside a phrase: ~1.1 s silence before "maybe done", then sttGateHold grace.
 fn default_min_silence_ms() -> u32 {
-    1300
+    1100
 }
 
 fn default_speech_pad_ms() -> u32 {
@@ -273,7 +273,7 @@ fn default_speech_pad_ms() -> u32 {
 }
 
 fn default_stt_gate_hold_ms() -> u32 {
-    1000
+    400
 }
 
 fn default_stt_listen_timeout_ms() -> u32 {

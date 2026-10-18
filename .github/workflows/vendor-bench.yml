@@ -1,9 +1,15 @@
 name: Vendor latency bench
 
-# Measures time to first audio (TTS) and STT open / partial / final latency of one cloud speech
-# vendor against its real API: crates/vendor-<id>/tests/live_bench.rs, using
-# crates/vendor-live-support. Manual only: it spends vendor credit and needs the vendor secrets.
-# There is no pull request trigger, so fork code never runs on the self-hosted runner.
+# Measures time to first audio (TTS) and STT open / partial / final latency of cloud speech
+# vendors against their real APIs: crates/vendor-<id>/tests/live_bench.rs, using
+# crates/vendor-live-support. It spends vendor credit and needs the vendor secrets.
+#
+# Triggers:
+#   - label `vendor-bench` on a same-repo pull request: runs all ten vendors, one at a time, from
+#     the PR branch (GitHub only dispatches workflow_dispatch workflows that exist on the default
+#     branch, so an unmerged branch needs this trigger).
+#   - manual dispatch: runs the one chosen vendor.
+#   - fork pull requests never run: the job runs on a self-hosted runner and forks get no secrets.
 #
 # The step summary shows median / p90 per metric (scripts/ci/vendor-bench-summary.mjs); the raw
 # log and the grouped JSON are uploaded as the artifact vendor-bench-<vendor>-<run id>. The bench
@@ -13,6 +19,8 @@ name: Vendor latency bench
 # own. <VENDOR>_LIVE_REQUIRED=1 turns a missing key into a failure instead of a skip.
 
 on:
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       vendor:
@@ -40,13 +48,18 @@ permissions:
   packages: read # pull the ci-build image from GHCR
 
 concurrency:
-  group: vendor-bench-${{ inputs.vendor }}
+  group: vendor-bench-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   bench:
-    name: Bench ${{ inputs.vendor }}
-    if: github.event_name == 'workflow_dispatch'
+    name: Bench ${{ matrix.vendor }}
+    if: github.event_name == 'workflow_dispatch' || (github.event.label.name == 'vendor-bench' && github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        vendor: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.vendor) || '["deepgram","elevenlabs","cartesia","assemblyai","google","groq","azure","aws","openai","fishaudio"]') }}
     runs-on: self-hosted
     # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
     # ci-run-integration-tests docker run).
@@ -92,8 +105,8 @@ jobs:
       - name: Require the chosen vendor and set run count
         shell: bash
         env:
-          VENDOR: ${{ inputs.vendor }}
-          RUNS: ${{ inputs.runs }}
+          VENDOR: ${{ matrix.vendor }}
+          RUNS: ${{ inputs.runs || '5' }}
         run: |
           # Fish Audio's live tests read FISH_LIVE_REQUIRED (vendor id "fish").
           flag="$(echo "$VENDOR" | tr a-z A-Z)_LIVE_REQUIRED"
@@ -105,7 +118,7 @@ jobs:
         id: bench
         shell: bash
         env:
-          VENDOR: ${{ inputs.vendor }}
+          VENDOR: ${{ matrix.vendor }}
         run: |
           set +e
           cargo test -p "node-webrtc-rust-vendor-$VENDOR" --features live --test live_bench -- --nocapture --test-threads=1 2>&1 | tee bench.log
@@ -117,7 +130,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vendor-bench-${{ inputs.vendor }}-${{ github.run_id }}
+          name: vendor-bench-${{ matrix.vendor }}-${{ github.run_id }}
           path: |
             bench.log
             bench.json

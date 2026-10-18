@@ -151,24 +151,102 @@ fn every_live_bench_is_a_vendor_bench_option() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
-#[test]
-fn vendor_bench_is_manual_only_and_requires_the_key() {
-    let workflow = read_workflow("vendor-bench.yml").expect("vendor-bench.yml");
-    assert!(workflow.contains("workflow_dispatch:"));
-    assert!(
-        !workflow.contains("pull_request"),
-        "the bench must not run on pull requests (secrets, cost, fork code on a self-hosted runner)"
-    );
-    assert!(
-        workflow.contains("_LIVE_REQUIRED"),
-        "the bench must set <VENDOR>_LIVE_REQUIRED=1"
-    );
+const FORK_SKIP: &str = "github.event.pull_request.head.repo.full_name == github.repository";
+
+/// The `- id` items under `options:` of the workflow_dispatch `vendor` input.
+fn dispatch_options(workflow: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut in_options = false;
+    for line in workflow.lines() {
+        let trimmed = line.trim();
+        if trimmed == "options:" {
+            in_options = true;
+        } else if in_options {
+            match trimmed.strip_prefix("- ") {
+                Some(id) => ids.push(id.to_string()),
+                None => break,
+            }
+        }
+    }
+    ids.sort();
+    ids
+}
+
+/// The quoted ids of the fixed list in the `matrix: vendor:` expression.
+fn matrix_vendors(workflow: &str) -> Vec<String> {
+    let Some(line) = workflow
+        .lines()
+        .find(|l| l.trim_start().starts_with("vendor: ${{ fromJSON("))
+    else {
+        return Vec::new();
+    };
+    let Some(list) = line.rsplit_once("|| '[").map(|(_, rest)| rest) else {
+        return Vec::new();
+    };
+    let list = list.split(']').next().unwrap_or("");
+    let mut ids: Vec<String> = list
+        .split(',')
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .filter(|v| !v.is_empty())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Everything wrong with the trigger, fork-skip and vendor lists of `vendor-bench.yml`.
+fn check_bench_trigger(workflow: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !workflow.contains("workflow_dispatch:") {
+        problems.push("missing the workflow_dispatch trigger".to_string());
+    }
+    let pr = pull_request_section(workflow);
+    let pr_lines: Vec<&str> = pr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if pr_lines != ["types: [labeled]"] {
+        problems.push(format!(
+            "the pull_request trigger must be exactly `types: [labeled]` (no paths, no other types), found {pr_lines:?}"
+        ));
+    }
+    let guarded = workflow.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("if:")
+            && l.contains("github.event.label.name == 'vendor-bench'")
+            && l.contains(FORK_SKIP)
+    });
+    if !guarded {
+        problems.push(format!(
+            "the job `if:` needs both `github.event.label.name == 'vendor-bench'` and the fork-skip `{FORK_SKIP}`"
+        ));
+    }
+    if !workflow.contains("_LIVE_REQUIRED") {
+        problems.push("the bench must set <VENDOR>_LIVE_REQUIRED=1".to_string());
+    }
+    let options = dispatch_options(workflow);
+    let matrix = matrix_vendors(workflow);
+    for id in &options {
+        if !matrix.contains(id) {
+            problems.push(format!(
+                "matrix vendor list is missing dispatch option `{id}`"
+            ));
+        }
+    }
+    for id in &matrix {
+        if !options.contains(id) {
+            problems.push(format!("matrix vendor `{id}` is not a dispatch option"));
+        }
+    }
+    problems
 }
 
 #[test]
-fn every_vendor_option_of_the_bench_is_a_real_vendor_crate() {
+fn vendor_bench_trigger_if_and_vendor_lists_are_in_lockstep() {
     let workflow = read_workflow("vendor-bench.yml").expect("vendor-bench.yml");
-    let options = [
+    let problems = check_bench_trigger(&workflow);
+    assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+    let expected = [
         "deepgram",
         "elevenlabs",
         "cartesia",
@@ -180,10 +258,11 @@ fn every_vendor_option_of_the_bench_is_a_real_vendor_crate() {
         "openai",
         "fishaudio",
     ];
-    for id in options {
+    let options = dispatch_options(&workflow);
+    for id in expected {
         assert!(
-            workflow.lines().any(|l| l.trim() == format!("- {id}")),
-            "vendor-bench.yml lacks option {id}"
+            options.iter().any(|o| o == id),
+            "dispatch options lack {id}"
         );
         assert!(
             repo_root()
@@ -193,6 +272,78 @@ fn every_vendor_option_of_the_bench_is_a_real_vendor_crate() {
             "no crates/vendor-{id}"
         );
     }
+    // Every crate that has a bench is in both lists.
+    for id in vendors_with("live_bench.rs") {
+        assert!(options.contains(&id), "{id} is not a dispatch option");
+        assert!(
+            matrix_vendors(&workflow).contains(&id),
+            "{id} is not in the matrix"
+        );
+    }
+}
+
+fn good_bench() -> String {
+    let all = "deepgram,groq";
+    let quoted: Vec<String> = all.split(',').map(|v| format!("\"{v}\"")).collect();
+    format!(
+        "on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      vendor:
+        type: choice
+        options:
+          - deepgram
+          - groq
+      runs:
+        default: '5'
+jobs:
+  bench:
+    if: github.event_name == 'workflow_dispatch' || (github.event.label.name == 'vendor-bench' && {FORK_SKIP})
+    strategy:
+      matrix:
+        vendor: ${{{{ fromJSON(github.event_name == 'workflow_dispatch' && format('[\"{{0}}\"]', inputs.vendor) || '[{}]') }}}}
+    steps:
+      - run: echo \"$VENDOR_LIVE_REQUIRED\"
+",
+        quoted.join(",")
+    )
+}
+
+#[test]
+fn bench_checker_accepts_a_complete_workflow() {
+    assert_eq!(check_bench_trigger(&good_bench()), Vec::<String>::new());
+}
+
+#[test]
+fn bench_workflow_with_pull_request_paths_fails() {
+    let bad = good_bench().replace(
+        "    types: [labeled]\n",
+        "    types: [labeled]\n    paths:\n      - 'crates/**'\n",
+    );
+    let problems = check_bench_trigger(&bad);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("no paths"), "{problems:?}");
+}
+
+#[test]
+fn bench_workflow_without_fork_skip_on_label_path_fails() {
+    let bad = good_bench().replace(&format!(" && {FORK_SKIP}"), "");
+    let problems = check_bench_trigger(&bad);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("fork-skip"), "{problems:?}");
+}
+
+#[test]
+fn bench_matrix_missing_a_dispatch_option_fails() {
+    let bad = good_bench().replace(",\"groq\"", "");
+    let problems = check_bench_trigger(&bad);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("missing dispatch option `groq`"),
+        "{problems:?}"
+    );
 }
 
 // --- negative tests: the checker must reject a broken workflow and say what is missing ---

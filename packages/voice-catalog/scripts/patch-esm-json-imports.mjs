@@ -26,6 +26,14 @@ const replacements = [
     'from "../catalog/azure-tts-voices.json";',
     'from "../catalog/azure-tts-voices.json" with { type: "json" };',
   ],
+  [
+    "from '../catalog/google-tts-voices.json';",
+    "from '../catalog/google-tts-voices.json' with { type: 'json' };",
+  ],
+  [
+    'from "../catalog/google-tts-voices.json";',
+    'from "../catalog/google-tts-voices.json" with { type: "json" };',
+  ],
 ]
 
 let changed = 0
@@ -36,8 +44,10 @@ for (const [from, to] of replacements) {
   }
 }
 
-if (changed < 2) {
-  throw new Error(`patch-esm-json-imports: expected vendors + azure json imports in ${esmIndex}`)
+if (changed < 3) {
+  throw new Error(
+    `patch-esm-json-imports: expected vendors + azure + google json imports in ${esmIndex}`,
+  )
 }
 
 writeFileSync(esmIndex, source)

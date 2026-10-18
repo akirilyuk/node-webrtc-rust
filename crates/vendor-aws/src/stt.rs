@@ -26,10 +26,13 @@ pub struct AwsStt {
     last_transport: std::sync::Mutex<Option<String>>,
 }
 
+/// What the reader task forwards: a transcript, or the error that ended the event stream.
+type SttItem = Result<SttTranscript, SpeechError>;
+
 struct AwsSttInner {
     running: bool,
     pcm_tx: Option<mpsc::UnboundedSender<Bytes>>,
-    transcript_rx: Option<mpsc::UnboundedReceiver<SttTranscript>>,
+    transcript_rx: Option<mpsc::UnboundedReceiver<SttItem>>,
     reader_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -74,7 +77,7 @@ impl SttProvider for AwsStt {
 
             let language_code = self.language_code.clone();
             let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<Bytes>();
-            let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttTranscript>();
+            let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttItem>();
 
             let audio_stream = EventStreamSender::from(PcmAudioStream { rx: pcm_rx });
 
@@ -109,11 +112,9 @@ impl SttProvider for AwsStt {
             let mut transcript_stream = response.transcript_result_stream;
 
             let reader_task = tokio::spawn(async move {
-                while let Ok(Some(event)) = transcript_stream.recv().await {
-                    if let Some(transcript) = transcript_from_event(&event) {
-                        let _ = transcript_tx.send(transcript);
-                    }
-                }
+                // A stream that ends with an error (reset, service exception, bad frame) is
+                // reported to the next poll; `Ok(None)` is the service closing it normally.
+                while forward_event(&transcript_tx, transcript_stream.recv().await) {}
             });
 
             let mut inner = self.state.lock().await;
@@ -161,9 +162,38 @@ impl SttProvider for AwsStt {
             return Ok(None);
         }
         if let Some(rx) = inner.transcript_rx.as_mut() {
-            return Ok(rx.try_recv().ok());
+            return match rx.try_recv() {
+                Ok(Ok(transcript)) => Ok(Some(transcript)),
+                Ok(Err(err)) => Err(err),
+                Err(_) => Ok(None),
+            };
         }
         Ok(None)
+    }
+}
+
+/// Forwards one `recv()` result of the transcript event stream. True while the stream goes on.
+/// `IsPartial: true` results go out as [`SttTranscript::Partial`], `false` as `Final`.
+#[cfg(feature = "live")]
+fn forward_event<E: std::fmt::Display>(
+    tx: &mpsc::UnboundedSender<SttItem>,
+    next: Result<Option<aws_sdk_transcribestreaming::types::TranscriptResultStream>, E>,
+) -> bool {
+    match next {
+        Ok(Some(event)) => {
+            if let Some(transcript) = transcript_from_event(&event) {
+                let _ = tx.send(Ok(transcript));
+            }
+            true
+        }
+        Ok(None) => false,
+        Err(err) => {
+            let _ = tx.send(Err(SpeechError::Vendor {
+                vendor: "aws".into(),
+                message: format!("transcribe stream error: {err}"),
+            }));
+            false
+        }
     }
 }
 
@@ -252,5 +282,101 @@ mod tests {
             }),
             Err(SpeechError::Config(_))
         ));
+    }
+
+    #[cfg(feature = "live")]
+    fn event(
+        is_partial: bool,
+        text: &str,
+    ) -> aws_sdk_transcribestreaming::types::TranscriptResultStream {
+        use aws_sdk_transcribestreaming::types::{
+            Alternative, Result as TranscribeResult, Transcript, TranscriptEvent,
+            TranscriptResultStream,
+        };
+        TranscriptResultStream::TranscriptEvent(
+            TranscriptEvent::builder()
+                .transcript(
+                    Transcript::builder()
+                        .results(
+                            TranscribeResult::builder()
+                                .is_partial(is_partial)
+                                .alternatives(Alternative::builder().transcript(text).build())
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build(),
+        )
+    }
+
+    /// `IsPartial: true` results are surfaced as partials (so `emits_partials()` stays true).
+    #[cfg(feature = "live")]
+    #[test]
+    fn partial_and_final_results_are_forwarded_as_such() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        assert!(forward_event::<String>(
+            &tx,
+            Ok(Some(event(true, "the quick")))
+        ));
+        assert!(forward_event::<String>(
+            &tx,
+            Ok(Some(event(false, "the quick fox")))
+        ));
+        assert!(matches!(rx.try_recv(), Ok(Ok(SttTranscript::Partial(t))) if t == "the quick"));
+        assert!(matches!(rx.try_recv(), Ok(Ok(SttTranscript::Final(t))) if t == "the quick fox"));
+    }
+
+    /// A stream error after start reaches `poll_transcript` as an `Err` (not silence), and the
+    /// reader stops. A normal close ends the reader without an error.
+    #[cfg(feature = "live")]
+    #[test]
+    fn a_stream_error_is_forwarded_and_a_normal_close_is_not_an_error() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        assert!(!forward_event(&tx, Err("connection reset".to_string())));
+        match rx.try_recv() {
+            Ok(Err(SpeechError::Vendor { vendor, message })) => {
+                assert_eq!(vendor, "aws");
+                assert!(message.contains("connection reset"), "{message}");
+            }
+            other => panic!("expected a vendor error, got {other:?}"),
+        }
+        assert!(!forward_event::<String>(&tx, Ok(None)));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[cfg(feature = "live")]
+    #[tokio::test]
+    async fn poll_transcript_returns_the_forwarded_error() {
+        let mut stt = AwsStt::new(&SttConfig {
+            provider: SttVendor::Aws,
+            model: None,
+            model_path: None,
+            language: None,
+            api_key: None,
+            endpoint: None,
+            transport: None,
+        })
+        .unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        {
+            let mut inner = stt.state.lock().await;
+            inner.running = true;
+            inner.transcript_rx = Some(rx);
+        }
+        let _ = tx.send(Ok(SttTranscript::Partial("a".into())));
+        let _ = tx.send(Err(SpeechError::Vendor {
+            vendor: "aws".into(),
+            message: "boom".into(),
+        }));
+        assert!(matches!(
+            stt.poll_transcript().await,
+            Ok(Some(SttTranscript::Partial(_)))
+        ));
+        assert!(matches!(
+            stt.poll_transcript().await,
+            Err(SpeechError::Vendor { .. })
+        ));
+        assert!(matches!(stt.poll_transcript().await, Ok(None)));
+        assert!(stt.emits_partials());
     }
 }

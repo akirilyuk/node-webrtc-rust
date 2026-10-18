@@ -42,6 +42,11 @@ pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// TCP keepalive on pooled connections.
 pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
+/// TTS: time from the request to the first audio bytes (headers and any container header
+/// included). A body that has not produced audio by then is an error.
+pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
+/// TTS: longest silence between two body chunks once audio has started.
+pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn default_stt_mode() -> &'static str {
     voice_catalog::default_stt_model("azure").expect("azure default STT in voice catalog")

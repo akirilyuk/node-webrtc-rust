@@ -1,0 +1,78 @@
+name: Vendor live — AWS
+
+# Runs the AWS live tests (crates/vendor-aws/tests/live_test.rs) against the real API.
+# The repo secrets AWS_LIVE_ACCESS_KEY_ID, AWS_LIVE_SECRET_ACCESS_KEY and AWS_LIVE_REGION are mapped to
+# the SDK's AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION env vars.
+#
+# Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
+# runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
+# from branches of this repo and manual dispatches run the job.
+#
+# A missing secret fails the job (first step, and AWS_LIVE_REQUIRED=1 makes the tests panic
+# instead of skipping), so a skipped live test can never show green.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/vendor-aws/**'
+      - 'crates/vendor-live-support/**'
+      - '.github/workflows/vendor-live-aws.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read # pull the ci-build image from GHCR
+
+concurrency:
+  group: vendor-live-aws-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: AWS live
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
+    # ci-run-integration-tests docker run).
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require AWS credentials and region
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LIVE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LIVE_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_LIVE_REGION }}
+        run: |
+          empty=""
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            empty="$empty AWS_LIVE_ACCESS_KEY_ID"
+          fi
+          if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            empty="$empty AWS_LIVE_SECRET_ACCESS_KEY"
+          fi
+          if [ -z "$AWS_REGION" ]; then
+            empty="$empty AWS_LIVE_REGION"
+          fi
+          if [ -n "$empty" ]; then
+            echo "::error::empty secrets:$empty"
+            exit 1
+          fi
+
+      - name: AWS live tests
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LIVE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LIVE_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_LIVE_REGION }}
+          AWS_LIVE_REQUIRED: '1'
+        run: |
+          cargo test -p node-webrtc-rust-vendor-aws --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'aws_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status

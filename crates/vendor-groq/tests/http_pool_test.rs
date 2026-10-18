@@ -98,11 +98,8 @@ async fn stt_server_that_never_answers_errors_within_the_bound() {
     let result = tokio::time::timeout(Duration::from_secs(10), stt_utterance(&mut provider))
         .await
         .expect("the client timeout fires before the test guard");
-    // The poll ends (error or no transcript) once the client timeout fires; it never yields a final.
-    assert!(
-        !matches!(result, Ok(Some(_))),
-        "unexpected transcript: {result:?}"
-    );
+    // A request that timed out is an error from the poll (`rt.silent-failure`), never silence.
+    assert!(result.is_err(), "expected an Err, got {result:?}");
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 

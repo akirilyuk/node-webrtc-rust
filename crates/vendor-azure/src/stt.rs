@@ -265,10 +265,23 @@ impl SttProvider for AzureStt {
                 self.on_final_delivered();
                 Ok(Some(transcript))
             }
+            // The task ended without a transcript. Its result says whether that is a request
+            // failure (network, non-2xx, timeout: an error) or an empty transcription (none).
             None => {
                 *rx_guard = None;
-                self.poll_task.lock().await.take();
+                let task = self.poll_task.lock().await.take();
                 self.on_final_delivered();
+                if let Some(task) = task {
+                    match task.await {
+                        Ok(inner) => inner?,
+                        Err(_) => {
+                            return Err(SpeechError::Vendor {
+                                vendor: "azure".into(),
+                                message: "recognition task aborted".into(),
+                            });
+                        }
+                    }
+                }
                 Ok(None)
             }
         }
@@ -350,16 +363,45 @@ async fn http_short_audio_recognize(
     }
     if !response.status().is_success() {
         let status = response.status();
-        let message = response.text().await.unwrap_or_else(|_| status.to_string());
+        let text = response.text().await.unwrap_or_default();
         return Err(SpeechError::Vendor {
             vendor: "azure".into(),
-            message,
+            message: format!("{status}: {text}"),
         });
     }
     let body = response.text().await.map_err(|err| SpeechError::Vendor {
         vendor: "azure".into(),
         message: err.to_string(),
     })?;
+    // Documented `RecognitionStatus` values: `Success`; `NoMatch`, `InitialSilenceTimeout` and
+    // `BabbleTimeout` (speech or noise was heard but there is nothing to transcribe: no final);
+    // `Error` ("The recognition service encountered an internal error and couldn't continue").
+    let status_field = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("RecognitionStatus")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
+        });
+    match status_field.as_deref() {
+        None => {
+            return Err(SpeechError::Vendor {
+                vendor: "azure".into(),
+                message: format!(
+                    "recognition response has no `RecognitionStatus` ({} bytes)",
+                    body.len()
+                ),
+            })
+        }
+        Some("Error") => {
+            return Err(SpeechError::Vendor {
+                vendor: "azure".into(),
+                message: "RecognitionStatus Error: the recognition service hit an internal error"
+                    .into(),
+            })
+        }
+        Some(_) => {}
+    }
     if let Some(text) = parse_short_audio_response(&body) {
         let _ = tx.send(SttTranscript::Final(text));
     }

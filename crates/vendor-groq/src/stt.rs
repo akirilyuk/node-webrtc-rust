@@ -212,10 +212,23 @@ impl SttProvider for GroqStt {
                 self.on_final_delivered();
                 Ok(Some(transcript))
             }
+            // The task ended without a transcript. Its result says whether that is a request
+            // failure (network, non-2xx, timeout: an error) or an empty transcription (none).
             None => {
                 *rx_guard = None;
-                self.poll_task.lock().await.take();
+                let task = self.poll_task.lock().await.take();
                 self.on_final_delivered();
+                if let Some(task) = task {
+                    match task.await {
+                        Ok(inner) => inner?,
+                        Err(_) => {
+                            return Err(SpeechError::Vendor {
+                                vendor: "groq".into(),
+                                message: "transcription task aborted".into(),
+                            });
+                        }
+                    }
+                }
                 Ok(None)
             }
         }
@@ -321,10 +334,10 @@ async fn http_transcribe(
     }
     if !response.status().is_success() {
         let status = response.status();
-        let message = response.text().await.unwrap_or_else(|_| status.to_string());
+        let text = response.text().await.unwrap_or_default();
         return Err(SpeechError::Vendor {
             vendor: "groq".into(),
-            message,
+            message: format!("{status}: {text}"),
         });
     }
 
@@ -333,6 +346,21 @@ async fn http_transcribe(
         message: err.to_string(),
     })?;
 
+    // A 2xx answer that is not the documented `{"text": "..."}` object is a failure, not silence.
+    if serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string))
+        .is_none()
+    {
+        return Err(SpeechError::Vendor {
+            vendor: "groq".into(),
+            message: format!(
+                "transcription response has no `text` field ({} bytes)",
+                body.len()
+            ),
+        });
+    }
+    // An empty `text` is a transcription of silence: no final.
     if let Some(text) = parse_transcription_json(&body) {
         let _ = tx.send(SttTranscript::Final(text));
     }

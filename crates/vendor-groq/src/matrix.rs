@@ -21,6 +21,11 @@ pub const HTTP_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 pub const POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// TCP keepalive on pooled connections.
 pub const TCP_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+/// TTS: time from the request to the first audio bytes (headers and any container header
+/// included). A body that has not produced audio by then is an error.
+pub const FIRST_AUDIO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// TTS: longest silence between two body chunks once audio has started.
+pub const CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const DEFAULT_TRANSCRIPTIONS_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
 pub const DEFAULT_SPEECH_URL: &str = "https://api.groq.com/openai/v1/audio/speech";
 

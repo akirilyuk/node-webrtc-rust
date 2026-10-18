@@ -2,7 +2,9 @@
 //! "a server that never answers is bounded" tests of the vendor crates. Plain HTTP only, so the
 //! client under test reports `http/1.1`.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -20,6 +22,40 @@ pub enum Reply {
     },
     /// Reads the request and never answers.
     Hang,
+    /// Hands the connection to the script after the request was read. The script writes the whole
+    /// response itself (chunked bodies with pauses, a reset after some audio, a body that stalls)
+    /// and the connection ends when it returns.
+    Script(Script),
+}
+
+/// What a [`Reply::Script`] runs for each request. See [`script`].
+pub type Script = Arc<dyn Fn(TcpStream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// Wraps an async closure as a [`Script`].
+pub fn script<F, Fut>(f: F) -> Script
+where
+    F: Fn(TcpStream) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    Arc::new(move |stream| Box::pin(f(stream)))
+}
+
+/// Status line and headers of a chunked `200` response that closes after the body.
+pub fn chunked_head(content_type: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+/// Writes one HTTP chunk and flushes, so the client sees it before the next one is written.
+pub async fn write_chunk(stream: &mut TcpStream, data: &[u8]) {
+    let _ = stream
+        .write_all(format!("{:x}\r\n", data.len()).as_bytes())
+        .await;
+    let _ = stream.write_all(data).await;
+    let _ = stream.write_all(b"\r\n").await;
+    let _ = stream.flush().await;
 }
 
 impl Reply {
@@ -165,6 +201,10 @@ async fn serve(
         match &reply {
             // Never answer; return (and count a close) once the client drops the connection.
             Reply::Hang => while fill(&mut stream, &mut buf).await {},
+            Reply::Script(run) => {
+                run(stream).await;
+                return;
+            }
             Reply::Fixed {
                 status,
                 content_type,
@@ -283,6 +323,26 @@ mod tests {
             }
         }
         assert_eq!((mock.accepted(), mock.requests()), (1, 2));
+    }
+
+    #[tokio::test]
+    async fn a_script_streams_chunks_and_ends_the_connection() {
+        let mock = MockHttp::start(Reply::Script(script(|mut stream| async move {
+            let _ = stream.write_all(&chunked_head("audio/pcm")).await;
+            write_chunk(&mut stream, b"ab").await;
+            write_chunk(&mut stream, b"cd").await;
+            let _ = stream.write_all(b"0\r\n\r\n").await;
+        })))
+        .await;
+        let mut s = TcpStream::connect(mock.host_port()).await.unwrap();
+        s.write_all(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        let mut got = Vec::new();
+        s.read_to_end(&mut got).await.unwrap();
+        let text = String::from_utf8_lossy(&got).to_string();
+        assert!(text.contains("2\r\nab\r\n2\r\ncd\r\n0\r\n"), "{text}");
+        assert_eq!((mock.accepted(), mock.requests()), (1, 1));
     }
 
     #[test]

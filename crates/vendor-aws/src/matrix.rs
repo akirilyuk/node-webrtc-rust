@@ -22,6 +22,13 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const POLLY_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Polly TTS: time from the request to the first audio bytes. No audio by then is an error.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
+/// Polly TTS: longest silence between two stream chunks once audio has started.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The SDK timeout settings of the Polly client.
 #[cfg(feature = "live")]
 pub(crate) fn polly_timeouts() -> aws_config::timeout::TimeoutConfig {

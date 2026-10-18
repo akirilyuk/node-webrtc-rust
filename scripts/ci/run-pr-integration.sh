@@ -98,20 +98,21 @@ if suite_enabled rust; then
     cargo test -p node-webrtc-rust-vendor-elevenlabs --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-fishaudio" -- \
     cargo test -p node-webrtc-rust-vendor-fishaudio --features live -- --test-threads=1
-  # Cloud vendors with a pooled HTTP client (HTTP pool reuse, last_transport, timeout bounds). Test
+  # Cloud vendors with a pooled HTTP client (HTTP pool reuse, last_transport, timeout bounds) and
+  # their mock-server tests (progressive TTS body, loud STT failures). Test
   # targets are listed instead of a bare `cargo test` so a live_test / live_bench target (they need
   # real keys) never runs here: those run only in vendor-live-*.yml / vendor-bench.yml.
   # Guard: crates/vendor-live-support/tests/workflow_lockstep_test.rs.
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-azure" -- \
-    cargo test -p node-webrtc-rust-vendor-azure --features live --lib --test vendor_test --test http_pool_test
+    cargo test -p node-webrtc-rust-vendor-azure --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-groq" -- \
-    cargo test -p node-webrtc-rust-vendor-groq --features live --lib --test vendor_test --test http_pool_test
+    cargo test -p node-webrtc-rust-vendor-groq --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-openai" -- \
     cargo test -p node-webrtc-rust-vendor-openai --features live --lib --test vendor_test --test http_pool_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-google" -- \
     cargo test -p node-webrtc-rust-vendor-google --features live --lib --test vendor_test --test http_pool_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-aws" -- \
-    cargo test -p node-webrtc-rust-vendor-aws --features live --lib --test vendor_test
+    cargo test -p node-webrtc-rust-vendor-aws --features live --lib --test mock_server_test --test vendor_test
   # Shared live-test/bench support: unit tests, the VAD gate test, and the workflow lockstep guard
   # (every live_test.rs has a vendor-live-<id>.yml with the fork-skip, _LIVE_REQUIRED and paths).
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-live-support" -- \

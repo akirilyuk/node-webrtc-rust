@@ -1,7 +1,7 @@
 {
   "name": "@node-webrtc-rust/example-voice-agent",
   "private": true,
-  "version": "0.11.4",
+  "version": "0.11.5",
   "description": "VoiceAgent demo: mock STT/TTS, VAD, barge-in, callback and stream events",
   "type": "module",
   "scripts": {
@@ -19,10 +19,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@node-webrtc-rust/helpers": "0.11.4",
-    "@node-webrtc-rust/sdk": "0.11.4",
-    "@node-webrtc-rust/signaling": "0.11.4",
-    "@node-webrtc-rust/voice-catalog": "0.11.4"
+    "@node-webrtc-rust/helpers": "0.11.5",
+    "@node-webrtc-rust/sdk": "0.11.5",
+    "@node-webrtc-rust/signaling": "0.11.5",
+    "@node-webrtc-rust/voice-catalog": "0.11.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

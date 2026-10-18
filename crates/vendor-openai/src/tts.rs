@@ -1,7 +1,3 @@
-#[cfg(feature = "live")]
-use async_openai::types::{CreateSpeechRequestArgs, SpeechModel, SpeechResponseFormat, Voice};
-#[cfg(feature = "live")]
-use async_openai::Client;
 use async_trait::async_trait;
 #[cfg(feature = "live")]
 use base64::Engine;
@@ -9,6 +5,7 @@ use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, mono_s16le_to_stereo};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
+use node_webrtc_rust_voice_catalog as voice_catalog;
 #[cfg(feature = "live")]
 use serde_json::Value;
 #[cfg(feature = "live")]
@@ -45,13 +42,23 @@ pub struct OpenAiTts {
 
 impl OpenAiTts {
     pub fn new(config: &TtsConfig) -> SpeechResult<Self> {
+        let model = config.model.clone().unwrap_or_else(|| "tts-1".to_string());
+        let voice = config.voice.clone().unwrap_or_else(|| "alloy".to_string());
+        let documented = voice_catalog::tts_voices_for_model("openai", Some(&model))
+            .expect("openai in voice catalog");
+        if !documented.contains(&voice.as_str()) {
+            return Err(SpeechError::Config(format!(
+                "unsupported OpenAI voice `{voice}` for model `{model}`; documented: {}",
+                documented.join(", ")
+            )));
+        }
         Ok(Self {
             api_key: config
                 .api_key
                 .clone()
                 .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
-            model: config.model.clone().unwrap_or_else(|| "tts-1".to_string()),
-            voice: config.voice.clone().unwrap_or_else(|| "alloy".to_string()),
+            model,
+            voice,
             endpoint: config.endpoint.clone(),
             #[cfg(feature = "live")]
             delivery: Mutex::new(SpeechDelivery::StreamPcm),
@@ -99,37 +106,41 @@ impl OpenAiTts {
         #[cfg(feature = "live")]
         {
             let api_key = api_key_from(&self.api_key, "OPENAI_API_KEY")?;
-            let request = CreateSpeechRequestArgs::default()
-                .input(text.to_string())
-                .model(parse_speech_model(&self.model))
-                .voice(parse_voice(&self.voice))
-                .response_format(SpeechResponseFormat::Pcm)
+            let url = format!("{}/audio/speech", api_root(&self.endpoint));
+            let body = serde_json::json!({
+                "model": self.model,
+                "input": text,
+                "voice": self.voice,
+                "response_format": "pcm",
+            });
+            let http = reqwest::Client::builder()
                 .build()
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "openai".into(),
+                    message: format!("HTTP client: {err}"),
+                })?;
+            let response = http
+                .post(url)
+                .bearer_auth(api_key)
+                .json(&body)
+                .send()
+                .await
                 .map_err(|err| SpeechError::Vendor {
                     vendor: "openai".into(),
                     message: err.to_string(),
                 })?;
-
-            let mut config = async_openai::config::OpenAIConfig::new().with_api_key(api_key);
-            if self
-                .endpoint
-                .as_deref()
-                .is_some_and(|endpoint| !endpoint.trim().is_empty())
-            {
-                config = config.with_api_base(api_root(&self.endpoint));
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(SpeechError::Vendor {
+                    vendor: "openai".into(),
+                    message: format!("speech HTTP {status}: {body}"),
+                });
             }
-            let client = Client::with_config(config);
-            let response =
-                client
-                    .audio()
-                    .speech(request)
-                    .await
-                    .map_err(|err| SpeechError::Vendor {
-                        vendor: "openai".into(),
-                        message: err.to_string(),
-                    })?;
-
-            let mono_24k = response.bytes;
+            let mono_24k = response.bytes().await.map_err(|err| SpeechError::Vendor {
+                vendor: "openai".into(),
+                message: format!("speech body read: {err}"),
+            })?;
             let duration_ms =
                 duration_ms_from_mono_s16le(mono_24k.len(), OPENAI_TTS_PCM_SAMPLE_RATE);
             let pcm = mono_24k_s16le_to_stereo_48k(mono_24k.as_ref());
@@ -419,30 +430,6 @@ fn api_root(endpoint: &Option<String>) -> String {
         .to_string()
 }
 
-#[cfg(feature = "live")]
-fn parse_voice(voice: &str) -> Voice {
-    match voice {
-        "alloy" => Voice::Alloy,
-        "ash" => Voice::Ash,
-        "coral" => Voice::Coral,
-        "echo" => Voice::Echo,
-        "fable" => Voice::Fable,
-        "onyx" => Voice::Onyx,
-        "nova" => Voice::Nova,
-        "sage" => Voice::Sage,
-        "shimmer" => Voice::Shimmer,
-        _ => Voice::Alloy,
-    }
-}
-
-#[cfg(feature = "live")]
-fn parse_speech_model(model: &str) -> SpeechModel {
-    match model {
-        "tts-1-hd" => SpeechModel::Tts1Hd,
-        other => SpeechModel::Other(other.to_string()),
-    }
-}
-
 /// Upsample mono 24 kHz s16le to stereo 48 kHz for WebRTC outbound tracks.
 fn mono_24k_s16le_to_stereo_48k(mono_24k: &[u8]) -> bytes::Bytes {
     let mut mono_48k = Vec::with_capacity(mono_24k.len() * 2);
@@ -474,16 +461,6 @@ mod tests {
         assert_eq!(buf, vec![3]);
     }
 
-    #[cfg(feature = "live")]
-    #[test]
-    fn parse_voice_and_model() {
-        assert!(matches!(parse_voice("alloy"), Voice::Alloy));
-        assert!(matches!(
-            parse_speech_model("tts-1-hd"),
-            SpeechModel::Tts1Hd
-        ));
-    }
-
     #[test]
     fn tts_matrix_forbids_sse_on_tts1() {
         assert!(!tts_sse_allowed("tts-1"));
@@ -503,6 +480,32 @@ mod tests {
             "audio": b64
         });
         assert_eq!(parse_speech_sse_event_for_test(&event), Some(pcm));
+    }
+
+    fn cfg(model: Option<&str>, voice: Option<&str>) -> TtsConfig {
+        TtsConfig {
+            provider: TtsVendor::Openai,
+            model: model.map(str::to_string),
+            model_path: None,
+            voice: voice.map(str::to_string),
+            api_key: Some("test".into()),
+            endpoint: None,
+            sentence_case: Default::default(),
+        }
+    }
+
+    #[test]
+    fn openai_rejects_voice_not_documented_for_model() {
+        assert!(matches!(
+            OpenAiTts::new(&cfg(Some("tts-1"), Some("marin"))),
+            Err(SpeechError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn openai_accepts_marin_on_gpt_4o_mini_tts() {
+        let tts = OpenAiTts::new(&cfg(Some("gpt-4o-mini-tts"), Some("marin"))).unwrap();
+        assert_eq!(tts.voice, "marin");
     }
 
     #[test]

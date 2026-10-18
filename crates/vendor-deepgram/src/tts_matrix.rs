@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
 pub const V1_SPEAK_DOC: &str = "https://developers.deepgram.com/reference/text-to-speech/speak";
 pub const V2_SPEAK_DOC: &str = "https://developers.deepgram.com/docs/flux-tts/overview";
 #[allow(dead_code)] // documentation reference, kept next to the other doc URLs
@@ -68,7 +70,14 @@ pub fn speak_api_version(model: &str) -> Result<SpeakApiVersion, String> {
 }
 
 pub fn validate_speak_model(model: &str) -> Result<SpeakApiVersion, String> {
-    speak_api_version(model)
+    let version = speak_api_version(model)?;
+    let documented = voice_catalog::tts_models("deepgram").expect("deepgram in voice catalog");
+    if !documented.contains(&model) {
+        return Err(format!(
+            "unsupported Deepgram speak model `{model}`; documented: {V1_SPEAK_DOC}"
+        ));
+    }
+    Ok(version)
 }
 
 pub fn tts_progressive_transport(model: &str) -> Result<TtsProgressiveTransport, String> {
@@ -166,6 +175,21 @@ mod tests {
             speak_api_version("flux-haley-en").unwrap(),
             SpeakApiVersion::V2Flux
         );
+    }
+
+    #[test]
+    fn deepgram_rejects_undocumented_aura_model() {
+        assert!(validate_speak_model("aura-nobody-en").is_err());
+    }
+
+    #[test]
+    fn deepgram_accepts_aura_2_thalia_en() {
+        assert_eq!(
+            validate_speak_model("aura-2-thalia-en").unwrap(),
+            SpeakApiVersion::V1Aura
+        );
+        assert!(validate_speak_model(default_speak_model()).is_ok());
+        assert!(validate_speak_model(DEFAULT_FLUX_MODEL).is_ok());
     }
 
     #[test]

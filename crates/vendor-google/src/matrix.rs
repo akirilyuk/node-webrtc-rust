@@ -20,6 +20,8 @@ pub const STT_V2_STREAMING_DOC: &str =
 pub const STT_V2_RECOGNIZER_DOC: &str =
     "https://cloud.google.com/speech-to-text/v2/docs/recognizers";
 
+pub const TTS_VOICES_DOC: &str = "https://cloud.google.com/text-to-speech/docs/voices";
+
 pub const TTS_STREAMING_DOC: &str =
     "https://docs.cloud.google.com/text-to-speech/docs/create-audio-text-streaming";
 
@@ -122,6 +124,22 @@ pub fn voice_supports_streaming_synthesize(voice: &str) -> bool {
     voice.contains("Chirp3-HD")
 }
 
+/// Voice names from the catalog snapshot of the Cloud TTS `voices.list` response.
+pub fn validate_tts_voice(voice: &str) -> Result<(), String> {
+    let documented = voice_catalog::google_tts_voices();
+    if documented.contains(&voice) {
+        return Ok(());
+    }
+    Err(format!(
+        "unsupported Google TTS voice `{voice}`; must be a voice name from the Cloud TTS voices list ({} voices); see {TTS_VOICES_DOC}",
+        documented.len()
+    ))
+}
+
+pub fn default_tts_voice() -> &'static str {
+    voice_catalog::default_tts_voice("google").expect("google default TTS voice in voice catalog")
+}
+
 pub fn default_stt_model() -> &'static str {
     "latest_long"
 }
@@ -156,6 +174,17 @@ mod tests {
             "en-US-Chirp3-HD-Charon"
         ));
         assert!(!voice_supports_streaming_synthesize("en-US-Neural2-A"));
+    }
+
+    #[test]
+    fn google_rejects_unknown_voice() {
+        assert!(validate_tts_voice("en-US-Nobody-Z").is_err());
+    }
+
+    #[test]
+    fn google_accepts_chirp3_hd_voice() {
+        assert!(validate_tts_voice("en-US-Chirp3-HD-Charon").is_ok());
+        assert!(validate_tts_voice(default_tts_voice()).is_ok());
     }
 
     #[test]

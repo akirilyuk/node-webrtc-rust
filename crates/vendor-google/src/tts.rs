@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use node_webrtc_rust_speech::config::TtsConfig;
-use node_webrtc_rust_speech::error::SpeechResult;
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{
     duration_ms_from_mono_s16le, mono_s16le_to_stereo, WEBRTC_PCM_SAMPLE_RATE,
 };
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
-use crate::matrix::voice_supports_streaming_synthesize;
+use crate::matrix::{default_tts_voice, validate_tts_voice, voice_supports_streaming_synthesize};
 
 #[cfg(feature = "live")]
 use crate::tts_live;
@@ -22,7 +22,8 @@ impl GoogleTts {
             .voice
             .clone()
             .or_else(|| config.model.clone())
-            .unwrap_or_else(|| "en-US-Neural2-A".to_string());
+            .unwrap_or_else(|| default_tts_voice().to_string());
+        validate_tts_voice(&voice).map_err(SpeechError::Config)?;
         let language = voice.split('-').take(2).collect::<Vec<_>>().join("-");
         Ok(Self {
             voice,

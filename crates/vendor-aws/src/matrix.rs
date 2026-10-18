@@ -16,7 +16,7 @@ use node_webrtc_rust_voice_catalog as voice_catalog;
 pub static DOCUMENTED_STT_LANGUAGE_CODES: LazyLock<&'static [&'static str]> =
     LazyLock::new(|| voice_catalog::stt_models("aws").expect("aws in voice catalog"));
 
-/// Sample Polly neural voices (voice id in `TtsConfig.voice`; engine `neural` unless noted).
+/// Polly voices that support the neural engine (we always send `Engine::Neural`).
 pub static DOCUMENTED_TTS_VOICES: LazyLock<&'static [&'static str]> =
     LazyLock::new(|| voice_catalog::tts_voices("aws").expect("aws in voice catalog"));
 
@@ -43,7 +43,7 @@ pub fn validate_tts_voice(voice: &str) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "unsupported Polly voice `{voice}`; documented sample voices: {}",
+        "unsupported Polly voice `{voice}`; documented neural voices: {}",
         DOCUMENTED_TTS_VOICES.join(", ")
     ))
 }
@@ -86,6 +86,12 @@ mod tests {
             assert!(validate_tts_voice(voice).is_ok());
         }
         assert!(validate_tts_voice("NotAVoice").is_err());
+    }
+
+    #[test]
+    fn aws_accepts_danielle_rejects_nicole() {
+        assert!(validate_tts_voice("Danielle").is_ok());
+        assert!(validate_tts_voice("Nicole").is_err());
     }
 
     #[test]

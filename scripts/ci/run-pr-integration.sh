@@ -94,6 +94,8 @@ if suite_enabled rust; then
     cargo test -p node-webrtc-rust-vendor-deepgram --features live
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-elevenlabs" -- \
     cargo test -p node-webrtc-rust-vendor-elevenlabs --features live
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-openai" -- \
+    cargo test -p node-webrtc-rust-vendor-openai --features live
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-fishaudio" -- \
     cargo test -p node-webrtc-rust-vendor-fishaudio --features live -- --test-threads=1
   # Vendored dtls (third_party/dtls) is not a workspace member, so `-p` cannot reach it. Guards

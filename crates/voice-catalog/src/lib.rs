@@ -15,6 +15,10 @@ const AZURE_TTS_VOICES_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../packages/voice-catalog/catalog/azure-tts-voices.json"
 ));
+const GOOGLE_TTS_VOICES_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../packages/voice-catalog/catalog/google-tts-voices.json"
+));
 
 #[derive(Debug, Deserialize)]
 struct VendorsFile {
@@ -29,6 +33,10 @@ struct AzureVoicesFile {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VendorEntryRaw {
+    #[serde(default)]
+    tts_voices_by_model: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    tts_voice_ids: Option<String>,
     id: String,
     label: String,
     stt: bool,
@@ -62,6 +70,8 @@ pub struct VendorEntry {
     stt_models: &'static [&'static str],
     tts_models: &'static [&'static str],
     tts_voices: &'static [&'static str],
+    tts_voices_by_model: HashMap<&'static str, &'static [&'static str]>,
+    tts_voice_ids: Option<&'static str>,
 }
 
 impl VendorEntry {
@@ -76,12 +86,23 @@ impl VendorEntry {
     pub fn tts_voices(&self) -> &'static [&'static str] {
         self.tts_voices
     }
+
+    /// Voices documented for one TTS model, when the catalog has a per-model list.
+    pub fn tts_voices_by_model(&self, model: &str) -> Option<&'static [&'static str]> {
+        self.tts_voices_by_model.get(model).copied()
+    }
+
+    /// How voice ids are described by the vendor (`listed`, `model`, `open`).
+    pub fn tts_voice_ids(&self) -> Option<&'static str> {
+        self.tts_voice_ids
+    }
 }
 
 struct Catalog {
     vendors: Vec<VendorEntry>,
     by_id: HashMap<&'static str, usize>,
     azure_tts_voices: &'static [&'static str],
+    google_tts_voices: &'static [&'static str],
 }
 
 static CATALOG: OnceLock<&'static Catalog> = OnceLock::new();
@@ -102,6 +123,9 @@ fn catalog() -> &'static Catalog {
         let azure_file: AzureVoicesFile =
             serde_json::from_str(AZURE_TTS_VOICES_JSON).expect("azure-tts-voices.json must parse");
         let azure_tts_voices = leak_str_slice(&azure_file.voices);
+        let google_file: AzureVoicesFile = serde_json::from_str(GOOGLE_TTS_VOICES_JSON)
+            .expect("google-tts-voices.json must parse");
+        let google_tts_voices = leak_str_slice(&google_file.voices);
 
         let mut vendors = Vec::with_capacity(vendors_file.vendors.len());
         let mut by_id = HashMap::new();
@@ -123,6 +147,12 @@ fn catalog() -> &'static Catalog {
                 stt_models: leak_str_slice(&raw.stt_models),
                 tts_models: leak_str_slice(&raw.tts_models),
                 tts_voices: leak_str_slice(&raw.tts_voices),
+                tts_voices_by_model: raw
+                    .tts_voices_by_model
+                    .iter()
+                    .map(|(model, voices)| (leak_str(model.clone()), leak_str_slice(voices)))
+                    .collect(),
+                tts_voice_ids: raw.tts_voice_ids.map(leak_str),
             };
             by_id.insert(id, vendors.len());
             vendors.push(entry);
@@ -132,6 +162,7 @@ fn catalog() -> &'static Catalog {
             vendors,
             by_id,
             azure_tts_voices,
+            google_tts_voices,
         }))
     })
 }
@@ -145,6 +176,32 @@ pub fn vendor(id: &str) -> Option<&'static VendorEntry> {
 /// Azure TTS ShortNames from `azure-tts-voices.json` (not duplicated in `vendors.json`).
 pub fn azure_tts_voices() -> &'static [&'static str] {
     catalog().azure_tts_voices
+}
+
+/// Google Cloud TTS voice names from `google-tts-voices.json` (not duplicated in `vendors.json`).
+pub fn google_tts_voices() -> &'static [&'static str] {
+    catalog().google_tts_voices
+}
+
+/// Voices valid for `vendor_id` and `model`: the per-model list when the catalog has one,
+/// else the azure/google snapshot, else the vendor list. `None` for an unknown vendor.
+pub fn tts_voices_for_model(
+    vendor_id: &str,
+    model: Option<&str>,
+) -> Option<&'static [&'static str]> {
+    let v = vendor(vendor_id)?;
+    if let Some(list) = model.and_then(|m| v.tts_voices_by_model(m)) {
+        return Some(list);
+    }
+    match vendor_id {
+        "azure" => Some(azure_tts_voices()),
+        "google" => Some(google_tts_voices()),
+        _ => Some(v.tts_voices()),
+    }
+}
+
+pub fn tts_voice_ids(vendor_id: &str) -> Option<&'static str> {
+    vendor(vendor_id).and_then(|v| v.tts_voice_ids())
 }
 
 pub fn stt_models(vendor_id: &str) -> Option<&'static [&'static str]> {
@@ -203,6 +260,32 @@ mod tests {
         assert_eq!(voices.len(), 761);
         assert!(voices.contains(&"en-US-JennyNeural"));
         assert!(voices.contains(&"en-US-Ava:DragonHDLatestNeural"));
+    }
+
+    #[test]
+    fn google_snapshot_has_neural2_voice() {
+        assert!(google_tts_voices().contains(&"en-US-Neural2-A"));
+        let via = tts_voices_for_model("google", None).expect("google");
+        assert!(via.contains(&"en-US-Neural2-A"));
+    }
+
+    #[test]
+    fn openai_tts1_lacks_marin() {
+        let tts1 = tts_voices_for_model("openai", Some("tts-1")).expect("openai");
+        assert!(!tts1.contains(&"marin"));
+        assert!(tts1.contains(&"alloy"));
+    }
+
+    #[test]
+    fn groq_arabic_list_has_fahad() {
+        let ar =
+            tts_voices_for_model("groq", Some("canopylabs/orpheus-arabic-saudi")).expect("groq");
+        assert!(ar.contains(&"fahad"));
+    }
+
+    #[test]
+    fn unknown_vendor_voices_is_none() {
+        assert!(tts_voices_for_model("not-a-vendor", None).is_none());
     }
 
     #[test]

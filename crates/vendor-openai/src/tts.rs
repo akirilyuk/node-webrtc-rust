@@ -41,6 +41,10 @@ pub struct OpenAiTts {
     /// Chunked PCM until a stream attempt fails before any audio is sent.
     #[cfg(feature = "live")]
     delivery: Mutex<SpeechDelivery>,
+    /// One client for the provider's life: connections (and TLS sessions) are reused.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl OpenAiTts {
@@ -56,7 +60,25 @@ impl OpenAiTts {
             endpoint: config.endpoint.clone(),
             #[cfg(feature = "live")]
             delivery: Mutex::new(SpeechDelivery::StreamPcm),
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            last_transport: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Test hook: replaces the pooled client with one that has this whole-request bound.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.http = crate::http::build_client(Some(total)).expect("test http client");
+        self
+    }
+
+    #[cfg(feature = "live")]
+    fn note_transport(&self, value: String) {
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some(value);
+        }
     }
 }
 
@@ -64,6 +86,10 @@ impl OpenAiTts {
 impl TtsProvider for OpenAiTts {
     fn vendor_name(&self) -> &'static str {
         "openai"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
@@ -119,7 +145,8 @@ impl OpenAiTts {
             {
                 config = config.with_api_base(api_root(&self.endpoint));
             }
-            let client = Client::with_config(config);
+            let client = Client::with_config(config).with_http_client(self.http.clone());
+            self.note_transport(crate::http::SDK_TRANSPORT.into());
             let response =
                 client
                     .audio()
@@ -183,19 +210,15 @@ impl OpenAiTts {
             "response_format": "pcm",
             "stream_format": "audio",
         });
-        let http = reqwest::Client::builder().build().map_err(|err| {
-            StreamAttempt::Failed(SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: format!("HTTP client: {err}"),
-            })
-        })?;
-        let response = http
+        let response = self
+            .http
             .post(url)
             .bearer_auth(api_key)
             .json(&body)
             .send()
             .await
             .map_err(|_| StreamAttempt::UseFullBody)?;
+        self.note_transport(crate::http::transport_label(response.version()));
         let status = response.status();
         let content_type = response
             .headers()
@@ -266,13 +289,8 @@ impl OpenAiTts {
             "response_format": "pcm",
             "stream_format": "sse",
         });
-        let http = reqwest::Client::builder()
-            .build()
-            .map_err(|err| SpeechError::Vendor {
-                vendor: "openai".into(),
-                message: format!("HTTP client: {err}"),
-            })?;
-        let response = http
+        let response = self
+            .http
             .post(url)
             .bearer_auth(api_key)
             .header("Accept", "text/event-stream")
@@ -283,6 +301,7 @@ impl OpenAiTts {
                 vendor: "openai".into(),
                 message: err.to_string(),
             })?;
+        self.note_transport(crate::http::transport_label(response.version()));
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();

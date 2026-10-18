@@ -21,6 +21,15 @@ pub struct GoogleStt {
     transport: SttDefaultTransport,
     v2_locator: Option<GoogleSttV2Locator>,
     state: Arc<Mutex<GoogleSttState>>,
+    /// One REST client for the provider's life: connections (and TLS sessions) are reused.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    /// The V2 gRPC client, built on first use and kept.
+    #[cfg(feature = "live")]
+    grpc: tokio::sync::OnceCell<google_cloud_speech_v2::client::Speech>,
+    #[cfg(feature = "live")]
+    rest_url_override: Option<String>,
+    last_transport: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct GoogleSttState {
@@ -56,7 +65,31 @@ impl GoogleStt {
                 #[cfg(feature = "live")]
                 v2_handle: None,
             })),
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            #[cfg(feature = "live")]
+            grpc: tokio::sync::OnceCell::new(),
+            #[cfg(feature = "live")]
+            rest_url_override: None,
+            last_transport: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Test hook: V1 `speech:recognize` goes to this URL (plain `http://` mock server) with a
+    /// fixed bearer token instead of Google credentials.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_rest_url_override(mut self, url: impl Into<String>) -> Self {
+        self.rest_url_override = Some(url.into());
+        self
+    }
+
+    /// Test hook: replaces the pooled REST client with one that has this whole-request bound.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.http = crate::http::build_client(Some(total)).expect("test http client");
+        self
     }
 }
 
@@ -72,6 +105,10 @@ impl SttProvider for GoogleStt {
         cfg!(feature = "live") && stt_uses_v2_streaming(self.transport)
     }
 
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
+    }
+
     async fn start(&mut self) -> SpeechResult<()> {
         let mut state = self.state.lock().await;
         state.running = true;
@@ -84,8 +121,18 @@ impl SttProvider for GoogleStt {
                 let locator = self.v2_locator.clone().ok_or_else(|| {
                     SpeechError::Config("missing Google V2 recognizer configuration".into())
                 })?;
-                let (rx, handle) =
-                    stt_live::start_v2_streaming(&locator, &self.model, &self.language).await?;
+                let client = self
+                    .grpc
+                    .get_or_try_init(stt_live::build_grpc_client)
+                    .await?;
+                let (rx, handle) = stt_live::start_v2_streaming(
+                    client,
+                    &self.last_transport,
+                    &locator,
+                    &self.model,
+                    &self.language,
+                )
+                .await?;
                 state.transcript_rx = Some(rx);
                 state.v2_handle = Some(handle);
             }
@@ -161,9 +208,19 @@ impl SttProvider for GoogleStt {
                 Bytes::from(std::mem::take(&mut state.buffered))
             };
             let language = self.language.clone();
+            let http = self.http.clone();
+            let transport = self.last_transport.clone();
+            let url_override = self.rest_url_override.clone();
             let (tx, rx) = mpsc::unbounded_channel();
             tokio::spawn(async move {
-                let result = stt_live::v1_recognize(pcm, &language).await;
+                let result = stt_live::v1_recognize(
+                    &http,
+                    &transport,
+                    url_override.as_deref(),
+                    pcm,
+                    &language,
+                )
+                .await;
                 if let Ok(text) = result {
                     if !text.trim().is_empty() {
                         let _ = tx.send(SttTranscript::Final(text));

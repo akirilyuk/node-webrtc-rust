@@ -58,3 +58,5 @@ Config: `tts.transport` and `stt.transport`: `auto` (default) or `http`. Allowed
 Polly and Transcribe streaming go through the AWS SDK over HTTP.
 
 `auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `http`. Default measured in a later change.
+
+Each provider keeps one SDK client (built on first use), and the SDK pools connections per client; HTTP/2 when the service negotiates it (Transcribe streaming is an HTTP/2 event stream), otherwise HTTP/1.1. There is no `reqwest` here. `last_transport()` reports `h2` for Transcribe and `sdk` for Polly, because the SDK does not expose the HTTP version of a Polly response. Connect timeout 10 s on both clients, plus a 60 s operation timeout on Polly.

@@ -96,6 +96,10 @@ impl TtsProvider for FishAudioTts {
         "fishaudio"
     }
 
+    fn last_transport(&self) -> Option<String> {
+        self.client.last_transport()
+    }
+
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         self.synthesize_progressive(text, None).await
     }

@@ -49,3 +49,5 @@ Config: `tts.transport`: `auto` (default), `websocket` or `http`. Cartesia has n
 TTS `websocket` (contexts socket, with the existing REST fallback only while no audio reached the sink). TTS `http` (REST bytes only, the body is read in full before it is sent to the sink today).
 
 `auto` resolves to the catalog default, which is today's behaviour: TTS `websocket`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.

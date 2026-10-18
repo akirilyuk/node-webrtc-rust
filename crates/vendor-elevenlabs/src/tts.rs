@@ -9,6 +9,7 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsPr
 #[cfg(feature = "live")]
 use crate::matrix::{
     full_body_url, CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
+    POOL_IDLE_TIMEOUT, TCP_KEEPALIVE,
 };
 use crate::matrix::{
     http_stream_url, resolve_tts_transport, tts_delivery_plan, tts_progressive_transport_for,
@@ -27,6 +28,14 @@ pub struct ElevenLabsTts {
     /// REST base (`TtsConfig.endpoint` or [`DEFAULT_BASE_URL`]); the WS host is derived from it.
     #[cfg_attr(not(feature = "live"), allow(dead_code))]
     base_url: String,
+    /// One HTTP client for the provider's life: connections (and TLS sessions) are reused. HTTP
+    /// version: ALPN default (h2 when the server offers it, else HTTP/1.1). It has no total
+    /// timeout, because that would cut a long streamed utterance; the full-body request sets
+    /// [`HTTP_TOTAL_TIMEOUT`] per request and the stream waits are bounded one by one.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    /// How the last request reached ElevenLabs: `ws`, `h2` or `http/1.1`.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl ElevenLabsTts {
@@ -52,7 +61,33 @@ impl ElevenLabsTts {
                 .filter(|value| !value.is_empty())
                 .unwrap_or(DEFAULT_BASE_URL)
                 .to_string(),
+            #[cfg(feature = "live")]
+            http: reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+                .tcp_keepalive(TCP_KEEPALIVE)
+                .build()
+                .map_err(|err| {
+                    vendor_error(format!("elevenlabs http client build failed: {err}"))
+                })?,
+            last_transport: std::sync::Mutex::new(None),
         })
+    }
+
+    #[cfg(feature = "live")]
+    fn note_http_version(&self, response: &reqwest::Response) {
+        self.note_transport(if response.version() == reqwest::Version::HTTP_2 {
+            "h2"
+        } else {
+            "http/1.1"
+        });
+    }
+
+    #[cfg(feature = "live")]
+    fn note_transport(&self, value: &str) {
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some(value.to_string());
+        }
     }
 
     fn api_key(&self) -> SpeechResult<String> {
@@ -77,6 +112,10 @@ impl ElevenLabsTts {
 impl TtsProvider for ElevenLabsTts {
     fn vendor_name(&self) -> &'static str {
         "elevenlabs"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
@@ -120,15 +159,10 @@ impl ElevenLabsTts {
                 "model_id": self.model,
             });
 
-            let http = reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(HTTP_TOTAL_TIMEOUT)
-                .build()
-                .map_err(|err| {
-                    vendor_error(format!("elevenlabs http client build failed: {err}"))
-                })?;
-            let response = http
+            let response = self
+                .http
                 .post(url)
+                .timeout(HTTP_TOTAL_TIMEOUT)
                 .header("xi-api-key", api_key)
                 .header("Content-Type", "application/json")
                 .header("Accept", "audio/pcm")
@@ -140,6 +174,7 @@ impl ElevenLabsTts {
                     message: err.to_string(),
                 })?;
 
+            self.note_http_version(&response);
             let status = response.status();
             if !status.is_success() {
                 let message = response.text().await.unwrap_or_else(|_| status.to_string());
@@ -184,10 +219,6 @@ impl ElevenLabsTts {
         });
 
         // No total timeout here: it would cut a long utterance. Each wait is bounded instead.
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .build()
-            .map_err(|err| vendor_error(format!("elevenlabs http client build failed: {err}")))?;
         let first_audio_timed_out = || {
             vendor_error(format!(
                 "elevenlabs http first audio timed out after {} ms",
@@ -198,7 +229,8 @@ impl ElevenLabsTts {
         let first_audio_deadline = tokio::time::Instant::now() + FIRST_AUDIO_TIMEOUT;
         let response = tokio::time::timeout_at(
             first_audio_deadline,
-            http.post(url)
+            self.http
+                .post(url)
                 .header("xi-api-key", api_key)
                 .header("Content-Type", "application/json")
                 .header("Accept", "audio/pcm")
@@ -209,6 +241,7 @@ impl ElevenLabsTts {
         .map_err(|_| first_audio_timed_out())?
         .map_err(|err| vendor_error(err.to_string()))?;
 
+        self.note_http_version(&response);
         if !response.status().is_success() {
             let status = response.status();
             let message = match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, response.text()).await {
@@ -313,6 +346,7 @@ impl ElevenLabsTts {
             .await
             .map_err(|_| connect_timeout())?
             .map_err(|err| vendor_error(err.to_string()))?;
+        self.note_transport("ws");
         let (mut ws_tx, mut ws_rx) = ws.split();
 
         tokio::time::timeout(

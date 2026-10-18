@@ -46,6 +46,10 @@ impl SttProvider for AssemblyAiStt {
         "assemblyai"
     }
 
+    fn last_transport(&self) -> Option<String> {
+        self.client.last_transport()
+    }
+
     async fn start(&mut self) -> SpeechResult<()> {
         self.client.connect().await?;
         self.running = true;

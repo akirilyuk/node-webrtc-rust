@@ -30,6 +30,10 @@ pub struct GroqStt {
     live_backlog_ms: AtomicU32,
     frozen_backlog_ms: AtomicU32,
     commit_waiting: AtomicBool,
+    /// One client for the provider's life: connections (and TLS sessions) are reused.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    last_transport: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct GroqSttInner {
@@ -67,7 +71,18 @@ impl GroqStt {
             live_backlog_ms: AtomicU32::new(0),
             frozen_backlog_ms: AtomicU32::new(0),
             commit_waiting: AtomicBool::new(false),
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            last_transport: std::sync::Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Test hook: replaces the pooled client with one that has this whole-request bound.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.http = crate::http::build_client(Some(total)).expect("test http client");
+        self
     }
 
     fn note_pushed_audio(&self, pcm_len: usize) {
@@ -113,6 +128,10 @@ impl SttProvider for GroqStt {
     /// Groq transcribes one uploaded file per utterance and returns only a final.
     fn emits_partials(&self) -> bool {
         false
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     fn decode_backlog_ms(&self) -> u32 {
@@ -227,8 +246,20 @@ impl SttProvider for GroqStt {
             let language = self.language.clone();
             let pcm = Bytes::from(pcm);
             let (tx, rx) = mpsc::unbounded_channel();
+            let http = self.http.clone();
+            let transport = self.last_transport.clone();
             let handle = tokio::spawn(async move {
-                http_transcribe(pcm, &api_key, &url, &model, language.as_deref(), tx).await
+                http_transcribe(
+                    &http,
+                    pcm,
+                    &api_key,
+                    &url,
+                    &model,
+                    language.as_deref(),
+                    tx,
+                    &transport,
+                )
+                .await
             });
             *self.poll_rx.lock().await = Some(rx);
             *self.poll_task.lock().await = Some(handle);
@@ -247,13 +278,16 @@ impl SttProvider for GroqStt {
 }
 
 #[cfg(feature = "live")]
+#[allow(clippy::too_many_arguments)]
 async fn http_transcribe(
+    http: &reqwest::Client,
     pcm: Bytes,
     api_key: &str,
     url: &str,
     model: &str,
     language: Option<&str>,
     tx: mpsc::UnboundedSender<SttTranscript>,
+    transport: &std::sync::Mutex<Option<String>>,
 ) -> SpeechResult<()> {
     let wav = mono16_le_to_wav(pcm.as_ref());
     let part = reqwest::multipart::Part::bytes(wav)
@@ -271,7 +305,7 @@ async fn http_transcribe(
         form = form.text("language", language.to_string());
     }
 
-    let response = reqwest::Client::new()
+    let response = http
         .post(url)
         .bearer_auth(api_key)
         .multipart(form)
@@ -282,6 +316,9 @@ async fn http_transcribe(
             message: err.to_string(),
         })?;
 
+    if let Ok(mut guard) = transport.lock() {
+        *guard = Some(crate::http::transport_label(response.version()));
+    }
     if !response.status().is_success() {
         let status = response.status();
         let message = response.text().await.unwrap_or_else(|_| status.to_string());

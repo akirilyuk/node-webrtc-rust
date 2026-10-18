@@ -61,3 +61,5 @@ Config: `tts.transport`: `auto` (default), `websocket` or `http`. `stt.transport
 TTS `websocket` (`/v1/speak` or `/v2/speak` socket, audio chunks reach the sink as they arrive). TTS `http` (`POST /v1/speak`; the body is read in full before it is sent to the sink today, streaming comes in a later change). STT is always the `/v1/listen` WebSocket.
 
 `auto` resolves to the catalog default, which is today's behaviour: TTS `websocket`, STT `websocket`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.

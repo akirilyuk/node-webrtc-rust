@@ -19,7 +19,7 @@ use crate::pcm::Pcm24kAssembler;
 #[cfg(feature = "live")]
 use crate::matrix::{
     http_tts_url, validate_model_id, ws_live_url, CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT,
-    FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
+    FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT, POOL_IDLE_TIMEOUT, TCP_KEEPALIVE,
 };
 
 const VENDOR: &str = "fishaudio";
@@ -174,8 +174,12 @@ impl StreamState {
 pub(crate) struct FishAudioClient {
     api_key: Option<String>,
     base_url: String,
+    /// One HTTP client for the provider's life: connections (and TLS sessions) are reused. HTTP
+    /// version: ALPN default (h2 when the server offers it, else HTTP/1.1).
     #[cfg(feature = "live")]
     http: reqwest::Client,
+    /// How the last request reached Fish: `ws`, `h2` or `http/1.1`.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl FishAudioClient {
@@ -189,11 +193,26 @@ impl FishAudioClient {
             #[cfg(feature = "live")]
             http: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
+                .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+                .tcp_keepalive(TCP_KEEPALIVE)
                 .build()
                 .map_err(|err| {
                     vendor_error(format!("fishaudio http client build failed: {err}"))
                 })?,
+            last_transport: std::sync::Mutex::new(None),
         })
+    }
+
+    /// How the last request reached Fish: `ws`, `h2` or `http/1.1`.
+    pub(crate) fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
+    }
+
+    #[cfg(feature = "live")]
+    fn note_transport(&self, value: &str) {
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some(value.to_string());
+        }
     }
 
     fn api_key(&self) -> SpeechResult<String> {
@@ -357,6 +376,7 @@ impl FishAudioClient {
             }
             Ok(Ok((ws, _))) => ws,
         };
+        self.note_transport("ws");
 
         ws_send(
             &mut ws,
@@ -450,6 +470,11 @@ impl FishAudioClient {
         .await?
         .map_err(|err| vendor_error(format!("fishaudio http request failed: {err}")))?;
 
+        self.note_transport(if response.version() == reqwest::Version::HTTP_2 {
+            "h2"
+        } else {
+            "http/1.1"
+        });
         let status = response.status();
         if !status.is_success() {
             state.http_status = Some(status.as_u16());

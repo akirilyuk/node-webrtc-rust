@@ -40,3 +40,5 @@ Config: `stt.transport`: `auto` (default) or `websocket`. AssemblyAI has no TTS.
 STT is always the streaming WebSocket.
 
 `auto` resolves to the catalog default, which is today's behaviour: STT `websocket`. Default measured in a later change.
+
+There is no HTTP request path in this crate, so no HTTP client or HTTP/2 setting applies. `last_transport()` reports `ws` once the streaming socket is open.

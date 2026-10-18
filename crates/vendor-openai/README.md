@@ -116,3 +116,5 @@ Config: `tts.transport`: `auto` (default) or `http`. `stt.transport`: `auto` onl
 TTS is the streamed `audio/speech` HTTP response.
 
 `auto` resolves to the catalog default, which is today's behaviour: TTS `http`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1. Connect timeout 10 s, whole-request timeout 60 s, idle pool 90 s, TCP keepalive 30 s. Requests made through the `async-openai` client (TTS full-body fallback, file-JSON STT) use the same pooled client but `last_transport()` reports `sdk` for them, because that client does not expose the response's HTTP version.

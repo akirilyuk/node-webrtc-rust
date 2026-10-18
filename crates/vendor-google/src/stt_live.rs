@@ -3,6 +3,8 @@
 //! V1 recognize: `POST https://speech.googleapis.com/v1/speech:recognize`
 //! V2 streaming: `Speech.StreamingRecognize` with `interim_results` — `matrix::STT_V2_STREAMING_DOC`.
 
+use std::sync::Mutex;
+
 use bytes::Bytes;
 use google_cloud_speech_v2::client::Speech;
 use google_cloud_speech_v2::model::{
@@ -17,11 +19,29 @@ use tokio::sync::mpsc;
 use crate::auth::{google_access_token, google_api_key};
 use crate::matrix::GoogleSttV2Locator;
 
-pub async fn v1_recognize(pcm: Bytes, language: &str) -> SpeechResult<String> {
+/// Builds the gRPC client a provider keeps for its whole life.
+pub async fn build_grpc_client() -> SpeechResult<Speech> {
+    Speech::builder()
+        .build()
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "google".into(),
+            message: err.to_string(),
+        })
+}
+
+/// `url_override` is a test hook: POST there with a fixed bearer token instead of the Google
+/// endpoint with real credentials.
+pub async fn v1_recognize(
+    client: &reqwest::Client,
+    transport: &Mutex<Option<String>>,
+    url_override: Option<&str>,
+    pcm: Bytes,
+    language: &str,
+) -> SpeechResult<String> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use serde_json::json;
 
-    let client = reqwest::Client::new();
     let body = json!({
         "config": {
             "encoding": "LINEAR16",
@@ -34,7 +54,9 @@ pub async fn v1_recognize(pcm: Bytes, language: &str) -> SpeechResult<String> {
         }
     });
 
-    let request = if let Some(api_key) = google_api_key() {
+    let request = if let Some(url) = url_override {
+        client.post(url).bearer_auth("test-token")
+    } else if let Some(api_key) = google_api_key() {
         client.post(format!(
             "https://speech.googleapis.com/v1/speech:recognize?key={api_key}"
         ))
@@ -59,6 +81,7 @@ pub async fn v1_recognize(pcm: Bytes, language: &str) -> SpeechResult<String> {
             message: err.to_string(),
         })?;
 
+    crate::http::note(transport, crate::http::transport_label(response.version()));
     let status = response.status();
     let payload: serde_json::Value = response.json().await.map_err(|err| SpeechError::Vendor {
         vendor: "google".into(),
@@ -99,17 +122,13 @@ impl V2StreamHandle {
 }
 
 pub async fn start_v2_streaming(
+    client: &Speech,
+    transport: &Mutex<Option<String>>,
     locator: &GoogleSttV2Locator,
     model: &str,
     language: &str,
 ) -> SpeechResult<(mpsc::UnboundedReceiver<SttTranscript>, V2StreamHandle)> {
-    let client = Speech::builder()
-        .build()
-        .await
-        .map_err(|err| SpeechError::Vendor {
-            vendor: "google".into(),
-            message: err.to_string(),
-        })?;
+    crate::http::note(transport, "grpc".into());
 
     let recognizer = format!(
         "projects/{}/locations/{}/recognizers/{}",

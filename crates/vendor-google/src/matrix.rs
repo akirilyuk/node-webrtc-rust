@@ -6,9 +6,20 @@
 //! TTS voices: <https://cloud.google.com/text-to-speech/docs/voices>
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use node_webrtc_rust_speech::config::SttConfig;
 use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// TCP connect bound of the pooled REST client (`infra.unbounded-external-wait`).
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Whole-request bound for the REST calls (V1 `speech:recognize`, `text:synthesize`). Google had
+/// no timeout before; 60 s matches the other REST vendors in this workspace.
+pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled connection is kept for the next request.
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled connections.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// Documented Speech-to-Text model identifiers (V2 table + V1 `latest_long`).
 pub static DOCUMENTED_STT_MODELS: LazyLock<&'static [&'static str]> =

@@ -28,6 +28,12 @@ pub struct AzureStt {
     live_backlog_ms: AtomicU32,
     frozen_backlog_ms: AtomicU32,
     commit_waiting: AtomicBool,
+    /// One client for the provider's life: connections (and TLS sessions) are reused.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    #[cfg(feature = "live")]
+    url_override: Option<String>,
+    last_transport: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct AzureSttInner {
@@ -64,7 +70,28 @@ impl AzureStt {
             live_backlog_ms: AtomicU32::new(0),
             frozen_backlog_ms: AtomicU32::new(0),
             commit_waiting: AtomicBool::new(false),
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            #[cfg(feature = "live")]
+            url_override: None,
+            last_transport: std::sync::Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Test hook: POST here instead of the resource host (plain `http://` mock server).
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_url_override(mut self, url: impl Into<String>) -> Self {
+        self.url_override = Some(url.into());
+        self
+    }
+
+    /// Test hook: replaces the pooled client with one that has this whole-request bound.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.http = crate::http::build_client(Some(total)).expect("test http client");
+        self
     }
 
     fn stt_url(&self) -> SpeechResult<String> {
@@ -154,6 +181,10 @@ impl SttProvider for AzureStt {
     /// Azure STT transcribes one uploaded utterance and returns only a final.
     fn emits_partials(&self) -> bool {
         false
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     fn decode_backlog_ms(&self) -> u32 {
@@ -263,11 +294,17 @@ impl SttProvider for AzureStt {
         #[cfg(feature = "live")]
         {
             let key = speech_key_from(&self.speech_key)?;
-            let url = self.stt_url()?;
+            let url = match &self.url_override {
+                Some(url) => url.clone(),
+                None => self.stt_url()?,
+            };
             let wav = mono16_le_to_wav(&pcm);
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle =
-                tokio::spawn(async move { http_short_audio_recognize(wav, &key, &url, tx).await });
+            let http = self.http.clone();
+            let transport = self.last_transport.clone();
+            let handle = tokio::spawn(async move {
+                http_short_audio_recognize(&http, wav, &key, &url, tx, &transport).await
+            });
             *self.poll_rx.lock().await = Some(rx);
             *self.poll_task.lock().await = Some(handle);
             return Ok(());
@@ -286,12 +323,14 @@ impl SttProvider for AzureStt {
 
 #[cfg(feature = "live")]
 async fn http_short_audio_recognize(
+    http: &reqwest::Client,
     wav: Vec<u8>,
     speech_key: &str,
     url: &str,
     tx: mpsc::UnboundedSender<SttTranscript>,
+    transport: &std::sync::Mutex<Option<String>>,
 ) -> SpeechResult<()> {
-    let response = reqwest::Client::new()
+    let response = http
         .post(url)
         .header("Ocp-Apim-Subscription-Key", speech_key)
         .header("Accept", "application/json")
@@ -306,6 +345,9 @@ async fn http_short_audio_recognize(
             vendor: "azure".into(),
             message: err.to_string(),
         })?;
+    if let Ok(mut guard) = transport.lock() {
+        *guard = Some(crate::http::transport_label(response.version()));
+    }
     if !response.status().is_success() {
         let status = response.status();
         let message = response.text().await.unwrap_or_else(|_| status.to_string());

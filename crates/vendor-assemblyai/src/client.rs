@@ -19,6 +19,8 @@ pub struct AssemblyAiClient {
     api_key: Option<String>,
     speech_model: String,
     inner: Arc<Mutex<AssemblyAiInner>>,
+    /// `ws` once the streaming socket is open.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 struct AssemblyAiInner {
@@ -38,7 +40,13 @@ impl AssemblyAiClient {
                 transcript_rx: None,
                 ws_task: None,
             })),
+            last_transport: std::sync::Mutex::new(None),
         })
+    }
+
+    /// `ws` once the streaming socket is open.
+    pub fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     fn api_key(&self) -> SpeechResult<String> {
@@ -73,6 +81,9 @@ impl AssemblyAiClient {
                 vendor: "assemblyai".into(),
                 message: err.to_string(),
             })?;
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some("ws".into());
+        }
         let (mut ws_tx, mut ws_rx) = ws.split();
         let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Bytes>();
         let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<SttTranscript>();

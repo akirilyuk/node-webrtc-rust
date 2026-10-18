@@ -1071,6 +1071,7 @@ async fn explicit_websocket_transport_goes_to_the_ws_endpoint() {
     assert_eq!(mock.ws_hits(), 1);
     assert_eq!(mock.stream_hits(), 0);
     assert_eq!(mock.full_hits(), 0);
+    assert_eq!(provider.last_transport().as_deref(), Some("ws"));
 }
 
 #[tokio::test]
@@ -1086,6 +1087,7 @@ async fn explicit_http_transport_goes_to_the_stream_endpoint() {
     assert_eq!(sunk.len(), 1);
     assert_eq!(mock.stream_hits(), 1);
     assert_eq!(mock.ws_hits(), 0);
+    assert_eq!(provider.last_transport().as_deref(), Some("http/1.1"));
 }
 
 #[tokio::test]

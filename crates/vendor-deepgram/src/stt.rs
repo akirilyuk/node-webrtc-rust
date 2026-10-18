@@ -23,6 +23,8 @@ pub struct DeepgramStt {
     model: String,
     language: Option<String>,
     state: Arc<Mutex<DeepgramSttInner>>,
+    /// `ws` once the listen socket is open.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 struct DeepgramSttInner {
@@ -56,6 +58,7 @@ impl DeepgramStt {
                 reader_task: None,
                 sender_task: None,
             })),
+            last_transport: std::sync::Mutex::new(None),
         })
     }
 
@@ -73,6 +76,10 @@ impl DeepgramStt {
 impl SttProvider for DeepgramStt {
     fn vendor_name(&self) -> &'static str {
         "deepgram"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn start(&mut self) -> SpeechResult<()> {
@@ -107,6 +114,9 @@ impl SttProvider for DeepgramStt {
                     vendor: "deepgram".into(),
                     message: err.to_string(),
                 })?;
+            if let Ok(mut guard) = self.last_transport.lock() {
+                *guard = Some("ws".into());
+            }
             let (mut ws_tx, mut ws_rx) = ws.split();
 
             let reader_task = tokio::spawn(async move {

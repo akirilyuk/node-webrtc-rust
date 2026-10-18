@@ -57,6 +57,10 @@ pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
 pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whole HTTP request, headers through the last body chunk.
 pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled HTTP connection is kept for the next request.
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled HTTP connections.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// Default model: Drama 3.
 pub fn default_model_id() -> &'static str {

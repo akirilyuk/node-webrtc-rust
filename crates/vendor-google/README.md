@@ -51,3 +51,5 @@ Config: `tts.transport` and `stt.transport`: `auto` only. The voice (TTS) or the
 An explicit `websocket` or `http` fails at construction with `google <leg> transport is decided by the model; use auto`.
 
 `auto` resolves to the catalog default, which is today's behaviour: none (the voice or model decides). Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1. Connect timeout 10 s, whole-request timeout 60 s, idle pool 90 s, TCP keepalive 30 s. The gRPC paths (Chirp3-HD `StreamingSynthesize`, V2 `StreamingRecognize`) keep one gRPC client per provider and report `grpc`.

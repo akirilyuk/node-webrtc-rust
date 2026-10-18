@@ -3,6 +3,8 @@
 //! REST: `POST https://texttospeech.googleapis.com/v1/text:synthesize`
 //! Streaming: `StreamingSynthesize` — `matrix::TTS_STREAMING_DOC`
 
+use std::sync::Mutex;
+
 use google_cloud_texttospeech_v1::client::TextToSpeech;
 use google_cloud_texttospeech_v1::model::streaming_synthesis_input::InputSource;
 use google_cloud_texttospeech_v1::model::streaming_synthesize_request::StreamingRequest;
@@ -18,11 +20,30 @@ use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink};
 
 use crate::auth::{google_access_token, google_api_key};
 
-pub async fn synthesize_linear16(text: &str, voice: &str, language: &str) -> SpeechResult<Vec<u8>> {
+/// Builds the gRPC client a provider keeps for its whole life.
+pub async fn build_grpc_client() -> SpeechResult<TextToSpeech> {
+    TextToSpeech::builder()
+        .build()
+        .await
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "google".into(),
+            message: err.to_string(),
+        })
+}
+
+/// `url_override` is a test hook: POST there with a fixed bearer token instead of the Google
+/// endpoint with real credentials.
+pub async fn synthesize_linear16(
+    client: &reqwest::Client,
+    transport: &Mutex<Option<String>>,
+    url_override: Option<&str>,
+    text: &str,
+    voice: &str,
+    language: &str,
+) -> SpeechResult<Vec<u8>> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use serde_json::json;
 
-    let client = reqwest::Client::new();
     let body = json!({
         "input": { "text": text },
         "voice": {
@@ -36,7 +57,9 @@ pub async fn synthesize_linear16(text: &str, voice: &str, language: &str) -> Spe
         }
     });
 
-    let request = if let Some(api_key) = google_api_key() {
+    let request = if let Some(url) = url_override {
+        client.post(url).bearer_auth("test-token")
+    } else if let Some(api_key) = google_api_key() {
         client.post(format!(
             "https://texttospeech.googleapis.com/v1/text:synthesize?key={api_key}"
         ))
@@ -61,6 +84,7 @@ pub async fn synthesize_linear16(text: &str, voice: &str, language: &str) -> Spe
             message: err.to_string(),
         })?;
 
+    crate::http::note(transport, crate::http::transport_label(response.version()));
     let status = response.status();
     let payload: serde_json::Value = response.json().await.map_err(|err| SpeechError::Vendor {
         vendor: "google".into(),
@@ -91,19 +115,14 @@ pub async fn synthesize_linear16(text: &str, voice: &str, language: &str) -> Spe
 }
 
 pub async fn streaming_synthesize(
+    client: &TextToSpeech,
+    transport: &Mutex<Option<String>>,
     voice: &str,
     language: &str,
     text: &str,
     sink: Option<TtsProgressiveSink>,
 ) -> SpeechResult<Vec<TtsAudioChunk>> {
-    let client = TextToSpeech::builder()
-        .build()
-        .await
-        .map_err(|err| SpeechError::Vendor {
-            vendor: "google".into(),
-            message: err.to_string(),
-        })?;
-
+    crate::http::note(transport, "grpc".into());
     let (grpc_tx, mut grpc_rx) = client.streaming_synthesize().build();
 
     let config =

@@ -334,6 +334,10 @@ impl TtsProvider for CachingTtsProvider {
         self.inner.take_open_wait()
     }
 
+    fn last_transport(&self) -> Option<String> {
+        self.inner.last_transport()
+    }
+
     fn take_cache_hit(&self) -> Option<u32> {
         self.last_hit.lock().ok().and_then(|mut g| g.take())
     }
@@ -533,6 +537,10 @@ mod tests {
             "fake"
         }
 
+        fn last_transport(&self) -> Option<String> {
+            Some("fake-transport".into())
+        }
+
         async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
             self.synthesize_progressive(text, None).await
         }
@@ -716,6 +724,14 @@ mod tests {
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert!(cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wrapper_forwards_last_transport_of_the_inner_provider() {
+        let (inner, _state) = Fake::boxed(1_000);
+        let cache = big_cache();
+        let tts = wrapper(inner, &cfg(TtsVendor::LocalSherpa, "a"), &cache);
+        assert_eq!(tts.last_transport().as_deref(), Some("fake-transport"));
     }
 
     fn key(text: &str) -> PhraseKey {

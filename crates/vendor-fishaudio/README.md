@@ -94,3 +94,5 @@ Config: `tts.transport`: `auto` (default), `http` or `websocket`. `stt.transport
 TTS `http` (chunked `POST /v1/tts`, with the documented WebSocket fallback while no audio reached the sink and the failure is one the socket can fix). TTS `websocket` (`/v1/tts/live` only, no fallback). STT is always the realtime WebSocket.
 
 `auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `websocket`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.

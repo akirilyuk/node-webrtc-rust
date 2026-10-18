@@ -647,3 +647,24 @@ async fn auto_transport_is_the_catalog_default_websocket() {
     assert_eq!(mock.ws_count(), 1);
     assert_eq!(mock.rest_count(), 0);
 }
+
+#[tokio::test]
+async fn last_transport_reports_ws_then_http() {
+    let mock = Mock::start(
+        script(|mut ws, ctx| async move {
+            ws.send(chunk_msg(&ctx, 1)).await.unwrap();
+            ws.send(done_msg(&ctx)).await.unwrap();
+            let _ = ws.close(None).await;
+        }),
+        rest_ok(CHUNK_BYTES),
+    )
+    .await;
+    let ws_provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    assert_eq!(ws_provider.last_transport(), None);
+    ws_provider.synthesize("hello").await.unwrap();
+    assert_eq!(ws_provider.last_transport().as_deref(), Some("ws"));
+
+    let http_provider = mock.provider_with(Some(SpeechTransport::Http));
+    http_provider.synthesize("hello").await.unwrap();
+    assert_eq!(http_provider.last_transport().as_deref(), Some("http/1.1"));
+}

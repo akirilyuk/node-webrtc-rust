@@ -28,7 +28,7 @@ pub struct BenchRecord {
     /// `"short"`, `"sentence"` (TTS) or `"phrase"` (STT).
     pub text: String,
     pub run: usize,
-    /// `h2`, `http/1.1`, `ws` or `grpc` when the vendor crate can report it.
+    /// From `last_transport()`: `h2`, `http/1.1`, `ws` or `grpc` when the vendor crate reports it.
     pub http_version: Option<String>,
     pub metrics: serde_json::Value,
 }
@@ -64,6 +64,7 @@ pub async fn bench_tts(
             let provider = make_provider();
             for phase in ["cold", "warm"] {
                 let sample = measure_tts(provider.as_ref(), text).await?;
+                let http_version = provider.last_transport();
                 emit(&BenchRecord {
                     vendor: vendor.into(),
                     leg: "tts".into(),
@@ -72,7 +73,7 @@ pub async fn bench_tts(
                     phase: phase.into(),
                     text: label.into(),
                     run,
-                    http_version: None,
+                    http_version,
                     metrics: serde_json::to_value(&sample).expect("sample serializes"),
                 });
             }
@@ -96,6 +97,7 @@ pub async fn bench_stt(
     for run in 0..runs {
         let mut provider = make_provider();
         let sample = measure_stt(provider.as_mut(), audio, &STT_WORDS).await;
+        let http_version = provider.last_transport();
         let _ = provider.stop().await;
         emit(&BenchRecord {
             vendor: vendor.into(),
@@ -105,7 +107,7 @@ pub async fn bench_stt(
             phase: "cold".into(),
             text: "phrase".into(),
             run,
-            http_version: None,
+            http_version,
             metrics: serde_json::to_value(sample?).expect("sample serializes"),
         });
     }

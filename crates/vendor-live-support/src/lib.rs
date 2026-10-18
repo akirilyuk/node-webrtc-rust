@@ -6,6 +6,7 @@
 pub mod audio;
 pub mod bench;
 pub mod env;
+pub mod http_mock;
 pub mod stt;
 pub mod tts;
 pub mod vad_gate;

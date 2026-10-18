@@ -999,6 +999,7 @@ async fn explicit_websocket_transport_uses_the_ws_endpoint_only() {
         0,
         "websocket never touches the HTTP endpoint"
     );
+    assert_eq!(tts.last_transport().as_deref(), Some("ws"));
 }
 
 #[tokio::test]
@@ -1061,4 +1062,5 @@ async fn auto_transport_is_the_catalog_default_http() {
         .expect("http synth");
     assert_eq!(mock.http_hits(), 1);
     assert_eq!(mock.ws_hits(), 0);
+    assert_eq!(tts.last_transport().as_deref(), Some("http/1.1"));
 }

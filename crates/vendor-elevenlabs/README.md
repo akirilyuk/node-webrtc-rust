@@ -63,3 +63,5 @@ Config: `tts.transport`: `auto` (default), `http` or `websocket`. `stt.transport
 TTS `http` (chunked `…/stream`, or the full-body POST for `eleven_v3`) and TTS `websocket` (`…/stream-input`). `websocket` is rejected at construction for models the socket does not support (`eleven_v3`). STT is always the Scribe realtime WebSocket.
 
 `auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `websocket`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.

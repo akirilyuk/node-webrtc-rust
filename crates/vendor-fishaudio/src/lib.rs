@@ -10,8 +10,8 @@ pub use factory::FishAudioFactory;
 pub use matrix::{
     http_tts_url, implemented_tts_transports, validate_model_id, ws_live_url, CHUNK_IDLE_TIMEOUT,
     CONNECT_TIMEOUT, DEFAULT_BASE_URL, DEFAULT_MODEL_ID, DOCUMENTED_MODELS, DRAMA3_DOC,
-    FIRST_AUDIO_TIMEOUT, HTTP_DOC, HTTP_TOTAL_TIMEOUT, LATENCY, PCM_SAMPLE_RATE, REALTIME_DOC,
-    WS_DOC,
+    FIRST_AUDIO_TIMEOUT, HTTP_DOC, HTTP_TOTAL_TIMEOUT, LATENCY, PCM_SAMPLE_RATE, POOL_IDLE_TIMEOUT,
+    REALTIME_DOC, TCP_KEEPALIVE, WS_DOC,
 };
 pub use stt::FishAudioStt;
 pub use stt_matrix::{

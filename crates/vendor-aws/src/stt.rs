@@ -18,6 +18,12 @@ use crate::matrix::{default_stt_language_code, validate_stt_language_code};
 pub struct AwsStt {
     language_code: String,
     state: Arc<Mutex<AwsSttInner>>,
+    /// One Transcribe client for the provider's life (built on first use): the SDK pools its
+    /// connections per client.
+    #[cfg(feature = "live")]
+    client: tokio::sync::OnceCell<aws_sdk_transcribestreaming::Client>,
+    /// `h2` once a stream is open: Transcribe streaming is an HTTP/2 event stream.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 struct AwsSttInner {
@@ -43,6 +49,9 @@ impl AwsStt {
                 transcript_rx: None,
                 reader_task: None,
             })),
+            #[cfg(feature = "live")]
+            client: tokio::sync::OnceCell::new(),
+            last_transport: std::sync::Mutex::new(None),
         })
     }
 }
@@ -51,6 +60,10 @@ impl AwsStt {
 impl SttProvider for AwsStt {
     fn vendor_name(&self) -> &'static str {
         "aws"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn start(&mut self) -> SpeechResult<()> {
@@ -65,10 +78,16 @@ impl SttProvider for AwsStt {
 
             let audio_stream = EventStreamSender::from(PcmAudioStream { rx: pcm_rx });
 
-            let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-                .load()
+            let client = self
+                .client
+                .get_or_init(|| async {
+                    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                        .timeout_config(crate::matrix::transcribe_timeouts())
+                        .load()
+                        .await;
+                    aws_sdk_transcribestreaming::Client::new(&config)
+                })
                 .await;
-            let client = aws_sdk_transcribestreaming::Client::new(&config);
             let language = language_code_to_aws(&language_code).map_err(SpeechError::Config)?;
 
             let response = client
@@ -84,6 +103,9 @@ impl SttProvider for AwsStt {
                     message: err.to_string(),
                 })?;
 
+            if let Ok(mut guard) = self.last_transport.lock() {
+                *guard = Some("h2".into());
+            }
             let mut transcript_stream = response.transcript_result_stream;
 
             let reader_task = tokio::spawn(async move {

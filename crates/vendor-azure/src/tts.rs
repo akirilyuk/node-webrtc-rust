@@ -15,6 +15,12 @@ pub struct AzureTts {
     speech_key: Option<String>,
     region: String,
     voice: String,
+    /// One client for the provider's life: connections (and TLS sessions) are reused.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    #[cfg(feature = "live")]
+    url_override: Option<String>,
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl AzureTts {
@@ -27,6 +33,11 @@ impl AzureTts {
         validate_tts_voice(&voice).map_err(SpeechError::Config)?;
         let region = resolve_region(config)?;
         Ok(Self {
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            #[cfg(feature = "live")]
+            url_override: None,
+            last_transport: std::sync::Mutex::new(None),
             speech_key: config.api_key.clone().or_else(|| {
                 ["AZURE_SPEECH_KEY", "SPEECH_KEY"]
                     .into_iter()
@@ -35,6 +46,23 @@ impl AzureTts {
             region,
             voice,
         })
+    }
+}
+
+#[cfg(feature = "live")]
+impl AzureTts {
+    /// Test hook: POST here instead of the regional host (plain `http://` mock server).
+    #[doc(hidden)]
+    pub fn __with_url_override(mut self, url: impl Into<String>) -> Self {
+        self.url_override = Some(url.into());
+        self
+    }
+
+    /// Test hook: replaces the pooled client with one that has this whole-request bound.
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.http = crate::http::build_client(Some(total)).expect("test http client");
+        self
     }
 }
 
@@ -72,6 +100,10 @@ impl TtsProvider for AzureTts {
         "azure"
     }
 
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
+    }
+
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         self.synthesize_full_body(text).await
     }
@@ -96,13 +128,17 @@ impl AzureTts {
         #[cfg(feature = "live")]
         {
             let key = speech_key_from(&self.speech_key)?;
-            let url = tts_rest_url(&self.region);
+            let url = self
+                .url_override
+                .clone()
+                .unwrap_or_else(|| tts_rest_url(&self.region));
             let ssml = format!(
                 "<speak version='1.0' xml:lang='en-US'><voice name='{}'>{}</voice></speak>",
                 self.voice,
                 xml_escape(text)
             );
-            let response = reqwest::Client::new()
+            let response = self
+                .http
                 .post(url)
                 .header("Ocp-Apim-Subscription-Key", key)
                 .header("Content-Type", "application/ssml+xml")
@@ -114,6 +150,9 @@ impl AzureTts {
                     vendor: "azure".into(),
                     message: err.to_string(),
                 })?;
+            if let Ok(mut guard) = self.last_transport.lock() {
+                *guard = Some(crate::http::transport_label(response.version()));
+            }
             if !response.status().is_success() {
                 let status = response.status();
                 let message = response.text().await.unwrap_or_else(|_| status.to_string());

@@ -12,6 +12,12 @@ const POLLY_PCM_RATE: u32 = 16_000;
 
 pub struct AwsTts {
     voice: String,
+    /// One Polly client for the provider's life (built on first use): the SDK pools its
+    /// connections per client.
+    #[cfg(feature = "live")]
+    client: tokio::sync::OnceCell<aws_sdk_polly::Client>,
+    /// `sdk`: the AWS SDK does not expose the HTTP version of a Polly call.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl AwsTts {
@@ -22,7 +28,12 @@ impl AwsTts {
             .clone()
             .unwrap_or_else(|| default_tts_voice().to_string());
         validate_tts_voice(&voice).map_err(SpeechError::Config)?;
-        Ok(Self { voice })
+        Ok(Self {
+            voice,
+            #[cfg(feature = "live")]
+            client: tokio::sync::OnceCell::new(),
+            last_transport: std::sync::Mutex::new(None),
+        })
     }
 }
 
@@ -30,6 +41,10 @@ impl AwsTts {
 impl TtsProvider for AwsTts {
     fn vendor_name(&self) -> &'static str {
         "aws"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
@@ -56,10 +71,16 @@ impl AwsTts {
         #[cfg(feature = "live")]
         {
             let voice_id = voice_id_from_name(&self.voice).map_err(SpeechError::Config)?;
-            let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-                .load()
+            let client = self
+                .client
+                .get_or_init(|| async {
+                    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                        .timeout_config(crate::matrix::polly_timeouts())
+                        .load()
+                        .await;
+                    aws_sdk_polly::Client::new(&config)
+                })
                 .await;
-            let client = aws_sdk_polly::Client::new(&config);
             let output = client
                 .synthesize_speech()
                 .text(text)
@@ -73,6 +94,9 @@ impl AwsTts {
                     vendor: "aws".into(),
                     message: err.to_string(),
                 })?;
+            if let Ok(mut guard) = self.last_transport.lock() {
+                *guard = Some("sdk".into());
+            }
             let mono = output
                 .audio_stream
                 .collect()

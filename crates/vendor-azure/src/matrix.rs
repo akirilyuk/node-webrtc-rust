@@ -6,6 +6,7 @@
 //! Regional voice list API: <https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech#get-a-list-of-voices>
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
@@ -31,6 +32,16 @@ pub const TTS_VOICES_LIST_DOC: &str =
 /// This crate implements REST short audio only — no invented WebSocket frames.
 pub static DOCUMENTED_STT_RECOGNITION_MODES: LazyLock<&'static [&'static str]> =
     LazyLock::new(|| voice_catalog::stt_models("azure").expect("azure in voice catalog"));
+
+/// TCP connect bound of the pooled HTTP client (`infra.unbounded-external-wait`).
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Whole-request bound (headers + body) for TTS synthesis and the STT upload + answer. Azure had
+/// no timeout before; 60 s matches the other REST vendors in this workspace.
+pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled connection is kept for the next utterance.
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled connections.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 pub fn default_stt_mode() -> &'static str {
     voice_catalog::default_stt_model("azure").expect("azure default STT in voice catalog")

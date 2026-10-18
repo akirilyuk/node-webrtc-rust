@@ -16,6 +16,10 @@ pub struct GroqTts {
     speech_url: String,
     model: String,
     voice: String,
+    /// One client for the provider's life: connections (and TLS sessions) are reused.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl GroqTts {
@@ -38,7 +42,18 @@ impl GroqTts {
                 .unwrap_or_else(|| DEFAULT_SPEECH_URL.to_string()),
             model,
             voice: config.voice.clone().unwrap_or_else(|| "troy".to_string()),
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            last_transport: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Test hook: replaces the pooled client with one that has this whole-request bound.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.http = crate::http::build_client(Some(total)).expect("test http client");
+        self
     }
 }
 
@@ -46,6 +61,10 @@ impl GroqTts {
 impl TtsProvider for GroqTts {
     fn vendor_name(&self) -> &'static str {
         "groq"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
@@ -78,7 +97,8 @@ impl GroqTts {
                 "voice": self.voice,
                 "response_format": "wav",
             });
-            let response = reqwest::Client::new()
+            let response = self
+                .http
                 .post(&self.speech_url)
                 .bearer_auth(api_key)
                 .json(&body)
@@ -88,6 +108,9 @@ impl GroqTts {
                     vendor: "groq".into(),
                     message: err.to_string(),
                 })?;
+            if let Ok(mut guard) = self.last_transport.lock() {
+                *guard = Some(crate::http::transport_label(response.version()));
+            }
             if !response.status().is_success() {
                 let status = response.status();
                 let message = response.text().await.unwrap_or_else(|_| status.to_string());

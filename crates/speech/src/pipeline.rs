@@ -149,6 +149,12 @@ pub trait SttProvider: Send + Sync {
         false
     }
 
+    /// How the last request reached the vendor: `h2`, `http/1.1`, `ws`, `grpc`; for logs and the
+    /// latency bench. `None` before the first request or when the provider does not report it.
+    fn last_transport(&self) -> Option<String> {
+        None
+    }
+
     /// Drop transcripts already queued inside the provider (results of audio pushed before this
     /// call). VoiceAgent calls it when a new utterance starts, so a late result of the previous
     /// utterance can never be emitted as the new one. Returns how many were dropped.
@@ -209,6 +215,12 @@ pub trait TtsProvider: Send + Sync {
 
     /// Optional hook when a voice session starts (e.g. Sherpa phrase-cache project scope).
     fn bind_session_context(&self, _ctx: &VoiceSessionContext) {}
+
+    /// How the last request reached the vendor: `h2`, `http/1.1`, `ws`, `grpc`; for logs and the
+    /// latency bench. `None` before the first request or when the provider does not report it.
+    fn last_transport(&self) -> Option<String> {
+        None
+    }
 
     /// Takes the open-wait record of the last synthesis if its start was refused and retried
     /// (see [`TtsOpenWait`]). Default: vendors that never wait return `None`.

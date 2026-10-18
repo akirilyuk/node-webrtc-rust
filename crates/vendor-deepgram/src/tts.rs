@@ -14,6 +14,7 @@ use crate::tts_matrix::{
 #[cfg(feature = "live")]
 use crate::tts_matrix::{
     CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
+    POOL_IDLE_TIMEOUT, TCP_KEEPALIVE,
 };
 
 pub struct DeepgramTts {
@@ -24,6 +25,12 @@ pub struct DeepgramTts {
     /// REST base (`TtsConfig.endpoint` or [`DEFAULT_BASE_URL`]); the WS host is derived from it.
     #[cfg_attr(not(feature = "live"), allow(dead_code))]
     base_url: String,
+    /// One REST client for the provider's life: connections (and TLS sessions) are reused. HTTP
+    /// version: ALPN default (h2 when the server offers it, else HTTP/1.1).
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    /// How the last request reached Deepgram: `ws`, `h2` or `http/1.1`.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl DeepgramTts {
@@ -49,7 +56,26 @@ impl DeepgramTts {
                 .filter(|value| !value.is_empty())
                 .unwrap_or(DEFAULT_BASE_URL)
                 .to_string(),
+            #[cfg(feature = "live")]
+            http: reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(HTTP_TOTAL_TIMEOUT)
+                .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+                .tcp_keepalive(TCP_KEEPALIVE)
+                .build()
+                .map_err(|err| SpeechError::Vendor {
+                    vendor: "deepgram".into(),
+                    message: format!("deepgram http client build failed: {err}"),
+                })?,
+            last_transport: std::sync::Mutex::new(None),
         })
+    }
+
+    #[cfg(feature = "live")]
+    fn note_transport(&self, value: &str) {
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some(value.to_string());
+        }
     }
 
     fn api_key(&self) -> SpeechResult<String> {
@@ -66,6 +92,10 @@ impl DeepgramTts {
 impl TtsProvider for DeepgramTts {
     fn vendor_name(&self) -> &'static str {
         "deepgram"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
@@ -117,15 +147,8 @@ impl DeepgramTts {
             };
             let body = serde_json::json!({ "text": text });
 
-            let http = reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(HTTP_TOTAL_TIMEOUT)
-                .build()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "deepgram".into(),
-                    message: format!("deepgram http client build failed: {err}"),
-                })?;
-            let response = http
+            let response = self
+                .http
                 .post(url)
                 .header("Authorization", format!("Token {api_key}"))
                 .header("Content-Type", "application/json")
@@ -137,6 +160,11 @@ impl DeepgramTts {
                     message: err.to_string(),
                 })?;
 
+            self.note_transport(if response.version() == reqwest::Version::HTTP_2 {
+                "h2"
+            } else {
+                "http/1.1"
+            });
             if !response.status().is_success() {
                 let status = response.status();
                 let message = response.text().await.unwrap_or_else(|_| status.to_string());
@@ -211,6 +239,7 @@ impl DeepgramTts {
                 vendor: "deepgram".into(),
                 message: err.to_string(),
             })?;
+        self.note_transport("ws");
         let (mut ws_tx, mut ws_rx) = ws.split();
 
         for control in [speak_json(text), flush_json().to_string()] {

@@ -11,12 +11,19 @@ use crate::matrix::{validate_model_id, DEFAULT_API_VERSION, DEFAULT_BASE_URL};
 #[cfg(feature = "live")]
 use crate::matrix::{
     websocket_url, CHUNK_IDLE_TIMEOUT, CONNECT_TIMEOUT, FIRST_AUDIO_TIMEOUT, HTTP_TOTAL_TIMEOUT,
+    POOL_IDLE_TIMEOUT, TCP_KEEPALIVE,
 };
 
 pub struct CartesiaClient {
     api_key: Option<String>,
     base_url: String,
     api_version: String,
+    /// One REST client for the provider's life: connections (and TLS sessions) are reused. HTTP
+    /// version: ALPN default (h2 when the server offers it, else HTTP/1.1).
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    /// How the last request reached Cartesia: `ws`, `h2` or `http/1.1`.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 #[cfg(feature = "live")]
@@ -25,6 +32,20 @@ fn vendor_err(message: impl Into<String>) -> SpeechError {
         vendor: "cartesia".into(),
         message: message.into(),
     }
+}
+
+#[cfg(feature = "live")]
+fn build_http_client() -> SpeechResult<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(HTTP_TOTAL_TIMEOUT)
+        .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+        .tcp_keepalive(TCP_KEEPALIVE)
+        .build()
+        .map_err(|err| SpeechError::Vendor {
+            vendor: "cartesia".into(),
+            message: format!("cartesia http client build failed: {err}"),
+        })
 }
 
 /// Result of a WebSocket synthesis that reached `done` (or was cancelled by the sink).
@@ -49,19 +70,34 @@ pub struct WsFailure {
 impl CartesiaClient {
     #[cfg(test)]
     pub fn new(api_key: Option<String>) -> Self {
-        Self::with_endpoint(api_key, None)
+        Self::with_endpoint(api_key, None).expect("client")
     }
 
     /// `endpoint` replaces the default `https://api.cartesia.ai` (REST base; WS is derived).
-    pub fn with_endpoint(api_key: Option<String>, endpoint: Option<String>) -> Self {
+    pub fn with_endpoint(api_key: Option<String>, endpoint: Option<String>) -> SpeechResult<Self> {
         let base_url = endpoint
             .filter(|value| !value.is_empty())
             .map(|value| value.trim_end_matches('/').to_string())
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        Self {
+        Ok(Self {
             api_key,
             base_url,
             api_version: DEFAULT_API_VERSION.to_string(),
+            #[cfg(feature = "live")]
+            http: build_http_client()?,
+            last_transport: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// How the last request reached Cartesia: `ws`, `h2` or `http/1.1`.
+    pub fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
+    }
+
+    #[cfg(feature = "live")]
+    fn note_transport(&self, value: &str) {
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some(value.to_string());
         }
     }
 
@@ -104,15 +140,8 @@ impl CartesiaClient {
                 }
             });
 
-            let http = reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(HTTP_TOTAL_TIMEOUT)
-                .build()
-                .map_err(|err| SpeechError::Vendor {
-                    vendor: "cartesia".into(),
-                    message: format!("cartesia http client build failed: {err}"),
-                })?;
-            let response = http
+            let response = self
+                .http
                 .post(format!("{}/tts/bytes", self.base_url))
                 .header("X-API-Key", api_key)
                 .header("Cartesia-Version", &self.api_version)
@@ -124,6 +153,11 @@ impl CartesiaClient {
                     message: err.to_string(),
                 })?;
 
+            self.note_transport(if response.version() == reqwest::Version::HTTP_2 {
+                "h2"
+            } else {
+                "http/1.1"
+            });
             let status = response.status();
             if !status.is_success() {
                 let message = response.text().await.unwrap_or_else(|_| status.to_string());
@@ -222,6 +256,7 @@ impl CartesiaClient {
             .await
             .map_err(|_| connect_timed_out())?
             .map_err(|err| early(vendor_err(err.to_string())))?;
+        self.note_transport("ws");
         let (mut ws_tx, mut ws_rx) = ws.split();
 
         let gen = serde_json::json!({

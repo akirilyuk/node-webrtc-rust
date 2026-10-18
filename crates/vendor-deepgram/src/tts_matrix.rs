@@ -32,6 +32,12 @@ pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whole REST request, headers through the last body byte.
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled REST connection is kept for the next request.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled REST connections.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// Default `model` query on `/v1/speak` (API reference).
 pub const DEFAULT_AURA_MODEL: &str = "aura-asteria-en";

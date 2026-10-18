@@ -61,6 +61,10 @@ pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whole REST request, headers through the last body byte.
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled REST connection is kept for the next request.
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled REST connections.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsDeliveryPlan {

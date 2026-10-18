@@ -14,6 +14,15 @@ use crate::tts_live;
 pub struct GoogleTts {
     voice: String,
     language: String,
+    /// One REST client for the provider's life: connections (and TLS sessions) are reused.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    /// The gRPC client (StreamingSynthesize), built on first use and kept.
+    #[cfg(feature = "live")]
+    grpc: tokio::sync::OnceCell<google_cloud_texttospeech_v1::client::TextToSpeech>,
+    #[cfg(feature = "live")]
+    rest_url_override: Option<String>,
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl GoogleTts {
@@ -32,7 +41,31 @@ impl GoogleTts {
             } else {
                 language
             },
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            #[cfg(feature = "live")]
+            grpc: tokio::sync::OnceCell::new(),
+            #[cfg(feature = "live")]
+            rest_url_override: None,
+            last_transport: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Test hook: REST `text:synthesize` goes to this URL (plain `http://` mock server) with a
+    /// fixed bearer token instead of Google credentials.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_rest_url_override(mut self, url: impl Into<String>) -> Self {
+        self.rest_url_override = Some(url.into());
+        self
+    }
+
+    /// Test hook: replaces the pooled REST client with one that has this whole-request bound.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.http = crate::http::build_client(Some(total)).expect("test http client");
+        self
     }
 }
 
@@ -40,6 +73,10 @@ impl GoogleTts {
 impl TtsProvider for GoogleTts {
     fn vendor_name(&self) -> &'static str {
         "google"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
@@ -54,10 +91,29 @@ impl TtsProvider for GoogleTts {
         #[cfg(feature = "live")]
         {
             if voice_supports_streaming_synthesize(&self.voice) {
-                return tts_live::streaming_synthesize(&self.voice, &self.language, text, sink)
-                    .await;
+                let client = self
+                    .grpc
+                    .get_or_try_init(tts_live::build_grpc_client)
+                    .await?;
+                return tts_live::streaming_synthesize(
+                    client,
+                    &self.last_transport,
+                    &self.voice,
+                    &self.language,
+                    text,
+                    sink,
+                )
+                .await;
             }
-            let mono = tts_live::synthesize_linear16(text, &self.voice, &self.language).await?;
+            let mono = tts_live::synthesize_linear16(
+                &self.http,
+                &self.last_transport,
+                self.rest_url_override.as_deref(),
+                text,
+                &self.voice,
+                &self.language,
+            )
+            .await?;
             let chunks = vec![pcm_chunk_from_mono(&mono)];
             if let Some(s) = sink {
                 for chunk in &chunks {

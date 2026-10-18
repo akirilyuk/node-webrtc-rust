@@ -12,6 +12,15 @@ pub static STT_DOC: LazyLock<&'static str> =
 pub static TTS_DOC: LazyLock<&'static str> =
     LazyLock::new(|| voice_catalog::tts_docs_url("groq").expect("groq tts docs in voice catalog"));
 
+/// TCP connect bound of the pooled HTTP client (`infra.unbounded-external-wait`).
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Whole-request bound (headers + body) for TTS synthesis and the STT upload + answer. Groq had
+/// no timeout before; 60 s matches the other REST vendors in this workspace.
+pub const HTTP_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long an idle pooled connection is kept for the next utterance.
+pub const POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+/// TCP keepalive on pooled connections.
+pub const TCP_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(30);
 pub const DEFAULT_TRANSCRIPTIONS_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
 pub const DEFAULT_SPEECH_URL: &str = "https://api.groq.com/openai/v1/audio/speech";
 

@@ -74,6 +74,32 @@ pub struct OpenAiStt {
     /// When set, force Realtime WS (committed-turn / live tests) instead of the file default.
     #[allow(dead_code)] // set by constructors; only live tests branch on it
     force_realtime: bool,
+    shared: Shared,
+}
+
+/// What the backends share: one pooled client for the provider's life, and the transport label.
+#[derive(Clone)]
+struct Shared {
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    last_transport: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl Shared {
+    fn new() -> SpeechResult<Self> {
+        Ok(Self {
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            last_transport: Arc::new(std::sync::Mutex::new(None)),
+        })
+    }
+
+    #[cfg(feature = "live")]
+    fn note(&self, value: String) {
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some(value);
+        }
+    }
 }
 
 enum Transport {
@@ -84,6 +110,7 @@ enum Transport {
 struct HttpBackend {
     api_base: String,
     file_sse: bool,
+    shared: Shared,
     inner: Mutex<HttpInner>,
     poll_rx: Mutex<Option<mpsc::UnboundedReceiver<SttTranscript>>>,
     poll_task: Mutex<Option<tokio::task::JoinHandle<SpeechResult<()>>>>,
@@ -157,6 +184,7 @@ impl OpenAiStt {
             .clone()
             .unwrap_or_else(|| "whisper-1".to_string());
         let api_base = normalize_openai_api_base(config.endpoint.as_deref());
+        let shared = Shared::new()?;
         let default = stt_default_transport(&model).map_err(|message| SpeechError::Vendor {
             vendor: "openai".into(),
             message,
@@ -172,18 +200,18 @@ impl OpenAiStt {
                     });
                 }
                 SttDefaultTransport::FileJson | SttDefaultTransport::FileSse => {
-                    Transport::Http(HttpBackend::new(api_base.clone(), file_sse))
+                    Transport::Http(HttpBackend::new(api_base.clone(), file_sse, shared.clone()))
                 }
             }
         } else {
             match default {
                 SttDefaultTransport::RealtimeLive => Transport::Realtime(RealtimeBackend::new()),
                 SttDefaultTransport::FileJson => {
-                    Transport::Http(HttpBackend::new(api_base.clone(), false))
+                    Transport::Http(HttpBackend::new(api_base.clone(), false, shared.clone()))
                 }
                 SttDefaultTransport::FileSse => {
                     let sse = stt_file_sse_supported(&model);
-                    Transport::Http(HttpBackend::new(api_base.clone(), sse))
+                    Transport::Http(HttpBackend::new(api_base.clone(), sse, shared.clone()))
                 }
             }
         };
@@ -194,15 +222,28 @@ impl OpenAiStt {
             language: config.language.clone(),
             transport,
             force_realtime,
+            shared,
         })
+    }
+
+    /// Test hook: replaces the pooled client with one that has this whole-request bound.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.shared.http = crate::http::build_client(Some(total)).expect("test http client");
+        if let Transport::Http(http) = &mut self.transport {
+            http.shared = self.shared.clone();
+        }
+        self
     }
 }
 
 impl HttpBackend {
-    fn new(api_base: String, file_sse: bool) -> Self {
+    fn new(api_base: String, file_sse: bool, shared: Shared) -> Self {
         Self {
             api_base,
             file_sse,
+            shared,
             inner: Mutex::new(HttpInner {
                 running: false,
                 buffered: Vec::new(),
@@ -375,13 +416,24 @@ impl HttpBackend {
             let language = language.clone();
             let pcm = Bytes::from(pcm);
             let use_sse = self.file_sse;
+            let shared = self.shared.clone();
             let (tx, rx) = mpsc::unbounded_channel();
             let handle = tokio::spawn(async move {
                 if use_sse {
-                    http_transcribe_sse(pcm, &api_key, &url, &model, language.as_deref(), tx).await
+                    http_transcribe_sse(
+                        &shared,
+                        pcm,
+                        &api_key,
+                        &url,
+                        &model,
+                        language.as_deref(),
+                        tx,
+                    )
+                    .await
                 } else {
                     if let Some(transcript) =
-                        http_transcribe(pcm, &api_key, &url, &model, language.as_deref()).await?
+                        http_transcribe(&shared, pcm, &api_key, &url, &model, language.as_deref())
+                            .await?
                     {
                         let _ = tx.send(transcript);
                     }
@@ -653,6 +705,7 @@ pub(crate) fn session_update_body(model: &str, language: Option<&str>) -> Value 
 
 #[cfg(feature = "live")]
 async fn mint_transcription_client_secret(
+    http: &reqwest::Client,
     api_key: &str,
     api_base: &str,
     model: &str,
@@ -660,8 +713,7 @@ async fn mint_transcription_client_secret(
 ) -> SpeechResult<String> {
     let url = format!("{}/realtime/client_secrets", api_base.trim_end_matches('/'));
     let body = transcription_client_secret_request(model, language);
-    let client = reqwest::Client::new();
-    let response = client
+    let response = http
         .post(&url)
         .bearer_auth(api_key)
         .json(&body)
@@ -819,6 +871,7 @@ fn realtime_error_message(event: &Value) -> Option<String> {
 
 #[cfg(feature = "live")]
 async fn http_transcribe(
+    shared: &Shared,
     pcm: Bytes,
     api_key: &str,
     transcriptions_url: &str,
@@ -853,7 +906,9 @@ async fn http_transcribe(
         async_openai::config::OpenAIConfig::new()
             .with_api_key(api_key)
             .with_api_base(api_base),
-    );
+    )
+    .with_http_client(shared.http.clone());
+    shared.note(crate::http::SDK_TRANSPORT.into());
     let response = client
         .audio()
         .transcribe(request)
@@ -899,6 +954,7 @@ fn push_file_sse_event(event: &Value, tx: &mpsc::UnboundedSender<SttTranscript>)
 
 #[cfg(feature = "live")]
 async fn http_transcribe_sse(
+    shared: &Shared,
     pcm: Bytes,
     api_key: &str,
     transcriptions_url: &str,
@@ -924,8 +980,8 @@ async fn http_transcribe_sse(
         form = form.text("language", language.to_string());
     }
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = shared
+        .http
         .post(transcriptions_url)
         .bearer_auth(api_key)
         .header("Accept", "text/event-stream")
@@ -936,6 +992,7 @@ async fn http_transcribe_sse(
             vendor: "openai".into(),
             message: err.to_string(),
         })?;
+    shared.note(crate::http::transport_label(response.version()));
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -992,6 +1049,14 @@ impl SttProvider for OpenAiStt {
         matches!(self.transport, Transport::Realtime(_))
     }
 
+    fn last_transport(&self) -> Option<String> {
+        self.shared
+            .last_transport
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+    }
+
     fn decode_backlog_ms(&self) -> u32 {
         match &self.transport {
             Transport::Http(http) => http.decode_backlog_ms(),
@@ -1006,14 +1071,16 @@ impl SttProvider for OpenAiStt {
                 rt.stop().await?;
                 #[cfg(feature = "live")]
                 {
-                    return rt
-                        .start_realtime(
-                            &self.api_key,
-                            &self.api_base,
-                            &self.model,
-                            self.language.as_deref(),
-                        )
-                        .await;
+                    rt.start_realtime(
+                        &self.shared.http,
+                        &self.api_key,
+                        &self.api_base,
+                        &self.model,
+                        self.language.as_deref(),
+                    )
+                    .await?;
+                    self.shared.note("ws".into());
+                    return Ok(());
                 }
                 #[cfg(not(feature = "live"))]
                 {
@@ -1063,6 +1130,7 @@ impl SttProvider for OpenAiStt {
 impl RealtimeBackend {
     async fn start_realtime(
         &mut self,
+        http: &reqwest::Client,
         api_key: &Option<String>,
         api_base: &str,
         model: &str,
@@ -1070,7 +1138,7 @@ impl RealtimeBackend {
     ) -> SpeechResult<()> {
         let api_key = crate::factory::api_key_from(api_key, "OPENAI_API_KEY")?;
         let ephemeral =
-            mint_transcription_client_secret(&api_key, api_base, model, language).await?;
+            mint_transcription_client_secret(http, &api_key, api_base, model, language).await?;
         let (mut sink, mut stream) = connect_realtime_with_url_fallback(&ephemeral).await?;
 
         let session = session_update_body(model, language);

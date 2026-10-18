@@ -28,7 +28,7 @@ impl CartesiaTts {
                     .clone()
                     .or_else(|| std::env::var("CARTESIA_API_KEY").ok()),
                 config.endpoint.clone(),
-            ),
+            )?,
             model: config
                 .model
                 .clone()
@@ -57,6 +57,10 @@ pub fn unsupported_stt(
 impl TtsProvider for CartesiaTts {
     fn vendor_name(&self) -> &'static str {
         "cartesia"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.client.last_transport()
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {

@@ -29,6 +29,8 @@ pub struct ElevenLabsStt {
     model: String,
     language: Option<String>,
     state: Arc<Mutex<ElevenLabsSttInner>>,
+    /// `ws` once the realtime socket is open.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 struct ElevenLabsSttInner {
@@ -62,6 +64,7 @@ impl ElevenLabsStt {
                 reader_task: None,
                 sender_task: None,
             })),
+            last_transport: std::sync::Mutex::new(None),
         })
     }
 
@@ -79,6 +82,10 @@ impl ElevenLabsStt {
 impl SttProvider for ElevenLabsStt {
     fn vendor_name(&self) -> &'static str {
         "elevenlabs"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn start(&mut self) -> SpeechResult<()> {
@@ -111,6 +118,9 @@ impl SttProvider for ElevenLabsStt {
                     vendor: "elevenlabs".into(),
                     message: err.to_string(),
                 })?;
+            if let Ok(mut guard) = self.last_transport.lock() {
+                *guard = Some("ws".into());
+            }
             let (mut ws_tx, mut ws_rx) = ws.split();
 
             let reader_task = tokio::spawn(async move {

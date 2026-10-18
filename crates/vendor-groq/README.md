@@ -56,3 +56,5 @@ Config: `tts.transport` and `stt.transport`: `auto` (default) or `http`. Allowed
 Both legs are plain HTTP requests.
 
 `auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `http`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1. Connect timeout 10 s, whole-request timeout 60 s, idle pool 90 s, TCP keepalive 30 s.

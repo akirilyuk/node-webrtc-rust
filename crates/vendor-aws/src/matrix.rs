@@ -9,8 +9,35 @@ pub const POLLY_SYNTH_DOC: &str =
     "https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html";
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// TCP + TLS connect bound of the AWS SDK clients (`infra.unbounded-external-wait`).
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Whole Polly `SynthesizeSpeech` call, request through the last audio byte. Polly had no bound
+/// before; 60 s matches the other REST vendors in this workspace. Transcribe streaming is a long
+/// lived event stream, so it only gets the connect bound.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const POLLY_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The SDK timeout settings of the Polly client.
+#[cfg(feature = "live")]
+pub(crate) fn polly_timeouts() -> aws_config::timeout::TimeoutConfig {
+    aws_config::timeout::TimeoutConfig::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .operation_timeout(POLLY_OPERATION_TIMEOUT)
+        .build()
+}
+
+/// The SDK timeout settings of the Transcribe streaming client (connect only).
+#[cfg(feature = "live")]
+pub(crate) fn transcribe_timeouts() -> aws_config::timeout::TimeoutConfig {
+    aws_config::timeout::TimeoutConfig::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+}
 
 /// Language codes documented for streaming examples (config `model` holds the code; default `en-US`).
 pub static DOCUMENTED_STT_LANGUAGE_CODES: LazyLock<&'static [&'static str]> =
@@ -169,5 +196,24 @@ mod transport_tests {
             ),
             other => panic!("expected a Config error, got {other:?}"),
         }
+    }
+}
+
+#[cfg(all(test, feature = "live"))]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn polly_is_bounded_on_connect_and_operation() {
+        let timeouts = polly_timeouts();
+        assert_eq!(timeouts.connect_timeout(), Some(CONNECT_TIMEOUT));
+        assert_eq!(timeouts.operation_timeout(), Some(POLLY_OPERATION_TIMEOUT));
+    }
+
+    #[test]
+    fn transcribe_stream_is_bounded_on_connect_only() {
+        let timeouts = transcribe_timeouts();
+        assert_eq!(timeouts.connect_timeout(), Some(CONNECT_TIMEOUT));
+        assert_eq!(timeouts.operation_timeout(), None);
     }
 }

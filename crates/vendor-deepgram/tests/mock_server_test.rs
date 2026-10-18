@@ -493,6 +493,7 @@ async fn explicit_websocket_transport_uses_the_ws_endpoint() {
     assert_eq!(sunk.len(), 1);
     assert_eq!(mock.ws_count.load(Ordering::SeqCst), 1);
     assert_eq!(mock.http_count.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.last_transport().as_deref(), Some("ws"));
 }
 
 #[tokio::test]
@@ -509,6 +510,7 @@ async fn explicit_http_transport_uses_the_rest_endpoint() {
     assert_eq!(sunk[0].pcm.len(), CHUNK_BYTES * 2);
     let returned: usize = chunks.iter().map(|c| c.pcm.len()).sum();
     assert_eq!(returned, sunk[0].pcm.len());
+    assert_eq!(provider.last_transport().as_deref(), Some("http/1.1"));
 }
 
 #[tokio::test]

@@ -4014,6 +4014,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-vendor-live-support",
  "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
  "rmp-serde",
@@ -4057,6 +4058,18 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "node-webrtc-rust-vendor-live-support"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "node-webrtc-rust-speech",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

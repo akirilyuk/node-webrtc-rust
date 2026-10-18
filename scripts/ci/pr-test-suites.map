@@ -17,6 +17,7 @@ crates/vendor-elevenlabs/* rust,node
 crates/vendor-fishaudio/* rust,node
 crates/vendor-google/* rust,node
 crates/vendor-groq/* rust,node
+crates/vendor-live-support/* rust
 crates/vendor-mock/* rust,node
 crates/vendor-openai/* rust,node
 

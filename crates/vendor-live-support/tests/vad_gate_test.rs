@@ -1,14 +1,14 @@
-//! Offline check of the VAD gate that the live STT test relies on. No key, no network, and no
+//! Offline check of the VAD gate that the live STT tests rely on. No key, no network, and no
 //! `live` feature: it runs in normal CI.
 //!
 //! The gate uses the voice agent's default energy VAD (threshold 0.15, 250 ms min speech,
 //! 1300 ms min silence, 300 ms pre-roll). A speech segment therefore ends 1300 ms after the
 //! last voiced frame, so the trailing silence in these clips is longer than that.
 
-mod common;
-
-use common::vad_gate::{silence_stereo_48k, tone_stereo_48k, vad_gated_frames, FRAME_BYTES};
 use node_webrtc_rust_speech::config::VadConfig;
+use node_webrtc_rust_vendor_live_support::vad_gate::{
+    silence_stereo_48k, tone_stereo_48k, vad_gated_frames, FRAME_BYTES,
+};
 
 /// Default `min_silence_duration_ms`: the VAD hangover after the last voiced frame.
 const HANGOVER_MS: u32 = 1300;

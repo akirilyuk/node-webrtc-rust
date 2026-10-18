@@ -1,7 +1,7 @@
-//! VAD gating for STT tests: only speech (plus a short pre-roll) is pushed to Fish, never the
-//! whole clip. Fish bills STT for the audio streamed, and the production recommendation is
-//! `vad.gateStt: true` (`VOICE_AGENT_VAD_PRESET`), which this helper mirrors with the same
-//! engine and default thresholds the voice agent uses.
+//! VAD gating for STT tests: only speech (plus a short pre-roll) is pushed to the vendor, never
+//! the whole clip. Cloud vendors bill STT for the audio streamed, and the production
+//! recommendation is `vad.gateStt: true` (`VOICE_AGENT_VAD_PRESET`), which this helper mirrors
+//! with the same engine and default thresholds the voice agent uses.
 
 use std::collections::VecDeque;
 
@@ -17,6 +17,7 @@ pub const BYTES_PER_MS: usize = 192;
 /// Past audio emitted with `SpeechStart` so the first syllable is not clipped.
 const PRE_ROLL_FRAMES: usize = 15; // 300 ms
 
+/// Result of gating one clip.
 pub struct GatedAudio {
     /// 16 kHz mono s16le, 20 ms per frame.
     pub frames_16k: Vec<Bytes>,
@@ -93,6 +94,7 @@ pub fn vad_gated_frames(stereo_48k: &[u8]) -> GatedAudio {
     gated
 }
 
+/// Digital silence, 48 kHz stereo s16le.
 pub fn silence_stereo_48k(ms: usize) -> Vec<u8> {
     vec![0; ms * BYTES_PER_MS]
 }
@@ -109,4 +111,73 @@ pub fn tone_stereo_48k(ms: usize, dbfs: f64) -> Vec<u8> {
         out.extend_from_slice(&sample.to_le_bytes());
     }
     out
+}
+
+/// 16 kHz mono s16le to 48 kHz stereo s16le: linear interpolation (x3), channel duplicated.
+/// The last sample is held for its two interpolated slots.
+pub fn mono_16k_to_stereo_48k(mono: &[u8]) -> Vec<u8> {
+    let samples: Vec<i32> = mono
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i32::from(i16::from_le_bytes(*pair)))
+        .collect();
+    let mut out = Vec::with_capacity(samples.len() * 3 * 4);
+    for (i, &a) in samples.iter().enumerate() {
+        let b = samples.get(i + 1).copied().unwrap_or(a);
+        for step in 0..3 {
+            let value = (a + (b - a) * step / 3) as i16;
+            let bytes = value.to_le_bytes();
+            out.extend_from_slice(&bytes);
+            out.extend_from_slice(&bytes);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mono(samples: &[i16]) -> Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    fn stereo_samples(bytes: &[u8]) -> Vec<(i16, i16)> {
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| {
+                (
+                    i16::from_le_bytes([c[0], c[1]]),
+                    i16::from_le_bytes([c[2], c[3]]),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn upsample_triples_the_samples_and_duplicates_the_channel() {
+        let out = mono_16k_to_stereo_48k(&mono(&[0, 300, -300]));
+        assert_eq!(out.len(), 3 * 3 * 4);
+        let pairs = stereo_samples(&out);
+        assert!(pairs.iter().all(|(l, r)| l == r));
+        let left: Vec<i16> = pairs.iter().map(|p| p.0).collect();
+        // 0 -> 300 in thirds, 300 -> -300 in thirds, then the last sample held.
+        assert_eq!(left, vec![0, 100, 200, 300, 100, -100, -300, -300, -300]);
+    }
+
+    #[test]
+    fn upsample_then_downsample_keeps_a_dc_level() {
+        let out = mono_16k_to_stereo_48k(&mono(&[1000; 160]));
+        let back = stereo_48k_to_mono_16k(&out);
+        assert_eq!(back.len(), 160);
+        assert!(back.iter().all(|s| *s == 1000));
+    }
+
+    #[test]
+    fn upsample_of_empty_is_empty() {
+        assert!(mono_16k_to_stereo_48k(&[]).is_empty());
+    }
 }

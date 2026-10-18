@@ -96,6 +96,10 @@ if suite_enabled rust; then
     cargo test -p node-webrtc-rust-vendor-elevenlabs --features live
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-fishaudio" -- \
     cargo test -p node-webrtc-rust-vendor-fishaudio --features live -- --test-threads=1
+  # Shared live-test/bench support: unit tests, the VAD gate test, and the workflow lockstep guard
+  # (every live_test.rs has a vendor-live-<id>.yml with the fork-skip, _LIVE_REQUIRED and paths).
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-live-support" -- \
+    cargo test -p node-webrtc-rust-vendor-live-support
   # Vendored dtls (third_party/dtls) is not a workspace member, so `-p` cannot reach it. Guards
   # net.final-flight-not-resent (seeded loss/reorder handshake test).
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendored dtls" -- \

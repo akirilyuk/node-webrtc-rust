@@ -440,3 +440,110 @@ fn bench_checker_names_the_vendor_that_is_not_an_option() {
     assert_eq!(problems.len(), 1);
     assert!(problems[0].contains("cartesia"), "{problems:?}");
 }
+
+// ---- PR integration runs every vendor crate test target ----
+
+/// Vendor ids of the crates that have a `live` feature, with their PR-integration test targets:
+/// every `tests/*.rs` except the `live_*` files (live_test, live_bench and other key-gated
+/// targets), which run only in `vendor-live-*.yml` / `vendor-bench.yml`.
+fn pr_integration_targets() -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    let mut dirs: Vec<_> = fs::read_dir(repo_root().join("crates"))
+        .expect("crates dir")
+        .filter_map(Result::ok)
+        .collect();
+    dirs.sort_by_key(|e| e.file_name());
+    for entry in dirs {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_prefix("vendor-") else {
+            continue;
+        };
+        let manifest = fs::read_to_string(entry.path().join("Cargo.toml")).unwrap_or_default();
+        if !manifest
+            .lines()
+            .any(|l| l.starts_with("live =") || l.starts_with("live="))
+        {
+            continue;
+        }
+        let mut targets: Vec<String> = fs::read_dir(entry.path().join("tests"))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|t| {
+                let file = t.file_name().to_string_lossy().into_owned();
+                let stem = file.strip_suffix(".rs")?.to_string();
+                (!stem.starts_with("live_")).then_some(stem)
+            })
+            .collect();
+        targets.sort();
+        if !targets.is_empty() {
+            out.push((id.to_string(), targets));
+        }
+    }
+    out
+}
+
+/// Everything wrong with `run-pr-integration.sh` for the vendor crates in `crates`.
+fn check_pr_integration(script: &str, crates: &[(String, Vec<String>)]) -> Vec<String> {
+    let joined = script.replace("\\\n", " ");
+    let mut problems = Vec::new();
+    for (id, targets) in crates {
+        let needle = format!("cargo test -p node-webrtc-rust-vendor-{id} ");
+        let Some(line) = joined
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.starts_with('#') && l.contains(&needle) && l.contains("--features live"))
+        else {
+            problems.push(format!(
+                "vendor-{id}: no `{needle}--features live` step in run-pr-integration.sh"
+            ));
+            continue;
+        };
+        // A bare `cargo test -p ...` runs every target; with `--test` selectors each must be named.
+        if line.contains("--test ") {
+            for target in targets {
+                if !line.contains(&format!("--test {target}")) {
+                    problems.push(format!(
+                        "vendor-{id}: step does not run tests/{target}.rs (`--test {target}`)"
+                    ));
+                }
+            }
+        }
+    }
+    problems
+}
+
+#[test]
+fn every_vendor_crate_test_target_runs_in_pr_integration() {
+    let script = fs::read_to_string(repo_root().join("scripts/ci/run-pr-integration.sh"))
+        .expect("run-pr-integration.sh");
+    let crates = pr_integration_targets();
+    assert!(crates.len() >= 9, "found only {crates:?}");
+    let problems = check_pr_integration(&script, &crates);
+    assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+}
+
+#[test]
+fn pr_integration_checker_rejects_a_missing_crate() {
+    let crates = vec![
+        ("azure".to_string(), vec!["http_pool_test".to_string()]),
+        ("groq".to_string(), vec!["http_pool_test".to_string()]),
+    ];
+    let script = "cargo test -p node-webrtc-rust-vendor-azure --features live\n";
+    let problems = check_pr_integration(script, &crates);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("vendor-groq"));
+}
+
+#[test]
+fn pr_integration_checker_rejects_a_missing_target_and_a_missing_feature() {
+    let crates = vec![(
+        "azure".to_string(),
+        vec!["http_pool_test".to_string(), "vendor_test".to_string()],
+    )];
+    let missing_target =
+        "cargo test -p node-webrtc-rust-vendor-azure --features live --test vendor_test\n";
+    assert_eq!(check_pr_integration(missing_target, &crates).len(), 1);
+    let no_feature = "cargo test -p node-webrtc-rust-vendor-azure\n";
+    assert_eq!(check_pr_integration(no_feature, &crates).len(), 1);
+}

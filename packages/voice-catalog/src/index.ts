@@ -1,5 +1,6 @@
 import vendorsCatalog from '../catalog/vendors.json'
 import azureTtsVoicesCatalog from '../catalog/azure-tts-voices.json'
+import googleTtsVoicesCatalog from '../catalog/google-tts-voices.json'
 
 /** SDK `stt.provider` / `tts.provider` id (matches VoiceAgent vendor ids). */
 export type VoiceVendorId =
@@ -38,7 +39,16 @@ export interface VoiceVendorEntry {
   defaultSttTransport?: VoiceTransport
   /** Transport `auto` resolves to for TTS (today's behaviour). Present only when `ttsTransports` is non-empty. */
   defaultTtsTransport?: VoiceTransport
-  /** Relative to `catalog/` — load via {@link azureTtsVoices}. */
+  /** Per-model voice list; overrides `ttsVoices` for that model. */
+  ttsVoicesByModel?: Record<string, string[]>
+  /**
+   * How voice ids are defined for this vendor.
+   * - `listed`: `ttsVoices` / `ttsVoicesByModel` / `ttsVoiceListFile` is the complete documented list.
+   * - `open`: voice ids are account or library ids plus customer clones; no closed list exists.
+   * - `model`: the voice is selected by the model id.
+   */
+  ttsVoiceIds?: 'listed' | 'open' | 'model'
+  /** Relative to `catalog/` — load via {@link azureTtsVoices} / {@link googleTtsVoices}. */
   ttsVoiceListFile?: string
   home: string
   sttDocs?: string
@@ -54,6 +64,13 @@ export interface AzureTtsVoicesCatalog {
   voices: string[]
 }
 
+export interface GoogleTtsVoicesCatalog {
+  snapshotDate: string
+  source: string
+  voicesListDoc: string
+  voices: string[]
+}
+
 export interface VendorsCatalogFile {
   vendors: VoiceVendorEntry[]
 }
@@ -61,12 +78,17 @@ export interface VendorsCatalogFile {
 export const vendorsCatalogJson: VendorsCatalogFile = vendorsCatalog as VendorsCatalogFile
 export const azureTtsVoicesJson: AzureTtsVoicesCatalog =
   azureTtsVoicesCatalog as AzureTtsVoicesCatalog
+export const googleTtsVoicesJson: GoogleTtsVoicesCatalog =
+  googleTtsVoicesCatalog as GoogleTtsVoicesCatalog
 
 /** All vendors from `catalog/vendors.json`. */
 export const VOICE_VENDORS: readonly VoiceVendorEntry[] = vendorsCatalogJson.vendors
 
 /** Azure TTS ShortNames snapshot (`catalog/azure-tts-voices.json`). */
 export const azureTtsVoices: readonly string[] = azureTtsVoicesJson.voices
+
+/** Google TTS voice names snapshot (`catalog/google-tts-voices.json`). */
+export const googleTtsVoices: readonly string[] = googleTtsVoicesJson.voices
 
 export function getVendor(id: string): VoiceVendorEntry | undefined {
   return VOICE_VENDORS.find((entry) => entry.id === id)
@@ -96,11 +118,19 @@ export function ttsModelAllowlist(vendorId: string): readonly string[] {
   return vendor?.ttsModels ?? []
 }
 
-export function ttsVoiceAllowlist(vendorId: string): readonly string[] {
+/** Documented TTS voices for a vendor; `model` selects a per-model list when the vendor has one. */
+export function ttsVoiceAllowlist(vendorId: string, model?: string): readonly string[] {
+  const vendor = getVendor(vendorId)
+  const byModel = model ? vendor?.ttsVoicesByModel?.[model] : undefined
+  if (byModel) {
+    return byModel
+  }
   if (vendorId === 'azure') {
     return azureTtsVoices
   }
-  const vendor = getVendor(vendorId)
+  if (vendorId === 'google') {
+    return googleTtsVoices
+  }
   return vendor?.ttsVoices ?? []
 }
 
@@ -138,6 +168,7 @@ export function validateVoiceCatalogChoice(
   vendorId: string,
   kind: VoiceCatalogValidationKind,
   value: string,
+  model?: string,
 ): VoiceCatalogValidationError | null {
   const vendor = getVendor(vendorId)
   if (!vendor) {
@@ -182,12 +213,13 @@ export function validateVoiceCatalogChoice(
           message: `vendor \`${vendorId}\` does not support TTS`,
         }
       }
-      allowlist = ttsVoiceAllowlist(vendorId)
+      allowlist = ttsVoiceAllowlist(vendorId, model)
       break
   }
 
   if (allowlist.length === 0) {
-    // local-sherpa / google TTS voices / deepgram TTS models: no hardcoded zoo in catalog
+    // An empty list means the vendor's `ttsVoiceIds` is `open` (account/library ids) or `model`
+    // (voice chosen by the model id); there is no closed list to check against.
     return null
   }
 
@@ -203,4 +235,8 @@ export function validateVoiceCatalogChoice(
   return null
 }
 
-export { vendorsCatalogJson as loadVendorsCatalog, azureTtsVoicesJson as loadAzureTtsVoicesCatalog }
+export {
+  vendorsCatalogJson as loadVendorsCatalog,
+  azureTtsVoicesJson as loadAzureTtsVoicesCatalog,
+  googleTtsVoicesJson as loadGoogleTtsVoicesCatalog,
+}

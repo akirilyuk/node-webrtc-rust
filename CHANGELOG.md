@@ -8,6 +8,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-10-18
+
+### Added
+
+- **voice-catalog:** complete documented TTS voice lists. OpenAI has 13 voices plus a 9-voice list for `tts-1`/`tts-1-hd`. Groq lists voices per Orpheus model. Deepgram's `ttsModels` has 138 Aura-1, Aura-2 and Flux ids. AWS lists the 63 Polly neural voices.
+- **voice-catalog:** a Google `google-tts-voices.json` snapshot (2,002 voices) plus `scripts/snapshot-google-tts-voices.mjs`.
+- **voice-catalog:** the new fields `ttsVoicesByModel` and `ttsVoiceIds`. `ttsVoiceAllowlist` and `validateVoiceCatalogChoice` accept an optional model (#467).
+
+### Fixed
+
+- **openai:** the full-body TTS path sends the configured voice. It used to map `ballad`/`verse`/`marin`/`cedar` to `alloy`.
+- **openai, groq, google:** TTS rejects voices that are not documented for the vendor/model with a config error, instead of failing at synthesis or silently substituting.
+- **deepgram:** undocumented speak models are rejected.
+- **groq:** without a voice it uses the catalog default only when that default is valid for the model (#467).
+
 ## [0.11.4] - 2026-10-17
 
 ### Fixed

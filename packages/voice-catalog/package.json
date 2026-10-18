@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/voice-catalog",
-  "version": "0.11.4",
+  "version": "0.11.5",
   "description": "Published STT/TTS vendor allowlists and documentation links for VoiceAgent providers",
   "keywords": [
     "webrtc",
@@ -30,7 +30,8 @@
       "require": "./dist/cjs/src/index.js"
     },
     "./catalog/vendors.json": "./catalog/vendors.json",
-    "./catalog/azure-tts-voices.json": "./catalog/azure-tts-voices.json"
+    "./catalog/azure-tts-voices.json": "./catalog/azure-tts-voices.json",
+    "./catalog/google-tts-voices.json": "./catalog/google-tts-voices.json"
   },
   "files": [
     "dist",
@@ -39,6 +40,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\" && node scripts/patch-esm-json-imports.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "snapshot:google-tts-voices": "node scripts/snapshot-google-tts-voices.mjs",
     "test": "vitest run"
   },
   "devDependencies": {

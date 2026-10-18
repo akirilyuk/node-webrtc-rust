@@ -9,6 +9,7 @@ import {
   defaultSttTransport,
   defaultTtsTransport,
   getVendor,
+  googleTtsVoices,
   sttModelAllowlist,
   sttTransports,
   ttsModelAllowlist,
@@ -165,14 +166,8 @@ describe('crate-aligned allowlist snapshots', () => {
       'it-IT',
       'hi-IN',
     ])
-    expect(ttsVoiceAllowlist('aws')).toEqual([
-      'Joanna',
-      'Matthew',
-      'Amy',
-      'Brian',
-      'Ruth',
-      'Stephen',
-    ])
+    expect(ttsVoiceAllowlist('aws').length).toBe(63)
+    expect(ttsVoiceAllowlist('aws')).toEqual(expect.arrayContaining(['Joanna', 'Matthew', 'Amy']))
   })
 
   test('azure STT recognition modes', () => {
@@ -191,13 +186,100 @@ describe('crate-aligned allowlist snapshots', () => {
 })
 
 describe('esm json import attributes', () => {
-  test('postbuild patch script rewrites both catalog JSON imports', () => {
+  test('postbuild patch script rewrites every catalog JSON import', () => {
     const src = readFileSync(
       new URL('../scripts/patch-esm-json-imports.mjs', import.meta.url),
       'utf8',
     )
     expect(src).toContain("from '../catalog/vendors.json' with { type: 'json' }")
     expect(src).toContain("from '../catalog/azure-tts-voices.json' with { type: 'json' }")
+    expect(src).toContain("from '../catalog/google-tts-voices.json' with { type: 'json' }")
+  })
+})
+
+describe('documented TTS voice lists', () => {
+  test('every customer TTS vendor declares ttsVoiceIds', () => {
+    for (const id of customerTtsProviderIds()) {
+      expect(['listed', 'open', 'model'], `vendor ${id}`).toContain(getVendor(id)?.ttsVoiceIds)
+    }
+    expect(getVendor('mock')?.ttsVoiceIds).toBeUndefined()
+  })
+
+  test('listed vendors have a non-empty voice list', () => {
+    const listed = VOICE_VENDORS.filter((v) => v.ttsVoiceIds === 'listed')
+    expect(listed.map((v) => v.id).sort()).toEqual(
+      ['aws', 'azure', 'google', 'groq', 'openai'].sort(),
+    )
+    for (const vendor of listed) {
+      expect(ttsVoiceAllowlist(vendor.id).length, `vendor ${vendor.id}`).toBeGreaterThan(0)
+    }
+  })
+
+  test('defaultTtsVoice is valid for defaultTtsModel', () => {
+    for (const vendor of VOICE_VENDORS) {
+      if (!vendor.defaultTtsVoice) continue
+      expect(
+        validateVoiceCatalogChoice(
+          vendor.id,
+          'ttsVoice',
+          vendor.defaultTtsVoice,
+          vendor.defaultTtsModel,
+        ),
+        `vendor ${vendor.id}`,
+      ).toBeNull()
+    }
+  })
+
+  test('tts-1 rejects marin, gpt-4o-mini-tts accepts it', () => {
+    expect(validateVoiceCatalogChoice('openai', 'ttsVoice', 'marin', 'tts-1')).toMatchObject({
+      kind: 'ttsVoice',
+      vendorId: 'openai',
+    })
+    expect(validateVoiceCatalogChoice('openai', 'ttsVoice', 'marin', 'tts-1-hd')).not.toBeNull()
+    expect(validateVoiceCatalogChoice('openai', 'ttsVoice', 'marin', 'gpt-4o-mini-tts')).toBeNull()
+    expect(validateVoiceCatalogChoice('openai', 'ttsVoice', 'marin')).toBeNull()
+  })
+
+  test('groq arabic model rejects troy and accepts fahad', () => {
+    const arabic = 'canopylabs/orpheus-arabic-saudi'
+    expect(validateVoiceCatalogChoice('groq', 'ttsVoice', 'troy', arabic)).not.toBeNull()
+    expect(validateVoiceCatalogChoice('groq', 'ttsVoice', 'fahad', arabic)).toBeNull()
+    expect(
+      validateVoiceCatalogChoice('groq', 'ttsVoice', 'troy', 'canopylabs/orpheus-v1-english'),
+    ).toBeNull()
+    expect(ttsVoiceAllowlist('groq').length).toBe(12)
+  })
+
+  test('google snapshot has en-US-Neural2-A and en-US-Chirp3-HD-Charon and no bare Kore', () => {
+    expect(googleTtsVoices.length).toBe(2002)
+    expect(googleTtsVoices).toContain('en-US-Neural2-A')
+    expect(googleTtsVoices).toContain('en-US-Chirp3-HD-Charon')
+    expect(googleTtsVoices).not.toContain('Kore')
+    expect(googleTtsVoices.every((name) => name.includes('-'))).toBe(true)
+    expect(getVendor('google')?.ttsVoiceListFile).toBe('google-tts-voices.json')
+    expect(validateVoiceCatalogChoice('google', 'ttsVoice', 'Kore')).not.toBeNull()
+    expect(validateVoiceCatalogChoice('google', 'ttsVoice', 'en-US-Neural2-A')).toBeNull()
+  })
+
+  test('aws accepts Danielle, rejects standard-only Nicole', () => {
+    expect(validateVoiceCatalogChoice('aws', 'ttsVoice', 'Danielle')).toBeNull()
+    expect(validateVoiceCatalogChoice('aws', 'ttsVoice', 'Nicole')).not.toBeNull()
+  })
+
+  test('deepgram accepts aura-2-thalia-en and flux-hannah-en as ttsModel, rejects aura-nobody-en', () => {
+    expect(ttsModelAllowlist('deepgram').length).toBe(138)
+    expect(ttsModelAllowlist('deepgram')[0]).toBe('aura-asteria-en')
+    expect(getVendor('deepgram')?.ttsVoiceIds).toBe('model')
+    expect(validateVoiceCatalogChoice('deepgram', 'ttsModel', 'aura-2-thalia-en')).toBeNull()
+    expect(validateVoiceCatalogChoice('deepgram', 'ttsModel', 'flux-hannah-en')).toBeNull()
+    expect(validateVoiceCatalogChoice('deepgram', 'ttsModel', 'aura-nobody-en')).not.toBeNull()
+  })
+
+  test('open vendors accept any voice id', () => {
+    for (const id of ['cartesia', 'elevenlabs', 'fishaudio', 'local-sherpa']) {
+      expect(getVendor(id)?.ttsVoiceIds).toBe('open')
+      expect(validateVoiceCatalogChoice(id, 'ttsVoice', 'any-customer-clone')).toBeNull()
+    }
   })
 })
 

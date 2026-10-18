@@ -7,7 +7,8 @@ use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::{duration_ms_from_stereo_48k, MonoToStereo48k};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
-#[cfg(feature = "live")]
+use node_webrtc_rust_voice_catalog as voice_catalog;
+
 use crate::factory::api_key_from;
 use crate::matrix::{default_tts_model, validate_tts_model, DEFAULT_SPEECH_URL};
 #[cfg(feature = "live")]
@@ -35,6 +36,30 @@ impl GroqTts {
             .clone()
             .unwrap_or_else(|| default_tts_model().to_string());
         validate_tts_model(&model).map_err(SpeechError::Config)?;
+        let documented = voice_catalog::tts_voices_for_model("groq", Some(&model))
+            .expect("groq in voice catalog");
+        let voice = match config.voice.as_deref().filter(|v| !v.is_empty()) {
+            Some(voice) => {
+                if !documented.contains(&voice) {
+                    return Err(SpeechError::Config(format!(
+                        "unsupported Groq voice `{voice}` for model `{model}`; documented voices: {}",
+                        documented.join(", ")
+                    )));
+                }
+                voice.to_string()
+            }
+            None => match voice_catalog::default_tts_voice("groq")
+                .filter(|default| documented.contains(default))
+            {
+                Some(default) => default.to_string(),
+                None => {
+                    return Err(SpeechError::Config(format!(
+                        "voice required for groq model `{model}`; documented voices: {}",
+                        documented.join(", ")
+                    )))
+                }
+            },
+        };
         Ok(Self {
             api_key: config
                 .api_key
@@ -46,7 +71,7 @@ impl GroqTts {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| DEFAULT_SPEECH_URL.to_string()),
             model,
-            voice: config.voice.clone().unwrap_or_else(|| "troy".to_string()),
+            voice,
             #[cfg(feature = "live")]
             http: crate::http::build_client(None)?,
             #[cfg(feature = "live")]
@@ -272,6 +297,41 @@ mod tests {
                 sentence_case: Default::default(),
                 transport: None,
             }),
+            Err(SpeechError::Config(_))
+        ));
+    }
+
+    fn cfg(model: &str, voice: Option<&str>) -> TtsConfig {
+        TtsConfig {
+            provider: TtsVendor::Groq,
+            model: Some(model.into()),
+            model_path: None,
+            voice: voice.map(str::to_string),
+            api_key: Some("k".into()),
+            endpoint: None,
+            sentence_case: Default::default(),
+            transport: None,
+        }
+    }
+
+    #[test]
+    fn groq_default_voice_for_english_is_troy() {
+        let tts = GroqTts::new(&cfg("canopylabs/orpheus-v1-english", None)).unwrap();
+        assert_eq!(tts.voice, "troy");
+    }
+
+    #[test]
+    fn groq_arabic_without_voice_is_config_error() {
+        assert!(matches!(
+            GroqTts::new(&cfg("canopylabs/orpheus-arabic-saudi", None)),
+            Err(SpeechError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn groq_rejects_english_voice_on_arabic_model() {
+        assert!(matches!(
+            GroqTts::new(&cfg("canopylabs/orpheus-arabic-saudi", Some("troy"))),
             Err(SpeechError::Config(_))
         ));
     }

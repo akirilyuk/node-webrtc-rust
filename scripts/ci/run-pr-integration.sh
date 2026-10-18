@@ -108,7 +108,7 @@ if suite_enabled rust; then
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-groq" -- \
     cargo test -p node-webrtc-rust-vendor-groq --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-openai" -- \
-    cargo test -p node-webrtc-rust-vendor-openai --features live --lib --test vendor_test --test http_pool_test
+    cargo test -p node-webrtc-rust-vendor-openai --features live --lib --test vendor_test --test http_pool_test --test mock_server_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-google" -- \
     cargo test -p node-webrtc-rust-vendor-google --features live --lib --test vendor_test --test http_pool_test --test mock_server_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-aws" -- \

@@ -97,7 +97,7 @@ if suite_enabled rust; then
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-elevenlabs" -- \
     cargo test -p node-webrtc-rust-vendor-elevenlabs --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-fishaudio" -- \
-    cargo test -p node-webrtc-rust-vendor-fishaudio --features live -- --test-threads=1
+    cargo test -p node-webrtc-rust-vendor-fishaudio --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test -- --test-threads=1
   # Cloud vendors with a pooled HTTP client (HTTP pool reuse, last_transport, timeout bounds) and
   # their mock-server tests (progressive TTS body, loud STT failures). Test
   # targets are listed instead of a bare `cargo test` so a live_test / live_bench target (they need

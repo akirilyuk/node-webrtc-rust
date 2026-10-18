@@ -90,7 +90,7 @@ async fn tts_full_body_two_requests_on_one_provider_reuse_one_connection() {
     }
     assert_eq!(mock.requests(), 2);
     assert_eq!(mock.accepted(), 1);
-    assert_eq!(provider.last_transport().as_deref(), Some("sdk"));
+    assert_eq!(provider.last_transport().as_deref(), Some("http/1.1"));
 }
 
 #[tokio::test]

@@ -209,6 +209,7 @@ CI_STEP_LOG_TS=1 npm run ci:verify:pr-test:docker   # UTC timestamps on [ci-step
 ```
 
 Step banners: `[ci-step] START (3/7) sherpa e2e start:roundtrip-barge-in` → `OK (25s)` or `FAIL` / timeout hint.  
+A step that passes but used at least 75 % of its `--timeout` also prints `[ci-step] WARN <label> used <d>s of <cap>s (<pct>%)` (plus a GitHub `::warning` and a `$GITHUB_STEP_SUMMARY` line); `CI_STEP_WARN_PCT` changes the threshold. The integration job compiles all Rust test binaries in a separate `cargo test build` step (`CI_CARGO_BUILD_TIMEOUT_SEC`, default 900), so the per-crate caps (`CI_CARGO_LIB_TIMEOUT_SEC`, 180) measure test time only; `run-pr-integration.test.sh` keeps that step in lockstep with the cargo steps.  
 Sherpa stderr during E2E: `[topology]` (signaling / agent-pc / user-pc attach), `[e2e-phase]`, `[speech]` (listener events), `[voice-debug]` (Rust STT/VAD). See [`ROUNDTRIP.md`](../../examples/voice-agent-local-sherpa/ROUNDTRIP.md) § Debug logging.
 
 **Pre-push (scoped):** `npm run ci:pre-push` runs Sherpa typecheck + Vitest + E2E when `examples/voice-agent-local-sherpa/` or `crates/speech/` changed — see [`run-pre-push-gates.sh`](run-pre-push-gates.sh).

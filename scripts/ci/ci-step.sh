@@ -8,6 +8,11 @@
 #   CI_STEP_INDEX / CI_STEP_TOTAL — "(3/12)" in banners
 #   CI_STEP_LOG_TS=1              — UTC ISO timestamp on each line
 #   CI_STEP_TIMEOUT_DISABLE=1     — skip wall-clock cap (debug)
+#   CI_STEP_WARN_PCT              — warn when a passing step used at least this share of its
+#                                   --timeout (default 75). Prints "[ci-step] WARN ...", a GitHub
+#                                   ::warning annotation (GITHUB_ACTIONS) and a $GITHUB_STEP_SUMMARY
+#                                   line, so a suite creeping toward its cap shows up before it
+#                                   times out (test.time-budget-creep).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -72,6 +77,20 @@ ELAPSED=$(( $(date +%s) - START_SEC ))
 
 if [[ $CODE -eq 0 ]]; then
   echo "$(ci_step_prefix) OK    $LABEL (${ELAPSED}s)"
+  # Early warning: ELAPSED is whole seconds (floor), so compare with >= to stay deterministic.
+  WARN_PCT="${CI_STEP_WARN_PCT:-75}"
+  if [[ -n "$SECS" && "$SECS" =~ ^[0-9]+$ && "$SECS" -ge 1 ]] \
+    && [[ "${CI_STEP_TIMEOUT_DISABLE:-}" != "1" ]] \
+    && (( ELAPSED * 100 >= WARN_PCT * SECS )); then
+    USED_PCT=$(( ELAPSED * 100 / SECS ))
+    echo "[ci-step] WARN $LABEL used ${ELAPSED}s of ${SECS}s (${USED_PCT}%)"
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+      echo "::warning title=CI step near its time budget::$LABEL ${ELAPSED}s/${SECS}s"
+    fi
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      echo "- CI step near its time budget: \`$LABEL\` used ${ELAPSED}s of ${SECS}s (${USED_PCT}%)" >>"$GITHUB_STEP_SUMMARY" || true
+    fi
+  fi
 else
   echo "$(ci_step_prefix) FAIL  $LABEL (${ELAPSED}s, exit ${CODE})" >&2
   if [[ $CODE -eq 124 ]]; then

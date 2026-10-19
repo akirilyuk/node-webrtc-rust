@@ -100,6 +100,56 @@ describe('frame-marker helper', () => {
     expect(analyseSequence(detectRun(idx))).toMatchObject({ reordered: 1, duplicates: 0, gaps: 0 })
   })
 
+  describe('a forward step of more than half the period (mod-40 aliasing)', () => {
+    /** Markers of source frames `from..from+count-1`, as the detector reports them. */
+    const marks = (from: number, count: number): DetectedIndex[] =>
+      seq(from, count).map((i) => i % 40)
+    const ambiguous = (n: number): DetectedIndex[] => Array.from({ length: n }, () => 'ambiguous')
+
+    // Shape of a stalled run (mixer stats: compressed 11): frames 0..20 heard, 11 merged
+    // (ambiguous) outputs that together carry source frames 21..82, then frame 83 (marker 3).
+    // The step 20 -> 3 is 23 mod 40, which is also a backward step of 17.
+    const stalled = [...marks(0, 21), ...ambiguous(11), ...marks(83, 31)]
+
+    it('is forward when the merges the mixer reports pay for it', () => {
+      const r = analyseSequence(stalled, { mergedFrames: 11 })
+      expect(r).toMatchObject({
+        reordered: 0,
+        gaps: 11,
+        duplicates: 0,
+        ambiguous: 11,
+        played: 52,
+      })
+    })
+
+    it('is reordered when no merge is accounted for', () => {
+      // 17 frames (3..19) read as backward steps of 17..1 until the marker wraps.
+      expect(analyseSequence(stalled).reordered).toBe(17)
+      expect(analyseSequence(stalled, { mergedFrames: 10 }).reordered).toBeGreaterThan(0)
+    })
+
+    it('spends the merge budget: a second long step needs its own merges', () => {
+      const twice = [...stalled, ...ambiguous(11), ...marks(83 + 31 + 22, 10)]
+      expect(analyseSequence(twice, { mergedFrames: 22 })).toMatchObject({ reordered: 0, gaps: 22 })
+      expect(analyseSequence(twice, { mergedFrames: 11 }).reordered).toBeGreaterThan(0)
+    })
+
+    it('an adjacent swap is still reordered with a large merge budget', () => {
+      const idx = [...marks(0, 10), 11, 10, ...marks(12, 9)]
+      expect(analyseSequence(idx, { mergedFrames: 100 })).toMatchObject({
+        reordered: 1,
+        gaps: 1,
+        duplicates: 0,
+      })
+    })
+
+    it('a long run of unknown frames explains the step by itself', () => {
+      // 25 unknown frames then marker 5 + 26: forward, with no merge needed.
+      const idx = [...marks(0, 6), ...ambiguous(25), ...marks(31, 5)]
+      expect(analyseSequence(idx)).toMatchObject({ reordered: 0, gaps: 0, ambiguous: 25 })
+    })
+  })
+
   it('a cross-faded merge of frames i and i+1 is ambiguous', () => {
     const gen = new FrameMarkerGenerator()
     const a = gen.next(10)

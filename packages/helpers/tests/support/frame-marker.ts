@@ -135,12 +135,32 @@ export interface SequenceAnalysis {
   firstIndexAt: number
 }
 
+export interface AnalyseOptions {
+  /**
+   * Output frames the mixer reports as merged (`mixStats`: `compressed + overflowCompressed +
+   * listenerCatchupCompressed + listenerSkipped`). Each merge swallows one marker index, so a
+   * run of merged (ambiguous) frames advances the index faster than one per frame.
+   *
+   * The sequence is unwrapped mod 40, which is only unambiguous for a forward step of at most 20.
+   * A longer run of merges or concealed frames steps further than that (11 merged frames moved
+   * the marker 23 ahead in a stalled run). A step above 20 therefore counts as forward when the
+   * indices it skips beyond its unknown frames are paid for by the merges not used yet, and at
+   * most one per frame of the step. Anything else above 20 is `reordered`. Default 0: no merge
+   * is accounted for, so only a run of unknown frames can explain a long forward step.
+   */
+  mergedFrames?: number
+}
+
 /**
  * Analyse detected indices, unwrapping mod 40. Leading silence is ignored. An ambiguous or
  * interior-silent frame stands in for one unknown frame, so it explains one missing index
- * (the Rust twin `analyze` in `crates/conference/tests/support/frame_marker.rs` does the same).
+ * (the Rust twin `analyze` in `crates/conference/tests/support/frame_marker.rs` does the same;
+ * it still treats every step above 20 as `reordered`, see `AnalyseOptions.mergedFrames`).
  */
-export function analyseSequence(indices: readonly DetectedIndex[]): SequenceAnalysis {
+export function analyseSequence(
+  indices: readonly DetectedIndex[],
+  opts: AnalyseOptions = {},
+): SequenceAnalysis {
   const out: SequenceAnalysis = {
     played: 0,
     gaps: 0,
@@ -159,6 +179,7 @@ export function analyseSequence(indices: readonly DetectedIndex[]): SequenceAnal
   let prev = -1
   let unknown = 0
   let pendingDups = 0
+  let mergesLeft = opts.mergedFrames ?? 0
   indices.forEach((idx, pos) => {
     if (idx === 'silence' && out.firstIndexAt >= 0) out.silent++
     if (pos > lastMarker) return
@@ -187,10 +208,18 @@ export function analyseSequence(indices: readonly DetectedIndex[]): SequenceAnal
       pendingDups++
       return
     }
-    if (delta > MARKER_PERIOD / 2) {
+    // Indices this step skips that no unknown frame (ambiguous / interior silence) stands in for.
+    const unexplained = Math.max(0, delta - 1 - unknown)
+    // A step above half the period is ambiguous mod 40 (forward by `delta` or back by
+    // `40 - delta`). It is forward when the unknown frames cover it, or when unused merges pay
+    // for the rest and each frame of the step absorbed at most one index.
+    const longForward =
+      delta > MARKER_PERIOD / 2 && unexplained <= Math.min(mergesLeft, unknown + 1)
+    if (delta > MARKER_PERIOD / 2 && !longForward) {
       out.reordered++
     } else {
-      out.gaps += Math.max(0, delta - 1 - unknown)
+      if (longForward) mergesLeft -= unexplained
+      out.gaps += unexplained
       out.played++
       prev = idx
       out.duplicates += pendingDups

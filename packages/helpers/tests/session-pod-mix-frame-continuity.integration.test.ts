@@ -136,7 +136,11 @@ function seededRandom(seed: number): () => number {
   }
 }
 
-type SendPattern = 'paced' | 'bunched-3x20' | 'packet-60ms' | 'jitter-30ms'
+type SendPattern = 'paced' | 'paced-stall-300ms' | 'bunched-3x20' | 'packet-60ms' | 'jitter-30ms'
+
+/** `paced-stall-300ms`: the sender thread is blocked at this source frame, for this long. */
+const STALL_AT_FRAME = 50
+const STALL_MS = 300
 
 /** Streams MARKED_FRAMES marked frames through the speaker's real outbound track. */
 async function sendMarkedFrames(mic: LocalAudioTrack, pattern: SendPattern): Promise<void> {
@@ -152,9 +156,14 @@ async function sendMarkedFrames(mic: LocalAudioTrack, pattern: SendPattern): Pro
     while (Date.now() < target) await new Promise<void>((resolve) => setImmediate(resolve))
   }
 
-  if (pattern === 'paced') {
+  if (pattern === 'paced' || pattern === 'paced-stall-300ms') {
     for (let i = 0; i < frames.length; i++) {
       await waitUntil(i * FRAME_MS)
+      if (pattern === 'paced-stall-300ms' && i === STALL_AT_FRAME) {
+        // Block the whole JS thread (the sender and the listener's reader share it) for 300 ms,
+        // like a CPU-starved CI host. The native mix pump keeps rendering meanwhile.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, STALL_MS)
+      }
       await mic.writeSample(frames[i]!, FRAME_MS)
     }
   } else if (pattern === 'bunched-3x20') {
@@ -332,6 +341,17 @@ async function runDirectControl(pattern: SendPattern): Promise<SequenceAnalysis>
   }
 }
 
+/** Output frames the mixer reports as merged: each swallows one marker index. */
+function mergedFrames(stats: MixStats | null): number {
+  if (!stats) return 0
+  return (
+    stats.compressed +
+    stats.overflowCompressed +
+    stats.listenerCatchupCompressed +
+    stats.listenerSkipped
+  )
+}
+
 /**
  * Same bar for every send pattern: the elastic mix queue must not lose a frame silently.
  *
@@ -352,7 +372,9 @@ async function runDirectControl(pattern: SendPattern): Promise<SequenceAnalysis>
  *   stands in for its missing index, see `analyseSequence`), plus one concealment frame at the
  *   stream edges; each concealed frame (faded) and each cross-faded merge is ambiguous too.
  * - reordered 0, decodeErrors 0, pushed == played + compressed + overflowCompressed + depth:
- *   conservation, nothing silently overwritten.
+ *   conservation, nothing silently overwritten. `analyseSequence` is given the merge count, so a
+ *   long run of merged frames that steps the marker more than half its period ahead is read as
+ *   forward and not as a backward jump (mod-40 aliasing), while an adjacent swap still counts.
  * - played >= 145 - 2 * merged: a merge costs two advancing markers (the absorbed index and the
  *   cross-faded frame itself, which is ambiguous).
  * - The pump renders at its scheduled slot time (`renderOutput(id, atMs)`), so a late timer
@@ -362,8 +384,7 @@ function expectContinuous({ seq, stats }: { seq: SequenceAnalysis; stats: MixSta
   const detail = JSON.stringify({ seq, stats })
   expect(stats, detail).not.toBeNull()
   const s = stats!
-  const merged =
-    s.compressed + s.overflowCompressed + s.listenerCatchupCompressed + s.listenerSkipped
+  const merged = mergedFrames(s)
   expect(seq.gaps, detail).toBeLessThanOrEqual(merged)
   expect(seq.reordered, detail).toBe(0)
   expect(seq.duplicates, detail).toBeLessThanOrEqual(s.concealed)
@@ -453,9 +474,9 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
           )
         }
       }
-      const result = analyseSequence(recorder.detected)
       const stats =
         host!.getClientMixer()?.mixStats(host!.resolveParticipantId(ids.speaker)) ?? null
+      const result = analyseSequence(recorder.detected, { mergedFrames: mergedFrames(stats) })
       // Machine-readable line for aggregating repeated runs.
       if (process.env.MIX_FC_DUMP) {
         console.log(`SEQ ${pattern} ${JSON.stringify(recorder.detected)}`)
@@ -521,9 +542,11 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
             Promise.race([recorder.ended, recorder.quiet(500)]),
             `${pattern}: burst ${burst} end of marked stream`,
           )
-          const seq = analyseSequence(recorder.detected.slice(from))
           const stats =
             host!.getClientMixer()?.mixStats(host!.resolveParticipantId(ids.speaker)) ?? null
+          const seq = analyseSequence(recorder.detected.slice(from), {
+            mergedFrames: mergedFrames(stats),
+          })
           console.log(
             `MIXSTATS ${JSON.stringify({ pattern: `${caseKey}-burst${burst}`, ...seq, firstFrameMs, stats })}`,
           )
@@ -550,6 +573,20 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
   it('paced 20 ms: no gaps, no duplicates', { timeout: 90_000 }, async () => {
     expectContinuous(await runCase('paced'))
   })
+
+  it(
+    'a 300 ms stall of the sender thread: merged frames are not read as reordered',
+    { timeout: 90_000 },
+    async () => {
+      // The stall leaves ~15 frames to arrive as a burst, which the queue then merges (counted
+      // as `compressed`). 11 to 13 merged outputs step the marker 23 to 25 ahead, more than
+      // half its period, which a mod-40 unwrap reads as a backward jump unless the merges are
+      // accounted for (before the fix: `reordered` 13 to 17 on every run).
+      const r = await runCase('paced-stall-300ms')
+      expect(r.stats!.compressed, JSON.stringify(r)).toBeGreaterThanOrEqual(10)
+      expectContinuous(r)
+    },
+  )
 
   it('bunched 3 x 20 ms writes every 60 ms', { timeout: 90_000 }, async () => {
     expectContinuous(await runCase('bunched-3x20'))

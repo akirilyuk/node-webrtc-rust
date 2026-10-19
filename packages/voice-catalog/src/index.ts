@@ -17,6 +17,9 @@ export type VoiceVendorId =
   | 'local-sherpa'
   | 'mock'
 
+/** Concrete speech transport a customer can select (`auto` is the SDK-level alias for the catalog default). */
+export type VoiceTransport = 'websocket' | 'http'
+
 export interface VoiceVendorEntry {
   id: VoiceVendorId
   label: string
@@ -28,6 +31,14 @@ export interface VoiceVendorEntry {
   sttModels: string[]
   ttsModels: string[]
   ttsVoices: string[]
+  /** Transports the customer may select for STT. Omitted or empty when the model decides. */
+  sttTransports?: VoiceTransport[]
+  /** Transports the customer may select for TTS. Omitted or empty when the voice or model decides. */
+  ttsTransports?: VoiceTransport[]
+  /** Transport `auto` resolves to for STT (today's behaviour). Present only when `sttTransports` is non-empty. */
+  defaultSttTransport?: VoiceTransport
+  /** Transport `auto` resolves to for TTS (today's behaviour). Present only when `ttsTransports` is non-empty. */
+  defaultTtsTransport?: VoiceTransport
   /** Per-model voice list; overrides `ttsVoices` for that model. */
   ttsVoicesByModel?: Record<string, string[]>
   /**
@@ -121,6 +132,26 @@ export function ttsVoiceAllowlist(vendorId: string, model?: string): readonly st
     return googleTtsVoices
   }
   return vendor?.ttsVoices ?? []
+}
+
+/** Selectable STT transports for a vendor (empty when none). */
+export function sttTransports(vendorId: string): readonly VoiceTransport[] {
+  return getVendor(vendorId)?.sttTransports ?? []
+}
+
+/** Selectable TTS transports for a vendor (empty when none). */
+export function ttsTransports(vendorId: string): readonly VoiceTransport[] {
+  return getVendor(vendorId)?.ttsTransports ?? []
+}
+
+/** Transport `auto` resolves to for STT, or `undefined` when the vendor has no selectable STT transport. */
+export function defaultSttTransport(vendorId: string): VoiceTransport | undefined {
+  return getVendor(vendorId)?.defaultSttTransport
+}
+
+/** Transport `auto` resolves to for TTS, or `undefined` when the vendor has no selectable TTS transport. */
+export function defaultTtsTransport(vendorId: string): VoiceTransport | undefined {
+  return getVendor(vendorId)?.defaultTtsTransport
 }
 
 export type VoiceCatalogValidationKind = 'sttModel' | 'ttsModel' | 'ttsVoice'

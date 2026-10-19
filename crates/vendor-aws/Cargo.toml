@@ -29,3 +29,6 @@ aws-config = { version = "1", optional = true, features = ["behavior-version-lat
 aws-sdk-transcribestreaming = { version = "1", optional = true }
 aws-sdk-polly = { version = "1", optional = true }
 aws-smithy-types = { version = "1", optional = true, features = ["byte-stream-poll-next"] }
+
+[dev-dependencies]
+node-webrtc-rust-vendor-live-support = { path = "../vendor-live-support" }

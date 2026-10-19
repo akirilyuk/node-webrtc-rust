@@ -131,6 +131,7 @@ fn config(endpoint: &str) -> SttConfig {
         language: None,
         api_key: Some("test-key".into()),
         endpoint: Some(endpoint.to_string()),
+        transport: None,
     }
 }
 
@@ -660,4 +661,13 @@ async fn stop_closes_without_waiting_for_the_server() {
     within(stt.push_audio(pcm(320, 1))).await.unwrap();
     assert!(stt.poll_output().await.unwrap().is_none());
     assert!(mock.conns.try_recv().is_err(), "no reconnect after stop");
+}
+
+#[tokio::test]
+async fn last_transport_is_ws_once_the_socket_is_open() {
+    let mut mock = Mock::start().await;
+    let provider = provider(&mock.endpoint());
+    assert_eq!(provider.last_transport(), None);
+    let (stt, _conn) = ready_provider(&mut mock).await;
+    assert_eq!(stt.last_transport().as_deref(), Some("ws"));
 }

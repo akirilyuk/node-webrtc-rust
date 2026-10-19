@@ -8,7 +8,30 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use node_webrtc_rust_speech::config::SpeechTransport;
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::resolve_transport;
 use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// TTS transports this crate implements. Lockstep with `voice_catalog::tts_transports("fishaudio")`.
+pub fn implemented_tts_transports() -> &'static [&'static str] {
+    &["http", "websocket"]
+}
+
+/// Resolve `TtsConfig.transport` against the voice catalog (`None` / `auto` = catalog default).
+///
+/// `http` (the default) keeps the documented WebSocket fallback while no audio has reached the
+/// sink; an explicit `websocket` uses the socket only, without a fallback.
+pub fn resolve_tts_transport(requested: Option<SpeechTransport>) -> SpeechResult<SpeechTransport> {
+    resolve_transport(
+        "fishaudio",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("fishaudio"),
+        voice_catalog::default_tts_transport("fishaudio"),
+    )?
+    .ok_or_else(|| SpeechError::Config("fishaudio tts has no catalog default transport".into()))
+}
 
 pub const WS_DOC: &str = "https://docs.fish.audio/api-reference/endpoint/websocket/tts-live";
 pub const HTTP_DOC: &str =
@@ -34,6 +57,10 @@ pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
 pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whole HTTP request, headers through the last body chunk.
 pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled HTTP connection is kept for the next request.
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled HTTP connections.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// Default model: Drama 3.
 pub fn default_model_id() -> &'static str {
@@ -83,6 +110,28 @@ pub fn ws_live_url(base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn implemented_transports_match_the_catalog() {
+        let mut implemented = implemented_tts_transports().to_vec();
+        let mut catalog = voice_catalog::tts_transports("fishaudio").to_vec();
+        implemented.sort_unstable();
+        catalog.sort_unstable();
+        assert_eq!(implemented, catalog);
+    }
+
+    #[test]
+    fn auto_is_http_and_websocket_is_selectable() {
+        assert_eq!(resolve_tts_transport(None).unwrap(), SpeechTransport::Http);
+        assert_eq!(
+            resolve_tts_transport(Some(SpeechTransport::Auto)).unwrap(),
+            SpeechTransport::Http
+        );
+        assert_eq!(
+            resolve_tts_transport(Some(SpeechTransport::Websocket)).unwrap(),
+            SpeechTransport::Websocket
+        );
+    }
 
     #[test]
     fn default_model_is_drama_3() {

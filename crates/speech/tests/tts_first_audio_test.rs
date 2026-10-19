@@ -117,6 +117,7 @@ async fn make_agent_with_vendor(
             api_key: None,
             endpoint: None,
             sentence_case,
+            transport: None,
         }),
         ..Default::default()
     };

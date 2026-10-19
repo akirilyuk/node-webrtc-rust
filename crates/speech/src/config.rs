@@ -406,6 +406,43 @@ impl TtsVendor {
     }
 }
 
+/// Transport a cloud speech vendor uses to reach its API.
+///
+/// Customers pick one per leg (STT / TTS) where the vendor offers more than one. The allowed
+/// values and the value `auto` resolves to come from the voice catalog
+/// (`packages/voice-catalog/catalog/vendors.json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpeechTransport {
+    /// The vendor default from the voice catalog (`defaultTtsTransport` / `defaultSttTransport`).
+    Auto,
+    /// A persistent WebSocket session.
+    Websocket,
+    /// Streamed HTTP: HTTP/2 when the vendor negotiates it, else HTTP/1.1.
+    Http,
+}
+
+impl SpeechTransport {
+    /// Lowercase wire / catalog value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Websocket => "websocket",
+            Self::Http => "http",
+        }
+    }
+
+    /// Parse a catalog / wire value (`"auto"`, `"websocket"`, `"http"`).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "websocket" => Some(Self::Websocket),
+            "http" => Some(Self::Http),
+            _ => None,
+        }
+    }
+}
+
 /// STT vendor configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -421,6 +458,9 @@ pub struct SttConfig {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Transport to the vendor API. `None` / `auto` = the catalog default. See [`SpeechTransport`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<SpeechTransport>,
 }
 
 /// Whether the TTS engine input gets sentence-start capitalization.
@@ -475,6 +515,9 @@ pub struct TtsConfig {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Transport to the vendor API. `None` / `auto` = the catalog default. See [`SpeechTransport`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<SpeechTransport>,
     /// Sentence-start capitalization of the text handed to the TTS engine. See [`SentenceCase`].
     #[serde(default)]
     pub sentence_case: SentenceCase,
@@ -814,6 +857,7 @@ mod language_id_config_tests {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         });
         let mock = Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -823,6 +867,7 @@ mod language_id_config_tests {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         });
         let cluster = Some(TtsConfig {
             provider: TtsVendor::ClusterSherpa,
@@ -832,6 +877,7 @@ mod language_id_config_tests {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         });
         assert!(lid_tts_exclusion_enabled(&Some(lid.clone()), &local));
         assert!(!lid_tts_exclusion_enabled(&Some(lid.clone()), &mock));
@@ -927,6 +973,7 @@ mod vendor_wire_tests {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         };
         let json = serde_json::to_string(&stt).unwrap();
         assert!(!json.contains("endpoint"));
@@ -1064,6 +1111,7 @@ impl Default for VoiceAgentConfig {
                 language: Some("en".to_string()),
                 api_key: None,
                 endpoint: None,
+                transport: None,
             }),
             tts: Some(TtsConfig {
                 provider: TtsVendor::Mock,
@@ -1073,6 +1121,7 @@ impl Default for VoiceAgentConfig {
                 api_key: None,
                 endpoint: None,
                 sentence_case: Default::default(),
+                transport: None,
             }),
             language_id: None,
             post_utterance_silence_ms: None,

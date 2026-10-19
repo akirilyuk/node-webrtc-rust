@@ -131,6 +131,7 @@ fn agent_with_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -140,6 +141,7 @@ fn agent_with_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         language_id: Some(LanguageIdConfig {
             enabled: Some(true),

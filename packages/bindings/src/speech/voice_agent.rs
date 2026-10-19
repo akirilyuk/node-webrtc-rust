@@ -111,7 +111,7 @@ impl JsVoiceAgent {
         if voice_debug_enabled() {
             eprintln!("[voice-debug] JsVoiceAgent native module loaded (rebuild with npm run build:native if missing pipeline logs)");
         }
-        let config = config.unwrap_or_default().into();
+        let config = config.unwrap_or_default().try_into()?;
         let registry = default_vendor_registry();
         let agent = VoiceAgent::new(config, registry).map_err(speech_err)?;
         let bus_rx = agent.subscribe_events();
@@ -373,7 +373,7 @@ impl JsVoiceAgent {
     #[napi]
     pub async fn update_stt(&self, config: JsSttConfig) -> Result<()> {
         self.inner
-            .update_stt_config(config.into())
+            .update_stt_config(config.try_into()?)
             .await
             .map_err(speech_err)
     }
@@ -388,7 +388,7 @@ impl JsVoiceAgent {
         let opts = options.unwrap_or_default();
         self.inner
             .update_tts_config(
-                config.into(),
+                config.try_into()?,
                 UpdateTtsConfigOptions {
                     cancel_inflight: opts.cancel_inflight.unwrap_or(false),
                 },

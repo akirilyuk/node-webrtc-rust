@@ -17,13 +17,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor};
+use node_webrtc_rust_speech::config::{SpeechTransport, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::error::SpeechError;
 use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, VendorFactory,
 };
 use node_webrtc_rust_vendor_fishaudio::__test::Client;
 use node_webrtc_rust_vendor_fishaudio::FishAudioFactory;
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -328,7 +329,12 @@ fn pcm(len: usize, seed: u8) -> Vec<u8> {
     (0..len).map(|i| seed.wrapping_add(i as u8) | 1).collect()
 }
 
-fn config(endpoint: &str, voice: Option<&str>, model: Option<&str>) -> TtsConfig {
+fn config(
+    endpoint: &str,
+    voice: Option<&str>,
+    model: Option<&str>,
+    transport: Option<SpeechTransport>,
+) -> TtsConfig {
     TtsConfig {
         provider: TtsVendor::Fishaudio,
         model: model.map(str::to_string),
@@ -337,12 +343,21 @@ fn config(endpoint: &str, voice: Option<&str>, model: Option<&str>) -> TtsConfig
         api_key: Some("test-key".into()),
         endpoint: Some(endpoint.to_string()),
         sentence_case: Default::default(),
+        transport,
     }
 }
 
 fn provider(endpoint: &str, voice: Option<&str>) -> Box<dyn TtsProvider> {
+    provider_with(endpoint, voice, None)
+}
+
+fn provider_with(
+    endpoint: &str,
+    voice: Option<&str>,
+    transport: Option<SpeechTransport>,
+) -> Box<dyn TtsProvider> {
     FishAudioFactory
-        .create_tts(&config(endpoint, voice, None))
+        .create_tts(&config(endpoint, voice, None, transport))
         .unwrap_or_else(|_| panic!("create_tts"))
 }
 
@@ -430,7 +445,7 @@ async fn http_streams_chunks_to_the_sink_before_the_body_ends() {
     });
 
     let first = within(rx.recv()).await.expect("first sink chunk");
-    assert_eq!(first.pcm.len(), 960 * 2 * 2);
+    assert_eq!(first.pcm.len(), 960 * 2 * 2 - 8);
     assert!(
         !call.is_finished(),
         "first chunk arrived before the body ended"
@@ -442,7 +457,11 @@ async fn http_streams_chunks_to_the_sink_before_the_body_ends() {
     while let Ok(chunk) = rx.try_recv() {
         sunk.push(chunk);
     }
-    assert_eq!(sunk.len(), 3, "each http chunk reaches the sink once");
+    assert_eq!(
+        sunk.len(),
+        4,
+        "each http chunk reaches the sink once, plus the interpolation tail"
+    );
     assert_eq!(returned.len(), 1);
     assert_eq!(returned[0].pcm.len(), 3 * 960 * 2 * 2);
     let sink_total: Vec<u8> = sunk.iter().flat_map(|c| c.pcm.to_vec()).collect();
@@ -501,7 +520,11 @@ async fn http_error_before_audio_falls_back_to_ws() {
     while let Ok(chunk) = rx.try_recv() {
         sunk.push(chunk);
     }
-    assert_eq!(sunk.len(), 2, "the sink got each WS chunk once");
+    assert_eq!(
+        sunk.len(),
+        3,
+        "the sink got each WS chunk once, plus the interpolation tail"
+    );
     assert_eq!(mock.http_hits(), 1);
     assert_eq!(mock.ws_hits(), 1);
 
@@ -724,7 +747,7 @@ async fn cancel_stops_reading_and_closes_the_connection() {
     });
 
     let first = within(rx.recv()).await.expect("first chunk");
-    assert_eq!(first.pcm.len(), 960 * 2 * 2);
+    assert_eq!(first.pcm.len(), 960 * 2 * 2 - 8);
     cancel.store(true, Ordering::SeqCst);
     go_tx.send(()).unwrap();
 
@@ -734,7 +757,7 @@ async fn cancel_stops_reading_and_closes_the_connection() {
         "a cancelled synthesis is not cacheable"
     );
     assert_eq!(synthesis.chunks.len(), 1);
-    assert_eq!(synthesis.chunks[0].pcm.len(), 960 * 2 * 2);
+    assert_eq!(synthesis.chunks[0].pcm.len(), 960 * 2 * 2 - 8);
     within(closed_rx)
         .await
         .expect("server observed the connection close");
@@ -748,8 +771,12 @@ async fn unknown_model_is_never_sent() {
     let http: HttpHandler = Box::new(|_req| Box::pin(async {}));
     let mock = Mock::start(Some(ws), Some(http)).await;
 
-    let result =
-        FishAudioFactory.create_tts(&config(&mock.endpoint(), Some("voice-1"), Some("s1-mini")));
+    let result = FishAudioFactory.create_tts(&config(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some("s1-mini"),
+        None,
+    ));
     match result {
         Err(SpeechError::Config(message)) => {
             assert!(
@@ -805,7 +832,7 @@ async fn ws_streams_chunks_to_the_sink_before_finish() {
     });
 
     let first = within(rx.recv()).await.expect("first sink chunk");
-    assert_eq!(first.pcm.len(), 960 * 2 * 2);
+    assert_eq!(first.pcm.len(), 960 * 2 * 2 - 8);
     assert!(!call.is_finished(), "first chunk arrived before finish");
     release_tx.send(()).unwrap();
 
@@ -814,7 +841,11 @@ async fn ws_streams_chunks_to_the_sink_before_finish() {
     while let Ok(chunk) = rx.try_recv() {
         sunk.push(chunk);
     }
-    assert_eq!(sunk.len(), 3, "each audio event reaches the sink once");
+    assert_eq!(
+        sunk.len(),
+        4,
+        "each audio event reaches the sink once, plus the interpolation tail"
+    );
     assert_eq!(returned.len(), 3 * 960 * 2 * 2);
     let sink_total: Vec<u8> = sunk.iter().flat_map(|c| c.pcm.to_vec()).collect();
     assert_eq!(sink_total, returned, "sink total = returned");
@@ -938,4 +969,199 @@ async fn ws_that_never_sends_audio_times_out() {
     assert!(waited < Duration::from_secs(25), "{waited:?}");
     assert_eq!(mock.http_hits(), 0, "the direct WS call never touches HTTP");
     assert!(!message.contains("Never answered."), "{message}");
+}
+
+// -- customer transport selection --
+
+fn http_serving_audio() -> HttpHandler {
+    Box::new(|mut req| {
+        Box::pin(async move {
+            write_chunked_head(&mut req.stream).await;
+            write_chunk(&mut req.stream, &pcm(960, 1)).await;
+            write_chunked_end(&mut req.stream).await;
+        })
+    })
+}
+
+#[tokio::test]
+async fn explicit_websocket_transport_uses_the_ws_endpoint_only() {
+    let mock = Mock::start(
+        Some(ws_that_would_serve_audio()),
+        Some(http_serving_audio()),
+    )
+    .await;
+    let tts = provider_with(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some(SpeechTransport::Websocket),
+    );
+    let (sink, mut rx, _cancel) = sink();
+
+    let returned = within(tts.synthesize_progressive("Hello.", Some(sink)))
+        .await
+        .expect("websocket synth");
+    let mut sunk = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        sunk.push(chunk);
+    }
+    assert_eq!(
+        sunk.len(),
+        2,
+        "the WS chunk reaches the sink once, plus the interpolation tail"
+    );
+    assert_eq!(returned.len(), 1);
+    assert_eq!(mock.ws_hits(), 1);
+    assert_eq!(
+        mock.http_hits(),
+        0,
+        "websocket never touches the HTTP endpoint"
+    );
+    assert_eq!(tts.last_transport().as_deref(), Some("ws"));
+}
+
+#[tokio::test]
+async fn explicit_websocket_failure_does_not_fall_back_to_http() {
+    // The WebSocket handshake is refused (no WS handler), the HTTP endpoint would serve audio.
+    let mock = Mock::start(None, Some(http_serving_audio())).await;
+    let tts = provider_with(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some(SpeechTransport::Websocket),
+    );
+    let (sink, mut rx, _cancel) = sink();
+
+    let result = within(tts.synthesize_progressive("Hello.", Some(sink))).await;
+    assert!(result.is_err(), "a WS failure is the result: {result:?}");
+    assert!(rx.try_recv().is_err(), "nothing reached the sink");
+    assert_eq!(
+        mock.http_hits(),
+        0,
+        "no HTTP fallback after an explicit websocket"
+    );
+}
+
+#[tokio::test]
+async fn explicit_http_transport_keeps_the_documented_ws_fallback() {
+    let http = http_answering(503, "Service Unavailable", r#"{"status":503}"#);
+    let mock = Mock::start(Some(ws_that_would_serve_audio()), Some(http)).await;
+    let tts = provider_with(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some(SpeechTransport::Http),
+    );
+    let (sink, mut rx, _cancel) = sink();
+
+    let returned = within(tts.synthesize_progressive("Hello.", Some(sink)))
+        .await
+        .expect("fallback serves the audio");
+    assert_eq!(returned.len(), 1);
+    assert!(rx.try_recv().is_ok());
+    assert_eq!(mock.http_hits(), 1);
+    assert_eq!(mock.ws_hits(), 1);
+}
+
+#[tokio::test]
+async fn auto_transport_is_the_catalog_default_http() {
+    let mock = Mock::start(
+        Some(ws_that_would_serve_audio()),
+        Some(http_serving_audio()),
+    )
+    .await;
+    let tts = provider_with(
+        &mock.endpoint(),
+        Some("voice-1"),
+        Some(SpeechTransport::Auto),
+    );
+    let (sink, _rx, _cancel) = sink();
+
+    within(tts.synthesize_progressive("Hello.", Some(sink)))
+        .await
+        .expect("http synth");
+    assert_eq!(mock.http_hits(), 1);
+    assert_eq!(mock.ws_hits(), 0);
+    assert_eq!(tts.last_transport().as_deref(), Some("http/1.1"));
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of 24 kHz mono (48000 bytes) is 1000 ms and 192000
+/// bytes of 48 kHz stereo.
+#[tokio::test]
+async fn one_second_of_source_audio_is_one_second_of_48k_stereo() {
+    let http: HttpHandler = Box::new(|mut req| {
+        Box::pin(async move {
+            write_chunked_head(&mut req.stream).await;
+            for seed in 0..50u8 {
+                write_chunk(&mut req.stream, &pcm(960, seed)).await;
+            }
+            write_chunked_end(&mut req.stream).await;
+        })
+    });
+    let mock = Mock::start(None, Some(http)).await;
+    let (sink, mut rx, _cancel) = sink();
+    let chunks = within(
+        provider(&mock.endpoint(), Some("voice-1")).synthesize_progressive("hello", Some(sink)),
+    )
+    .await
+    .unwrap();
+    assert_chunks_match_source("fishaudio_http", &chunks, 1000);
+    let mut sunk = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        sunk.push(chunk);
+    }
+    assert_chunks_match_source("fishaudio_http_sink", &sunk, 1000);
+}
+
+/// A 24 kHz ramp served in odd-sized chunks: the 48 kHz output has no step or repeat at a chunk
+/// boundary (it is monotonic) and is exactly twice as long.
+#[tokio::test]
+async fn fish_chunked_synthesis_has_no_discontinuity_at_chunk_boundaries() {
+    let ramp: Vec<u8> = (0..2400i32)
+        .flat_map(|i| ((i * 10 - 12_000) as i16).to_le_bytes())
+        .collect();
+    let served = ramp.clone();
+    let http: HttpHandler = Box::new(move |mut req| {
+        let served = served.clone();
+        Box::pin(async move {
+            write_chunked_head(&mut req.stream).await;
+            let mut rest = served.as_slice();
+            for size in [1001usize, 777, 3, 1, 1500].iter().cycle() {
+                if rest.is_empty() {
+                    break;
+                }
+                let n = (*size).min(rest.len());
+                write_chunk(&mut req.stream, &rest[..n]).await;
+                rest = &rest[n..];
+            }
+            write_chunked_end(&mut req.stream).await;
+        })
+    });
+    let mock = Mock::start(None, Some(http)).await;
+    let (sink, mut rx, _cancel) = sink();
+    let chunks = within(
+        provider(&mock.endpoint(), Some("voice-1")).synthesize_progressive("hello", Some(sink)),
+    )
+    .await
+    .unwrap();
+    let mut sunk = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        sunk.push(chunk);
+    }
+    assert!(sunk.len() > 2, "the audio arrived in several chunks");
+    let all: Vec<u8> = sunk.iter().flat_map(|c| c.pcm.to_vec()).collect();
+    assert_eq!(
+        all,
+        chunks[0].pcm.to_vec(),
+        "sink bytes equal returned bytes"
+    );
+    let left: Vec<i16> = all
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|f| i16::from_le_bytes([f[0], f[1]]))
+        .collect();
+    assert_eq!(left.len(), 2400 * 2);
+    assert!(left.windows(2).all(|w| w[0] <= w[1]), "not monotonic");
+    assert!(
+        left.windows(2).filter(|w| w[0] < w[1]).count() >= 2399,
+        "samples were repeated instead of interpolated"
+    );
 }

@@ -259,6 +259,7 @@ async fn agent_with(
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -268,6 +269,7 @@ async fn agent_with(
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         language_id: language_id_config,
         vad,

@@ -219,6 +219,7 @@ fn stt_and_lid_loads_overlap_without_deadlock() {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         };
         let lid_config = lid_config(&lid_dir);
         let (done_tx, done_rx) = std::sync::mpsc::channel();

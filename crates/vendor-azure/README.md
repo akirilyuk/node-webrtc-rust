@@ -46,10 +46,37 @@ Default: `en-US-JennyNeural`. Unknown ShortNames are rejected at validation.
 
 For the live catalog available in your Azure region, call **GET** `https://{region}.tts.speech.microsoft.com/cognitiveservices/voices/list` ([REST TTS docs](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech#get-a-list-of-voices)).
 
-REST SSML with `X-Microsoft-OutputFormat: riff-16khz-16bit-mono-pcm`. Full-body synthesis only (no documented text-stream REST without SDK frames).
+REST SSML with `X-Microsoft-OutputFormat: raw-48khz-16bit-mono-pcm`, read as it arrives (see Transport). No documented text-stream REST without SDK frames.
 
 ## Tests
 
 ```bash
 cargo test -p node-webrtc-rust-vendor-azure --lib
+cargo test -p node-webrtc-rust-vendor-azure --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
 ```
+
+The live checks against the real API (`tests/live_test.rs`) and the latency bench (`tests/live_bench.rs`) are described under Transport.
+
+## Transport
+
+Config: `tts.transport` and `stt.transport`: `auto` (default) or `http`. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+Both legs are REST requests (the realtime speech API is SDK-only).
+
+**TTS streams the raw PCM body.** `raw-48khz-16bit-mono-pcm` is listed under "Streaming" audio outputs, and the REST page says of a `200` answer: "This file can be played as it's transferred, saved to a buffer, or saved to a file." (The `riff-*` formats are listed as non-streaming.) 48 kHz is the agent's rate, so there is no resampling, and it is a higher rate than the 16 kHz WAV used before ("If you select 48kHz output format, the high-fidelity voice model with 48kHz will be invoked"). The body goes to the sink as it arrives, each chunk once, an odd trailing byte carried to the next chunk. A body that errors or ends early after audio is an error with no retry, and a body without audio is an error (`Azure TTS returned no audio`). Bounds: first audio 15 s (request and headers included), 10 s between chunks, 60 s for the whole request. The request also sends the `User-Agent` header the page marks as required.
+
+**STT is a finals-only batch upload.** The short-audio page says "The REST API for short audio returns only final results. It doesn't provide partial results.", so `emits_partials()` is `false`. A failed request (network error, non-2xx, timeout, an answer that is not the documented JSON, `RecognitionStatus: Error`) is an `Err` from `poll_transcript`; the STT actor turns it into a vendor error event for the utterance. The status and Azure's error text are in the message, the key never is. `NoMatch`, `InitialSilenceTimeout` and `BabbleTimeout` are documented outcomes for audio with nothing to transcribe: no final and no error. Each finalize is an independent request, so the bench measures a second utterance on the same provider as `warm` (pooled connection).
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `http`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1. Connect timeout 10 s, whole-request timeout 60 s, idle pool 90 s, TCP keepalive 30 s.
+
+### Live tests and bench
+
+```bash
+# from node-webrtc-rust/
+AZURE_SPEECH_KEY=... AZURE_SPEECH_REGION=... cargo test -p node-webrtc-rust-vendor-azure --features live --test live_test -- --nocapture --test-threads=1
+NWR_BENCH_RUNS=3 AZURE_SPEECH_KEY=... AZURE_SPEECH_REGION=... cargo test -p node-webrtc-rust-vendor-azure --features live --test live_bench -- --nocapture --test-threads=1
+```
+
+Without both variables they skip; `AZURE_LIVE_REQUIRED=1` turns a missing one into a panic that names it (CI sets it, `.github/workflows/vendor-live-azure.yml`; secrets `AZURE_LIVE_SPEECH_KEY` and `AZURE_LIVE_SPEECH_REGION`). The STT test synthesizes its phrase with Azure TTS. The bench runs through `vendor-bench.yml`. The mock-server tests run in PR integration (`cargo vendor-azure`).

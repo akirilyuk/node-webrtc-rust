@@ -79,6 +79,7 @@ fn stt_config(model_path: String) -> SttConfig {
         language: Some("en".into()),
         api_key: None,
         endpoint: None,
+        transport: None,
     }
 }
 
@@ -149,6 +150,7 @@ async fn tiny_fragments_are_recognised_after_synthesis() {
             api_key: None,
             endpoint: None,
             sentence_case,
+            transport: None,
         })
         .expect("create TTS");
     let stt_cfg = stt_config(stt_path);

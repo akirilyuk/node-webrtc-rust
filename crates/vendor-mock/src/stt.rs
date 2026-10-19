@@ -85,6 +85,7 @@ mod tests {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         });
         stt.start().await.unwrap();
         stt.push_audio(Bytes::from(vec![1_u8; FINAL_THRESHOLD_BYTES]))

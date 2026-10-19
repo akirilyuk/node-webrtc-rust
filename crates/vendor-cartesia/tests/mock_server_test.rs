@@ -3,6 +3,7 @@
 //! `TtsProvider`: each PCM chunk reaches the progressive sink exactly once, and the REST
 //! fallback only runs when no audio reached the sink.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -12,12 +13,13 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
-use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor};
+use node_webrtc_rust_speech::config::{SpeechTransport, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::error::SpeechError;
 use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
 };
 use node_webrtc_rust_vendor_cartesia::CartesiaFactory;
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -29,10 +31,25 @@ const CHUNK_BYTES: usize = 960;
 
 type Ws = WebSocketStream<TcpStream>;
 type WsScript = Box<dyn FnOnce(Ws, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+/// Owns the whole WebSocket connection: reads its own generation requests (reuse tests).
+type ConnScript = Box<dyn FnOnce(Ws) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+/// Answers a REST request after its head was read; owns the connection.
+type RestScript = Arc<dyn Fn(TcpStream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+enum WsKind {
+    /// Runs after the first generation request arrived, with its `context_id`.
+    AfterRequest(WsScript),
+    Raw(ConnScript),
+}
 
 struct RestReply {
     status: &'static str,
     body: Vec<u8>,
+}
+
+enum Rest {
+    Reply(RestReply),
+    Script(RestScript),
 }
 
 struct Mock {
@@ -45,13 +62,28 @@ struct Mock {
 impl Mock {
     /// `ws`: script run after the generation request arrived (`None` refuses the upgrade with 403).
     async fn start(ws: Option<WsScript>, rest: RestReply) -> Self {
+        let queue = ws.map(WsKind::AfterRequest).into_iter().collect();
+        Self::start_inner(queue, Rest::Reply(rest)).await
+    }
+
+    /// One script per accepted WebSocket connection, in order. Connections beyond the scripts
+    /// are refused with 403.
+    async fn start_many(ws: Vec<WsKind>, rest: RestReply) -> Self {
+        Self::start_inner(ws.into(), Rest::Reply(rest)).await
+    }
+
+    async fn start_rest_script(rest: RestScript) -> Self {
+        Self::start_inner(VecDeque::new(), Rest::Script(rest)).await
+    }
+
+    async fn start_inner(queue: VecDeque<WsKind>, rest: Rest) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         let ws_count = Arc::new(AtomicUsize::new(0));
         let rest_count = Arc::new(AtomicUsize::new(0));
         let ws_uris = Arc::new(Mutex::new(Vec::new()));
-        let script = Arc::new(Mutex::new(ws));
-        let rest = Arc::new((rest.status, rest.body));
+        let queue = Arc::new(Mutex::new(queue));
+        let rest = Arc::new(rest);
         {
             let ws_count = ws_count.clone();
             let rest_count = rest_count.clone();
@@ -64,20 +96,30 @@ impl Mock {
                     let ws_count = ws_count.clone();
                     let rest_count = rest_count.clone();
                     let ws_uris = ws_uris.clone();
-                    let script = script.clone();
+                    let queue = queue.clone();
                     let rest = rest.clone();
                     tokio::spawn(async move {
                         let path = peek_request_path(&stream).await;
                         if path.starts_with("/tts/websocket") {
                             ws_count.fetch_add(1, Ordering::SeqCst);
-                            let script = script.lock().unwrap().take();
-                            match script {
-                                Some(script) => handle_ws(stream, ws_uris, script).await,
+                            let next = queue.lock().unwrap().pop_front();
+                            match next {
+                                Some(kind) => handle_ws(stream, ws_uris, kind).await,
                                 None => refuse(stream).await,
                             }
                         } else {
                             rest_count.fetch_add(1, Ordering::SeqCst);
-                            handle_rest(stream, rest.0, &rest.1).await;
+                            match rest.as_ref() {
+                                Rest::Reply(reply) => {
+                                    handle_rest(stream, reply.status, &reply.body).await
+                                }
+                                Rest::Script(script) => {
+                                    // The script owns the connection after the head was read.
+                                    let mut stream = stream;
+                                    let _ = read_http_request(&mut stream).await;
+                                    script(stream).await;
+                                }
+                            }
                         }
                     });
                 }
@@ -100,6 +142,10 @@ impl Mock {
     }
 
     fn provider(&self) -> Box<dyn TtsProvider> {
+        self.provider_with(None)
+    }
+
+    fn provider_with(&self, transport: Option<SpeechTransport>) -> Box<dyn TtsProvider> {
         CartesiaFactory
             .create_tts(&TtsConfig {
                 provider: TtsVendor::Cartesia,
@@ -109,6 +155,7 @@ impl Mock {
                 api_key: Some("test-key".into()),
                 endpoint: Some(self.endpoint.clone()),
                 sentence_case: Default::default(),
+                transport,
             })
             .unwrap()
     }
@@ -173,7 +220,7 @@ async fn refuse(mut stream: TcpStream) {
 }
 
 #[allow(clippy::result_large_err)] // the handshake callback signature is fixed by tungstenite
-async fn handle_ws(stream: TcpStream, uris: Arc<Mutex<Vec<String>>>, script: WsScript) {
+async fn handle_ws(stream: TcpStream, uris: Arc<Mutex<Vec<String>>>, kind: WsKind) {
     let mut ws = tokio_tungstenite::accept_hdr_async(stream, |req: &_, resp| {
         let req: &tokio_tungstenite::tungstenite::handshake::server::Request = req;
         uris.lock().unwrap().push(req.uri().to_string());
@@ -181,17 +228,31 @@ async fn handle_ws(stream: TcpStream, uris: Arc<Mutex<Vec<String>>>, script: WsS
     })
     .await
     .unwrap();
-    let context_id = loop {
+    match kind {
+        WsKind::Raw(script) => script(ws).await,
+        WsKind::AfterRequest(script) => {
+            let request = read_generation(&mut ws).await;
+            script(
+                ws,
+                request["context_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+            .await;
+        }
+    }
+}
+
+/// Next client text message (a generation request or a cancel), as JSON.
+async fn read_generation(ws: &mut Ws) -> serde_json::Value {
+    loop {
         match ws.next().await {
-            Some(Ok(Message::Text(raw))) => {
-                let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-                break value["context_id"].as_str().unwrap_or_default().to_string();
-            }
+            Some(Ok(Message::Text(raw))) => return serde_json::from_str(&raw).unwrap(),
             Some(Ok(_)) => continue,
             other => panic!("no generation request: {other:?}"),
         }
-    };
-    script(ws, context_id).await;
+    }
 }
 
 fn chunk_msg(context_id: &str, fill: u8) -> Message {
@@ -439,8 +500,11 @@ async fn cancel_after_the_first_chunk_stops_reading() {
             ws.send(chunk_msg(&ctx, 1)).await.unwrap();
             go_rx.await.unwrap();
             ws.send(chunk_msg(&ctx, 2)).await.unwrap();
+            // The documented cancel message of this context, then the close.
+            let cancel = read_generation(&mut ws).await;
+            let cancelled = cancel["cancel"] == true && cancel["context_id"] == ctx.as_str();
             let closed = matches!(ws.next().await, Some(Ok(Message::Close(_))));
-            let _ = report_tx.send(closed);
+            let _ = report_tx.send(cancelled && closed);
         }),
         rest_fail(),
     )
@@ -475,7 +539,10 @@ async fn cancel_after_the_first_chunk_stops_reading() {
         .await
         .expect("server report timed out")
         .unwrap();
-    assert!(server_saw_close, "client closes the socket after a cancel");
+    assert!(
+        server_saw_close,
+        "client sends the documented cancel for the context, then closes the socket"
+    );
     assert_eq!(mock.rest_count(), 0);
 }
 
@@ -494,8 +561,8 @@ async fn rest_path_sends_the_utterance_to_the_sink_once() {
     .expect("synthesize failed");
 
     let sunk = drain(&mut rig.rx);
-    assert_eq!(sunk.len(), 1);
-    assert_eq!(sunk[0].pcm.len(), CHUNK_BYTES * 2 * 2);
+    let sink_total_bytes: usize = sunk.iter().map(|c| c.pcm.len()).sum();
+    assert_eq!(sink_total_bytes, CHUNK_BYTES * 2 * 2);
     let sink_total: usize = sunk.iter().map(|c| c.pcm.len()).sum();
     let returned_total: usize = chunks.iter().map(|c| c.pcm.len()).sum();
     assert_eq!(returned_total, sink_total);
@@ -589,4 +656,490 @@ async fn ws_that_stalls_after_audio_times_out() {
         drain(&mut rig.rx).is_empty(),
         "exactly one chunk reached the sink"
     );
+}
+
+fn ws_ok_script() -> Option<WsScript> {
+    script(|mut ws, ctx| async move {
+        ws.send(chunk_msg(&ctx, 1)).await.unwrap();
+        ws.send(done_msg(&ctx)).await.unwrap();
+        let _ = ws.close(None).await;
+    })
+}
+
+async fn run_progressive(provider: &dyn TtsProvider) -> Vec<TtsAudioChunk> {
+    let mut rig = sink_rig();
+    tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out")
+    .expect("synthesize failed");
+    drain(&mut rig.rx)
+}
+
+#[tokio::test]
+async fn explicit_websocket_transport_uses_the_ws_endpoint() {
+    let mock = Mock::start(ws_ok_script(), rest_fail()).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count(), 1);
+    assert_eq!(mock.rest_count(), 0);
+}
+
+#[tokio::test]
+async fn explicit_http_transport_uses_rest_only() {
+    // The WS script would succeed, so any WS attempt shows up in the counters.
+    let mock = Mock::start(ws_ok_script(), rest_ok(CHUNK_BYTES)).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1, "the REST body reaches the sink exactly once");
+    assert_eq!(sunk[0].pcm.len(), CHUNK_BYTES * 2);
+    assert_eq!(mock.ws_count(), 0, "http never opens the WebSocket");
+    assert_eq!(mock.rest_count(), 1);
+}
+
+#[tokio::test]
+async fn auto_transport_is_the_catalog_default_websocket() {
+    let mock = Mock::start(ws_ok_script(), rest_fail()).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Auto));
+    let sunk = run_progressive(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count(), 1);
+    assert_eq!(mock.rest_count(), 0);
+}
+
+#[tokio::test]
+async fn last_transport_reports_ws_then_http() {
+    let mock = Mock::start(
+        script(|mut ws, ctx| async move {
+            ws.send(chunk_msg(&ctx, 1)).await.unwrap();
+            ws.send(done_msg(&ctx)).await.unwrap();
+            let _ = ws.close(None).await;
+        }),
+        rest_ok(CHUNK_BYTES),
+    )
+    .await;
+    let ws_provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    assert_eq!(ws_provider.last_transport(), None);
+    ws_provider.synthesize("hello").await.unwrap();
+    assert_eq!(ws_provider.last_transport().as_deref(), Some("ws"));
+
+    let http_provider = mock.provider_with(Some(SpeechTransport::Http));
+    http_provider.synthesize("hello").await.unwrap();
+    assert_eq!(http_provider.last_transport().as_deref(), Some("http/1.1"));
+}
+
+fn sink_bytes(chunks: &[TtsAudioChunk]) -> usize {
+    chunks.iter().map(|c| c.pcm.len()).sum()
+}
+
+// ---- WebSocket reuse across utterances ----
+
+fn raw(f: impl FnOnce(Ws) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'static) -> WsKind {
+    WsKind::Raw(Box::new(f))
+}
+
+/// Answers one generation request with `chunks` chunks and `done`.
+async fn answer(ws: &mut Ws, chunks: u8, fill: u8) -> serde_json::Value {
+    let request = read_generation(ws).await;
+    let ctx = request["context_id"].as_str().unwrap().to_string();
+    for n in 0..chunks {
+        ws.send(chunk_msg(&ctx, fill + n)).await.unwrap();
+    }
+    ws.send(done_msg(&ctx)).await.unwrap();
+    request
+}
+
+async fn run_once(provider: &dyn TtsProvider) -> (Vec<TtsAudioChunk>, Vec<TtsAudioChunk>) {
+    let mut rig = sink_rig();
+    let chunks = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out")
+    .expect("synthesize failed");
+    (chunks, drain(&mut rig.rx))
+}
+
+#[tokio::test]
+async fn two_utterances_reuse_one_websocket_with_distinct_contexts() {
+    let contexts = Arc::new(Mutex::new(Vec::new()));
+    let seen = contexts.clone();
+    let mock = Mock::start_many(
+        vec![raw(move |mut ws| {
+            Box::pin(async move {
+                let first = answer(&mut ws, 1, 1).await;
+                let second = answer(&mut ws, 2, 2).await;
+                seen.lock().unwrap().push(first["context_id"].clone());
+                seen.lock().unwrap().push(second["context_id"].clone());
+                assert_eq!(second["continue"], false);
+                // Hold the socket until the client closes it.
+                while ws.next().await.is_some() {}
+            })
+        })],
+        rest_fail(),
+    )
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+
+    let (chunks1, sunk1) = run_once(provider.as_ref()).await;
+    let (chunks2, sunk2) = run_once(provider.as_ref()).await;
+
+    assert_eq!(mock.ws_count(), 1, "one accept for two utterances");
+    assert_eq!(mock.rest_count(), 0);
+    assert_eq!(sunk1.len(), 1);
+    assert_eq!(sunk2.len(), 2);
+    assert_eq!(sink_bytes(&sunk1), sink_bytes(&chunks1));
+    assert_eq!(sink_bytes(&sunk2), sink_bytes(&chunks2));
+    assert_eq!(sunk2[0].pcm[0], 2, "second utterance carries its own audio");
+    let contexts = contexts.lock().unwrap().clone();
+    assert_eq!(contexts.len(), 2);
+    assert_ne!(contexts[0], contexts[1], "a fresh context_id per utterance");
+}
+
+#[tokio::test]
+async fn server_close_between_utterances_reopens_and_succeeds() {
+    let mock = Mock::start_many(
+        vec![
+            raw(|mut ws| {
+                Box::pin(async move {
+                    answer(&mut ws, 1, 1).await;
+                    let _ = ws.close(None).await;
+                })
+            }),
+            raw(|mut ws| {
+                Box::pin(async move {
+                    answer(&mut ws, 1, 9).await;
+                    while ws.next().await.is_some() {}
+                })
+            }),
+        ],
+        rest_fail(),
+    )
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+
+    let (_, sunk1) = run_once(provider.as_ref()).await;
+    // Let the close frame reach the client's socket.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (chunks2, sunk2) = run_once(provider.as_ref()).await;
+
+    assert_eq!(sunk1.len(), 1);
+    assert_eq!(mock.ws_count(), 2, "second utterance reopened");
+    assert_eq!(sunk2.len(), 1, "audio of the retry reaches the sink once");
+    assert_eq!(sink_bytes(&sunk2), sink_bytes(&chunks2));
+    assert_eq!(sunk2[0].pcm[0], 9);
+    assert_eq!(mock.rest_count(), 0);
+}
+
+#[tokio::test]
+async fn error_after_first_chunk_on_a_reused_socket_is_an_error_without_a_second_socket() {
+    let mock = Mock::start_many(
+        vec![
+            raw(|mut ws| {
+                Box::pin(async move {
+                    answer(&mut ws, 1, 1).await;
+                    let request = read_generation(&mut ws).await;
+                    let ctx = request["context_id"].as_str().unwrap().to_string();
+                    ws.send(chunk_msg(&ctx, 2)).await.unwrap();
+                    let _ = ws.close(None).await;
+                })
+            }),
+            raw(|mut ws| {
+                Box::pin(async move {
+                    answer(&mut ws, 1, 3).await;
+                })
+            }),
+        ],
+        rest_ok(CHUNK_BYTES),
+    )
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+
+    let (_, sunk1) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk1.len(), 1);
+
+    let mut rig = sink_rig();
+    let result = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("again", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out");
+    match result {
+        Err(SpeechError::Vendor { message, .. }) => {
+            assert_eq!(message, "cartesia ws closed before done");
+        }
+        other => panic!("expected a vendor error, got {other:?}"),
+    }
+    assert_eq!(
+        drain(&mut rig.rx).len(),
+        1,
+        "the chunk reached the sink once"
+    );
+    assert_eq!(mock.ws_count(), 1, "no retry socket after audio");
+    assert_eq!(mock.rest_count(), 0, "no REST fallback after audio");
+}
+
+#[tokio::test]
+async fn an_error_never_leaves_a_socket_for_reuse() {
+    let mock = Mock::start_many(
+        vec![
+            raw(|mut ws| {
+                Box::pin(async move {
+                    let request = read_generation(&mut ws).await;
+                    let ctx = request["context_id"].as_str().unwrap().to_string();
+                    ws.send(chunk_msg(&ctx, 1)).await.unwrap();
+                    let message = serde_json::json!({
+                        "type": "error", "message": "boom", "done": true, "context_id": ctx,
+                    });
+                    ws.send(Message::Text(message.to_string().into()))
+                        .await
+                        .unwrap();
+                    while ws.next().await.is_some() {}
+                })
+            }),
+            raw(|mut ws| {
+                Box::pin(async move {
+                    answer(&mut ws, 1, 5).await;
+                    while ws.next().await.is_some() {}
+                })
+            }),
+        ],
+        rest_fail(),
+    )
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    let rig = sink_rig();
+    let first = provider
+        .synthesize_progressive("a", Some(rig.sink.clone()))
+        .await;
+    assert!(first.is_err());
+    let (_, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count(), 2, "fresh socket after an error");
+}
+
+#[tokio::test]
+async fn messages_of_another_context_are_ignored() {
+    let mock = Mock::start_many(
+        vec![raw(|mut ws| {
+            Box::pin(async move {
+                let request = read_generation(&mut ws).await;
+                let ctx = request["context_id"].as_str().unwrap().to_string();
+                // Leftovers of an earlier context must not reach the sink or end this one.
+                ws.send(chunk_msg("ctx-old", 7)).await.unwrap();
+                ws.send(done_msg("ctx-old")).await.unwrap();
+                ws.send(chunk_msg(&ctx, 1)).await.unwrap();
+                ws.send(done_msg(&ctx)).await.unwrap();
+                while ws.next().await.is_some() {}
+            })
+        })],
+        rest_fail(),
+    )
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    let (_, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(sunk[0].pcm[0], 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn tts_websocket_connect_that_never_handshakes_is_bounded() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _conn = listener.accept().await;
+        std::future::pending::<()>().await;
+    });
+    let provider = CartesiaFactory
+        .create_tts(&TtsConfig {
+            provider: TtsVendor::Cartesia,
+            model: None,
+            model_path: None,
+            voice: Some("v".into()),
+            api_key: Some("k".into()),
+            endpoint: Some(endpoint),
+            sentence_case: Default::default(),
+            transport: Some(SpeechTransport::Websocket),
+        })
+        .unwrap();
+    // The REST fallback after the failed connect cannot connect either; the call still ends.
+    let result = provider.synthesize_progressive("hello", None).await;
+    assert!(result.is_err(), "{result:?}");
+}
+
+// ---- REST body streams to the sink ----
+
+fn chunked_head() -> &'static [u8] {
+    b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+}
+
+async fn write_chunk(stream: &mut TcpStream, data: &[u8]) {
+    stream
+        .write_all(format!("{:x}\r\n", data.len()).as_bytes())
+        .await
+        .unwrap();
+    stream.write_all(data).await.unwrap();
+    stream.write_all(b"\r\n").await.unwrap();
+    stream.flush().await.unwrap();
+}
+
+#[tokio::test]
+async fn rest_body_reaches_the_sink_before_the_response_ends() {
+    let (go_tx, go_rx) = oneshot::channel::<()>();
+    let go_rx = Arc::new(Mutex::new(Some(go_rx)));
+    let mock = Mock::start_rest_script(Arc::new(move |mut stream: TcpStream| {
+        let go_rx = go_rx.lock().unwrap().take();
+        Box::pin(async move {
+            stream.write_all(chunked_head()).await.unwrap();
+            write_chunk(&mut stream, &[1u8; CHUNK_BYTES]).await;
+            // The second chunk is released only after the client showed the first to the sink.
+            if let Some(go_rx) = go_rx {
+                let _ = go_rx.await;
+            }
+            write_chunk(&mut stream, &[2u8; CHUNK_BYTES]).await;
+            stream.write_all(b"0\r\n\r\n").await.unwrap();
+            let _ = stream.shutdown().await;
+        })
+    }))
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let SinkRig { sink, mut rx, .. } = sink_rig();
+
+    let call =
+        tokio::spawn(async move { provider.synthesize_progressive("hello", Some(sink)).await });
+    let first = tokio::time::timeout(BOUND, rx.recv())
+        .await
+        .expect("no chunk before the body ended")
+        .expect("first chunk");
+    assert_eq!(first.pcm[0], 1);
+    assert!(!call.is_finished(), "the call must still be running");
+    go_tx.send(()).unwrap();
+
+    let chunks = tokio::time::timeout(BOUND, call)
+        .await
+        .expect("call timed out")
+        .unwrap()
+        .expect("synthesize failed");
+    let second = rx.recv().await.expect("second chunk");
+    assert_eq!(second.pcm[0], 2);
+    assert!(rx.try_recv().is_err(), "each chunk exactly once");
+    assert_eq!(sink_bytes(&chunks), 2 * CHUNK_BYTES * 2);
+    assert_eq!(mock.rest_count(), 1);
+    assert_eq!(mock.ws_count(), 0);
+}
+
+#[tokio::test]
+async fn rest_body_error_after_audio_is_an_error_without_a_retry() {
+    let mock = Mock::start_rest_script(Arc::new(|mut stream: TcpStream| {
+        Box::pin(async move {
+            // Promises more than it sends, then resets the connection.
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+                CHUNK_BYTES * 10
+            );
+            stream.write_all(head.as_bytes()).await.unwrap();
+            stream.write_all(&[1u8; CHUNK_BYTES]).await.unwrap();
+            stream.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(stream);
+        })
+    }))
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let mut rig = sink_rig();
+
+    let result = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("call timed out");
+    assert!(
+        matches!(result, Err(SpeechError::Vendor { .. })),
+        "a body that ends early is an error: {result:?}"
+    );
+    assert_eq!(
+        drain(&mut rig.rx).len(),
+        1,
+        "the audio sent so far reached the sink once"
+    );
+    assert_eq!(mock.rest_count(), 1, "no retry after audio");
+    assert_eq!(mock.ws_count(), 0);
+}
+
+#[tokio::test]
+async fn rest_odd_chunk_sizes_stay_sample_aligned() {
+    let mock = Mock::start_rest_script(Arc::new(|mut stream: TcpStream| {
+        Box::pin(async move {
+            stream.write_all(chunked_head()).await.unwrap();
+            let body = vec![9u8; 1920];
+            for part in [&body[..21], &body[21..25], &body[25..1001], &body[1001..]] {
+                write_chunk(&mut stream, part).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            stream.write_all(b"0\r\n\r\n").await.unwrap();
+            let _ = stream.shutdown().await;
+        })
+    }))
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sink_bytes(&sunk), 1920 * 2);
+    assert_eq!(sink_bytes(&chunks), sink_bytes(&sunk));
+    assert!(sunk.iter().all(|c| c.pcm.len() % 4 == 0), "sample aligned");
+}
+
+#[tokio::test]
+async fn rest_empty_body_is_an_error() {
+    let mock = Mock::start(None, rest_ok(0)).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let result = provider.synthesize_progressive("hello", None).await;
+    match result {
+        Err(SpeechError::Vendor { message, .. }) => {
+            assert_eq!(message, "Cartesia bytes returned no audio");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn missing_voice_is_a_config_error_before_any_request() {
+    let mock = Mock::start(ws_ok_script(), rest_ok(CHUNK_BYTES)).await;
+    let provider = CartesiaFactory
+        .create_tts(&TtsConfig {
+            provider: TtsVendor::Cartesia,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: Some("k".into()),
+            endpoint: Some(mock.endpoint.clone()),
+            sentence_case: Default::default(),
+            transport: None,
+        })
+        .unwrap();
+    // CARTESIA_VOICE_ID may be set in the environment; only assert when it is not.
+    if std::env::var("CARTESIA_VOICE_ID").is_err() {
+        match provider.synthesize_progressive("hello", None).await {
+            Err(SpeechError::Config(message)) => assert!(message.contains("CARTESIA_VOICE_ID")),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(mock.ws_count() + mock.rest_count(), 0);
+    }
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of 48 kHz mono from `/tts/bytes` is 1000 ms and
+/// 192000 bytes of 48 kHz stereo.
+#[tokio::test]
+async fn one_second_of_source_audio_is_one_second_of_48k_stereo() {
+    let mock = Mock::start(None, rest_ok(96_000)).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_chunks_match_source("cartesia_http", &chunks, 1000);
+    assert_chunks_match_source("cartesia_http_sink", &sunk, 1000);
+    assert_eq!(sink_bytes(&chunks), 192_000);
 }

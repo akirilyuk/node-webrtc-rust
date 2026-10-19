@@ -45,6 +45,7 @@ fn stt_config(model_path: String) -> SttConfig {
         language: Some("en".into()),
         api_key: None,
         endpoint: None,
+        transport: None,
     }
 }
 

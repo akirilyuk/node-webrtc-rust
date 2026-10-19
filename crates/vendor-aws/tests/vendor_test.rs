@@ -12,6 +12,7 @@ fn aws_factory_creates_providers() {
         language: None,
         api_key: None,
         endpoint: None,
+        transport: None,
     });
     assert!(stt.is_ok());
     let tts = factory.create_tts(&TtsConfig {
@@ -22,6 +23,7 @@ fn aws_factory_creates_providers() {
         api_key: None,
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     });
     assert!(tts.is_ok());
 }

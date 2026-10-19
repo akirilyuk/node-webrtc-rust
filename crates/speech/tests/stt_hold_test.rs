@@ -298,6 +298,7 @@ fn stt_config(model: &str, lang: &str) -> SttConfig {
         language: Some(lang.into()),
         api_key: None,
         endpoint: None,
+        transport: None,
     }
 }
 
@@ -324,6 +325,7 @@ fn agent_config(
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         vad,
         replay,

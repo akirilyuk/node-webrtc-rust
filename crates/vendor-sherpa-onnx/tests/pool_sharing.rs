@@ -15,6 +15,7 @@ fn stt_config(model_path: String) -> SttConfig {
         language: Some("en".into()),
         api_key: None,
         endpoint: None,
+        transport: None,
     }
 }
 
@@ -27,6 +28,7 @@ fn tts_config(model_path: String) -> TtsConfig {
         api_key: None,
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     }
 }
 

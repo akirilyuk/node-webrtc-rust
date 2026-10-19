@@ -124,6 +124,7 @@ fn stt_config(model: Option<&str>) -> node_webrtc_rust_speech::SttConfig {
         language: Some("en".into()),
         api_key: None,
         endpoint: None,
+        transport: None,
     }
 }
 
@@ -136,6 +137,7 @@ fn tts_config() -> TtsConfig {
         api_key: None,
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     }
 }
 

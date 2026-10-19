@@ -60,6 +60,7 @@ mod tests {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         });
         let chunks = tts.synthesize("hello").await.unwrap();
         assert_eq!(chunks.len(), 1);

@@ -3,6 +3,7 @@
 //! `TtsProvider`: each PCM chunk reaches the progressive sink exactly once, a close before
 //! `Flushed` is an error, and every wait is bounded.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -11,12 +12,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use node_webrtc_rust_speech::config::{TtsConfig, TtsVendor};
+use node_webrtc_rust_speech::config::{
+    SpeechTransport, SttConfig, SttVendor, TtsConfig, TtsVendor,
+};
 use node_webrtc_rust_speech::error::SpeechError;
 use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis, VendorFactory,
 };
 use node_webrtc_rust_vendor_deepgram::DeepgramFactory;
+use node_webrtc_rust_vendor_live_support::tts::assert_chunks_match_source;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -28,24 +32,56 @@ const CHUNK_BYTES: usize = 960;
 
 type Ws = WebSocketStream<TcpStream>;
 type WsScript = Box<dyn FnOnce(Ws) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+/// Answers a REST request after its head was read; owns the connection.
+type RestScript = Arc<dyn Fn(TcpStream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+enum Rest {
+    /// 200 with the whole body and a Content-Length, or 500 when `None`.
+    Body(Option<Vec<u8>>),
+    Script(RestScript),
+}
 
 struct Mock {
     endpoint: String,
     ws_count: Arc<AtomicUsize>,
     http_count: Arc<AtomicUsize>,
     ws_uris: Arc<Mutex<Vec<String>>>,
+    http_uris: Arc<Mutex<Vec<String>>>,
 }
 
 impl Mock {
-    /// `ws`: script run after the `Speak` and `Flush` messages arrived.
+    /// `ws`: script run after the `Speak` and `Flush` messages arrived. REST answers 500.
     async fn start(ws: WsScript) -> Self {
+        Self::start_with_rest(ws, None).await
+    }
+
+    /// One WS script per accepted WebSocket connection, in order. Connections beyond the
+    /// scripts are dropped without a handshake.
+    async fn start_many(ws: Vec<WsScript>) -> Self {
+        Self::start_inner(ws.into(), Rest::Body(None)).await
+    }
+
+    /// REST answered by `script`; WebSocket connections get no script.
+    async fn start_rest_script(script: RestScript) -> Self {
+        Self::start_inner(VecDeque::new(), Rest::Script(script)).await
+    }
+
+    /// Like [`Mock::start`], and `rest_body` (when set) is the 200 body of any REST request.
+    async fn start_with_rest(ws: WsScript, rest_body: Option<Vec<u8>>) -> Self {
+        Self::start_inner(VecDeque::from([ws]), Rest::Body(rest_body)).await
+    }
+
+    async fn start_inner(scripts: VecDeque<WsScript>, rest: Rest) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         let ws_count = Arc::new(AtomicUsize::new(0));
         let http_count = Arc::new(AtomicUsize::new(0));
         let ws_uris = Arc::new(Mutex::new(Vec::new()));
-        let script = Arc::new(Mutex::new(Some(ws)));
+        let http_uris = Arc::new(Mutex::new(Vec::new()));
+        let rest = Arc::new(rest);
+        let script = Arc::new(Mutex::new(scripts));
         {
+            let http_uris = http_uris.clone();
             let ws_count = ws_count.clone();
             let http_count = http_count.clone();
             let ws_uris = ws_uris.clone();
@@ -58,16 +94,18 @@ impl Mock {
                     let http_count = http_count.clone();
                     let ws_uris = ws_uris.clone();
                     let script = script.clone();
+                    let http_uris = http_uris.clone();
+                    let rest = rest.clone();
                     tokio::spawn(async move {
                         if peek_is_websocket_upgrade(&stream).await {
                             ws_count.fetch_add(1, Ordering::SeqCst);
-                            let script = script.lock().unwrap().take();
+                            let script = script.lock().unwrap().pop_front();
                             if let Some(script) = script {
                                 handle_ws(stream, ws_uris, script).await;
                             }
                         } else {
                             http_count.fetch_add(1, Ordering::SeqCst);
-                            handle_http_refused(stream).await;
+                            handle_http(stream, http_uris, rest).await;
                         }
                     });
                 }
@@ -78,10 +116,15 @@ impl Mock {
             ws_count,
             http_count,
             ws_uris,
+            http_uris,
         }
     }
 
     fn provider(&self) -> Box<dyn TtsProvider> {
+        self.provider_with(None)
+    }
+
+    fn provider_with(&self, transport: Option<SpeechTransport>) -> Box<dyn TtsProvider> {
         DeepgramFactory
             .create_tts(&TtsConfig {
                 provider: TtsVendor::Deepgram,
@@ -91,6 +134,7 @@ impl Mock {
                 api_key: Some("test-key".into()),
                 endpoint: Some(self.endpoint.clone()),
                 sentence_case: Default::default(),
+                transport,
             })
             .unwrap()
     }
@@ -109,8 +153,8 @@ async fn peek_is_websocket_upgrade(stream: &TcpStream) -> bool {
     }
 }
 
-/// REST is never selected for the default model; answer 500 so a regression shows up.
-async fn handle_http_refused(mut stream: TcpStream) {
+/// REST: 200 with `rest_body` when configured, else 500 so a regression shows up.
+async fn handle_http(mut stream: TcpStream, uris: Arc<Mutex<Vec<String>>>, rest: Arc<Rest>) {
     let mut tmp = [0u8; 4096];
     let mut data = Vec::new();
     while !data.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -120,11 +164,34 @@ async fn handle_http_refused(mut stream: TcpStream) {
         }
         data.extend_from_slice(&tmp[..n]);
     }
-    let _ = stream
-        .write_all(
-            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        )
-        .await;
+    let head = String::from_utf8_lossy(&data).to_string();
+    if let Some(target) = head.split_whitespace().nth(1) {
+        uris.lock().unwrap().push(target.to_string());
+    }
+    let rest_body = match rest.as_ref() {
+        Rest::Script(script) => {
+            script(stream).await;
+            return;
+        }
+        Rest::Body(body) => body,
+    };
+    match rest_body {
+        Some(body) => {
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/l16\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes()).await;
+            let _ = stream.write_all(body).await;
+        }
+        None => {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+        }
+    }
     let _ = stream.shutdown().await;
 }
 
@@ -302,7 +369,18 @@ async fn cancel_after_the_first_chunk_stops_reading() {
         ws.send(audio_msg(1)).await.unwrap();
         go_rx.await.unwrap();
         ws.send(audio_msg(2)).await.unwrap();
-        let closed = matches!(ws.next().await, Some(Ok(Message::Close(_))));
+        // The client sends the documented `Clear` before closing.
+        let mut closed = false;
+        while let Some(Ok(msg)) = ws.next().await {
+            match msg {
+                Message::Text(_) => continue,
+                Message::Close(_) => {
+                    closed = true;
+                    break;
+                }
+                _ => break,
+            }
+        }
         let _ = report_tx.send(closed);
     }))
     .await;
@@ -424,4 +502,443 @@ async fn ws_that_stalls_after_audio_times_out() {
         drain(&mut rig.rx).is_empty(),
         "exactly one chunk reached the sink"
     );
+}
+
+fn ws_ok_script() -> WsScript {
+    script(|mut ws| async move {
+        ws.send(audio_msg(1)).await.unwrap();
+        ws.send(flushed_msg()).await.unwrap();
+        let _ = ws.close(None).await;
+    })
+}
+
+async fn run_once(provider: &dyn TtsProvider) -> (Vec<TtsAudioChunk>, Vec<TtsAudioChunk>) {
+    let mut rig = sink_rig();
+    let chunks = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out")
+    .expect("synthesize failed");
+    (chunks, drain(&mut rig.rx))
+}
+
+#[tokio::test]
+async fn explicit_websocket_transport_uses_the_ws_endpoint() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; CHUNK_BYTES])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    let (_, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count.load(Ordering::SeqCst), 1);
+    assert_eq!(mock.http_count.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.last_transport().as_deref(), Some("ws"));
+}
+
+#[tokio::test]
+async fn explicit_http_transport_uses_the_rest_endpoint() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; CHUNK_BYTES])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(mock.ws_count.load(Ordering::SeqCst), 0, "no WebSocket");
+    assert_eq!(mock.http_count.load(Ordering::SeqCst), 1);
+    let uris = mock.http_uris.lock().unwrap().clone();
+    assert!(uris[0].starts_with("/v1/speak"), "{}", uris[0]);
+    // The REST body reaches the sink exactly once and equals what is returned.
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(sunk[0].pcm.len(), CHUNK_BYTES * 2);
+    let returned: usize = chunks.iter().map(|c| c.pcm.len()).sum();
+    assert_eq!(returned, sunk[0].pcm.len());
+    assert_eq!(provider.last_transport().as_deref(), Some("http/1.1"));
+}
+
+#[tokio::test]
+async fn auto_transport_is_the_catalog_default_websocket() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; CHUNK_BYTES])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Auto));
+    let (_, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(mock.ws_count.load(Ordering::SeqCst), 1);
+    assert_eq!(mock.http_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn unsupported_stt_transport_fails_at_construction() {
+    let result = DeepgramFactory.create_stt(&SttConfig {
+        provider: SttVendor::Deepgram,
+        model: None,
+        model_path: None,
+        language: None,
+        api_key: Some("k".into()),
+        endpoint: None,
+        transport: Some(SpeechTransport::Http),
+    });
+    match result {
+        Err(SpeechError::Config(message)) => assert!(message.contains("allowed: auto, websocket")),
+        Err(other) => panic!("expected a Config error, got {other:?}"),
+        Ok(_) => panic!("http STT must be rejected"),
+    }
+}
+
+// ---- socket reuse across utterances ----
+
+/// Reads the `Speak` + `Flush` pair of one more utterance on an open socket.
+async fn read_controls(ws: &mut Ws) {
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        match ws.next().await {
+            Some(Ok(Message::Text(raw))) => {
+                let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+                seen.push(value["type"].as_str().unwrap_or_default().to_string());
+            }
+            Some(Ok(_)) => continue,
+            other => panic!("client control messages missing: {other:?}"),
+        }
+    }
+    assert_eq!(seen, ["Speak", "Flush"]);
+}
+
+fn sink_bytes(chunks: &[TtsAudioChunk]) -> usize {
+    chunks.iter().map(|c| c.pcm.len()).sum()
+}
+
+#[tokio::test]
+async fn two_utterances_reuse_one_websocket() {
+    let mock = Mock::start(script(|mut ws| async move {
+        ws.send(audio_msg(1)).await.unwrap();
+        ws.send(flushed_msg()).await.unwrap();
+        read_controls(&mut ws).await;
+        ws.send(audio_msg(2)).await.unwrap();
+        ws.send(audio_msg(3)).await.unwrap();
+        ws.send(flushed_msg()).await.unwrap();
+        // Hold the socket until the client closes it.
+        while ws.next().await.is_some() {}
+    }))
+    .await;
+    let provider = mock.provider();
+
+    let (chunks1, sunk1) = run_once(provider.as_ref()).await;
+    let (chunks2, sunk2) = run_once(provider.as_ref()).await;
+
+    assert_eq!(mock.ws_count.load(Ordering::SeqCst), 1, "one accept");
+    assert_eq!(sunk1.len(), 1);
+    assert_eq!(sunk2.len(), 2);
+    assert_eq!(sink_bytes(&sunk1), sink_bytes(&chunks1));
+    assert_eq!(sink_bytes(&sunk2), sink_bytes(&chunks2));
+    assert_eq!(sunk2[0].pcm[0], 2, "second utterance carries its own audio");
+}
+
+#[tokio::test]
+async fn server_close_between_utterances_reopens_and_succeeds() {
+    let mock = Mock::start_many(vec![
+        script(|mut ws| async move {
+            ws.send(audio_msg(1)).await.unwrap();
+            ws.send(flushed_msg()).await.unwrap();
+            let _ = ws.close(None).await;
+        }),
+        ws_ok_script(),
+    ])
+    .await;
+    let provider = mock.provider();
+
+    let (_, sunk1) = run_once(provider.as_ref()).await;
+    // Let the close frame reach the client's socket.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (chunks2, sunk2) = run_once(provider.as_ref()).await;
+
+    assert_eq!(sunk1.len(), 1);
+    assert_eq!(
+        mock.ws_count.load(Ordering::SeqCst),
+        2,
+        "second utterance reopened"
+    );
+    assert_eq!(sunk2.len(), 1, "audio of the retry reaches the sink once");
+    assert_eq!(sink_bytes(&sunk2), sink_bytes(&chunks2));
+}
+
+#[tokio::test]
+async fn error_after_first_chunk_on_a_reused_socket_is_an_error_without_a_second_socket() {
+    let mock = Mock::start_many(vec![
+        script(|mut ws| async move {
+            ws.send(audio_msg(1)).await.unwrap();
+            ws.send(flushed_msg()).await.unwrap();
+            read_controls(&mut ws).await;
+            ws.send(audio_msg(2)).await.unwrap();
+            let _ = ws.close(None).await;
+        }),
+        ws_ok_script(),
+    ])
+    .await;
+    let provider = mock.provider();
+
+    let (_, sunk1) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk1.len(), 1);
+
+    let mut rig = sink_rig();
+    let result = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("again", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out");
+    match result {
+        Err(SpeechError::Vendor { message, .. }) => {
+            assert_eq!(message, "deepgram ws closed before Flushed");
+        }
+        other => panic!("expected a vendor error, got {other:?}"),
+    }
+    assert_eq!(
+        drain(&mut rig.rx).len(),
+        1,
+        "the chunk reached the sink once"
+    );
+    assert_eq!(
+        mock.ws_count.load(Ordering::SeqCst),
+        1,
+        "no retry socket after audio"
+    );
+}
+
+#[tokio::test]
+async fn an_error_never_leaves_a_socket_for_reuse() {
+    let mock = Mock::start_many(vec![
+        script(|mut ws| async move {
+            ws.send(audio_msg(1)).await.unwrap();
+            ws.send(Message::Text(
+                r#"{"type":"Error","description":"boom"}"#.into(),
+            ))
+            .await
+            .unwrap();
+            while ws.next().await.is_some() {}
+        }),
+        ws_ok_script(),
+    ])
+    .await;
+    let provider = mock.provider();
+    let rig = sink_rig();
+    let first = provider
+        .synthesize_progressive("a", Some(rig.sink.clone()))
+        .await;
+    assert!(first.is_err());
+    let (_, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sunk.len(), 1);
+    assert_eq!(
+        mock.ws_count.load(Ordering::SeqCst),
+        2,
+        "fresh socket after an error"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn tts_websocket_connect_that_never_handshakes_is_bounded() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _conn = listener.accept().await;
+        std::future::pending::<()>().await;
+    });
+    let provider = DeepgramFactory
+        .create_tts(&TtsConfig {
+            provider: TtsVendor::Deepgram,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: Some("k".into()),
+            endpoint: Some(endpoint),
+            sentence_case: Default::default(),
+            transport: Some(SpeechTransport::Websocket),
+        })
+        .unwrap();
+    match provider.synthesize_progressive("hello", None).await {
+        Err(SpeechError::Vendor { message, .. }) => {
+            assert_eq!(
+                message,
+                "deepgram tts websocket connect timed out after 10 s"
+            );
+        }
+        other => panic!("expected a connect timeout, got {other:?}"),
+    }
+}
+
+// ---- REST body streams to the sink ----
+
+fn chunked_head() -> &'static [u8] {
+    b"HTTP/1.1 200 OK\r\nContent-Type: audio/l16\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+}
+
+async fn write_chunk(stream: &mut TcpStream, data: &[u8]) {
+    stream
+        .write_all(format!("{:x}\r\n", data.len()).as_bytes())
+        .await
+        .unwrap();
+    stream.write_all(data).await.unwrap();
+    stream.write_all(b"\r\n").await.unwrap();
+    stream.flush().await.unwrap();
+}
+
+#[tokio::test]
+async fn rest_body_reaches_the_sink_before_the_response_ends() {
+    let (go_tx, go_rx) = oneshot::channel::<()>();
+    let go_rx = Arc::new(Mutex::new(Some(go_rx)));
+    let mock = Mock::start_rest_script(Arc::new(move |mut stream: TcpStream| {
+        let go_rx = go_rx.lock().unwrap().take();
+        Box::pin(async move {
+            stream.write_all(chunked_head()).await.unwrap();
+            write_chunk(&mut stream, &[1u8; CHUNK_BYTES]).await;
+            // The second chunk is released only after the client showed the first to the sink.
+            if let Some(go_rx) = go_rx {
+                let _ = go_rx.await;
+            }
+            write_chunk(&mut stream, &[2u8; CHUNK_BYTES]).await;
+            stream.write_all(b"0\r\n\r\n").await.unwrap();
+            let _ = stream.shutdown().await;
+        })
+    }))
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let SinkRig { sink, mut rx, .. } = sink_rig();
+
+    let call =
+        tokio::spawn(async move { provider.synthesize_progressive("hello", Some(sink)).await });
+    let first = tokio::time::timeout(BOUND, rx.recv())
+        .await
+        .expect("no chunk before the body ended")
+        .expect("first chunk");
+    assert_eq!(first.pcm[0], 1);
+    assert!(!call.is_finished(), "the call must still be running");
+    go_tx.send(()).unwrap();
+
+    let chunks = tokio::time::timeout(BOUND, call)
+        .await
+        .expect("call timed out")
+        .unwrap()
+        .expect("synthesize failed");
+    let second = rx.recv().await.expect("second chunk");
+    assert_eq!(second.pcm[0], 2);
+    assert!(rx.try_recv().is_err(), "each chunk exactly once");
+    assert_eq!(sink_bytes(&chunks), 2 * CHUNK_BYTES * 2);
+    assert_eq!(mock.http_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn rest_body_error_after_audio_is_an_error_without_a_retry() {
+    let mock = Mock::start_rest_script(Arc::new(|mut stream: TcpStream| {
+        Box::pin(async move {
+            // Promises more than it sends, then resets the connection.
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/l16\r\nContent-Length: {}\r\n\r\n",
+                CHUNK_BYTES * 10
+            );
+            stream.write_all(head.as_bytes()).await.unwrap();
+            stream.write_all(&[1u8; CHUNK_BYTES]).await.unwrap();
+            stream.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(stream);
+        })
+    }))
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let mut rig = sink_rig();
+
+    let result = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("call timed out");
+    assert!(
+        matches!(result, Err(SpeechError::Vendor { .. })),
+        "a body that ends early is an error: {result:?}"
+    );
+    assert_eq!(
+        drain(&mut rig.rx).len(),
+        1,
+        "the audio sent so far reached the sink once"
+    );
+    assert_eq!(
+        mock.http_count.load(Ordering::SeqCst),
+        1,
+        "no retry after audio"
+    );
+    assert_eq!(mock.ws_count.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn rest_odd_chunk_sizes_stay_sample_aligned() {
+    let mock = Mock::start_rest_script(Arc::new(|mut stream: TcpStream| {
+        Box::pin(async move {
+            stream.write_all(chunked_head()).await.unwrap();
+            let body = vec![9u8; 1920];
+            for part in [&body[..21], &body[21..25], &body[25..1001], &body[1001..]] {
+                write_chunk(&mut stream, part).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            stream.write_all(b"0\r\n\r\n").await.unwrap();
+            let _ = stream.shutdown().await;
+        })
+    }))
+    .await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_eq!(sink_bytes(&sunk), 1920 * 2);
+    assert_eq!(sink_bytes(&chunks), sink_bytes(&sunk));
+    assert!(sunk.iter().all(|c| c.pcm.len() % 4 == 0), "sample aligned");
+}
+
+#[tokio::test]
+async fn rest_request_asks_for_container_none() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; CHUNK_BYTES])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let _ = run_once(provider.as_ref()).await;
+    let uris = mock.http_uris.lock().unwrap().clone();
+    assert!(uris[0].contains("encoding=linear16"), "{}", uris[0]);
+    assert!(uris[0].contains("container=none"), "{}", uris[0]);
+}
+
+#[tokio::test]
+async fn rest_body_that_is_a_wav_container_is_an_error_and_nothing_reaches_the_sink() {
+    let mut body = b"RIFF\x24\x00\x00\x00WAVEfmt ".to_vec();
+    body.resize(44 + CHUNK_BYTES, 3);
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(body)).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let mut rig = sink_rig();
+    let result = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_progressive("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("call timed out");
+    match result {
+        Err(SpeechError::Vendor { message, .. }) => assert_eq!(
+            message,
+            "deepgram rest returned a wav container; expected raw linear16 (container=none)"
+        ),
+        other => panic!("expected a vendor error, got {other:?}"),
+    }
+    assert!(drain(&mut rig.rx).is_empty(), "nothing reaches the sink");
+}
+
+/// Catalog `audio.sample-rate-mismatch`: 1 s of 48 kHz mono linear16 (`sample_rate=48000`) is
+/// 1000 ms and 192000 bytes of 48 kHz stereo, on both transports.
+#[tokio::test]
+async fn one_second_of_source_audio_is_one_second_of_48k_stereo() {
+    let mock = Mock::start_with_rest(ws_ok_script(), Some(vec![7u8; 96_000])).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Http));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_chunks_match_source("deepgram_http", &chunks, 1000);
+    assert_chunks_match_source("deepgram_http_sink", &sunk, 1000);
+    assert_eq!(sink_bytes(&chunks), 192_000);
+
+    let ws = script(|mut ws| async move {
+        for fill in 0..100u8 {
+            ws.send(audio_msg(fill)).await.unwrap();
+        }
+        ws.send(flushed_msg()).await.unwrap();
+        let _ = ws.close(None).await;
+    });
+    let mock = Mock::start_with_rest(ws, None).await;
+    let provider = mock.provider_with(Some(SpeechTransport::Websocket));
+    let (chunks, sunk) = run_once(provider.as_ref()).await;
+    assert_chunks_match_source("deepgram_ws", &chunks, 1000);
+    assert_chunks_match_source("deepgram_ws_sink", &sunk, 1000);
 }

@@ -9,8 +9,42 @@ pub const POLLY_SYNTH_DOC: &str =
     "https://docs.aws.amazon.com/polly/latest/dg/API_SynthesizeSpeech.html";
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// TCP + TLS connect bound of the AWS SDK clients (`infra.unbounded-external-wait`).
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Whole Polly `SynthesizeSpeech` call, request through the last audio byte. Polly had no bound
+/// before; 60 s matches the other REST vendors in this workspace. Transcribe streaming is a long
+/// lived event stream, so it only gets the connect bound.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const POLLY_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Polly TTS: time from the request to the first audio bytes. No audio by then is an error.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
+/// Polly TTS: longest silence between two stream chunks once audio has started.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The SDK timeout settings of the Polly client.
+#[cfg(feature = "live")]
+pub(crate) fn polly_timeouts() -> aws_config::timeout::TimeoutConfig {
+    aws_config::timeout::TimeoutConfig::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .operation_timeout(POLLY_OPERATION_TIMEOUT)
+        .build()
+}
+
+/// The SDK timeout settings of the Transcribe streaming client (connect only).
+#[cfg(feature = "live")]
+pub(crate) fn transcribe_timeouts() -> aws_config::timeout::TimeoutConfig {
+    aws_config::timeout::TimeoutConfig::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+}
 
 /// Language codes documented for streaming examples (config `model` holds the code; default `en-US`).
 pub static DOCUMENTED_STT_LANGUAGE_CODES: LazyLock<&'static [&'static str]> =
@@ -108,5 +142,91 @@ mod tests {
         .unwrap();
         assert!(!fin);
         assert_eq!(text, "hello");
+    }
+}
+
+/// Validate `TtsConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_tts_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "aws",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("aws"),
+        voice_catalog::default_tts_transport("aws"),
+    )
+    .map(|_| ())
+}
+
+/// Validate `SttConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_stt_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "aws",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("aws"),
+        voice_catalog::default_stt_transport("aws"),
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use node_webrtc_rust_speech::config::SpeechTransport;
+    use node_webrtc_rust_speech::error::SpeechError;
+
+    #[test]
+    fn tts_transport_accepts_auto_and_http_and_rejects_websocket() {
+        assert_eq!(voice_catalog::tts_transports("aws"), &["http"]);
+        assert!(check_tts_transport(None).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Http)).is_ok());
+        match check_tts_transport(Some(SpeechTransport::Websocket)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "aws tts transport 'websocket' is not supported; allowed: auto, http"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stt_transport_accepts_auto_and_http_and_rejects_websocket() {
+        assert_eq!(voice_catalog::stt_transports("aws"), &["http"]);
+        assert!(check_stt_transport(None).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Http)).is_ok());
+        match check_stt_transport(Some(SpeechTransport::Websocket)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "aws stt transport 'websocket' is not supported; allowed: auto, http"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "live"))]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn polly_is_bounded_on_connect_and_operation() {
+        let timeouts = polly_timeouts();
+        assert_eq!(timeouts.connect_timeout(), Some(CONNECT_TIMEOUT));
+        assert_eq!(timeouts.operation_timeout(), Some(POLLY_OPERATION_TIMEOUT));
+    }
+
+    #[test]
+    fn transcribe_stream_is_bounded_on_connect_only() {
+        let timeouts = transcribe_timeouts();
+        assert_eq!(timeouts.connect_timeout(), Some(CONNECT_TIMEOUT));
+        assert_eq!(timeouts.operation_timeout(), None);
     }
 }

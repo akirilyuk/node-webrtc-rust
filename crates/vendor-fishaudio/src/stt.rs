@@ -160,10 +160,14 @@ pub struct FishAudioStt {
     shared: Arc<Shared>,
     tasks: Option<Tasks>,
     running: bool,
+    /// `ws` once the transcribe socket is open.
+    last_transport: std::sync::Mutex<Option<String>>,
 }
 
 impl FishAudioStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        // The only STT transport is the WebSocket; an unsupported value fails the config here.
+        crate::stt_matrix::resolve_stt_transport(config.transport)?;
         let model = config
             .model
             .clone()
@@ -181,6 +185,7 @@ impl FishAudioStt {
             }),
             tasks: None,
             running: false,
+            last_transport: std::sync::Mutex::new(None),
         })
     }
 
@@ -257,6 +262,9 @@ impl FishAudioStt {
             }
             Ok(Ok((ws, _))) => ws,
         };
+        if let Ok(mut guard) = self.last_transport.lock() {
+            *guard = Some("ws".into());
+        }
         let (mut ws_tx, mut ws_rx) = ws.split();
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Outbound>();
 
@@ -361,6 +369,10 @@ impl SttProvider for FishAudioStt {
     /// `transcribe-1` returns text only on `commit` (`Committed`), never an interim result.
     fn emits_partials(&self) -> bool {
         false
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
     }
 
     async fn start(&mut self) -> SpeechResult<()> {
@@ -487,6 +499,7 @@ mod tests {
             language: None,
             api_key: Some("k".into()),
             endpoint: None,
+            transport: None,
         }
     }
 

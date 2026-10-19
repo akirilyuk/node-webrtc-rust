@@ -8,8 +8,19 @@
 //! <https://developers.openai.com/api/docs/api-reference/audio/createSpeech>
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use node_webrtc_rust_voice_catalog as voice_catalog;
+
+/// TCP connect bound of the pooled HTTP client (`infra.unbounded-external-wait`).
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Whole-request bound (headers + body, so also a streamed PCM/SSE body) for every REST call.
+/// OpenAI had no timeout before; 60 s matches the other REST vendors in this workspace.
+pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled connection is kept for the next request.
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled connections.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// Documented transcription models (VoiceAgent auto-pick and error messages).
 pub static DOCUMENTED_STT_MODELS: LazyLock<&'static [&'static str]> =
@@ -235,5 +246,73 @@ mod tests {
         assert!(stt_default_transport("not-a-model").is_err());
         assert!(stt_default_transport("whisper-2").is_err());
         assert!(stt_default_transport("my-transcribe").is_err());
+    }
+}
+
+/// Validate `TtsConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_tts_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "openai",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("openai"),
+        voice_catalog::default_tts_transport("openai"),
+    )
+    .map(|_| ())
+}
+
+/// Validate `SttConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_stt_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "openai",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("openai"),
+        voice_catalog::default_stt_transport("openai"),
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use node_webrtc_rust_speech::config::SpeechTransport;
+    use node_webrtc_rust_speech::error::SpeechError;
+
+    #[test]
+    fn tts_transport_accepts_auto_and_http_and_rejects_websocket() {
+        assert_eq!(voice_catalog::tts_transports("openai"), &["http"]);
+        assert!(check_tts_transport(None).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Http)).is_ok());
+        match check_tts_transport(Some(SpeechTransport::Websocket)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "openai tts transport 'websocket' is not supported; allowed: auto, http"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stt_transport_is_decided_by_the_model() {
+        assert!(check_stt_transport(None).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(voice_catalog::stt_transports("openai").is_empty());
+        for requested in [SpeechTransport::Http, SpeechTransport::Websocket] {
+            match check_stt_transport(Some(requested)) {
+                Err(SpeechError::Config(message)) => assert_eq!(
+                    message,
+                    "openai stt transport is decided by the model; use auto"
+                ),
+                other => panic!("expected a Config error, got {other:?}"),
+            }
+        }
     }
 }

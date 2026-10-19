@@ -149,6 +149,22 @@ pub trait SttProvider: Send + Sync {
         false
     }
 
+    /// `false` when the vendor closed the stream after [`Self::start`] and nothing is in flight
+    /// on it: an idle close (measured 2026-10-19: ElevenLabs after about 15 s without audio,
+    /// close code 1000; Deepgram before 20 s). Audio pushed now would go nowhere, so the STT
+    /// actor calls [`Self::start`] again before the next audio, with the open marked pending for
+    /// the C1 window (see [`Self::stream_open_pending`]). Providers that keep their stream alive
+    /// themselves, or reconnect inside `push_audio`, keep the default `true`.
+    fn stream_alive(&self) -> bool {
+        true
+    }
+
+    /// How the last request reached the vendor: `h2`, `http/1.1`, `ws`, `grpc`; for logs and the
+    /// latency bench. `None` before the first request or when the provider does not report it.
+    fn last_transport(&self) -> Option<String> {
+        None
+    }
+
     /// Drop transcripts already queued inside the provider (results of audio pushed before this
     /// call). VoiceAgent calls it when a new utterance starts, so a late result of the previous
     /// utterance can never be emitted as the new one. Returns how many were dropped.
@@ -209,6 +225,12 @@ pub trait TtsProvider: Send + Sync {
 
     /// Optional hook when a voice session starts (e.g. Sherpa phrase-cache project scope).
     fn bind_session_context(&self, _ctx: &VoiceSessionContext) {}
+
+    /// How the last request reached the vendor: `h2`, `http/1.1`, `ws`, `grpc`; for logs and the
+    /// latency bench. `None` before the first request or when the provider does not report it.
+    fn last_transport(&self) -> Option<String> {
+        None
+    }
 
     /// Takes the open-wait record of the last synthesis if its start was refused and retried
     /// (see [`TtsOpenWait`]). Default: vendors that never wait return `None`.

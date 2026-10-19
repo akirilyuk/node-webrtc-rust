@@ -92,6 +92,7 @@ async fn make_agent(calls: Arc<AtomicUsize>) -> Arc<VoiceAgent> {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         ..Default::default()
     };

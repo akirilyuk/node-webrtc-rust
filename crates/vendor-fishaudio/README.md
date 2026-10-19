@@ -86,3 +86,15 @@ cargo test -p node-webrtc-rust-vendor-fishaudio --features live   # includes the
 ```
 
 `tests/vad_gate_test.rs` checks the VAD gate used by the live STT test and runs without the `live` feature. `tests/live_test.rs` needs `FISH_API_KEY`; `FISH_LIVE_REQUIRED=1` turns a missing key into a failure.
+
+## Transport
+
+Config: `tts.transport`: `auto` (default), `http` or `websocket`. `stt.transport`: `auto` or `websocket`. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+TTS `http` (chunked `POST /v1/tts`, with the documented WebSocket fallback while no audio reached the sink and the failure is one the socket can fix). TTS `websocket` (`/v1/tts/live` only, no fallback). STT is always the realtime WebSocket.
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `websocket`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.
+
+TTS output is now upsampled from 24 kHz to 48 kHz stereo with linear interpolation (`MonoToStereo48k`, one instance per synthesis, tail flushed once unless the sink was cancelled) instead of sample repetition. Adds `tests/live_bench.rs`.

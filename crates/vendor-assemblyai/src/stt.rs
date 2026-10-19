@@ -14,6 +14,7 @@ pub struct AssemblyAiStt {
 
 impl AssemblyAiStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        crate::matrix::check_stt_transport(config.transport)?;
         let speech_model = config
             .model
             .clone()
@@ -25,6 +26,7 @@ impl AssemblyAiStt {
                     .clone()
                     .or_else(|| std::env::var("ASSEMBLYAI_API_KEY").ok()),
                 speech_model,
+                config.endpoint.clone(),
             )?,
             running: false,
         })
@@ -43,6 +45,10 @@ pub fn unsupported_tts(
 impl SttProvider for AssemblyAiStt {
     fn vendor_name(&self) -> &'static str {
         "assemblyai"
+    }
+
+    fn last_transport(&self) -> Option<String> {
+        self.client.last_transport()
     }
 
     async fn start(&mut self) -> SpeechResult<()> {
@@ -72,7 +78,12 @@ impl SttProvider for AssemblyAiStt {
     }
 
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
-        // Documented v3: `{"type":"Terminate"}` finalizes the open turn (disconnect also sends it).
-        Ok(())
+        // Documented v3 `ForceEndpoint` ends the open turn and keeps the session, so the next
+        // utterance reuses the socket. (`Terminate` also finalizes, but closes the session; stop()
+        // sends it.)
+        if !self.running {
+            return Ok(());
+        }
+        self.client.force_endpoint().await
     }
 }

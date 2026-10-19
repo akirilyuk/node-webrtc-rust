@@ -28,6 +28,12 @@ pub struct AzureStt {
     live_backlog_ms: AtomicU32,
     frozen_backlog_ms: AtomicU32,
     commit_waiting: AtomicBool,
+    /// One client for the provider's life: connections (and TLS sessions) are reused.
+    #[cfg(feature = "live")]
+    http: reqwest::Client,
+    #[cfg(feature = "live")]
+    url_override: Option<String>,
+    last_transport: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct AzureSttInner {
@@ -37,6 +43,7 @@ struct AzureSttInner {
 
 impl AzureStt {
     pub fn new(config: &SttConfig) -> SpeechResult<Self> {
+        crate::matrix::check_stt_transport(config.transport)?;
         let mode = config
             .model
             .clone()
@@ -63,7 +70,28 @@ impl AzureStt {
             live_backlog_ms: AtomicU32::new(0),
             frozen_backlog_ms: AtomicU32::new(0),
             commit_waiting: AtomicBool::new(false),
+            #[cfg(feature = "live")]
+            http: crate::http::build_client(None)?,
+            #[cfg(feature = "live")]
+            url_override: None,
+            last_transport: std::sync::Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Test hook: POST here instead of the resource host (plain `http://` mock server).
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_url_override(mut self, url: impl Into<String>) -> Self {
+        self.url_override = Some(url.into());
+        self
+    }
+
+    /// Test hook: replaces the pooled client with one that has this whole-request bound.
+    #[cfg(feature = "live")]
+    #[doc(hidden)]
+    pub fn __with_total_timeout(mut self, total: std::time::Duration) -> Self {
+        self.http = crate::http::build_client(Some(total)).expect("test http client");
+        self
     }
 
     fn stt_url(&self) -> SpeechResult<String> {
@@ -155,6 +183,10 @@ impl SttProvider for AzureStt {
         false
     }
 
+    fn last_transport(&self) -> Option<String> {
+        self.last_transport.lock().ok().and_then(|g| g.clone())
+    }
+
     fn decode_backlog_ms(&self) -> u32 {
         if self.commit_waiting.load(Ordering::Relaxed) {
             self.frozen_backlog_ms.load(Ordering::Relaxed)
@@ -233,10 +265,23 @@ impl SttProvider for AzureStt {
                 self.on_final_delivered();
                 Ok(Some(transcript))
             }
+            // The task ended without a transcript. Its result says whether that is a request
+            // failure (network, non-2xx, timeout: an error) or an empty transcription (none).
             None => {
                 *rx_guard = None;
-                self.poll_task.lock().await.take();
+                let task = self.poll_task.lock().await.take();
                 self.on_final_delivered();
+                if let Some(task) = task {
+                    match task.await {
+                        Ok(inner) => inner?,
+                        Err(_) => {
+                            return Err(SpeechError::Vendor {
+                                vendor: "azure".into(),
+                                message: "recognition task aborted".into(),
+                            });
+                        }
+                    }
+                }
                 Ok(None)
             }
         }
@@ -262,11 +307,17 @@ impl SttProvider for AzureStt {
         #[cfg(feature = "live")]
         {
             let key = speech_key_from(&self.speech_key)?;
-            let url = self.stt_url()?;
+            let url = match &self.url_override {
+                Some(url) => url.clone(),
+                None => self.stt_url()?,
+            };
             let wav = mono16_le_to_wav(&pcm);
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle =
-                tokio::spawn(async move { http_short_audio_recognize(wav, &key, &url, tx).await });
+            let http = self.http.clone();
+            let transport = self.last_transport.clone();
+            let handle = tokio::spawn(async move {
+                http_short_audio_recognize(&http, wav, &key, &url, tx, &transport).await
+            });
             *self.poll_rx.lock().await = Some(rx);
             *self.poll_task.lock().await = Some(handle);
             return Ok(());
@@ -285,12 +336,14 @@ impl SttProvider for AzureStt {
 
 #[cfg(feature = "live")]
 async fn http_short_audio_recognize(
+    http: &reqwest::Client,
     wav: Vec<u8>,
     speech_key: &str,
     url: &str,
     tx: mpsc::UnboundedSender<SttTranscript>,
+    transport: &std::sync::Mutex<Option<String>>,
 ) -> SpeechResult<()> {
-    let response = reqwest::Client::new()
+    let response = http
         .post(url)
         .header("Ocp-Apim-Subscription-Key", speech_key)
         .header("Accept", "application/json")
@@ -305,18 +358,50 @@ async fn http_short_audio_recognize(
             vendor: "azure".into(),
             message: err.to_string(),
         })?;
+    if let Ok(mut guard) = transport.lock() {
+        *guard = Some(crate::http::transport_label(response.version()));
+    }
     if !response.status().is_success() {
         let status = response.status();
-        let message = response.text().await.unwrap_or_else(|_| status.to_string());
+        let text = response.text().await.unwrap_or_default();
         return Err(SpeechError::Vendor {
             vendor: "azure".into(),
-            message,
+            message: format!("{status}: {text}"),
         });
     }
     let body = response.text().await.map_err(|err| SpeechError::Vendor {
         vendor: "azure".into(),
         message: err.to_string(),
     })?;
+    // Documented `RecognitionStatus` values: `Success`; `NoMatch`, `InitialSilenceTimeout` and
+    // `BabbleTimeout` (speech or noise was heard but there is nothing to transcribe: no final);
+    // `Error` ("The recognition service encountered an internal error and couldn't continue").
+    let status_field = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("RecognitionStatus")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
+        });
+    match status_field.as_deref() {
+        None => {
+            return Err(SpeechError::Vendor {
+                vendor: "azure".into(),
+                message: format!(
+                    "recognition response has no `RecognitionStatus` ({} bytes)",
+                    body.len()
+                ),
+            })
+        }
+        Some("Error") => {
+            return Err(SpeechError::Vendor {
+                vendor: "azure".into(),
+                message: "RecognitionStatus Error: the recognition service hit an internal error"
+                    .into(),
+            })
+        }
+        Some(_) => {}
+    }
     if let Some(text) = parse_short_audio_response(&body) {
         let _ = tx.send(SttTranscript::Final(text));
     }
@@ -337,6 +422,7 @@ mod tests {
             language: Some("en-US".into()),
             api_key: Some("k".into()),
             endpoint: Some("res.cognitiveservices.azure.com".into()),
+            transport: None,
         })
         .unwrap();
         assert!(!stt.emits_partials());
@@ -352,6 +438,7 @@ mod tests {
                 language: Some("en-US".into()),
                 api_key: Some("k".into()),
                 endpoint: Some("res.cognitiveservices.azure.com".into()),
+                transport: None,
             }),
             Err(SpeechError::Config(_))
         ));

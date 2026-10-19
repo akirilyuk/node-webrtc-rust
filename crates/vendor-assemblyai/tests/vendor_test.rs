@@ -12,6 +12,7 @@ fn assemblyai_factory_creates_stt() {
         language: Some("en".into()),
         api_key: Some("test-key".into()),
         endpoint: None,
+        transport: None,
     });
     assert!(stt.is_ok());
 }

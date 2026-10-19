@@ -1,0 +1,25 @@
+[package]
+name = "node-webrtc-rust-vendor-live-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared test support for live vendor tests and the latency bench (not published)"
+publish = false
+
+[features]
+default = []
+# Registers the local Sherpa spoken-language ID for configs that enable it (the runner config).
+sherpa-lid = ["dep:node-webrtc-rust-vendor-sherpa-onnx"]
+
+[dependencies]
+node-webrtc-rust-vendor-sherpa-onnx = { path = "../vendor-sherpa-onnx", optional = true }
+bytes = { workspace = true }
+node-webrtc-rust-speech = { path = "../speech" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+async-trait = "0.1"
+tokio = { workspace = true, features = ["test-util"] }

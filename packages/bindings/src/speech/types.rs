@@ -4,8 +4,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
-    NoiseSuppressionProvider, SentenceCase, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig,
-    VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    NoiseSuppressionProvider, SentenceCase, SpeechTransport, SttConfig, SttVendor, TtsConfig,
+    TtsVendor, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -288,18 +288,35 @@ pub struct JsSttConfig {
     pub language: Option<String>,
     pub api_key: Option<String>,
     pub endpoint: Option<String>,
+    /// `"auto"`, `"websocket"` or `"http"`; omitted = `"auto"` (the voice-catalog default).
+    pub transport: Option<String>,
 }
 
-impl From<JsSttConfig> for SttConfig {
-    fn from(value: JsSttConfig) -> Self {
-        Self {
+/// Parse the JS `transport` string. Unknown values fail the config with the accepted list.
+fn parse_js_transport(leg: &str, raw: Option<String>) -> Result<Option<SpeechTransport>> {
+    match raw {
+        None => Ok(None),
+        Some(value) => SpeechTransport::parse(&value).map(Some).ok_or_else(|| {
+            Error::from_reason(format!(
+                "invalid {leg} transport '{value}'; expected one of: auto, websocket, http"
+            ))
+        }),
+    }
+}
+
+impl TryFrom<JsSttConfig> for SttConfig {
+    type Error = Error;
+
+    fn try_from(value: JsSttConfig) -> Result<Self> {
+        Ok(Self {
             provider: value.provider.into(),
             model: value.model,
             model_path: value.model_path,
             language: value.language,
             api_key: value.api_key,
             endpoint: value.endpoint,
-        }
+            transport: parse_js_transport("stt", value.transport)?,
+        })
     }
 }
 
@@ -315,11 +332,15 @@ pub struct JsTtsConfig {
     pub post_utterance_silence_ms: Option<u32>,
     /// `"auto"` (default) or `"off"`; see `SentenceCase`.
     pub sentence_case: Option<String>,
+    /// `"auto"`, `"websocket"` or `"http"`; omitted = `"auto"` (the voice-catalog default).
+    pub transport: Option<String>,
 }
 
-impl From<JsTtsConfig> for TtsConfig {
-    fn from(value: JsTtsConfig) -> Self {
-        Self {
+impl TryFrom<JsTtsConfig> for TtsConfig {
+    type Error = Error;
+
+    fn try_from(value: JsTtsConfig) -> Result<Self> {
+        Ok(Self {
             provider: value.provider.into(),
             model: value.model,
             model_path: value.model_path,
@@ -331,7 +352,8 @@ impl From<JsTtsConfig> for TtsConfig {
                 .as_deref()
                 .map(SentenceCase::from_wire)
                 .unwrap_or_default(),
-        }
+            transport: parse_js_transport("tts", value.transport)?,
+        })
     }
 }
 
@@ -371,6 +393,89 @@ impl From<JsNoiseSuppressionConfig> for NoiseSuppressionConfig {
 }
 
 #[cfg(test)]
+mod transport_config_from_tests {
+    use super::*;
+
+    fn js_tts(transport: Option<&str>) -> JsTtsConfig {
+        JsTtsConfig {
+            provider: JsTtsVendor::Deepgram,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+            endpoint: None,
+            post_utterance_silence_ms: None,
+            sentence_case: None,
+            transport: transport.map(str::to_owned),
+        }
+    }
+
+    fn js_stt(transport: Option<&str>) -> JsSttConfig {
+        JsSttConfig {
+            provider: JsSttVendor::Deepgram,
+            model: None,
+            model_path: None,
+            language: None,
+            api_key: None,
+            endpoint: None,
+            transport: transport.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn tts_transport_http_arrives_as_http() {
+        let cfg = TtsConfig::try_from(js_tts(Some("http"))).unwrap();
+        assert_eq!(cfg.transport, Some(SpeechTransport::Http));
+        assert_eq!(cfg.provider, TtsVendor::Deepgram);
+    }
+
+    #[test]
+    fn stt_transport_websocket_arrives_as_websocket() {
+        let cfg = SttConfig::try_from(js_stt(Some("websocket"))).unwrap();
+        assert_eq!(cfg.transport, Some(SpeechTransport::Websocket));
+    }
+
+    #[test]
+    fn omitted_transport_is_none_and_auto_is_auto() {
+        assert_eq!(TtsConfig::try_from(js_tts(None)).unwrap().transport, None);
+        assert_eq!(
+            TtsConfig::try_from(js_tts(Some("auto"))).unwrap().transport,
+            Some(SpeechTransport::Auto)
+        );
+    }
+
+    #[test]
+    fn invalid_transport_string_fails_with_a_clear_error() {
+        let err = TtsConfig::try_from(js_tts(Some("grpc"))).unwrap_err();
+        assert_eq!(
+            err.reason,
+            "invalid tts transport 'grpc'; expected one of: auto, websocket, http"
+        );
+        let err = SttConfig::try_from(js_stt(Some("HTTP"))).unwrap_err();
+        assert!(
+            err.reason.contains("invalid stt transport 'HTTP'"),
+            "{}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn invalid_transport_in_voice_agent_config_fails() {
+        let cfg = JsVoiceAgentConfig {
+            tts: Some(js_tts(Some("carrier-pigeon"))),
+            ..Default::default()
+        };
+        assert!(VoiceAgentConfig::try_from(cfg).is_err());
+        let ok = JsVoiceAgentConfig {
+            tts: Some(js_tts(Some("http"))),
+            ..Default::default()
+        };
+        let cfg = VoiceAgentConfig::try_from(ok).unwrap();
+        assert_eq!(cfg.tts.unwrap().transport, Some(SpeechTransport::Http));
+    }
+}
+
+#[cfg(test)]
 mod noise_suppression_config_from_tests {
     use super::*;
 
@@ -391,7 +496,7 @@ mod noise_suppression_config_from_tests {
 
     #[test]
     fn voice_agent_omitted_noise_suppression_defaults_to_none() {
-        let cfg: VoiceAgentConfig = JsVoiceAgentConfig::default().into();
+        let cfg: VoiceAgentConfig = JsVoiceAgentConfig::default().try_into().unwrap();
         assert_eq!(
             cfg.noise_suppression.provider,
             NoiseSuppressionProvider::None
@@ -475,19 +580,21 @@ pub struct JsVoiceAgentConfig {
     pub replay: Option<JsReplayConfig>,
 }
 
-impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
-    fn from(value: JsVoiceAgentConfig) -> Self {
+impl TryFrom<JsVoiceAgentConfig> for VoiceAgentConfig {
+    type Error = Error;
+
+    fn try_from(value: JsVoiceAgentConfig) -> Result<Self> {
         let post_utterance_silence_ms = value.post_utterance_silence_ms.or_else(|| {
             value
                 .tts
                 .as_ref()
                 .and_then(|tts| tts.post_utterance_silence_ms)
         });
-        Self {
+        Ok(Self {
             vad: value.vad.map(Into::into).unwrap_or_default(),
             events: value.events.map(Into::into).unwrap_or_default(),
-            stt: value.stt.map(Into::into),
-            tts: value.tts.map(Into::into),
+            stt: value.stt.map(TryInto::try_into).transpose()?,
+            tts: value.tts.map(TryInto::try_into).transpose()?,
             language_id: value.language_id.map(Into::into),
             post_utterance_silence_ms,
             noise_suppression: value.noise_suppression.map(Into::into).unwrap_or_default(),
@@ -497,7 +604,7 @@ impl From<JsVoiceAgentConfig> for VoiceAgentConfig {
                     max_age_ms: r.max_age_ms,
                 })
                 .unwrap_or_default(),
-        }
+        })
     }
 }
 

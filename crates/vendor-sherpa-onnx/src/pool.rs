@@ -702,6 +702,7 @@ mod tests {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         };
         let config_b = SttConfig {
             provider: node_webrtc_rust_speech::config::SttVendor::LocalSherpa,
@@ -710,6 +711,7 @@ mod tests {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         };
         assert_eq!(
             stt_pool_key(&config_a).unwrap(),
@@ -730,6 +732,7 @@ mod tests {
             language: None,
             api_key: None,
             endpoint: None,
+            transport: None,
         })
         .unwrap();
         let key_b = stt_pool_key(&SttConfig {
@@ -739,6 +742,7 @@ mod tests {
             language: None,
             api_key: None,
             endpoint: None,
+            transport: None,
         })
         .unwrap();
         assert_ne!(key_a, key_b);
@@ -756,6 +760,7 @@ mod tests {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         };
         let config_b = TtsConfig {
             provider: node_webrtc_rust_speech::config::TtsVendor::LocalSherpa,
@@ -765,6 +770,7 @@ mod tests {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         };
         assert_eq!(
             tts_pool_key(&config_a).unwrap(),

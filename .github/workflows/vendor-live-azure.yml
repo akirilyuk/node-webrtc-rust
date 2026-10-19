@@ -1,0 +1,73 @@
+name: Vendor live — Azure
+
+# Runs the Azure live tests (crates/vendor-azure/tests/live_test.rs) against the real API.
+# The repo secrets AZURE_LIVE_SPEECH_KEY and AZURE_LIVE_SPEECH_REGION are mapped to the library's
+# AZURE_SPEECH_KEY and AZURE_SPEECH_REGION env vars.
+#
+# Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
+# runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
+# from branches of this repo and manual dispatches run the job.
+#
+# A missing secret fails the job (first step, and AZURE_LIVE_REQUIRED=1 makes the tests panic
+# instead of skipping), so a skipped live test can never show green.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/vendor-azure/**'
+      - 'crates/vendor-live-support/**'
+      - '.github/workflows/vendor-live-azure.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read # pull the ci-build image from GHCR
+
+concurrency:
+  group: vendor-live-azure-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: Azure live
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
+    # ci-run-integration-tests docker run).
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require Azure Speech key and region
+        env:
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_LIVE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_LIVE_SPEECH_REGION }}
+        run: |
+          empty=""
+          if [ -z "$AZURE_SPEECH_KEY" ]; then
+            empty="$empty AZURE_LIVE_SPEECH_KEY"
+          fi
+          if [ -z "$AZURE_SPEECH_REGION" ]; then
+            empty="$empty AZURE_LIVE_SPEECH_REGION"
+          fi
+          if [ -n "$empty" ]; then
+            echo "::error::empty secrets:$empty"
+            exit 1
+          fi
+
+      - name: Azure live tests
+        shell: bash
+        env:
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_LIVE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_LIVE_SPEECH_REGION }}
+          AZURE_LIVE_REQUIRED: '1'
+        run: |
+          cargo test -p node-webrtc-rust-vendor-azure --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'azure_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status

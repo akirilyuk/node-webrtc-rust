@@ -6,10 +6,14 @@ import {
   azureTtsVoices,
   customerSttProviderIds,
   customerTtsProviderIds,
+  defaultSttTransport,
+  defaultTtsTransport,
   getVendor,
   googleTtsVoices,
   sttModelAllowlist,
+  sttTransports,
   ttsModelAllowlist,
+  ttsTransports,
   ttsVoiceAllowlist,
   validateVoiceCatalogChoice,
 } from '../src/index.js'
@@ -275,6 +279,46 @@ describe('documented TTS voice lists', () => {
     for (const id of ['cartesia', 'elevenlabs', 'fishaudio', 'local-sherpa']) {
       expect(getVendor(id)?.ttsVoiceIds).toBe('open')
       expect(validateVoiceCatalogChoice(id, 'ttsVoice', 'any-customer-clone')).toBeNull()
+    }
+  })
+})
+
+describe('voice catalog transports', () => {
+  test('deepgram lists two TTS transports with websocket as default', () => {
+    expect([...ttsTransports('deepgram')]).toEqual(['websocket', 'http'])
+    expect(defaultTtsTransport('deepgram')).toBe('websocket')
+    expect([...sttTransports('deepgram')]).toEqual(['websocket'])
+    expect(defaultSttTransport('deepgram')).toBe('websocket')
+  })
+
+  test('elevenlabs defaults to http TTS', () => {
+    expect([...ttsTransports('elevenlabs')]).toEqual(['http', 'websocket'])
+    expect(defaultTtsTransport('elevenlabs')).toBe('http')
+  })
+
+  test('google and unknown vendors have no selectable transport', () => {
+    for (const id of ['google', 'not-a-vendor', 'local-sherpa', 'mock']) {
+      expect(ttsTransports(id)).toEqual([])
+      expect(sttTransports(id)).toEqual([])
+      expect(defaultTtsTransport(id)).toBeUndefined()
+      expect(defaultSttTransport(id)).toBeUndefined()
+    }
+  })
+
+  test('default is in the list for every vendor that has one, and absent otherwise', () => {
+    for (const vendor of VOICE_VENDORS) {
+      for (const [list, def] of [
+        [ttsTransports(vendor.id), defaultTtsTransport(vendor.id)],
+        [sttTransports(vendor.id), defaultSttTransport(vendor.id)],
+      ] as const) {
+        if (list.length > 0) {
+          expect(def, vendor.id).toBeDefined()
+          expect(list, vendor.id).toContain(def)
+        } else {
+          expect(def, vendor.id).toBeUndefined()
+        }
+        for (const t of list) expect(['websocket', 'http']).toContain(t)
+      }
     }
   })
 })

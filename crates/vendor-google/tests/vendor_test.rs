@@ -13,6 +13,7 @@ fn google_factory_creates_providers() {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         })
         .is_ok());
     assert!(factory
@@ -24,6 +25,7 @@ fn google_factory_creates_providers() {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         })
         .is_ok());
 }

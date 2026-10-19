@@ -145,6 +145,7 @@ async fn empty_leftover_final_while_speaking_does_not_drop_real_utterance() {
             language: Some("en".into()),
             api_key: None,
             endpoint: None,
+            transport: None,
         }),
         tts: Some(TtsConfig {
             provider: TtsVendor::Mock,
@@ -154,6 +155,7 @@ async fn empty_leftover_final_while_speaking_does_not_drop_real_utterance() {
             api_key: None,
             endpoint: None,
             sentence_case: Default::default(),
+            transport: None,
         }),
         vad,
         ..Default::default()

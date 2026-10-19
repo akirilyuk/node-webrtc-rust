@@ -108,3 +108,15 @@ Live matrix (`tests/live_openai_matrix.rs`, `OPENAI_LIVE=1`):
 | TTS SSE allow (`gpt-4o-mini-tts`) / deny (`tts-1`, `tts-1-hd`)                   | `live_tts_sse_allow_and_deny`                       |
 
 Optional: `gpt-4o-mini-tts-2025-12-15` is exercised inside `live_tts_audio_and_progressive` when the API accepts that model id.
+
+## Transport
+
+Config: `tts.transport`: `auto` (default) or `http`. `stt.transport`: `auto` only; the STT model decides between file upload and the realtime socket. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.
+
+TTS is the streamed `audio/speech` HTTP response.
+
+`auto` resolves to the catalog default, which is today's behaviour: TTS `http`. Default measured in a later change.
+
+HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1. Connect timeout 10 s, whole-request timeout 60 s, idle pool 90 s, TCP keepalive 30 s. Requests made through the `async-openai` client (file-JSON STT) use the same pooled client but `last_transport()` reports `sdk` for them, because that client does not expose the response's HTTP version.
+
+TTS output is now upsampled from 24 kHz to 48 kHz stereo with linear interpolation (`MonoToStereo48k`, one instance per synthesis) instead of sample repetition, so chunk boundaries are seamless. Adds `tests/live_test.rs` (workflow `vendor-live-openai.yml`) and `tests/live_bench.rs`.

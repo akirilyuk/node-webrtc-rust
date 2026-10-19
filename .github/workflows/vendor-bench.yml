@@ -1,0 +1,139 @@
+name: Vendor latency bench
+
+# Measures time to first audio (TTS) and STT open / partial / final latency of cloud speech
+# vendors against their real APIs: crates/vendor-<id>/tests/live_bench.rs, using
+# crates/vendor-live-support. It spends vendor credit and needs the vendor secrets.
+#
+# Triggers:
+#   - label `vendor-bench` on a same-repo pull request: runs all ten vendors, one at a time, from
+#     the PR branch (GitHub only dispatches workflow_dispatch workflows that exist on the default
+#     branch, so an unmerged branch needs this trigger).
+#   - manual dispatch: runs the one chosen vendor.
+#   - fork pull requests never run: the job runs on a self-hosted runner and forks get no secrets.
+#
+# The step summary shows median / p90 per metric (scripts/ci/vendor-bench-summary.mjs); the raw
+# log and the grouped JSON are uploaded as the artifact vendor-bench-<vendor>-<run id>. The bench
+# never prints keys or transcripts.
+#
+# Every vendor secret is mapped to the library's env name, and only the chosen crate reads its
+# own. <VENDOR>_LIVE_REQUIRED=1 turns a missing key into a failure instead of a skip.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      vendor:
+        description: 'Vendor crate to bench'
+        required: true
+        type: choice
+        options:
+          - deepgram
+          - elevenlabs
+          - cartesia
+          - assemblyai
+          - google
+          - groq
+          - azure
+          - aws
+          - openai
+          - fishaudio
+      runs:
+        description: 'Runs per sample'
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+  packages: read # pull the ci-build image from GHCR
+
+concurrency:
+  group: vendor-bench-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: Bench ${{ matrix.vendor }}
+    if: github.event_name == 'workflow_dispatch' || (github.event.label.name == 'vendor-bench' && github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        vendor: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.vendor) || '["deepgram","elevenlabs","cartesia","assemblyai","google","groq","azure","aws","openai","fishaudio"]') }}
+    runs-on: self-hosted
+    # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
+    # ci-run-integration-tests docker run).
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+      DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_LIVE_KEY }}
+      ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_LIVE_KEY }}
+      CARTESIA_API_KEY: ${{ secrets.CARTESIA_LIVE_KEY }}
+      CARTESIA_VOICE_ID: ${{ secrets.CARTESIA_LIVE_VOICE_ID }}
+      ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_LIVE_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_LIVE_API_KEY }}
+      GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_LIVE_PROJECT_ID }}
+      GROQ_API_KEY: ${{ secrets.GROQ_LIVE_KEY }}
+      AZURE_SPEECH_KEY: ${{ secrets.AZURE_LIVE_SPEECH_KEY }}
+      AZURE_SPEECH_REGION: ${{ secrets.AZURE_LIVE_SPEECH_REGION }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LIVE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LIVE_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_LIVE_REGION }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_LIVE_KEY }}
+      FISH_API_KEY: ${{ secrets.FISH_AUDIO_API }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Google service account file
+        shell: bash
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_LIVE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            umask 077
+            printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gcp-sa.json"
+            chmod 600 "$RUNNER_TEMP/gcp-sa.json"
+            echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-sa.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Require the chosen vendor and set run count
+        shell: bash
+        env:
+          VENDOR: ${{ matrix.vendor }}
+          RUNS: ${{ inputs.runs || '5' }}
+        run: |
+          # Fish Audio's live tests read FISH_LIVE_REQUIRED (vendor id "fish").
+          flag="$(echo "$VENDOR" | tr a-z A-Z)_LIVE_REQUIRED"
+          if [ "$VENDOR" = "fishaudio" ]; then flag="FISH_LIVE_REQUIRED"; fi
+          echo "$flag=1" >> "$GITHUB_ENV"
+          # Google has two credential paths with their own flag (live_test.rs, live_bench.rs).
+          if [ "$VENDOR" = "google" ]; then echo "GOOGLE_SA_LIVE_REQUIRED=1" >> "$GITHUB_ENV"; fi
+          echo "NWR_BENCH_RUNS=${RUNS:-5}" >> "$GITHUB_ENV"
+
+      - name: Bench
+        id: bench
+        shell: bash
+        env:
+          VENDOR: ${{ matrix.vendor }}
+        run: |
+          set +e
+          cargo test -p "node-webrtc-rust-vendor-$VENDOR" --features live --test live_bench -- --nocapture --test-threads=1 2>&1 | tee bench.log
+          status=${PIPESTATUS[0]}
+          node scripts/ci/vendor-bench-summary.mjs bench.log bench.json >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload bench log and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendor-bench-${{ matrix.vendor }}-${{ github.run_id }}
+          path: |
+            bench.log
+            bench.json
+          if-no-files-found: warn

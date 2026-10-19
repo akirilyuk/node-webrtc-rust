@@ -89,15 +89,34 @@ if suite_enabled rust; then
   # Cloud vendors are not live-tested in CI, so these local mock servers are the only guard of the
   # sink contract (each chunk to the sink once, no fallback after audio) and the wait bounds.
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-cartesia" -- \
-    cargo test -p node-webrtc-rust-vendor-cartesia --features live
+    cargo test -p node-webrtc-rust-vendor-cartesia --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-assemblyai" -- \
+    cargo test -p node-webrtc-rust-vendor-assemblyai --features live --lib --test mock_server_test --test tls_provider_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-deepgram" -- \
-    cargo test -p node-webrtc-rust-vendor-deepgram --features live
+    cargo test -p node-webrtc-rust-vendor-deepgram --features live --lib --test http_pool_test --test mock_server_test --test stt_agent_mock_test --test stt_mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-elevenlabs" -- \
-    cargo test -p node-webrtc-rust-vendor-elevenlabs --features live
-  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-openai" -- \
-    cargo test -p node-webrtc-rust-vendor-openai --features live
+    cargo test -p node-webrtc-rust-vendor-elevenlabs --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-fishaudio" -- \
-    cargo test -p node-webrtc-rust-vendor-fishaudio --features live -- --test-threads=1
+    cargo test -p node-webrtc-rust-vendor-fishaudio --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test -- --test-threads=1
+  # Cloud vendors with a pooled HTTP client (HTTP pool reuse, last_transport, timeout bounds) and
+  # their mock-server tests (progressive TTS body, loud STT failures). Test
+  # targets are listed instead of a bare `cargo test` so a live_test / live_bench target (they need
+  # real keys) never runs here: those run only in vendor-live-*.yml / vendor-bench.yml.
+  # Guard: crates/vendor-live-support/tests/workflow_lockstep_test.rs.
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-azure" -- \
+    cargo test -p node-webrtc-rust-vendor-azure --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-groq" -- \
+    cargo test -p node-webrtc-rust-vendor-groq --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-openai" -- \
+    cargo test -p node-webrtc-rust-vendor-openai --features live --lib --test vendor_test --test http_pool_test --test mock_server_test
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-google" -- \
+    cargo test -p node-webrtc-rust-vendor-google --features live --lib --test vendor_test --test http_pool_test --test mock_server_test
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-aws" -- \
+    cargo test -p node-webrtc-rust-vendor-aws --features live --lib --test mock_server_test --test vendor_test
+  # Shared live-test/bench support: unit tests, the VAD gate test, and the workflow lockstep guard
+  # (every live_test.rs has a vendor-live-<id>.yml with the fork-skip, _LIVE_REQUIRED and paths).
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-live-support" -- \
+    cargo test -p node-webrtc-rust-vendor-live-support
   # Vendored dtls (third_party/dtls) is not a workspace member, so `-p` cannot reach it. Guards
   # net.final-flight-not-resent (seeded loss/reorder handshake test).
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendored dtls" -- \

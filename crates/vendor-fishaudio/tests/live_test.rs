@@ -26,9 +26,11 @@ use node_webrtc_rust_vendor_fishaudio::FishAudioStt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-mod common;
-
-use common::vad_gate::{silence_stereo_48k, vad_gated_frames};
+use node_webrtc_rust_vendor_live_support::audio::{matched_words, rms, STT_PHRASE, STT_WORDS};
+use node_webrtc_rust_vendor_live_support::env::live_env;
+use node_webrtc_rust_vendor_live_support::vad_gate::{
+    silence_stereo_48k, vad_gated_frames, STT_CLIP_TAIL_MS,
+};
 
 const MODEL: &str = "drama-3";
 const TEXT: &str =
@@ -37,15 +39,8 @@ const TEXT: &str =
 const BYTES_PER_MS: usize = 192;
 
 fn live_key() -> Option<String> {
-    let key = std::env::var("FISH_API_KEY").unwrap_or_default();
-    if key.is_empty() {
-        if std::env::var("FISH_LIVE_REQUIRED").as_deref() == Ok("1") {
-            panic!("FISH_LIVE_REQUIRED=1 but FISH_API_KEY is empty");
-        }
-        println!("fishaudio live test skipped: FISH_API_KEY unset");
-        return None;
-    }
-    Some(key)
+    // Vendor id `fish`: a missing key panics under `FISH_LIVE_REQUIRED=1`, otherwise skips.
+    live_env("fish", &["FISH_API_KEY"]).map(|mut env| env.remove("FISH_API_KEY").expect("key"))
 }
 
 fn env_voice() -> Option<String> {
@@ -60,18 +55,6 @@ fn client(key: String) -> Client {
 
 fn duration_ms(pcm_len: usize) -> usize {
     pcm_len / BYTES_PER_MS
-}
-
-fn rms(pcm: &[u8]) -> f64 {
-    let samples: Vec<i16> = pcm
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| i16::from_le_bytes(*pair))
-        .collect();
-    assert!(!samples.is_empty(), "no PCM samples");
-    let sum: f64 = samples.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
-    (sum / samples.len() as f64).sqrt()
 }
 
 struct SinkStats {
@@ -184,30 +167,6 @@ async fn drama3_live_without_voice() {
     }
 }
 
-const STT_PHRASE: &str = "The quick brown fox jumps over the lazy dog.";
-const STT_WORDS: [&str; 9] = [
-    "the", "quick", "brown", "fox", "jumps", "over", "the", "lazy", "dog",
-];
-
-/// How many of the expected words appear in the transcript (lowercase, punctuation stripped,
-/// each transcript word used once).
-fn matched_words(transcript: &str) -> usize {
-    let cleaned: String = transcript
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect();
-    let mut heard: Vec<&str> = cleaned.split_whitespace().collect();
-    let mut matched = 0;
-    for word in STT_WORDS {
-        if let Some(at) = heard.iter().position(|heard| *heard == word) {
-            heard.swap_remove(at);
-            matched += 1;
-        }
-    }
-    matched
-}
-
 /// Drama 3 speaks a known phrase; the VAD gate drops the silence padding; the gated 16 kHz
 /// frames stream to `transcribe-1` at real-time pace; one commit ends the utterance.
 /// The transcript is never printed, only the matched word count and timings.
@@ -222,7 +181,12 @@ async fn transcribe_1_live_vad_gated_roundtrip() {
         .synthesize_ws(STT_PHRASE, voice.as_deref(), MODEL, None)
         .await
         .unwrap_or_else(|err| panic!("drama 3 synthesis failed: {err}"));
-    let stereo = [silence_stereo_48k(1000), speech, silence_stereo_48k(2000)].concat();
+    let stereo = [
+        silence_stereo_48k(1000),
+        speech,
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
+    ]
+    .concat();
 
     let gated = vad_gated_frames(&stereo);
     println!(
@@ -244,6 +208,7 @@ async fn transcribe_1_live_vad_gated_roundtrip() {
         language: None,
         api_key: Some(key),
         endpoint: None,
+        transport: None,
     })
     .unwrap_or_else(|err| panic!("stt config: {err}"));
     stt.start()
@@ -293,7 +258,7 @@ async fn transcribe_1_live_vad_gated_roundtrip() {
     println!("fishaudio_stt_commit_to_final_ms {commit_to_final_ms}");
     stt.stop().await.unwrap();
 
-    let matched = matched_words(&transcript);
+    let matched = matched_words(&transcript, &STT_WORDS);
     assert!(
         matched >= 7,
         "matched {matched} of {} words (transcript not printed)",

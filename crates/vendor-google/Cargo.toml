@@ -16,6 +16,7 @@ live = [
     "dep:yup-oauth2",
     "dep:futures-util",
     "dep:tokio-stream",
+    "dep:google-cloud-auth",
     "dep:google-cloud-speech-v2",
     "dep:google-cloud-texttospeech-v1",
 ]
@@ -25,14 +26,19 @@ async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
 bytes = { workspace = true }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
+google-cloud-auth = { version = "1.17", optional = true }
 google-cloud-speech-v2 = { version = "1.15", optional = true }
 google-cloud-texttospeech-v1 = { version = "1.16", optional = true }
 node-webrtc-rust-speech = { path = "../speech" }
 node-webrtc-rust-voice-catalog = { path = "../voice-catalog" }
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", optional = true }
 yup-oauth2 = { version = "11", optional = true }
+
+[dev-dependencies]
+node-webrtc-rust-vendor-live-support = { path = "../vendor-live-support" }
+base64 = "0.22"

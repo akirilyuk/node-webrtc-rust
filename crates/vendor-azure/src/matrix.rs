@@ -6,6 +6,7 @@
 //! Regional voice list API: <https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech#get-a-list-of-voices>
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
@@ -31,6 +32,21 @@ pub const TTS_VOICES_LIST_DOC: &str =
 /// This crate implements REST short audio only — no invented WebSocket frames.
 pub static DOCUMENTED_STT_RECOGNITION_MODES: LazyLock<&'static [&'static str]> =
     LazyLock::new(|| voice_catalog::stt_models("azure").expect("azure in voice catalog"));
+
+/// TCP connect bound of the pooled HTTP client (`infra.unbounded-external-wait`).
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Whole-request bound (headers + body) for TTS synthesis and the STT upload + answer. Azure had
+/// no timeout before; 60 s matches the other REST vendors in this workspace.
+pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled connection is kept for the next utterance.
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled connections.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
+/// TTS: time from the request to the first audio bytes (headers and any container header
+/// included). A body that has not produced audio by then is an error.
+pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
+/// TTS: longest silence between two body chunks once audio has started.
+pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn default_stt_mode() -> &'static str {
     voice_catalog::default_stt_model("azure").expect("azure default STT in voice catalog")
@@ -143,5 +159,72 @@ mod tests {
         )
         .unwrap();
         assert_eq!(text, "Hello.");
+    }
+}
+
+/// Validate `TtsConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_tts_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "azure",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("azure"),
+        voice_catalog::default_tts_transport("azure"),
+    )
+    .map(|_| ())
+}
+
+/// Validate `SttConfig.transport` against the voice catalog (`None` / `auto` = the
+/// catalog default). An unsupported value is a config error, raised at provider construction.
+pub(crate) fn check_stt_transport(
+    requested: Option<node_webrtc_rust_speech::config::SpeechTransport>,
+) -> node_webrtc_rust_speech::error::SpeechResult<()> {
+    node_webrtc_rust_speech::resolve_transport(
+        "azure",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("azure"),
+        voice_catalog::default_stt_transport("azure"),
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use node_webrtc_rust_speech::config::SpeechTransport;
+    use node_webrtc_rust_speech::error::SpeechError;
+
+    #[test]
+    fn tts_transport_accepts_auto_and_http_and_rejects_websocket() {
+        assert_eq!(voice_catalog::tts_transports("azure"), &["http"]);
+        assert!(check_tts_transport(None).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(check_tts_transport(Some(SpeechTransport::Http)).is_ok());
+        match check_tts_transport(Some(SpeechTransport::Websocket)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "azure tts transport 'websocket' is not supported; allowed: auto, http"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stt_transport_accepts_auto_and_http_and_rejects_websocket() {
+        assert_eq!(voice_catalog::stt_transports("azure"), &["http"]);
+        assert!(check_stt_transport(None).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Auto)).is_ok());
+        assert!(check_stt_transport(Some(SpeechTransport::Http)).is_ok());
+        match check_stt_transport(Some(SpeechTransport::Websocket)) {
+            Err(SpeechError::Config(message)) => assert_eq!(
+                message,
+                "azure stt transport 'websocket' is not supported; allowed: auto, http"
+            ),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
     }
 }

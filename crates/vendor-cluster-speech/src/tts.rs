@@ -308,6 +308,7 @@ mod tests {
             api_key: None,
             endpoint: None,
             sentence_case,
+            transport: None,
         }
     }
 

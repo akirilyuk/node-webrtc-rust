@@ -73,6 +73,7 @@ async fn full_body_sends_the_configured_voice() {
         api_key: Some("test-key".into()),
         endpoint: Some(format!("http://{addr}/v1")),
         sentence_case: Default::default(),
+        transport: None,
     };
     let tts = OpenAiFactory.create_tts(&config).expect("openai tts");
     let chunks = tokio::time::timeout(BOUND, tts.synthesize("hello"))

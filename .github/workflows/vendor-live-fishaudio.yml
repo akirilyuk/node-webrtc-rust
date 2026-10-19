@@ -15,6 +15,7 @@ on:
   pull_request:
     paths:
       - 'crates/vendor-fishaudio/**'
+      - 'crates/vendor-live-support/**'
       - '.github/workflows/vendor-live-fishaudio.yml'
   workflow_dispatch:
 

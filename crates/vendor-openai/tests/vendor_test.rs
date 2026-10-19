@@ -12,6 +12,7 @@ fn openai_factory_creates_providers() {
         language: Some("en".into()),
         api_key: Some("test-key".into()),
         endpoint: None,
+        transport: None,
     });
     assert!(stt.is_ok());
 
@@ -23,6 +24,7 @@ fn openai_factory_creates_providers() {
         api_key: Some("test-key".into()),
         endpoint: None,
         sentence_case: Default::default(),
+        transport: None,
     });
     assert!(tts.is_ok());
 }

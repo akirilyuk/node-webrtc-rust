@@ -24,12 +24,13 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 node-webrtc-rust-speech = { path = "../speech" }
 node-webrtc-rust-voice-catalog = { path = "../voice-catalog" }
 serde_json = { workspace = true }
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "http2"] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 
 [dev-dependencies]
+node-webrtc-rust-vendor-live-support = { path = "../vendor-live-support", features = ["sherpa-lid"] }
 # `test-util` gives `tokio::time::pause`/`advance` for the timeout tests.
 tokio = { workspace = true, features = ["test-util"] }

@@ -60,6 +60,7 @@ async fn buffered_path_emits_one_start_and_one_end_per_reply() {
             voice: None,
             api_key: None,
             endpoint: None,
+            transport: None,
             sentence_case: Default::default(),
         }),
         ..Default::default()

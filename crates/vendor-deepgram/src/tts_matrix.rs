@@ -6,6 +6,9 @@
 
 use std::time::Duration;
 
+use node_webrtc_rust_speech::config::SpeechTransport;
+use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::resolve_transport;
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
 pub const V1_SPEAK_DOC: &str = "https://developers.deepgram.com/reference/text-to-speech/speak";
@@ -20,6 +23,14 @@ pub const DEFAULT_BASE_URL: &str = "https://api.deepgram.com";
 /// TCP + TLS + WebSocket handshake (also bounds each WS control send and the HTTP connect).
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bound on the WebSocket TCP + TLS + upgrade handshake (`infra.unbounded-external-wait`).
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one speak socket is reused. Deepgram: "An active websocket has a 60-minute timeout
+/// period from the initial connection" (streaming TTS guide), so a socket older than this is
+/// replaced before the server would cut it mid-utterance.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const WS_MAX_AGE: Duration = Duration::from_secs(55 * 60);
 /// Wait for the first audio frame.
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(15);
@@ -29,6 +40,12 @@ pub const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whole REST request, headers through the last body byte.
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle pooled REST connection is kept for the next request.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// TCP keepalive on pooled REST connections.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// Default `model` query on `/v1/speak` (API reference).
 pub const DEFAULT_AURA_MODEL: &str = "aura-asteria-en";
@@ -51,6 +68,23 @@ pub enum TtsProgressiveTransport {
     /// Full-body REST when progressive socket is unavailable without `live`.
     #[allow(dead_code)] // documented fallback, selected only without `live`
     RestFullBody,
+}
+
+/// TTS transports this crate implements. Lockstep with `voice_catalog::tts_transports("deepgram")`.
+pub fn implemented_tts_transports() -> &'static [&'static str] {
+    &["websocket", "http"]
+}
+
+/// Resolve `TtsConfig.transport` against the voice catalog (`None` / `auto` = catalog default).
+pub fn resolve_tts_transport(requested: Option<SpeechTransport>) -> SpeechResult<SpeechTransport> {
+    resolve_transport(
+        "deepgram",
+        "tts",
+        requested,
+        voice_catalog::tts_transports("deepgram"),
+        voice_catalog::default_tts_transport("deepgram"),
+    )?
+    .ok_or_else(|| SpeechError::Config("deepgram tts has no catalog default transport".into()))
 }
 
 pub fn default_speak_model() -> &'static str {
@@ -107,8 +141,11 @@ pub fn v1_speak_rest_url(base_url: &str, model: &str) -> Result<String, String> 
             "model `{model}` is not served on /v1/speak (Aura only)"
         ));
     }
+    // Deepgram, "Media output settings": "Linear16 supports two container formats: wav (default)
+    // and none". Without `container=none` the REST body starts with a WAV header, which would be
+    // played as audio. `/v2/speak` documents no `container` parameter, so Flux is left as is.
     Ok(format!(
-        "{}/v1/speak?model={model}&encoding=linear16&sample_rate=48000",
+        "{}/v1/speak?model={model}&encoding=linear16&sample_rate=48000&container=none",
         base_url.trim_end_matches('/')
     ))
 }
@@ -155,6 +192,12 @@ pub fn v2_speak_websocket_url(base_url: &str, model: &str) -> Result<String, Str
 /// Flux `/v2/speak` JSON control messages (also used on `/v1/speak` for `Speak` / `Flush`).
 pub fn speak_json(text: &str) -> String {
     serde_json::json!({ "type": "Speak", "text": text }).to_string()
+}
+
+/// Documented `Clear` message: drops the text the server still has queued.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+pub fn clear_json() -> &'static str {
+    r#"{"type":"Clear"}"#
 }
 
 pub fn flush_json() -> &'static str {
@@ -211,10 +254,35 @@ mod tests {
     }
 
     #[test]
-    fn default_urls_unchanged() {
+    fn implemented_transports_match_the_catalog() {
+        let mut implemented = implemented_tts_transports().to_vec();
+        let mut catalog = voice_catalog::tts_transports("deepgram").to_vec();
+        implemented.sort_unstable();
+        catalog.sort_unstable();
+        assert_eq!(implemented, catalog);
+    }
+
+    #[test]
+    fn auto_and_none_resolve_to_the_catalog_default() {
+        assert_eq!(
+            resolve_tts_transport(None).unwrap(),
+            SpeechTransport::Websocket
+        );
+        assert_eq!(
+            resolve_tts_transport(Some(SpeechTransport::Auto)).unwrap(),
+            SpeechTransport::Websocket
+        );
+        assert_eq!(
+            resolve_tts_transport(Some(SpeechTransport::Http)).unwrap(),
+            SpeechTransport::Http
+        );
+    }
+
+    #[test]
+    fn rest_url_requests_raw_linear16() {
         assert_eq!(
             v1_speak_rest_url(DEFAULT_BASE_URL, "aura-asteria-en").unwrap(),
-            "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=48000"
+            "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=48000&container=none"
         );
         assert_eq!(
             v1_speak_websocket_url(DEFAULT_BASE_URL, "aura-asteria-en").unwrap(),
@@ -238,7 +306,7 @@ mod tests {
         );
         assert_eq!(
             v1_speak_rest_url("http://127.0.0.1:9/", "aura-asteria-en").unwrap(),
-            "http://127.0.0.1:9/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=48000"
+            "http://127.0.0.1:9/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=48000&container=none"
         );
     }
 }

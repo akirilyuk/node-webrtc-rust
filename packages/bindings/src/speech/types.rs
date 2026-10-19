@@ -162,7 +162,7 @@ impl From<JsVadConfig> for VadConfig {
             provider: value.provider.unwrap_or_else(|| "energy".to_string()),
             threshold: value.threshold.unwrap_or(0.15) as f32,
             min_speech_duration_ms: value.min_speech_duration_ms.unwrap_or(250),
-            min_silence_duration_ms: value.min_silence_duration_ms.unwrap_or(1300),
+            min_silence_duration_ms: value.min_silence_duration_ms.unwrap_or(1100),
             speech_pad_ms: value.speech_pad_ms.unwrap_or(300),
             sample_rate: value
                 .sample_rate
@@ -171,7 +171,7 @@ impl From<JsVadConfig> for VadConfig {
             barge_in: value.barge_in.map(Into::into).unwrap_or_default(),
             gate_stt: value.gate_stt.unwrap_or(false),
             gate_stt_open_on_pending: value.gate_stt_open_on_pending.unwrap_or(true),
-            stt_gate_hold_ms: value.stt_gate_hold_ms.unwrap_or(1000),
+            stt_gate_hold_ms: value.stt_gate_hold_ms.unwrap_or(400),
             stt_listen_timeout_ms: value.stt_listen_timeout_ms.unwrap_or(4000),
             stt_listen_backlog_slack_ms: value.stt_listen_backlog_slack_ms.unwrap_or(200),
             stt_listen_hard_timeout_ms: value.stt_listen_hard_timeout_ms.unwrap_or(0),
@@ -723,4 +723,36 @@ pub struct JsUpdateTtsOptions {
 
 pub fn speech_err(err: node_webrtc_rust_speech::SpeechError) -> Error {
     Error::from_reason(err.to_string())
+}
+
+#[cfg(test)]
+mod vad_config_defaults_tests {
+    use super::*;
+
+    #[test]
+    fn omitted_end_of_turn_fields_fall_back_to_1100_and_400() {
+        let cfg: VadConfig = JsVadConfig::default().into();
+        assert_eq!(cfg.min_silence_duration_ms, 1100);
+        assert_eq!(cfg.stt_gate_hold_ms, 400);
+    }
+
+    #[test]
+    fn binding_fallbacks_match_the_core_vad_defaults() {
+        let cfg: VadConfig = JsVadConfig::default().into();
+        let core = VadConfig::default();
+        assert_eq!(cfg.min_silence_duration_ms, core.min_silence_duration_ms);
+        assert_eq!(cfg.stt_gate_hold_ms, core.stt_gate_hold_ms);
+    }
+
+    #[test]
+    fn explicit_values_override_the_fallbacks() {
+        let cfg: VadConfig = JsVadConfig {
+            min_silence_duration_ms: Some(1300),
+            stt_gate_hold_ms: Some(1000),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(cfg.min_silence_duration_ms, 1300);
+        assert_eq!(cfg.stt_gate_hold_ms, 1000);
+    }
 }

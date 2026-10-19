@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-10-18
+
+### Changed
+
+- **voice:** Voice agent VAD defaults: `minSilenceDurationMs` 1300 → 1100, `sttGateHoldMs` 1000 → 400. The agent answers about 0.4 s sooner after the caller stops. Set both back explicitly if your callers pause mid-sentence (#471).
+
 ## [0.11.5] - 2026-10-18
 
 ### Added

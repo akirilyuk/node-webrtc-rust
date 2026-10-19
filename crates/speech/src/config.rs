@@ -1066,7 +1066,7 @@ pub struct VoiceSessionContext {
 }
 
 /// Options for [`crate::VoiceAgent::send_text_to_tts_with_options`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendTextToTtsOptions {
     /// When true, return as soon as the utterance is queued. When false (default), await synthesis
@@ -1077,6 +1077,11 @@ pub struct SendTextToTtsOptions {
     /// is synthesizing or playing. Default true. Explicit `flush_tts` / `stop` still cancel it.
     #[serde(default = "default_send_text_interruptible")]
     pub interruptible: bool,
+    /// Tags this reply's events: `agent_reply_start` / `agent_reply_end`, and
+    /// `tts_phrase_cache_hit` / `tts_wait` / `agent_speak_failed`. Without it none of these
+    /// events carry a reply id and no reply events are emitted.
+    #[serde(default)]
+    pub reply_id: Option<String>,
 }
 
 fn default_send_text_interruptible() -> bool {
@@ -1088,6 +1093,7 @@ impl Default for SendTextToTtsOptions {
         Self {
             non_blocking: false,
             interruptible: true,
+            reply_id: None,
         }
     }
 }

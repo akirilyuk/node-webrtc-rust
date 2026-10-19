@@ -318,6 +318,9 @@ export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     waitMs: event.waitMs ?? extended.wait_ms ?? undefined,
     attempts: event.attempts ?? undefined,
     chars: event.chars ?? undefined,
+    replyId: event.replyId ?? undefined,
+    playedMs: event.playedMs ?? undefined,
+    interrupted: event.interrupted ?? undefined,
   }
 }
 
@@ -367,6 +370,10 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'tts_phrase_cache_hit'
     case JsSpeechEventType.AgentSpeakFailed:
       return 'agent_speak_failed'
+    case JsSpeechEventType.AgentReplyStart:
+      return 'agent_reply_start'
+    case JsSpeechEventType.AgentReplyEnd:
+      return 'agent_reply_end'
     default:
       return 'error'
   }
@@ -449,6 +456,7 @@ export class VoiceAgent {
       text,
       options?.nonBlocking ?? undefined,
       options?.interruptible ?? undefined,
+      options?.replyId ?? undefined,
     )
   }
 

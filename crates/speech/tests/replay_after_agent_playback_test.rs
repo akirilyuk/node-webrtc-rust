@@ -234,6 +234,7 @@ async fn run_scenario(interruptible: bool, extra_silence_ms: Option<u32>) {
             SendTextToTtsOptions {
                 non_blocking: true,
                 interruptible,
+                reply_id: None,
             },
         )
         .await
@@ -308,6 +309,7 @@ async fn utterance_spoken_during_agent_playback_still_finalizes() {
             SendTextToTtsOptions {
                 non_blocking: true,
                 interruptible: false,
+                reply_id: None,
             },
         )
         .await

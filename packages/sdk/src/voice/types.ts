@@ -272,6 +272,11 @@ export interface SendTextToTtsOptions {
    * `stop()` and `updateTts({ cancelInflight: true })` still stop it.
    */
   interruptible?: boolean
+  /**
+   * Tags this reply's events: `agent_reply_start` / `agent_reply_end`, and `tts_phrase_cache_hit` /
+   * `tts_wait` / `agent_speak_failed`. Replies sent without it emit none of the reply events.
+   */
+  replyId?: string
 }
 
 /**
@@ -310,6 +315,16 @@ export type SpeechEventType =
   | 'tts_phrase_cache_hit'
   /** One reply could not be synthesized (`reason`); the session keeps running. */
   | 'agent_speak_failed'
+  /**
+   * First outbound frame of a reply sent with a `replyId` (`replyId`, `firstChunkMs`). Replies
+   * queued behind others get their own start. Not emitted for replies without a `replyId`.
+   */
+  | 'agent_reply_start'
+  /**
+   * A reply sent with a `replyId` finished playing or was cut off (`replyId`, `playedMs`,
+   * `interrupted`). Emitted once per reply, also for a reply dropped from the queue (`playedMs: 0`).
+   */
+  | 'agent_reply_end'
   /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
   | 'voice_language_switching'
   /** Host coordinator: switch succeeded. */
@@ -345,6 +360,8 @@ export const SPEECH_EVENT_TYPE = {
   ttsWait: 'tts_wait',
   ttsPhraseCacheHit: 'tts_phrase_cache_hit',
   agentSpeakFailed: 'agent_speak_failed',
+  agentReplyStart: 'agent_reply_start',
+  agentReplyEnd: 'agent_reply_end',
   voiceLanguageSwitching: 'voice_language_switching',
   voiceLanguageChanged: 'voice_language_changed',
   voiceLanguageSwitchFailed: 'voice_language_switch_failed',
@@ -417,6 +434,16 @@ export interface SpeechEvent {
   attempts?: number
   /** `tts_phrase_cache_hit`: chars (Unicode scalars) of the text served from the phrase cache. */
   chars?: number
+  /**
+   * The `replyId` passed to `sendTextToTTS` for the reply this event belongs to: set on
+   * `agent_reply_start`, `agent_reply_end`, and on `tts_phrase_cache_hit` / `tts_wait` /
+   * `agent_speak_failed` of a tagged reply.
+   */
+  replyId?: string
+  /** `agent_reply_end`: ms of this reply's audio written to the outbound track. */
+  playedMs?: number
+  /** `agent_reply_end`: true when the reply was cut off (barge-in, flush, stop) before its last frame. */
+  interrupted?: boolean
 }
 
 /** `languageId.timing` values. */

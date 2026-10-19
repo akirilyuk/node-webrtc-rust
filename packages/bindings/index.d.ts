@@ -397,7 +397,9 @@ export const enum JsSpeechEventType {
   SttHoldEnded = 'stt_hold_ended',
   TtsWait = 'tts_wait',
   TtsPhraseCacheHit = 'tts_phrase_cache_hit',
-  AgentSpeakFailed = 'agent_speak_failed'
+  AgentSpeakFailed = 'agent_speak_failed',
+  AgentReplyStart = 'agent_reply_start',
+  AgentReplyEnd = 'agent_reply_end'
 }
 export interface JsSpeechEvent {
   eventType: JsSpeechEventType
@@ -429,6 +431,12 @@ export interface JsSpeechEvent {
   attempts?: number
   /** `tts_phrase_cache_hit`: chars (Unicode scalars) of the text served from the cache. */
   chars?: number
+  /** `agent_reply_start` / `agent_reply_end`, and `tts_phrase_cache_hit` / `tts_wait` / `agent_speak_failed` of a reply sent with a `replyId`. */
+  replyId?: string
+  /** `agent_reply_end`: ms of the reply's audio written to the outbound track. */
+  playedMs?: number
+  /** `agent_reply_end`: true when the reply was cut off before its last frame was written. */
+  interrupted?: boolean
 }
 export const enum JsSttHoldMode {
   BufferReplay = 'buffer_replay',
@@ -708,7 +716,7 @@ export declare class JsVoiceAgent {
    * agent. Call after `start`.
    */
   startNativeInbound(track: JsMediaStreamTrack, mixGraph?: JsMixGraph | undefined | null, participantId?: string | undefined | null): void
-  sendTextToTts(text: string, nonBlocking?: boolean | undefined | null, interruptible?: boolean | undefined | null): Promise<void>
+  sendTextToTts(text: string, nonBlocking?: boolean | undefined | null, interruptible?: boolean | undefined | null, replyId?: string | undefined | null): Promise<void>
   flushTts(): Promise<void>
   /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */
   waitTtsPlaybackIdle(): Promise<void>

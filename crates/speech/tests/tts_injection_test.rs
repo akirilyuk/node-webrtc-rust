@@ -284,7 +284,7 @@ async fn non_blocking_two_jobs_still_play_in_order() {
         ..Default::default()
     };
     agent
-        .send_text_to_tts_with_options("first phrase here", opts)
+        .send_text_to_tts_with_options("first phrase here", opts.clone())
         .await
         .unwrap();
     agent
@@ -496,7 +496,7 @@ async fn tts_worker_stress_enqueue_interrupt_close_returns_to_baseline() {
     };
     for i in 0..8 {
         agent
-            .send_text_to_tts_with_options(&format!("phrase {i}"), opts)
+            .send_text_to_tts_with_options(&format!("phrase {i}"), opts.clone())
             .await
             .unwrap();
         if i % 2 == 0 {

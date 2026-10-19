@@ -192,7 +192,7 @@ async fn queued_reply_while_speaking_is_timed_from_its_own_request() {
     };
 
     agent
-        .send_text_to_tts_with_options(&unique_text("first reply"), non_blocking)
+        .send_text_to_tts_with_options(&unique_text("first reply"), non_blocking.clone())
         .await
         .unwrap();
     agent
@@ -228,7 +228,7 @@ async fn barge_in_clears_pending_first_audio() {
 
     let first_requested_at = Instant::now();
     agent
-        .send_text_to_tts_with_options(&unique_text("first reply"), non_blocking)
+        .send_text_to_tts_with_options(&unique_text("first reply"), non_blocking.clone())
         .await
         .unwrap();
     // The vendor call is running, so the first reply has pending timing but no audio yet.

@@ -22,7 +22,7 @@ use node_webrtc_rust_vendor_live_support::bench::{
     bench_stt, bench_stt_warm, bench_tts, runs_from_env,
 };
 use node_webrtc_rust_vendor_live_support::env::live_env;
-use node_webrtc_rust_vendor_live_support::vad_gate::silence_stereo_48k;
+use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
 const ID: &str = "google";
@@ -68,7 +68,12 @@ async fn phrase(provider: &dyn TtsProvider) -> Vec<u8> {
         .into_iter()
         .flat_map(|chunk| chunk.pcm)
         .collect();
-    [silence_stereo_48k(1000), speech, silence_stereo_48k(2000)].concat()
+    [
+        silence_stereo_48k(1000),
+        speech,
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
+    ]
+    .concat()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

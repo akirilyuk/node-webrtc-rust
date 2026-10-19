@@ -30,6 +30,19 @@ pub fn preset_vad_config() -> VadConfig {
     }
 }
 
+/// The VAD config that gates the audio of the per-vendor STT live measurements
+/// ([`vad_gated_frames`], so [`crate::stt::run_utterance`] and `measure_stt`): the runner's
+/// production values (threshold 0.05, minimum silence 1100 ms, gate hold 400 ms, pad 500 ms),
+/// not the library defaults of [`preset_vad_config`] (threshold 0.15), which close the gate on the
+/// quiet words of a counted phrase.
+pub fn gate_vad_config() -> VadConfig {
+    crate::runner_config::runner_vad_config()
+}
+
+/// Silence after the speech in a per-vendor STT clip. The runner's gate ends the segment 1100 ms
+/// after the last speech and holds 400 ms more, so 3 s leaves at least 1 s unstreamed.
+pub const STT_CLIP_TAIL_MS: usize = 3000;
+
 /// Past audio emitted with `SpeechStart`: the production STT pre-roll ring (`speech_pad_ms` +
 /// `min_speech_duration_ms`, 750 ms with the preset). The speech accumulates its minimum duration
 /// over frames that may be separated by quiet word gaps, so a shorter ring clips the first words.
@@ -55,9 +68,9 @@ fn to_16k(frame: &[u8]) -> Bytes {
     i16_samples_to_bytes(&stereo_48k_to_mono_16k(frame))
 }
 
-/// [`vad_gated_frames_with`] under [`preset_vad_config`].
+/// [`vad_gated_frames_with`] under [`gate_vad_config`] (the runner's VAD).
 pub fn vad_gated_frames(stereo_48k: &[u8]) -> GatedAudio {
-    vad_gated_frames_with(&preset_vad_config(), stereo_48k)
+    vad_gated_frames_with(&gate_vad_config(), stereo_48k)
 }
 
 /// Runs the energy VAD of `config` over 20 ms frames and gates like `VoiceAgent` with
@@ -204,6 +217,30 @@ pub fn mono_16k_to_stereo_48k(mono: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use node_webrtc_rust_speech::config::{SttConfig, SttVendor};
+
+    /// The gate of the vendor live measurements is the runner's VAD config, field for field.
+    #[test]
+    fn stt_gate_config_equals_the_runner_vad_config() {
+        let runner = crate::runner_config::runner_staging_config_with_lid(
+            SttConfig {
+                provider: SttVendor::Elevenlabs,
+                model: None,
+                model_path: None,
+                language: None,
+                api_key: None,
+                endpoint: None,
+                transport: None,
+            },
+            None,
+        );
+        assert_eq!(gate_vad_config(), runner.vad);
+        assert!((gate_vad_config().threshold - 0.05).abs() < f32::EPSILON);
+        assert_eq!(gate_vad_config().min_silence_duration_ms, 1100);
+        assert_eq!(gate_vad_config().stt_gate_hold_ms, 400);
+        assert_eq!(gate_vad_config().speech_pad_ms, 500);
+        assert_ne!(gate_vad_config(), preset_vad_config());
+    }
 
     fn mono(samples: &[i16]) -> Vec<u8> {
         samples.iter().flat_map(|s| s.to_le_bytes()).collect()
@@ -223,20 +260,48 @@ mod tests {
             .collect()
     }
 
-    /// Frame-RMS shaped like Deepgram Aura speech (~0.1 of full scale): the default energy VAD
-    /// (threshold 0.15) never opens on it as delivered.
+    /// Frame-RMS shaped like Deepgram Aura speech (~0.1 of full scale): the library default energy
+    /// VAD (threshold 0.15) never opens on it as delivered. The runner's (0.05) does.
     fn quiet_speech() -> Vec<u8> {
         [
             silence_stereo_48k(1000),
             tone_stereo_48k(1500, -14.0),
-            silence_stereo_48k(2000),
+            silence_stereo_48k(STT_CLIP_TAIL_MS),
         ]
         .concat()
     }
 
     #[test]
-    fn quiet_vendor_speech_is_not_gated_in_as_delivered() {
-        assert_eq!(vad_gated_frames(&quiet_speech()).starts, 0);
+    fn quiet_vendor_speech_is_not_gated_in_as_delivered_by_the_library_default() {
+        assert_eq!(
+            vad_gated_frames_with(&preset_vad_config(), &quiet_speech()).starts,
+            0
+        );
+        assert_eq!(vad_gated_frames(&quiet_speech()).starts, 1);
+    }
+
+    /// Groq STT roundtrip 6 of 9 (2026-10-19): the library default gate (threshold 0.15) never
+    /// opened on the quieter words of the phrase and pushed 3440 of 7039 ms, the runner's gate
+    /// (0.05) pushed 4340 ms and Groq returned 9 of 9 words. A quiet segment after a pause must
+    /// reach the vendor under the gate the tests use.
+    #[test]
+    fn quiet_words_after_a_pause_reach_the_vendor_under_the_runner_gate() {
+        let clip = [
+            silence_stereo_48k(1000),
+            tone_stereo_48k(800, -3.0),
+            silence_stereo_48k(2500),
+            tone_stereo_48k(800, -16.0),
+            silence_stereo_48k(STT_CLIP_TAIL_MS),
+        ]
+        .concat();
+        let under_default = vad_gated_frames_with(&preset_vad_config(), &clip);
+        let under_runner = vad_gated_frames(&clip);
+        assert_eq!(
+            under_default.starts, 1,
+            "the default gate misses the quiet words"
+        );
+        assert_eq!(under_runner.starts, 2, "the runner gate opens on them");
+        assert!(under_runner.pushed_ms >= under_default.pushed_ms + 800);
     }
 
     #[test]
@@ -276,7 +341,7 @@ mod tests {
             tone_stereo_48k(100, -3.0),
             silence_stereo_48k(400),
             tone_stereo_48k(600, -3.0),
-            silence_stereo_48k(2000),
+            silence_stereo_48k(STT_CLIP_TAIL_MS),
         ]
         .concat();
         let gated = vad_gated_frames(&clip);
@@ -293,6 +358,7 @@ mod tests {
             .count();
         // 5 frames of the first word + 30 of the second.
         assert!(voiced >= 35, "first word clipped: {voiced} voiced frames");
+        assert_eq!(pre_roll_frames(&gate_vad_config()), 35);
         assert_eq!(pre_roll_frames(&preset_vad_config()), 37);
     }
 

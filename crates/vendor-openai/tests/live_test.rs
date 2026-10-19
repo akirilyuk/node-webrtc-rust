@@ -22,7 +22,7 @@ use node_webrtc_rust_vendor_live_support::audio::{STT_PHRASE, STT_WORDS};
 use node_webrtc_rust_vendor_live_support::env::live_env;
 use node_webrtc_rust_vendor_live_support::stt::{assert_stt_contract, measure_stt};
 use node_webrtc_rust_vendor_live_support::tts::{assert_tts_contract, measure_tts};
-use node_webrtc_rust_vendor_live_support::vad_gate::silence_stereo_48k;
+use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
 use node_webrtc_rust_vendor_openai::{documented_realtime_model, OpenAiFactory, SttRealtimeMode};
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
@@ -73,7 +73,12 @@ async fn phrase_audio(key: &str) -> Vec<u8> {
         .into_iter()
         .flat_map(|chunk| chunk.pcm)
         .collect();
-    [silence_stereo_48k(1000), speech, silence_stereo_48k(2000)].concat()
+    [
+        silence_stereo_48k(1000),
+        speech,
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
+    ]
+    .concat()
 }
 
 /// One synthesis per transport: the streaming contract, and the transport that was really used.

@@ -28,7 +28,9 @@ use tokio::task::JoinHandle;
 
 use node_webrtc_rust_vendor_live_support::audio::{matched_words, rms, STT_PHRASE, STT_WORDS};
 use node_webrtc_rust_vendor_live_support::env::live_env;
-use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, vad_gated_frames};
+use node_webrtc_rust_vendor_live_support::vad_gate::{
+    silence_stereo_48k, vad_gated_frames, STT_CLIP_TAIL_MS,
+};
 
 const MODEL: &str = "drama-3";
 const TEXT: &str =
@@ -179,7 +181,12 @@ async fn transcribe_1_live_vad_gated_roundtrip() {
         .synthesize_ws(STT_PHRASE, voice.as_deref(), MODEL, None)
         .await
         .unwrap_or_else(|err| panic!("drama 3 synthesis failed: {err}"));
-    let stereo = [silence_stereo_48k(1000), speech, silence_stereo_48k(2000)].concat();
+    let stereo = [
+        silence_stereo_48k(1000),
+        speech,
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
+    ]
+    .concat();
 
     let gated = vad_gated_frames(&stereo);
     println!(

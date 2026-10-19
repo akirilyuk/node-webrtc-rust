@@ -20,7 +20,7 @@ use node_webrtc_rust_vendor_live_support::audio::{STT_PHRASE, STT_WORDS};
 use node_webrtc_rust_vendor_live_support::env::live_env;
 use node_webrtc_rust_vendor_live_support::stt::{assert_stt_contract, measure_stt};
 use node_webrtc_rust_vendor_live_support::tts::{assert_tts_contract, measure_tts};
-use node_webrtc_rust_vendor_live_support::vad_gate::silence_stereo_48k;
+use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
 const ID: &str = "azure";
@@ -129,7 +129,12 @@ async fn azure_stt_live_vad_gated_roundtrip() {
         .collect();
     // 1 s of silence before and 2 s after; the tail is longer than the VAD's 1300 ms hangover,
     // otherwise the speech segment never ends.
-    let stereo = [silence_stereo_48k(1000), speech, silence_stereo_48k(2000)].concat();
+    let stereo = [
+        silence_stereo_48k(1000),
+        speech,
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
+    ]
+    .concat();
 
     let mut provider = stt(&key);
     let sample = measure_stt(provider.as_mut(), &stereo, &STT_WORDS)

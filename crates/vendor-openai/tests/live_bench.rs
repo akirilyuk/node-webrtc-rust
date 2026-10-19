@@ -14,7 +14,7 @@ use node_webrtc_rust_vendor_live_support::bench::{
     bench_stt, bench_stt_warm, bench_tts, runs_from_env,
 };
 use node_webrtc_rust_vendor_live_support::env::live_env;
-use node_webrtc_rust_vendor_live_support::vad_gate::silence_stereo_48k;
+use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
 use node_webrtc_rust_vendor_openai::{documented_realtime_model, OpenAiFactory, SttRealtimeMode};
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
@@ -74,7 +74,12 @@ async fn bench() {
         .into_iter()
         .flat_map(|chunk| chunk.pcm)
         .collect();
-    let stereo = [silence_stereo_48k(1000), speech, silence_stereo_48k(2000)].concat();
+    let stereo = [
+        silence_stereo_48k(1000),
+        speech,
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
+    ]
+    .concat();
 
     // `whisper-1` is one file upload per utterance, so a second utterance on the same provider
     // is a normal request (the pooled connection is reused): cold and warm.

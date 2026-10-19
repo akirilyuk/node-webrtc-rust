@@ -316,7 +316,7 @@ pub fn assert_stt_contract(label: &str, provider_emits_partials: bool, sample: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vad_gate::{silence_stereo_48k, tone_stereo_48k};
+    use crate::vad_gate::{silence_stereo_48k, tone_stereo_48k, STT_CLIP_TAIL_MS};
     use async_trait::async_trait;
     use std::collections::VecDeque;
 
@@ -424,7 +424,7 @@ mod tests {
         [
             silence_stereo_48k(1000),
             tone_stereo_48k(1000, -12.0),
-            silence_stereo_48k(2000),
+            silence_stereo_48k(STT_CLIP_TAIL_MS),
         ]
         .concat()
     }
@@ -502,7 +502,7 @@ mod tests {
         let quiet = [
             silence_stereo_48k(1000),
             tone_stereo_48k(1500, -14.0),
-            silence_stereo_48k(2000),
+            silence_stereo_48k(STT_CLIP_TAIL_MS),
         ]
         .concat();
         let mut stt = FakeStt::new(FinalizeMode::Deferred, None);

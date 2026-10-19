@@ -18,13 +18,13 @@ pub mod vad_gate;
 const FIXTURE_16K_MONO: &[u8] = include_bytes!("../fixtures/quick-brown-fox-16k-mono.pcm");
 
 /// The STT fixture as the voice agent receives audio: 48 kHz stereo s16le, 1 s of silence, the
-/// phrase, then 2 s of silence. The tail is longer than the VAD's 1300 ms hangover, otherwise
+/// phrase, then 3 s of silence. The tail is longer than the VAD's 1100 ms hangover plus 400 ms hold, otherwise
 /// the speech segment never ends.
 pub fn stt_fixture_stereo_48k() -> Vec<u8> {
     [
         vad_gate::silence_stereo_48k(1000),
         vad_gate::mono_16k_to_stereo_48k(FIXTURE_16K_MONO),
-        vad_gate::silence_stereo_48k(2000),
+        vad_gate::silence_stereo_48k(vad_gate::STT_CLIP_TAIL_MS),
     ]
     .concat()
 }
@@ -38,7 +38,7 @@ mod tests {
         let stereo = stt_fixture_stereo_48k();
         let ms = stereo.len() / vad_gate::BYTES_PER_MS;
         // The phrase is roughly 2 to 4 s long.
-        assert!((5000..=7500).contains(&ms), "fixture clip is {ms} ms");
+        assert!((6000..=8500).contains(&ms), "fixture clip is {ms} ms");
         let gated = vad_gate::vad_gated_frames(&stereo);
         assert_eq!((gated.starts, gated.ends), (1, 1));
         assert!(gated.pushed_ms < gated.total_ms - 1000);

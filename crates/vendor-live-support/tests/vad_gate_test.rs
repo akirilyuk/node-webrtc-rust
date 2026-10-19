@@ -1,21 +1,21 @@
 //! Offline check of the VAD gate that the live STT tests rely on. No key, no network, and no
 //! `live` feature: it runs in normal CI.
 //!
-//! The gate uses the voice agent's default energy VAD (threshold 0.15, 250 ms min speech,
-//! 1100 ms min silence, 750 ms production pre-roll). A speech segment therefore ends 1100 ms after the
+//! The gate uses the runner's energy VAD (threshold 0.05, 200 ms min speech, 1100 ms min silence,
+//! 400 ms gate hold, 700 ms pre-roll). A speech segment therefore ends 1100 ms after the
 //! last voiced frame, so the trailing silence in these clips is longer than that.
 
-use node_webrtc_rust_speech::config::VadConfig;
 use node_webrtc_rust_vendor_live_support::vad_gate::{
-    silence_stereo_48k, tone_stereo_48k, vad_gated_frames, FRAME_BYTES,
+    gate_vad_config, silence_stereo_48k, tone_stereo_48k, vad_gated_frames, FRAME_BYTES,
+    STT_CLIP_TAIL_MS,
 };
 
 /// Default `min_silence_duration_ms`: the VAD hangover after the last voiced frame.
 const HANGOVER_MS: u32 = 1100;
 /// Default `stt_gate_hold_ms`: audio still sent to STT after the VAD's `SpeechEnd`.
 const GATE_HOLD_MS: u32 = 400;
-/// Production STT pre-roll: `speech_pad_ms` 500 (VOICE_AGENT_VAD_PRESET) + 250 ms minimum speech.
-const PRE_ROLL_MS: u32 = 750;
+/// STT pre-roll of the runner config: `speech_pad_ms` 500 + 200 ms minimum speech.
+const PRE_ROLL_MS: u32 = 700;
 
 fn clip(parts: &[Vec<u8>]) -> Vec<u8> {
     parts.concat()
@@ -23,13 +23,13 @@ fn clip(parts: &[Vec<u8>]) -> Vec<u8> {
 
 #[test]
 fn tone_between_silences_is_gated_to_one_segment() {
-    assert_eq!(VadConfig::default().min_silence_duration_ms, HANGOVER_MS);
-    assert_eq!(VadConfig::default().stt_gate_hold_ms, GATE_HOLD_MS);
+    assert_eq!(gate_vad_config().min_silence_duration_ms, HANGOVER_MS);
+    assert_eq!(gate_vad_config().stt_gate_hold_ms, GATE_HOLD_MS);
     // 1 s silence, 1 s tone at -12 dBFS, 2 s silence.
     let stereo = clip(&[
         silence_stereo_48k(1000),
         tone_stereo_48k(1000, -12.0),
-        silence_stereo_48k(2000),
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
     ]);
     let gated = vad_gated_frames(&stereo);
 
@@ -37,7 +37,7 @@ fn tone_between_silences_is_gated_to_one_segment() {
         "vad_gate pushed_ms={} total_ms={} starts={} ends={}",
         gated.pushed_ms, gated.total_ms, gated.starts, gated.ends
     );
-    assert_eq!(gated.total_ms, 4000);
+    assert_eq!(gated.total_ms, 5000);
     assert_eq!(gated.starts, 1, "one SpeechStart");
     assert_eq!(gated.ends, 1, "one SpeechEnd");
     assert!(
@@ -61,7 +61,7 @@ fn pre_roll_covers_the_start_of_the_tone() {
     let stereo = clip(&[
         silence_stereo_48k(1000),
         tone_stereo_48k(1000, -12.0),
-        silence_stereo_48k(2000),
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
     ]);
     let gated = vad_gated_frames(&stereo);
     // The first emitted frame is up to 750 ms before SpeechStart, which itself fires 250 ms
@@ -96,9 +96,9 @@ fn two_segments_are_gated_separately() {
     let stereo = clip(&[
         silence_stereo_48k(1000),
         tone_stereo_48k(1000, -12.0),
-        silence_stereo_48k(2000),
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
         tone_stereo_48k(1000, -12.0),
-        silence_stereo_48k(2000),
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
     ]);
     let gated = vad_gated_frames(&stereo);
     assert_eq!((gated.starts, gated.ends), (2, 2));

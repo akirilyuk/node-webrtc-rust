@@ -58,7 +58,8 @@ with `stt::run_utterance` once its docs allow it.
 `fixtures/quick-brown-fox-16k-mono.pcm` is 16 kHz mono s16le of "The quick brown fox jumps over
 the lazy dog." (3.36 s), rendered by local Sherpa `vits-piper-en_US-amy-low`.
 `stt_fixture_stereo_48k()` returns it as 1 s of silence, the phrase upsampled to 48 kHz stereo,
-and 2 s of silence (longer than the VAD's 1300 ms hangover, so the segment ends).
+and 3 s of silence (`STT_CLIP_TAIL_MS`: the gate ends the segment 1100 ms after the speech and holds 400 ms more, so at least 1 s is not streamed).
+The gate (`vad_gate::gate_vad_config`) is the runner's VAD config from `runner_config::runner_vad_config` (threshold 0.05, minimum silence 1100 ms, hold 400 ms, pad 500 ms); a unit test pins the two together.
 
 Regenerate on purpose (Piper noise changes the bytes on every render):
 

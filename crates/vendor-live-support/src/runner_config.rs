@@ -41,6 +41,34 @@ pub fn whisper_tiny_model_dir() -> Option<PathBuf> {
     })
 }
 
+/// The VAD block of the runner's session config on staging (`voice agent config resolved`).
+/// The STT gate of the per-vendor live measurements ([`crate::vad_gate::gate_vad_config`]) uses
+/// exactly this, so the audio a vendor test pushes is the audio the runner pushes.
+pub fn runner_vad_config() -> VadConfig {
+    VadConfig {
+        enabled: true,
+        provider: "energy".into(),
+        gate_stt: true,
+        gate_stt_open_on_pending: true,
+        threshold: 0.05,
+        min_speech_duration_ms: 200,
+        min_silence_duration_ms: 1100,
+        speech_pad_ms: 500,
+        stt_gate_hold_ms: 400,
+        stt_listen_timeout_ms: 4000,
+        utterance_finalize_timeout_ms: 1500,
+        barge_in: BargeInConfig {
+            enabled: true,
+            use_vad: true,
+            require_stt_partial: true,
+            min_stt_partial_tokens: 2,
+            flush_tts: true,
+            agent_playback_guard_ms: 0,
+        },
+        ..VadConfig::default()
+    }
+}
+
 /// The runner's config for `stt` (`model`, `language`, key and the rest of the vendor block are the
 /// caller's). Panics, naming the missing piece, when language ID cannot run: the staging bug may
 /// depend on it, so a run without it must not pass as a reproduction.
@@ -83,28 +111,7 @@ pub fn runner_staging_config_with_lid(
         events: EventsConfig {
             mode: EventDeliveryMode::Both,
         },
-        vad: VadConfig {
-            enabled: true,
-            provider: "energy".into(),
-            gate_stt: true,
-            gate_stt_open_on_pending: true,
-            threshold: 0.05,
-            min_speech_duration_ms: 200,
-            min_silence_duration_ms: 1100,
-            speech_pad_ms: 500,
-            stt_gate_hold_ms: 400,
-            stt_listen_timeout_ms: 4000,
-            utterance_finalize_timeout_ms: 1500,
-            barge_in: BargeInConfig {
-                enabled: true,
-                use_vad: true,
-                require_stt_partial: true,
-                min_stt_partial_tokens: 2,
-                flush_tts: true,
-                agent_playback_guard_ms: 0,
-            },
-            ..VadConfig::default()
-        },
+        vad: runner_vad_config(),
         ..VoiceAgentConfig::default()
     }
 }

@@ -13,7 +13,7 @@ use node_webrtc_rust_vendor_elevenlabs::ElevenLabsFactory;
 use node_webrtc_rust_vendor_live_support::audio::STT_PHRASE;
 use node_webrtc_rust_vendor_live_support::bench::{bench_stt, bench_tts, runs_from_env};
 use node_webrtc_rust_vendor_live_support::env::live_env;
-use node_webrtc_rust_vendor_live_support::vad_gate::silence_stereo_48k;
+use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
 const ID: &str = "elevenlabs";
@@ -71,7 +71,12 @@ async fn bench() {
         .into_iter()
         .flat_map(|chunk| chunk.pcm)
         .collect();
-    let stereo = [silence_stereo_48k(1000), speech, silence_stereo_48k(2000)].concat();
+    let stereo = [
+        silence_stereo_48k(1000),
+        speech,
+        silence_stereo_48k(STT_CLIP_TAIL_MS),
+    ]
+    .concat();
     bench_stt(ID, "websocket", stt_model, || stt(&key), &stereo, runs)
         .await
         .unwrap_or_else(|err| panic!("{ID} stt bench failed: {err}"));

@@ -157,6 +157,7 @@ async fn make_agent(scripts: Vec<(&'static str, Script)>) -> Arc<VoiceAgent> {
             voice: None,
             api_key: None,
             endpoint: None,
+            transport: None,
             sentence_case: Default::default(),
         }),
         ..Default::default()

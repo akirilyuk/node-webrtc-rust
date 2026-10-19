@@ -81,3 +81,10 @@ NWR_BENCH_RUNS=3 DEEPGRAM_API_KEY=... cargo test -p node-webrtc-rust-vendor-deep
 Without the key both skip; `DEEPGRAM_LIVE_REQUIRED=1` turns a missing key into a panic (CI sets it, `.github/workflows/vendor-live-deepgram.yml`). The bench runs through `vendor-bench.yml`.
 
 HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.
+
+## Latency benchmark
+
+The TTS and STT latency of this crate against the real API is measured with
+`npm run bench:vendors -- --vendors deepgram` (from `node-webrtc-rust/`, keys as in the
+[benchmark quick start](../../benchmarks/README.md)). What each number means:
+[`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).

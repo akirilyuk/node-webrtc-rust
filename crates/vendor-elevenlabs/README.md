@@ -83,3 +83,10 @@ NWR_BENCH_RUNS=3 ELEVENLABS_API_KEY=... cargo test -p node-webrtc-rust-vendor-el
 Without the key both skip; `ELEVENLABS_LIVE_REQUIRED=1` turns a missing key into a panic (CI sets it, `.github/workflows/vendor-live-elevenlabs.yml`). The bench runs through `vendor-bench.yml`.
 
 HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.
+
+## Latency benchmark
+
+The TTS and STT latency of this crate against the real API is measured with
+`npm run bench:vendors -- --vendors elevenlabs` (from `node-webrtc-rust/`, keys as in the
+[benchmark quick start](../../benchmarks/README.md)). What each number means:
+[`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).

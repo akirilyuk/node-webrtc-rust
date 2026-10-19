@@ -1,44 +1,41 @@
 # Benchmarks
 
-Reproducible latency measurements of the cloud speech vendors (TTS time to first audio, STT open,
-partial and final latency), run against the vendors' real APIs. The CLI wraps the Rust
-`crates/vendor-<id>/tests/live_bench.rs` benches and records where it ran, so results from
-different machines and regions can be compared.
+Latency of the cloud speech vendors (TTS time to first audio, STT open, first partial and final),
+measured against the vendors' real APIs by the vendor crates of this library. The CLI records
+where it ran, so a run on your machine can be compared with ours.
 
-`METHODOLOGY.md` follows.
+## Prerequisites
+
+A Rust toolchain, Node 18 or newer, and an API key for each vendor you want to measure. A vendor
+without keys is skipped (`--require` makes that a failure). The variable names per vendor are in
+[`METHODOLOGY.md`](METHODOLOGY.md#reproduce).
 
 ## Run
 
 ```bash
-npm run bench:vendors -- --vendors deepgram --runs 3 --region my-host --env-file <path>
+npm run bench:vendors -- --vendors deepgram --runs 5 --region my-host --env-file <path>
 ```
 
-Without keys a vendor is skipped (add `--require` to fail instead). Results go to
-`benchmarks/results/<date>-<region>/`: `raw.jsonl`, `summary.json`, `summary.md`,
-`environment.json`. Flags: `--vendors <list|all>`, `--exclude <list>`, `--runs <n>`,
-`--transport <all|websocket|http|auto>`, `--region <label>`, `--out <dir>`, `--env-file <path>`,
-`--require`, `--force`.
+`--env-file` takes whitespace-separated `NAME=value` tokens; the process environment works too.
+Other flags: `--exclude`, `--transport`, `--out`, `--require`, `--force`. Keys are never printed
+or written to a result file.
 
-Keys come from the process environment or from `--env-file` (whitespace-separated `NAME=value`
-tokens). The library names:
+## Output
 
-| Vendor     | Variables                                                                      |
-| ---------- | ------------------------------------------------------------------------------ |
-| deepgram   | `DEEPGRAM_API_KEY`                                                             |
-| elevenlabs | `ELEVENLABS_API_KEY`                                                           |
-| cartesia   | `CARTESIA_API_KEY`, `CARTESIA_VOICE_ID`                                        |
-| assemblyai | `ASSEMBLYAI_API_KEY`                                                           |
-| google     | `GOOGLE_API_KEY`, or `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` |
-| groq       | `GROQ_API_KEY`                                                                 |
-| azure      | `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`                                      |
-| aws        | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`                     |
-| openai     | `OPENAI_API_KEY`                                                               |
-| fishaudio  | `FISH_API_KEY`                                                                 |
+Results go to `results/<date>-<region>/`:
 
-A key value is never printed or written to a result file.
+- `raw.jsonl`: one record per sample.
+- `summary.json` and `summary.md`: median, p90, min, max and n per group.
+- `environment.json`: nwr version, git SHA, host, and DNS/TCP/TLS times to each vendor host.
 
 ## Compare two runs
 
 ```bash
-npm run bench:compare -- benchmarks/results/<a> benchmarks/results/<b>
+npm run bench:compare -- benchmarks/results/<ours> benchmarks/results/<yours>
 ```
+
+## More
+
+- [`METHODOLOGY.md`](METHODOLOGY.md): inputs, cold and warm, what each metric starts and stops
+  on, and what the numbers leave out.
+- [`results/`](results/): published runs.

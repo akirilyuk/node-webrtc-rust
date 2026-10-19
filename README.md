@@ -17,6 +17,7 @@ Unlike standalone media servers (Mediasoup, LiveKit), there is **no separate SFU
 
 - [Why build voice agents here?](#why-build-voice-agents-here)
 - [Performance](#performance)
+- [Benchmarks](#benchmarks)
 - [Agentic voice quick start](#agentic-voice-quick-start)
 - [Voice pipeline architecture](#voice-pipeline-architecture)
 - [STT/TTS vendors and config](#stttts-vendors-and-config)
@@ -96,6 +97,12 @@ Speech engine numbers were measured in a container limited to one CPU; media pat
 - Encoding the Opus audio of one session takes 112 µs per 20 ms stereo frame, about 0.6% of one core ([details](docs/performance.md#media-path)).
 - In the 8-session voice loopback test, synthesized speech starts playing 71 ms after the request (p50) ([details](docs/performance.md#voice-loopback-under-load)).
 - Since 0.10.0 the per-frame voice media loops (mix pump, inbound audio, speech events) run in Rust. With 10 concurrent voice sessions in one process, the Node.js main thread spends 20 ms of CPU per second on them instead of 107 ms ([details](docs/performance.md#voice-media-loops-in-rust-0100)), and a CPU-starved host no longer loses words ([details](docs/performance.md#behavior-under-cpu-starvation)).
+
+---
+
+## Benchmarks
+
+Latency of the cloud speech vendors (TTS time to first audio, STT open, first partial and final), measured against their real APIs with a CLI you can run on your own machine and compare with our results: [`benchmarks/README.md`](benchmarks/README.md). How each number is measured: [`benchmarks/METHODOLOGY.md`](benchmarks/METHODOLOGY.md).
 
 ---
 

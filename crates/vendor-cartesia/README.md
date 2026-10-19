@@ -70,3 +70,10 @@ NWR_BENCH_RUNS=3 CARTESIA_API_KEY=... CARTESIA_VOICE_ID=... cargo test -p node-w
 ```
 
 Without both variables they skip; `CARTESIA_LIVE_REQUIRED=1` turns a missing one into a panic that names it (CI sets it, `.github/workflows/vendor-live-cartesia.yml`; secrets `CARTESIA_LIVE_KEY` and `CARTESIA_LIVE_VOICE_ID`). The bench runs through `vendor-bench.yml`. The mock-server tests run in PR integration (`cargo vendor-cartesia`).
+
+## Latency benchmark
+
+The TTS latency of this crate against the real API is measured with
+`npm run bench:vendors -- --vendors cartesia` (from `node-webrtc-rust/`, keys as in the
+[benchmark quick start](../../benchmarks/README.md)). What each number means:
+[`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).

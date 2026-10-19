@@ -80,3 +80,10 @@ NWR_BENCH_RUNS=3 AZURE_SPEECH_KEY=... AZURE_SPEECH_REGION=... cargo test -p node
 ```
 
 Without both variables they skip; `AZURE_LIVE_REQUIRED=1` turns a missing one into a panic that names it (CI sets it, `.github/workflows/vendor-live-azure.yml`; secrets `AZURE_LIVE_SPEECH_KEY` and `AZURE_LIVE_SPEECH_REGION`). The STT test synthesizes its phrase with Azure TTS. The bench runs through `vendor-bench.yml`. The mock-server tests run in PR integration (`cargo vendor-azure`).
+
+## Latency benchmark
+
+The TTS and STT latency of this crate against the real API is measured with
+`npm run bench:vendors -- --vendors azure` (from `node-webrtc-rust/`, keys as in the
+[benchmark quick start](../../benchmarks/README.md)). What each number means:
+[`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).

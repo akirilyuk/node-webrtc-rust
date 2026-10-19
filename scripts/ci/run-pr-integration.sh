@@ -91,7 +91,7 @@ if suite_enabled rust; then
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-cartesia" -- \
     cargo test -p node-webrtc-rust-vendor-cartesia --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-assemblyai" -- \
-    cargo test -p node-webrtc-rust-vendor-assemblyai --features live --lib --test mock_server_test --test vendor_test
+    cargo test -p node-webrtc-rust-vendor-assemblyai --features live --lib --test mock_server_test --test tls_provider_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-deepgram" -- \
     cargo test -p node-webrtc-rust-vendor-deepgram --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-elevenlabs" -- \

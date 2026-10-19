@@ -251,8 +251,8 @@ async fn elevenlabs_stt_commit_answer_after_next_audio_keeps_each_utterance() {
             stereo
                 .chunks(3840)
                 .map(|frame| {
-                    Bytes::from(node_webrtc_rust_speech::pcm::i16_samples_to_bytes(
-                        &stereo_48k_to_mono_16k(frame),
+                    node_webrtc_rust_speech::pcm::i16_samples_to_bytes(&stereo_48k_to_mono_16k(
+                        frame,
                     ))
                 })
                 .collect(),

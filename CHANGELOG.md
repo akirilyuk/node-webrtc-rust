@@ -8,13 +8,33 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-19
+
 ### Added
 
-- **voice:** `sendTextToTTS(text, { replyId })` tags a reply. Tagged replies emit `agent_reply_start` (`replyId`, `firstChunkMs`) at their first outbound frame and `agent_reply_end` (`replyId`, `playedMs`, `interrupted`) when they finish, are cut off by barge-in, `flushTts()` or `stop()`, or are dropped from the queue. `tts_phrase_cache_hit`, `tts_wait` and `agent_speak_failed` carry the `replyId` of their reply. Replies without a `replyId` emit no new events.
+- **speech:** selectable STT/TTS transport. `SttConfig.transport` / `TtsConfig.transport` take `auto` (default), `websocket` or `http`, validated against the new voice-catalog fields `ttsTransports`, `sttTransports`, `defaultTtsTransport` and `defaultSttTransport`. Selectable today: Deepgram, ElevenLabs, Cartesia and Fish Audio TTS (#470).
+- **speech:** `last_transport()` on TTS and STT providers reports how the last request reached the vendor (`h2`, `http/1.1`, `ws`, `grpc`, `sdk`) (#470).
+- **speech:** `MonoToStereo48k`, a streaming linear-interpolation upsampler used by every cloud TTS vendor (#470).
+- **google:** service-account credentials for V2 `StreamingRecognize` (`chirp_3`) and Chirp 3 HD `StreamingSynthesize`, with the implicit `_` recognizer from `GOOGLE_CLOUD_PROJECT` / `GOOGLE_SPEECH_LOCATION` (#470).
+- **voice:** `sendTextToTTS(text, { replyId })` tags a reply. Tagged replies emit `agent_reply_start` (`replyId`, `firstChunkMs`) at their first outbound frame and `agent_reply_end` (`replyId`, `playedMs`, `interrupted`) when they finish, are cut off by barge-in, `flushTts()` or `stop()`, or are dropped from the queue. `tts_phrase_cache_hit`, `tts_wait` and `agent_speak_failed` carry the `replyId` of their reply. Replies without a `replyId` emit no new events. (#474)
 
 ### Changed
 
-- **speech:** `SendTextToTtsOptions` (Rust) gains `reply_id` and is no longer `Copy`.
+- **speech:** cloud vendors use one pooled HTTP client per provider with HTTP/2 when the vendor negotiates it, and every connect, open and stream wait is bounded (#470).
+- **speech:** TTS audio is forwarded to the sink as it arrives on every documented streaming path: Deepgram REST (`container=none`), Cartesia `/tts/bytes`, Groq WAV, Azure raw PCM, Polly `audio_stream`, Google StreamingSynthesize. Deepgram Speak and Cartesia WebSockets are reused across utterances (#470).
+- **speech:** Deepgram and ElevenLabs STT end an utterance at the agent's finalize (`FinalizeMode::Deferred`): Deepgram joins its `is_final` segments into one final, ElevenLabs waits for the `committed_transcript` (#470).
+- **speech:** `SendTextToTtsOptions` (Rust) gains `reply_id` and is no longer `Copy`. (#474)
+
+### Fixed
+
+- **azure, aws:** TTS played 3x fast (16 kHz audio sent as 48 kHz); **groq:** 2x fast. Audio is now resampled to 48 kHz (#470).
+- **google:** REST TTS played its WAV header as audio; StreamingSynthesize played at half speed (24 kHz treated as 48 kHz) (#470).
+- **elevenlabs:** WebSocket TTS was cut short (the socket's default format was read as PCM); it now requests `pcm_48000` (#470).
+- **elevenlabs, deepgram:** STT went deaf after the vendor closed an idle socket (about 15–20 s without audio before the first word). The STT actor reopens a closed stream before the next audio, and the no-partial window waits for the reopen (#470).
+- **elevenlabs:** a partial repeating the just-committed segment opened a second utterance with a duplicate final (#470).
+- **deepgram:** one spoken phrase could produce several finals (#470).
+- **assemblyai:** the first connect panicked without a rustls crypto provider; the socket task died on Ping/Pong frames; `push_audio` dropped audio silently after the socket closed; finalize now sends `ForceEndpoint` (#470).
+- **groq, azure, aws, google:** a failed STT request surfaced as silence; it is now an error (#470).
 
 ## [0.11.6] - 2026-10-18
 

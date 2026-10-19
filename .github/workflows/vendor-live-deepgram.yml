@@ -64,7 +64,7 @@ jobs:
         run: |
           cargo test -p node-webrtc-rust-vendor-deepgram --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'deepgram_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status
 
-      - name: Deepgram full-stack STT (VoiceAgent: production VAD preset, runner staging config, idle session)
+      - name: Deepgram full-stack STT (VoiceAgent, production VAD preset, runner staging config, idle session)
         shell: bash
         env:
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_LIVE_KEY }}

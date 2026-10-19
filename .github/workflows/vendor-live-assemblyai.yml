@@ -64,7 +64,7 @@ jobs:
         run: |
           cargo test -p node-webrtc-rust-vendor-assemblyai --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'assemblyai_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status
 
-      - name: AssemblyAI full-stack STT (VoiceAgent: production VAD preset, runner staging config)
+      - name: AssemblyAI full-stack STT (VoiceAgent, production VAD preset, runner staging config)
         shell: bash
         env:
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_LIVE_KEY }}

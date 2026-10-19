@@ -31,6 +31,8 @@ use crate::registry::VendorRegistry;
 pub const STT_ACTOR_STOP_MS: u64 = 3_000;
 /// Longest wait for `SttProvider::start`.
 pub const STT_ACTOR_START_MS: u64 = 15_000;
+/// Wait after a failed reopen of a stream the vendor closed, before the next attempt.
+pub const STT_REOPEN_BACKOFF_MS: u64 = 2_000;
 /// Interval at which a busy actor drains provider outputs when no command arrives. An idle actor
 /// (nothing outstanding, no work for [`STT_ACTOR_BUSY_WINDOW_MS`]) does not poll at all: it
 /// sleeps until a command or a deadline arrives, and drains leftovers at the next command.
@@ -255,6 +257,7 @@ pub fn spawn_stt_actor(
         parked: None,
         last_work_at: None,
         backlog_logged: false,
+        reopen_not_before: None,
         last_open_pending: false,
     };
     let join = tokio::spawn(actor.run(cmd_rx));
@@ -297,6 +300,8 @@ struct Actor {
     /// an output; keeps the actor busy for a while after it.
     last_work_at: Option<Instant>,
     backlog_logged: bool,
+    /// After a failed reopen of a dead stream: no new attempt before this time.
+    reopen_not_before: Option<Instant>,
     /// `open_pending()` as seen by the last `observe_open_transition` call.
     last_open_pending: bool,
 }
@@ -670,9 +675,56 @@ impl Actor {
         true
     }
 
+    /// The vendor closes a stream that got no audio for a while (the gate is closed between
+    /// utterances). Reopens it before the first audio of the next utterance goes out, with the
+    /// open marked pending so the agent's no-partial window (C1) waits for it.
+    /// One failed attempt blocks the next for [`STT_REOPEN_BACKOFF_MS`]; the audio of that gap is
+    /// lost and the failure is reported once.
+    async fn reopen_dead_stream(&mut self) {
+        let now = Instant::now();
+        let dead = self.provider.as_ref().is_some_and(|p| !p.stream_alive());
+        // A finalize still outstanding means the stream died mid-utterance: its markers and the
+        // loss error are queued in the provider, and `start` would clear them.
+        if !dead
+            || !self.outstanding.is_empty()
+            || self.reopen_not_before.is_some_and(|at| at > now)
+        {
+            return;
+        }
+        // Whatever the dead stream still holds (an idle close queues nothing) is delivered first.
+        self.drain_outputs(None).await;
+        let Some(provider) = self.provider.as_mut() else {
+            return;
+        };
+        let vendor = provider.vendor_name();
+        self.status.open_pending.store(true, Ordering::SeqCst);
+        let started_at = Instant::now();
+        let result = start_bounded(provider.as_mut()).await;
+        match result {
+            Ok(()) => {
+                self.reopen_not_before = None;
+                eprintln!(
+                    "[speech] stt stream closed by the vendor while idle; reopened in {} ms (vendor={vendor})",
+                    started_at.elapsed().as_millis()
+                );
+            }
+            Err(e) => {
+                self.reopen_not_before =
+                    Some(Instant::now() + Duration::from_millis(STT_REOPEN_BACKOFF_MS));
+                eprintln!(
+                    "[speech] stt stream closed by the vendor while idle; reopen failed after {} ms (vendor={vendor})",
+                    started_at.elapsed().as_millis()
+                );
+                self.emit_vendor_error(None, e.to_string());
+            }
+        }
+        self.publish_status();
+    }
+
     async fn on_audio(&mut self, pcm: Bytes) {
         let len = pcm.len() as u64;
         self.last_work_at = Some(Instant::now());
+        self.reopen_dead_stream().await;
         if let Some(key) = self.inline_late_key.take() {
             self.drain_outputs(Some(key)).await;
         }

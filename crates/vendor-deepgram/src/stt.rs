@@ -195,6 +195,13 @@ impl SttProvider for DeepgramStt {
         FinalizeMode::Deferred
     }
 
+    /// The vendor closes a socket that gets no audio for a while; the agent gates audio away
+    /// between utterances. `false` after such a close, so the STT actor reopens the stream
+    /// before the next audio (Deepgram would otherwise drop it and the turn ends with no final).
+    fn stream_alive(&self) -> bool {
+        !self.running || self.shared.lock().alive
+    }
+
     fn finalize_wait_ms(&self) -> u64 {
         FINALIZE_WAIT_MS
     }

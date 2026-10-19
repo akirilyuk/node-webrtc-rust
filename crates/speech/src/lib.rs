@@ -59,6 +59,8 @@ pub mod registry;
 pub mod session_recorder;
 #[doc(hidden)]
 pub mod stt_actor;
+#[doc(hidden)]
+pub mod stt_deferred;
 pub mod stt_hold;
 pub mod stt_pre_roll;
 pub mod transport;

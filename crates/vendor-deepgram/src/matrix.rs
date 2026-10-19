@@ -49,9 +49,31 @@ pub fn validate_listen_model(model: &str) -> Result<(), String> {
 
 /// Build documented live listen WebSocket URL (query params from live streaming guide).
 pub fn listen_websocket_url(model: &str, language: Option<&str>) -> Result<String, String> {
+    listen_websocket_url_at(None, model, language)
+}
+
+/// Same as [`listen_websocket_url`] against `base` (`SttConfig.endpoint`, an `http(s)://` or
+/// `ws(s)://` origin); `None` is the Deepgram API.
+pub fn listen_websocket_url_at(
+    base: Option<&str>,
+    model: &str,
+    language: Option<&str>,
+) -> Result<String, String> {
     validate_listen_model(model)?;
+    let base = base
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .unwrap_or(crate::tts_matrix::DEFAULT_BASE_URL)
+        .trim_end_matches('/');
+    let ws_base = if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        base.to_string()
+    };
     let mut url = format!(
-        "wss://api.deepgram.com/v1/listen?model={model}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true"
+        "{ws_base}/v1/listen?model={model}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true"
     );
     if let Some(lang) = language.filter(|l| !l.is_empty()) {
         url.push_str("&language=");
@@ -60,37 +82,57 @@ pub fn listen_websocket_url(model: &str, language: Option<&str>) -> Result<Strin
     Ok(url)
 }
 
-/// Parse documented `Results` WebSocket message (`type`, `is_final`, `channel.alternatives.0.transcript`).
-pub fn parse_listen_results_message(
-    raw: &str,
-) -> Option<node_webrtc_rust_speech::pipeline::SttTranscript> {
-    use node_webrtc_rust_speech::pipeline::SttTranscript;
+/// Documented client message that flushes the stream: the server processes all unprocessed audio
+/// and answers with `Results` that carry `from_finalize: true`.
+pub const FINALIZE_MESSAGE: &str = r#"{"type":"Finalize"}"#;
+
+/// A `Results` message reduced to what the provider acts on. Text is trimmed (may be empty).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListenResults {
+    pub text: String,
+    pub is_final: bool,
+    /// `from_finalize`: the answer to a `Finalize` message.
+    pub from_finalize: bool,
+    /// `start` and `start + duration`, seconds of audio since the stream began.
+    pub start_s: f64,
+    pub end_s: f64,
+}
+
+/// Parse a documented `Results` WebSocket message (`type`, `is_final`, `from_finalize`, `start`,
+/// `duration`, `channel.alternatives.0.transcript`). Other message types return `None`.
+pub fn parse_listen_results(raw: &str) -> Option<ListenResults> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     if value.get("type")?.as_str()? != "Results" {
         return None;
     }
-    let transcript = value
+    let text = value
         .pointer("/channel/alternatives/0/transcript")?
         .as_str()?
-        .trim();
-    if transcript.is_empty() {
-        return None;
-    }
-    let is_final = value
-        .get("is_final")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    if is_final {
-        Some(SttTranscript::Final(transcript.to_string()))
-    } else {
-        Some(SttTranscript::Partial(transcript.to_string()))
-    }
+        .trim()
+        .to_string();
+    let start_s = value.get("start").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let duration = value
+        .get("duration")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    Some(ListenResults {
+        text,
+        is_final: value
+            .get("is_final")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        from_finalize: value
+            .get("from_finalize")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        start_s,
+        end_s: start_s + duration,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use node_webrtc_rust_speech::pipeline::SttTranscript;
 
     #[test]
     fn implemented_transports_match_the_catalog() {
@@ -139,16 +181,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_interim_and_final() {
-        let partial = parse_listen_results_message(
-            r#"{"type":"Results","is_final":false,"channel":{"alternatives":[{"transcript":"hello"}]}}"#,
+    fn parse_interim_final_and_finalize_answer() {
+        let r = parse_listen_results(
+            r#"{"type":"Results","start":1.5,"duration":2.0,"is_final":false,"channel":{"alternatives":[{"transcript":"hello"}]}}"#,
         )
         .unwrap();
-        assert_eq!(partial, SttTranscript::Partial("hello".into()));
-        let fin = parse_listen_results_message(
-            r#"{"type":"Results","is_final":true,"channel":{"alternatives":[{"transcript":"hello world"}]}}"#,
+        assert!(!r.is_final && !r.from_finalize);
+        assert_eq!((r.text.as_str(), r.start_s, r.end_s), ("hello", 1.5, 3.5));
+        let r = parse_listen_results(
+            r#"{"type":"Results","is_final":true,"from_finalize":true,"channel":{"alternatives":[{"transcript":""}]}}"#,
         )
         .unwrap();
-        assert_eq!(fin, SttTranscript::Final("hello world".into()));
+        assert!(r.is_final && r.from_finalize && r.text.is_empty());
+        assert!(parse_listen_results(r#"{"type":"Metadata"}"#).is_none());
+    }
+
+    #[test]
+    fn listen_url_follows_the_endpoint_override() {
+        let url = listen_websocket_url_at(Some("http://127.0.0.1:9/"), "nova-3", None).unwrap();
+        assert!(url.starts_with("ws://127.0.0.1:9/v1/listen?model=nova-3&"));
     }
 }

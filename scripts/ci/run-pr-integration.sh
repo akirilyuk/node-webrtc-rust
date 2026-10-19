@@ -16,6 +16,8 @@ CI_STEP="$ROOT/scripts/ci/ci-step.sh"
 DEFAULT_CARGO_LIB_TIMEOUT_SEC="${CI_CARGO_LIB_TIMEOUT_SEC:-180}"
 DEFAULT_CARGO_PEER_TEST_TIMEOUT_SEC="${CI_CARGO_PEER_TEST_TIMEOUT_SEC:-420}"
 DEFAULT_NPM_TEST_TIMEOUT_SEC="${CI_NPM_TEST_TIMEOUT_SEC:-600}"
+# Budget for compiling every cargo test binary below (cache-dependent: cold cache ~2x warm).
+DEFAULT_CARGO_BUILD_TIMEOUT_SEC="${CI_CARGO_BUILD_TIMEOUT_SEC:-900}"
 
 CI_TEST_SUITES="${CI_TEST_SUITES:-}"
 suite_enabled() { [[ -z "$CI_TEST_SUITES" || ",$CI_TEST_SUITES," == *",$1,"* ]]; }
@@ -74,6 +76,40 @@ if suite_enabled rust; then
   # Lesson: development/node-webrtc-rust/features/2026-07-30-opus-sdp-omit-unset.md
   unset WEBRTC_OPUS_BITRATE_BPS
   unset WEBRTC_OPUS_APPLICATION
+  # Compile the test binaries in their own step. The per-crate caps below are wall-clock caps on a
+  # whole `cargo test`, so they used to include a compile time that depends on the build cache: on
+  # release-prep PR #475 the speech step compiled for 76 s on a cold cache, ran its tests for 104 s
+  # and hit the 180 s cap (exit 124) although it took 139-143 s on warm runs (2026-10-19,
+  # test.time-budget-creep). With the compile separated, the later caps measure test time only, and
+  # ci-step.sh warns when any step uses >= 75 % of its cap.
+  # Keep this list in lockstep with the cargo steps below: each line is that step's `cargo test`
+  # (same -p, --features, --manifest-path and test targets) plus --no-run, so the artifacts are
+  # identical (same feature unification) and the later step does not compile again. Guard:
+  # scripts/ci/run-pr-integration.test.sh.
+  cargo_test_build() {
+    set -euo pipefail
+    cargo test --no-run -p node-webrtc-rust-core --lib --test peer_connection_test
+    cargo test --no-run -p node-webrtc-rust-mixer
+    cargo test --no-run -p node-webrtc-rust-conference
+    cargo test --no-run -p node-webrtc-rust-speech
+    cargo test --no-run -p node-webrtc-rust-vendor-cartesia --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-assemblyai --features live --lib --test mock_server_test --test tls_provider_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-deepgram --features live --lib --test http_pool_test --test mock_server_test --test stt_agent_mock_test --test stt_mock_server_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-elevenlabs --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-fishaudio --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-azure --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-groq --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-openai --features live --lib --test vendor_test --test http_pool_test --test mock_server_test
+    cargo test --no-run -p node-webrtc-rust-vendor-google --features live --lib --test vendor_test --test http_pool_test --test mock_server_test
+    cargo test --no-run -p node-webrtc-rust-vendor-aws --features live --lib --test mock_server_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-live-support
+    cargo test --no-run --manifest-path third_party/dtls/Cargo.toml
+    cargo test --no-run --manifest-path third_party/webrtc-ice/Cargo.toml
+    cargo check --benches -p node-webrtc-rust-speech -p node-webrtc-rust-vendor-sherpa-onnx -p node-webrtc-rust-core
+  }
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_BUILD_TIMEOUT_SEC" "cargo test build" -- \
+    bash -c "$(declare -f cargo_test_build); cargo_test_build"
+
   # WebRTC peer integration tests flake when run in parallel (shared ICE/ports).
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo core --lib" -- \
     cargo test -p node-webrtc-rust-core --lib

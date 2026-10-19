@@ -5,8 +5,11 @@ name: Vendor latency bench
 # benchmarks/scripts/bench-vendors.mjs (`npm run bench:vendors`). It spends vendor credit and
 # needs the vendor secrets.
 #
+# `all` measures the published vendor set; unpublished vendors (benchmarks/scripts/vendors.mjs)
+# run only when chosen by name.
+#
 # Triggers:
-#   - label `vendor-bench` on a same-repo pull request: runs all ten vendors, one at a time, from
+#   - label `vendor-bench` on a same-repo pull request: runs the published vendor set (`all`), one at a time, from
 #     the PR branch (GitHub only dispatches workflow_dispatch workflows that exist on the default
 #     branch, so an unmerged branch needs this trigger).
 #   - manual dispatch: `vendor` is `all` or one vendor; `runs`, `transport` (all, websocket, http
@@ -47,7 +50,7 @@ on:
       runs:
         description: 'Runs per sample'
         required: false
-        default: '5'
+        default: '10'
       transport:
         description: 'Transport to measure'
         required: false
@@ -121,7 +124,7 @@ jobs:
         shell: bash
         env:
           VENDORS: ${{ github.event_name == 'workflow_dispatch' && inputs.vendor || 'all' }}
-          RUNS: ${{ inputs.runs || '5' }}
+          RUNS: ${{ inputs.runs || '10' }}
           TRANSPORT: ${{ inputs.transport || 'all' }}
           REGION: ${{ inputs.region || 'ci-eu' }}
         run: |

@@ -70,7 +70,10 @@ test('without keys every vendor is skipped and cargo never runs', () => {
   assert.equal(existsSync(path.join(dir, 'marker')), false)
   const summary = json('summary.json')
   assert.equal(summary.skipped.length, 10)
-  for (const s of summary.skipped) assert.match(s.reason, /^no key: /)
+  for (const s of summary.skipped) {
+    const unpublished = ['deepgram', 'assemblyai', 'google', 'azure', 'aws'].includes(s.vendor)
+    assert.match(s.reason, unpublished ? /^not published: / : /^no key: /)
+  }
   assert.deepEqual(summary.vendors_run, [])
   assert.ok(existsSync(path.join(out, 'summary.md')))
   assert.ok(existsSync(path.join(out, 'environment.json')))
@@ -198,4 +201,33 @@ test('a key value in a cargo log is deleted locally', () => {
   const stamps = readdirSync(logRoot).sort()
   const newest = path.join(logRoot, stamps[stamps.length - 1])
   assert.equal(existsSync(path.join(newest, 'deepgram.run.log')), false)
+})
+
+test('--vendors all skips unpublished vendors with their reason even when keys are set', () => {
+  const { dir, run, json } = setup()
+  const result = run([], {
+    DEEPGRAM_API_KEY: KEY,
+    ASSEMBLYAI_API_KEY: OTHER_KEY,
+    GROQ_API_KEY: 'groq-test-key-5555555555',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const summary = json('summary.json')
+  assert.deepEqual(summary.vendors_run, ['groq'])
+  for (const id of ['deepgram', 'assemblyai']) {
+    const entry = summary.skipped.find((s) => s.vendor === id)
+    assert.match(entry.reason, /^not published: vendor terms do not allow benchmarking$/)
+  }
+  const calls = readFileSync(path.join(dir, 'calls'), 'utf8')
+  assert.equal(/^(deepgram|assemblyai) /m.test(calls), false, 'cargo ran for an unpublished vendor')
+  assert.ok(existsSync(path.join(dir, 'envnames-groq')))
+  assert.equal(existsSync(path.join(dir, 'envnames-deepgram')), false)
+  assert.equal(existsSync(path.join(dir, 'envnames-assemblyai')), false)
+})
+
+test('an unpublished vendor named explicitly runs', () => {
+  const { dir, run, json } = setup()
+  const result = run(['--vendors', 'deepgram'], { DEEPGRAM_API_KEY: KEY })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(json('summary.json').vendors_run, ['deepgram'])
+  assert.match(readFileSync(path.join(dir, 'calls'), 'utf8'), /^deepgram /m)
 })

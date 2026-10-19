@@ -13,12 +13,15 @@ without keys is skipped (`--require` makes that a failure). The variable names p
 ## Run
 
 ```bash
-npm run bench:vendors -- --vendors deepgram --runs 5 --region my-host --env-file <path>
+npm run bench:vendors -- --vendors elevenlabs --runs 10 --region my-host --env-file <path>
 ```
 
 `--env-file` takes whitespace-separated `NAME=value` tokens; the process environment works too.
 Other flags: `--exclude`, `--transport`, `--out`, `--require`, `--force`. Keys are never printed
 or written to a result file.
+
+`--vendors all` measures the published set (ElevenLabs, Cartesia, Groq, OpenAI, Fish Audio); other
+vendors run only when named. See [which vendors are published and why](METHODOLOGY.md#vendors-in-the-published-results).
 
 ## Output
 

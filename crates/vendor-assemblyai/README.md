@@ -69,3 +69,5 @@ The STT latency of this crate against the real API is measured with
 `npm run bench:vendors -- --vendors assemblyai` (from `node-webrtc-rust/`, keys as in the
 [benchmark quick start](../../benchmarks/README.md)). What each number means:
 [`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).
+
+Not part of the published results: the vendor's terms do not allow benchmarking; you can run it under your own agreement.

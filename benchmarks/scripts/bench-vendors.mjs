@@ -208,6 +208,10 @@ export async function main(argv, processEnv = process.env) {
       skipped.push({ vendor: id, reason: 'excluded' })
       continue
     }
+    if (opts.vendors === 'all' && vendor.unpublished) {
+      skipped.push({ vendor: id, reason: `not published: ${vendor.unpublished}` })
+      continue
+    }
     const { env, missing, sets } = resolved.get(id)
     if (missing.length > 0) {
       if (opts.require)

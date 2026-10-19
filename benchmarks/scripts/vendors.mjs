@@ -6,6 +6,8 @@
 //   vars      environment variables the bench reads. `name` is the library name; `secret` is the
 //             CI secret name mapped to it in `.github/workflows/vendor-bench.yml`, accepted as an
 //             alias in an env file
+//   unpublished  reason string; vendors with `unpublished` are skipped by `--vendors all` with this
+//             reason; naming them in `--vendors` runs them
 //   hosts     API hosts the crate's default configuration connects to for the transports the bench
 //             uses. `{region}` is filled from `regionVar`; the probe skips a templated host when
 //             that variable is unset. `vendors.test.mjs` checks every host against the crate source.
@@ -15,6 +17,7 @@
 export const VENDORS = [
   {
     id: 'deepgram',
+    unpublished: 'vendor terms do not allow benchmarking',
     envId: 'deepgram',
     vars: [{ name: 'DEEPGRAM_API_KEY', secret: 'DEEPGRAM_LIVE_KEY' }],
     hosts: ['api.deepgram.com'],
@@ -36,6 +39,7 @@ export const VENDORS = [
   },
   {
     id: 'assemblyai',
+    unpublished: 'vendor terms do not allow benchmarking',
     envId: 'assemblyai',
     vars: [{ name: 'ASSEMBLYAI_API_KEY', secret: 'ASSEMBLYAI_LIVE_KEY' }],
     // Default is the US host: crates/vendor-assemblyai/src/matrix.rs:16 (STREAMING_WS_BASE
@@ -45,6 +49,7 @@ export const VENDORS = [
   },
   {
     id: 'google',
+    unpublished: 'no account yet',
     envId: 'google',
     // Two credential paths, each gated by its own flag (live_bench.rs): API key (REST) or
     // service account (gRPC, `google_sa`). The vendor runs when at least one set is complete.
@@ -67,6 +72,7 @@ export const VENDORS = [
   },
   {
     id: 'azure',
+    unpublished: 'no account yet',
     envId: 'azure',
     vars: [
       { name: 'AZURE_SPEECH_KEY', secret: 'AZURE_LIVE_SPEECH_KEY' },
@@ -77,6 +83,7 @@ export const VENDORS = [
   },
   {
     id: 'aws',
+    unpublished: 'no account yet',
     envId: 'aws',
     vars: [
       { name: 'AWS_ACCESS_KEY_ID', secret: 'AWS_LIVE_ACCESS_KEY_ID' },

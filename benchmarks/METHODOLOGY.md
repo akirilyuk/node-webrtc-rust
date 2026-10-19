@@ -264,12 +264,10 @@ counted or discarded.
 
 ## Known vendor behaviours
 
-Observed in our runs, 2026-10 (single runs made before this bench existed, not yet repeated
+Observed in our runs, 2026-10 (a single run made before this bench existed, not yet repeated
 with it):
 
 - ElevenLabs STT: the first partial arrived 1.6 to 2.0 s after the first audio.
-- Deepgram TTS over WebSocket: 520 to 919 ms to first audio on a new socket, 108 ms on a reused
-  socket.
 
 From the vendor crates (`emits_partials()` returns false in `crates/vendor-<id>/src/stt.rs`),
 these STT paths send only finals: Azure (REST short audio), Fish Audio (`transcribe-1` realtime
@@ -279,19 +277,31 @@ Google REST and `whisper-1` upload the finished utterance as a file or request b
 finalize (their crate READMEs and `live_bench.rs` comments); Fish Audio streams audio and
 commits by hand, but still reports no partials.
 
+## Vendors in the published results
+
+The published set is ElevenLabs, Cartesia, Groq, OpenAI and Fish Audio. `--vendors all` measures
+exactly that set and reports the others under `skipped` as `not published: <reason>`.
+
+Deepgram and AssemblyAI: their terms of service do not allow benchmarking (Deepgram terms §2.4,
+AssemblyAI terms of service §2.4(f)), so we do not run or publish them. The CLI supports both for
+anyone measuring with their own account, under their own agreement. Terms:
+<https://deepgram.com/terms> and <https://www.assemblyai.com/legal/terms-of-service>.
+
+Google Cloud, Azure and AWS: supported, not measured yet.
+
 ## Reproduce
 
 Prerequisites: a Rust toolchain, Node 18 or newer, a vendor key. From the repository root:
 
 ```bash
-npm run bench:vendors -- --vendors deepgram,openai --runs 5 --region my-host --env-file <path>
+npm run bench:vendors -- --vendors elevenlabs,openai --runs 10 --region my-host --env-file <path>
 ```
 
 Flags:
 
-- `--vendors <list|all>` and `--exclude <list>` choose vendors. A vendor without keys is skipped;
+- `--vendors <list|all>` and `--exclude <list>` choose vendors. `all` is the published set; a vendor outside it runs only when named. A vendor without keys is skipped;
   with `--require` it is a failure instead.
-- `--runs <n>` runs per group (default 5).
+- `--runs <n>` runs per group (default 5; the published runs use 10).
 - `--transport <all|websocket|http|auto|rest|grpc>` or a comma list selects transports.
 - `--region <label>` names where you run (used in the output folder name).
 - `--out <dir>` overrides `benchmarks/results/<date>-<region>/`; an existing `summary.json` there

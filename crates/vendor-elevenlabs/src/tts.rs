@@ -373,7 +373,8 @@ impl ElevenLabsTts {
         tokio::time::timeout(
             WS_CONNECT_TIMEOUT,
             ws_tx.send(Message::Text(
-                serde_json::json!({"text": text, "flush": true})
+                // Docs (SendText): the text should "always end with a single space string".
+                serde_json::json!({"text": format!("{} ", text.trim_end()), "flush": true})
                     .to_string()
                     .into(),
             )),

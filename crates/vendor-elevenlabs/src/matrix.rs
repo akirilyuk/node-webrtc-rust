@@ -142,7 +142,11 @@ pub fn websocket_stream_input_url(base_url: &str, voice_id: &str, model_id: &str
     } else {
         base.to_string()
     };
-    format!("{ws_base}/v1/text-to-speech/{voice_id}/stream-input?model_id={model_id}")
+    // Same `output_format` as the HTTP transport. Without it the socket answers in the API default
+    // (mp3_44100_128) and the bytes would be read as 48 kHz PCM: ~1/6 of the real duration, noise.
+    format!(
+        "{ws_base}/v1/text-to-speech/{voice_id}/stream-input?model_id={model_id}&output_format=pcm_48000"
+    )
 }
 
 #[cfg(test)]
@@ -235,7 +239,7 @@ mod tests {
         );
         assert_eq!(
             websocket_stream_input_url(DEFAULT_BASE_URL, "v1", "m"),
-            "wss://api.elevenlabs.io/v1/text-to-speech/v1/stream-input?model_id=m"
+            "wss://api.elevenlabs.io/v1/text-to-speech/v1/stream-input?model_id=m&output_format=pcm_48000"
         );
     }
 
@@ -243,7 +247,7 @@ mod tests {
     fn http_endpoint_maps_to_ws() {
         assert_eq!(
             websocket_stream_input_url("http://127.0.0.1:9/", "v1", "m"),
-            "ws://127.0.0.1:9/v1/text-to-speech/v1/stream-input?model_id=m"
+            "ws://127.0.0.1:9/v1/text-to-speech/v1/stream-input?model_id=m&output_format=pcm_48000"
         );
         assert_eq!(
             http_stream_url("http://127.0.0.1:9/", "v1"),

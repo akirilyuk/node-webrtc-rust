@@ -761,6 +761,9 @@ async fn ws_stream_sends_each_chunk_to_the_sink_once() {
         "{}",
         uris[0]
     );
+    // Without `output_format` the socket sends mp3_44100_128, which was read as 48 kHz PCM and
+    // gave 748 ms for a 2-3 s utterance (live, 2026-10-19).
+    assert!(uris[0].ends_with("&output_format=pcm_48000"), "{}", uris[0]);
     let sent = mock.ws_client_messages.lock().unwrap().clone();
     assert_eq!(
         sent,
@@ -769,10 +772,45 @@ async fn ws_stream_sends_each_chunk_to_the_sink_once() {
                 "text": " ",
                 "voice_settings": {"stability": 0.5, "similarity_boost": 0.8, "use_speaker_boost": false},
             }),
-            serde_json::json!({"text": "hello", "flush": true}),
+            serde_json::json!({"text": "hello ", "flush": true}),
             serde_json::json!({"text": ""}),
         ]
     );
+}
+
+/// Docs (FinalOutput): `isFinal` means "the generation is complete", so it arrives after every
+/// audio message. Audio-less messages in between (`"audio": null`, alignment only) neither end the
+/// stream nor add audio, and all twelve audio messages reach the sink.
+#[tokio::test]
+async fn ws_reads_every_audio_message_until_is_final() {
+    let mock = Mock::start_ws(ws_script(|mut ws| async move {
+        for fill in 1u8..=12 {
+            ws.send(audio_msg(fill)).await.unwrap();
+            if fill % 4 == 0 {
+                ws.send(Message::Text(
+                    r#"{"audio":null,"alignment":{"chars":["a"]}}"#.into(),
+                ))
+                .await
+                .unwrap();
+            }
+        }
+        ws.send(final_msg()).await.unwrap();
+        let _ = ws.close(None).await;
+    }))
+    .await;
+    let provider = mock.elevenlabs();
+    let mut rig = sink_rig();
+    let chunks = tokio::time::timeout(
+        BOUND,
+        provider.synthesize_websocket_stream("hello", Some(rig.sink.clone())),
+    )
+    .await
+    .expect("synthesize timed out")
+    .expect("synthesize failed");
+    let sunk = drain(&mut rig.rx);
+    assert_eq!(sunk.len(), 12);
+    let returned: usize = chunks.iter().map(|c| c.pcm.len()).sum();
+    assert_eq!(returned, 12 * CHUNK_BYTES * 2);
 }
 
 #[tokio::test]

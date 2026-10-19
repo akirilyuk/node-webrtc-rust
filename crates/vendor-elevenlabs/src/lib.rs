@@ -13,7 +13,7 @@ pub use matrix::{
     websocket_stream_input_url, DEFAULT_MODEL_ID, HTTP_STREAM_DOC, WS_STREAM_INPUT_DOC,
 };
 pub use stt_matrix::{
-    default_stt_model, implemented_stt_transports, realtime_websocket_url, validate_stt_model,
-    DEFAULT_STT_MODEL, REALTIME_STT_DOC,
+    default_stt_model, implemented_stt_transports, realtime_websocket_url,
+    realtime_websocket_url_at, validate_stt_model, DEFAULT_STT_MODEL, REALTIME_STT_DOC,
 };
 pub use tts::ElevenLabsTts;

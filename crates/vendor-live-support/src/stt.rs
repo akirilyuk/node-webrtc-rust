@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, sleep_until, timeout, Instant};
 
 use crate::audio::matched_words;
-use crate::vad_gate::vad_gated_frames;
+use crate::vad_gate::{normalize_peak_stereo_48k, vad_gated_frames, CLIP_PEAK_DBFS};
 
 /// One frame of the gated audio is 20 ms.
 const FRAME: Duration = Duration::from_millis(20);
@@ -125,7 +125,8 @@ pub async fn run_utterance(
 ) -> SpeechResult<SttSample> {
     let vendor = stt.vendor_name();
     let mode = stt.finalize_mode();
-    let gated = vad_gated_frames(stereo_48k);
+    // Vendor TTS can be quieter than the production energy VAD threshold: see the helper.
+    let gated = vad_gated_frames(&normalize_peak_stereo_48k(stereo_48k, CLIP_PEAK_DBFS));
     let first_voiced = gated.frames_16k.iter().position(is_voiced);
     let last_voiced = gated.frames_16k.iter().rposition(is_voiced);
     let (Some(first_voiced), Some(last_voiced)) = (first_voiced, last_voiced) else {
@@ -425,6 +426,21 @@ mod tests {
         let mut lifted = sample.clone();
         lifted.matched_words = 9;
         assert_stt_contract("fake", emits_partials, &lifted);
+    }
+
+    /// A clip at the level of Deepgram Aura speech (frame RMS ~0.1, below the VAD threshold 0.15)
+    /// still streams: the clip is brought to -1 dBFS peak before gating.
+    #[tokio::test(start_paused = true)]
+    async fn quiet_vendor_speech_is_levelled_and_streamed() {
+        let quiet = [
+            silence_stereo_48k(1000),
+            tone_stereo_48k(1500, -14.0),
+            silence_stereo_48k(2000),
+        ]
+        .concat();
+        let mut stt = FakeStt::new(FinalizeMode::Deferred, None);
+        let sample = measure_stt(&mut stt, &quiet, &["the"]).await.unwrap();
+        assert!(sample.pushed_ms > 0 && sample.pushed_ms < sample.total_ms - 1000);
     }
 
     #[tokio::test(start_paused = true)]

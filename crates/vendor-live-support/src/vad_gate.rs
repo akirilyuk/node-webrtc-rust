@@ -1,4 +1,4 @@
-//! VAD gating for STT tests: only speech (plus a short pre-roll) is pushed to the vendor, never
+//! VAD gating for STT tests: only speech (plus the production pre-roll) is pushed to the vendor, never
 //! the whole clip. Cloud vendors bill STT for the audio streamed, and the production
 //! recommendation is `vad.gateStt: true` (`VOICE_AGENT_VAD_PRESET`), which this helper mirrors
 //! with the same engine and default thresholds the voice agent uses.
@@ -8,14 +8,34 @@ use std::collections::VecDeque;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::VadConfig;
 use node_webrtc_rust_speech::pcm::{i16_samples_to_bytes, stereo_48k_to_mono_16k};
+use node_webrtc_rust_speech::stt_pre_roll::stt_pre_roll_capacity_ms;
 use node_webrtc_rust_speech::vad::{VadEngine, VadTransition};
 
 /// 20 ms of 48 kHz stereo s16le.
 pub const FRAME_BYTES: usize = 3840;
 /// 48 kHz stereo s16le: 4 bytes per frame, 48 frames per millisecond.
 pub const BYTES_PER_MS: usize = 192;
-/// Past audio emitted with `SpeechStart` so the first syllable is not clipped.
-const PRE_ROLL_FRAMES: usize = 15; // 300 ms
+/// `speechPadMs` of `VOICE_AGENT_VAD_PRESET` (`packages/sdk/src/voice/defaults.ts`), the
+/// recommended production preset. The Rust default is 300.
+const PRESET_SPEECH_PAD_MS: u32 = 500;
+
+/// The VAD config the voice agent runs with `VOICE_AGENT_VAD_PRESET`: library defaults (energy
+/// engine, threshold 0.15, 250 ms minimum speech, 1300 ms minimum silence) and a 500 ms pad.
+pub fn preset_vad_config() -> VadConfig {
+    VadConfig {
+        enabled: true,
+        gate_stt: true,
+        speech_pad_ms: PRESET_SPEECH_PAD_MS,
+        ..VadConfig::default()
+    }
+}
+
+/// Past audio emitted with `SpeechStart`: the production STT pre-roll ring (`speech_pad_ms` +
+/// `min_speech_duration_ms`, 750 ms with the preset). The speech accumulates its minimum duration
+/// over frames that may be separated by quiet word gaps, so a shorter ring clips the first words.
+fn pre_roll_frames() -> usize {
+    (stt_pre_roll_capacity_ms(&preset_vad_config()) / 20) as usize
+}
 
 /// Result of gating one clip.
 pub struct GatedAudio {
@@ -39,11 +59,8 @@ fn to_16k(frame: &[u8]) -> Bytes {
 /// frames is emitted, then every frame until `SpeechEnd` (inclusive). Frames outside a speech
 /// segment are dropped.
 pub fn vad_gated_frames(stereo_48k: &[u8]) -> GatedAudio {
-    let mut vad = VadEngine::new(VadConfig {
-        enabled: true,
-        ..VadConfig::default()
-    })
-    .expect("energy VAD");
+    let mut vad = VadEngine::new(preset_vad_config()).expect("energy VAD");
+    let pre_roll = pre_roll_frames();
     let mut gated = GatedAudio {
         frames_16k: Vec::new(),
         pushed_ms: 0,
@@ -82,7 +99,7 @@ pub fn vad_gated_frames(stereo_48k: &[u8]) -> GatedAudio {
             gated.frames_16k.push(to_16k(frame));
         } else {
             ring.push_back(frame);
-            if ring.len() > PRE_ROLL_FRAMES {
+            if ring.len() > pre_roll {
                 ring.pop_front();
             }
         }
@@ -111,6 +128,42 @@ pub fn tone_stereo_48k(ms: usize, dbfs: f64) -> Vec<u8> {
         out.extend_from_slice(&sample.to_le_bytes());
     }
     out
+}
+
+/// Peak level the STT clip is brought to before gating: -1 dBFS, a loud but unclipped microphone.
+pub const CLIP_PEAK_DBFS: f64 = -1.0;
+
+/// Scales 48 kHz stereo s16le so its peak sits at `peak_dbfs`. Vendor TTS output is not level
+/// normalised: Deepgram Aura speech has frame RMS ~0.09 of full scale, below the default energy
+/// VAD threshold (0.15), so the production gate would never open on it. A real microphone chain is
+/// gain-controlled; this stands in for it and leaves the production VAD threshold untouched.
+/// Digital silence stays silence, and a clip already louder than the target is left as it is.
+pub fn normalize_peak_stereo_48k(pcm: &[u8], peak_dbfs: f64) -> Vec<u8> {
+    let peak = pcm
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|s| i32::from(i16::from_le_bytes(*s)).unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    if peak == 0 {
+        return pcm.to_vec();
+    }
+    let target = 10_f64.powf(peak_dbfs / 20.0) * f64::from(i16::MAX);
+    let gain = target / f64::from(peak);
+    if gain <= 1.0 {
+        return pcm.to_vec();
+    }
+    pcm.as_chunks::<2>()
+        .0
+        .iter()
+        .flat_map(|s| {
+            let v = (f64::from(i16::from_le_bytes(*s)) * gain)
+                .round()
+                .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+            v.to_le_bytes()
+        })
+        .collect()
 }
 
 /// 16 kHz mono s16le to 48 kHz stereo s16le: linear interpolation (x3), channel duplicated.
@@ -155,6 +208,79 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// Frame-RMS shaped like Deepgram Aura speech (~0.1 of full scale): the default energy VAD
+    /// (threshold 0.15) never opens on it as delivered.
+    fn quiet_speech() -> Vec<u8> {
+        [
+            silence_stereo_48k(1000),
+            tone_stereo_48k(1500, -14.0),
+            silence_stereo_48k(2000),
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn quiet_vendor_speech_is_not_gated_in_as_delivered() {
+        assert_eq!(vad_gated_frames(&quiet_speech()).starts, 0);
+    }
+
+    #[test]
+    fn normalised_quiet_speech_opens_the_gate_and_ends_it() {
+        let gated = vad_gated_frames(&normalize_peak_stereo_48k(&quiet_speech(), CLIP_PEAK_DBFS));
+        assert_eq!((gated.starts, gated.ends), (1, 1));
+        assert!(gated.pushed_ms < gated.total_ms - 1000);
+    }
+
+    #[test]
+    fn normalise_sets_the_peak_keeps_silence_and_never_attenuates() {
+        let out = normalize_peak_stereo_48k(&quiet_speech(), -1.0);
+        assert_eq!(out.len(), quiet_speech().len());
+        let peak = out
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|s| i32::from(i16::from_le_bytes(*s)).abs())
+            .max()
+            .unwrap();
+        assert!((29_000..=29_300).contains(&peak), "{peak}");
+        assert!(out[..1000 * BYTES_PER_MS].iter().all(|b| *b == 0));
+        let loud = tone_stereo_48k(100, 0.0);
+        assert_eq!(normalize_peak_stereo_48k(&loud, -1.0), loud);
+        assert!(normalize_peak_stereo_48k(&silence_stereo_48k(100), -1.0)
+            .iter()
+            .all(|b| *b == 0));
+    }
+
+    /// A short first word, a 400 ms gap, then the rest of the phrase: the VAD reaches its 250 ms
+    /// minimum speech only inside the second burst, so the first word is in the pre-roll ring
+    /// only if the ring is as long as production's (750 ms), not 300 ms.
+    #[test]
+    fn pre_roll_reaches_back_over_a_word_gap_to_the_first_word() {
+        let clip = [
+            silence_stereo_48k(1000),
+            tone_stereo_48k(100, -3.0),
+            silence_stereo_48k(400),
+            tone_stereo_48k(600, -3.0),
+            silence_stereo_48k(2000),
+        ]
+        .concat();
+        let gated = vad_gated_frames(&clip);
+        assert_eq!((gated.starts, gated.ends), (1, 1));
+        let voiced = gated
+            .frames_16k
+            .iter()
+            .filter(|f| {
+                f.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|s| i16::from_le_bytes(*s) != 0)
+            })
+            .count();
+        // 5 frames of the first word + 30 of the second.
+        assert!(voiced >= 35, "first word clipped: {voiced} voiced frames");
+        assert_eq!(pre_roll_frames(), 37);
     }
 
     #[test]

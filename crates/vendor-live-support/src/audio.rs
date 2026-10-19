@@ -36,14 +36,19 @@ const NUMBER_WORDS: [&str; 10] = [
 
 /// Cloud STT writes spoken numbers as numerals ("1, 2, 3", or fused "123-456-789-10" for a
 /// quickly counted run). The same words, so they count: a token of digits is read as a run of
-/// the numbers 1 to 10 (greedy: `10` before `1`). A digit run that is not one (a `0`, `11`) is
-/// kept as one unmatched token.
+/// the numbers 1 to 10 (greedy: `10` before `1`). A `0` straight after a `9` is the `10` written
+/// as a phone-style digit run: ElevenLabs Scribe v2 writes the counted "one" to "ten" as
+/// "123-456-7890" (measured 2026-10-19: the tail "7890" read as 7, 8, 9 and an unmatched "0"
+/// scored 6 of 10 words, though the transcript held every number). A digit run that is not one
+/// (a `0` elsewhere, `11`) is kept as one unmatched token.
 fn numeral_words(token: &str) -> Vec<&str> {
     let mut words = Vec::new();
     let mut rest = token;
     while !rest.is_empty() {
         let (n, len) = if rest.starts_with("10") {
             (10, 2)
+        } else if rest == "0" && words.last() == Some(&"nine") {
+            (10, 1)
         } else {
             match rest.as_bytes()[0] {
                 b @ b'1'..=b'9' => ((b - b'0') as usize, 1),
@@ -59,6 +64,12 @@ fn numeral_words(token: &str) -> Vec<&str> {
 /// How many of `expected` appear in `transcript` (lowercase, punctuation stripped, each
 /// transcript word used once).
 pub fn matched_words(transcript: &str, expected: &[&str]) -> usize {
+    expected.len() - missing_words(transcript, expected).len()
+}
+
+/// Indexes into `expected` of the words `transcript` does not contain (same matching as
+/// [`matched_words`]). Positions, never text, so a failing run can say which words were lost.
+pub fn missing_words(transcript: &str, expected: &[&str]) -> Vec<usize> {
     let cleaned: String = transcript
         .to_lowercase()
         .chars()
@@ -72,14 +83,15 @@ pub fn matched_words(transcript: &str, expected: &[&str]) -> usize {
             heard.push(token);
         }
     }
-    let mut matched = 0;
-    for word in expected {
+    let mut missing = Vec::new();
+    for (index, word) in expected.iter().enumerate() {
         if let Some(at) = heard.iter().position(|h| h == word) {
             heard.swap_remove(at);
-            matched += 1;
+        } else {
+            missing.push(index);
         }
     }
-    matched
+    missing
 }
 
 #[cfg(test)]
@@ -115,6 +127,28 @@ mod tests {
         // Each numeral is used once, and a digit run with a 0 outside "10" matches nothing.
         assert_eq!(matched_words("1 1 1", &words), 1);
         assert_eq!(matched_words("0 2024 100", &words), 0);
+    }
+
+    #[test]
+    fn phone_style_digit_runs_count_as_the_numbers() {
+        let words = COUNT_WORDS;
+        // "123-456-7890": the vendor's rendering of one to ten (6 of 10 before this was read).
+        assert_eq!(matched_words("123-456-7890.", &words), 10);
+        assert_eq!(matched_words("1234567890", &words), 10);
+        assert_eq!(matched_words("12345 67890", &words), 10);
+        // A 0 that does not follow a 9 is still no number, and the tail is not invented.
+        assert_eq!(matched_words("123-456-780", &words), 6);
+        assert_eq!(matched_words("123-456-789", &words), 9);
+        assert_eq!(missing_words("123-456-7890", &words), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn missing_words_are_positions() {
+        assert_eq!(
+            missing_words("one two four", &COUNT_WORDS),
+            vec![2, 4, 5, 6, 7, 8, 9]
+        );
+        assert!(missing_words("1, 2, 3, 4, 5, 6, 7, 8, 9, 10", &COUNT_WORDS).is_empty());
     }
 
     #[test]

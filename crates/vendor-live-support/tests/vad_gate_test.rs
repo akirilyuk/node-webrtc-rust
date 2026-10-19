@@ -12,7 +12,8 @@ use node_webrtc_rust_vendor_live_support::vad_gate::{
 
 /// Default `min_silence_duration_ms`: the VAD hangover after the last voiced frame.
 const HANGOVER_MS: u32 = 1300;
-const PRE_ROLL_MS: u32 = 300;
+/// Production STT pre-roll: `speech_pad_ms` 500 (VOICE_AGENT_VAD_PRESET) + 250 ms minimum speech.
+const PRE_ROLL_MS: u32 = 750;
 
 fn clip(parts: &[Vec<u8>]) -> Vec<u8> {
     parts.concat()
@@ -60,7 +61,7 @@ fn pre_roll_covers_the_start_of_the_tone() {
         silence_stereo_48k(2000),
     ]);
     let gated = vad_gated_frames(&stereo);
-    // The first emitted frame is up to 300 ms before SpeechStart, which itself fires 250 ms
+    // The first emitted frame is up to 750 ms before SpeechStart, which itself fires 250 ms
     // into the tone: so the tone onset is inside the pushed audio.
     let first_voiced = gated
         .frames_16k

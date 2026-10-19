@@ -190,6 +190,7 @@ async fn job_queued_after_protected_job_is_flushed_by_later_barge_in() {
             SendTextToTtsOptions {
                 non_blocking: true,
                 interruptible: false,
+                reply_id: None,
             },
         )
         .await
@@ -245,6 +246,7 @@ async fn explicit_flush_cancels_protected_job() {
             SendTextToTtsOptions {
                 non_blocking: true,
                 interruptible: false,
+                reply_id: None,
             },
         )
         .await
@@ -275,6 +277,7 @@ async fn explicit_stop_cancels_protected_job() {
             SendTextToTtsOptions {
                 non_blocking: true,
                 interruptible: false,
+                reply_id: None,
             },
         )
         .await

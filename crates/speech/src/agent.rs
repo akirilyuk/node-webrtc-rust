@@ -37,7 +37,7 @@ use crate::stt_hold::{
     ReleaseSttHoldOptions, SttHold,
 };
 use crate::stt_pre_roll::{ShortBurstRetainer, SttPreRollBuffer, SHORT_BURST_SEPARATOR_MS};
-use crate::tts_buffer::TtsBuffer;
+use crate::tts_buffer::{ReplyTransition, TtsBuffer};
 use crate::tts_cache::{normalize_phrase_text, wrap_tts_for_agent};
 use crate::tts_text::prepare_engine_text;
 use crate::turn_latency::TurnLatencyTracker;
@@ -527,6 +527,8 @@ struct TtsSynthesisJob {
     interruptible: bool,
     /// When the text was accepted by `send_text_to_tts_with_options` (time-to-first-audio anchor).
     requested_at: Instant,
+    /// Host-chosen id of this reply; tags the reply events and the job's `tts_*` events.
+    reply_id: Option<Arc<str>>,
 }
 
 /// One voice agent session bound to a single peer connection.
@@ -1864,8 +1866,11 @@ impl VoiceAgent {
 
         // Cancel producers, wake consumers, join workers within a bound (no detached tasks).
         self.tts_workers_shutdown.store(true, Ordering::SeqCst);
-        self.cancel_pending_tts_synthesis().await;
-        self.tts_buffer.flush().await;
+        let dropped = self.cancel_pending_tts_synthesis_collect().await;
+        self.tts_buffer
+            .flush_with_reply_events(|event| self.emit(event))
+            .await;
+        self.emit_dropped_reply_ends(dropped);
         self.tts_synthesis_wake.notify_waiters();
         self.tts_drain_wake.notify_waiters();
         self.tts_workers_shutdown_wake.notify_waiters();
@@ -1975,6 +1980,7 @@ impl VoiceAgent {
                 done: done_tx,
                 interruptible: options.interruptible,
                 requested_at: Instant::now(),
+                reply_id: options.reply_id.as_deref().map(Arc::from),
             });
         }
 
@@ -2080,6 +2086,7 @@ impl VoiceAgent {
                     let result = Self::run_tts_synthesis_job(
                         &job.text,
                         job.requested_at,
+                        job.reply_id.as_ref(),
                         &tts,
                         &tts_buffer,
                         &tts_drain_wake,
@@ -2125,6 +2132,7 @@ impl VoiceAgent {
     async fn run_tts_synthesis_job(
         text: &str,
         requested_at: Instant,
+        reply_id: Option<&Arc<str>>,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2149,6 +2157,7 @@ impl VoiceAgent {
             Self::run_tts_synthesis_job_streaming(
                 text,
                 requested_at,
+                reply_id,
                 tts,
                 tts_buffer,
                 tts_drain_wake,
@@ -2170,6 +2179,7 @@ impl VoiceAgent {
             Self::run_tts_synthesis_job_buffered(
                 text,
                 requested_at,
+                reply_id,
                 tts,
                 tts_buffer,
                 tts_drain_wake,
@@ -2195,6 +2205,7 @@ impl VoiceAgent {
     async fn run_tts_synthesis_job_buffered(
         text: &str,
         requested_at: Instant,
+        reply_id: Option<&Arc<str>>,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2243,13 +2254,14 @@ impl VoiceAgent {
             (synthesize_result, provider.take_open_wait(), cache_hit)
         };
         let (chunks, open_wait, cache_hit) = chunks;
-        Self::emit_tts_wait(event_bus, open_wait);
-        Self::emit_tts_phrase_cache_hit(event_bus, cache_hit);
+        let reply_str = reply_id.map(|id| &**id);
+        Self::emit_tts_wait(event_bus, open_wait, reply_str);
+        Self::emit_tts_phrase_cache_hit(event_bus, cache_hit, reply_str);
         Self::record_tts_job_latency(inner, tts_started).await;
         let chunks = match chunks {
             Ok(chunks) => chunks,
             Err(error) => {
-                Self::fail_reply_keep_session(inner, event_bus, &error).await;
+                Self::fail_reply_keep_session(inner, event_bus, &error, reply_str).await;
                 return Ok(());
             }
         };
@@ -2259,6 +2271,7 @@ impl VoiceAgent {
 
         if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
             voice_debug("TTS synthesis discarded (invalidated during synthesize)");
+            Self::emit_discarded_reply_end(event_bus, reply_str);
             return Ok(());
         }
 
@@ -2271,12 +2284,22 @@ impl VoiceAgent {
             guard.tts_playback_failure_gen
         };
 
+        // The whole reply is enqueued at once, so it is complete as soon as it is booked.
+        let first_chunk_ms = Self::elapsed_ms_u32(requested_at);
         if !tts_buffer
-            .enqueue_if_generation(chunks, Some(generation_at_start))
+            .enqueue_tagged_if_generation(
+                chunks,
+                Some(generation_at_start),
+                reply_id.map(|id| (id, Some(first_chunk_ms))),
+            )
             .await
         {
             voice_debug("TTS synthesis discarded (buffer flushed during synthesize)");
+            Self::emit_discarded_reply_end(event_bus, reply_str);
             return Ok(());
+        }
+        if let Some(id) = reply_str {
+            tts_buffer.mark_reply_complete(id).await;
         }
         Self::ensure_tts_drain_worker_shared(
             tts_drain_worker,
@@ -2309,6 +2332,7 @@ impl VoiceAgent {
     async fn run_tts_synthesis_job_streaming(
         text: &str,
         requested_at: Instant,
+        reply_id: Option<&Arc<str>>,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2361,22 +2385,33 @@ impl VoiceAgent {
         let enqueue_buffer = tts_buffer.clone();
         let enqueue_wake = Arc::clone(tts_drain_wake);
         let enqueue_inner = Arc::clone(inner);
+        let enqueue_reply_id: Option<Arc<str>> = reply_id.cloned();
+        // Returns (a chunk of this reply was booked, a chunk was discarded by a flush).
         let enqueue_task = tokio::spawn(async move {
             let mut first_chunk_seen = false;
+            let mut first_chunk_ms = None;
+            let mut queued_any = false;
             while let Some(chunk) = rx.recv().await {
                 if !first_chunk_seen && !chunk.pcm.is_empty() {
                     first_chunk_seen = true;
+                    first_chunk_ms = Some(Self::elapsed_ms_u32(requested_at));
                     Self::record_first_chunk(&enqueue_inner, requested_at).await;
                 }
                 if !enqueue_buffer
-                    .enqueue_if_generation(vec![chunk], Some(generation_at_start))
+                    .enqueue_tagged_if_generation(
+                        vec![chunk],
+                        Some(generation_at_start),
+                        enqueue_reply_id.as_ref().map(|id| (id, first_chunk_ms)),
+                    )
                     .await
                 {
                     voice_debug("TTS progressive chunk discarded (buffer flushed)");
-                    break;
+                    return (queued_any, true);
                 }
+                queued_any = true;
                 enqueue_wake.notify_one();
             }
+            (queued_any, false)
         });
 
         let tts_started = Instant::now();
@@ -2410,13 +2445,19 @@ impl VoiceAgent {
             (result, provider.take_open_wait(), cache_hit)
         };
         let (synth_result, open_wait, cache_hit) = synth_result;
-        Self::emit_tts_wait(event_bus, open_wait);
-        Self::emit_tts_phrase_cache_hit(event_bus, cache_hit);
+        let reply_str = reply_id.map(|id| &**id);
+        Self::emit_tts_wait(event_bus, open_wait, reply_str);
+        Self::emit_tts_phrase_cache_hit(event_bus, cache_hit, reply_str);
         Self::record_tts_job_latency(inner, tts_started).await;
 
         // Dropping the last sender happens when synthesize_progressive returns
         // (sink moved into the call). Wait for the enqueue task to drain.
-        let _ = enqueue_task.await;
+        let (queued_any, chunk_discarded) = enqueue_task.await.unwrap_or((false, false));
+        // Mark the reply complete before the drain can run out of bytes: the drain reports
+        // the end once a complete reply is fully played.
+        if let Some(id) = reply_str {
+            tts_buffer.mark_reply_complete(id).await;
+        }
         tts_buffer.set_producing(false).await;
         tts_drain_wake.notify_one();
 
@@ -2424,7 +2465,13 @@ impl VoiceAgent {
             Ok(chunks) => {
                 if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
                     voice_debug("TTS streaming synthesis discarded (invalidated)");
+                    if !queued_any {
+                        Self::emit_discarded_reply_end(event_bus, reply_str);
+                    }
                     return Ok(());
+                }
+                if chunk_discarded && !queued_any {
+                    Self::emit_discarded_reply_end(event_bus, reply_str);
                 }
                 if chunks.is_empty()
                     && !tts_buffer.is_speaking().await
@@ -2444,25 +2491,54 @@ impl VoiceAgent {
             Err(error) => {
                 tts_buffer.set_producing(false).await;
                 tts_drain_wake.notify_one();
-                Self::fail_reply_keep_session(inner, event_bus, &error).await;
+                Self::fail_reply_keep_session(inner, event_bus, &error, reply_str).await;
                 Ok(())
             }
         }
     }
 
-    fn emit_tts_wait(event_bus: &SpeechEventBus, open_wait: Option<crate::pipeline::TtsOpenWait>) {
+    fn emit_tts_wait(
+        event_bus: &SpeechEventBus,
+        open_wait: Option<crate::pipeline::TtsOpenWait>,
+        reply_id: Option<&str>,
+    ) {
         if let Some(wait) = open_wait {
-            event_bus.emit(SpeechEvent::tts_wait(
-                wait.wait_ms,
-                wait.attempts,
-                wait.reason,
-            ));
+            event_bus.emit(
+                SpeechEvent::tts_wait(wait.wait_ms, wait.attempts, wait.reason)
+                    .with_reply_id(reply_id),
+            );
         }
     }
 
-    fn emit_tts_phrase_cache_hit(event_bus: &SpeechEventBus, cache_hit: Option<u32>) {
+    fn emit_tts_phrase_cache_hit(
+        event_bus: &SpeechEventBus,
+        cache_hit: Option<u32>,
+        reply_id: Option<&str>,
+    ) {
         if let Some(chars) = cache_hit {
-            event_bus.emit(SpeechEvent::tts_phrase_cache_hit(chars));
+            event_bus.emit(SpeechEvent::tts_phrase_cache_hit(chars).with_reply_id(reply_id));
+        }
+    }
+
+    /// A reply that never reached the buffer (flushed or invalidated while synthesizing, or
+    /// dropped from the synthesis queue) ends with nothing played. Only for jobs with a reply id.
+    fn emit_discarded_reply_end(event_bus: &SpeechEventBus, reply_id: Option<&str>) {
+        if let Some(id) = reply_id {
+            event_bus.emit(SpeechEvent::agent_reply_end(id, 0, true));
+        }
+    }
+
+    /// Emit the reply boundaries crossed by written PCM (see [`TtsBuffer::consume_played`]).
+    fn emit_reply_transitions(event_bus: &SpeechEventBus, transitions: Vec<ReplyTransition>) {
+        for transition in transitions {
+            match transition {
+                ReplyTransition::Started { id, first_chunk_ms } => {
+                    event_bus.emit(SpeechEvent::agent_reply_start(&id, first_chunk_ms));
+                }
+                ReplyTransition::Ended { id, played_ms } => {
+                    event_bus.emit(SpeechEvent::agent_reply_end(&id, played_ms, false));
+                }
+            }
         }
     }
 
@@ -2473,13 +2549,14 @@ impl VoiceAgent {
         inner: &Arc<Mutex<AgentInner>>,
         event_bus: &SpeechEventBus,
         error: &SpeechError,
+        reply_id: Option<&str>,
     ) {
         {
             let mut guard = inner.lock().await;
             Self::clear_pending_first_audio(&mut guard);
         }
         voice_debug(format!("TTS reply failed, session kept: {error}"));
-        event_bus.emit(SpeechEvent::agent_speak_failed(error.to_string()));
+        event_bus.emit(SpeechEvent::agent_speak_failed(error.to_string()).with_reply_id(reply_id));
     }
 
     fn elapsed_ms_u32(since: Instant) -> u32 {
@@ -2675,7 +2752,9 @@ impl VoiceAgent {
             guard.stt_barge_fired_this_agent_playback = false;
             was_speaking
         };
-        tts_buffer.flush().await;
+        tts_buffer
+            .flush_with_reply_events(|event| event_bus.emit(event))
+            .await;
         event_bus.emit(SpeechEvent::error(message.clone()));
         if emit_speaking_end {
             event_bus.emit(SpeechEvent::agent_speaking_end());
@@ -2729,19 +2808,38 @@ impl VoiceAgent {
     }
 
     async fn cancel_pending_tts_synthesis(&self) {
+        let dropped = self.cancel_pending_tts_synthesis_collect().await;
+        self.emit_dropped_reply_ends(dropped);
+    }
+
+    /// Drop every queued synthesis job and return the reply ids of those that carried one.
+    /// The caller emits their `agent_reply_end` ([`emit_dropped_reply_ends`](Self::emit_dropped_reply_ends))
+    /// after it has flushed the buffer, so replies end in queue order.
+    async fn cancel_pending_tts_synthesis_collect(&self) -> Vec<Arc<str>> {
         self.invalidate_inflight_tts_synthesis();
         Self::clear_pending_first_audio(&mut *self.inner.lock().await);
         let mut queue = self.tts_synthesis_queue.lock().await;
+        let mut dropped = Vec::new();
         for job in queue.drain(..) {
+            if let Some(id) = job.reply_id {
+                dropped.push(id);
+            }
             if let Some(done) = job.done {
                 let _ = done.send(Err(SpeechError::Internal("TTS cancelled".into())));
             }
+        }
+        dropped
+    }
+
+    fn emit_dropped_reply_ends(&self, dropped: Vec<Arc<str>>) {
+        for id in dropped {
+            self.emit(SpeechEvent::agent_reply_end(&id, 0, true));
         }
     }
 
     /// Clears pending outbound TTS (manual cancel or barge-in when `flush_tts` is enabled).
     pub async fn flush_tts(&self) -> SpeechResult<()> {
-        self.cancel_pending_tts_synthesis().await;
+        let dropped = self.cancel_pending_tts_synthesis_collect().await;
         let barge_in = {
             let inner = self.inner.lock().await;
             inner.config.vad.barge_in.clone()
@@ -2751,11 +2849,14 @@ impl VoiceAgent {
             self.end_agent_speaking(false).await;
             voice_debug("agent_speaking=false (manual barge-in flush)");
         } else {
-            self.tts_buffer.flush().await;
+            self.tts_buffer
+                .flush_with_reply_events(|event| self.emit(event))
+                .await;
             self.end_agent_speaking(true).await;
             voice_debug("agent_speaking=false (flush_tts)");
             self.emit(SpeechEvent::agent_speaking_end());
         }
+        self.emit_dropped_reply_ends(dropped);
         Ok(())
     }
 
@@ -5012,6 +5113,7 @@ impl VoiceAgent {
                 &mut played_any,
                 &mut pace,
                 frames,
+                None,
             )
             .await?
             {
@@ -5026,6 +5128,8 @@ impl VoiceAgent {
             && tts_buffer.current_generation().await == drain_generation
         {
             let (frame, duration_ms) = pad_stereo_frame_20ms(&frame_carry);
+            // Only the real PCM counts for the reply ledger, not the padding.
+            let real_bytes = frame_carry.len();
             frame_carry.clear();
             match Self::write_paced_tts_frames(
                 &writer,
@@ -5038,6 +5142,7 @@ impl VoiceAgent {
                 &mut played_any,
                 &mut pace,
                 vec![(frame, duration_ms)],
+                Some(real_bytes),
             )
             .await?
             {
@@ -5048,6 +5153,10 @@ impl VoiceAgent {
         tts_buffer.store_frame_carry(frame_carry).await;
         // Everything this pass held has been written; agent_speaking (if any) carries idle state.
         drop(drain_hold);
+        // A reply marked complete after its last frame was written ends here.
+        if tts_buffer.current_generation().await == drain_generation {
+            Self::emit_reply_transitions(event_bus, tts_buffer.consume_played(0).await);
+        }
 
         if played_any && agent_start_emitted && !tts_buffer.is_producing().await {
             Self::end_agent_speaking_inner(inner, true).await;
@@ -5091,8 +5200,10 @@ impl VoiceAgent {
         played_any: &mut bool,
         pace: &mut TtsDrainPaceState,
         frames: Vec<(Bytes, u32)>,
+        last_frame_real_bytes: Option<usize>,
     ) -> SpeechResult<TtsDrainWrite> {
-        for (frame, duration_ms) in frames {
+        let frame_count = frames.len();
+        for (index, (frame, duration_ms)) in frames.into_iter().enumerate() {
             if weak_self.strong_count() == 0 {
                 // Dropped without stop(): no owner and no listener remain, so end silently.
                 voice_debug("TTS drain stopped (agent dropped)");
@@ -5162,7 +5273,15 @@ impl VoiceAgent {
                 }
                 return Ok(TtsDrainWrite::Stopped);
             }
+            let ledger_bytes = match last_frame_real_bytes {
+                Some(real) if index + 1 == frame_count => real,
+                _ => frame.len(),
+            };
             writer(frame, duration_ms)?;
+            Self::emit_reply_transitions(
+                event_bus,
+                tts_buffer.consume_played(ledger_bytes as u64).await,
+            );
             if !Self::pace_tts_drain_frame_while_running(
                 tts_buffer,
                 inner,

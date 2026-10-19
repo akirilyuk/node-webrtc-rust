@@ -550,6 +550,10 @@ pub enum JsSpeechEventType {
     TtsPhraseCacheHit,
     #[napi(value = "agent_speak_failed")]
     AgentSpeakFailed,
+    #[napi(value = "agent_reply_start")]
+    AgentReplyStart,
+    #[napi(value = "agent_reply_end")]
+    AgentReplyEnd,
 }
 
 #[napi(object)]
@@ -584,6 +588,12 @@ pub struct JsSpeechEvent {
     pub attempts: Option<u32>,
     /// `tts_phrase_cache_hit`: chars (Unicode scalars) of the text served from the cache.
     pub chars: Option<u32>,
+    /// `agent_reply_start` / `agent_reply_end`, and `tts_phrase_cache_hit` / `tts_wait` / `agent_speak_failed` of a reply sent with a `replyId`.
+    pub reply_id: Option<String>,
+    /// `agent_reply_end`: ms of the reply's audio written to the outbound track.
+    pub played_ms: Option<u32>,
+    /// `agent_reply_end`: true when the reply was cut off before its last frame was written.
+    pub interrupted: Option<bool>,
 }
 
 #[napi(string_enum)]

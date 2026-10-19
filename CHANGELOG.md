@@ -8,6 +8,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **voice:** `sendTextToTTS(text, { replyId })` tags a reply. Tagged replies emit `agent_reply_start` (`replyId`, `firstChunkMs`) at their first outbound frame and `agent_reply_end` (`replyId`, `playedMs`, `interrupted`) when they finish, are cut off by barge-in, `flushTts()` or `stop()`, or are dropped from the queue. `tts_phrase_cache_hit`, `tts_wait` and `agent_speak_failed` carry the `replyId` of their reply. Replies without a `replyId` emit no new events.
+
+### Changed
+
+- **speech:** `SendTextToTtsOptions` (Rust) gains `reply_id` and is no longer `Copy`.
+
 ## [0.11.6] - 2026-10-18
 
 ### Changed

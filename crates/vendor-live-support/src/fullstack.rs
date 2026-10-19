@@ -22,7 +22,7 @@ use node_webrtc_rust_speech::pipeline::VendorFactory;
 use node_webrtc_rust_speech::{PcmWriter, VendorRegistry, VoiceAgent};
 use tokio::time::{sleep, sleep_until, Instant};
 
-use crate::audio::matched_words;
+use crate::audio::{matched_words, missing_words};
 use crate::vad_gate::{
     normalize_peak_stereo_48k, preset_vad_config, silence_stereo_48k, CLIP_PEAK_DBFS, FRAME_BYTES,
 };
@@ -57,6 +57,10 @@ pub struct FullstackSample {
     pub first_partial_ms: Option<u64>,
     pub first_final_ms: Option<u64>,
     pub first_not_found_ms: Option<u64>,
+    /// Expected words found in each final alone, in event order (counts, never text).
+    pub per_final_matched: Vec<usize>,
+    /// Positions (in `expected`) missing from each final alone, in event order.
+    pub per_final_missing: Vec<Vec<usize>>,
 }
 
 /// Runs `clip_stereo_48k` (speech only, no padding) through a `VoiceAgent` whose STT is
@@ -159,6 +163,8 @@ pub async fn run_fullstack_idle_then_speak(
         first_partial_ms: None,
         first_final_ms: None,
         first_not_found_ms: None,
+        per_final_matched: Vec::new(),
+        per_final_missing: Vec::new(),
     };
     let mut final_text = String::new();
     let mut first_terminal_at: Option<Instant> = None;
@@ -182,6 +188,12 @@ pub async fn run_fullstack_idle_then_speak(
             SpeechEventKind::UserSpeechFinal => {
                 sample.finals += 1;
                 sample.first_final_ms.get_or_insert_with(since_speech);
+                sample
+                    .per_final_matched
+                    .push(matched_words(event.text.as_deref().unwrap_or(""), expected));
+                sample
+                    .per_final_missing
+                    .push(missing_words(event.text.as_deref().unwrap_or(""), expected));
                 final_text.push(' ');
                 final_text.push_str(event.text.as_deref().unwrap_or(""));
                 first_terminal_at.get_or_insert_with(Instant::now);
@@ -248,10 +260,17 @@ pub fn assert_fullstack_contract(
     min_words: usize,
     total_words: usize,
 ) {
-    println!("{label}_fullstack_finals {}", sample.finals);
+    println!(
+        "{label}_fullstack_finals {} utterances {} partials {}",
+        sample.finals, sample.speech_started, sample.partials
+    );
     println!(
         "{label}_fullstack_first_partial_ms {:?} first_final_ms {:?} first_not_found_ms {:?}",
         sample.first_partial_ms, sample.first_final_ms, sample.first_not_found_ms
+    );
+    println!(
+        "{label}_fullstack_per_final_matched {:?} missing_positions {:?}",
+        sample.per_final_matched, sample.per_final_missing
     );
     println!(
         "{label}_fullstack_words {}/{}",
@@ -295,6 +314,8 @@ mod tests {
             first_partial_ms: Some(700),
             first_final_ms: Some(6000),
             first_not_found_ms: None,
+            per_final_matched: vec![9],
+            per_final_missing: vec![vec![3]],
         }
     }
 

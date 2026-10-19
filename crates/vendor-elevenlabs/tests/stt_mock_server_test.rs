@@ -298,3 +298,126 @@ async fn socket_closed_with_a_pending_commit_answers_it_with_an_error() {
     .await;
     assert!(saw_error);
 }
+
+fn partials(outputs: &[SttOutput]) -> Vec<String> {
+    outputs
+        .iter()
+        .filter_map(|o| match o {
+            SttOutput::Transcript(SttTranscript::Partial(t)) => Some(t.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Quiet time: the provider produces nothing more.
+async fn assert_quiet(stt: &mut dyn SttProvider) {
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(stt.poll_output().await.unwrap().is_none());
+}
+
+/// `rt.stale-event-by-key` (ghost utterance): the server repeats the committed segment as a
+/// `partial_transcript` right after the `committed_transcript`. The voice agent turned that
+/// partial into a second utterance with a second `user_speech_final` of the same text (live
+/// runner-config run, 2026-10-19: 2 finals for one phrase). The repeat must not leave the provider.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_repeating_the_committed_segment_is_dropped() {
+    let (mut stt, mut ws) = start().await;
+    push_ms(stt.as_mut(), 3000).await;
+    send(
+        &mut ws,
+        json!({"message_type": "partial_transcript", "text": "one two three"}),
+    )
+    .await;
+    stt.request_finalize().await.unwrap();
+    read_until_commit(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"message_type": "committed_transcript", "text": "one two three four five"}),
+    )
+    .await;
+    send(
+        &mut ws,
+        json!({"message_type": "partial_transcript", "text": "one two three four five"}),
+    )
+    .await;
+    let out = collect(stt.as_mut(), has_done).await;
+    assert_eq!(finals(&out), ["one two three four five"]);
+    assert_quiet(stt.as_mut()).await;
+}
+
+/// The same repeat when its text differs a little (no audio was pushed since the commit, so it
+/// cannot be new speech), and then a real partial of the next utterance, which must still pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_without_new_audio_is_dropped_and_the_next_utterance_still_gets_partials() {
+    let (mut stt, mut ws) = start().await;
+    push_ms(stt.as_mut(), 2000).await;
+    stt.request_finalize().await.unwrap();
+    read_until_commit(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"message_type": "committed_transcript", "text": "alpha beta"}),
+    )
+    .await;
+    send(
+        &mut ws,
+        json!({"message_type": "partial_transcript", "text": "alpha beta."}),
+    )
+    .await;
+    let out = collect(stt.as_mut(), has_done).await;
+    assert_eq!(finals(&out), ["alpha beta"]);
+    assert_quiet(stt.as_mut()).await;
+
+    push_ms(stt.as_mut(), 1000).await;
+    send(
+        &mut ws,
+        json!({"message_type": "partial_transcript", "text": "gamma"}),
+    )
+    .await;
+    let next = collect(stt.as_mut(), |seen| !seen.is_empty()).await;
+    assert_eq!(partials(&next), ["gamma"]);
+}
+
+/// The commit of utterance 1 is sent and utterance 2's audio is pushed before the server answers
+/// it. Each commit answer belongs to its own `request_finalize`, in order, and utterance 2's
+/// partial (seen before answer 1) is not part of utterance 1's final. The docs do not say what the
+/// server does with audio sent between a commit and its answer; the live counterpart is
+/// `elevenlabs_stt_commit_answer_after_next_audio_keeps_each_utterance` in `live_fullstack.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commit_answered_after_the_next_utterance_audio_keeps_each_utterance_apart() {
+    let (mut stt, mut ws) = start().await;
+    push_ms(stt.as_mut(), 2000).await;
+    stt.request_finalize().await.unwrap();
+    assert_eq!(read_until_commit(&mut ws).await, 2000 / 20 * FRAME);
+    // Utterance 2 starts before the answer to commit 1.
+    push_ms(stt.as_mut(), 1500).await;
+    send(
+        &mut ws,
+        json!({"message_type": "partial_transcript", "text": "six"}),
+    )
+    .await;
+    send(
+        &mut ws,
+        json!({"message_type": "committed_transcript", "text": "one two three four five"}),
+    )
+    .await;
+    let first = collect(stt.as_mut(), has_done).await;
+    assert_eq!(finals(&first), ["one two three four five"]);
+
+    push_ms(stt.as_mut(), 500).await;
+    send(
+        &mut ws,
+        json!({"message_type": "partial_transcript", "text": "six seven"}),
+    )
+    .await;
+    stt.request_finalize().await.unwrap();
+    // Only the audio of utterance 2 is in front of commit 2.
+    assert_eq!(read_until_commit(&mut ws).await, 2000 / 20 * FRAME);
+    send(
+        &mut ws,
+        json!({"message_type": "committed_transcript", "text": "six seven eight nine ten"}),
+    )
+    .await;
+    let second = collect(stt.as_mut(), has_done).await;
+    assert_eq!(finals(&second), ["six seven eight nine ten"]);
+    assert_quiet(stt.as_mut()).await;
+}

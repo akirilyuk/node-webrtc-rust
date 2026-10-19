@@ -17,6 +17,13 @@
 //!   finalize with no answer within [`FINALIZE_WAIT_MS`] is closed by the provider with what it
 //!   has. A `commit_throttled` error answers the oldest pending commit.
 //!
+//! - The server repeats the segment it just committed as a `partial_transcript` a moment after the
+//!   `committed_transcript` (measured 2026-10-19, same millisecond). That partial describes no new
+//!   audio. Taken at face value it opens a ghost utterance in the voice agent: a second
+//!   `user_speaking_start`, and a second `user_speech_final` with the same text. A partial is
+//!   dropped when no audio was pushed since the last commit and no commit is outstanding, and a
+//!   partial equal to the text just committed is dropped until a different one arrives.
+//!
 //! Transcript text is never logged or put into an error message.
 #![cfg_attr(not(feature = "live"), allow(dead_code))]
 
@@ -55,6 +62,26 @@ struct State {
     finals: DeferredFinals,
     /// Audio pushed since the last commit.
     uncommitted: bool,
+    /// The last `committed_transcript` text, while a repeat of it is still to be expected.
+    last_committed: Option<String>,
+    /// Partials dropped as repeats of a committed segment (the stale-partial guard).
+    stale_partials: u64,
+}
+
+impl State {
+    /// A partial that cannot describe new audio: nothing was pushed since the last commit and no
+    /// commit is waiting for its answer (a partial between the commit and its answer is the
+    /// segment's last refresh and still counts), or the text of the segment just committed.
+    fn is_stale_partial(&self, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        if self.last_committed.as_deref() == Some(text) {
+            return true;
+        }
+        self.finals.pending() == 0 && !self.uncommitted && !self.finals.has_segments()
+    }
 }
 
 pub(crate) struct Shared {
@@ -69,6 +96,8 @@ impl Shared {
                 outbound: None,
                 finals: DeferredFinals::new(),
                 uncommitted: false,
+                last_committed: None,
+                stale_partials: 0,
             }),
         }
     }
@@ -83,8 +112,22 @@ impl Shared {
             return;
         }
         match message {
-            ServerMessage::Partial(text) => st.finals.interim(&text),
+            ServerMessage::Partial(text) => {
+                if st.is_stale_partial(&text) {
+                    st.stale_partials += 1;
+                    eprintln!(
+                        "[speech] elevenlabs stt: dropped a partial that repeats the committed segment ({} words, {} so far)",
+                        text.split_whitespace().count(),
+                        st.stale_partials
+                    );
+                } else {
+                    st.last_committed = None;
+                    st.finals.interim(&text);
+                }
+            }
             ServerMessage::Committed(text) => {
+                let trimmed = text.trim();
+                st.last_committed = (!trimmed.is_empty()).then(|| trimmed.to_string());
                 st.finals.segment(&text);
                 // Without a pending finalize this is the model's own commit: the text stays
                 // with the utterance in progress.
@@ -218,6 +261,7 @@ impl SttProvider for ElevenLabsStt {
                 st.outbound = Some(outbound_tx);
                 st.finals.clear();
                 st.uncommitted = false;
+                st.last_committed = None;
             }
 
             let reader_shared = self.shared.clone();
@@ -283,6 +327,7 @@ impl SttProvider for ElevenLabsStt {
             st.alive = false;
             st.outbound = None;
             st.finals.clear();
+            st.last_committed = None;
         }
         self.abort_tasks();
         Ok(())

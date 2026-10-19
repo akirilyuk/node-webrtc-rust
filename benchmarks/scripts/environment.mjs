@@ -13,6 +13,9 @@ import tls from 'node:tls'
 
 /** A host is starved when its CPU busy p90 over a vendor window exceeds this percent. */
 export const STARVED_BUSY_P90 = 85
+/** `--wait-idle` starts a vendor once the busy p90 of the last IDLE_WINDOW samples is below this. */
+export const IDLE_BUSY_P90 = 50
+export const IDLE_WINDOW = 30
 /** A gap between 1 s ticks above this many ms is a suspend. */
 export const SUSPEND_GAP_MS = 5000
 const PROBE_TIMEOUT_MS = 5000
@@ -166,6 +169,43 @@ export function summarizeLoad(samples) {
     busy_max: round1(busy.length ? Math.max(...busy) : null),
     load1_max: round1(samples.length ? Math.max(...samples.map((s) => s.load1)) : null),
     starved: p90 !== null && p90 > STARVED_BUSY_P90,
+  }
+}
+
+/**
+ * Waits for a quiet host: samples the busy percent every second and returns once the last
+ * IDLE_WINDOW samples have a busy p90 below IDLE_BUSY_P90; gives up at `timeoutMs`.
+ * `deps` are injectable: `sample()` (busy percent), `sleep(ms)`, `now()` (ms).
+ * Returns `{ waited_ms, reached }`.
+ */
+export async function waitForIdleHost(timeoutMs, deps = {}) {
+  const now = deps.now ?? (() => Date.now())
+  const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+  let sample = deps.sample
+  if (!sample) {
+    let prev = os.cpus()
+    sample = () => {
+      const cur = os.cpus()
+      const busy = cpuBusyPercent(prev, cur)
+      prev = cur
+      return busy
+    }
+  }
+  const start = now()
+  const window = []
+  for (;;) {
+    await sleep(1000)
+    window.push(sample())
+    if (window.length > IDLE_WINDOW) window.shift()
+    const waited = now() - start
+    if (window.length === IDLE_WINDOW) {
+      const p90 = percentile(
+        [...window].sort((a, b) => a - b),
+        90,
+      )
+      if (p90 < IDLE_BUSY_P90) return { waited_ms: waited, reached: true }
+    }
+    if (waited >= timeoutMs) return { waited_ms: waited, reached: false }
   }
 }
 

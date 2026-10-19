@@ -122,6 +122,7 @@ function fmt(value) {
 export function renderMarkdown(groups) {
   if (groups.length === 0) return '_No `vendor_bench` lines in the log._\n'
   const out = []
+  let anyInconclusive = false
   for (const leg of [...new Set(groups.map((g) => g.leg))].sort()) {
     const rows = groups.filter((g) => g.leg === leg)
     const metrics = [...new Set(rows.flatMap((g) => Object.keys(g.metrics)))]
@@ -132,11 +133,18 @@ export function renderMarkdown(groups) {
       const cells = metrics.map((m) =>
         g.metrics[m] ? `${fmt(g.metrics[m].median)} / ${fmt(g.metrics[m].p90)}` : '',
       )
+      if (g.inconclusive) anyInconclusive = true
       out.push(
-        `| ${[g.vendor, g.transport, g.model, g.phase, g.text, g.n, g.http_versions.join(', '), ...cells].join(' | ')} |`,
+        `| ${[g.inconclusive ? `${g.vendor} †` : g.vendor, g.transport, g.model, g.phase, g.text, g.n, g.http_versions.join(', '), ...cells].join(' | ')} |`,
       )
     }
     out.push('')
+  }
+  if (anyInconclusive) {
+    out.push(
+      '† Inconclusive: the host was starved or suspended during this vendor, or the vendor failed.',
+      '',
+    )
   }
   return out.join('\n')
 }

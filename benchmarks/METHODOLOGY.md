@@ -74,6 +74,26 @@ Google (the catalog default voice, which is put in the record's `model` field). 
 has no default, the record says `default`. OpenAI's realtime STT model is
 `documented_realtime_model` in `crates/vendor-openai`.
 
+**Idle wait and inconclusive results.** The runner host can be shared with other CI jobs, which
+starves a bench. With `--wait-idle <seconds>` (the CI workflow passes 900) the CLI samples the
+host busy percent every second before each vendor's run and starts once the last 30 samples have
+a busy p90 below 50 %; at the timeout it runs anyway. The outcome is
+`per_vendor_load[vendor].idle_wait = { waited_ms, reached }`. A vendor that is `starved`, failed
+or had a host-suspend gap is listed in `inconclusive_vendors`; its groups carry
+`inconclusive: true`, and `summary.md` marks their table rows with `†`. Repeat such a vendor on a
+quiet host instead of reading its numbers.
+
+**Rate limits.** Groq's documented base limits for the Developer plan are 10 requests per minute
+for `canopylabs/orpheus-v1-english` (TTS) and 20 for `whisper-large-v3-turbo` (STT)
+(https://console.groq.com/docs/rate-limits; the free plan's values are not on that page). The
+bench sends several requests per run, which exceeded 10 per minute and answered `429
+rate_limit_exceeded`. `vendors.mjs` therefore sets `minRequestIntervalMs: 6500` for Groq
+(`ceil(60000 / 10) + 500`), passed to the bench as `NWR_BENCH_MIN_REQUEST_INTERVAL_MS` and
+recorded in `request_interval_ms`. The wait happens before a sample starts, outside the measured
+time, and time a sample itself took counts toward the interval. The consequence for warm
+samples: a warm request follows its cold one after an idle gap of about that interval, on a
+pooled connection that stayed open (or that the server may have closed meanwhile).
+
 ## Cold and warm
 
 The definitions are in `crates/vendor-live-support/src/bench.rs`.
@@ -219,20 +239,22 @@ show the path to the vendor from this host, not the exact path of each sample.
 
 **`summary.json`.** The top-level fields of the file the compare tool reads:
 
-| Field             | Meaning                                                                                                                                                   |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schema_version`  | Format version of this file, currently 1.                                                                                                                 |
-| `generated_at`    | ISO time the CLI finished (same as `finished_at`).                                                                                                        |
-| `region`          | The `--region` label.                                                                                                                                     |
-| `runs`            | Runs per sample group, from `--runs`.                                                                                                                     |
-| `transport`       | The `--transport` value passed on to the benches (`all` by default).                                                                                      |
-| `vendors_run`     | Vendors whose run step started, including a vendor whose run failed.                                                                                      |
-| `skipped`         | `{ vendor, reason }` entries: `excluded` or `no key: <variable names>`.                                                                                   |
-| `failed`          | Entries with `vendor`, `phase` (`env`, `build` or `run`), and `exit_code`, `log` or `reason` where known. A failure makes the CLI exit with 1.            |
-| `starved`         | Vendors whose run window was CPU-starved (below).                                                                                                         |
-| `host_suspended`  | `{ vendor, at, gap_ms }` for each suspend gap (below).                                                                                                    |
-| `per_vendor_load` | Per vendor id: `samples`, `busy_median`, `busy_p90`, `busy_max` (CPU busy percent per second), `load1_max` (largest 1-minute load average) and `starved`. |
-| `groups`          | The statistics of the previous section, one entry per group with its `n`, `http_versions` and `metrics`.                                                  |
+| Field                  | Meaning                                                                                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `schema_version`       | Format version of this file, currently 1.                                                                                                                                            |
+| `generated_at`         | ISO time the CLI finished (same as `finished_at`).                                                                                                                                   |
+| `region`               | The `--region` label.                                                                                                                                                                |
+| `runs`                 | Runs per sample group, from `--runs`.                                                                                                                                                |
+| `transport`            | The `--transport` value passed on to the benches (`all` by default).                                                                                                                 |
+| `vendors_run`          | Vendors whose run step started, including a vendor whose run failed.                                                                                                                 |
+| `skipped`              | `{ vendor, reason }` entries: `excluded` or `no key: <variable names>`.                                                                                                              |
+| `failed`               | Entries with `vendor`, `phase` (`env`, `build` or `run`), and `exit_code`, `log` or `reason` where known. A failure makes the CLI exit with 1.                                       |
+| `starved`              | Vendors whose run window was CPU-starved (below).                                                                                                                                    |
+| `host_suspended`       | `{ vendor, at, gap_ms }` for each suspend gap (below).                                                                                                                               |
+| `per_vendor_load`      | Per vendor id: `samples`, `busy_median`, `busy_p90`, `busy_max` (CPU busy percent per second), `load1_max` (largest 1-minute load average) and `starved`.                            |
+| `request_interval_ms`  | Per vendor id with request pacing: the minimum milliseconds between two requests that the run used (`{ "groq": 6500 }`). Empty when no vendor was paced.                             |
+| `inconclusive_vendors` | Union of the `starved` vendors, the vendors in `failed` and the vendors with a `host_suspended` gap. Their results are not comparable (below).                                       |
+| `groups`               | The statistics of the previous section, one entry per group with its `n`, `http_versions`, `metrics` and `inconclusive` (true when the group's vendor is in `inconclusive_vendors`). |
 
 **Host load.** While a vendor's test runs, the CLI samples the busy share of `os.cpus()` every
 second. The cargo build happens before and is not sampled. A vendor window is `starved` when the

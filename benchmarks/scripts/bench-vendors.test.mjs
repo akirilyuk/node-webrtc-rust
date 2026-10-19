@@ -332,3 +332,53 @@ test('--summarize refuses an existing summary.json without --force', () => {
   assert.match(again.stderr, /--force/)
   assert.equal(summarizeCli(dir, '--force').status, 0)
 })
+
+test('a starved vendor is inconclusive: summary.json, groups and summary.md', () => {
+  const { out, run, json } = setup()
+  const result = run(['--vendors', 'deepgram,groq', '--runs', '2', '--wait-idle', '2'], {
+    DEEPGRAM_API_KEY: KEY,
+    GROQ_API_KEY: OTHER_KEY,
+    NWR_BENCH_FAKE_LOAD: 'busy',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const summary = json('summary.json')
+  assert.deepEqual(summary.inconclusive_vendors.sort(), ['deepgram', 'groq'])
+  assert.ok(summary.groups.every((g) => g.inconclusive === true))
+  assert.equal(summary.per_vendor_load.deepgram.idle_wait.reached, false)
+  assert.ok(summary.per_vendor_load.deepgram.idle_wait.waited_ms >= 2000)
+  const md = readFileSync(path.join(out, 'summary.md'), 'utf8')
+  assert.match(md, /Inconclusive \(starved host, failure or host suspend\):\*\* /)
+  assert.match(md, /\| deepgram † \|/)
+})
+
+test('a healthy vendor is not inconclusive; a failed one is', () => {
+  const { run, json } = setup()
+  run(['--vendors', 'deepgram,groq'], {
+    DEEPGRAM_API_KEY: KEY,
+    GROQ_API_KEY: OTHER_KEY,
+    FAKE_FAIL_CRATE: 'deepgram',
+  })
+  const summary = json('summary.json')
+  assert.deepEqual(summary.inconclusive_vendors, ['deepgram'])
+  for (const g of summary.groups) assert.equal(g.inconclusive, g.vendor === 'deepgram')
+})
+
+test('groq gets its request interval, a parent value wins, and it is recorded', () => {
+  let t = setup()
+  t.run(['--vendors', 'groq', '--runs', '1'], { GROQ_API_KEY: OTHER_KEY })
+  assert.match(
+    readFileSync(path.join(t.dir, 'flags-groq'), 'utf8'),
+    /^NWR_BENCH_MIN_REQUEST_INTERVAL_MS=6500$/m,
+  )
+  assert.deepEqual(t.json('summary.json').request_interval_ms, { groq: 6500 })
+  t = setup()
+  t.run(['--vendors', 'groq', '--runs', '1'], {
+    GROQ_API_KEY: OTHER_KEY,
+    NWR_BENCH_MIN_REQUEST_INTERVAL_MS: '1200',
+  })
+  assert.match(
+    readFileSync(path.join(t.dir, 'flags-groq'), 'utf8'),
+    /^NWR_BENCH_MIN_REQUEST_INTERVAL_MS=1200$/m,
+  )
+  assert.deepEqual(t.json('summary.json').request_interval_ms, { groq: 1200 })
+})

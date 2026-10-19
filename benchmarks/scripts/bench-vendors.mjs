@@ -6,6 +6,7 @@
 //     --env-file ~/vendor-keys.env
 //
 // Flags: --vendors <list|all>  --exclude <list>  --runs <n>  --transport <all|websocket|http|auto|…>
+//        --wait-idle <seconds>  wait up to this long for a quiet host before each vendor's run (0 = off)
 //        --region <label>  --out <dir>  --env-file <path>  --require  --force
 //        --scrub-logs <dir>   delete logs that contain a key value (lists them by name), then exit
 //        --summarize <dir>    summarise an end-to-end result folder (raw.jsonl + meta.json), then exit
@@ -35,7 +36,12 @@ import {
   withDerivedMetrics,
 } from '../../scripts/ci/vendor-bench-summary.mjs'
 import { parseEnvFile, resolveVendorEnv } from './env-file.mjs'
-import { collectEnvironment, startLoadSampler, startSuspendWatch } from './environment.mjs'
+import {
+  collectEnvironment,
+  startLoadSampler,
+  startSuspendWatch,
+  waitForIdleHost,
+} from './environment.mjs'
 import { VENDORS, allVendorEnvNames } from './vendors.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -50,6 +56,7 @@ const VALUE_FLAGS = new Set([
   '--env-file',
   '--scrub-logs',
   '--summarize',
+  '--wait-idle',
 ])
 const BOOL_FLAGS = new Set(['--require', '--force'])
 
@@ -68,6 +75,7 @@ export function parseArgs(argv) {
     force: false,
     scrubLogs: null,
     summarize: null,
+    waitIdle: 0,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
@@ -99,6 +107,11 @@ export function parseArgs(argv) {
   const runs = Number(opts.runs)
   if (!Number.isInteger(runs) || runs < 1) throw new UsageError(`--runs must be a positive integer`)
   opts.runs = runs
+  const waitIdle = Number(opts.waitIdle)
+  if (!Number.isFinite(waitIdle) || waitIdle < 0) {
+    throw new UsageError('--wait-idle must be a number of seconds >= 0')
+  }
+  opts.waitIdle = waitIdle
   const transports = list(String(opts.transport))
   if (transports.length === 0 || transports.some((t) => !TRANSPORTS.has(t))) {
     throw new UsageError(`--transport must be ${[...TRANSPORTS].join(', ')} or a comma list`)
@@ -292,6 +305,10 @@ export async function main(argv, processEnv = process.env) {
   const starved = []
   const hostSuspended = []
   const perVendorLoad = {}
+  const requestIntervalMs = {}
+  const idleWait = {}
+  // Test hook: NWR_BENCH_FAKE_LOAD=busy|quiet replaces the host busy samples.
+  const fakeLoad = processEnv.NWR_BENCH_FAKE_LOAD
 
   for (const id of opts.selected) {
     const vendor = VENDORS.find((v) => v.id === id)
@@ -315,6 +332,12 @@ export async function main(argv, processEnv = process.env) {
       ...env,
       NWR_BENCH_RUNS: String(opts.runs),
       NWR_BENCH_TRANSPORT: opts.transport,
+    }
+    const parentInterval = Number(processEnv.NWR_BENCH_MIN_REQUEST_INTERVAL_MS)
+    if (parentInterval > 0) requestIntervalMs[id] = parentInterval
+    else if (vendor.minRequestIntervalMs) {
+      childEnv.NWR_BENCH_MIN_REQUEST_INTERVAL_MS = String(vendor.minRequestIntervalMs)
+      requestIntervalMs[id] = vendor.minRequestIntervalMs
     }
     for (const flagId of sets ?? [vendor.envId]) {
       childEnv[`${flagId.toUpperCase()}_LIVE_REQUIRED`] = '1'
@@ -341,6 +364,13 @@ export async function main(argv, processEnv = process.env) {
 
     process.stderr.write(`bench-vendors: ${id}: run\n`)
     const runLog = path.join(logDir, `${id}.run.log`)
+    if (opts.waitIdle > 0) {
+      process.stderr.write(`bench-vendors: ${id}: waiting for an idle host\n`)
+      idleWait[id] = await waitForIdleHost(
+        opts.waitIdle * 1000,
+        fakeLoad ? { sample: () => (fakeLoad === 'busy' ? 100 : 0) } : {},
+      )
+    }
     const sampler = startLoadSampler()
     const watch = startSuspendWatch()
     const runCode = await runProcess(
@@ -352,9 +382,10 @@ export async function main(argv, processEnv = process.env) {
         logPath: runLog,
       },
     )
-    const load = sampler.stop()
+    let load = sampler.stop()
+    if (fakeLoad === 'busy') load = { ...load, busy_p90: 100, starved: true }
     const gaps = watch.stop()
-    perVendorLoad[id] = load
+    perVendorLoad[id] = idleWait[id] ? { ...load, idle_wait: idleWait[id] } : load
     if (load.starved) starved.push(id)
     for (const gap of gaps) hostSuspended.push({ vendor: id, ...gap })
     vendorsRun.push(id)
@@ -375,7 +406,13 @@ export async function main(argv, processEnv = process.env) {
     process.stderr.write(`key value found in log ${name}; deleted\n`)
     scrubFailed = true
   }
-  const groups = summarize(records.map(withDerivedMetrics))
+  const inconclusiveVendors = [
+    ...new Set([...starved, ...failed.map((f) => f.vendor), ...hostSuspended.map((h) => h.vendor)]),
+  ]
+  const groups = summarize(records.map(withDerivedMetrics)).map((g) => ({
+    ...g,
+    inconclusive: inconclusiveVendors.includes(g.vendor),
+  }))
   const runVendors = VENDORS.filter((v) => vendorsRun.includes(v.id))
   const environment = await collectEnvironment({
     region: opts.region,
@@ -398,6 +435,8 @@ export async function main(argv, processEnv = process.env) {
     starved,
     host_suspended: hostSuspended,
     per_vendor_load: perVendorLoad,
+    request_interval_ms: requestIntervalMs,
+    inconclusive_vendors: inconclusiveVendors,
     groups,
   }
 
@@ -427,6 +466,7 @@ export async function main(argv, processEnv = process.env) {
         `${f.vendor} (${f.phase}${f.exit_code !== undefined ? ` exit ${f.exit_code}` : ''}${f.reason ? `, ${f.reason}` : ''})`,
     ),
   )
+  list('Inconclusive (starved host, failure or host suspend)', inconclusiveVendors)
   list('Starved host (CPU busy p90 above 85%)', starved)
   list(
     'Host suspended',

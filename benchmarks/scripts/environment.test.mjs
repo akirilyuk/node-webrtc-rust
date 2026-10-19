@@ -13,6 +13,7 @@ import {
   startSuspendWatch,
   summarizeLoad,
   vendorHosts,
+  waitForIdleHost,
 } from './environment.mjs'
 
 function sequence(values) {
@@ -154,4 +155,42 @@ test('nwr_version is the sdk package version', async () => {
     readFileSync(path.join(repoRoot, 'packages/sdk/package.json'), 'utf8'),
   ).version
   assert.equal(env.nwr_version, expected)
+})
+
+function fakeClock(samples) {
+  let t = 0
+  let i = 0
+  return {
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms
+    },
+    sample: () => samples(i++),
+  }
+}
+
+test('waitForIdleHost on a quiet host proceeds after 30 samples', async () => {
+  const r = await waitForIdleHost(
+    900_000,
+    fakeClock(() => 5),
+  )
+  assert.deepEqual(r, { waited_ms: 30_000, reached: true })
+})
+
+test('waitForIdleHost on a busy host gives up at the timeout', async () => {
+  const r = await waitForIdleHost(
+    10_000,
+    fakeClock(() => 100),
+  )
+  assert.deepEqual(r, { waited_ms: 10_000, reached: false })
+})
+
+test('waitForIdleHost proceeds once a busy host turns quiet for 30 samples', async () => {
+  const r = await waitForIdleHost(
+    900_000,
+    fakeClock((i) => (i < 20 ? 100 : 5)),
+  )
+  assert.equal(r.reached, true)
+  // 20 busy samples, then the window must hold 30 samples with p90 < 50: 3 busy ones remain.
+  assert.ok(r.waited_ms > 30_000 && r.waited_ms <= 50_000, String(r.waited_ms))
 })

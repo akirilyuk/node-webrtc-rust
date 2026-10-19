@@ -22,6 +22,10 @@ name: Vendor latency bench
 # environment.json) and the cargo logs. The CLI never writes a key into a result file, and the
 # last step deletes any log that contains one.
 #
+# The runner host is shared with other CI jobs. The CLI waits (--wait-idle) for a quiet host
+# before each vendor and marks starved, failed or suspended vendors as inconclusive; only one
+# bench runs at a time repo-wide (concurrency group `vendor-bench`).
+#
 # Every vendor secret is mapped to the library's env name; the CLI hands each cargo run only its
 # own vendor's variables and sets <VENDOR>_LIVE_REQUIRED=1.
 
@@ -71,7 +75,7 @@ permissions:
   packages: read # pull the ci-build image from GHCR
 
 concurrency:
-  group: vendor-bench-${{ github.event_name }}-${{ github.ref }}
+  group: vendor-bench
   cancel-in-progress: false
 
 jobs:
@@ -128,7 +132,7 @@ jobs:
           TRANSPORT: ${{ inputs.transport || 'all' }}
           REGION: ${{ inputs.region || 'ci-eu' }}
         run: |
-          args=(--vendors "$VENDORS" --runs "$RUNS" --transport "$TRANSPORT" --region "$REGION" --out bench-results)
+          args=(--vendors "$VENDORS" --runs "$RUNS" --transport "$TRANSPORT" --region "$REGION" --wait-idle 900 --out bench-results)
           if [ "$VENDORS" != "all" ]; then args+=(--require); fi
           status=0
           node benchmarks/scripts/bench-vendors.mjs "${args[@]}" || status=$?
@@ -148,4 +152,5 @@ jobs:
           path: |
             bench-results/
             .test-logs/bench-vendors/
+          retention-days: 7
           if-no-files-found: warn

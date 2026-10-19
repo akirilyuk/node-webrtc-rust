@@ -245,7 +245,7 @@ pub async fn handle_barge_in(
     }
 
     if barge_in.flush_tts {
-        tts_buffer.flush().await;
+        tts_buffer.flush_with_reply_events(&emit).await;
     }
     emit(SpeechEvent::barge_in());
 }

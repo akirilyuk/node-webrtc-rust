@@ -27,8 +27,8 @@ describe('VoiceAgent', () => {
     await agent.sendTextToTTS('default')
     await agent.sendTextToTTS('protected', { interruptible: false, nonBlocking: true })
 
-    expect(spy).toHaveBeenNthCalledWith(1, 'default', undefined, undefined)
-    expect(spy).toHaveBeenNthCalledWith(2, 'protected', true, false)
+    expect(spy).toHaveBeenNthCalledWith(1, 'default', undefined, undefined, undefined)
+    expect(spy).toHaveBeenNthCalledWith(2, 'protected', true, false, undefined)
   })
 
   test('sendTextToTTS interruptible:false plays through native end to end', async () => {

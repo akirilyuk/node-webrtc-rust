@@ -34,6 +34,8 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::TtsWait => JsSpeechEventType::TtsWait,
             SpeechEventKind::TtsPhraseCacheHit => JsSpeechEventType::TtsPhraseCacheHit,
             SpeechEventKind::AgentSpeakFailed => JsSpeechEventType::AgentSpeakFailed,
+            SpeechEventKind::AgentReplyStart => JsSpeechEventType::AgentReplyStart,
+            SpeechEventKind::AgentReplyEnd => JsSpeechEventType::AgentReplyEnd,
         },
         text: event.text,
         language: event.language,
@@ -57,6 +59,9 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         wait_ms: event.wait_ms,
         attempts: event.attempts,
         chars: event.chars,
+        reply_id: event.reply_id,
+        played_ms: event.played_ms,
+        interrupted: event.interrupted,
     }
 }
 
@@ -142,6 +147,22 @@ mod speech_event_to_js_tests {
         assert_eq!(js.event_type, JsSpeechEventType::TtsPhraseCacheHit);
         assert_eq!(js.chars, Some(12));
         assert!(js.text.is_none());
+    }
+
+    #[test]
+    fn reply_events_map_reply_id_and_playback() {
+        let js = speech_event_to_js(SpeechEvent::agent_reply_start("r1", Some(120)));
+        assert_eq!(js.event_type, JsSpeechEventType::AgentReplyStart);
+        assert_eq!(js.reply_id.as_deref(), Some("r1"));
+        assert_eq!(js.first_chunk_ms, Some(120));
+
+        let js = speech_event_to_js(SpeechEvent::agent_reply_end("r1", 900, true));
+        assert_eq!(js.event_type, JsSpeechEventType::AgentReplyEnd);
+        assert_eq!(js.played_ms, Some(900));
+        assert_eq!(js.interrupted, Some(true));
+
+        let js = speech_event_to_js(SpeechEvent::tts_phrase_cache_hit(3).with_reply_id(Some("r2")));
+        assert_eq!(js.reply_id.as_deref(), Some("r2"));
     }
 
     #[test]

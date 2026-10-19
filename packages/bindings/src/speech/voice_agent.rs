@@ -279,10 +279,12 @@ impl JsVoiceAgent {
         text: String,
         non_blocking: Option<bool>,
         interruptible: Option<bool>,
+        reply_id: Option<String>,
     ) -> Result<()> {
         let options = SendTextToTtsOptions {
             non_blocking: non_blocking.unwrap_or(false),
             interruptible: interruptible.unwrap_or(true),
+            reply_id,
         };
         self.inner
             .send_text_to_tts_with_options(&text, options)

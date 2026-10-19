@@ -23,6 +23,8 @@
 //! | `TtsWait` | A TTS synthesis start was refused and retried (`wait_ms`, `attempts`, `reason`) |
 //! | `TtsPhraseCacheHit` | A reply (or one synthesis job of it) was served from the phrase cache (`chars`); no text |
 //! | `AgentSpeakFailed` | One reply could not be synthesized (`reason`); the session keeps running |
+//! | `AgentReplyStart` | First outbound frame of one reply sent with a `replyId` (`reply_id`, `first_chunk_ms`); never emitted for replies without a reply id |
+//! | `AgentReplyEnd` | One reply sent with a `replyId` finished playing or was cut off (`reply_id`, `played_ms`, `interrupted`) |
 //! | `Error` | Vendor or internal failure |
 //!
 //! ## Event order contract
@@ -80,6 +82,10 @@ pub enum SpeechEventKind {
     TtsPhraseCacheHit,
     /// One reply failed to synthesize (`reason`); the agent keeps listening.
     AgentSpeakFailed,
+    /// First outbound frame of a reply that carries a reply id (`reply_id`, `first_chunk_ms`).
+    AgentReplyStart,
+    /// A reply that carries a reply id ended (`reply_id`, `played_ms`, `interrupted`).
+    AgentReplyEnd,
 }
 
 /// A speech event with optional payload text.
@@ -128,6 +134,14 @@ pub struct SpeechEvent {
     pub attempts: Option<u32>,
     /// `tts_phrase_cache_hit`: Unicode scalar count of the text served from the cache.
     pub chars: Option<u32>,
+    /// `agent_reply_start` / `agent_reply_end`, and `tts_phrase_cache_hit` / `tts_wait` /
+    /// `agent_speak_failed` of a job sent with a reply id.
+    pub reply_id: Option<String>,
+    /// `agent_reply_end`: ms of this reply's audio that reached the outbound track.
+    pub played_ms: Option<u32>,
+    /// `agent_reply_end`: true when the reply was cut off (barge-in, flush, stop) before its
+    /// last frame was written.
+    pub interrupted: Option<bool>,
 }
 
 impl SpeechEvent {
@@ -156,7 +170,34 @@ impl SpeechEvent {
             wait_ms: None,
             attempts: None,
             chars: None,
+            reply_id: None,
+            played_ms: None,
+            interrupted: None,
         }
+    }
+
+    /// First outbound frame of reply `reply_id`; `first_chunk_ms` is the speak request to the
+    /// first PCM chunk from the TTS vendor.
+    pub fn agent_reply_start(reply_id: &str, first_chunk_ms: Option<u32>) -> Self {
+        let mut ev = Self::base(SpeechEventKind::AgentReplyStart);
+        ev.reply_id = Some(reply_id.to_string());
+        ev.first_chunk_ms = first_chunk_ms;
+        ev
+    }
+
+    /// Reply `reply_id` is over: `played_ms` of its audio was written, `interrupted` when cut off.
+    pub fn agent_reply_end(reply_id: &str, played_ms: u32, interrupted: bool) -> Self {
+        let mut ev = Self::base(SpeechEventKind::AgentReplyEnd);
+        ev.reply_id = Some(reply_id.to_string());
+        ev.played_ms = Some(played_ms);
+        ev.interrupted = Some(interrupted);
+        ev
+    }
+
+    /// Tag the event with the reply id of the job that caused it.
+    pub fn with_reply_id(mut self, reply_id: Option<&str>) -> Self {
+        self.reply_id = reply_id.map(str::to_string);
+        self
     }
 
     /// A TTS synthesis start was refused and retried (`reason`: gRPC code + message).
@@ -442,6 +483,23 @@ mod user_language_event_tests {
         assert_eq!(event.kind, SpeechEventKind::SttStreamEnd);
         assert_eq!(event.reason.as_deref(), Some("listen_timeout"));
         assert!(SpeechEvent::stt_stream_end().reason.is_none());
+    }
+
+    #[test]
+    fn reply_events_carry_reply_id_and_playback() {
+        let start = SpeechEvent::agent_reply_start("r1", Some(120));
+        assert_eq!(start.kind, SpeechEventKind::AgentReplyStart);
+        assert_eq!(start.reply_id.as_deref(), Some("r1"));
+        assert_eq!(start.first_chunk_ms, Some(120));
+
+        let end = SpeechEvent::agent_reply_end("r1", 900, true);
+        assert_eq!(end.kind, SpeechEventKind::AgentReplyEnd);
+        assert_eq!(end.played_ms, Some(900));
+        assert_eq!(end.interrupted, Some(true));
+
+        let tagged = SpeechEvent::tts_phrase_cache_hit(4).with_reply_id(Some("r2"));
+        assert_eq!(tagged.reply_id.as_deref(), Some("r2"));
+        assert!(SpeechEvent::tts_phrase_cache_hit(4).reply_id.is_none());
     }
 
     #[test]

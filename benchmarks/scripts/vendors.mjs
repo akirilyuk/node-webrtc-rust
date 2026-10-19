@@ -8,6 +8,9 @@
 //             alias in an env file
 //   unpublished  reason string; vendors with `unpublished` are skipped by `--vendors all` with this
 //             reason; naming them in `--vendors` runs them
+//   minRequestIntervalMs  minimum time between two requests, from the vendor's documented rate
+//             limit; the CLI passes it as NWR_BENCH_MIN_REQUEST_INTERVAL_MS (a value set in the
+//             parent env wins). The bench waits before a sample, outside the measured time.
 //   hosts     API hosts the crate's default configuration connects to for the transports the bench
 //             uses. `{region}` is filled from `regionVar`; the probe skips a templated host when
 //             that variable is unset. `vendors.test.mjs` checks every host against the crate source.
@@ -68,6 +71,10 @@ export const VENDORS = [
     id: 'groq',
     envId: 'groq',
     vars: [{ name: 'GROQ_API_KEY', secret: 'GROQ_LIVE_KEY' }],
+    // https://console.groq.com/docs/rate-limits (Developer plan base limits): 10 requests per
+    // minute for `canopylabs/orpheus-v1-english` (TTS), 20 for `whisper-large-v3-turbo` (STT).
+    // The slower TTS limit applies to both legs: ceil(60000 / 10) + 500 ms.
+    minRequestIntervalMs: 6500,
     hosts: ['api.groq.com'],
   },
   {

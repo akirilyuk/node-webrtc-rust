@@ -4,6 +4,8 @@
 use node_webrtc_rust_speech::error::SpeechResult;
 use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::audio::STT_WORDS;
 use crate::stt::{measure_stt, open_stt, run_utterance};
@@ -50,6 +52,52 @@ pub fn runs_from_env(default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// Minimum time between two requests from `NWR_BENCH_MIN_REQUEST_INTERVAL_MS` (a vendor's
+/// documented rate limit). Unset, `0` or unparsable: no pacing.
+pub fn min_request_interval_from_env() -> Option<Duration> {
+    min_request_interval_from(
+        std::env::var("NWR_BENCH_MIN_REQUEST_INTERVAL_MS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Testable core of [`min_request_interval_from_env`].
+pub fn min_request_interval_from(value: Option<&str>) -> Option<Duration> {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+}
+
+/// Spaces request starts at least `min` apart. The wait happens before a sample's measurement
+/// starts, so it never counts toward a measured time. Time a sample itself took counts toward
+/// the interval.
+#[derive(Debug, Default)]
+pub struct Pacer {
+    last: Option<Instant>,
+    min: Option<Duration>,
+}
+
+impl Pacer {
+    pub fn new(min: Option<Duration>) -> Self {
+        Self { last: None, min }
+    }
+
+    /// A pacer configured from `NWR_BENCH_MIN_REQUEST_INTERVAL_MS`.
+    pub fn from_env() -> Self {
+        Self::new(min_request_interval_from_env())
+    }
+
+    /// Sleeps until `last + min` (not the first time, not when `min` is `None`), then records now.
+    pub async fn wait(&mut self) {
+        if let (Some(last), Some(min)) = (self.last, self.min) {
+            tokio::time::sleep_until(last + min).await;
+        }
+        self.last = Some(Instant::now());
+    }
+}
+
 /// The transports of `all` selected by `NWR_BENCH_TRANSPORT` (see [`transports_from`]).
 pub fn transports_from_env<'a>(all: &[&'a str]) -> Vec<&'a str> {
     transports_from(std::env::var("NWR_BENCH_TRANSPORT").ok().as_deref(), all)
@@ -79,10 +127,12 @@ pub async fn bench_tts(
     make_provider: impl Fn() -> Box<dyn TtsProvider>,
     runs: usize,
 ) -> SpeechResult<()> {
+    let mut pacer = Pacer::from_env();
     for run in 0..runs {
         for (label, text) in [("short", SHORT), ("sentence", SENTENCE)] {
             let provider = make_provider();
             for phase in ["cold", "warm"] {
+                pacer.wait().await;
                 let sample = measure_tts(provider.as_ref(), text).await?;
                 let http_version = provider.last_transport();
                 emit(&BenchRecord {
@@ -114,8 +164,10 @@ pub async fn bench_stt(
     audio: &[u8],
     runs: usize,
 ) -> SpeechResult<()> {
+    let mut pacer = Pacer::from_env();
     for run in 0..runs {
         let mut provider = make_provider();
+        pacer.wait().await;
         let sample = measure_stt(provider.as_mut(), audio, &STT_WORDS).await;
         let http_version = provider.last_transport();
         let _ = provider.stop().await;
@@ -145,12 +197,15 @@ pub async fn bench_stt_warm(
     audio: &[u8],
     runs: usize,
 ) -> SpeechResult<()> {
+    let mut pacer = Pacer::from_env();
     for run in 0..runs {
         let mut provider = make_provider();
         let outcome = async {
+            pacer.wait().await;
             let open_ms = open_stt(provider.as_mut()).await?;
             let mut cold = run_utterance(provider.as_mut(), audio, &STT_WORDS).await?;
             cold.open_ms = open_ms;
+            pacer.wait().await;
             let warm = run_utterance(provider.as_mut(), audio, &STT_WORDS).await?;
             Ok::<_, node_webrtc_rust_speech::error::SpeechError>((cold, warm))
         }
@@ -281,6 +336,47 @@ mod tests {
             vec!["websocket", "http"]
         );
         assert!(transports_from(Some("grpc"), &all).is_empty());
+    }
+
+    #[test]
+    fn min_request_interval_parses_or_is_none() {
+        assert_eq!(min_request_interval_from(None), None);
+        assert_eq!(min_request_interval_from(Some("0")), None);
+        assert_eq!(min_request_interval_from(Some("abc")), None);
+        assert_eq!(
+            min_request_interval_from(Some(" 6500 ")),
+            Some(Duration::from_millis(6500))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pacer_first_wait_does_not_sleep_and_second_sleeps_the_remainder() {
+        let mut pacer = Pacer::new(Some(Duration::from_millis(1000)));
+        let t0 = Instant::now();
+        pacer.wait().await;
+        assert_eq!(t0.elapsed(), Duration::ZERO);
+        tokio::time::advance(Duration::from_millis(300)).await;
+        pacer.wait().await;
+        assert_eq!(t0.elapsed(), Duration::from_millis(1000));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pacer_without_interval_never_sleeps() {
+        let mut pacer = Pacer::new(None);
+        let t0 = Instant::now();
+        pacer.wait().await;
+        pacer.wait().await;
+        assert_eq!(t0.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pacer_does_not_sleep_when_the_sample_took_longer_than_the_interval() {
+        let mut pacer = Pacer::new(Some(Duration::from_millis(1000)));
+        pacer.wait().await;
+        tokio::time::advance(Duration::from_millis(2500)).await;
+        let t1 = Instant::now();
+        pacer.wait().await;
+        assert_eq!(t1.elapsed(), Duration::ZERO);
     }
 
     #[test]

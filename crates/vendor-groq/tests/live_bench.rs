@@ -18,7 +18,7 @@ use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider, VendorFactory}
 use node_webrtc_rust_vendor_groq::GroqFactory;
 use node_webrtc_rust_vendor_live_support::audio::STT_PHRASE;
 use node_webrtc_rust_vendor_live_support::bench::{
-    bench_stt_warm, bench_tts, runs_from_env, transports_from_env,
+    bench_stt_warm, bench_tts, min_request_interval_from_env, runs_from_env, transports_from_env,
 };
 use node_webrtc_rust_vendor_live_support::env::live_env;
 use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
@@ -72,7 +72,11 @@ async fn bench() {
             .unwrap_or_else(|err| panic!("{ID} {transport} tts bench failed: {err}"));
     }
 
-    // The STT phrase is synthesized once with the vendor's own default TTS.
+    // The STT phrase is synthesized once with the vendor's own default TTS. It is one more
+    // request, so it waits for the interval after the last TTS sample.
+    if let Some(interval) = min_request_interval_from_env() {
+        tokio::time::sleep(interval).await;
+    }
     let speech: Vec<u8> = tts(&key, "auto")
         .synthesize_progressive(STT_PHRASE, None)
         .await

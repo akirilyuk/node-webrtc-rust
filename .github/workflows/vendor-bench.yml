@@ -1,22 +1,26 @@
 name: Vendor latency bench
 
 # Measures time to first audio (TTS) and STT open / partial / final latency of cloud speech
-# vendors against their real APIs: crates/vendor-<id>/tests/live_bench.rs, using
-# crates/vendor-live-support. It spends vendor credit and needs the vendor secrets.
+# vendors against their real APIs: crates/vendor-<id>/tests/live_bench.rs, run through the CLI
+# benchmarks/scripts/bench-vendors.mjs (`npm run bench:vendors`). It spends vendor credit and
+# needs the vendor secrets.
 #
 # Triggers:
 #   - label `vendor-bench` on a same-repo pull request: runs all ten vendors, one at a time, from
 #     the PR branch (GitHub only dispatches workflow_dispatch workflows that exist on the default
 #     branch, so an unmerged branch needs this trigger).
-#   - manual dispatch: runs the one chosen vendor.
+#   - manual dispatch: `vendor` is `all` or one vendor; `runs`, `transport` (all, websocket, http
+#     or auto) and `region` (a label for the result folder and summary) are inputs. A single
+#     vendor runs with --require, so a missing key fails instead of skipping.
 #   - fork pull requests never run: the job runs on a self-hosted runner and forks get no secrets.
 #
-# The step summary shows median / p90 per metric (scripts/ci/vendor-bench-summary.mjs); the raw
-# log and the grouped JSON are uploaded as the artifact vendor-bench-<vendor>-<run id>. The bench
-# never prints keys or transcripts.
+# The step summary is summary.md of the CLI (median / p90 per metric); the artifact
+# vendor-bench-<run id> holds bench-results/ (raw.jsonl, summary.json, summary.md,
+# environment.json) and the cargo logs. The CLI never writes a key into a result file, and the
+# last step deletes any log that contains one.
 #
-# Every vendor secret is mapped to the library's env name, and only the chosen crate reads its
-# own. <VENDOR>_LIVE_REQUIRED=1 turns a missing key into a failure instead of a skip.
+# Every vendor secret is mapped to the library's env name; the CLI hands each cargo run only its
+# own vendor's variables and sets <VENDOR>_LIVE_REQUIRED=1.
 
 on:
   pull_request:
@@ -24,10 +28,12 @@ on:
   workflow_dispatch:
     inputs:
       vendor:
-        description: 'Vendor crate to bench'
+        description: 'Vendor crate to bench, or all'
         required: true
         type: choice
+        default: all
         options:
+          - all
           - deepgram
           - elevenlabs
           - cartesia
@@ -42,6 +48,20 @@ on:
         description: 'Runs per sample'
         required: false
         default: '5'
+      transport:
+        description: 'Transport to measure'
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - websocket
+          - http
+          - auto
+      region:
+        description: 'Label for where this runs (result folder and summary)'
+        required: false
+        default: ci-eu
 
 permissions:
   contents: read
@@ -53,13 +73,8 @@ concurrency:
 
 jobs:
   bench:
-    name: Bench ${{ matrix.vendor }}
+    name: Bench ${{ github.event_name == 'workflow_dispatch' && inputs.vendor || 'all' }}
     if: github.event_name == 'workflow_dispatch' || (github.event.label.name == 'vendor-bench' && github.event.pull_request.head.repo.full_name == github.repository)
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        vendor: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.vendor) || '["deepgram","elevenlabs","cartesia","assemblyai","google","groq","azure","aws","openai","fishaudio"]') }}
     runs-on: self-hosted
     # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
     # ci-run-integration-tests docker run).
@@ -102,38 +117,32 @@ jobs:
             echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-sa.json" >> "$GITHUB_ENV"
           fi
 
-      - name: Require the chosen vendor and set run count
-        shell: bash
-        env:
-          VENDOR: ${{ matrix.vendor }}
-          RUNS: ${{ inputs.runs || '5' }}
-        run: |
-          # Fish Audio's live tests read FISH_LIVE_REQUIRED (vendor id "fish").
-          flag="$(echo "$VENDOR" | tr a-z A-Z)_LIVE_REQUIRED"
-          if [ "$VENDOR" = "fishaudio" ]; then flag="FISH_LIVE_REQUIRED"; fi
-          echo "$flag=1" >> "$GITHUB_ENV"
-          # Google has two credential paths with their own flag (live_test.rs, live_bench.rs).
-          if [ "$VENDOR" = "google" ]; then echo "GOOGLE_SA_LIVE_REQUIRED=1" >> "$GITHUB_ENV"; fi
-          echo "NWR_BENCH_RUNS=${RUNS:-5}" >> "$GITHUB_ENV"
-
       - name: Bench
-        id: bench
         shell: bash
         env:
-          VENDOR: ${{ matrix.vendor }}
+          VENDORS: ${{ github.event_name == 'workflow_dispatch' && inputs.vendor || 'all' }}
+          RUNS: ${{ inputs.runs || '5' }}
+          TRANSPORT: ${{ inputs.transport || 'all' }}
+          REGION: ${{ inputs.region || 'ci-eu' }}
         run: |
-          set +e
-          cargo test -p "node-webrtc-rust-vendor-$VENDOR" --features live --test live_bench -- --nocapture --test-threads=1 2>&1 | tee bench.log
-          status=${PIPESTATUS[0]}
-          node scripts/ci/vendor-bench-summary.mjs bench.log bench.json >> "$GITHUB_STEP_SUMMARY"
+          args=(--vendors "$VENDORS" --runs "$RUNS" --transport "$TRANSPORT" --region "$REGION" --out bench-results)
+          if [ "$VENDORS" != "all" ]; then args+=(--require); fi
+          status=0
+          node benchmarks/scripts/bench-vendors.mjs "${args[@]}" || status=$?
+          if [ -f bench-results/summary.md ]; then cat bench-results/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$status"
 
-      - name: Upload bench log and summary
+      - name: Delete logs that contain a key value
+        if: always()
+        shell: bash
+        run: node benchmarks/scripts/bench-vendors.mjs --scrub-logs .test-logs/bench-vendors
+
+      - name: Upload bench results and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vendor-bench-${{ matrix.vendor }}-${{ github.run_id }}
+          name: vendor-bench-${{ github.run_id }}
           path: |
-            bench.log
-            bench.json
+            bench-results/
+            .test-logs/bench-vendors/
           if-no-files-found: warn

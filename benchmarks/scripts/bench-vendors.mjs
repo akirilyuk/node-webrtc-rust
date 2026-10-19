@@ -275,6 +275,11 @@ export async function main(argv, processEnv = process.env) {
   }
 
   const finishedAt = new Date().toISOString()
+  let scrubFailed = false
+  for (const name of scrubLogs(logDir, secrets)) {
+    process.stderr.write(`key value found in log ${name}; deleted\n`)
+    scrubFailed = true
+  }
   const groups = summarize(records.map(withDerivedMetrics))
   const runVendors = VENDORS.filter((v) => vendorsRun.includes(v.id))
   const environment = await collectEnvironment({
@@ -338,7 +343,6 @@ export async function main(argv, processEnv = process.env) {
   }
   md.push(renderMarkdown(groups))
 
-  let scrubFailed = false
   const write = (name, content) => {
     if (secrets.some((s) => content.includes(s))) {
       process.stderr.write(`key value found in ${name}; not written\n`)

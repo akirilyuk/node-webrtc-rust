@@ -35,6 +35,7 @@ for run in 0 1; do
   echo "vendor_bench {\\"vendor\\":\\"$crate\\",\\"leg\\":\\"tts\\",\\"transport\\":\\"http\\",\\"model\\":\\"$model\\",\\"phase\\":\\"cold\\",\\"text\\":\\"short\\",\\"run\\":$run,\\"http_version\\":null,\\"metrics\\":{\\"ttfa_ms\\":$((100 + run)),\\"total_ms\\":400,\\"audio_ms\\":2000}}"
   echo "noise line $run"
 done
+if [ -n "$FAKE_NOISE_KEY" ]; then echo "debug $DEEPGRAM_API_KEY"; fi
 if [ "$crate" = "$FAKE_FAIL_CRATE" ]; then exit 3; fi
 exit 0
 `
@@ -184,4 +185,17 @@ test('usage errors exit 2 and an existing summary.json needs --force', () => {
   assert.equal(run([]).status, 0)
   assert.equal(run([]).status, 2, 'second run into the same folder')
   assert.equal(run(['--force']).status, 0)
+})
+
+test('a key value in a cargo log is deleted locally', () => {
+  const { out, run } = setup()
+  const result = run(['--vendors', 'deepgram'], { DEEPGRAM_API_KEY: KEY, FAKE_NOISE_KEY: '1' })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /key value found in log deepgram\.run\.log; deleted/)
+  assert.equal(result.stderr.includes(KEY), false)
+  assert.equal(readFileSync(path.join(out, 'raw.jsonl'), 'utf8').includes(KEY), false)
+  const logRoot = path.join(path.dirname(cli), '../../.test-logs/bench-vendors')
+  const stamps = readdirSync(logRoot).sort()
+  const newest = path.join(logRoot, stamps[stamps.length - 1])
+  assert.equal(existsSync(path.join(newest, 'deepgram.run.log')), false)
 })

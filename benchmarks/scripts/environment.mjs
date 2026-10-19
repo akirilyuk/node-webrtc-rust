@@ -233,12 +233,11 @@ function sh(cmd, args, cwd) {
   }
 }
 
-/** Workspace version from the root Cargo.toml `[workspace.package]`. */
+/** Released nwr version: `version` of packages/sdk/package.json (null if unreadable). */
 export function readNwrVersion(repoRoot) {
   try {
-    const text = readFileSync(path.join(repoRoot, 'Cargo.toml'), 'utf8')
-    const section = text.split(/^\[workspace\.package\]/m)[1] ?? ''
-    return /^version\s*=\s*"([^"]+)"/m.exec(section.split(/^\[/m)[0])?.[1] ?? null
+    const pkg = JSON.parse(readFileSync(path.join(repoRoot, 'packages/sdk/package.json'), 'utf8'))
+    return typeof pkg.version === 'string' ? pkg.version : null
   } catch {
     return null
   }

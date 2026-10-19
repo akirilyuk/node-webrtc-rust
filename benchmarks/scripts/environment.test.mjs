@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import {
   STARVED_BUSY_P90,
+  collectEnvironment,
   cpuBusyPercent,
   probeHost,
   startLoadSampler,
@@ -141,4 +145,13 @@ test('suspend watch records a gap above 5 s from an injected clock', () => {
   assert.equal(gaps.length, 1)
   assert.equal(gaps[0].gap_ms, 203_000)
   assert.equal(gaps[0].at, new Date(1_000_000 + 204_000).toISOString())
+})
+
+test('nwr_version is the sdk package version', async () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+  const env = await collectEnvironment({ repoRoot, vendors: [], probes: null })
+  const expected = JSON.parse(
+    readFileSync(path.join(repoRoot, 'packages/sdk/package.json'), 'utf8'),
+  ).version
+  assert.equal(env.nwr_version, expected)
 })

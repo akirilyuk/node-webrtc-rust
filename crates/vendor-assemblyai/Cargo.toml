@@ -22,6 +22,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+# Pins the `ring` backend: tokio-tungstenite enables rustls with no crypto provider, so a plain
+# Rust consumer of this crate would otherwise panic when building the TLS client.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 
 [dev-dependencies]

@@ -20,6 +20,17 @@ fn vendor_error(message: String) -> SpeechError {
     }
 }
 
+/// Installs the `ring` rustls provider once per process. tokio-tungstenite builds its TLS client
+/// from the process-level provider and panics (`rustls crypto/mod.rs`) when none is installed and
+/// the enabled features do not name exactly one. An already-installed provider (bindings, another
+/// vendor, the host app) is kept.
+pub(crate) fn ensure_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Opens `url` with the `Authorization` header. A handshake that does not finish in 10 s is
 /// `assemblyai stt websocket connect timed out after 10 s`.
 pub(crate) async fn connect(url: String, api_key: &str) -> SpeechResult<Socket> {
@@ -31,6 +42,7 @@ pub(crate) async fn connect_with_bound(
     api_key: &str,
     bound: Duration,
 ) -> SpeechResult<Socket> {
+    ensure_crypto_provider();
     let mut request = url
         .into_client_request()
         .map_err(|err| vendor_error(err.to_string()))?;

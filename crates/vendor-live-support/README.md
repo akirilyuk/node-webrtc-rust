@@ -50,10 +50,11 @@ node scripts/ci/vendor-bench-summary.mjs bench.log bench.json
 ```
 
 TTS: per run and per text (`short`, `sentence`) a new provider gives a `cold` sample (DNS and
-TLS or WS handshake included) and then a `warm` sample on the same provider. STT: each run is a
-fresh provider and one utterance, `cold`. A warm second utterance is not measured because whether
-a provider accepts another utterance after a finalize differs per vendor; a vendor crate opts in
-with `stt::run_utterance` once its docs allow it.
+TLS or WS handshake included) and then a `warm` sample on the same provider. STT: `bench_stt` uses a
+fresh provider and one utterance per run, `cold`. Whether a provider accepts another utterance
+after a finalize differs per vendor, so a vendor whose docs allow it uses `bench_stt_warm`
+instead: a `cold` utterance (open included) and then a `warm` second utterance on the same
+session (AssemblyAI, Azure, Groq, Google REST, OpenAI `whisper-1`).
 
 ## STT fixture
 

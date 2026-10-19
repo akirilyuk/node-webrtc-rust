@@ -190,27 +190,6 @@ fn dispatch_options(workflow: &str) -> Vec<String> {
     ids
 }
 
-/// The quoted ids of the fixed list in the `matrix: vendor:` expression.
-fn matrix_vendors(workflow: &str) -> Vec<String> {
-    let Some(line) = workflow
-        .lines()
-        .find(|l| l.trim_start().starts_with("vendor: ${{ fromJSON("))
-    else {
-        return Vec::new();
-    };
-    let Some(list) = line.rsplit_once("|| '[").map(|(_, rest)| rest) else {
-        return Vec::new();
-    };
-    let list = list.split(']').next().unwrap_or("");
-    let mut ids: Vec<String> = list
-        .split(',')
-        .map(|v| v.trim().trim_matches('"').to_string())
-        .filter(|v| !v.is_empty())
-        .collect();
-    ids.sort();
-    ids
-}
-
 /// Everything wrong with the trigger, fork-skip and vendor lists of `vendor-bench.yml`.
 fn check_bench_trigger(workflow: &str) -> Vec<String> {
     let mut problems = Vec::new();
@@ -239,22 +218,17 @@ fn check_bench_trigger(workflow: &str) -> Vec<String> {
             "the job `if:` needs both `github.event.label.name == 'vendor-bench'` and the fork-skip `{FORK_SKIP}`"
         ));
     }
-    if !workflow.contains("_LIVE_REQUIRED") {
-        problems.push("the bench must set <VENDOR>_LIVE_REQUIRED=1".to_string());
+    if !workflow.contains("benchmarks/scripts/bench-vendors.mjs") {
+        problems.push(
+            "the job must run benchmarks/scripts/bench-vendors.mjs (it sets <VENDOR>_LIVE_REQUIRED=1)"
+                .to_string(),
+        );
     }
-    let options = dispatch_options(workflow);
-    let matrix = matrix_vendors(workflow);
-    for id in &options {
-        if !matrix.contains(id) {
-            problems.push(format!(
-                "matrix vendor list is missing dispatch option `{id}`"
-            ));
-        }
+    if !workflow.contains("--require") {
+        problems.push("a single chosen vendor must run with --require".to_string());
     }
-    for id in &matrix {
-        if !options.contains(id) {
-            problems.push(format!("matrix vendor `{id}` is not a dispatch option"));
-        }
+    if !dispatch_options(workflow).iter().any(|o| o == "all") {
+        problems.push("the vendor input needs an `all` option".to_string());
     }
     problems
 }
@@ -290,19 +264,13 @@ fn vendor_bench_trigger_if_and_vendor_lists_are_in_lockstep() {
             "no crates/vendor-{id}"
         );
     }
-    // Every crate that has a bench is in both lists.
+    // Every crate that has a bench is a dispatch option.
     for id in vendors_with("live_bench.rs") {
         assert!(options.contains(&id), "{id} is not a dispatch option");
-        assert!(
-            matrix_vendors(&workflow).contains(&id),
-            "{id} is not in the matrix"
-        );
     }
 }
 
 fn good_bench() -> String {
-    let all = "deepgram,groq";
-    let quoted: Vec<String> = all.split(',').map(|v| format!("\"{v}\"")).collect();
     format!(
         "on:
   pull_request:
@@ -312,6 +280,7 @@ fn good_bench() -> String {
       vendor:
         type: choice
         options:
+          - all
           - deepgram
           - groq
       runs:
@@ -319,13 +288,11 @@ fn good_bench() -> String {
 jobs:
   bench:
     if: github.event_name == 'workflow_dispatch' || (github.event.label.name == 'vendor-bench' && {FORK_SKIP})
-    strategy:
-      matrix:
-        vendor: ${{{{ fromJSON(github.event_name == 'workflow_dispatch' && format('[\"{{0}}\"]', inputs.vendor) || '[{}]') }}}}
     steps:
-      - run: echo \"$VENDOR_LIVE_REQUIRED\"
-",
-        quoted.join(",")
+      - run: |
+          if [ \"$VENDORS\" != all ]; then args+=(--require); fi
+          node benchmarks/scripts/bench-vendors.mjs \"${{args[@]}}\"
+"
     )
 }
 
@@ -354,14 +321,19 @@ fn bench_workflow_without_fork_skip_on_label_path_fails() {
 }
 
 #[test]
-fn bench_matrix_missing_a_dispatch_option_fails() {
-    let bad = good_bench().replace(",\"groq\"", "");
+fn bench_workflow_that_does_not_run_the_cli_fails() {
+    let bad = good_bench().replace("benchmarks/scripts/bench-vendors.mjs", "cargo test");
     let problems = check_bench_trigger(&bad);
     assert_eq!(problems.len(), 1, "{problems:?}");
-    assert!(
-        problems[0].contains("missing dispatch option `groq`"),
-        "{problems:?}"
-    );
+    assert!(problems[0].contains("bench-vendors.mjs"), "{problems:?}");
+}
+
+#[test]
+fn bench_workflow_without_the_all_option_fails() {
+    let bad = good_bench().replace("          - all\n", "");
+    let problems = check_bench_trigger(&bad);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("`all` option"), "{problems:?}");
 }
 
 // --- negative tests: the checker must reject a broken workflow and say what is missing ---

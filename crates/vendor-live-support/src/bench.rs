@@ -50,6 +50,26 @@ pub fn runs_from_env(default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// The transports of `all` selected by `NWR_BENCH_TRANSPORT` (see [`transports_from`]).
+pub fn transports_from_env<'a>(all: &[&'a str]) -> Vec<&'a str> {
+    transports_from(std::env::var("NWR_BENCH_TRANSPORT").ok().as_deref(), all)
+}
+
+/// Testable core of [`transports_from_env`]: unset, empty or `all` keeps every transport;
+/// otherwise the comma-separated values (trimmed) that are in `all`, in `all`'s order. Values
+/// not in `all` are dropped.
+pub fn transports_from<'a>(value: Option<&str>, all: &[&'a str]) -> Vec<&'a str> {
+    let value = value.map(str::trim).unwrap_or("");
+    if value.is_empty() || value == "all" {
+        return all.to_vec();
+    }
+    let wanted: Vec<&str> = value.split(',').map(str::trim).collect();
+    all.iter()
+        .copied()
+        .filter(|transport| wanted.contains(transport))
+        .collect()
+}
+
 /// TTS bench. Per run and per text: a new provider, a cold sample, then a warm sample on the
 /// same provider.
 pub async fn bench_tts(
@@ -245,6 +265,22 @@ mod tests {
         .unwrap();
         assert_eq!(starts.load(Ordering::SeqCst), 2, "one open per run");
         assert_eq!(finalizes.load(Ordering::SeqCst), 4, "cold + warm per run");
+    }
+
+    #[test]
+    fn transports_from_selects_in_the_order_of_all() {
+        let all = ["websocket", "http"];
+        assert_eq!(transports_from(None, &all), vec!["websocket", "http"]);
+        assert_eq!(
+            transports_from(Some("all"), &all),
+            vec!["websocket", "http"]
+        );
+        assert_eq!(transports_from(Some(" http "), &all), vec!["http"]);
+        assert_eq!(
+            transports_from(Some("http,websocket"), &all),
+            vec!["websocket", "http"]
+        );
+        assert!(transports_from(Some("grpc"), &all).is_empty());
     }
 
     #[test]

@@ -43,6 +43,24 @@ export function percentile(sorted, p) {
   return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)]
 }
 
+/**
+ * Adds derived metrics to a record (a copy): for a TTS sample with `total_ms` and `audio_ms > 0`,
+ * `real_time_factor = total_ms / audio_ms` (below 1 means faster than real time).
+ */
+export function withDerivedMetrics(record) {
+  const m = record.metrics
+  if (
+    record.leg === 'tts' &&
+    m &&
+    typeof m.total_ms === 'number' &&
+    typeof m.audio_ms === 'number' &&
+    m.audio_ms > 0
+  ) {
+    return { ...record, metrics: { ...m, real_time_factor: m.total_ms / m.audio_ms } }
+  }
+  return record
+}
+
 const KEY_FIELDS = ['vendor', 'leg', 'transport', 'model', 'phase', 'text']
 
 /** Groups records and computes median / p90 / min / max per numeric metric. */
@@ -124,7 +142,7 @@ export function renderMarkdown(groups) {
 function main(argv) {
   const [input, outPath] = argv
   const text = input && input !== '-' ? readFileSync(input, 'utf8') : readFileSync(0, 'utf8')
-  const groups = summarize(parseBenchLines(text))
+  const groups = summarize(parseBenchLines(text).map(withDerivedMetrics))
   if (outPath) writeFileSync(outPath, `${JSON.stringify(groups, null, 2)}\n`)
   process.stdout.write(renderMarkdown(groups))
 }

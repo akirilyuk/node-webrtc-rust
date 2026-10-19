@@ -20,6 +20,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run test --workspaces --if-present",
+    "bench:vendors": "node benchmarks/scripts/bench-vendors.mjs",
+    "bench:compare": "node benchmarks/scripts/compare.mjs",
     "test:helpers": "bash scripts/ci/run-helpers-unit-tests.sh",
     "ci:pre-push": "bash scripts/ci/run-pre-push-gates.sh",
     "ci:validate:package-lock": "bash scripts/ci/validate-package-lock-optional-bindings.sh",

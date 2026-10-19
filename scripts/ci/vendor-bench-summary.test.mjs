@@ -12,6 +12,7 @@ import {
   percentile,
   renderMarkdown,
   summarize,
+  withDerivedMetrics,
 } from './vendor-bench-summary.mjs'
 
 const script = join(dirname(fileURLToPath(import.meta.url)), 'vendor-bench-summary.mjs')
@@ -112,4 +113,16 @@ test('cli reads a path, prints markdown and writes grouped json', () => {
 test('cli reads stdin when no path is given', () => {
   const stdout = execFileSync('node', [script], { input: LOG, encoding: 'utf8' })
   assert.match(stdout, /### STT/)
+})
+
+test('withDerivedMetrics adds real_time_factor for a TTS sample with audio', () => {
+  const tts = { leg: 'tts', metrics: { total_ms: 500, audio_ms: 2000 } }
+  assert.equal(withDerivedMetrics(tts).metrics.real_time_factor, 0.25)
+  assert.equal(tts.metrics.real_time_factor, undefined, 'input is not mutated')
+  const noAudio = { leg: 'tts', metrics: { total_ms: 500, audio_ms: 0 } }
+  assert.equal(withDerivedMetrics(noAudio), noAudio)
+  const stt = { leg: 'stt', metrics: { total_ms: 500, audio_ms: 2000 } }
+  assert.equal(withDerivedMetrics(stt), stt)
+  const missing = { leg: 'tts', metrics: { ttfa_ms: 100 } }
+  assert.equal(withDerivedMetrics(missing), missing)
 })

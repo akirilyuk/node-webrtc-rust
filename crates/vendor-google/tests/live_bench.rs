@@ -12,6 +12,9 @@
 //!   finalize half-closes it), and a second utterance on one stream is not a documented flow.
 //!
 //! `NWR_BENCH_RUNS` sets the runs (default 5).
+//!
+//! `NWR_BENCH_TRANSPORT` (`all` by default, or a comma list such as `http,websocket`) selects the
+//! transports to measure.
 #![cfg(feature = "live")]
 
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
@@ -19,7 +22,7 @@ use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider};
 use node_webrtc_rust_vendor_google::{GoogleStt, GoogleTts};
 use node_webrtc_rust_vendor_live_support::audio::STT_PHRASE;
 use node_webrtc_rust_vendor_live_support::bench::{
-    bench_stt, bench_stt_warm, bench_tts, runs_from_env,
+    bench_stt, bench_stt_warm, bench_tts, runs_from_env, transports_from_env,
 };
 use node_webrtc_rust_vendor_live_support::env::live_env;
 use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
@@ -80,7 +83,9 @@ async fn phrase(provider: &dyn TtsProvider) -> Vec<u8> {
 async fn bench() {
     let runs = runs_from_env(5);
 
-    if let Some(mut env) = live_env(ID, &["GOOGLE_API_KEY"]) {
+    if let Some(mut env) = live_env(ID, &["GOOGLE_API_KEY"])
+        .filter(|_| transports_from_env(&["rest"]).contains(&"rest"))
+    {
         let key = env.remove("GOOGLE_API_KEY").expect("key");
         let voice = voice_catalog::default_tts_voice(ID).expect("catalog default voice");
         let model = voice_catalog::default_stt_model(ID).expect("catalog default model");
@@ -98,6 +103,7 @@ async fn bench() {
         &["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"],
     )
     .is_some()
+        && transports_from_env(&["grpc"]).contains(&"grpc")
     {
         bench_tts(ID, "grpc", CHIRP3_VOICE, || tts(CHIRP3_VOICE, None), runs)
             .await

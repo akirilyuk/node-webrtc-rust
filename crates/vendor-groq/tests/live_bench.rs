@@ -6,6 +6,9 @@
 //!
 //! `NWR_BENCH_RUNS` sets the runs (default 5). Without GROQ_API_KEY the bench skips, unless
 //! `GROQ_LIVE_REQUIRED=1`.
+//!
+//! `NWR_BENCH_TRANSPORT` (`all` by default, or a comma list such as `http,websocket`) selects the
+//! transports to measure.
 #![cfg(feature = "live")]
 
 use node_webrtc_rust_speech::config::{
@@ -14,7 +17,9 @@ use node_webrtc_rust_speech::config::{
 use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider, VendorFactory};
 use node_webrtc_rust_vendor_groq::GroqFactory;
 use node_webrtc_rust_vendor_live_support::audio::STT_PHRASE;
-use node_webrtc_rust_vendor_live_support::bench::{bench_stt_warm, bench_tts, runs_from_env};
+use node_webrtc_rust_vendor_live_support::bench::{
+    bench_stt_warm, bench_tts, runs_from_env, transports_from_env,
+};
 use node_webrtc_rust_vendor_live_support::env::live_env;
 use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
 use node_webrtc_rust_voice_catalog as voice_catalog;
@@ -61,7 +66,7 @@ async fn bench() {
     let tts_model = voice_catalog::default_tts_model(ID).unwrap_or("default");
     let stt_model = voice_catalog::default_stt_model(ID).unwrap_or("default");
 
-    for transport in voice_catalog::tts_transports(ID) {
+    for transport in transports_from_env(voice_catalog::tts_transports(ID)) {
         bench_tts(ID, transport, tts_model, || tts(&key, transport), runs)
             .await
             .unwrap_or_else(|err| panic!("{ID} {transport} tts bench failed: {err}"));
@@ -81,7 +86,9 @@ async fn bench() {
         silence_stereo_48k(STT_CLIP_TAIL_MS),
     ]
     .concat();
-    bench_stt_warm(ID, "http", stt_model, || stt(&key), &stereo, runs)
-        .await
-        .unwrap_or_else(|err| panic!("{ID} stt bench failed: {err}"));
+    if transports_from_env(&["http"]).contains(&"http") {
+        bench_stt_warm(ID, "http", stt_model, || stt(&key), &stereo, runs)
+            .await
+            .unwrap_or_else(|err| panic!("{ID} stt bench failed: {err}"));
+    }
 }

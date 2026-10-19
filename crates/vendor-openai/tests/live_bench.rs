@@ -3,6 +3,9 @@
 //!
 //! `NWR_BENCH_RUNS` sets the runs (default 5). Without `OPENAI_API_KEY` the bench skips, unless
 //! `OPENAI_LIVE_REQUIRED=1`.
+//!
+//! `NWR_BENCH_TRANSPORT` (`all` by default, or a comma list such as `http,websocket`) selects the
+//! transports to measure.
 #![cfg(feature = "live")]
 
 use node_webrtc_rust_speech::config::{
@@ -11,7 +14,7 @@ use node_webrtc_rust_speech::config::{
 use node_webrtc_rust_speech::pipeline::{SttProvider, TtsProvider, VendorFactory};
 use node_webrtc_rust_vendor_live_support::audio::STT_PHRASE;
 use node_webrtc_rust_vendor_live_support::bench::{
-    bench_stt, bench_stt_warm, bench_tts, runs_from_env,
+    bench_stt, bench_stt_warm, bench_tts, runs_from_env, transports_from_env,
 };
 use node_webrtc_rust_vendor_live_support::env::live_env;
 use node_webrtc_rust_vendor_live_support::vad_gate::{silence_stereo_48k, STT_CLIP_TAIL_MS};
@@ -60,7 +63,7 @@ async fn bench() {
     let stt_model = voice_catalog::default_stt_model(ID).expect("default stt model");
     let realtime_model = documented_realtime_model(SttRealtimeMode::Live);
 
-    for transport in voice_catalog::tts_transports(ID) {
+    for transport in transports_from_env(voice_catalog::tts_transports(ID)) {
         bench_tts(ID, transport, tts_model, || tts(&key, transport), runs)
             .await
             .unwrap_or_else(|err| panic!("{ID} {transport} tts bench failed: {err}"));
@@ -83,26 +86,30 @@ async fn bench() {
 
     // `whisper-1` is one file upload per utterance, so a second utterance on the same provider
     // is a normal request (the pooled connection is reused): cold and warm.
-    bench_stt_warm(
-        ID,
-        "http",
-        stt_model,
-        || stt(&key, stt_model),
-        &stereo,
-        runs,
-    )
-    .await
-    .unwrap_or_else(|err| panic!("{ID} {stt_model} stt bench failed: {err}"));
+    if transports_from_env(&["http"]).contains(&"http") {
+        bench_stt_warm(
+            ID,
+            "http",
+            stt_model,
+            || stt(&key, stt_model),
+            &stereo,
+            runs,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{ID} {stt_model} stt bench failed: {err}"));
+    }
 
     // The realtime model opens a session per utterance: cold only.
-    bench_stt(
-        ID,
-        "websocket",
-        realtime_model,
-        || stt(&key, realtime_model),
-        &stereo,
-        runs,
-    )
-    .await
-    .unwrap_or_else(|err| panic!("{ID} {realtime_model} stt bench failed: {err}"));
+    if transports_from_env(&["websocket"]).contains(&"websocket") {
+        bench_stt(
+            ID,
+            "websocket",
+            realtime_model,
+            || stt(&key, realtime_model),
+            &stereo,
+            runs,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{ID} {realtime_model} stt bench failed: {err}"));
+    }
 }

@@ -30,6 +30,6 @@ tokio = { workspace = true }
 tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 
 [dev-dependencies]
-node-webrtc-rust-vendor-live-support = { path = "../vendor-live-support" }
+node-webrtc-rust-vendor-live-support = { path = "../vendor-live-support", features = ["sherpa-lid"] }
 # `test-util` gives `tokio::time::pause`/`advance` for the timeout tests.
 tokio = { workspace = true, features = ["test-util"] }

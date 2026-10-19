@@ -8,6 +8,7 @@ pub mod bench;
 pub mod env;
 pub mod fullstack;
 pub mod http_mock;
+pub mod runner_config;
 pub mod stt;
 pub mod tts;
 pub mod vad_gate;

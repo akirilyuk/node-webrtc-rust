@@ -28,6 +28,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 
 [dev-dependencies]
-node-webrtc-rust-vendor-live-support = { path = "../vendor-live-support" }
+node-webrtc-rust-vendor-live-support = { path = "../vendor-live-support", features = ["sherpa-lid"] }
 # `test-util` gives `tokio::time::pause`/`advance` for the timeout tests.
 tokio = { workspace = true, features = ["test-util"] }

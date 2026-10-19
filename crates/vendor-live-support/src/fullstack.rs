@@ -52,6 +52,11 @@ pub struct FullstackSample {
     pub errors: usize,
     /// Expected words found in the concatenated final texts.
     pub matched_words: usize,
+    /// Milliseconds from the first frame of the speech (after the leading silence) to each event
+    /// kind's first occurrence; `None` when it never happened.
+    pub first_partial_ms: Option<u64>,
+    pub first_final_ms: Option<u64>,
+    pub first_not_found_ms: Option<u64>,
 }
 
 /// Runs `clip_stereo_48k` (speech only, no padding) through a `VoiceAgent` whose STT is
@@ -67,6 +72,9 @@ pub async fn run_fullstack(
     run_fullstack_settling(factory, stt, clip_stereo_48k, expected, SETTLE).await
 }
 
+/// Frames of silence before the speech in every run; the timeline's zero is the first speech frame.
+const LEAD_SILENCE_MS: usize = 1000;
+
 /// [`run_fullstack`] with the quiet time after the first terminal event set by the caller.
 pub async fn run_fullstack_settling(
     factory: Arc<dyn VendorFactory>,
@@ -75,8 +83,6 @@ pub async fn run_fullstack_settling(
     expected: &[&str],
     settle: Duration,
 ) -> SpeechResult<FullstackSample> {
-    let mut registry = VendorRegistry::new();
-    registry.register_stt(stt.provider, factory);
     let mut vad = preset_vad_config();
     vad.barge_in.enabled = false;
     let config = VoiceAgentConfig {
@@ -85,6 +91,51 @@ pub async fn run_fullstack_settling(
         vad,
         ..Default::default()
     };
+    run_fullstack_with_config(factory, config, clip_stereo_48k, expected, settle).await
+}
+
+/// [`run_fullstack_settling`] with the whole [`VoiceAgentConfig`] given by the caller, for example
+/// [`crate::runner_config::runner_staging_config`]. The STT vendor is `config.stt`. When the config
+/// enables language ID, the local Sherpa factory is registered for it (feature `sherpa-lid`); a
+/// build without it panics instead of running without the LID the config asks for.
+pub async fn run_fullstack_with_config(
+    factory: Arc<dyn VendorFactory>,
+    config: VoiceAgentConfig,
+    clip_stereo_48k: &[u8],
+    expected: &[&str],
+    settle: Duration,
+) -> SpeechResult<FullstackSample> {
+    run_fullstack_idle_then_speak(
+        factory,
+        config,
+        clip_stereo_48k,
+        expected,
+        settle,
+        LEAD_SILENCE_MS,
+    )
+    .await
+}
+
+/// [`run_fullstack_with_config`] with `lead_silence_ms` of silence (gate closed, nothing sent to
+/// the vendor) between the agent start and the speech: a session that sits idle before the caller
+/// speaks, as every real session does while it connects, greets and waits.
+pub async fn run_fullstack_idle_then_speak(
+    factory: Arc<dyn VendorFactory>,
+    config: VoiceAgentConfig,
+    clip_stereo_48k: &[u8],
+    expected: &[&str],
+    settle: Duration,
+    lead_silence_ms: usize,
+) -> SpeechResult<FullstackSample> {
+    let stt = config
+        .stt
+        .clone()
+        .ok_or_else(|| SpeechError::Config("run_fullstack_with_config needs config.stt".into()))?;
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(stt.provider, factory);
+    if node_webrtc_rust_speech::config::language_id_enabled(&config.language_id) {
+        crate::runner_config::register_lid(&mut registry);
+    }
     let agent = VoiceAgent::new(config, Arc::new(registry))?;
     let mut events = agent.subscribe_events();
     let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
@@ -92,7 +143,7 @@ pub async fn run_fullstack_settling(
     agent.start(None).await?;
 
     let clip = [
-        silence_stereo_48k(1000),
+        silence_stereo_48k(lead_silence_ms),
         normalize_peak_stereo_48k(clip_stereo_48k, CLIP_PEAK_DBFS),
         silence_stereo_48k(TAIL_SILENCE_MS),
     ]
@@ -105,24 +156,39 @@ pub async fn run_fullstack_settling(
         partials: 0,
         errors: 0,
         matched_words: 0,
+        first_partial_ms: None,
+        first_final_ms: None,
+        first_not_found_ms: None,
     };
     let mut final_text = String::new();
     let mut first_terminal_at: Option<Instant> = None;
+    let run_start = Instant::now();
+    let speech_zero = run_start + Duration::from_millis(lead_silence_ms as u64);
+    let since_speech = move || {
+        Instant::now()
+            .saturating_duration_since(speech_zero)
+            .as_millis() as u64
+    };
     let take = |sample: &mut FullstackSample,
                 final_text: &mut String,
                 first_terminal_at: &mut Option<Instant>,
                 event: node_webrtc_rust_speech::events::SpeechEvent| {
         match event.kind {
             SpeechEventKind::UserSpeakingStart => sample.speech_started += 1,
-            SpeechEventKind::UserSpeechPartial => sample.partials += 1,
+            SpeechEventKind::UserSpeechPartial => {
+                sample.partials += 1;
+                sample.first_partial_ms.get_or_insert_with(since_speech);
+            }
             SpeechEventKind::UserSpeechFinal => {
                 sample.finals += 1;
+                sample.first_final_ms.get_or_insert_with(since_speech);
                 final_text.push(' ');
                 final_text.push_str(event.text.as_deref().unwrap_or(""));
                 first_terminal_at.get_or_insert_with(Instant::now);
             }
             SpeechEventKind::UserSttNotFound => {
                 sample.not_found += 1;
+                sample.first_not_found_ms.get_or_insert_with(since_speech);
                 first_terminal_at.get_or_insert_with(Instant::now);
             }
             SpeechEventKind::Error => sample.errors += 1,
@@ -173,9 +239,9 @@ pub async fn run_fullstack_settling(
     Ok(sample)
 }
 
-/// The full-stack contract for one spoken phrase: one utterance, exactly one
-/// `user_speech_final`, no `user_stt_not_found`, no error event, and at least `min_words` of the
-/// expected words in it. Prints `<label>_fullstack_finals` and `<label>_fullstack_words`.
+/// The full-stack contract for one spoken phrase: exactly one `user_speech_final` per
+/// `user_speaking_start` (per VAD utterance), no `user_stt_not_found`, no error event, and at least `min_words` of the
+/// expected words across all finals. Prints `<label>_fullstack_finals` and `<label>_fullstack_words`.
 pub fn assert_fullstack_contract(
     label: &str,
     sample: &FullstackSample,
@@ -184,6 +250,10 @@ pub fn assert_fullstack_contract(
 ) {
     println!("{label}_fullstack_finals {}", sample.finals);
     println!(
+        "{label}_fullstack_first_partial_ms {:?} first_final_ms {:?} first_not_found_ms {:?}",
+        sample.first_partial_ms, sample.first_final_ms, sample.first_not_found_ms
+    );
+    println!(
         "{label}_fullstack_words {}/{}",
         sample.matched_words, total_words
     );
@@ -191,10 +261,16 @@ pub fn assert_fullstack_contract(
         sample.not_found, 0,
         "{label}: the agent closed the utterance as user_stt_not_found ({sample:?})"
     );
+    // The VAD may split a phrase at a long pause into several utterances (`user_speaking_start`);
+    // each one gets exactly one final.
+    assert!(
+        sample.speech_started >= 1,
+        "{label}: no utterance started ({sample:?})"
+    );
     assert_eq!(
-        sample.finals, 1,
-        "{label}: one spoken phrase produced {} user_speech_final events ({sample:?})",
-        sample.finals
+        sample.finals, sample.speech_started,
+        "{label}: {} utterances produced {} user_speech_final events ({sample:?})",
+        sample.speech_started, sample.finals
     );
     assert_eq!(sample.errors, 0, "{label}: error events ({sample:?})");
     assert!(
@@ -216,6 +292,9 @@ mod tests {
             partials: 3,
             errors: 0,
             matched_words: 9,
+            first_partial_ms: Some(700),
+            first_final_ms: Some(6000),
+            first_not_found_ms: None,
         }
     }
 
@@ -226,10 +305,26 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "produced 2 user_speech_final")]
-    fn contract_rejects_a_split_phrase() {
+    fn contract_rejects_two_finals_for_one_utterance() {
         let mut s = sample();
         s.finals = 2;
         assert_fullstack_contract("split", &s, 8, 10);
+    }
+
+    #[test]
+    fn contract_accepts_one_final_per_utterance_when_the_vad_splits_the_phrase() {
+        let mut s = sample();
+        s.speech_started = 2;
+        s.finals = 2;
+        assert_fullstack_contract("two", &s, 8, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "2 utterances produced 1 user_speech_final")]
+    fn contract_rejects_an_utterance_without_a_final() {
+        let mut s = sample();
+        s.speech_started = 2;
+        assert_fullstack_contract("lost", &s, 8, 10);
     }
 
     #[test]

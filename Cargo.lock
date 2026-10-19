@@ -4097,6 +4097,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-vendor-sherpa-onnx",
  "serde",
  "serde_json",
  "tokio",

@@ -12,6 +12,8 @@ use node_webrtc_rust_vendor_live_support::vad_gate::{
 
 /// Default `min_silence_duration_ms`: the VAD hangover after the last voiced frame.
 const HANGOVER_MS: u32 = 1100;
+/// Default `stt_gate_hold_ms`: audio still sent to STT after the VAD's `SpeechEnd`.
+const GATE_HOLD_MS: u32 = 400;
 /// Production STT pre-roll: `speech_pad_ms` 500 (VOICE_AGENT_VAD_PRESET) + 250 ms minimum speech.
 const PRE_ROLL_MS: u32 = 750;
 
@@ -22,6 +24,7 @@ fn clip(parts: &[Vec<u8>]) -> Vec<u8> {
 #[test]
 fn tone_between_silences_is_gated_to_one_segment() {
     assert_eq!(VadConfig::default().min_silence_duration_ms, HANGOVER_MS);
+    assert_eq!(VadConfig::default().stt_gate_hold_ms, GATE_HOLD_MS);
     // 1 s silence, 1 s tone at -12 dBFS, 2 s silence.
     let stereo = clip(&[
         silence_stereo_48k(1000),
@@ -38,7 +41,7 @@ fn tone_between_silences_is_gated_to_one_segment() {
     assert_eq!(gated.starts, 1, "one SpeechStart");
     assert_eq!(gated.ends, 1, "one SpeechEnd");
     assert!(
-        (1000..=1000 + PRE_ROLL_MS + HANGOVER_MS).contains(&gated.pushed_ms),
+        (1000..=1000 + PRE_ROLL_MS + HANGOVER_MS + GATE_HOLD_MS).contains(&gated.pushed_ms),
         "pushed {} ms",
         gated.pushed_ms
     );

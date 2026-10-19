@@ -33,8 +33,8 @@ pub fn preset_vad_config() -> VadConfig {
 /// Past audio emitted with `SpeechStart`: the production STT pre-roll ring (`speech_pad_ms` +
 /// `min_speech_duration_ms`, 750 ms with the preset). The speech accumulates its minimum duration
 /// over frames that may be separated by quiet word gaps, so a shorter ring clips the first words.
-fn pre_roll_frames() -> usize {
-    (stt_pre_roll_capacity_ms(&preset_vad_config()) / 20) as usize
+fn pre_roll_frames(config: &VadConfig) -> usize {
+    (stt_pre_roll_capacity_ms(config) / 20) as usize
 }
 
 /// Result of gating one clip.
@@ -55,12 +55,20 @@ fn to_16k(frame: &[u8]) -> Bytes {
     i16_samples_to_bytes(&stereo_48k_to_mono_16k(frame))
 }
 
-/// Runs the default energy VAD over 20 ms frames. On `SpeechStart` the 300 ms ring of past
-/// frames is emitted, then every frame until `SpeechEnd` (inclusive). Frames outside a speech
-/// segment are dropped.
+/// [`vad_gated_frames_with`] under [`preset_vad_config`].
 pub fn vad_gated_frames(stereo_48k: &[u8]) -> GatedAudio {
-    let mut vad = VadEngine::new(preset_vad_config()).expect("energy VAD");
-    let pre_roll = pre_roll_frames();
+    vad_gated_frames_with(&preset_vad_config(), stereo_48k)
+}
+
+/// Runs the energy VAD of `config` over 20 ms frames and gates like `VoiceAgent` with
+/// `gate_stt`: on `SpeechStart` the pre-roll ring of past frames is emitted, then every frame
+/// until `SpeechEnd` plus `stt_gate_hold_ms` (trailing phonemes, word gaps). A `SpeechStart`
+/// during the hold keeps the gate open. While the gate is closed frames go to the ring, which is
+/// not cleared at the end of a segment, so a segment that starts soon after the previous one
+/// still gets its lead-in.
+pub fn vad_gated_frames_with(config: &VadConfig, stereo_48k: &[u8]) -> GatedAudio {
+    let mut vad = VadEngine::new(config.clone()).expect("energy VAD");
+    let pre_roll = pre_roll_frames(config);
     let mut gated = GatedAudio {
         frames_16k: Vec::new(),
         pushed_ms: 0,
@@ -70,42 +78,47 @@ pub fn vad_gated_frames(stereo_48k: &[u8]) -> GatedAudio {
     };
     let mut ring: VecDeque<&[u8]> = VecDeque::new();
     let mut emitting = false;
+    // Milliseconds of gate hold left after a `SpeechEnd`; 0 = no hold running.
+    let mut hold_left: u32 = 0;
 
     for frame in stereo_48k.chunks(FRAME_BYTES) {
-        let (transitions, _) = vad
-            .process_webrtc_pcm(frame, frame_ms(frame).max(1))
-            .expect("vad frame");
+        let ms = frame_ms(frame);
+        let (transitions, _) = vad.process_webrtc_pcm(frame, ms.max(1)).expect("vad frame");
         let mut emit_current = emitting;
-        let mut end_after = false;
         for transition in transitions {
             match transition {
                 VadTransition::SpeechStart => {
                     gated.starts += 1;
-                    for past in ring.drain(..) {
-                        gated.pushed_ms += frame_ms(past);
-                        gated.frames_16k.push(to_16k(past));
+                    if !emitting {
+                        for past in ring.drain(..) {
+                            gated.pushed_ms += frame_ms(past);
+                            gated.frames_16k.push(to_16k(past));
+                        }
                     }
                     emitting = true;
+                    hold_left = 0;
                     emit_current = true;
                 }
                 VadTransition::SpeechEnd => {
                     gated.ends += 1;
-                    end_after = true;
+                    hold_left = config.stt_gate_hold_ms;
                 }
             }
         }
         if emit_current {
-            gated.pushed_ms += frame_ms(frame);
+            gated.pushed_ms += ms;
             gated.frames_16k.push(to_16k(frame));
+            if hold_left > 0 && emitting {
+                hold_left = hold_left.saturating_sub(ms);
+                if hold_left == 0 {
+                    emitting = false;
+                }
+            }
         } else {
             ring.push_back(frame);
             if ring.len() > pre_roll {
                 ring.pop_front();
             }
-        }
-        if end_after {
-            emitting = false;
-            ring.clear();
         }
     }
     gated
@@ -280,7 +293,7 @@ mod tests {
             .count();
         // 5 frames of the first word + 30 of the second.
         assert!(voiced >= 35, "first word clipped: {voiced} voiced frames");
-        assert_eq!(pre_roll_frames(), 37);
+        assert_eq!(pre_roll_frames(&preset_vad_config()), 37);
     }
 
     #[test]

@@ -9,6 +9,7 @@
 #![cfg(feature = "live")]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use node_webrtc_rust_speech::config::{
     SpeechTransport, SttConfig, SttVendor, TtsConfig, TtsVendor,
@@ -17,7 +18,11 @@ use node_webrtc_rust_speech::pipeline::{TtsProvider, VendorFactory};
 use node_webrtc_rust_vendor_deepgram::DeepgramFactory;
 use node_webrtc_rust_vendor_live_support::audio::{COUNT_PHRASE, COUNT_WORDS};
 use node_webrtc_rust_vendor_live_support::env::live_env;
-use node_webrtc_rust_vendor_live_support::fullstack::{assert_fullstack_contract, run_fullstack};
+use node_webrtc_rust_vendor_live_support::fullstack::{
+    assert_fullstack_contract, run_fullstack, run_fullstack_idle_then_speak,
+    run_fullstack_with_config,
+};
+use node_webrtc_rust_vendor_live_support::runner_config::runner_staging_config;
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
 const ID: &str = "deepgram";
@@ -69,4 +74,69 @@ async fn deepgram_stt_fullstack_one_final_per_utterance() {
     .await
     .unwrap_or_else(|err| panic!("{ID} full-stack run failed: {err}"));
     assert_fullstack_contract(ID, &sample, 8, COUNT_WORDS.len());
+}
+
+async fn counting_clip(key: &str) -> Vec<u8> {
+    tts(key)
+        .synthesize_progressive(COUNT_PHRASE, None)
+        .await
+        .unwrap_or_else(|err| panic!("{ID} phrase synthesis failed: {err}"))
+        .into_iter()
+        .flat_map(|chunk| chunk.pcm)
+        .collect()
+}
+
+fn runner_stt(key: String) -> SttConfig {
+    SttConfig {
+        provider: SttVendor::Deepgram,
+        model: voice_catalog::default_stt_model(ID).map(str::to_string),
+        model_path: None,
+        language: Some("en".into()),
+        api_key: Some(key),
+        endpoint: None,
+        transport: None,
+    }
+}
+
+/// The same phrase through the config the runner builds on staging (`runner_staging_config`:
+/// language ID early, rnnoise, the runner VAD and barge-in values).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepgram_stt_fullstack_runner_config_one_final_per_utterance() {
+    let Some(mut env) = live_env(ID, &["DEEPGRAM_API_KEY"]) else {
+        return;
+    };
+    let key = env.remove("DEEPGRAM_API_KEY").expect("key");
+    let speech = counting_clip(&key).await;
+    let sample = run_fullstack_with_config(
+        Arc::new(DeepgramFactory) as Arc<dyn VendorFactory>,
+        runner_staging_config(runner_stt(key)),
+        &speech,
+        &COUNT_WORDS,
+        Duration::from_secs(4),
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{ID} runner-config full-stack run failed: {err}"));
+    assert_fullstack_contract(&format!("{ID}_runner"), &sample, 8, COUNT_WORDS.len());
+}
+
+/// The runner config again, with the session idle for 20 s before the caller speaks. Deepgram
+/// closes a live socket that got no audio for some seconds (measured 2026-10-19: closed before 20 s).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepgram_stt_fullstack_runner_config_after_idle_one_final_per_utterance() {
+    let Some(mut env) = live_env(ID, &["DEEPGRAM_API_KEY"]) else {
+        return;
+    };
+    let key = env.remove("DEEPGRAM_API_KEY").expect("key");
+    let speech = counting_clip(&key).await;
+    let sample = run_fullstack_idle_then_speak(
+        Arc::new(DeepgramFactory) as Arc<dyn VendorFactory>,
+        runner_staging_config(runner_stt(key)),
+        &speech,
+        &COUNT_WORDS,
+        Duration::from_secs(4),
+        20_000,
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{ID} idle full-stack run failed: {err}"));
+    assert_fullstack_contract(&format!("{ID}_idle"), &sample, 8, COUNT_WORDS.len());
 }

@@ -277,6 +277,58 @@ Google REST and `whisper-1` upload the finished utterance as a file or request b
 finalize (their crate READMEs and `live_bench.rs` comments); Fish Audio streams audio and
 commits by hand, but still reports no partials.
 
+## End-to-end results (VoiceThere)
+
+The vendor legs above time one vendor call. The end-to-end results time a whole call: a client
+talks to a deployed agent and measures what it hears back. They come from VoiceThere's
+end-to-end load harness, or from the public client example
+<https://github.com/voicethere/client/tree/main/examples/latency-bench>, and are summarised by
+the same code (`bench-vendors.mjs --summarize`). Records use `leg` `e2e`, and the summary prints
+them under an `END-TO-END` heading.
+
+| Metric                         | Meaning                                                                                                  |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `speech_end_to_final_ms`       | From the end of the client's speech audio to the STT final event the client receives.                    |
+| `final_to_reply_start_ms`      | From that final event to the first agent audio the client receives.                                      |
+| `speech_end_to_reply_start_ms` | From the end of the client's speech audio to the first agent audio the client receives.                  |
+| `tts_first_audio_ms`           | Time to the first synthesized audio; `null` when the run did not report it, and null values are skipped. |
+
+The exact definitions are defined by the harness that produced the folder; see its README.
+
+Cold is the first turn of a conversation, warm is every later turn. Results are grouped by
+concurrency into folders named `c<N>` (`c1`, `c10`, `c45`), each with its own `raw.jsonl` and
+`meta.json`. Summarising the parent folder summarises every `c<N>` folder and writes one
+combined `summary.md`.
+
+`meta.json` fields:
+
+| Field                    | Meaning                                                                                        |
+| ------------------------ | ---------------------------------------------------------------------------------------------- |
+| `schema_version`         | Always `1`.                                                                                    |
+| `source`                 | `e2e-load-staging` or `client-latency-bench`.                                                  |
+| `concurrency`            | Simultaneous conversations.                                                                    |
+| `conversations`          | Conversations run.                                                                             |
+| `turns_per_conversation` | Turns in each conversation.                                                                    |
+| `started_at`             | Start time (UTC, ISO 8601).                                                                    |
+| `finished_at`            | End time (UTC, ISO 8601).                                                                      |
+| `host_suspended`         | List of `{at, gap_ms}` gaps where the host slept; a non-empty list marks the run inconclusive. |
+| `client_starved`         | `true` when the load client ran short of CPU.                                                  |
+
+`summary.json` written by `--summarize` has `schema_version`, `generated_at`, `source`,
+`concurrency`, `conversations`, `turns_per_conversation`, `host_suspended`, `client_starved` and
+`groups`; the meaning of each matches the table above, and `groups` is the same structure as in
+the vendor summary.
+
+To reproduce against your own agent, run the latency-bench example from the link above. It
+writes `raw.jsonl`, `meta.json` and `environment.json` into a folder. Then:
+
+```bash
+node benchmarks/scripts/bench-vendors.mjs --summarize <folder>
+```
+
+It exits 2 with a named message when `meta.json` is missing or `summary.json`
+already exists (add `--force` to overwrite).
+
 ## Vendors in the published results
 
 The published set is ElevenLabs, Cartesia, Groq, OpenAI and Fish Audio. `--vendors all` measures

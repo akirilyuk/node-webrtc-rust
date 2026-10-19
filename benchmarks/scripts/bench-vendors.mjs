@@ -8,6 +8,7 @@
 // Flags: --vendors <list|all>  --exclude <list>  --runs <n>  --transport <all|websocket|http|auto|…>
 //        --region <label>  --out <dir>  --env-file <path>  --require  --force
 //        --scrub-logs <dir>   delete logs that contain a key value (lists them by name), then exit
+//        --summarize <dir>    summarise an end-to-end result folder (raw.jsonl + meta.json), then exit
 //
 // Keys are read from the process env, then the env file, by their library names
 // (DEEPGRAM_API_KEY, …) or their CI secret names (DEEPGRAM_LIVE_KEY, …). A key value is never
@@ -48,6 +49,7 @@ const VALUE_FLAGS = new Set([
   '--out',
   '--env-file',
   '--scrub-logs',
+  '--summarize',
 ])
 const BOOL_FLAGS = new Set(['--require', '--force'])
 
@@ -65,6 +67,7 @@ export function parseArgs(argv) {
     require: false,
     force: false,
     scrubLogs: null,
+    summarize: null,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
@@ -139,6 +142,81 @@ function scrubLogs(dir, secrets) {
   return removed
 }
 
+function summarizeRecords(text) {
+  return text
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line))
+}
+
+/** Summary of one folder holding raw.jsonl and meta.json; null when it has no raw.jsonl. */
+function summarizeFolder(dir, force) {
+  const rawPath = path.join(dir, 'raw.jsonl')
+  if (!existsSync(rawPath)) return null
+  const metaPath = path.join(dir, 'meta.json')
+  if (!existsSync(metaPath)) throw new UsageError(`${dir} has no meta.json`)
+  if (existsSync(path.join(dir, 'summary.json')) && !force) {
+    throw new UsageError(`${dir} already has summary.json (use --force)`)
+  }
+  const meta = JSON.parse(readFileSync(metaPath, 'utf8'))
+  const groups = summarize(summarizeRecords(readFileSync(rawPath, 'utf8')).map(withDerivedMetrics))
+  const hostSuspended = meta.host_suspended ?? []
+  const summary = {
+    schema_version: 1,
+    generated_at: new Date().toISOString(),
+    source: meta.source,
+    concurrency: meta.concurrency,
+    conversations: meta.conversations,
+    turns_per_conversation: meta.turns_per_conversation,
+    host_suspended: hostSuspended,
+    client_starved: Boolean(meta.client_starved),
+    groups,
+  }
+  const md = [
+    '# End-to-end latency',
+    '',
+    `- Date: ${String(meta.finished_at ?? summary.generated_at).slice(0, 10)} (UTC)`,
+    `- Source: ${meta.source}`,
+    `- Concurrency: ${meta.concurrency}, ${meta.conversations} conversations x ${meta.turns_per_conversation} turns`,
+    `- Started: ${meta.started_at}, finished: ${meta.finished_at}`,
+    '',
+  ]
+  if (hostSuspended.length > 0) {
+    md.push(
+      `**Host suspended:** ${hostSuspended.map((h) => `${h.at} (${h.gap_ms} ms)`).join('; ')}`,
+      '',
+      '[host-suspended] result: inconclusive',
+      '',
+    )
+  }
+  if (summary.client_starved) md.push('**Client starved:** the load client ran out of CPU.', '')
+  md.push(renderMarkdown(groups))
+  return { summary, markdown: `${md.join('\n')}\n` }
+}
+
+function summarizeDir(dir, force) {
+  const single = summarizeFolder(dir, force)
+  if (single) {
+    writeFileSync(path.join(dir, 'summary.json'), `${JSON.stringify(single.summary, null, 2)}\n`)
+    writeFileSync(path.join(dir, 'summary.md'), single.markdown)
+    return
+  }
+  const subs = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(path.join(dir, e.name, 'raw.jsonl')))
+    .map((e) => e.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  if (subs.length === 0) throw new UsageError(`${dir} has no raw.jsonl and no subfolder with one`)
+  const results = subs.map((name) => [name, summarizeFolder(path.join(dir, name), force)])
+  const combined = ['# End-to-end latency', '']
+  for (const [name, result] of results) {
+    const dest = path.join(dir, name)
+    writeFileSync(path.join(dest, 'summary.json'), `${JSON.stringify(result.summary, null, 2)}\n`)
+    writeFileSync(path.join(dest, 'summary.md'), result.markdown)
+    combined.push(`## ${name}`, '', result.markdown.split('\n').slice(2).join('\n'))
+  }
+  writeFileSync(path.join(dir, 'summary.md'), `${combined.join('\n').trimEnd()}\n`)
+}
+
 export async function main(argv, processEnv = process.env) {
   let opts
   try {
@@ -149,6 +227,19 @@ export async function main(argv, processEnv = process.env) {
       'usage: bench-vendors.mjs [--vendors list|all] [--exclude list] [--runs n] [--transport t] [--region label] [--out dir] [--env-file path] [--require] [--force]\n',
     )
     return 2
+  }
+
+  if (opts.summarize) {
+    const dir = path.resolve(opts.summarize)
+    try {
+      if (!existsSync(dir)) throw new UsageError(`${dir} does not exist`)
+      summarizeDir(dir, opts.force)
+    } catch (err) {
+      process.stderr.write(`bench-vendors: ${err.message}\n`)
+      return 2
+    }
+    process.stderr.write(`bench-vendors: summary written in ${dir}\n`)
+    return 0
   }
 
   let fileEnv = new Map()
@@ -315,7 +406,7 @@ export async function main(argv, processEnv = process.env) {
   const md = [
     `# Vendor latency bench`,
     '',
-    `- Date: ${finishedAt.slice(0, 10)}`,
+    `- Date: ${finishedAt.slice(0, 10)} (UTC)`,
     `- Region: ${opts.region}`,
     `- nwr ${environment.nwr_version ?? 'unknown'} (${(environment.git_sha ?? 'unknown').slice(0, 9)}${environment.git_dirty ? ', dirty' : ''})`,
     `- Host: ${osText}, ${cpu}`,

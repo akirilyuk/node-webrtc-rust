@@ -112,6 +112,8 @@ export function summarize(records) {
     )
 }
 
+const LEG_TITLES = { tts: 'TTS', stt: 'STT', e2e: 'END-TO-END' }
+
 function fmt(value) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
@@ -123,7 +125,7 @@ export function renderMarkdown(groups) {
   for (const leg of [...new Set(groups.map((g) => g.leg))].sort()) {
     const rows = groups.filter((g) => g.leg === leg)
     const metrics = [...new Set(rows.flatMap((g) => Object.keys(g.metrics)))]
-    out.push(`### ${leg.toUpperCase()} (median / p90)\n`)
+    out.push(`### ${LEG_TITLES[leg] ?? leg.toUpperCase()} (median / p90)\n`)
     out.push(`| vendor | transport | model | phase | text | n | http | ${metrics.join(' | ')} |`)
     out.push(`|${' --- |'.repeat(7 + metrics.length)}`)
     for (const g of rows) {

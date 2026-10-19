@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -230,4 +231,104 @@ test('an unpublished vendor named explicitly runs', () => {
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(json('summary.json').vendors_run, ['deepgram'])
   assert.match(readFileSync(path.join(dir, 'calls'), 'utf8'), /^deepgram /m)
+})
+
+// --summarize: end-to-end result folders.
+const E2E_META = {
+  schema_version: 1,
+  source: 'client-latency-bench',
+  concurrency: 10,
+  conversations: 10,
+  turns_per_conversation: 2,
+  started_at: '2026-10-19T10:00:00.000Z',
+  finished_at: '2026-10-19T10:05:00.000Z',
+  host_suspended: [],
+  client_starved: false,
+}
+const e2eRecord = (run, metrics) =>
+  JSON.stringify({
+    vendor: 'agent',
+    leg: 'e2e',
+    transport: 'webrtc',
+    model: 'm',
+    phase: 'cold',
+    text: 'phrase',
+    run,
+    http_version: null,
+    metrics,
+  })
+const E2E_RAW = `${[
+  e2eRecord(0, { speech_end_to_final_ms: 100, tts_first_audio_ms: 300 }),
+  e2eRecord(1, { speech_end_to_final_ms: 200, tts_first_audio_ms: null }),
+].join('\n')}\n`
+
+function e2eFolder(meta = E2E_META) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'nwr-summarize-test-'))
+  writeFileSync(path.join(dir, 'raw.jsonl'), E2E_RAW)
+  if (meta) writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta))
+  return dir
+}
+const summarizeCli = (dir, ...extra) =>
+  spawnSync(process.execPath, [cli, '--summarize', dir, ...extra], { encoding: 'utf8' })
+
+test('--summarize writes summary.json and summary.md, skipping null metrics', () => {
+  const dir = e2eFolder()
+  const result = summarizeCli(dir)
+  assert.equal(result.status, 0, result.stderr)
+  const summary = JSON.parse(readFileSync(path.join(dir, 'summary.json'), 'utf8'))
+  assert.equal(summary.source, 'client-latency-bench')
+  assert.equal(summary.concurrency, 10)
+  assert.equal(summary.client_starved, false)
+  assert.equal(summary.groups.length, 1)
+  assert.equal(summary.groups[0].n, 2)
+  assert.equal(summary.groups[0].metrics.speech_end_to_final_ms.median, 150)
+  assert.equal(summary.groups[0].metrics.tts_first_audio_ms.n, 1)
+  const md = readFileSync(path.join(dir, 'summary.md'), 'utf8')
+  assert.match(md, /END-TO-END/)
+  assert.match(md, /Date: 2026-10-19 \(UTC\)/)
+  assert.doesNotMatch(md, /host-suspended/)
+})
+
+test('--summarize marks a suspended host inconclusive', () => {
+  const dir = e2eFolder({
+    ...E2E_META,
+    host_suspended: [{ at: '2026-10-19T10:01:00Z', gap_ms: 5000 }],
+  })
+  assert.equal(summarizeCli(dir).status, 0)
+  assert.match(
+    readFileSync(path.join(dir, 'summary.md'), 'utf8'),
+    /\[host-suspended\] result: inconclusive/,
+  )
+})
+
+test('--summarize without meta.json exits 2 and names the file', () => {
+  const dir = e2eFolder(null)
+  const result = summarizeCli(dir)
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /meta\.json/)
+})
+
+test('--summarize reads c1/ and c10/ subfolders and writes a combined summary.md', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'nwr-summarize-test-'))
+  for (const name of ['c10', 'c1']) {
+    mkdirSync(path.join(dir, name))
+    writeFileSync(path.join(dir, name, 'raw.jsonl'), E2E_RAW)
+    writeFileSync(path.join(dir, name, 'meta.json'), JSON.stringify(E2E_META))
+  }
+  const result = summarizeCli(dir)
+  assert.equal(result.status, 0, result.stderr)
+  assert.ok(existsSync(path.join(dir, 'c1', 'summary.json')))
+  assert.ok(existsSync(path.join(dir, 'c10', 'summary.json')))
+  const md = readFileSync(path.join(dir, 'summary.md'), 'utf8')
+  assert.ok(md.indexOf('## c1\n') >= 0 && md.indexOf('## c1\n') < md.indexOf('## c10\n'))
+  assert.match(md, /END-TO-END/)
+})
+
+test('--summarize refuses an existing summary.json without --force', () => {
+  const dir = e2eFolder()
+  assert.equal(summarizeCli(dir).status, 0)
+  const again = summarizeCli(dir)
+  assert.equal(again.status, 2)
+  assert.match(again.stderr, /--force/)
+  assert.equal(summarizeCli(dir, '--force').status, 0)
 })

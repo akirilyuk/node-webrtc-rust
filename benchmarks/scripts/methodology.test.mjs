@@ -167,3 +167,31 @@ test('the public benchmark docs link no private repo and name no internal path',
     assert.doesNotMatch(text, /webrtc-cloud/, `${file} mentions webrtc-cloud`)
   }
 })
+
+test('METHODOLOGY.md documents every key of meta.json and of the --summarize summary.json', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'nwr-methodology-e2e-'))
+  const meta = {
+    schema_version: 1,
+    source: 'client-latency-bench',
+    concurrency: 1,
+    conversations: 1,
+    turns_per_conversation: 1,
+    started_at: '2026-10-19T10:00:00.000Z',
+    finished_at: '2026-10-19T10:01:00.000Z',
+    host_suspended: [],
+    client_starved: false,
+  }
+  writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta))
+  writeFileSync(
+    path.join(dir, 'raw.jsonl'),
+    `${JSON.stringify({ vendor: 'agent', leg: 'e2e', transport: 'webrtc', model: 'm', phase: 'cold', text: 't', run: 0, http_version: null, metrics: { speech_end_to_final_ms: 1 } })}\n`,
+  )
+  const result = spawnSync(process.execPath, [cli, '--summarize', dir], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  const summary = JSON.parse(readFileSync(path.join(dir, 'summary.json'), 'utf8'))
+  const doc = read('benchmarks/METHODOLOGY.md')
+  const missingMeta = undocumented(Object.keys(meta), doc)
+  const missingSummary = undocumented(Object.keys(summary), doc)
+  assert.deepEqual(missingMeta, [], `meta.json keys not documented: ${missingMeta}`)
+  assert.deepEqual(missingSummary, [], `summary.json keys not documented: ${missingSummary}`)
+})

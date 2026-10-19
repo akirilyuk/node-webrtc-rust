@@ -7,6 +7,14 @@ pub const STT_WORDS: [&str; 9] = [
     "the", "quick", "brown", "fox", "jumps", "over", "the", "lazy", "dog",
 ];
 
+/// The phrase of the full-stack STT tests: about 5 s of speech, long enough that vendors
+/// finalize segments before the speaker is done.
+pub const COUNT_PHRASE: &str = "one. two. three. four. five. six. seven. eight. nine. ten.";
+/// [`COUNT_PHRASE`] as lowercase words.
+pub const COUNT_WORDS: [&str; 10] = [
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+];
+
 /// RMS of s16le samples. `0.0` for an empty buffer.
 pub fn rms(pcm: &[u8]) -> f64 {
     let samples: Vec<i16> = pcm

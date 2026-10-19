@@ -61,3 +61,11 @@ jobs:
           DEEPGRAM_LIVE_REQUIRED: '1'
         run: |
           cargo test -p node-webrtc-rust-vendor-deepgram --features live --test live_test -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'deepgram_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status
+
+      - name: Deepgram full-stack STT (VoiceAgent, production VAD preset)
+        shell: bash
+        env:
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_LIVE_KEY }}
+          DEEPGRAM_LIVE_REQUIRED: '1'
+        run: |
+          cargo test -p node-webrtc-rust-vendor-deepgram --features live --test live_fullstack -- --nocapture --test-threads=1 2>&1 | tee fullstack.log; status=${PIPESTATUS[0]}; grep -oE 'deepgram_fullstack_[a-z_]+ .*' fullstack.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status

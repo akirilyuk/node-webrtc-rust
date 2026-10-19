@@ -6,6 +6,7 @@
 pub mod audio;
 pub mod bench;
 pub mod env;
+pub mod fullstack;
 pub mod http_mock;
 pub mod stt;
 pub mod tts;

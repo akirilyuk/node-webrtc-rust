@@ -41,6 +41,9 @@ pub struct SttSample {
     pub finalize_to_final_ms: u64,
     pub partials_before_finalize: usize,
     pub matched_words: usize,
+    /// `SttTranscript::Final` count of the one utterance, up to the provider's documented end of
+    /// it. The contract is exactly 1: a vendor that splits one phrase into several finals fails.
+    pub finals: usize,
     /// Audio actually streamed to the vendor.
     pub pushed_ms: u32,
     /// Length of the whole clip (including the padding that is not streamed).
@@ -50,6 +53,7 @@ pub struct SttSample {
 #[derive(Default)]
 struct Collector {
     transcript: String,
+    finals: usize,
     partials_before_finalize: usize,
     first_partial_at: Option<Instant>,
     last_final_at: Option<Instant>,
@@ -67,6 +71,7 @@ impl Collector {
                 }
             }
             SttTranscript::Final(text) => {
+                self.finals += 1;
                 self.transcript.push(' ');
                 self.transcript.push_str(&text);
                 self.last_final_at = Some(now);
@@ -223,20 +228,19 @@ pub async fn run_utterance(
                 stt.finalize_utterance(),
             )
             .await?;
-            loop {
-                match bounded(vendor, "poll_transcript", OP_TIMEOUT, stt.poll_transcript()).await? {
-                    Some(transcript) => collected.take(transcript),
-                    None if collected.last_final_at.is_some() => {
-                        done_at = Instant::now();
-                        break;
-                    }
-                    None => {
-                        if Instant::now() >= deadline {
-                            return Err(timed_out());
-                        }
-                        sleep(Duration::from_millis(5)).await;
-                    }
-                }
+            // The agent's STT actor drains the provider once when `finalize_utterance` returns
+            // and closes the utterance with whatever it found. A final that arrives later is
+            // late (the agent has already reported `user_stt_not_found`), so it does not count.
+            while let Some(transcript) =
+                bounded(vendor, "poll_transcript", OP_TIMEOUT, stt.poll_transcript()).await?
+            {
+                collected.take(transcript);
+            }
+            done_at = Instant::now();
+            if collected.finals == 0 {
+                return Err(SpeechError::Stt(format!(
+                    "{vendor}: no final when finalize_utterance returned; the voice agent would close the utterance without a transcript"
+                )));
             }
         }
     }
@@ -255,6 +259,7 @@ pub async fn run_utterance(
         finalize_to_final_ms: final_at.saturating_duration_since(finalize_at).as_millis() as u64,
         partials_before_finalize: collected.partials_before_finalize,
         matched_words: matched_words(&collected.transcript, expected),
+        finals: collected.finals,
         pushed_ms: gated.pushed_ms,
         total_ms: gated.total_ms,
     })
@@ -278,9 +283,16 @@ pub async fn measure_stt(
 /// `<label>_stt_pushed_ms`.
 pub fn assert_stt_contract(label: &str, provider_emits_partials: bool, sample: &SttSample) {
     println!("{label}_stt_final_ms {}", sample.speech_end_to_final_ms);
+    println!("{label}_stt_finals {}", sample.finals);
+    println!("{label}_stt_words {}", sample.matched_words);
     println!(
         "{label}_stt_pushed_ms {}/{}",
         sample.pushed_ms, sample.total_ms
+    );
+    assert_eq!(
+        sample.finals, 1,
+        "{label}: one utterance produced {} finals (transcript not printed)",
+        sample.finals
     );
     assert!(
         sample.matched_words >= 7,
@@ -315,6 +327,12 @@ mod tests {
         pushes: usize,
         queue: VecDeque<SttOutput>,
         pushed_bytes: usize,
+        /// Finals emitted at the finalize (default 1).
+        finals_on_finalize: usize,
+        /// Inline only: the final becomes pollable only after `finalize_utterance` returned and
+        /// the first poll came back empty (a vendor that answers after the call).
+        late_final: bool,
+        late_pending: bool,
     }
 
     impl FakeStt {
@@ -325,6 +343,9 @@ mod tests {
                 pushes: 0,
                 queue: VecDeque::new(),
                 pushed_bytes: 0,
+                finals_on_finalize: 1,
+                late_final: false,
+                late_pending: false,
             }
         }
 
@@ -339,10 +360,16 @@ mod tests {
         }
 
         fn on_finalize(&mut self) {
-            self.queue
-                .push_back(SttOutput::Transcript(SttTranscript::Final(
-                    "The quick, brown.".into(),
-                )));
+            if self.late_final {
+                self.late_pending = true;
+                return;
+            }
+            for _ in 0..self.finals_on_finalize {
+                self.queue
+                    .push_back(SttOutput::Transcript(SttTranscript::Final(
+                        "The quick, brown.".into(),
+                    )));
+            }
             if self.mode == FinalizeMode::Deferred {
                 self.queue.push_back(SttOutput::FinalizeDone);
             }
@@ -365,6 +392,13 @@ mod tests {
             Ok(())
         }
         async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
+            if self.late_pending && self.queue.is_empty() {
+                // First poll after the finalize is empty; the final lands right after.
+                self.late_pending = false;
+                self.queue
+                    .push_back(SttOutput::Transcript(SttTranscript::Final("late".into())));
+                return Ok(None);
+            }
             match self.queue.pop_front() {
                 Some(SttOutput::Transcript(t)) => Ok(Some(t)),
                 Some(SttOutput::FinalizeDone) | None => Ok(None),
@@ -421,6 +455,39 @@ mod tests {
         assert_stt_contract_for_words(&sample, false);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_phrase_split_into_two_finals_is_counted_and_fails_the_contract() {
+        for mode in [FinalizeMode::Inline, FinalizeMode::Deferred] {
+            let mut stt = FakeStt::new(mode, Some(10));
+            stt.finals_on_finalize = 2;
+            let sample = measure_stt(&mut stt, &clip(), &["the", "quick", "brown"])
+                .await
+                .unwrap();
+            assert_eq!(sample.finals, 2, "{mode:?}");
+            let mut lifted = sample.clone();
+            lifted.matched_words = 9;
+            let result = std::panic::catch_unwind(|| assert_stt_contract("split", true, &lifted));
+            assert!(
+                result.is_err(),
+                "{mode:?}: contract accepted a split phrase"
+            );
+        }
+    }
+
+    /// The agent closes the utterance when `finalize_utterance` returns; a final that comes after
+    /// is late, so the harness reports it instead of waiting for it.
+    #[tokio::test(start_paused = true)]
+    async fn inline_final_that_arrives_after_finalize_returned_is_an_error() {
+        let mut stt = FakeStt::new(FinalizeMode::Inline, None);
+        stt.late_final = true;
+        let err = measure_stt(&mut stt, &clip(), &["the"]).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no final when finalize_utterance returned"),
+            "{err}"
+        );
+    }
+
     /// The real contract wants 7 words; the fake says 3, so lift the count for this check.
     fn assert_stt_contract_for_words(sample: &SttSample, emits_partials: bool) {
         let mut lifted = sample.clone();
@@ -460,6 +527,7 @@ mod tests {
             finalize_to_final_ms: 200,
             partials_before_finalize: 4,
             matched_words: 9,
+            finals: 1,
             pushed_ms: 4500,
             total_ms: 6000,
         }
@@ -468,6 +536,14 @@ mod tests {
     #[test]
     fn contract_accepts_a_good_sample() {
         assert_stt_contract("good", true, &good());
+    }
+
+    #[test]
+    #[should_panic(expected = "produced 2 finals")]
+    fn contract_rejects_a_split_phrase() {
+        let mut s = good();
+        s.finals = 2;
+        assert_stt_contract("split", true, &s);
     }
 
     #[test]

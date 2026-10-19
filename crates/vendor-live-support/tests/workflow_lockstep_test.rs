@@ -4,6 +4,8 @@
 //! - Every `crates/vendor-*/tests/live_test.rs` has `.github/workflows/vendor-live-<id>.yml`
 //!   with the fork-skip `if`, `_LIVE_REQUIRED: '1'`, the cargo command, `--test-threads=1`, and a
 //!   pull_request path filter that covers the vendor crate, this support crate and the workflow.
+//! - A vendor with `tests/live_fullstack.rs` (the real `VoiceAgent` / STT actor path) also runs
+//!   it in that workflow, as an extra `--test live_fullstack` step of the same job.
 //! - Every `crates/vendor-*/tests/live_bench.rs` is a vendor option of `vendor-bench.yml`.
 //!
 //! The checkers are plain functions over the workflow text so the negative tests can feed them
@@ -57,7 +59,7 @@ fn pull_request_section(workflow: &str) -> String {
 }
 
 /// Everything wrong with the live-test workflow of vendor `id`, empty when it is fine.
-fn check_live_workflow(id: &str, workflow: &str) -> Vec<String> {
+fn check_live_workflow(id: &str, workflow: &str, has_fullstack: bool) -> Vec<String> {
     let mut problems = Vec::new();
     let mut require = |ok: bool, what: String| {
         if !ok {
@@ -76,6 +78,15 @@ fn check_live_workflow(id: &str, workflow: &str) -> Vec<String> {
     let command =
         format!("cargo test -p node-webrtc-rust-vendor-{id} --features live --test live_test");
     require(workflow.contains(&command), format!("missing `{command}`"));
+    if has_fullstack {
+        let command = format!(
+            "cargo test -p node-webrtc-rust-vendor-{id} --features live --test live_fullstack"
+        );
+        require(
+            workflow.contains(&command),
+            format!("missing `{command}` (crates/vendor-{id}/tests/live_fullstack.rs exists)"),
+        );
+    }
     require(
         workflow.contains("--test-threads=1"),
         "missing `--test-threads=1`".into(),
@@ -119,6 +130,13 @@ fn every_live_test_has_a_complete_workflow() {
         !ids.is_empty(),
         "no crates/vendor-*/tests/live_test.rs found"
     );
+    let fullstack = vendors_with("live_fullstack.rs");
+    for id in &fullstack {
+        assert!(
+            ids.contains(id),
+            "vendor-{id} has live_fullstack.rs but no live_test.rs"
+        );
+    }
     let mut failures = Vec::new();
     for id in &ids {
         let name = format!("vendor-live-{id}.yml");
@@ -127,7 +145,7 @@ fn every_live_test_has_a_complete_workflow() {
                 "{name}: missing (crates/vendor-{id}/tests/live_test.rs exists)"
             )),
             Some(workflow) => {
-                for problem in check_live_workflow(id, &workflow) {
+                for problem in check_live_workflow(id, &workflow, fullstack.contains(id)) {
                     failures.push(format!("{name}: {problem}"));
                 }
             }
@@ -372,8 +390,26 @@ jobs:
 #[test]
 fn checker_accepts_a_complete_workflow() {
     assert_eq!(
-        check_live_workflow("x", &good_workflow("x")),
+        check_live_workflow("x", &good_workflow("x"), false),
         Vec::<String>::new()
+    );
+}
+
+#[test]
+fn checker_requires_the_fullstack_step_when_the_vendor_has_one() {
+    let with_step = format!(
+        "{}          cargo test -p node-webrtc-rust-vendor-x --features live --test live_fullstack -- --nocapture --test-threads=1\n",
+        good_workflow("x")
+    );
+    assert_eq!(
+        check_live_workflow("x", &with_step, true),
+        Vec::<String>::new()
+    );
+    let problems = check_live_workflow("x", &good_workflow("x"), true);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("--test live_fullstack"),
+        "{problems:?}"
     );
 }
 
@@ -383,7 +419,7 @@ fn checker_rejects_a_missing_fork_skip() {
         " || github.event.pull_request.head.repo.full_name == github.repository",
         "",
     );
-    let problems = check_live_workflow("x", &bad);
+    let problems = check_live_workflow("x", &bad, false);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("fork-skip"), "{problems:?}");
 }
@@ -391,7 +427,7 @@ fn checker_rejects_a_missing_fork_skip() {
 #[test]
 fn checker_rejects_a_missing_required_flag() {
     let bad = good_workflow("x").replace("X_LIVE_REQUIRED: '1'", "X_LIVE_REQUIRED: '0'");
-    let problems = check_live_workflow("x", &bad);
+    let problems = check_live_workflow("x", &bad, false);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("_LIVE_REQUIRED: '1'"), "{problems:?}");
 }
@@ -399,7 +435,7 @@ fn checker_rejects_a_missing_required_flag() {
 #[test]
 fn checker_rejects_a_wrong_path_filter() {
     let bad = good_workflow("x").replace("      - 'crates/vendor-live-support/**'\n", "");
-    let problems = check_live_workflow("x", &bad);
+    let problems = check_live_workflow("x", &bad, false);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
         problems[0].contains("crates/vendor-live-support/**"),
@@ -410,7 +446,7 @@ fn checker_rejects_a_wrong_path_filter() {
     let elsewhere = good_workflow("x")
         .replace("      - '.github/workflows/vendor-live-x.yml'\n", "")
         + "# .github/workflows/vendor-live-x.yml\n";
-    let problems = check_live_workflow("x", &elsewhere);
+    let problems = check_live_workflow("x", &elsewhere, false);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("vendor-live-x.yml"), "{problems:?}");
 }
@@ -418,12 +454,12 @@ fn checker_rejects_a_wrong_path_filter() {
 #[test]
 fn checker_rejects_a_missing_command_or_thread_pin() {
     let bad = good_workflow("x").replace("--test-threads=1", "");
-    let problems = check_live_workflow("x", &bad);
+    let problems = check_live_workflow("x", &bad, false);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("--test-threads=1"), "{problems:?}");
 
     let wrong_crate = good_workflow("x").replace("vendor-x --features", "vendor-y --features");
-    let problems = check_live_workflow("x", &wrong_crate);
+    let problems = check_live_workflow("x", &wrong_crate, false);
     assert!(
         problems
             .iter()

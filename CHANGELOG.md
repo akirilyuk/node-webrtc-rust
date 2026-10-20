@@ -8,6 +8,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **bench:** vendor latency benchmark. `npm run bench:vendors` measures TTS time to first audio and STT open, first partial and final against the real vendor APIs and writes `raw.jsonl`, `summary.json`, `summary.md` and `environment.json` (host, git SHA, DNS/TCP/TLS to each vendor host, host load); `npm run bench:compare` compares two result folders. Published set: ElevenLabs, Cartesia, Groq, OpenAI, Fish Audio. First results: `benchmarks/results/2026-10-19-ci-eu`. Method: `benchmarks/METHODOLOGY.md` (#479).
+- **bench:** the default transport rule (`benchmarks/METHODOLOGY.md`, "Default transport rule") as code. `npm run bench:transport-table -- <results-dir>` prints, per vendor and leg, each transport's medians, whether it qualifies, and the winner.
+
+### Changed
+
+- **elevenlabs:** the default TTS transport (`auto`) is now `websocket` (was `http`): median first audio 422.5 ms warm against 645 ms over `http` in the 2026-10-19 bench. `auto` with `eleven_v3` still resolves to `http`.
+- **cartesia:** the default TTS transport (`auto`) is now `http` (was `websocket`): a warm tie (116 ms against 108.5 ms) and a lower cold median (141.5 ms against 240 ms).
+- **fishaudio:** `http` stays the default TTS transport (291.5 ms warm against 1023.5 ms over `websocket`).
+
+### Fixed
+
+- **bench:** `environment.json` records the git SHA in CI containers that cannot run git (`NWR_BENCH_GIT_SHA`, then `GITHUB_SHA`) and where it came from (`git_sha_source`).
+
 ## [0.12.0] - 2026-10-19
 
 ### Added

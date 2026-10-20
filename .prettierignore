@@ -12,3 +12,6 @@ third_party/
 
 # Downloaded model bundles (gitignored/cache artifacts, not repo content)
 .models/
+
+# Bench results are committed as the CLI wrote them and never edited
+benchmarks/results/

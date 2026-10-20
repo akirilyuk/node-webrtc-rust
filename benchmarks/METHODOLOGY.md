@@ -284,12 +284,50 @@ counted or discarded.
 - `speech_end_to_final_ms` contains the VAD end-of-speech wait of the runner settings. Compare it
   across vendors on the same settings, not with an end-pointing number from another tool.
 
+## Default transport rule
+
+A vendor with more than one transport gets the default `auto` resolves to from this rule, applied
+to a committed results folder. `benchmarks/scripts/transport-rule.mjs` is the rule as code;
+`npm run bench:transport-table -- benchmarks/results/<folder>` prints the table below for any
+folder.
+
+1. **Qualify.** TTS: no sample has a `stall_ms` above 20 (one 20 ms frame), and at most 1 in 40
+   samples (2.5 %, `count(stall_ms > 0) <= floor(n / 40)`) has any stall. STT: every sample has
+   `matched_words` of at least 7 (of 9).
+2. **Lowest median warm** `ttfa_ms` (TTS) or `speech_end_to_final_ms` (STT) wins. A transport
+   without warm samples has no warm median, so it can only win as the single qualifying transport.
+3. **Tie.** Two warm medians tie when they differ by at most max(50 ms, 10 % of the lower). The
+   lower median cold value then wins. If the cold medians tie by the same test, `http` wins.
+4. A vendor and leg with one transport reports "single transport, no decision".
+
+Amended 2026-10-20. The first version of rule 1 allowed no stall at all. In the 2026-10-19 run
+one 20 ms stall on the first cold Fish Audio HTTP sample disqualified a transport that was 3.5
+times faster in warm time (291.5 ms against 1023.5 ms). One 20 ms frame in 40 samples is not
+audible as a gap, so the rule now allows one such sample in 40 and nothing longer.
+
+Outcome for [`results/2026-10-19-ci-eu`](results/2026-10-19-ci-eu/README.md) (median ms, warm /
+cold):
+
+| Vendor, leg    | Transports                                      | Default                                                       |
+| -------------- | ----------------------------------------------- | ------------------------------------------------------------- |
+| ElevenLabs TTS | `http` 645 / 722.5, `websocket` 422.5 / 415.5   | `websocket` (lower warm)                                      |
+| Cartesia TTS   | `websocket` 108.5 / 240, `http` 116 / 141.5     | `http` (warm tie, lower cold)                                 |
+| Fish Audio TTS | `http` 291.5 / 325.5, `websocket` 1023.5 / 1023 | `http` (lower warm)                                           |
+| OpenAI TTS     | `http` 961 / 1184.5                             | none qualifies (26 of 40 samples stalled), no other transport |
+| OpenAI STT     | `http` 1976 / 1912, `websocket` no warm samples | `http` (the only one with warm samples)                       |
+
+Groq and the other single-transport legs have no decision. STT defaults are not changed by this
+run.
+
 ## Known vendor behaviours
 
 Observed in our runs, 2026-10 (a single run made before this bench existed, not yet repeated
 with it):
 
 - ElevenLabs STT: the first partial arrived 1.6 to 2.0 s after the first audio.
+- OpenAI TTS (`tts-1`, streaming): in the 2026-10-19 run 26 of 40 samples had a stall in the audio
+  stream (median stall above 0 in warm and in cold samples, largest 2.9 s). The crate has no other
+  transport for OpenAI TTS, so there is nothing to switch to.
 
 From the vendor crates (`emits_partials()` returns false in `crates/vendor-<id>/src/stt.rs`),
 these STT paths send only finals: Azure (REST short audio), Fish Audio (`transcribe-1` realtime

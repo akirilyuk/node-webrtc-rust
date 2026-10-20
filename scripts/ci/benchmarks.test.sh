@@ -9,4 +9,5 @@ node --test \
   benchmarks/scripts/environment.test.mjs \
   benchmarks/scripts/bench-vendors.test.mjs \
   benchmarks/scripts/compare.test.mjs \
+  benchmarks/scripts/transport-rule.test.mjs \
   benchmarks/scripts/methodology.test.mjs

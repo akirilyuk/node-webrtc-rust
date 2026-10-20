@@ -10,6 +10,8 @@
 #      calls `docker run` (Kubernetes runner pods have no Docker daemon), and run-pr-integration.sh
 #      starts and stops turnserver itself.
 #   4. Path-based suite selection (CI_TEST_SUITES / test_suites): empty means every suite.
+#   5. ARC runners: build.yml has no docker commands, every build.yml job with runs-on also has
+#      container:, and every runs-on in build.yml and reusable-test.yml uses the NWR_RUNNER_* variables.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -81,16 +83,67 @@ if grep -Eq '^[^#]*docker run' "$reusable"; then
   echo "$reusable: must not call 'docker run' (Kubernetes runners have no Docker daemon)" >&2
   exit 1
 fi
-# build.yml: the only allowed 'docker run' is the host permission reset in steps named
-# 'Prepare workspace' (host jobs, not the integration job). Any other step must not use Docker.
-if awk '
-  /^      - / { in_prepare = ($0 ~ /name: Prepare workspace/) }
-  /^[^#]*docker run/ && !in_prepare { print FILENAME ":" NR ": " $0; found = 1 }
-  END { exit found ? 0 : 1 }
-' "$build" >&2; then
-  echo "$build: 'docker run' outside a 'Prepare workspace' step (Kubernetes runners have no Docker daemon)" >&2
+# build.yml: no Docker at all (ARC runner pods have no Docker daemon, and no Prepare workspace
+# permission reset is needed on a fresh pod). Comment lines may mention it.
+if grep -Ev '^[[:space:]]*#' "$build" | grep -Ewn 'docker' >&2; then
+  echo "$build: must not contain docker commands (docker run/build/login); ARC runners have no Docker daemon" >&2
   exit 1
 fi
+
+# Every build.yml job that has runs-on also has a container: block, so the same YAML runs on the
+# ARC scale sets and (via NWR_RUNNER_* = self-hosted) on the old runners. Jobs that call a reusable
+# workflow (uses:) have no runs-on and are skipped. Prints the offending job names.
+jobs_missing_container() {
+  awk '
+    function flush() { if (job != "" && has_runs_on && !has_container) print job }
+    /^jobs:/ { in_jobs = 1; next }
+    in_jobs && /^[^[:space:]#]/ { flush(); job = ""; in_jobs = 0 }
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      flush()
+      job = $1; sub(/:$/, "", job); has_runs_on = 0; has_container = 0; next
+    }
+    in_jobs && /^    runs-on:/ { has_runs_on = 1 }
+    in_jobs && /^    container:/ { has_container = 1 }
+    END { flush() }
+  ' "$1"
+}
+missing="$(jobs_missing_container "$build")"
+if [ -n "$missing" ]; then
+  echo "$build: jobs with runs-on but no container: block: $(echo "$missing" | tr '\n' ' ')" >&2
+  echo "$build: every Linux job is a container: job so the NWR_RUNNER_* fallback to self-hosted keeps working" >&2
+  exit 1
+fi
+
+# Self-test: a job without container: must be reported, one with container: must not.
+tmp_jobs="$(mktemp)"
+trap 'rm -f "$tmp" "$tmp_jobs"' EXIT
+cat >"$tmp_jobs" <<'YAML'
+jobs:
+  with-container:
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: example
+    steps:
+      - run: true
+  no-container:
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    steps:
+      - run: true
+  reusable:
+    uses: ./.github/workflows/reusable-test.yml
+YAML
+if [ "$(jobs_missing_container "$tmp_jobs")" != "no-container" ]; then
+  echo "self-test failed: jobs_missing_container did not report exactly the job without container:" >&2
+  exit 1
+fi
+
+# Runners come from the NWR_RUNNER_* variables with an ARC default, never a hard-coded self-hosted.
+for wf in "$build" "$reusable"; do
+  if grep -E '^[[:space:]]*runs-on:' "$wf" | grep -Fv 'NWR_RUNNER_' >&2; then
+    echo "$wf: every runs-on must use the NWR_RUNNER_* repo variables with an ARC default (no plain self-hosted)" >&2
+    exit 1
+  fi
+done
 integration="scripts/ci/run-pr-integration.sh"
 if ! grep -Eq 'turnserver-ci\.sh"? start' "$integration"; then
   echo "$integration: must call turnserver-ci.sh start (coturn runs inside the ci-test container)" >&2

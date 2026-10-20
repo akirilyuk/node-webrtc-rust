@@ -7,6 +7,9 @@ name: Vendor live — Google
 #   GOOGLE_LIVE_SERVICE_ACCOUNT_JSON -> a file under $RUNNER_TEMP, GOOGLE_APPLICATION_CREDENTIALS
 #                                       points at it (gRPC: V2 chirp_3, Chirp 3 HD streaming)
 #
+# Runs only when the repository variable GOOGLE_LIVE_ENABLED is `true` (set it when the Google keys exist).
+# Until then the job shows as skipped, not green.
+#
 # Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
 # runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
 # from branches of this repo and manual dispatches run the job.
@@ -33,7 +36,7 @@ concurrency:
 jobs:
   live:
     name: Google live
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && vars.GOOGLE_LIVE_ENABLED == 'true'
     runs-on: self-hosted
     # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
     # ci-run-integration-tests docker run).

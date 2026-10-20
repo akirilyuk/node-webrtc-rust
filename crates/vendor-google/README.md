@@ -132,6 +132,8 @@ The service account tests pass no API key and assert the `grpc` transport. CI: `
 (secrets `GOOGLE_LIVE_API_KEY`, `GOOGLE_LIVE_PROJECT_ID`, `GOOGLE_LIVE_SERVICE_ACCOUNT_JSON`) and the `google` option of
 `.github/workflows/vendor-bench.yml` (`tests/live_bench.rs`: REST TTS and STT cold and warm; gRPC TTS and V2 STT cold).
 
+The live workflow runs only when the repository variable `GOOGLE_LIVE_ENABLED` is `true` (set it when the Google keys exist); until then the job shows as skipped.
+
 ## Transport
 
 Config: `tts.transport` and `stt.transport`: `auto` only. The voice (TTS) or the model (STT) decides between REST and gRPC. Allowed values per leg come from `packages/voice-catalog/catalog/vendors.json` (`ttsTransports` / `sttTransports`); an unsupported value fails at provider construction with the allowed list.

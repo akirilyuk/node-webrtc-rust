@@ -338,6 +338,10 @@ impl TtsProvider for CachingTtsProvider {
         self.inner.last_transport()
     }
 
+    fn playout_prebuffer_ms(&self) -> u32 {
+        self.inner.playout_prebuffer_ms()
+    }
+
     fn take_cache_hit(&self) -> Option<u32> {
         self.last_hit.lock().ok().and_then(|mut g| g.take())
     }

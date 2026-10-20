@@ -66,13 +66,15 @@ table: [`cluster/summary.md`](results/2026-10-20-staging-eu/cluster/summary.md).
 Five vendor pairs on one conversation of 10 turns each, warm turns. Source table:
 [`vendors/summary.md`](results/2026-10-20-staging-eu/vendors/summary.md).
 
-| STT and TTS                             | n (warm) | Reply start after speech end | TTS first audio |
-| --------------------------------------- | -------- | ---------------------------- | --------------- |
-| Cluster STT, Cartesia `sonic-3`         | 9        | 1634 / 1921                  | 170 / 456       |
-| Groq, Groq                              | 9        | 1777 / 1848                  | 180 / 181       |
-| ElevenLabs Scribe v2, ElevenLabs        | 9        | 2424 / 2541                  | 663 / 700       |
-| Fish Audio `transcribe-1`, Fish Audio   | 9        | 2219 / 2516                  | 273 / 319       |
-| OpenAI `gpt-4o-mini-transcribe`, OpenAI | 9        | 3382 / 4398                  | 905 / 2040      |
+| STT and TTS                               | n (warm) | Reply start after speech end | TTS first audio |
+| ----------------------------------------- | -------- | ---------------------------- | --------------- |
+| Cluster STT, Cartesia `sonic-3`           | 9        | 1634 / 1921                  | 170 / 456       |
+| Groq, Groq                                | 9        | 1777 / 1848                  | 180 / 181       |
+| ElevenLabs Scribe v2, ElevenLabs          | 9        | 2424 / 2541                  | 663 / 700       |
+| Fish Audio `transcribe-1`, Fish Audio     | 9        | 2219 / 2516                  | 273 / 319       |
+| OpenAI `gpt-4o-mini-transcribe`, OpenAI ² | 9        | 3595 / 5506                  | 1303 / 1843     |
+
+² OpenAI row: re-measured on 0.12.2 in [`results/2026-10-20-staging-eu-openai/`](results/2026-10-20-staging-eu-openai/); TTS first audio is when playback starts (250 ms buffer).
 
 "Reply start after speech end" is `speech_end_to_reply_start_ms`; "TTS first audio" is
 `tts_first_audio_ms`.

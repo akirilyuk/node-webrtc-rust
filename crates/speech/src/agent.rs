@@ -24,8 +24,8 @@ use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::otel;
 use crate::pcm::i16_samples_to_bytes;
 use crate::pipeline::{
-    tts_stream_chunks_enabled, LanguageIdProvider, SttProvider, SttTranscript, TtsProgressiveSink,
-    TtsProvider,
+    tts_stream_chunks_enabled, LanguageIdProvider, SttProvider, SttTranscript, TtsAudioChunk,
+    TtsProgressiveSink, TtsProvider,
 };
 use crate::registry::VendorRegistry;
 use crate::stt_actor::{
@@ -2387,19 +2387,46 @@ impl VoiceAgent {
         let enqueue_inner = Arc::clone(inner);
         let enqueue_reply_id: Option<Arc<str>> = reply_id.cloned();
         // Returns (a chunk of this reply was booked, a chunk was discarded by a flush).
+        // Audio held back before playback starts, for vendors that stream in bursts with idle
+        // gaps (`TtsProvider::playout_prebuffer_ms`). 0 enqueues every chunk as it arrives.
+        let prebuffer_bytes = {
+            let guard = tts.lock().await;
+            guard
+                .as_ref()
+                .map_or(0, |provider| provider.playout_prebuffer_ms() as usize)
+                * 192 // 48 kHz stereo s16le bytes per ms
+        };
         let enqueue_task = tokio::spawn(async move {
             let mut first_chunk_seen = false;
             let mut first_chunk_ms = None;
             let mut queued_any = false;
-            while let Some(chunk) = rx.recv().await {
-                if !first_chunk_seen && !chunk.pcm.is_empty() {
+            let mut held: Vec<TtsAudioChunk> = Vec::new();
+            let mut held_bytes = 0usize;
+            let mut released = false;
+            loop {
+                let batch = match rx.recv().await {
+                    Some(chunk) if released => vec![chunk],
+                    Some(chunk) => {
+                        held_bytes += chunk.pcm.len();
+                        held.push(chunk);
+                        if held_bytes < prebuffer_bytes {
+                            continue;
+                        }
+                        released = true;
+                        std::mem::take(&mut held)
+                    }
+                    // End of stream: a reply shorter than the prebuffer plays now.
+                    None if !released && !held.is_empty() => std::mem::take(&mut held),
+                    None => break,
+                };
+                if !first_chunk_seen && batch.iter().any(|chunk| !chunk.pcm.is_empty()) {
                     first_chunk_seen = true;
                     first_chunk_ms = Some(Self::elapsed_ms_u32(requested_at));
                     Self::record_first_chunk(&enqueue_inner, requested_at).await;
                 }
                 if !enqueue_buffer
                     .enqueue_tagged_if_generation(
-                        vec![chunk],
+                        batch,
                         Some(generation_at_start),
                         enqueue_reply_id.as_ref().map(|id| (id, first_chunk_ms)),
                     )
@@ -2410,6 +2437,10 @@ impl VoiceAgent {
                 }
                 queued_any = true;
                 enqueue_wake.notify_one();
+                if !released {
+                    // The stream ended while holding: nothing more will arrive.
+                    break;
+                }
             }
             (queued_any, false)
         });

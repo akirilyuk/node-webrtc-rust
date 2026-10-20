@@ -8,6 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **speech:** `TtsProvider::playout_prebuffer_ms()` (default 0): audio the agent buffers before it starts playing a reply, for vendors that stream in bursts with idle gaps. Playback starts once that much audio is buffered or the synthesis ended.
+- **bench:** `playout_start_ms`, and `stall_ms` is now measured from it (unchanged for a prebuffer of 0). `NWR_BENCH_TRACE_ARRIVALS=1` adds a per-chunk `arrivals` trace.
+
+### Fixed
+
+- **openai:** TTS streaming no longer gaps. OpenAI sends a 40 ms first chunk and the next one up to about 1 s later; the crate now declares a 250 ms playout prebuffer, so first audio comes about 0.3 s later and without a gap.
+
 ## [0.12.1] - 2026-10-20
 
 ### Added

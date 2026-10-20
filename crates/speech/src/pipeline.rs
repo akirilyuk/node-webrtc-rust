@@ -232,6 +232,14 @@ pub trait TtsProvider: Send + Sync {
         None
     }
 
+    /// Audio (ms) the agent buffers before it starts playing a reply, for vendors that stream in
+    /// bursts with idle gaps: playing the first small chunk would run dry before the next burst.
+    /// Vendor-declared from measurements. Playback starts once this much audio is buffered or the
+    /// synthesis call has ended, whichever comes first. `0` plays on the first chunk.
+    fn playout_prebuffer_ms(&self) -> u32 {
+        0
+    }
+
     /// Takes the open-wait record of the last synthesis if its start was refused and retried
     /// (see [`TtsOpenWait`]). Default: vendors that never wait return `None`.
     fn take_open_wait(&self) -> Option<TtsOpenWait> {

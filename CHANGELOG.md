@@ -8,9 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-20
+
 ### Added
 
 - **bench:** vendor latency benchmark. `npm run bench:vendors` measures TTS time to first audio and STT open, first partial and final against the real vendor APIs and writes `raw.jsonl`, `summary.json`, `summary.md` and `environment.json` (host, git SHA, DNS/TCP/TLS to each vendor host, host load); `npm run bench:compare` compares two result folders. Published set: ElevenLabs, Cartesia, Groq, OpenAI, Fish Audio. First results: `benchmarks/results/2026-10-19-ci-eu`. Method: `benchmarks/METHODOLOGY.md` (#479).
+- **bench:** end-to-end results on VoiceThere's EU cluster (`benchmarks/results/2026-10-20-staging-eu`) and `bench-vendors.mjs --summarize` for end-to-end result folders.
 - **bench:** the default transport rule (`benchmarks/METHODOLOGY.md`, "Default transport rule") as code. `npm run bench:transport-table -- <results-dir>` prints, per vendor and leg, each transport's medians, whether it qualifies, and the winner.
 
 ### Changed

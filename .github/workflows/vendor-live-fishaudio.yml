@@ -4,8 +4,9 @@ name: Vendor live — Fish Audio
 # the real API. The API key is the repo secret FISH_AUDIO_API, mapped to the library's
 # FISH_API_KEY env var (the name Fish documents).
 #
-# Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
-# runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
+# Fork PRs are skipped on purpose: this repo is public and the job runs on our own runners
+# (ARC scale set nwr-large; the repo variable NWR_RUNNER_LARGE=self-hosted falls back to the
+# old runners), so fork code must never run there, and forks get no secrets anyway. Pull requests
 # from branches of this repo and manual dispatches run the job.
 #
 # A missing key fails the job (first step, and FISH_LIVE_REQUIRED=1 makes the tests panic
@@ -31,7 +32,7 @@ jobs:
   live:
     name: Fish Audio live
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
     # ci-run-integration-tests docker run).
     container:
@@ -44,6 +45,13 @@ jobs:
       CMAKE_POLICY_VERSION_MINIMUM: '3.5'
       OPUS_STATIC: '1'
     steps:
+      # Migration measurement: CPUs, cgroup limits and CPU model of the runner this job got.
+      - name: Runner facts
+        run: |
+          echo "runner=${RUNNER_NAME:-unknown} nproc=$(nproc)"
+          echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+          grep -m1 'model name' /proc/cpuinfo || true
+
       - uses: actions/checkout@v4
 
       - name: Require Fish key

@@ -36,6 +36,11 @@ on:
         type: string
         default: ''
 
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     name: Test
@@ -50,6 +55,10 @@ jobs:
       CI: 'true'
       CMAKE_POLICY_VERSION_MINIMUM: '3.5'
       OPUS_STATIC: '1'
+      # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: '*'
     steps:
       # Migration measurement: CPUs, cgroup limits and CPU model of the runner this job got.
       - name: Runner facts

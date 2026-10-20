@@ -12,6 +12,8 @@
 #   4. Path-based suite selection (CI_TEST_SUITES / test_suites): empty means every suite.
 #   5. ARC runners: build.yml has no docker commands, every build.yml job with runs-on also has
 #      container:, and every runs-on in build.yml and reusable-test.yml uses the NWR_RUNNER_* variables.
+#   6. Container-mode jobs: build.yml and reusable-test.yml default run: steps to bash and set the
+#      wildcard safe.directory through GIT_CONFIG_* env.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -141,6 +143,23 @@ fi
 for wf in "$build" "$reusable"; do
   if grep -E '^[[:space:]]*runs-on:' "$wf" | grep -Fv 'NWR_RUNNER_' >&2; then
     echo "$wf: every runs-on must use the NWR_RUNNER_* repo variables with an ARC default (no plain self-hosted)" >&2
+    exit 1
+  fi
+done
+# Container mode defaults run: steps to `sh -e`, and job pods run as root on a workspace owned by
+# another user: both workflows set a top-level bash default shell and a wildcard safe.directory.
+for wf in "$build" "$reusable"; do
+  if ! awk '
+    /^defaults:/ { in_defaults = 1; next }
+    in_defaults && /^[^[:space:]#]/ { in_defaults = 0 }
+    in_defaults && /^    shell:[[:space:]]*bash[[:space:]]*$/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$wf"; then
+    echo "$wf: must set 'shell: bash' under a top-level defaults.run block (container-mode run: steps default to sh -e)" >&2
+    exit 1
+  fi
+  if ! grep -Eq '^[[:space:]]*GIT_CONFIG_KEY_0:[[:space:]]*safe\.directory[[:space:]]*$' "$wf"; then
+    echo "$wf: must set GIT_CONFIG_KEY_0: safe.directory (with GIT_CONFIG_COUNT/VALUE_0) so git works on the root-owned-vs-runner workspace" >&2
     exit 1
   fi
 done

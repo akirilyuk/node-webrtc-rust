@@ -275,4 +275,28 @@ for bad in "crates/core/* rust,node extra" "crates/core/*" "crates/core/* rust,b
 done
 echo "ok: malformed map line -> exit non-zero"
 
+# --- 14. not a git repository fails closed --------------------------------------------------
+nogit="$(mktemp -d)"
+if out="$(cd "$nogit" && GIT_CEILING_DIRECTORIES="$nogit/.." bash "$GATES" 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 2>&1)"; then
+  echo "expected the gates script to fail outside a git repository" >&2
+  echo "$out" >&2
+  exit 1
+fi
+assert_contains "$out" "not a git repository"
+rm -rf "$nogit"
+echo "ok: not a git repository -> exit non-zero"
+
+# --- 15. unknown base commit fails closed ----------------------------------------------------
+dir="$(make_repo unknownbase)"
+commit_files "$dir" "change" crates/core/src/x.rs
+head="$(git -C "$dir" rev-parse HEAD)"
+if out="$(cd "$dir" && bash "$GATES" 0000000000000000000000000000000000000001 "$head" 2>&1)"; then
+  echo "expected an unknown base commit to fail" >&2
+  echo "$out" >&2
+  exit 1
+fi
+assert_not_contains "$out" "run_test="
+assert_contains "$out" "::error::compute-pr-job-gates: git diff"
+echo "ok: unknown base commit -> exit non-zero, no gates printed"
+
 echo "compute-pr-job-gates.test.sh: all checks passed"

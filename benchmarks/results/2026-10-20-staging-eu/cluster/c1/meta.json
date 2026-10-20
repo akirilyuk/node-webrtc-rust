@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "source": "e2e-load-staging",
+  "concurrency": 1,
+  "conversations": 1,
+  "turns_per_conversation": 19,
+  "target": "staging",
+  "started_at": "2026-10-20T00:58:45.509Z",
+  "finished_at": "2026-10-20T01:03:08.345Z",
+  "host_suspended": [],
+  "phrase_cache_suspected": false,
+  "client_starved": false,
+  "client_starved_threshold_p99_ms": 200,
+  "event_loop_delay_ms": {
+    "intervals": 53,
+    "p99_max": 24.99,
+    "max": 80.61
+  }
+}

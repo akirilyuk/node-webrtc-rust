@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T01:59:26.233Z",
+  "source": "e2e-load-staging",
+  "concurrency": 45,
+  "conversations": 45,
+  "turns_per_conversation": 18.07,
+  "host_suspended": [],
+  "client_starved": false,
+  "groups": [
+    {
+      "vendor": "voicethere",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "en/en",
+      "phase": "cold",
+      "text": "counting-echo",
+      "n": 45,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 45,
+          "median": 1604,
+          "p90": 1763,
+          "min": 1379,
+          "max": 1851
+        },
+        "final_to_reply_start_ms": {
+          "n": 45,
+          "median": 124,
+          "p90": 313,
+          "min": 88,
+          "max": 423
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 45,
+          "median": 1748,
+          "p90": 1976,
+          "min": 1507,
+          "max": 2149
+        },
+        "tts_first_audio_ms": {
+          "n": 45,
+          "median": 117,
+          "p90": 312,
+          "min": 90,
+          "max": 422
+        }
+      }
+    },
+    {
+      "vendor": "voicethere",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "en/en",
+      "phase": "warm",
+      "text": "counting-echo",
+      "n": 768,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 768,
+          "median": 1594,
+          "p90": 1736,
+          "min": 1241,
+          "max": 2023
+        },
+        "final_to_reply_start_ms": {
+          "n": 768,
+          "median": 132,
+          "p90": 336,
+          "min": 60,
+          "max": 721
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 768,
+          "median": 1766,
+          "p90": 1961,
+          "min": 1368,
+          "max": 2346
+        },
+        "tts_first_audio_ms": {
+          "n": 768,
+          "median": 129.5,
+          "p90": 330,
+          "min": 87,
+          "max": 717
+        }
+      }
+    }
+  ]
+}

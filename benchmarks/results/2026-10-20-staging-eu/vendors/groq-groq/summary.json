@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T01:59:26.269Z",
+  "source": "e2e-cloud-vendor-smoke",
+  "concurrency": 1,
+  "conversations": 1,
+  "turns_per_conversation": 10,
+  "host_suspended": [],
+  "client_starved": false,
+  "groups": [
+    {
+      "vendor": "voicethere+groq/groq",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "whisper-large-v3-turbo/canopylabs/orpheus-v1-english",
+      "phase": "cold",
+      "text": "counting-echo",
+      "n": 1,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 1,
+          "median": 1603,
+          "p90": 1603,
+          "min": 1603,
+          "max": 1603
+        },
+        "final_to_reply_start_ms": {
+          "n": 1,
+          "median": 183,
+          "p90": 183,
+          "min": 183,
+          "max": 183
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 1,
+          "median": 1786,
+          "p90": 1786,
+          "min": 1786,
+          "max": 1786
+        },
+        "tts_first_audio_ms": {
+          "n": 1,
+          "median": 182,
+          "p90": 182,
+          "min": 182,
+          "max": 182
+        }
+      }
+    },
+    {
+      "vendor": "voicethere+groq/groq",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "whisper-large-v3-turbo/canopylabs/orpheus-v1-english",
+      "phase": "warm",
+      "text": "counting-echo",
+      "n": 9,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 9,
+          "median": 1596,
+          "p90": 1671,
+          "min": 1577,
+          "max": 1671
+        },
+        "final_to_reply_start_ms": {
+          "n": 9,
+          "median": 181,
+          "p90": 183,
+          "min": 176,
+          "max": 183
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 9,
+          "median": 1777,
+          "p90": 1848,
+          "min": 1759,
+          "max": 1848
+        },
+        "tts_first_audio_ms": {
+          "n": 9,
+          "median": 180,
+          "p90": 181,
+          "min": 176,
+          "max": 181
+        }
+      }
+    }
+  ]
+}

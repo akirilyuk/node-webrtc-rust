@@ -1,0 +1,16 @@
+{
+  "os": "darwin 24.6.0 arm64",
+  "cpu_model": "Apple M4 Pro",
+  "cpu_cores": 14,
+  "node_version": "v26.4.0",
+  "harness_git_sha": "2e497d847c3a14a3c8606998f5613ea6986018be",
+  "versions": {
+    "@voicethere/client": "0.11.9",
+    "@node-webrtc-rust/bindings": "0.11.1",
+    "@node-webrtc-rust/bindings-darwin-arm64": "0.11.1",
+    "@node-webrtc-rust/sdk": "0.11.1",
+    "@node-webrtc-rust/signaling": "0.11.1",
+    "@node-webrtc-rust/voice-catalog": "0.9.16"
+  },
+  "region": "staging-eu"
+}

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T01:59:26.269Z",
+  "source": "e2e-cloud-vendor-smoke",
+  "concurrency": 1,
+  "conversations": 1,
+  "turns_per_conversation": 10,
+  "host_suspended": [],
+  "client_starved": false,
+  "groups": [
+    {
+      "vendor": "voicethere+openai/openai",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "gpt-4o-mini-transcribe/tts-1",
+      "phase": "cold",
+      "text": "counting-echo",
+      "n": 1,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 1,
+          "median": 2534,
+          "p90": 2534,
+          "min": 2534,
+          "max": 2534
+        },
+        "final_to_reply_start_ms": {
+          "n": 1,
+          "median": 1057,
+          "p90": 1057,
+          "min": 1057,
+          "max": 1057
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 1,
+          "median": 3591,
+          "p90": 3591,
+          "min": 3591,
+          "max": 3591
+        },
+        "tts_first_audio_ms": {
+          "n": 1,
+          "median": 1260,
+          "p90": 1260,
+          "min": 1260,
+          "max": 1260
+        }
+      }
+    },
+    {
+      "vendor": "voicethere+openai/openai",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "gpt-4o-mini-transcribe/tts-1",
+      "phase": "warm",
+      "text": "counting-echo",
+      "n": 9,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 9,
+          "median": 2316,
+          "p90": 3695,
+          "min": 2170,
+          "max": 3695
+        },
+        "final_to_reply_start_ms": {
+          "n": 9,
+          "median": 872,
+          "p90": 1833,
+          "min": 0,
+          "max": 1833
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 9,
+          "median": 3382,
+          "p90": 4398,
+          "min": 2770,
+          "max": 4398
+        },
+        "tts_first_audio_ms": {
+          "n": 9,
+          "median": 905,
+          "p90": 2040,
+          "min": 811,
+          "max": 2040
+        }
+      }
+    }
+  ]
+}

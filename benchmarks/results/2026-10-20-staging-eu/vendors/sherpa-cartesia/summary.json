@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T01:59:26.269Z",
+  "source": "e2e-cloud-vendor-smoke",
+  "concurrency": 1,
+  "conversations": 1,
+  "turns_per_conversation": 10,
+  "host_suspended": [],
+  "client_starved": false,
+  "groups": [
+    {
+      "vendor": "voicethere+sherpa/cartesia",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "en/sonic-3",
+      "phase": "cold",
+      "text": "counting-echo",
+      "n": 1,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 1,
+          "median": 1454,
+          "p90": 1454,
+          "min": 1454,
+          "max": 1454
+        },
+        "final_to_reply_start_ms": {
+          "n": 1,
+          "median": 168,
+          "p90": 168,
+          "min": 168,
+          "max": 168
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 1,
+          "median": 1622,
+          "p90": 1622,
+          "min": 1622,
+          "max": 1622
+        },
+        "tts_first_audio_ms": {
+          "n": 1,
+          "median": 166,
+          "p90": 166,
+          "min": 166,
+          "max": 166
+        }
+      }
+    },
+    {
+      "vendor": "voicethere+sherpa/cartesia",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "en/sonic-3",
+      "phase": "warm",
+      "text": "counting-echo",
+      "n": 9,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 9,
+          "median": 1465,
+          "p90": 1858,
+          "min": 1453,
+          "max": 1858
+        },
+        "final_to_reply_start_ms": {
+          "n": 9,
+          "median": 169,
+          "p90": 456,
+          "min": 0,
+          "max": 456
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 9,
+          "median": 1634,
+          "p90": 1921,
+          "min": 1622,
+          "max": 1921
+        },
+        "tts_first_audio_ms": {
+          "n": 9,
+          "median": 170,
+          "p90": 456,
+          "min": 166,
+          "max": 456
+        }
+      }
+    }
+  ]
+}

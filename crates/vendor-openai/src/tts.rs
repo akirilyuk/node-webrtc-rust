@@ -16,6 +16,14 @@ use crate::matrix::tts_sse_allowed;
 
 /// OpenAI TTS PCM output sample rate (16-bit mono LE).
 const OPENAI_TTS_PCM_SAMPLE_RATE: u32 = 24_000;
+/// Audio buffered before playback starts while the reply streams as chunked PCM.
+///
+/// Measured 2026-10-20 (40 samples per model, `tts-1`/`tts-1-hd`/`gpt-4o-mini-tts`): OpenAI sends
+/// a first chunk of about 40 ms of audio, then the next chunk 21 to 975 ms later, then bursts well
+/// ahead of real time. Playing the first chunk on arrival gave an audible gap in 26 to 39 of 40
+/// samples. A simulated 250 ms buffer gave 0 stalls in 80 of 80 `tts-1`/`tts-1-hd` samples, with
+/// the first audio about 0.3 s later (`tts-1` median 1.3 s to 1.6 s).
+pub const OPENAI_STREAM_PREBUFFER_MS: u32 = 250;
 const DEFAULT_API_ROOT: &str = "https://api.openai.com/v1";
 
 /// How this vendor instance turns text into PCM.
@@ -42,6 +50,8 @@ pub struct OpenAiTts {
     #[cfg(feature = "live")]
     http: reqwest::Client,
     last_transport: std::sync::Mutex<Option<String>>,
+    /// Cheap mirror of `delivery == StreamPcm` for the sync `playout_prebuffer_ms`.
+    streaming: std::sync::atomic::AtomicBool,
 }
 
 impl OpenAiTts {
@@ -70,6 +80,7 @@ impl OpenAiTts {
             #[cfg(feature = "live")]
             http: crate::http::build_client(None)?,
             last_transport: std::sync::Mutex::new(None),
+            streaming: std::sync::atomic::AtomicBool::new(cfg!(feature = "live")),
         })
     }
 
@@ -97,6 +108,15 @@ impl TtsProvider for OpenAiTts {
 
     fn last_transport(&self) -> Option<String> {
         self.last_transport.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Chunked PCM arrives in bursts with idle gaps; the full body arrives at once.
+    fn playout_prebuffer_ms(&self) -> u32 {
+        if self.streaming.load(std::sync::atomic::Ordering::SeqCst) {
+            OPENAI_STREAM_PREBUFFER_MS
+        } else {
+            0
+        }
     }
 
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
@@ -189,6 +209,8 @@ impl OpenAiTts {
             Ok(chunks) => Ok(chunks),
             Err(StreamAttempt::UseFullBody) => {
                 *self.delivery.lock().await = SpeechDelivery::FullBody;
+                self.streaming
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 let chunks = self.synthesize_full_body(text).await?;
                 emit_chunks(sink.as_ref(), &chunks);
                 Ok(chunks)
@@ -467,6 +489,31 @@ mod tests {
         let mono_24k = vec![0_u8; 480];
         let stereo_48k = mono_24k_s16le_to_stereo_48k(&mono_24k).unwrap();
         assert_eq!(stereo_48k.len(), 480 * 2 * 2);
+    }
+
+    fn tts_config(endpoint: Option<String>) -> TtsConfig {
+        TtsConfig {
+            provider: TtsVendor::Openai,
+            model: Some("tts-1".into()),
+            model_path: None,
+            voice: None,
+            api_key: Some("test-key".into()),
+            endpoint,
+            sentence_case: Default::default(),
+            transport: None,
+        }
+    }
+
+    #[cfg(feature = "live")]
+    #[tokio::test]
+    async fn prebuffer_is_250_while_streaming_and_0_after_the_full_body_switch() {
+        // Nothing listens on port 1: the stream request fails before any audio, the instance
+        // switches to the full body for good (and that call fails too, which is fine here).
+        let tts = OpenAiTts::new(&tts_config(Some("http://127.0.0.1:1".into()))).unwrap();
+        assert_eq!(tts.playout_prebuffer_ms(), OPENAI_STREAM_PREBUFFER_MS);
+        assert_eq!(tts.playout_prebuffer_ms(), 250);
+        let _ = tts.synthesize_progressive("hi", None).await;
+        assert_eq!(tts.playout_prebuffer_ms(), 0);
     }
 
     #[test]

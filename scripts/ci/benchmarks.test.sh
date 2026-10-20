@@ -10,4 +10,5 @@ node --test \
   benchmarks/scripts/bench-vendors.test.mjs \
   benchmarks/scripts/compare.test.mjs \
   benchmarks/scripts/transport-rule.test.mjs \
-  benchmarks/scripts/methodology.test.mjs
+  benchmarks/scripts/methodology.test.mjs \
+  benchmarks/scripts/readme.test.mjs

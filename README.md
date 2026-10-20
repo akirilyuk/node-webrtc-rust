@@ -102,7 +102,7 @@ Speech engine numbers were measured in a container limited to one CPU; media pat
 
 ## Benchmarks
 
-Latency of the cloud speech vendors (TTS time to first audio, STT open, first partial and final), measured against their real APIs with a CLI you can run on your own machine and compare with our results: [`benchmarks/README.md`](benchmarks/README.md). How each number is measured: [`benchmarks/METHODOLOGY.md`](benchmarks/METHODOLOGY.md).
+Latency of the cloud speech vendors (TTS time to first audio, STT open, first partial and final), measured against their real APIs with a CLI you can run on your own machine and compare with our results: [`benchmarks/README.md`](benchmarks/README.md). How each number is measured: [`benchmarks/METHODOLOGY.md`](benchmarks/METHODOLOGY.md). Latest results: [`2026-10-19-ci-eu`](benchmarks/results/2026-10-19-ci-eu/) (vendor APIs called directly from the EU) and [`2026-10-20-staging-eu`](benchmarks/results/2026-10-20-staging-eu/) (end to end on VoiceThere's EU cluster).
 
 ---
 

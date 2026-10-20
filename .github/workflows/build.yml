@@ -206,12 +206,14 @@ jobs:
   # a thin gate job PRs stick on "Expected — Waiting for status to be reported".
   integration-test:
     name: Integration tests
-    needs: [changes, validate-package-lock, build-ts]
+    # Does not wait for build-ts: run-pr-integration.sh builds the TS dist itself on a cache miss
+    # (ensure-ts-dist.sh), and on the 1-CPU nwr-small build-ts took 160 s on the critical path.
+    # The Test gate still requires build-ts.
+    needs: [changes, validate-package-lock]
     if: |
       always() &&
       !cancelled() &&
-      needs.validate-package-lock.result == 'success' &&
-      needs.build-ts.result != 'failure'
+      needs.validate-package-lock.result == 'success'
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh

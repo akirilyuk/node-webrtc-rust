@@ -24,8 +24,14 @@ pub struct TtsSample {
     /// Sum of the chunks' own `duration_ms`.
     pub audio_ms: u64,
     pub chunks: usize,
-    /// Worst time a chunk arrived after the audio before it would have finished playing; above
-    /// zero means an audible gap.
+    /// Call start to the moment playback would begin: when the buffered audio first reaches the
+    /// provider's `playout_prebuffer_ms()`, or the call's return time if it never does. With a
+    /// prebuffer of 0 this equals `ttfa_ms`.
+    #[serde(default)]
+    pub playout_start_ms: u64,
+    /// Worst time a chunk arrived after the audio before it would have finished playing, with
+    /// playback starting at `playout_start_ms`; above zero means an audible gap. With a prebuffer
+    /// of 0 playback starts at the first chunk.
     pub stall_ms: u64,
     /// Bytes that reached the sink.
     pub bytes: usize,
@@ -52,13 +58,33 @@ pub fn stall_ms(arrivals: &[(u64, u32)]) -> u64 {
     let Some(&(first, _)) = arrivals.first() else {
         return 0;
     };
+    stall_ms_from(arrivals, first)
+}
+
+/// [`stall_ms`] for playback that starts at `start` (ms offset): max over k of
+/// `max(0, arrival_k - start - sum(duration of chunks before k))`. Chunks that arrived before
+/// `start` are never late.
+pub fn stall_ms_from(arrivals: &[(u64, u32)], start: u64) -> u64 {
     let mut played = 0u64;
     let mut worst = 0u64;
     for &(at, duration) in arrivals {
-        worst = worst.max((at - first).saturating_sub(played));
+        worst = worst.max(at.saturating_sub(start).saturating_sub(played));
         played += u64::from(duration);
     }
     worst
+}
+
+/// Offset at which buffered audio first reaches `prebuffer_ms`; `fallback` if it never does
+/// (the reply is shorter, so it plays when the call ends). A prebuffer of 0 is the first chunk.
+pub fn playout_start_ms(arrivals: &[(u64, u32)], prebuffer_ms: u32, fallback: u64) -> u64 {
+    let mut buffered = 0u64;
+    for &(at, duration) in arrivals {
+        buffered += u64::from(duration);
+        if buffered >= u64::from(prebuffer_ms) {
+            return at;
+        }
+    }
+    fallback
 }
 
 /// Runs one `synthesize_progressive` with a sink and timestamps every chunk.
@@ -77,6 +103,7 @@ pub async fn measure_tts_traced(
         tx,
         cancel: Arc::new(AtomicBool::new(false)),
     };
+    let prebuffer_ms = provider.playout_prebuffer_ms();
     let started = Instant::now();
     let receiver = tokio::spawn(async move {
         let mut arrivals: Vec<(u64, u32)> = Vec::new();
@@ -114,12 +141,14 @@ pub async fn measure_tts_traced(
         .await
         .map_err(|err| SpeechError::Internal(format!("sink task: {err}")))?;
 
+    let playout_start = playout_start_ms(&arrivals, prebuffer_ms, returned_ms);
     Ok(TtsSample {
         ttfa_ms: arrivals.first().map_or(returned_ms, |(at, _)| *at),
+        playout_start_ms: playout_start,
         total_ms: returned_ms,
         audio_ms: arrivals.iter().map(|(_, d)| u64::from(*d)).sum(),
         chunks: arrivals.len(),
-        stall_ms: stall_ms(&arrivals),
+        stall_ms: stall_ms_from(&arrivals, playout_start),
         bytes: pcm.len(),
         returned_bytes: returned.iter().map(|c| c.pcm.len()).sum(),
         first_before_return: arrivals.first().is_some_and(|(at, _)| *at < returned_ms),
@@ -318,6 +347,61 @@ mod tests {
     }
 
     #[test]
+    fn stall_from_a_later_start_ignores_the_early_gap() {
+        // 40 ms first chunk, next 500 ms later: late by 460 ms from the first chunk, but playing
+        // from the second arrival (250 ms buffered) is gap-free.
+        let arrivals = [(0u64, 40u32), (500, 170), (501, 170), (502, 170)];
+        assert_eq!(stall_ms(&arrivals), 460);
+        let start = playout_start_ms(&arrivals, 250, 600);
+        assert_eq!(start, 501);
+        assert_eq!(stall_ms_from(&arrivals, start), 0);
+        // Prebuffer 0 starts at the first chunk: identical to `stall_ms`.
+        assert_eq!(playout_start_ms(&arrivals, 0, 600), 0);
+        assert_eq!(stall_ms_from(&arrivals, 0), stall_ms(&arrivals));
+        // A reply shorter than the prebuffer starts when the call returned.
+        assert_eq!(playout_start_ms(&arrivals[..1], 250, 600), 600);
+    }
+
+    #[tokio::test]
+    async fn prebuffering_provider_gets_playout_start_after_the_buffered_audio() {
+        struct Prebuffered;
+        #[async_trait]
+        impl TtsProvider for Prebuffered {
+            fn vendor_name(&self) -> &'static str {
+                "fake-prebuffered"
+            }
+            fn playout_prebuffer_ms(&self) -> u32 {
+                50
+            }
+            async fn synthesize(&self, _t: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+                Ok(Vec::new())
+            }
+            async fn synthesize_progressive(
+                &self,
+                _t: &str,
+                sink: Option<TtsProgressiveSink>,
+            ) -> SpeechResult<Vec<TtsAudioChunk>> {
+                let sink = sink.expect("sink");
+                for gap_ms in [0u64, 60, 0] {
+                    tokio::time::sleep(Duration::from_millis(gap_ms)).await;
+                    sink.send(TtsAudioChunk {
+                        pcm: Bytes::from(vec![0x10; 3840]),
+                        duration_ms: 20,
+                    });
+                }
+                Ok(Vec::new())
+            }
+        }
+        let sample = measure_tts_traced(&Prebuffered, "hi", false).await.unwrap();
+        // 20 ms, then 40 ms at +60 ms: 50 ms is reached on the second chunk.
+        assert!(sample.playout_start_ms >= sample.ttfa_ms + 50);
+        let plain = measure_tts_traced(&FakeTts { send_to_sink: true }, "hi", false)
+            .await
+            .unwrap();
+        assert_eq!(plain.playout_start_ms, plain.ttfa_ms);
+    }
+
+    #[test]
     fn stall_of_empty_and_single_is_zero() {
         assert_eq!(stall_ms(&[]), 0);
         assert_eq!(stall_ms(&[(500, 100)]), 0);
@@ -329,6 +413,7 @@ mod tests {
             total_ms: 900,
             audio_ms: 3000,
             chunks: 6,
+            playout_start_ms: 120,
             stall_ms: 0,
             bytes: 576_000,
             returned_bytes: 576_000,

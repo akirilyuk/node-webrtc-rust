@@ -125,7 +125,10 @@ impl TtsProvider for FishAudioTts {
 
         // Chunked HTTP is the default: the agent hands whole sentences, so the WebSocket's
         // text-streaming input buys nothing, and HTTP reached the first audio chunk sooner
-        // in live measurements (291-658 ms vs 963-1035 ms, 2026-10-16).
+        // in live measurements (291-658 ms vs 963-1035 ms, 2026-10-16). Bench run 2026-10-19
+        // (CI runner, Hetzner EU, 40 samples each): median first audio 291.5 ms warm / 325.5 ms
+        // cold over http against 1023.5 / 1023 ms over websocket. Both qualify under the
+        // default transport rule (one 20 ms stall in 40 http samples is allowed), so http wins.
         #[cfg(feature = "live")]
         let outcome = match self
             .client

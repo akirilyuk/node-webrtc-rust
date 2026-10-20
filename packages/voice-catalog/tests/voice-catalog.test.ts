@@ -291,9 +291,19 @@ describe('voice catalog transports', () => {
     expect(defaultSttTransport('deepgram')).toBe('websocket')
   })
 
-  test('elevenlabs defaults to http TTS', () => {
+  // Defaults come from the 2026-10-19 vendor bench (benchmarks/METHODOLOGY.md, "Default transport rule").
+  test('elevenlabs defaults to websocket TTS', () => {
     expect([...ttsTransports('elevenlabs')]).toEqual(['http', 'websocket'])
-    expect(defaultTtsTransport('elevenlabs')).toBe('http')
+    expect(defaultTtsTransport('elevenlabs')).toBe('websocket')
+  })
+
+  test('cartesia defaults to http TTS', () => {
+    expect([...ttsTransports('cartesia')]).toEqual(['websocket', 'http'])
+    expect(defaultTtsTransport('cartesia')).toBe('http')
+  })
+
+  test('fish audio keeps http TTS as the default', () => {
+    expect(defaultTtsTransport('fishaudio')).toBe('http')
   })
 
   test('google and unknown vendors have no selectable transport', () => {

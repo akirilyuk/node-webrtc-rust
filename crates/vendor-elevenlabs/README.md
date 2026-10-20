@@ -35,8 +35,8 @@ ElevenLabs Scribe realtime STT and TTS for `@node-webrtc-rust/sdk` VoiceAgent.
 
 | Choice                   | What we implemented                                          | Why                                                                                               |
 | ------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| Default progressive      | HTTP `POST …/text-to-speech/{voice_id}/stream` (`pcm_48000`) | Official stream API; works for `eleven_multilingual_v2`, Flash, etc.                              |
-| WebSocket `stream-input` | Implemented and **allowed** except `eleven_v3`               | Official realtime TTS WS.                                                                         |
+| `http` transport         | HTTP `POST …/text-to-speech/{voice_id}/stream` (`pcm_48000`) | Official stream API; works for `eleven_multilingual_v2`, Flash, etc.                              |
+| WebSocket `stream-input` | Default (`auto`) except for `eleven_v3`                      | Official realtime TTS WS.                                                                         |
 | `eleven_v3`              | Full-body `POST …/text-to-speech/{voice_id}` only            | **Documented:** `stream-input` does not support `eleven_v3`. We do not send that model on the WS. |
 
 The WebSocket `stream-input` path is selected with the `websocket` customer transport (never for `eleven_v3`). If the HTTP stream yields no audio, the full-body POST is used as a fallback and its audio reaches the sink once; a cancelled utterance never falls back.
@@ -62,7 +62,18 @@ Config: `tts.transport`: `auto` (default), `http` or `websocket`. `stt.transport
 
 TTS `http` (chunked `…/stream`, or the full-body POST for `eleven_v3`) and TTS `websocket` (`…/stream-input`). `websocket` is rejected at construction for models the socket does not support (`eleven_v3`). STT is always the Scribe realtime WebSocket.
 
-`auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `websocket`. Default measured in a later change.
+`auto` resolves to the catalog default: TTS `websocket`, STT `websocket`. For a model the socket does not support (`eleven_v3`), `auto` resolves to `http` (full-body POST); an explicit `websocket` with that model is a config error.
+
+### Transport decisions
+
+Measured 2026-10-19 on a CI runner in a Hetzner data centre in the EU, 10 runs per group (40 TTS samples per transport), model `eleven_multilingual_v2`. Median `ttfa_ms`, warm / cold:
+
+| Transport   | Median warm | Median cold | Qualifies |
+| ----------- | ----------- | ----------- | --------- |
+| `http`      | 645 ms      | 722.5 ms    | yes       |
+| `websocket` | 422.5 ms    | 415.5 ms    | yes       |
+
+Both transports qualify and `websocket` has the lower warm median, so it is the default (TTS changed from `http` on 2026-10-19). STT has one transport, so there is no decision. Rule: [`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md#default-transport-rule). Results: [`benchmarks/results/2026-10-19-ci-eu`](../../benchmarks/results/2026-10-19-ci-eu/README.md).
 
 ### WebSocket streaming and reuse
 

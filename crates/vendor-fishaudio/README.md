@@ -93,7 +93,18 @@ Config: `tts.transport`: `auto` (default), `http` or `websocket`. `stt.transport
 
 TTS `http` (chunked `POST /v1/tts`, with the documented WebSocket fallback while no audio reached the sink and the failure is one the socket can fix). TTS `websocket` (`/v1/tts/live` only, no fallback). STT is always the realtime WebSocket.
 
-`auto` resolves to the catalog default, which is today's behaviour: TTS `http`, STT `websocket`. Default measured in a later change.
+`auto` resolves to the catalog default: TTS `http`, STT `websocket`.
+
+### Transport decisions
+
+Measured 2026-10-19 on a CI runner in a Hetzner data centre in the EU, 10 runs per group (40 samples per transport), model `drama-3`. Median `ttfa_ms`, warm / cold:
+
+| Transport   | Median warm | Median cold | Qualifies                           |
+| ----------- | ----------- | ----------- | ----------------------------------- |
+| `http`      | 291.5 ms    | 325.5 ms    | yes (one 20 ms stall in 40 samples) |
+| `websocket` | 1023.5 ms   | 1023 ms     | yes                                 |
+
+`http` stays the default. Under the first version of the rule, which allowed no stall at all, the one 20 ms stall on the first cold `http` sample disqualified it, although it is 3.5 times faster. The rule was amended on 2026-10-20 to allow one stalled sample in 40 as long as no stall is longer than one 20 ms frame; `http` qualifies under it and has the lower warm median. STT has one transport, so there is no decision. Rule: [`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md#default-transport-rule). Results: [`benchmarks/results/2026-10-19-ci-eu`](../../benchmarks/results/2026-10-19-ci-eu/README.md).
 
 HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.
 

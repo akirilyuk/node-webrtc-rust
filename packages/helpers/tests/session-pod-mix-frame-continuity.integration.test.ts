@@ -136,11 +136,19 @@ function seededRandom(seed: number): () => number {
   }
 }
 
-type SendPattern = 'paced' | 'paced-stall-300ms' | 'bunched-3x20' | 'packet-60ms' | 'jitter-30ms'
+type SendPattern =
+  | 'paced'
+  | 'paced-stall-300ms'
+  | 'paced-stall-1200ms'
+  | 'bunched-3x20'
+  | 'packet-60ms'
+  | 'jitter-30ms'
 
 /** `paced-stall-300ms`: the sender thread is blocked at this source frame, for this long. */
 const STALL_AT_FRAME = 50
 const STALL_MS = 300
+/** `paced-stall-1200ms`: a stall longer than the 1 s queue capacity. */
+const LONG_STALL_MS = 1_200
 
 /** Streams MARKED_FRAMES marked frames through the speaker's real outbound track. */
 async function sendMarkedFrames(mic: LocalAudioTrack, pattern: SendPattern): Promise<void> {
@@ -156,13 +164,21 @@ async function sendMarkedFrames(mic: LocalAudioTrack, pattern: SendPattern): Pro
     while (Date.now() < target) await new Promise<void>((resolve) => setImmediate(resolve))
   }
 
-  if (pattern === 'paced' || pattern === 'paced-stall-300ms') {
+  if (pattern === 'paced' || pattern === 'paced-stall-300ms' || pattern === 'paced-stall-1200ms') {
     for (let i = 0; i < frames.length; i++) {
       await waitUntil(i * FRAME_MS)
-      if (pattern === 'paced-stall-300ms' && i === STALL_AT_FRAME) {
+      if (
+        (pattern === 'paced-stall-300ms' || pattern === 'paced-stall-1200ms') &&
+        i === STALL_AT_FRAME
+      ) {
         // Block the whole JS thread (the sender and the listener's reader share it) for 300 ms,
         // like a CPU-starved CI host. The native mix pump keeps rendering meanwhile.
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, STALL_MS)
+        Atomics.wait(
+          new Int32Array(new SharedArrayBuffer(4)),
+          0,
+          0,
+          pattern === 'paced-stall-1200ms' ? LONG_STALL_MS : STALL_MS,
+        )
       }
       await mic.writeSample(frames[i]!, FRAME_MS)
     }
@@ -393,8 +409,25 @@ function expectContinuous({ seq, stats }: { seq: SequenceAnalysis; stats: MixSta
     5 + s.concealed + s.compressed + s.listenerCatchupCompressed,
   )
   expect(s.decodeErrors, detail).toBe(0)
-  expect(s.overflowCompressed, detail).toBe(0)
+  // `overflowCompressed` is not asserted to be 0: when the whole test process is starved for
+  // about a second (a shared CI host), the source queue fills to its 50-frame capacity and the
+  // two oldest frames are merged. That is the same counted, cross-faded merge as `compressed`
+  // (it is in `mergedFrames` and in the conservation line below), so a hole beyond it still
+  // fails the gap and conservation checks. Run 39394607747: overflow 1, compressed 23, every
+  // other bound held.
   expect(s.pushed, detail).toBeGreaterThanOrEqual(MARKED_FRAMES)
+  expect(s.pushed, detail).toBe(s.played + s.compressed + s.overflowCompressed + s.depth)
+}
+
+/** The accounting-only subset of the bar, for runs whose source stream itself has a long hole. */
+function expectAccounted({ seq, stats }: { seq: SequenceAnalysis; stats: MixStats | null }): void {
+  const detail = JSON.stringify({ seq, stats })
+  expect(stats, detail).not.toBeNull()
+  const s = stats!
+  expect(seq.gaps, detail).toBeLessThanOrEqual(mergedFrames(s))
+  expect(seq.reordered, detail).toBe(0)
+  expect(seq.duplicates, detail).toBeLessThanOrEqual(s.concealed)
+  expect(s.decodeErrors, detail).toBe(0)
   expect(s.pushed, detail).toBe(s.played + s.compressed + s.overflowCompressed + s.depth)
 }
 
@@ -585,6 +618,22 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       const r = await runCase('paced-stall-300ms')
       expect(r.stats!.compressed, JSON.stringify(r)).toBeGreaterThanOrEqual(10)
       expectContinuous(r)
+    },
+  )
+
+  it(
+    'a 1.2 s stall of the sender thread: the queue overflow merge is counted, not a loss',
+    { timeout: 90_000 },
+    async () => {
+      // The stall leaves ~60 frames to arrive as one burst, more than the 50-frame (1 s)
+      // source queue holds, so the two oldest frames are merged (`overflowCompressed`).
+      // A CPU-starved CI host does the same to any case (run 39394607747: overflow 1,
+      // compressed 23 on a plain paced case).
+      const r = await runCase('paced-stall-1200ms')
+      // The 1.2 s hole in the source stream is not a continuity failure of the mixer (the
+      // recorder sees it as interior silence), so only the accounting is asserted.
+      expect(r.stats!.overflowCompressed, JSON.stringify(r)).toBeGreaterThanOrEqual(1)
+      expectAccounted(r)
     },
   )
 

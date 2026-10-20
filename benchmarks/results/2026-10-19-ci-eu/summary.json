@@ -1,0 +1,3114 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-19T18:59:56.932Z",
+  "region": "ci-eu",
+  "runs": 10,
+  "transport": "all",
+  "vendors_run": [
+    "elevenlabs",
+    "cartesia",
+    "groq",
+    "openai",
+    "fishaudio"
+  ],
+  "skipped": [
+    {
+      "vendor": "deepgram",
+      "reason": "not published: vendor terms do not allow benchmarking"
+    },
+    {
+      "vendor": "assemblyai",
+      "reason": "not published: vendor terms do not allow benchmarking"
+    },
+    {
+      "vendor": "google",
+      "reason": "not published: no account yet"
+    },
+    {
+      "vendor": "azure",
+      "reason": "not published: no account yet"
+    },
+    {
+      "vendor": "aws",
+      "reason": "not published: no account yet"
+    }
+  ],
+  "failed": [],
+  "starved": [],
+  "host_suspended": [],
+  "per_vendor_load": {
+    "elevenlabs": {
+      "samples": 94,
+      "busy_median": 4.2,
+      "busy_p90": 11.2,
+      "busy_max": 19.6,
+      "load1_max": 1.9,
+      "starved": false,
+      "idle_wait": {
+        "waited_ms": 30076,
+        "reached": true
+      }
+    },
+    "cartesia": {
+      "samples": 47,
+      "busy_median": 3.5,
+      "busy_p90": 4.9,
+      "busy_max": 6.9,
+      "load1_max": 0.7,
+      "starved": false,
+      "idle_wait": {
+        "waited_ms": 30065,
+        "reached": true
+      }
+    },
+    "groq": {
+      "samples": 389,
+      "busy_median": 4.8,
+      "busy_p90": 14.9,
+      "busy_max": 91.7,
+      "load1_max": 1.8,
+      "starved": false,
+      "idle_wait": {
+        "waited_ms": 30067,
+        "reached": true
+      }
+    },
+    "openai": {
+      "samples": 223,
+      "busy_median": 1.5,
+      "busy_p90": 3.1,
+      "busy_max": 16.8,
+      "load1_max": 0.8,
+      "starved": false,
+      "idle_wait": {
+        "waited_ms": 30075,
+        "reached": true
+      }
+    },
+    "fishaudio": {
+      "samples": 161,
+      "busy_median": 1.3,
+      "busy_p90": 4.4,
+      "busy_max": 20.3,
+      "load1_max": 0.6,
+      "starved": false,
+      "idle_wait": {
+        "waited_ms": 30069,
+        "reached": true
+      }
+    }
+  },
+  "request_interval_ms": {
+    "groq": 6500
+  },
+  "inconclusive_vendors": [],
+  "groups": [
+    {
+      "vendor": "cartesia",
+      "leg": "tts",
+      "transport": "http",
+      "model": "sonic-3",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3347,
+          "p90": 3738,
+          "min": 2911,
+          "max": 3832
+        },
+        "bytes": {
+          "n": 10,
+          "median": 646442,
+          "p90": 722232,
+          "min": 561736,
+          "max": 740068
+        },
+        "chunks": {
+          "n": 10,
+          "median": 50,
+          "p90": 54,
+          "min": 41,
+          "max": 57
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 646442,
+          "p90": 722232,
+          "min": 561736,
+          "max": 740068
+        },
+        "rms": {
+          "n": 10,
+          "median": 2722.9770874963897,
+          "p90": 3077.339050565608,
+          "min": 1984.456344104017,
+          "max": 3171.1604739661
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 694,
+          "p90": 782,
+          "min": 626,
+          "max": 804
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 125,
+          "p90": 151,
+          "min": 121,
+          "max": 180
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.20700812269914431,
+          "p90": 0.23153555479216764,
+          "min": 0.1998394863563403,
+          "max": 0.24549618320610686
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "cartesia",
+      "leg": "tts",
+      "transport": "http",
+      "model": "sonic-3",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1523.5,
+          "p90": 1710,
+          "min": 740,
+          "max": 1889
+        },
+        "bytes": {
+          "n": 10,
+          "median": 294244,
+          "p90": 329908,
+          "min": 142664,
+          "max": 365576
+        },
+        "chunks": {
+          "n": 10,
+          "median": 22.5,
+          "p90": 25,
+          "min": 12,
+          "max": 32
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 294244,
+          "p90": 329908,
+          "min": 142664,
+          "max": 365576
+        },
+        "rms": {
+          "n": 10,
+          "median": 2648.6653179046907,
+          "p90": 3798.579118517882,
+          "min": 879.0676906800905,
+          "max": 4688.065325657853
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 423,
+          "p90": 464,
+          "min": 291,
+          "max": 477
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 152.5,
+          "p90": 211,
+          "min": 131,
+          "max": 212
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.29360479240440485,
+          "p90": 0.3606853020739405,
+          "min": 0.2424563260984648,
+          "max": 0.3932432432432432
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "cartesia",
+      "leg": "tts",
+      "transport": "http",
+      "model": "sonic-3",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3440.5,
+          "p90": 3602,
+          "min": 3232,
+          "max": 3647
+        },
+        "bytes": {
+          "n": 10,
+          "median": 664278,
+          "p90": 695484,
+          "min": 624152,
+          "max": 704400
+        },
+        "chunks": {
+          "n": 10,
+          "median": 51.5,
+          "p90": 56,
+          "min": 47,
+          "max": 58
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 664278,
+          "p90": 695484,
+          "min": 624152,
+          "max": 704400
+        },
+        "rms": {
+          "n": 10,
+          "median": 2707.4161300382966,
+          "p90": 2844.5761109625305,
+          "min": 1879.1034652032888,
+          "max": 2959.9547156512945
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 691.5,
+          "p90": 718,
+          "min": 647,
+          "max": 882
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 108.5,
+          "p90": 119,
+          "min": 105,
+          "max": 130
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.20097626435841076,
+          "p90": 0.2079207920792079,
+          "min": 0.19496296296296298,
+          "max": 0.2418426103646833
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "cartesia",
+      "leg": "tts",
+      "transport": "http",
+      "model": "sonic-3",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1731,
+          "p90": 2081,
+          "min": 970,
+          "max": 2491
+        },
+        "bytes": {
+          "n": 10,
+          "median": 334366,
+          "p90": 401240,
+          "min": 187244,
+          "max": 481488
+        },
+        "chunks": {
+          "n": 10,
+          "median": 25.5,
+          "p90": 30,
+          "min": 14,
+          "max": 40
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 334366,
+          "p90": 401240,
+          "min": 187244,
+          "max": 481488
+        },
+        "rms": {
+          "n": 10,
+          "median": 2096.9863076773518,
+          "p90": 4074.1996451053205,
+          "min": 874.7849668413056,
+          "max": 4553.883922057173
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 416.5,
+          "p90": 475,
+          "min": 280,
+          "max": 657
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 129.5,
+          "p90": 142,
+          "min": 115,
+          "max": 170
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.24878627634210457,
+          "p90": 0.28865979381443296,
+          "min": 0.22825564632388276,
+          "max": 0.3069679849340866
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "cartesia",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "sonic-3",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3223,
+          "p90": 3525,
+          "min": 2598,
+          "max": 3664
+        },
+        "bytes": {
+          "n": 10,
+          "median": 619694,
+          "p90": 677652,
+          "min": 499320,
+          "max": 704400
+        },
+        "chunks": {
+          "n": 10,
+          "median": 18,
+          "p90": 21,
+          "min": 15,
+          "max": 21
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 619694,
+          "p90": 677652,
+          "min": 499320,
+          "max": 704400
+        },
+        "rms": {
+          "n": 10,
+          "median": 2895.6259819571824,
+          "p90": 3145.047561045124,
+          "min": 2333.877209332683,
+          "max": 3193.3775913572517
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 766,
+          "p90": 900,
+          "min": 622,
+          "max": 939
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 228,
+          "p90": 267,
+          "min": 183,
+          "max": 276
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.2369891625693354,
+          "p90": 0.2733900364520049,
+          "min": 0.2177947598253275,
+          "max": 0.3214652516261554
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "cartesia",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "sonic-3",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1391.5,
+          "p90": 1810,
+          "min": 927,
+          "max": 1948
+        },
+        "bytes": {
+          "n": 10,
+          "median": 267494,
+          "p90": 347744,
+          "min": 178328,
+          "max": 374492
+        },
+        "chunks": {
+          "n": 10,
+          "median": 9,
+          "p90": 11,
+          "min": 6,
+          "max": 12
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 267494,
+          "p90": 347744,
+          "min": 178328,
+          "max": 374492
+        },
+        "rms": {
+          "n": 10,
+          "median": 2700.880752208571,
+          "p90": 3240.7882403611798,
+          "min": 1151.182685460504,
+          "max": 4116.926314351849
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 472.5,
+          "p90": 553,
+          "min": 381,
+          "max": 587
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 268,
+          "p90": 281,
+          "min": 199,
+          "max": 306
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.3358315295815296,
+          "p90": 0.4241379310344828,
+          "min": 0.2844311377245509,
+          "max": 0.43797195253505933
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "cartesia",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "sonic-3",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3177.5,
+          "p90": 3479,
+          "min": 2968,
+          "max": 3664
+        },
+        "bytes": {
+          "n": 10,
+          "median": 610778,
+          "p90": 668736,
+          "min": 570652,
+          "max": 704400
+        },
+        "chunks": {
+          "n": 10,
+          "median": 18.5,
+          "p90": 20,
+          "min": 18,
+          "max": 21
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 610778,
+          "p90": 668736,
+          "min": 570652,
+          "max": 704400
+        },
+        "rms": {
+          "n": 10,
+          "median": 2871.5612539560175,
+          "p90": 3141.7617365911024,
+          "min": 2316.197895048901,
+          "max": 3264.773134018328
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 661,
+          "p90": 695,
+          "min": 599,
+          "max": 701
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 106,
+          "p90": 109,
+          "min": 93,
+          "max": 175
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.20090134719177843,
+          "p90": 0.21435468297392984,
+          "min": 0.18694624926166567,
+          "max": 0.22506738544474394
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "cartesia",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "sonic-3",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1785,
+          "p90": 2830,
+          "min": 1067,
+          "max": 3013
+        },
+        "bytes": {
+          "n": 10,
+          "median": 343284,
+          "p90": 543904,
+          "min": 205080,
+          "max": 579572
+        },
+        "chunks": {
+          "n": 10,
+          "median": 11,
+          "p90": 17,
+          "min": 7,
+          "max": 17
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 343284,
+          "p90": 543904,
+          "min": 205080,
+          "max": 579572
+        },
+        "rms": {
+          "n": 10,
+          "median": 2314.41895849186,
+          "p90": 3209.73901749815,
+          "min": 1141.605765644778,
+          "max": 3969.910463024932
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 482,
+          "p90": 610,
+          "min": 291,
+          "max": 768
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 128,
+          "p90": 141,
+          "min": 104,
+          "max": 142
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.2582636402068895,
+          "p90": 0.2777777777777778,
+          "min": 0.21554770318021202,
+          "max": 0.30879911455451026
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "stt",
+      "transport": "websocket",
+      "model": "scribe_v2_realtime",
+      "phase": "cold",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 182.5,
+          "p90": 250,
+          "min": 154,
+          "max": 385
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "first_partial_ms": {
+          "n": 10,
+          "median": 1869.5,
+          "p90": 1940,
+          "min": 1839,
+          "max": 2120
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 173.5,
+          "p90": 182,
+          "min": 162,
+          "max": 203
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 4,
+          "p90": 4,
+          "min": 3,
+          "max": 4
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 4180,
+          "p90": 4180,
+          "min": 4180,
+          "max": 4180
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 1443,
+          "p90": 1510,
+          "min": 1415,
+          "max": 1645
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 6647,
+          "p90": 6647,
+          "min": 6647,
+          "max": 6647
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "tts",
+      "transport": "http",
+      "model": "eleven_multilingual_v2",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3765,
+          "p90": 3883,
+          "min": 3643,
+          "max": 4097
+        },
+        "bytes": {
+          "n": 10,
+          "median": 726690,
+          "p90": 748984,
+          "min": 704400,
+          "max": 793564
+        },
+        "chunks": {
+          "n": 10,
+          "median": 47.5,
+          "p90": 75,
+          "min": 33,
+          "max": 78
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 726690,
+          "p90": 748984,
+          "min": 704400,
+          "max": 793564
+        },
+        "rms": {
+          "n": 10,
+          "median": 4492.246636154213,
+          "p90": 4734.309765465806,
+          "min": 4215.749532891295,
+          "max": 5274.955499964993
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 822.5,
+          "p90": 830,
+          "min": 799,
+          "max": 835
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 755,
+          "p90": 765,
+          "min": 716,
+          "max": 766
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.21714136356053093,
+          "p90": 0.2247557003257329,
+          "min": 0.20380766414449597,
+          "max": 0.2253637112270107
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "tts",
+      "transport": "http",
+      "model": "eleven_multilingual_v2",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1246.5,
+          "p90": 1336,
+          "min": 970,
+          "max": 1341
+        },
+        "bytes": {
+          "n": 10,
+          "median": 240744,
+          "p90": 258576,
+          "min": 187244,
+          "max": 258576
+        },
+        "chunks": {
+          "n": 10,
+          "median": 17,
+          "p90": 24,
+          "min": 11,
+          "max": 28
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 240744,
+          "p90": 258576,
+          "min": 187244,
+          "max": 258576
+        },
+        "rms": {
+          "n": 10,
+          "median": 5164.091974325474,
+          "p90": 5633.890731556494,
+          "min": 4528.968322196042,
+          "max": 6094.27574580935
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 645,
+          "p90": 661,
+          "min": 596,
+          "max": 774
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 606.5,
+          "p90": 625,
+          "min": 561,
+          "max": 731
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.5303804944140305,
+          "p90": 0.6211878009630819,
+          "min": 0.4802386278896346,
+          "max": 0.6556701030927835
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "tts",
+      "transport": "http",
+      "model": "eleven_multilingual_v2",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3945.5,
+          "p90": 4014,
+          "min": 3507,
+          "max": 4107
+        },
+        "bytes": {
+          "n": 10,
+          "median": 762358,
+          "p90": 775732,
+          "min": 677652,
+          "max": 793564
+        },
+        "chunks": {
+          "n": 10,
+          "median": 47.5,
+          "p90": 58,
+          "min": 30,
+          "max": 75
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 762358,
+          "p90": 775732,
+          "min": 677652,
+          "max": 793564
+        },
+        "rms": {
+          "n": 10,
+          "median": 4354.983280422464,
+          "p90": 4957.287713854533,
+          "min": 3669.2948967499156,
+          "max": 5033.953592685504
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 789.5,
+          "p90": 813,
+          "min": 749,
+          "max": 843
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 727.5,
+          "p90": 763,
+          "min": 692,
+          "max": 766
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.20157335397267778,
+          "p90": 0.21927573424579413,
+          "min": 0.19068228105906312,
+          "max": 0.22636949516648766
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "tts",
+      "transport": "http",
+      "model": "eleven_multilingual_v2",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1270.5,
+          "p90": 1341,
+          "min": 1109,
+          "max": 1341
+        },
+        "bytes": {
+          "n": 10,
+          "median": 245202,
+          "p90": 258576,
+          "min": 213996,
+          "max": 258576
+        },
+        "chunks": {
+          "n": 10,
+          "median": 14,
+          "p90": 25,
+          "min": 10,
+          "max": 32
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 245202,
+          "p90": 258576,
+          "min": 213996,
+          "max": 258576
+        },
+        "rms": {
+          "n": 10,
+          "median": 4511.56047310911,
+          "p90": 5715.896475297101,
+          "min": 1196.8407882070487,
+          "max": 6031.446793638647
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 613,
+          "p90": 635,
+          "min": 570,
+          "max": 635
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 585.5,
+          "p90": 597,
+          "min": 532,
+          "max": 598
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.4827356731174153,
+          "p90": 0.5100334448160535,
+          "min": 0.45041014168530946,
+          "max": 0.5446348061316502
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "eleven_multilingual_v2",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3853,
+          "p90": 3993,
+          "min": 3529,
+          "max": 4271
+        },
+        "bytes": {
+          "n": 10,
+          "median": 740068,
+          "p90": 766816,
+          "min": 677652,
+          "max": 820316
+        },
+        "chunks": {
+          "n": 10,
+          "median": 2,
+          "p90": 2,
+          "min": 2,
+          "max": 2
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 740068,
+          "p90": 766816,
+          "min": 677652,
+          "max": 820316
+        },
+        "rms": {
+          "n": 10,
+          "median": 4553.618229465545,
+          "p90": 4888.69783600465,
+          "min": 3874.1542048634424,
+          "max": 5288.302349306896
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 526.5,
+          "p90": 571,
+          "min": 463,
+          "max": 592
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 511,
+          "p90": 555,
+          "min": 448,
+          "max": 576
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.13936149305528606,
+          "p90": 0.14793667272255384,
+          "min": 0.12104893467571998,
+          "max": 0.14825945404457802
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "eleven_multilingual_v2",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1229.5,
+          "p90": 1392,
+          "min": 1113,
+          "max": 1438
+        },
+        "bytes": {
+          "n": 10,
+          "median": 236286,
+          "p90": 267492,
+          "min": 213996,
+          "max": 276412
+        },
+        "chunks": {
+          "n": 10,
+          "median": 2,
+          "p90": 2,
+          "min": 2,
+          "max": 2
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 236286,
+          "p90": 267492,
+          "min": 213996,
+          "max": 276412
+        },
+        "rms": {
+          "n": 10,
+          "median": 4196.847761858611,
+          "p90": 5568.236081289402,
+          "min": 3417.1583518532043,
+          "max": 6281.311269402784
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 348,
+          "p90": 384,
+          "min": 324,
+          "max": 393
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 340,
+          "p90": 374,
+          "min": 314,
+          "max": 383
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.2896163494465238,
+          "p90": 0.3136472466081405,
+          "min": 0.22948539638386647,
+          "max": 0.33243486073674755
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "eleven_multilingual_v2",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3783.5,
+          "p90": 3993,
+          "min": 3529,
+          "max": 4086
+        },
+        "bytes": {
+          "n": 10,
+          "median": 726690,
+          "p90": 766816,
+          "min": 677652,
+          "max": 784648
+        },
+        "chunks": {
+          "n": 10,
+          "median": 2,
+          "p90": 2,
+          "min": 2,
+          "max": 2
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 726690,
+          "p90": 766816,
+          "min": 677652,
+          "max": 784648
+        },
+        "rms": {
+          "n": 10,
+          "median": 4603.997927064236,
+          "p90": 5048.197871815701,
+          "min": 4199.443160803809,
+          "max": 5277.720426926579
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 520,
+          "p90": 529,
+          "min": 474,
+          "max": 586
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 504,
+          "p90": 514,
+          "min": 459,
+          "max": 570
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.13406143443333526,
+          "p90": 0.14224992915840182,
+          "min": 0.1254434870755195,
+          "max": 0.15980365421325335
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "elevenlabs",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "eleven_multilingual_v2",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1299,
+          "p90": 1392,
+          "min": 1113,
+          "max": 1392
+        },
+        "bytes": {
+          "n": 10,
+          "median": 249660,
+          "p90": 267492,
+          "min": 213996,
+          "max": 267492
+        },
+        "chunks": {
+          "n": 10,
+          "median": 2,
+          "p90": 2,
+          "min": 2,
+          "max": 2
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 249660,
+          "p90": 267492,
+          "min": 213996,
+          "max": 267492
+        },
+        "rms": {
+          "n": 10,
+          "median": 5091.170102705213,
+          "p90": 5576.8336770931255,
+          "min": 2511.0299534713904,
+          "max": 5714.003745928906
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 373.5,
+          "p90": 391,
+          "min": 310,
+          "max": 397
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 363,
+          "p90": 380,
+          "min": 299,
+          "max": 386
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.28116870404289773,
+          "p90": 0.33448275862068966,
+          "min": 0.23864511162432642,
+          "max": 0.35130278526504943
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "stt",
+      "transport": "websocket",
+      "model": "transcribe-1",
+      "phase": "cold",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 461,
+          "p90": 542,
+          "min": 429,
+          "max": 626
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 255.5,
+          "p90": 264,
+          "min": 235,
+          "max": 306
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 6060,
+          "p90": 6060,
+          "min": 6060,
+          "max": 6060
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 1580.5,
+          "p90": 1662,
+          "min": 1550,
+          "max": 1746
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 8733,
+          "p90": 8733,
+          "min": 8733,
+          "max": 8733
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "tts",
+      "transport": "http",
+      "model": "drama-3",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 4067,
+          "p90": 5226,
+          "min": 3468,
+          "max": 5412
+        },
+        "bytes": {
+          "n": 10,
+          "median": 784084,
+          "p90": 1006992,
+          "min": 668168,
+          "max": 1042656
+        },
+        "chunks": {
+          "n": 10,
+          "median": 30,
+          "p90": 35,
+          "min": 23,
+          "max": 37
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 784084,
+          "p90": 1006992,
+          "min": 668168,
+          "max": 1042656
+        },
+        "rms": {
+          "n": 10,
+          "median": 3718.809187732646,
+          "p90": 7496.398534827563,
+          "min": 1840.2615889917217,
+          "max": 9534.766675565279
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 20
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1007.5,
+          "p90": 1186,
+          "min": 864,
+          "max": 1211
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 319,
+          "p90": 361,
+          "min": 301,
+          "max": 368
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.24138959794172093,
+          "p90": 0.26365400609925144,
+          "min": 0.21269903676036958,
+          "max": 0.26614763552479814
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "tts",
+      "transport": "http",
+      "model": "drama-3",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1595,
+          "p90": 1803,
+          "min": 1062,
+          "max": 1896
+        },
+        "bytes": {
+          "n": 10,
+          "median": 307052,
+          "p90": 347176,
+          "min": 204512,
+          "max": 365008
+        },
+        "chunks": {
+          "n": 10,
+          "median": 12,
+          "p90": 13,
+          "min": 9,
+          "max": 14
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 307052,
+          "p90": 347176,
+          "min": 204512,
+          "max": 365008
+        },
+        "rms": {
+          "n": 10,
+          "median": 3973.3497417679055,
+          "p90": 4678.986264248128,
+          "min": 736.2325300589085,
+          "max": 7483.54123471432
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 558,
+          "p90": 871,
+          "min": 478,
+          "max": 878
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 334.5,
+          "p90": 352,
+          "min": 291,
+          "max": 360
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.40150725065062254,
+          "p90": 0.5508905852417303,
+          "min": 0.3096415327564895,
+          "max": 0.5940460081190798
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "tts",
+      "transport": "http",
+      "model": "drama-3",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 4254.5,
+          "p90": 4577,
+          "min": 3793,
+          "max": 4808
+        },
+        "bytes": {
+          "n": 10,
+          "median": 819748,
+          "p90": 882160,
+          "min": 730584,
+          "max": 926744
+        },
+        "chunks": {
+          "n": 10,
+          "median": 29,
+          "p90": 33,
+          "min": 25,
+          "max": 34
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 819748,
+          "p90": 882160,
+          "min": 730584,
+          "max": 926744
+        },
+        "rms": {
+          "n": 10,
+          "median": 3778.1642712033827,
+          "p90": 5912.667463488374,
+          "min": 2148.4218565804476,
+          "max": 6066.431125444351
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 981.5,
+          "p90": 1129,
+          "min": 886,
+          "max": 1153
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 291.5,
+          "p90": 317,
+          "min": 264,
+          "max": 369
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.23701000611088546,
+          "p90": 0.25380228136882127,
+          "min": 0.19425956738768718,
+          "max": 0.2680771913508486
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "tts",
+      "transport": "http",
+      "model": "drama-3",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1502.5,
+          "p90": 1757,
+          "min": 1202,
+          "max": 1895
+        },
+        "bytes": {
+          "n": 10,
+          "median": 289220,
+          "p90": 338256,
+          "min": 231264,
+          "max": 365008
+        },
+        "chunks": {
+          "n": 10,
+          "median": 11,
+          "p90": 13,
+          "min": 9,
+          "max": 14
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 289220,
+          "p90": 338256,
+          "min": 231264,
+          "max": 365008
+        },
+        "rms": {
+          "n": 10,
+          "median": 3230.601146353604,
+          "p90": 5483.9449180684205,
+          "min": 1979.8338309087787,
+          "max": 5500.47622693389
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 557,
+          "p90": 812,
+          "min": 429,
+          "max": 820
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 290.5,
+          "p90": 304,
+          "min": 281,
+          "max": 309
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.3497714904096801,
+          "p90": 0.5666434054431263,
+          "min": 0.30288461538461536,
+          "max": 0.5726256983240223
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "drama-3",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 4362,
+          "p90": 4640,
+          "min": 3897,
+          "max": 4919
+        },
+        "bytes": {
+          "n": 10,
+          "median": 837584,
+          "p90": 891080,
+          "min": 748416,
+          "max": 944576
+        },
+        "chunks": {
+          "n": 10,
+          "median": 6,
+          "p90": 6,
+          "min": 6,
+          "max": 6
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 837584,
+          "p90": 891080,
+          "min": 748416,
+          "max": 944576
+        },
+        "rms": {
+          "n": 10,
+          "median": 4436.443861018282,
+          "p90": 5775.642872744787,
+          "min": 2362.2749931647313,
+          "max": 6061.339696251102
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1588.5,
+          "p90": 1654,
+          "min": 1491,
+          "max": 1678
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1023,
+          "p90": 1065,
+          "min": 985,
+          "max": 1085
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.37063820543458004,
+          "p90": 0.38986262434864993,
+          "min": 0.3329945110794877,
+          "max": 0.3915832691814216
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "drama-3",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1436,
+          "p90": 1808,
+          "min": 1065,
+          "max": 1808
+        },
+        "bytes": {
+          "n": 10,
+          "median": 275844,
+          "p90": 347176,
+          "min": 204512,
+          "max": 347176
+        },
+        "chunks": {
+          "n": 10,
+          "median": 4.5,
+          "p90": 5,
+          "min": 4,
+          "max": 5
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 275844,
+          "p90": 347176,
+          "min": 204512,
+          "max": 347176
+        },
+        "rms": {
+          "n": 10,
+          "median": 4345.234370167319,
+          "p90": 6017.151995491594,
+          "min": 1707.4909279269298,
+          "max": 7088.904386755907
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1213,
+          "p90": 1325,
+          "min": 1121,
+          "max": 1347
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1033,
+          "p90": 1075,
+          "min": 974,
+          "max": 1084
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.864967502866854,
+          "p90": 0.9626245847176079,
+          "min": 0.7190265486725663,
+          "max": 1.0525821596244131
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "drama-3",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 4176,
+          "p90": 4408,
+          "min": 3758,
+          "max": 4594
+        },
+        "bytes": {
+          "n": 10,
+          "median": 801912,
+          "p90": 846496,
+          "min": 721664,
+          "max": 882160
+        },
+        "chunks": {
+          "n": 10,
+          "median": 6,
+          "p90": 6,
+          "min": 6,
+          "max": 6
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 801912,
+          "p90": 846496,
+          "min": 721664,
+          "max": 882160
+        },
+        "rms": {
+          "n": 10,
+          "median": 4208.416754614834,
+          "p90": 5790.649438851929,
+          "min": 2576.563404786904,
+          "max": 6026.462351001673
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1546,
+          "p90": 1645,
+          "min": 1434,
+          "max": 1802
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1023.5,
+          "p90": 1073,
+          "min": 971,
+          "max": 1139
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.3760186440272394,
+          "p90": 0.38850452368281,
+          "min": 0.34698275862068967,
+          "max": 0.4088021778584392
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "fishaudio",
+      "leg": "tts",
+      "transport": "websocket",
+      "model": "drama-3",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 1436,
+          "p90": 1529,
+          "min": 1111,
+          "max": 2040
+        },
+        "bytes": {
+          "n": 10,
+          "median": 275848,
+          "p90": 293680,
+          "min": 213432,
+          "max": 391760
+        },
+        "chunks": {
+          "n": 10,
+          "median": 4,
+          "p90": 5,
+          "min": 4,
+          "max": 5
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 275848,
+          "p90": 293680,
+          "min": 213432,
+          "max": 391760
+        },
+        "rms": {
+          "n": 10,
+          "median": 2627.830228292323,
+          "p90": 4774.92775170973,
+          "min": 1038.6861631832417,
+          "max": 5628.013436898926
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1229.5,
+          "p90": 1315,
+          "min": 1155,
+          "max": 1424
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1021,
+          "p90": 1124,
+          "min": 970,
+          "max": 1126
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.8713207150157312,
+          "p90": 1.0522052205220522,
+          "min": 0.6980392156862745,
+          "max": 1.1070811744386875
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "groq",
+      "leg": "stt",
+      "transport": "http",
+      "model": "whisper-large-v3-turbo",
+      "phase": "cold",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 239,
+          "p90": 292,
+          "min": 195,
+          "max": 308
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 4340,
+          "p90": 4340,
+          "min": 4340,
+          "max": 4340
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 1359,
+          "p90": 1412,
+          "min": 1312,
+          "max": 1428
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 7039,
+          "p90": 7039,
+          "min": 7039,
+          "max": 7039
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "groq",
+      "leg": "stt",
+      "transport": "http",
+      "model": "whisper-large-v3-turbo",
+      "phase": "warm",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 231,
+          "p90": 246,
+          "min": 168,
+          "max": 256
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 4340,
+          "p90": 4340,
+          "min": 4340,
+          "max": 4340
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 1351.5,
+          "p90": 1366,
+          "min": 1288,
+          "max": 1375
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 7039,
+          "p90": 7039,
+          "min": 7039,
+          "max": 7039
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "groq",
+      "leg": "tts",
+      "transport": "http",
+      "model": "canopylabs/orpheus-v1-english",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3506,
+          "p90": 3506,
+          "min": 3505,
+          "max": 3506
+        },
+        "bytes": {
+          "n": 10,
+          "median": 675808,
+          "p90": 675808,
+          "min": 675808,
+          "max": 675808
+        },
+        "chunks": {
+          "n": 10,
+          "median": 30,
+          "p90": 31,
+          "min": 30,
+          "max": 31
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 675808,
+          "p90": 675808,
+          "min": 675808,
+          "max": 675808
+        },
+        "rms": {
+          "n": 10,
+          "median": 3251.968019373701,
+          "p90": 3251.968019373701,
+          "min": 3251.968019373701,
+          "max": 3251.968019373701
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 681,
+          "p90": 688,
+          "min": 642,
+          "max": 698
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 229.5,
+          "p90": 239,
+          "min": 212,
+          "max": 251
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.1942384483742156,
+          "p90": 0.19623502567027953,
+          "min": 0.18311466058185966,
+          "max": 0.1990872789503708
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "groq",
+      "leg": "tts",
+      "transport": "http",
+      "model": "canopylabs/orpheus-v1-english",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 2152,
+          "p90": 2152,
+          "min": 2152,
+          "max": 2152
+        },
+        "bytes": {
+          "n": 10,
+          "median": 414688,
+          "p90": 414688,
+          "min": 414688,
+          "max": 414688
+        },
+        "chunks": {
+          "n": 10,
+          "median": 19,
+          "p90": 20,
+          "min": 18,
+          "max": 20
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 414688,
+          "p90": 414688,
+          "min": 414688,
+          "max": 414688
+        },
+        "rms": {
+          "n": 10,
+          "median": 2656.5465025901635,
+          "p90": 2656.5465025901635,
+          "min": 2656.5465025901635,
+          "max": 2656.5465025901635
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 472.5,
+          "p90": 488,
+          "min": 458,
+          "max": 490
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 219,
+          "p90": 238,
+          "min": 209,
+          "max": 248
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.2195631970260223,
+          "p90": 0.22676579925650558,
+          "min": 0.2128252788104089,
+          "max": 0.22769516728624536
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "groq",
+      "leg": "tts",
+      "transport": "http",
+      "model": "canopylabs/orpheus-v1-english",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 3506,
+          "p90": 3506,
+          "min": 3506,
+          "max": 3506
+        },
+        "bytes": {
+          "n": 10,
+          "median": 675808,
+          "p90": 675808,
+          "min": 675808,
+          "max": 675808
+        },
+        "chunks": {
+          "n": 10,
+          "median": 30,
+          "p90": 31,
+          "min": 30,
+          "max": 31
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 675808,
+          "p90": 675808,
+          "min": 675808,
+          "max": 675808
+        },
+        "rms": {
+          "n": 10,
+          "median": 3251.968019373701,
+          "p90": 3251.968019373701,
+          "min": 3251.968019373701,
+          "max": 3251.968019373701
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 648.5,
+          "p90": 662,
+          "min": 627,
+          "max": 698
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 198,
+          "p90": 213,
+          "min": 186,
+          "max": 229
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.184968625213919,
+          "p90": 0.18881916714204222,
+          "min": 0.17883628066172277,
+          "max": 0.1990872789503708
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "groq",
+      "leg": "tts",
+      "transport": "http",
+      "model": "canopylabs/orpheus-v1-english",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 2152,
+          "p90": 2152,
+          "min": 2151,
+          "max": 2152
+        },
+        "bytes": {
+          "n": 10,
+          "median": 414688,
+          "p90": 414688,
+          "min": 414688,
+          "max": 414688
+        },
+        "chunks": {
+          "n": 10,
+          "median": 19,
+          "p90": 20,
+          "min": 18,
+          "max": 20
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 414688,
+          "p90": 414688,
+          "min": 414688,
+          "max": 414688
+        },
+        "rms": {
+          "n": 10,
+          "median": 2656.5465025901635,
+          "p90": 2656.5465025901635,
+          "min": 2656.5465025901635,
+          "max": 2656.5465025901635
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 438,
+          "p90": 455,
+          "min": 430,
+          "max": 461
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 194,
+          "p90": 205,
+          "min": 182,
+          "max": 209
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.20357880142200654,
+          "p90": 0.21143122676579926,
+          "min": 0.19981412639405205,
+          "max": 0.2142193308550186
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "stt",
+      "transport": "http",
+      "model": "whisper-1",
+      "phase": "cold",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "sdk"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 852,
+          "p90": 1510,
+          "min": 652,
+          "max": 1752
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 3900,
+          "p90": 3900,
+          "min": 3900,
+          "max": 3900
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 1912,
+          "p90": 2570,
+          "min": 1712,
+          "max": 2813
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 6625,
+          "p90": 6625,
+          "min": 6625,
+          "max": 6625
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "stt",
+      "transport": "http",
+      "model": "whisper-1",
+      "phase": "warm",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "sdk"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 916,
+          "p90": 1372,
+          "min": 535,
+          "max": 1446
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 3900,
+          "p90": 3900,
+          "min": 3900,
+          "max": 3900
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 1976,
+          "p90": 2433,
+          "min": 1594,
+          "max": 2507
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 6625,
+          "p90": 6625,
+          "min": 6625,
+          "max": 6625
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "stt",
+      "transport": "websocket",
+      "model": "gpt-live-transcribe",
+      "phase": "cold",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 609.5,
+          "p90": 695,
+          "min": 449,
+          "max": 712
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "first_partial_ms": {
+          "n": 10,
+          "median": 1100,
+          "p90": 1101,
+          "min": 1020,
+          "max": 1139
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 1095,
+          "p90": 1279,
+          "min": 990,
+          "max": 1965
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 10,
+          "p90": 10,
+          "min": 10,
+          "max": 10
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 3900,
+          "p90": 3900,
+          "min": 3900,
+          "max": 3900
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 1670,
+          "p90": 1756,
+          "min": 1510,
+          "max": 1771
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 6625,
+          "p90": 6625,
+          "min": 6625,
+          "max": 6625
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "tts",
+      "transport": "http",
+      "model": "tts-1",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 4118,
+          "p90": 4655,
+          "min": 3261,
+          "max": 4679
+        },
+        "bytes": {
+          "n": 10,
+          "median": 794400,
+          "p90": 897600,
+          "min": 628800,
+          "max": 902400
+        },
+        "chunks": {
+          "n": 10,
+          "median": 35.5,
+          "p90": 41,
+          "min": 27,
+          "max": 43
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 794400,
+          "p90": 897600,
+          "min": 628800,
+          "max": 902400
+        },
+        "rms": {
+          "n": 10,
+          "median": 2135.846482577509,
+          "p90": 2161.078370132994,
+          "min": 2102.513992972975,
+          "max": 2220.7172947151726
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 51.5,
+          "p90": 130,
+          "min": 0,
+          "max": 2896
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1815,
+          "p90": 2699,
+          "min": 1249,
+          "max": 5018
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1184.5,
+          "p90": 1614,
+          "min": 885,
+          "max": 1686
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.4489396716126899,
+          "p90": 0.6865937420503688,
+          "min": 0.2960417160464565,
+          "max": 1.0724513784996794
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "tts",
+      "transport": "http",
+      "model": "tts-1",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 915,
+          "p90": 946,
+          "min": 821,
+          "max": 946
+        },
+        "bytes": {
+          "n": 10,
+          "median": 176400,
+          "p90": 182400,
+          "min": 158400,
+          "max": 182400
+        },
+        "chunks": {
+          "n": 10,
+          "median": 9.5,
+          "p90": 11,
+          "min": 8,
+          "max": 11
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 176400,
+          "p90": 182400,
+          "min": 158400,
+          "max": 182400
+        },
+        "rms": {
+          "n": 10,
+          "median": 3338.840499618247,
+          "p90": 3378.0940461116534,
+          "min": 3299.2533670547236,
+          "max": 3475.9290558551943
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 20,
+          "p90": 45,
+          "min": 0,
+          "max": 132
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1340.5,
+          "p90": 1766,
+          "min": 1076,
+          "max": 2491
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1166,
+          "p90": 1651,
+          "min": 930,
+          "max": 2108
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 1.5301652576950753,
+          "p90": 1.8907922912205568,
+          "min": 1.1744186046511629,
+          "max": 2.7046688382193267
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "tts",
+      "transport": "http",
+      "model": "tts-1",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 4063,
+          "p90": 4515,
+          "min": 3595,
+          "max": 4679
+        },
+        "bytes": {
+          "n": 10,
+          "median": 783600,
+          "p90": 871200,
+          "min": 693600,
+          "max": 902400
+        },
+        "chunks": {
+          "n": 10,
+          "median": 36,
+          "p90": 39,
+          "min": 31,
+          "max": 48
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 783600,
+          "p90": 871200,
+          "min": 693600,
+          "max": 902400
+        },
+        "rms": {
+          "n": 10,
+          "median": 2137.2791141763373,
+          "p90": 2170.8751477632427,
+          "min": 2102.6626408166367,
+          "max": 2187.145490001713
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 5,
+          "p90": 47,
+          "min": 0,
+          "max": 69
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1428,
+          "p90": 1814,
+          "min": 1074,
+          "max": 2307
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1004,
+          "p90": 1250,
+          "min": 902,
+          "max": 1375
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.36629880568191514,
+          "p90": 0.4559317653140346,
+          "min": 0.2812254516889238,
+          "max": 0.5741662518666003
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "tts",
+      "transport": "http",
+      "model": "tts-1",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 933,
+          "p90": 971,
+          "min": 883,
+          "max": 971
+        },
+        "bytes": {
+          "n": 10,
+          "median": 180000,
+          "p90": 187200,
+          "min": 170400,
+          "max": 187200
+        },
+        "chunks": {
+          "n": 10,
+          "median": 10,
+          "p90": 11,
+          "min": 9,
+          "max": 11
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 180000,
+          "p90": 187200,
+          "min": 170400,
+          "max": 187200
+        },
+        "rms": {
+          "n": 10,
+          "median": 3320.0118878970306,
+          "p90": 3390.156393680255,
+          "min": 3289.762218727857,
+          "max": 3402.9509986621574
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 52,
+          "min": 0,
+          "max": 54
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1018,
+          "p90": 1445,
+          "min": 924,
+          "max": 1701
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 824.5,
+          "p90": 1263,
+          "min": 742,
+          "max": 1517
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 1.1060951598509852,
+          "p90": 1.5487674169346195,
+          "min": 1.0176211453744493,
+          "max": 1.7518022657054584
+        }
+      },
+      "inconclusive": false
+    }
+  ]
+}

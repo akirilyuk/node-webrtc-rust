@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-10-20
+
 ### Added
 
 - **speech:** `TtsProvider::playout_prebuffer_ms()` (default 0): audio the agent buffers before it starts playing a reply, for vendors that stream in bursts with idle gaps. Playback starts once that much audio is buffered or the synthesis ended.

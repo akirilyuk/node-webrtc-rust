@@ -1,0 +1,588 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T05:00:50.841Z",
+  "region": "mac-prebuffer",
+  "runs": 10,
+  "transport": "all",
+  "vendors_run": [
+    "openai"
+  ],
+  "skipped": [],
+  "failed": [],
+  "starved": [],
+  "host_suspended": [],
+  "per_vendor_load": {
+    "openai": {
+      "samples": 262,
+      "busy_median": 16.7,
+      "busy_p90": 20.3,
+      "busy_max": 62,
+      "load1_max": 5.3,
+      "starved": false
+    }
+  },
+  "request_interval_ms": {},
+  "inconclusive_vendors": [],
+  "groups": [
+    {
+      "vendor": "openai",
+      "leg": "stt",
+      "transport": "http",
+      "model": "whisper-1",
+      "phase": "cold",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "sdk"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 1844.5,
+          "p90": 2226,
+          "min": 876,
+          "max": 2800
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 3980,
+          "p90": 3980,
+          "min": 3980,
+          "max": 3980
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 2825.5,
+          "p90": 3208,
+          "min": 1858,
+          "max": 3782
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 6712,
+          "p90": 6712,
+          "min": 6712,
+          "max": 6712
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "stt",
+      "transport": "http",
+      "model": "whisper-1",
+      "phase": "warm",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "sdk"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 1312.5,
+          "p90": 2520,
+          "min": 791,
+          "max": 2617
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 3980,
+          "p90": 3980,
+          "min": 3980,
+          "max": 3980
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 2292.5,
+          "p90": 3499,
+          "min": 1771,
+          "max": 3597
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 6712,
+          "p90": 6712,
+          "min": 6712,
+          "max": 6712
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "stt",
+      "transport": "websocket",
+      "model": "gpt-live-transcribe",
+      "phase": "cold",
+      "text": "phrase",
+      "n": 10,
+      "http_versions": [
+        "ws"
+      ],
+      "metrics": {
+        "finalize_to_final_ms": {
+          "n": 10,
+          "median": 637.5,
+          "p90": 793,
+          "min": 581,
+          "max": 833
+        },
+        "finals": {
+          "n": 10,
+          "median": 1,
+          "p90": 1,
+          "min": 1,
+          "max": 1
+        },
+        "first_partial_ms": {
+          "n": 10,
+          "median": 1280,
+          "p90": 1360,
+          "min": 1259,
+          "max": 1360
+        },
+        "matched_words": {
+          "n": 10,
+          "median": 9,
+          "p90": 9,
+          "min": 9,
+          "max": 9
+        },
+        "open_ms": {
+          "n": 10,
+          "median": 1646.5,
+          "p90": 2093,
+          "min": 1584,
+          "max": 2247
+        },
+        "partials_before_finalize": {
+          "n": 10,
+          "median": 10,
+          "p90": 10,
+          "min": 10,
+          "max": 10
+        },
+        "pushed_ms": {
+          "n": 10,
+          "median": 3980,
+          "p90": 3980,
+          "min": 3980,
+          "max": 3980
+        },
+        "speech_end_to_final_ms": {
+          "n": 10,
+          "median": 1618,
+          "p90": 1772,
+          "min": 1561,
+          "max": 1814
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 6712,
+          "p90": 6712,
+          "min": 6712,
+          "max": 6712
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "tts",
+      "transport": "http",
+      "model": "tts-1",
+      "phase": "cold",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 4237.5,
+          "p90": 4653,
+          "min": 3360,
+          "max": 4703
+        },
+        "bytes": {
+          "n": 10,
+          "median": 817200,
+          "p90": 897600,
+          "min": 648000,
+          "max": 907200
+        },
+        "chunks": {
+          "n": 10,
+          "median": 35,
+          "p90": 38,
+          "min": 29,
+          "max": 39
+        },
+        "playout_start_ms": {
+          "n": 10,
+          "median": 1503.5,
+          "p90": 2451,
+          "min": 1143,
+          "max": 2464
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 817200,
+          "p90": 897600,
+          "min": 648000,
+          "max": 907200
+        },
+        "rms": {
+          "n": 10,
+          "median": 2132.3379458805734,
+          "p90": 2154.423782619474,
+          "min": 2102.652385001034,
+          "max": 2204.8275211257637
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 2172.5,
+          "p90": 2943,
+          "min": 1659,
+          "max": 3026
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1252.5,
+          "p90": 2077,
+          "min": 919,
+          "max": 2214
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.4927713282937365,
+          "p90": 0.7047042384722869,
+          "min": 0.36870082925792047,
+          "max": 0.7211467777505514
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "tts",
+      "transport": "http",
+      "model": "tts-1",
+      "phase": "cold",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 933,
+          "p90": 958,
+          "min": 846,
+          "max": 958
+        },
+        "bytes": {
+          "n": 10,
+          "median": 180000,
+          "p90": 184800,
+          "min": 163200,
+          "max": 184800
+        },
+        "chunks": {
+          "n": 10,
+          "median": 10,
+          "p90": 11,
+          "min": 9,
+          "max": 12
+        },
+        "playout_start_ms": {
+          "n": 10,
+          "median": 1271,
+          "p90": 2586,
+          "min": 879,
+          "max": 2617
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 180000,
+          "p90": 184800,
+          "min": 163200,
+          "max": 184800
+        },
+        "rms": {
+          "n": 10,
+          "median": 3330.7179857026076,
+          "p90": 3416.543101520544,
+          "min": 3273.834097905094,
+          "max": 3442.886691746605
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1497,
+          "p90": 2610,
+          "min": 890,
+          "max": 2744
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1022,
+          "p90": 2246,
+          "min": 870,
+          "max": 2290
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 1.58381777416778,
+          "p90": 2.797427652733119,
+          "min": 1.0520094562647755,
+          "max": 2.9006342494714588
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "tts",
+      "transport": "http",
+      "model": "tts-1",
+      "phase": "warm",
+      "text": "sentence",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 4138.5,
+          "p90": 4542,
+          "min": 3807,
+          "max": 4641
+        },
+        "bytes": {
+          "n": 10,
+          "median": 798000,
+          "p90": 876000,
+          "min": 734400,
+          "max": 895200
+        },
+        "chunks": {
+          "n": 10,
+          "median": 37,
+          "p90": 39,
+          "min": 30,
+          "max": 40
+        },
+        "playout_start_ms": {
+          "n": 10,
+          "median": 1838.5,
+          "p90": 2162,
+          "min": 930,
+          "max": 2311
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 798000,
+          "p90": 876000,
+          "min": 734400,
+          "max": 895200
+        },
+        "rms": {
+          "n": 10,
+          "median": 2135.8775429309826,
+          "p90": 2160.265098984954,
+          "min": 2101.9791646576923,
+          "max": 2163.734057044278
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 2234,
+          "p90": 2573,
+          "min": 1393,
+          "max": 2851
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1587,
+          "p90": 1835,
+          "min": 904,
+          "max": 1920
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 0.582863951605886,
+          "p90": 0.6360871768879879,
+          "min": 0.3066930867459269,
+          "max": 0.6547679755226925
+        }
+      },
+      "inconclusive": false
+    },
+    {
+      "vendor": "openai",
+      "leg": "tts",
+      "transport": "http",
+      "model": "tts-1",
+      "phase": "warm",
+      "text": "short",
+      "n": 10,
+      "http_versions": [
+        "h2"
+      ],
+      "metrics": {
+        "audio_ms": {
+          "n": 10,
+          "median": 933.5,
+          "p90": 958,
+          "min": 883,
+          "max": 971
+        },
+        "bytes": {
+          "n": 10,
+          "median": 180000,
+          "p90": 184800,
+          "min": 170400,
+          "max": 187200
+        },
+        "chunks": {
+          "n": 10,
+          "median": 10,
+          "p90": 11,
+          "min": 9,
+          "max": 11
+        },
+        "playout_start_ms": {
+          "n": 10,
+          "median": 1292.5,
+          "p90": 2128,
+          "min": 1058,
+          "max": 2151
+        },
+        "returned_bytes": {
+          "n": 10,
+          "median": 180000,
+          "p90": 184800,
+          "min": 170400,
+          "max": 187200
+        },
+        "rms": {
+          "n": 10,
+          "median": 3320.066529207236,
+          "p90": 3367.2108192385554,
+          "min": 3283.345213550679,
+          "max": 3404.4988016548755
+        },
+        "stall_ms": {
+          "n": 10,
+          "median": 0,
+          "p90": 0,
+          "min": 0,
+          "max": 0
+        },
+        "total_ms": {
+          "n": 10,
+          "median": 1446.5,
+          "p90": 2181,
+          "min": 1185,
+          "max": 2250
+        },
+        "ttfa_ms": {
+          "n": 10,
+          "median": 1059,
+          "p90": 1774,
+          "min": 817,
+          "max": 1878
+        },
+        "real_time_factor": {
+          "n": 10,
+          "median": 1.5536743360395993,
+          "p90": 2.2844733984799133,
+          "min": 1.2526427061310783,
+          "max": 2.44299674267101
+        }
+      },
+      "inconclusive": false
+    }
+  ]
+}

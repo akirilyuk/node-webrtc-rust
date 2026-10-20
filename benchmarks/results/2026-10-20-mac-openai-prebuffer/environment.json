@@ -1,0 +1,30 @@
+{
+  "nwr_version": "0.12.1",
+  "git_sha": "ad5314f2abf6ab2fc22cff8825f1c83e88aeb822",
+  "git_sha_source": "git",
+  "git_dirty": false,
+  "os": {
+    "platform": "darwin",
+    "release": "24.6.0",
+    "arch": "arm64"
+  },
+  "cpu_model": "Apple M4 Pro",
+  "cpu_cores": 14,
+  "memory_gb": 48,
+  "node_version": "v26.4.0",
+  "rustc_version": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "region": "mac-prebuffer",
+  "started_at": "2026-10-20T04:56:28.129Z",
+  "finished_at": "2026-10-20T05:00:50.841Z",
+  "endpoints": [
+    {
+      "vendor": "openai",
+      "host": "api.openai.com",
+      "dns_ms": 1,
+      "tcp_ms": 17.9,
+      "tls_ms": 37.1,
+      "alpn": "h2",
+      "address_family": "IPv6"
+    }
+  ]
+}

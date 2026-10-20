@@ -31,11 +31,20 @@ on:
         description: Comma list of rust,node,sherpa to run (path-based selection on PRs); empty = all
         type: string
         default: ''
+      runner:
+        description: runs-on override; empty = vars.NWR_RUNNER_LARGE or nwr-large
+        type: string
+        default: ''
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   test:
     name: Test
-    runs-on: self-hosted
+    runs-on: ${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:test
       credentials:
@@ -46,7 +55,18 @@ jobs:
       CI: 'true'
       CMAKE_POLICY_VERSION_MINIMUM: '3.5'
       OPUS_STATIC: '1'
+      # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: '*'
     steps:
+      # Migration measurement: CPUs, cgroup limits and CPU model of the runner this job got.
+      - name: Runner facts
+        run: |
+          echo "runner=${RUNNER_NAME:-unknown} nproc=$(nproc)"
+          echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+          grep -m1 'model name' /proc/cpuinfo || true
+
       # workflow_call coerces booleans; normalize once in bash for reliable step if: gates.
       - name: Resolve integration test gates
         id: gate
@@ -117,6 +137,10 @@ jobs:
           TS_DIST_CACHE_HIT: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
           CI_TEST_SUITES: ${{ inputs.test_suites }}
         run: bash "${{ inputs.test_script }}"
+
+      - name: Runner facts (end)
+        if: always()
+        run: echo "memory.peak=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
 
       # Native DTLS/ICE trace written by scripts/ci/run-pr-integration.sh. The script deletes the
       # directory when the helpers integration step passes, so files exist only after that step failed.

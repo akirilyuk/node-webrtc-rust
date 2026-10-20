@@ -43,16 +43,21 @@ PR and main build workflows use GitHub `concurrency` with `cancel-in-progress: t
 
 ## Runners
 
-| Platform               | `runs-on`                                  | Workflows                                                                                          |
-| ---------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| Linux x64 (gnu + musl) | `self-hosted` + `ci-build` container       | Linux x64 release matrix, integration tests (`ci-test` container), CI image build, release publish |
-| Linux arm64 (gnu)      | `ubuntu-24.04-arm` (GitHub-hosted, native) | Linux release matrix only                                                                          |
-| macOS                  | `macos-latest`                             | Release host matrix (darwin x64 + arm64)                                                           |
-| Windows                | `windows-latest`                           | Release host matrix (x64)                                                                          |
+| Platform               | `runs-on`                                  | Workflows                                                                                                         |
+| ---------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| Linux x64 (gnu + musl) | `self-hosted` + `ci-build` container       | Linux x64 release matrix, main/release integration tests (`runner: self-hosted`), CI image build, release publish |
+| Linux arm64 (gnu)      | `ubuntu-24.04-arm` (GitHub-hosted, native) | Linux release matrix only                                                                                         |
+| macOS                  | `macos-latest`                             | Release host matrix (darwin x64 + arm64)                                                                          |
+| Windows                | `windows-latest`                           | Release host matrix (x64)                                                                                         |
 
 **Linux gnu x64** builds natively on the self-hosted runner without `napi --zig` so Sherpa/ONNX static objects link correctly (`__cpu_features2`). **Linux x64 musl** builds natively in **`ghcr.io/.../ci-build-alpine:latest`** with **musl Sherpa shared libs** (`build-sherpa-onnx-musl-libs.sh` + Alpine `onnxruntime-dev`); `vendor-sherpa-onnx` selects `sherpa-onnx/shared` via `target_env = "musl"` — the default `sherpa-onnx-sys` glibc static prebuilts fail on Alpine (`__strdup: symbol not found`). CI sets `SHERPA_ONNX_LIB_DIR=/opt/sherpa-musl/lib` **only on the musl job** (gnu/arm64 must not export an empty value). CI runs `verify-musl-runtime.sh` after musl builds. **Linux arm64 gnu** builds on GitHub-hosted ARM runners (native compile, no Zig cross) to avoid build-script `ring` arch mismatches.
 
-The self-hosted runner must have **Docker** (runner user in the `docker` group). Container jobs run as root and leave root-owned files; host jobs run an inline **Docker `chown`** prepare step before checkout (no passwordless sudo required).
+**PR jobs** (`build.yml`) run on ARC runner scale sets in the staging cluster, all as `container:` jobs (Kubernetes container mode, fresh pod per job, no Docker daemon, no `services:`):
+
+- `nwr-small` (1 CPU / 2 GiB job pod, `ci-build:latest` container): package-lock validation, change detection, typecheck and lint, TypeScript build, and the `Test` gate. Selected with `runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}`.
+- `nwr-large` (4 CPU / 12 GiB job pod, `ci-build:test` container): the integration tests in [`reusable-test.yml`](../../.github/workflows/reusable-test.yml). Selected with `runs-on: ${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}`.
+
+Setting the repo variable `NWR_RUNNER_SMALL` or `NWR_RUNNER_LARGE` to `self-hosted` sends those jobs back to the old runners without a PR; this works because every Linux job is a `container:` job, so the same YAML runs on both. `build-main.yml` and `release.yml` still pass `runner: self-hosted` to the reusable test workflow until they move to ARC. The old self-hosted runner needs **Docker** (runner user in the `docker` group) for those jobs; container jobs run as root there.
 
 ---
 
@@ -101,8 +106,8 @@ Local check (hermetic, builds its own temp git repos): `bash scripts/ci/compute-
 
 - **Always runs** on every PR (for branch-protection required checks).
 - **When:** `run_quality` (every diff, including docs-only PRs, which run quality only) — otherwise the job succeeds immediately after a skip notice (no checkout or setup-node).
-- **When running:** [`run-pr-quality.sh`](run-pr-quality.sh) on self-hosted runner.
-- **Runner:** `self-hosted` + `actions/setup-node@v20` (not `ci-build` — fast, no GHCR pull)
+- **When running:** [`run-pr-quality.sh`](run-pr-quality.sh) on the ARC `nwr-small` runner.
+- **Runner:** `nwr-small` in the `ci-build:latest` container + `actions/setup-node@v4` (node 20)
 - **Script:** [`run-pr-quality.sh`](run-pr-quality.sh) → [`validate-package-lock-optional-bindings.sh`](validate-package-lock-optional-bindings.sh), `npm ci`, `fix-rollup-native.sh`, typecheck ([`tsconfig.typecheck.json`](tsconfig.typecheck.json)), `eslint`, helpers vitest, [`run-sherpa-example-ci.sh typecheck`](run-sherpa-example-ci.sh)
 - Runs [`build-ts-workspace.sh`](build-ts-workspace.sh) inside [`run-helpers-unit-tests.sh`](run-helpers-unit-tests.sh) when sdk/signaling/helpers `dist/` is missing (fresh CI checkout). Job 4 still builds once for Test cache.
 
@@ -117,7 +122,7 @@ There is no `Compile native` job on PRs. The integration job builds the debug `x
 - **Always runs** on every PR (for branch-protection required checks).
 - **When:** `run_build_ts` — otherwise the job succeeds immediately after a skip notice (no checkout, setup-node, or cache).
 - **Needs:** package-lock validation only. It starts without waiting for **Typecheck & lint**.
-- **Runner:** `self-hosted` + `setup-node`
+- **Runner:** `nwr-small` in the `ci-build:latest` container + `setup-node`
 - **Cache:** [`ci-cache-ts-dist`](../../.github/actions/ci-cache-ts-dist) → `packages/sdk/dist`, `packages/signaling/dist`, `packages/helpers/dist`
 - **On cache miss:** `npm ci`, `fix-rollup-native.sh`, [`build-ts-workspace.sh`](build-ts-workspace.sh) (sdk core → signaling → full sdk → helpers)
 
@@ -128,7 +133,7 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 - **Always runs** on every PR (for branch-protection required checks).
 - **Required check name:** a thin `Test` job in [`build.yml`](../../.github/workflows/build.yml) gates on the reusable workflow. `workflow_call` jobs alone report as `Integration tests / Test`, which does **not** satisfy the required `Test` context. The gate requires `Typecheck & lint` = success, `Build TypeScript` = success or skipped, and `Integration tests` = success.
 - **When:** tests are not skipped (`skip_test` false) — otherwise the integration job succeeds immediately (`skip: 'true'`), e.g. docs-only and version-only PRs.
-- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (called as **Integration tests**), runs in the `ci-test` container (`container:` job, no `docker` calls in steps)
+- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (called as **Integration tests**), runs on `nwr-large` in the `ci-test` container (`container:` job, no `docker` calls in steps)
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 
 Inside the job:

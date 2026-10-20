@@ -216,6 +216,8 @@ jobs:
       require_binding_artifact: 'true'
       needs_native_binding: 'true'
       needs_ts_dist: 'true'
+      # old runners until build-main/release move (ARC migration chunks 4/5)
+      runner: self-hosted
     secrets: inherit
 
   assemble-native-bundle:

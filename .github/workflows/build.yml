@@ -1,5 +1,11 @@
 name: Build & Test
 
+# Runners: ARC scale sets `nwr-small` (light jobs here) and `nwr-large` (integration, via
+# reusable-test.yml), selected with the NWR_RUNNER_SMALL / NWR_RUNNER_LARGE repo variables as
+# fallback (set a variable to `self-hosted` to send those jobs back to the old runners). Every
+# Linux job is a `container:` job (ci-build image), so the same YAML runs on both.
+# Plan: development/node-webrtc-rust/plans/2026-10-20-nwr-ci-arc-migration.md
+
 on:
   pull_request:
     branches: [main]
@@ -28,55 +34,27 @@ env:
   CARGO_INCREMENTAL: 0
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
   OPUS_STATIC: '1'
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   # Always runs (no path filter). Catches broken lockfiles even when quality/test are skipped.
   validate-package-lock:
     name: Package-lock optional bindings
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prepare workspace
-        run: |
-          set -euo pipefail
-          uid="$(id -u)"
-          gid="$(id -g)"
-          declare -a roots=()
-          add_root() {
-            local p="${1:-}"
-            [[ -n "$p" && -d "$p" ]] || return 0
-            local existing
-            for existing in "${roots[@]+"${roots[@]}"}"; do
-              [[ "$existing" == "$p" ]] && return 0
-            done
-            roots+=("$p")
-          }
-          add_root "${RUNNER_WORKSPACE:-}"
-          add_root "${GITHUB_WORKSPACE:-}"
-          if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
-            add_root "$(dirname "${GITHUB_WORKSPACE}")"
-          fi
-          if [[ ${#roots[@]} -eq 0 ]]; then
-            echo "No workspace root to reset (RUNNER_WORKSPACE/GITHUB_WORKSPACE unset)."
-            exit 0
-          fi
-          for root in "${roots[@]}"; do
-            echo "Resetting permissions under ${root} (uid=${uid} gid=${gid})"
-            docker run --rm \
-              -v "${root}:${root}" \
-              alpine:3.20 \
-              sh -c "rm -rf \
-                \"${root}/target\" \
-                \"${root}/node_modules\" \
-                \"${root}/node-webrtc-rust/target\" \
-                \"${root}/node-webrtc-rust/node_modules\" \
-                \"${root}/packages\"/*/node_modules \
-                \"${root}/examples\"/*/node_modules \
-                \"${root}/node-webrtc-rust/packages\"/*/node_modules \
-                \"${root}/node-webrtc-rust/examples\"/*/node_modules \
-                2>/dev/null || true; \
-                chown -R ${uid}:${gid} \"${root}\""
-          done
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -87,7 +65,12 @@ jobs:
 
   changes:
     name: Detect changes
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       run_build_ts: ${{ steps.pr_gates.outputs.run_build_ts }}
       run_quality: ${{ steps.pr_gates.outputs.run_quality }}
@@ -96,48 +79,6 @@ jobs:
       needs_ts_for_test: ${{ steps.pr_gates.outputs.needs_ts }}
       test_suites: ${{ steps.pr_gates.outputs.test_suites }}
     steps:
-      - name: Prepare workspace
-        run: |
-          set -euo pipefail
-          uid="$(id -u)"
-          gid="$(id -g)"
-          declare -a roots=()
-          add_root() {
-            local p="${1:-}"
-            [[ -n "$p" && -d "$p" ]] || return 0
-            local existing
-            for existing in "${roots[@]+"${roots[@]}"}"; do
-              [[ "$existing" == "$p" ]] && return 0
-            done
-            roots+=("$p")
-          }
-          add_root "${RUNNER_WORKSPACE:-}"
-          add_root "${GITHUB_WORKSPACE:-}"
-          if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
-            add_root "$(dirname "${GITHUB_WORKSPACE}")"
-          fi
-          if [[ ${#roots[@]} -eq 0 ]]; then
-            echo "No workspace root to reset (RUNNER_WORKSPACE/GITHUB_WORKSPACE unset)."
-            exit 0
-          fi
-          for root in "${roots[@]}"; do
-            echo "Resetting permissions under ${root} (uid=${uid} gid=${gid})"
-            docker run --rm \
-              -v "${root}:${root}" \
-              alpine:3.20 \
-              sh -c "rm -rf \
-                \"${root}/target\" \
-                \"${root}/node_modules\" \
-                \"${root}/node-webrtc-rust/target\" \
-                \"${root}/node-webrtc-rust/node_modules\" \
-                \"${root}/packages\"/*/node_modules \
-                \"${root}/examples\"/*/node_modules \
-                \"${root}/node-webrtc-rust/packages\"/*/node_modules \
-                \"${root}/node-webrtc-rust/examples\"/*/node_modules \
-                2>/dev/null || true; \
-                chown -R ${uid}:${gid} \"${root}\""
-          done
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -170,10 +111,22 @@ jobs:
       always() &&
       !cancelled() &&
       needs.validate-package-lock.result == 'success'
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       ran_quality: ${{ steps.gate.outputs.run }}
     steps:
+      # Migration measurement: CPUs, cgroup limits and CPU model of the runner this job got.
+      - name: Runner facts
+        run: |
+          echo "runner=${RUNNER_NAME:-unknown} nproc=$(nproc)"
+          echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+          grep -m1 'model name' /proc/cpuinfo || true
+
       - name: Skip when docs-only (no code or CI changes)
         id: gate
         run: |
@@ -183,49 +136,6 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping typecheck & lint — docs-only PR (no code or CI changes)."
           fi
-
-      - name: Prepare workspace
-        if: steps.gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          uid="$(id -u)"
-          gid="$(id -g)"
-          declare -a roots=()
-          add_root() {
-            local p="${1:-}"
-            [[ -n "$p" && -d "$p" ]] || return 0
-            local existing
-            for existing in "${roots[@]+"${roots[@]}"}"; do
-              [[ "$existing" == "$p" ]] && return 0
-            done
-            roots+=("$p")
-          }
-          add_root "${RUNNER_WORKSPACE:-}"
-          add_root "${GITHUB_WORKSPACE:-}"
-          if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
-            add_root "$(dirname "${GITHUB_WORKSPACE}")"
-          fi
-          if [[ ${#roots[@]} -eq 0 ]]; then
-            echo "No workspace root to reset (RUNNER_WORKSPACE/GITHUB_WORKSPACE unset)."
-            exit 0
-          fi
-          for root in "${roots[@]}"; do
-            echo "Resetting permissions under ${root} (uid=${uid} gid=${gid})"
-            docker run --rm \
-              -v "${root}:${root}" \
-              alpine:3.20 \
-              sh -c "rm -rf \
-                \"${root}/target\" \
-                \"${root}/node_modules\" \
-                \"${root}/node-webrtc-rust/target\" \
-                \"${root}/node-webrtc-rust/node_modules\" \
-                \"${root}/packages\"/*/node_modules \
-                \"${root}/examples\"/*/node_modules \
-                \"${root}/node-webrtc-rust/packages\"/*/node_modules \
-                \"${root}/node-webrtc-rust/examples\"/*/node_modules \
-                2>/dev/null || true; \
-                chown -R ${uid}:${gid} \"${root}\""
-          done
 
       - uses: actions/checkout@v4
         if: steps.gate.outputs.run == 'true'
@@ -239,6 +149,10 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: bash scripts/ci/run-pr-quality.sh
 
+      - name: Runner facts (end)
+        if: always()
+        run: echo "memory.peak=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+
   build-ts:
     name: Build TypeScript
     needs: [changes, validate-package-lock]
@@ -246,7 +160,12 @@ jobs:
       always() &&
       !cancelled() &&
       needs.validate-package-lock.result == 'success'
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       ran_build: ${{ steps.gate.outputs.run }}
     steps:
@@ -259,49 +178,6 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping TypeScript build — no TS/examples or TS-build CI changes in this PR."
           fi
-
-      - name: Prepare workspace
-        if: steps.gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          uid="$(id -u)"
-          gid="$(id -g)"
-          declare -a roots=()
-          add_root() {
-            local p="${1:-}"
-            [[ -n "$p" && -d "$p" ]] || return 0
-            local existing
-            for existing in "${roots[@]+"${roots[@]}"}"; do
-              [[ "$existing" == "$p" ]] && return 0
-            done
-            roots+=("$p")
-          }
-          add_root "${RUNNER_WORKSPACE:-}"
-          add_root "${GITHUB_WORKSPACE:-}"
-          if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
-            add_root "$(dirname "${GITHUB_WORKSPACE}")"
-          fi
-          if [[ ${#roots[@]} -eq 0 ]]; then
-            echo "No workspace root to reset (RUNNER_WORKSPACE/GITHUB_WORKSPACE unset)."
-            exit 0
-          fi
-          for root in "${roots[@]}"; do
-            echo "Resetting permissions under ${root} (uid=${uid} gid=${gid})"
-            docker run --rm \
-              -v "${root}:${root}" \
-              alpine:3.20 \
-              sh -c "rm -rf \
-                \"${root}/target\" \
-                \"${root}/node_modules\" \
-                \"${root}/node-webrtc-rust/target\" \
-                \"${root}/node-webrtc-rust/node_modules\" \
-                \"${root}/packages\"/*/node_modules \
-                \"${root}/examples\"/*/node_modules \
-                \"${root}/node-webrtc-rust/packages\"/*/node_modules \
-                \"${root}/node-webrtc-rust/examples\"/*/node_modules \
-                2>/dev/null || true; \
-                chown -R ${uid}:${gid} \"${root}\""
-          done
 
       - uses: actions/checkout@v4
         if: steps.gate.outputs.run == 'true'
@@ -330,12 +206,14 @@ jobs:
   # a thin gate job PRs stick on "Expected — Waiting for status to be reported".
   integration-test:
     name: Integration tests
-    needs: [changes, validate-package-lock, build-ts]
+    # Does not wait for build-ts: run-pr-integration.sh builds the TS dist itself on a cache miss
+    # (ensure-ts-dist.sh), and on the 1-CPU nwr-small build-ts took 160 s on the critical path.
+    # The Test gate still requires build-ts.
+    needs: [changes, validate-package-lock]
     if: |
       always() &&
       !cancelled() &&
-      needs.validate-package-lock.result == 'success' &&
-      needs.build-ts.result != 'failure'
+      needs.validate-package-lock.result == 'success'
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
@@ -349,7 +227,12 @@ jobs:
     name: Test
     needs: [quality, build-ts, integration-test]
     if: always() && !cancelled()
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Require lint, TypeScript build and integration tests
         run: |

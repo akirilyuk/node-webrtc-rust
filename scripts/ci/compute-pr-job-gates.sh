@@ -24,6 +24,13 @@ PR_BASE_SHA="${1:?PR base SHA (main tip)}"
 PR_HEAD_SHA="${2:?PR head SHA (branch tip — use pull_request.head.sha, not github.sha)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Fail closed: outside a repo git diff falls back to no-index mode and prints nothing useful, which
+# would classify every PR as docs-only (e.g. dubious ownership in a container job).
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "::error::compute-pr-job-gates: $(pwd) is not a git repository (safe.directory?)" >&2
+  exit 1
+fi
+
 run_compile=false
 run_build_ts=false
 run_test=false
@@ -49,15 +56,23 @@ classify_path() {
 
 merge_base="$(git merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA" 2>/dev/null || echo "$PR_BASE_SHA")"
 
+if ! changed_paths="$(git diff --name-only "$merge_base" "$PR_HEAD_SHA")"; then
+  echo "::error::compute-pr-job-gates: git diff $merge_base..$PR_HEAD_SHA failed" >&2
+  exit 1
+fi
 while IFS= read -r path; do
   classify_path "$path"
-done < <(git diff --name-only "$merge_base" "$PR_HEAD_SHA")
+done <<<"$changed_paths"
 
 # Latest commit on the PR branch (covers speech-only pushes after merge-base is stale).
 if git rev-parse --verify "${PR_HEAD_SHA}^{commit}" >/dev/null 2>&1; then
+  if ! head_paths="$(git diff-tree --no-commit-id --name-only -r "$PR_HEAD_SHA")"; then
+    echo "::error::compute-pr-job-gates: git diff-tree $PR_HEAD_SHA failed" >&2
+    exit 1
+  fi
   while IFS= read -r path; do
     classify_path "$path"
-  done < <(git diff-tree --no-commit-id --name-only -r "$PR_HEAD_SHA" 2>/dev/null || true)
+  done <<<"$head_paths"
 fi
 
 # Post-release lock PRs only bump our own @node-webrtc-rust/* versions: quality + build-ts only.

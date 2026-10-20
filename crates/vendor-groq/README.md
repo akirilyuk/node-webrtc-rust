@@ -73,3 +73,10 @@ NWR_BENCH_RUNS=3 GROQ_API_KEY=... cargo test -p node-webrtc-rust-vendor-groq --f
 ```
 
 Without the key they skip; `GROQ_LIVE_REQUIRED=1` turns a missing key into a panic that names it (CI sets it, `.github/workflows/vendor-live-groq.yml`; secret `GROQ_LIVE_KEY`). The STT test synthesizes its phrase with Groq TTS, so it needs the Orpheus terms accepted too. The bench runs through `vendor-bench.yml`. The mock-server tests run in PR integration (`cargo vendor-groq`).
+
+## Latency benchmark
+
+The TTS and STT latency of this crate against the real API is measured with
+`npm run bench:vendors -- --vendors groq` (from `node-webrtc-rust/`, keys as in the
+[benchmark quick start](../../benchmarks/README.md)). What each number means:
+[`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).

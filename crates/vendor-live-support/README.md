@@ -36,6 +36,8 @@ CI: `.github/workflows/vendor-live-<id>.yml`. `tests/workflow_lockstep_test.rs` 
 
 ## Latency bench
 
+The CLI `npm run bench:vendors` (see [`benchmarks/README.md`](../../benchmarks/README.md)) runs these benches for chosen vendors and records the host. Definitions of every metric: [`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).
+
 `crates/vendor-<id>/tests/live_bench.rs` calls `bench_tts` / `bench_stt` and is dispatched with the
 workflow `.github/workflows/vendor-bench.yml` (inputs `vendor`, `runs`; no pull request trigger).
 Locally:
@@ -48,10 +50,11 @@ node scripts/ci/vendor-bench-summary.mjs bench.log bench.json
 ```
 
 TTS: per run and per text (`short`, `sentence`) a new provider gives a `cold` sample (DNS and
-TLS or WS handshake included) and then a `warm` sample on the same provider. STT: each run is a
-fresh provider and one utterance, `cold`. A warm second utterance is not measured because whether
-a provider accepts another utterance after a finalize differs per vendor; a vendor crate opts in
-with `stt::run_utterance` once its docs allow it.
+TLS or WS handshake included) and then a `warm` sample on the same provider. STT: `bench_stt` uses a
+fresh provider and one utterance per run, `cold`. Whether a provider accepts another utterance
+after a finalize differs per vendor, so a vendor whose docs allow it uses `bench_stt_warm`
+instead: a `cold` utterance (open included) and then a `warm` second utterance on the same
+session (AssemblyAI, Azure, Groq, Google REST, OpenAI `whisper-1`).
 
 ## STT fixture
 

@@ -173,8 +173,10 @@ impl Mock {
         .unwrap()
     }
 
+    /// Pinned to `http`: the tests that use it are about the HTTP paths. The catalog default is
+    /// checked by `auto_transport_is_the_catalog_default_websocket`.
     fn provider(&self, model: Option<&str>) -> Box<dyn TtsProvider> {
-        self.provider_with(model, None)
+        self.provider_with(model, Some(SpeechTransport::Http))
     }
 
     fn provider_with(
@@ -1130,18 +1132,37 @@ async fn explicit_http_transport_goes_to_the_stream_endpoint() {
 }
 
 #[tokio::test]
-async fn auto_transport_is_the_catalog_default_http() {
+async fn auto_transport_is_the_catalog_default_websocket() {
+    for requested in [None, Some(SpeechTransport::Auto)] {
+        let mock = Mock::start_with(
+            http_stream_script(),
+            Some(ws_ok_script()),
+            vec![7u8; CHUNK_BYTES],
+        )
+        .await;
+        let provider = mock.provider_with(None, requested);
+        let sunk = run_progressive(provider.as_ref()).await;
+        assert_eq!(sunk.len(), 1);
+        assert_eq!(provider.last_transport().as_deref(), Some("ws"));
+        assert_eq!(mock.ws_hits(), 1);
+        assert_eq!(mock.stream_hits(), 0);
+    }
+}
+
+#[tokio::test]
+async fn auto_transport_for_eleven_v3_stays_on_the_full_body_post() {
     let mock = Mock::start_with(
         http_stream_script(),
         Some(ws_ok_script()),
         vec![7u8; CHUNK_BYTES],
     )
     .await;
-    let provider = mock.provider_with(None, Some(SpeechTransport::Auto));
+    let provider = mock.provider_with(Some("eleven_v3"), Some(SpeechTransport::Auto));
     let sunk = run_progressive(provider.as_ref()).await;
     assert_eq!(sunk.len(), 1);
-    assert_eq!(mock.stream_hits(), 1);
+    assert_eq!(mock.full_hits(), 1);
     assert_eq!(mock.ws_hits(), 0);
+    assert_eq!(mock.stream_hits(), 0);
 }
 
 #[test]

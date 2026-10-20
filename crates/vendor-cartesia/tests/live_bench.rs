@@ -3,12 +3,15 @@
 //!
 //! `NWR_BENCH_RUNS` sets the runs (default 5). Without `CARTESIA_API_KEY` and `CARTESIA_VOICE_ID`
 //! the bench skips, unless `CARTESIA_LIVE_REQUIRED=1`. Cartesia is TTS only.
+//!
+//! `NWR_BENCH_TRANSPORT` (`all` by default, or a comma list such as `http,websocket`) selects the
+//! transports to measure.
 #![cfg(feature = "live")]
 
 use node_webrtc_rust_speech::config::{SpeechTransport, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::pipeline::{TtsProvider, VendorFactory};
 use node_webrtc_rust_vendor_cartesia::CartesiaFactory;
-use node_webrtc_rust_vendor_live_support::bench::{bench_tts, runs_from_env};
+use node_webrtc_rust_vendor_live_support::bench::{bench_tts, runs_from_env, transports_from_env};
 use node_webrtc_rust_vendor_live_support::env::live_env;
 use node_webrtc_rust_voice_catalog as voice_catalog;
 
@@ -39,7 +42,7 @@ async fn bench() {
     let runs = runs_from_env(5);
     let tts_model = voice_catalog::default_tts_model(ID).expect("default tts model");
 
-    for transport in voice_catalog::tts_transports(ID) {
+    for transport in transports_from_env(voice_catalog::tts_transports(ID)) {
         bench_tts(
             ID,
             transport,

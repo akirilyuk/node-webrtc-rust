@@ -21,6 +21,8 @@ Official docs:
 | `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, `gpt-4o-transcribe-diarize`, `gpt-transcribe` | File SSE (`stream=true`)                    | Text deltas of a **finished** utterance WAV, not live-mic |
 | `gpt-live-transcribe`                                                                        | Realtime WS `session.type=transcription`    | Yes (`input_audio_buffer.append` while VAD is open)       |
 
+TTS `tts-1` streaming showed stalls in 26 of 40 samples on 2026-10-19 (median stall above 0 in warm and cold samples, largest 2.9 s; CI runner, Hetzner EU, [results](../../benchmarks/results/2026-10-19-ci-eu/README.md)). The crate has no alternative TTS transport, so there is nothing to switch to; this is a known behaviour of the vendor ([`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md#known-vendor-behaviours)).
+
 TTS: default `stream_format=audio` (chunked PCM). SSE (`speech.audio.delta`) only for models that document it (`gpt-4o-mini-tts`). **Never** send `stream_format=sse` for `tts-1` / `tts-1-hd`.
 
 We do **not** open a second WebRTC peer to OpenAI. See below.
@@ -120,3 +122,10 @@ TTS is the streamed `audio/speech` HTTP response.
 HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1. Connect timeout 10 s, whole-request timeout 60 s, idle pool 90 s, TCP keepalive 30 s. Requests made through the `async-openai` client (file-JSON STT) use the same pooled client but `last_transport()` reports `sdk` for them, because that client does not expose the response's HTTP version.
 
 TTS output is now upsampled from 24 kHz to 48 kHz stereo with linear interpolation (`MonoToStereo48k`, one instance per synthesis) instead of sample repetition, so chunk boundaries are seamless. Adds `tests/live_test.rs` (workflow `vendor-live-openai.yml`) and `tests/live_bench.rs`.
+
+## Latency benchmark
+
+The TTS and STT latency of this crate against the real API is measured with
+`npm run bench:vendors -- --vendors openai` (from `node-webrtc-rust/`, keys as in the
+[benchmark quick start](../../benchmarks/README.md)). What each number means:
+[`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).

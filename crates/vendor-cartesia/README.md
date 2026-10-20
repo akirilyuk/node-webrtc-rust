@@ -31,7 +31,7 @@ Connect 10 s (WebSocket handshake: `cartesia tts websocket connect timed out aft
 
 | Choice      | What we implemented                                                                                                            | Why                                                                     |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| Default     | WS `/tts/websocket` contexts (`chunk` / `done`)                                                                                | Official WebSocket API; progressive PCM for VoiceAgent.                 |
+| `websocket` | WS `/tts/websocket` contexts (`chunk` / `done`)                                                                                | Official WebSocket API; progressive PCM for VoiceAgent.                 |
 | Fallback    | REST `/tts/bytes` only when the WS failed before any audio reached the sink; a WS failure after audio is returned as an error. | Falling back after audio would play the utterance twice.                |
 | Models      | `sonic-3` (default), `sonic-3.5`, `sonic-3.6`, `sonic-latest`                                                                  | Current WS `model_id` enum. Legacy `sonic-english` is **not** accepted. |
 | API version | `2026-08-14` (`cartesia_version` query)                                                                                        | Documented AsyncAPI version at implementation time.                     |
@@ -53,7 +53,18 @@ TTS `websocket`: the contexts socket, with the streamed REST fallback only while
 
 **HTTP streams from `/tts/bytes`.** Cartesia's endpoint comparison says "All three endpoints stream audio as it is produced" (bytes delivers one HTTP response body; SSE and WebSocket chunk it into events or messages). The bytes endpoint's own page only says "Stream audio from a complete transcript" and lists the response as `audio/*` binary. We use `/tts/bytes` and read the body as it arrives (`Response::chunk`): raw `pcm_s16le` at 48 kHz has no framing to parse, which keeps one request shape for the WebSocket fallback and for `http`. `/tts/sse` is also documented ("Server-sent events stream. Each frame is `data: <json>\n\n`") but adds base64 and JSON framing for no gain here, so it is not used. Each body chunk goes to the sink once, an odd trailing byte is carried to the next chunk so every frame is sample-aligned, a body that errors or ends early after audio is an error with no retry, and an empty body is an error (`Cartesia bytes returned no audio`).
 
-`auto` resolves to the catalog default, which is today's behaviour: TTS `websocket`. Default measured in a later change.
+`auto` resolves to the catalog default: TTS `http`.
+
+### Transport decisions
+
+Measured 2026-10-19 on a CI runner in a Hetzner data centre in the EU, 10 runs per group (40 samples per transport), model `sonic-3`. Median `ttfa_ms`, warm / cold:
+
+| Transport   | Median warm | Median cold | Qualifies |
+| ----------- | ----------- | ----------- | --------- |
+| `http`      | 116 ms      | 141.5 ms    | yes       |
+| `websocket` | 108.5 ms    | 240 ms      | yes       |
+
+The warm medians differ by 7.5 ms, which is a tie (within 50 ms). The cold median breaks the tie, and `http` is 98.5 ms lower, so `http` is the default (TTS changed from `websocket` on 2026-10-19). `websocket` stays selectable. Rule: [`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md#default-transport-rule). Results: [`benchmarks/results/2026-10-19-ci-eu`](../../benchmarks/results/2026-10-19-ci-eu/README.md).
 
 HTTP requests use one pooled client per provider; HTTP/2 when the vendor negotiates it (ALPN), otherwise HTTP/1.1.
 
@@ -70,3 +81,10 @@ NWR_BENCH_RUNS=3 CARTESIA_API_KEY=... CARTESIA_VOICE_ID=... cargo test -p node-w
 ```
 
 Without both variables they skip; `CARTESIA_LIVE_REQUIRED=1` turns a missing one into a panic that names it (CI sets it, `.github/workflows/vendor-live-cartesia.yml`; secrets `CARTESIA_LIVE_KEY` and `CARTESIA_LIVE_VOICE_ID`). The bench runs through `vendor-bench.yml`. The mock-server tests run in PR integration (`cargo vendor-cartesia`).
+
+## Latency benchmark
+
+The TTS latency of this crate against the real API is measured with
+`npm run bench:vendors -- --vendors cartesia` (from `node-webrtc-rust/`, keys as in the
+[benchmark quick start](../../benchmarks/README.md)). What each number means:
+[`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).

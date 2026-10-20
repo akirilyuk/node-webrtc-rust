@@ -70,7 +70,7 @@ pub fn tts_websocket_allowed(model: &str) -> bool {
     model != "eleven_v3"
 }
 
-/// Progressive transport for the `http` customer transport (the catalog default).
+/// Progressive transport for the `http` customer transport.
 pub fn tts_progressive_transport(model: &str) -> TtsProgressiveTransport {
     tts_progressive_transport_for(model, SpeechTransport::Http)
 }
@@ -97,7 +97,12 @@ pub fn implemented_tts_transports() -> &'static [&'static str] {
 }
 
 /// Resolve `TtsConfig.transport` for `model` against the voice catalog (`None` / `auto` = default).
-/// `websocket` with a model the stream-input socket does not support (`eleven_v3`) is a config error.
+///
+/// The default is `websocket`. On 2026-10-19 (CI runner, Hetzner EU, 10 runs, 40 samples per
+/// transport) its median first audio was 422.5 ms warm / 415.5 ms cold against 645 / 722.5 ms
+/// over `http`, and both transports qualified (`benchmarks/METHODOLOGY.md`, "Default transport rule").
+/// `auto` with a model the socket does not support (`eleven_v3`) resolves to `http`; an explicit
+/// `websocket` with such a model is a config error.
 pub fn resolve_tts_transport(
     model: &str,
     requested: Option<SpeechTransport>,
@@ -111,6 +116,11 @@ pub fn resolve_tts_transport(
     )?
     .ok_or_else(|| SpeechError::Config("elevenlabs tts has no catalog default transport".into()))?;
     if resolved == SpeechTransport::Websocket && !tts_websocket_allowed(model) {
+        // The catalog default is `websocket`, but the model decides when the caller asked for
+        // `auto`: `eleven_v3` has no `stream-input` socket, so it stays on the full-body POST.
+        if matches!(requested, None | Some(SpeechTransport::Auto)) {
+            return Ok(SpeechTransport::Http);
+        }
         return Err(SpeechError::Config(format!(
             "elevenlabs tts transport 'websocket' is not supported for model '{model}'; use http or auto"
         )));
@@ -172,19 +182,19 @@ mod tests {
     }
 
     #[test]
-    fn auto_is_http_and_websocket_is_selectable() {
+    fn auto_is_websocket_and_http_is_selectable() {
         let m = "eleven_flash_v2_5";
         assert_eq!(
             resolve_tts_transport(m, None).unwrap(),
-            SpeechTransport::Http
+            SpeechTransport::Websocket
         );
         assert_eq!(
             resolve_tts_transport(m, Some(SpeechTransport::Auto)).unwrap(),
-            SpeechTransport::Http
+            SpeechTransport::Websocket
         );
         assert_eq!(
-            resolve_tts_transport(m, Some(SpeechTransport::Websocket)).unwrap(),
-            SpeechTransport::Websocket
+            resolve_tts_transport(m, Some(SpeechTransport::Http)).unwrap(),
+            SpeechTransport::Http
         );
     }
 
@@ -196,10 +206,13 @@ mod tests {
             }
             other => panic!("expected a Config error, got {other:?}"),
         }
-        assert_eq!(
-            resolve_tts_transport("eleven_v3", None).unwrap(),
-            SpeechTransport::Http
-        );
+        // `auto` follows the model: the websocket default does not apply to `eleven_v3`.
+        for requested in [None, Some(SpeechTransport::Auto)] {
+            assert_eq!(
+                resolve_tts_transport("eleven_v3", requested).unwrap(),
+                SpeechTransport::Http
+            );
+        }
     }
 
     #[test]

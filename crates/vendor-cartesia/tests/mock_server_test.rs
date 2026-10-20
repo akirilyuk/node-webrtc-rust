@@ -141,8 +141,10 @@ impl Mock {
         self.rest_count.load(Ordering::SeqCst)
     }
 
+    /// Pinned to `websocket`: the tests that use it are about the socket path. The catalog default
+    /// is checked by `auto_transport_is_the_catalog_default_http`.
     fn provider(&self) -> Box<dyn TtsProvider> {
-        self.provider_with(None)
+        self.provider_with(Some(SpeechTransport::Websocket))
     }
 
     fn provider_with(&self, transport: Option<SpeechTransport>) -> Box<dyn TtsProvider> {
@@ -701,13 +703,15 @@ async fn explicit_http_transport_uses_rest_only() {
 }
 
 #[tokio::test]
-async fn auto_transport_is_the_catalog_default_websocket() {
-    let mock = Mock::start(ws_ok_script(), rest_fail()).await;
-    let provider = mock.provider_with(Some(SpeechTransport::Auto));
-    let sunk = run_progressive(provider.as_ref()).await;
-    assert_eq!(sunk.len(), 1);
-    assert_eq!(mock.ws_count(), 1);
-    assert_eq!(mock.rest_count(), 0);
+async fn auto_transport_is_the_catalog_default_http() {
+    for requested in [None, Some(SpeechTransport::Auto)] {
+        let mock = Mock::start(ws_ok_script(), rest_ok(CHUNK_BYTES)).await;
+        let provider = mock.provider_with(requested);
+        let sunk = run_progressive(provider.as_ref()).await;
+        assert_eq!(sunk.len(), 1);
+        assert_eq!(mock.rest_count(), 1);
+        assert_eq!(mock.ws_count(), 0);
+    }
 }
 
 #[tokio::test]

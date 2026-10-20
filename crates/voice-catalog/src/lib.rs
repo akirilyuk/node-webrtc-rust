@@ -313,6 +313,15 @@ mod tests {
         assert_eq!(stt_transports("deepgram"), &["websocket"]);
     }
 
+    /// Defaults from the 2026-10-19 vendor bench (`benchmarks/METHODOLOGY.md`, "Default transport rule").
+    #[test]
+    fn tts_transport_defaults_follow_the_vendor_bench() {
+        assert_eq!(default_tts_transport("elevenlabs"), Some("websocket"));
+        assert_eq!(default_tts_transport("cartesia"), Some("http"));
+        assert_eq!(default_tts_transport("fishaudio"), Some("http"));
+        assert_eq!(default_stt_transport("elevenlabs"), Some("websocket"));
+    }
+
     #[test]
     fn google_has_no_selectable_transport() {
         assert!(tts_transports("google").is_empty());

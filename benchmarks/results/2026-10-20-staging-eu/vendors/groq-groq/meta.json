@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "source": "e2e-cloud-vendor-smoke",
+  "concurrency": 1,
+  "conversations": 1,
+  "turns_per_conversation": 10,
+  "target": "staging",
+  "started_at": "2026-10-20T01:20:33.989Z",
+  "finished_at": "2026-10-20T01:25:23.800Z",
+  "host_suspended": [],
+  "phrase_cache_suspected": false,
+  "client_starved": false,
+  "client_starved_threshold_p99_ms": 200,
+  "event_loop_delay_ms": {
+    "intervals": 58,
+    "p99_max": 22.92,
+    "max": 30.03
+  }
+}

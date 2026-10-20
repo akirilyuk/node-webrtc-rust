@@ -43,6 +43,24 @@ export function percentile(sorted, p) {
   return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)]
 }
 
+/**
+ * Adds derived metrics to a record (a copy): for a TTS sample with `total_ms` and `audio_ms > 0`,
+ * `real_time_factor = total_ms / audio_ms` (below 1 means faster than real time).
+ */
+export function withDerivedMetrics(record) {
+  const m = record.metrics
+  if (
+    record.leg === 'tts' &&
+    m &&
+    typeof m.total_ms === 'number' &&
+    typeof m.audio_ms === 'number' &&
+    m.audio_ms > 0
+  ) {
+    return { ...record, metrics: { ...m, real_time_factor: m.total_ms / m.audio_ms } }
+  }
+  return record
+}
+
 const KEY_FIELDS = ['vendor', 'leg', 'transport', 'model', 'phase', 'text']
 
 /** Groups records and computes median / p90 / min / max per numeric metric. */
@@ -94,6 +112,8 @@ export function summarize(records) {
     )
 }
 
+const LEG_TITLES = { tts: 'TTS', stt: 'STT', e2e: 'END-TO-END' }
+
 function fmt(value) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
@@ -102,21 +122,29 @@ function fmt(value) {
 export function renderMarkdown(groups) {
   if (groups.length === 0) return '_No `vendor_bench` lines in the log._\n'
   const out = []
+  let anyInconclusive = false
   for (const leg of [...new Set(groups.map((g) => g.leg))].sort()) {
     const rows = groups.filter((g) => g.leg === leg)
     const metrics = [...new Set(rows.flatMap((g) => Object.keys(g.metrics)))]
-    out.push(`### ${leg.toUpperCase()} (median / p90)\n`)
+    out.push(`### ${LEG_TITLES[leg] ?? leg.toUpperCase()} (median / p90)\n`)
     out.push(`| vendor | transport | model | phase | text | n | http | ${metrics.join(' | ')} |`)
     out.push(`|${' --- |'.repeat(7 + metrics.length)}`)
     for (const g of rows) {
       const cells = metrics.map((m) =>
         g.metrics[m] ? `${fmt(g.metrics[m].median)} / ${fmt(g.metrics[m].p90)}` : '',
       )
+      if (g.inconclusive) anyInconclusive = true
       out.push(
-        `| ${[g.vendor, g.transport, g.model, g.phase, g.text, g.n, g.http_versions.join(', '), ...cells].join(' | ')} |`,
+        `| ${[g.inconclusive ? `${g.vendor} †` : g.vendor, g.transport, g.model, g.phase, g.text, g.n, g.http_versions.join(', '), ...cells].join(' | ')} |`,
       )
     }
     out.push('')
+  }
+  if (anyInconclusive) {
+    out.push(
+      '† Inconclusive: the host was starved or suspended during this vendor, or the vendor failed.',
+      '',
+    )
   }
   return out.join('\n')
 }
@@ -124,7 +152,7 @@ export function renderMarkdown(groups) {
 function main(argv) {
   const [input, outPath] = argv
   const text = input && input !== '-' ? readFileSync(input, 'utf8') : readFileSync(0, 'utf8')
-  const groups = summarize(parseBenchLines(text))
+  const groups = summarize(parseBenchLines(text).map(withDerivedMetrics))
   if (outPath) writeFileSync(outPath, `${JSON.stringify(groups, null, 2)}\n`)
   process.stdout.write(renderMarkdown(groups))
 }

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T01:59:26.269Z",
+  "source": "e2e-cloud-vendor-smoke",
+  "concurrency": 1,
+  "conversations": 1,
+  "turns_per_conversation": 10,
+  "host_suspended": [],
+  "client_starved": false,
+  "groups": [
+    {
+      "vendor": "voicethere+fishaudio/fishaudio",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "transcribe-1/drama-3",
+      "phase": "cold",
+      "text": "counting-echo",
+      "n": 1,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 1,
+          "median": 2255,
+          "p90": 2255,
+          "min": 2255,
+          "max": 2255
+        },
+        "final_to_reply_start_ms": {
+          "n": 1,
+          "median": 283,
+          "p90": 283,
+          "min": 283,
+          "max": 283
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 1,
+          "median": 2538,
+          "p90": 2538,
+          "min": 2538,
+          "max": 2538
+        },
+        "tts_first_audio_ms": {
+          "n": 1,
+          "median": 279,
+          "p90": 279,
+          "min": 279,
+          "max": 279
+        }
+      }
+    },
+    {
+      "vendor": "voicethere+fishaudio/fishaudio",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "transcribe-1/drama-3",
+      "phase": "warm",
+      "text": "counting-echo",
+      "n": 9,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 9,
+          "median": 1962,
+          "p90": 2233,
+          "min": 1864,
+          "max": 2233
+        },
+        "final_to_reply_start_ms": {
+          "n": 9,
+          "median": 274,
+          "p90": 321,
+          "min": 250,
+          "max": 321
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 9,
+          "median": 2219,
+          "p90": 2516,
+          "min": 2114,
+          "max": 2516
+        },
+        "tts_first_audio_ms": {
+          "n": 9,
+          "median": 273,
+          "p90": 319,
+          "min": 247,
+          "max": 319
+        }
+      }
+    }
+  ]
+}

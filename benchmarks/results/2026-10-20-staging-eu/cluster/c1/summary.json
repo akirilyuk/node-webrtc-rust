@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T01:59:26.230Z",
+  "source": "e2e-load-staging",
+  "concurrency": 1,
+  "conversations": 1,
+  "turns_per_conversation": 19,
+  "host_suspended": [],
+  "client_starved": false,
+  "groups": [
+    {
+      "vendor": "voicethere",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "en/en",
+      "phase": "cold",
+      "text": "counting-echo",
+      "n": 1,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 1,
+          "median": 1485,
+          "p90": 1485,
+          "min": 1485,
+          "max": 1485
+        },
+        "final_to_reply_start_ms": {
+          "n": 1,
+          "median": 91,
+          "p90": 91,
+          "min": 91,
+          "max": 91
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 1,
+          "median": 1576,
+          "p90": 1576,
+          "min": 1576,
+          "max": 1576
+        },
+        "tts_first_audio_ms": {
+          "n": 1,
+          "median": 88,
+          "p90": 88,
+          "min": 88,
+          "max": 88
+        }
+      }
+    },
+    {
+      "vendor": "voicethere",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "en/en",
+      "phase": "warm",
+      "text": "counting-echo",
+      "n": 18,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 18,
+          "median": 1597.5,
+          "p90": 1707,
+          "min": 1463,
+          "max": 1724
+        },
+        "final_to_reply_start_ms": {
+          "n": 18,
+          "median": 87.5,
+          "p90": 92,
+          "min": 82,
+          "max": 92
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 18,
+          "median": 1687,
+          "p90": 1797,
+          "min": 1550,
+          "max": 1806
+        },
+        "tts_first_audio_ms": {
+          "n": 18,
+          "median": 89,
+          "p90": 92,
+          "min": 86,
+          "max": 93
+        }
+      }
+    }
+  ]
+}

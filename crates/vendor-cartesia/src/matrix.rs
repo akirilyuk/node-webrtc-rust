@@ -21,6 +21,11 @@ pub fn implemented_tts_transports() -> &'static [&'static str] {
 }
 
 /// Resolve `TtsConfig.transport` against the voice catalog (`None` / `auto` = catalog default).
+///
+/// The default is `http`. On 2026-10-19 (CI runner, Hetzner EU, 10 runs, 40 samples per transport)
+/// median first audio was 116 ms warm / 141.5 ms cold over `http` against 108.5 ms warm / 240 ms
+/// cold over `websocket`. The warm difference (7.5 ms) is a tie, and `http` has the lower cold
+/// median (`benchmarks/METHODOLOGY.md`, "Default transport rule").
 pub fn resolve_tts_transport(requested: Option<SpeechTransport>) -> SpeechResult<SpeechTransport> {
     resolve_transport(
         "cartesia",
@@ -117,18 +122,15 @@ mod tests {
     }
 
     #[test]
-    fn auto_is_websocket_and_http_is_selectable() {
-        assert_eq!(
-            resolve_tts_transport(None).unwrap(),
-            SpeechTransport::Websocket
-        );
+    fn auto_is_http_and_websocket_is_selectable() {
+        assert_eq!(resolve_tts_transport(None).unwrap(), SpeechTransport::Http);
         assert_eq!(
             resolve_tts_transport(Some(SpeechTransport::Auto)).unwrap(),
-            SpeechTransport::Websocket
+            SpeechTransport::Http
         );
         assert_eq!(
-            resolve_tts_transport(Some(SpeechTransport::Http)).unwrap(),
-            SpeechTransport::Http
+            resolve_tts_transport(Some(SpeechTransport::Websocket)).unwrap(),
+            SpeechTransport::Websocket
         );
     }
 

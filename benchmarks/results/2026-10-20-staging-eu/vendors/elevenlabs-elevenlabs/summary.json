@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T01:59:26.268Z",
+  "source": "e2e-cloud-vendor-smoke",
+  "concurrency": 1,
+  "conversations": 1,
+  "turns_per_conversation": 10,
+  "host_suspended": [],
+  "client_starved": false,
+  "groups": [
+    {
+      "vendor": "voicethere+elevenlabs/elevenlabs",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "scribe_v2_realtime/eleven_multilingual_v2",
+      "phase": "cold",
+      "text": "counting-echo",
+      "n": 1,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 1,
+          "median": 1874,
+          "p90": 1874,
+          "min": 1874,
+          "max": 1874
+        },
+        "final_to_reply_start_ms": {
+          "n": 1,
+          "median": 682,
+          "p90": 682,
+          "min": 682,
+          "max": 682
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 1,
+          "median": 2556,
+          "p90": 2556,
+          "min": 2556,
+          "max": 2556
+        },
+        "tts_first_audio_ms": {
+          "n": 1,
+          "median": 677,
+          "p90": 677,
+          "min": 677,
+          "max": 677
+        }
+      }
+    },
+    {
+      "vendor": "voicethere+elevenlabs/elevenlabs",
+      "leg": "e2e",
+      "transport": "webrtc",
+      "model": "scribe_v2_realtime/eleven_multilingual_v2",
+      "phase": "warm",
+      "text": "counting-echo",
+      "n": 9,
+      "http_versions": [],
+      "metrics": {
+        "speech_end_to_final_ms": {
+          "n": 9,
+          "median": 1765,
+          "p90": 1862,
+          "min": 1717,
+          "max": 1862
+        },
+        "final_to_reply_start_ms": {
+          "n": 9,
+          "median": 666,
+          "p90": 702,
+          "min": 612,
+          "max": 702
+        },
+        "speech_end_to_reply_start_ms": {
+          "n": 9,
+          "median": 2424,
+          "p90": 2541,
+          "min": 2336,
+          "max": 2541
+        },
+        "tts_first_audio_ms": {
+          "n": 9,
+          "median": 663,
+          "p90": 700,
+          "min": 609,
+          "max": 700
+        }
+      }
+    }
+  ]
+}

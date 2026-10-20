@@ -1,0 +1,65 @@
+{
+  "nwr_version": "0.12.0",
+  "git_sha": null,
+  "git_dirty": null,
+  "os": {
+    "platform": "linux",
+    "release": "6.8.0-100-generic",
+    "arch": "x64"
+  },
+  "cpu_model": "Intel(R) Core(TM) i7-7700 CPU @ 3.60GHz",
+  "cpu_cores": 8,
+  "memory_gb": 62.6,
+  "node_version": "v20.20.2",
+  "rustc_version": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "region": "ci-eu",
+  "started_at": "2026-10-19T18:41:02.619Z",
+  "finished_at": "2026-10-19T18:59:56.932Z",
+  "endpoints": [
+    {
+      "vendor": "elevenlabs",
+      "host": "api.elevenlabs.io",
+      "dns_ms": 1.7,
+      "tcp_ms": 6.2,
+      "tls_ms": 42.6,
+      "alpn": "h2",
+      "address_family": "IPv4"
+    },
+    {
+      "vendor": "cartesia",
+      "host": "api.cartesia.ai",
+      "dns_ms": 3.6,
+      "tcp_ms": 8.4,
+      "tls_ms": 23.9,
+      "alpn": "h2",
+      "address_family": "IPv4"
+    },
+    {
+      "vendor": "groq",
+      "host": "api.groq.com",
+      "dns_ms": 1.8,
+      "tcp_ms": 7.9,
+      "tls_ms": 27.3,
+      "alpn": "h2",
+      "address_family": "IPv4"
+    },
+    {
+      "vendor": "openai",
+      "host": "api.openai.com",
+      "dns_ms": 1.9,
+      "tcp_ms": 7.9,
+      "tls_ms": 32.2,
+      "alpn": "h2",
+      "address_family": "IPv4"
+    },
+    {
+      "vendor": "fishaudio",
+      "host": "api.fish.audio",
+      "dns_ms": 1.9,
+      "tcp_ms": 7.6,
+      "tls_ms": 32.6,
+      "alpn": "h2",
+      "address_family": "IPv4"
+    }
+  ]
+}

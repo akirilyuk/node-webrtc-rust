@@ -62,3 +62,12 @@ NWR_BENCH_RUNS=3 ASSEMBLYAI_API_KEY=... cargo test -p node-webrtc-rust-vendor-as
 ```
 
 Without the key both skip; `ASSEMBLYAI_LIVE_REQUIRED=1` turns a missing key into a panic (CI sets it, `.github/workflows/vendor-live-assemblyai.yml`, secret `ASSEMBLYAI_LIVE_KEY`). The bench runs through `vendor-bench.yml`. The mock-server tests run in PR integration (`cargo vendor-assemblyai`).
+
+## Latency benchmark
+
+The STT latency of this crate against the real API is measured with
+`npm run bench:vendors -- --vendors assemblyai` (from `node-webrtc-rust/`, keys as in the
+[benchmark quick start](../../benchmarks/README.md)). What each number means:
+[`benchmarks/METHODOLOGY.md`](../../benchmarks/METHODOLOGY.md).
+
+Not part of the published results: the vendor's terms do not allow benchmarking; you can run it under your own agreement.

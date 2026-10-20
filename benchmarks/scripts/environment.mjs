@@ -284,8 +284,21 @@ export function readNwrVersion(repoRoot) {
 }
 
 /**
+ * The build's commit: `git rev-parse HEAD` when it worked (`git`), else `NWR_BENCH_GIT_SHA`, else
+ * `GITHUB_SHA` (`env`; a CI container may not be able to run git), else none (`null`).
+ */
+export function resolveGitSha(gitSha, env) {
+  if (gitSha) return { sha: gitSha, source: 'git' }
+  for (const name of ['NWR_BENCH_GIT_SHA', 'GITHUB_SHA']) {
+    const value = env[name]?.trim()
+    if (value) return { sha: value, source: 'env' }
+  }
+  return { sha: null, source: null }
+}
+
+/**
  * The `environment.json` record. `probes: null` skips the network probes (`endpoints` is `[]`).
- * @param {{ region?: string, repoRoot: string, vendors: any[], lookupEnv?: (n: string) => string | undefined, probes?: object | null, startedAt?: string, finishedAt?: string }} opts
+ * @param {{ region?: string, repoRoot: string, exec?: (cmd: string, args: string[], cwd: string) => string | null, processEnv?: Record<string, string | undefined>, vendors: any[], lookupEnv?: (n: string) => string | undefined, probes?: object | null, startedAt?: string, finishedAt?: string }} opts
  */
 export async function collectEnvironment(opts) {
   const { repoRoot, vendors } = opts
@@ -302,10 +315,14 @@ export async function collectEnvironment(opts) {
       }
     }
   }
-  const status = sh('git', ['status', '--porcelain'], repoRoot)
+  const run = opts.exec ?? sh
+  const env = opts.processEnv ?? process.env
+  const status = run('git', ['status', '--porcelain'], repoRoot)
+  const { sha, source } = resolveGitSha(run('git', ['rev-parse', 'HEAD'], repoRoot), env)
   return {
     nwr_version: readNwrVersion(repoRoot),
-    git_sha: sh('git', ['rev-parse', 'HEAD'], repoRoot),
+    git_sha: sha,
+    git_sha_source: source,
     git_dirty: status === null ? null : status.length > 0,
     os: { platform: os.platform(), release: os.release(), arch: os.arch() },
     cpu_model: cpuList[0]?.model ?? null,

@@ -200,21 +200,22 @@ the sorted `http_versions` seen. The CLI default is 5 runs (`--runs`).
 `environment.json` is written next to the results by `collectEnvironment` in
 `benchmarks/scripts/environment.mjs`, so a result can be read together with where it ran.
 
-| Field           | Meaning                                                                                    |
-| --------------- | ------------------------------------------------------------------------------------------ |
-| `nwr_version`   | `version` in `packages/sdk/package.json` of the checkout that ran, `null` if unreadable.   |
-| `git_sha`       | `git rev-parse HEAD` of the checkout.                                                      |
-| `git_dirty`     | True when `git status --porcelain` is not empty, so local changes were built into the run. |
-| `os`            | `platform`, `release` and `arch` from Node's `os` module.                                  |
-| `cpu_model`     | Model name of the first CPU.                                                               |
-| `cpu_cores`     | Number of logical CPUs reported by `os.cpus()`.                                            |
-| `memory_gb`     | Total memory in GB, one decimal.                                                           |
-| `node_version`  | `process.version` of the CLI.                                                              |
-| `rustc_version` | `rustc --version`, `null` if not found.                                                    |
-| `region`        | The `--region` label (default `unlabelled`). It is a label you choose, nothing detects it. |
-| `started_at`    | ISO time when the CLI started its first vendor.                                            |
-| `finished_at`   | ISO time after the last vendor finished.                                                   |
-| `endpoints`     | One entry per probed vendor host (below). Empty when probes are switched off.              |
+| Field            | Meaning                                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `nwr_version`    | `version` in `packages/sdk/package.json` of the checkout that ran, `null` if unreadable.                                                   |
+| `git_sha`        | `git rev-parse HEAD` of the checkout. When git cannot run (a CI container), `NWR_BENCH_GIT_SHA`, then `GITHUB_SHA`; `null` if none is set. |
+| `git_sha_source` | Where `git_sha` came from: `git` (`rev-parse` worked), `env` (`NWR_BENCH_GIT_SHA` or `GITHUB_SHA`), or `null` when there is no SHA.        |
+| `git_dirty`      | True when `git status --porcelain` is not empty, so local changes were built into the run.                                                 |
+| `os`             | `platform`, `release` and `arch` from Node's `os` module.                                                                                  |
+| `cpu_model`      | Model name of the first CPU.                                                                                                               |
+| `cpu_cores`      | Number of logical CPUs reported by `os.cpus()`.                                                                                            |
+| `memory_gb`      | Total memory in GB, one decimal.                                                                                                           |
+| `node_version`   | `process.version` of the CLI.                                                                                                              |
+| `rustc_version`  | `rustc --version`, `null` if not found.                                                                                                    |
+| `region`         | The `--region` label (default `unlabelled`). It is a label you choose, nothing detects it.                                                 |
+| `started_at`     | ISO time when the CLI started its first vendor.                                                                                            |
+| `finished_at`    | ISO time after the last vendor finished.                                                                                                   |
+| `endpoints`      | One entry per probed vendor host (below). Empty when probes are switched off.                                                              |
 
 **Endpoint probes.** After all vendors ran, the CLI probes the hosts the vendor crates connect
 to (`hosts` in `benchmarks/scripts/vendors.mjs`, checked against the crate sources by

@@ -9,6 +9,7 @@ import {
   collectEnvironment,
   cpuBusyPercent,
   probeHost,
+  resolveGitSha,
   startLoadSampler,
   startSuspendWatch,
   summarizeLoad,
@@ -155,6 +156,44 @@ test('nwr_version is the sdk package version', async () => {
     readFileSync(path.join(repoRoot, 'packages/sdk/package.json'), 'utf8'),
   ).version
   assert.equal(env.nwr_version, expected)
+})
+
+test('git_sha comes from git when rev-parse works', async () => {
+  const exec = (cmd, args) => (args[0] === 'rev-parse' ? 'abc123' : '')
+  const env = await collectEnvironment({
+    repoRoot: '.',
+    vendors: [],
+    probes: null,
+    exec,
+    processEnv: { NWR_BENCH_GIT_SHA: 'ignored', GITHUB_SHA: 'ignored' },
+  })
+  assert.equal(env.git_sha, 'abc123')
+  assert.equal(env.git_sha_source, 'git')
+})
+
+test('git_sha falls back to NWR_BENCH_GIT_SHA when rev-parse fails, and records the source', async () => {
+  const exec = () => null
+  const env = await collectEnvironment({
+    repoRoot: '.',
+    vendors: [],
+    probes: null,
+    exec,
+    processEnv: { NWR_BENCH_GIT_SHA: '0a7cd5011e74', GITHUB_SHA: 'other' },
+  })
+  assert.equal(env.git_sha, '0a7cd5011e74')
+  assert.equal(env.git_sha_source, 'env')
+  assert.equal(env.git_dirty, null)
+})
+
+test('git_sha falls back to GITHUB_SHA, and is null without any source', () => {
+  assert.deepEqual(resolveGitSha(null, { GITHUB_SHA: 'def456' }), {
+    sha: 'def456',
+    source: 'env',
+  })
+  assert.deepEqual(resolveGitSha(null, { NWR_BENCH_GIT_SHA: '  ', GITHUB_SHA: '' }), {
+    sha: null,
+    source: null,
+  })
 })
 
 function fakeClock(samples) {

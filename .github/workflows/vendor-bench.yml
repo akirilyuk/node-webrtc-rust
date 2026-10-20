@@ -131,6 +131,8 @@ jobs:
           RUNS: ${{ inputs.runs || '10' }}
           TRANSPORT: ${{ inputs.transport || 'all' }}
           REGION: ${{ inputs.region || 'ci-eu' }}
+          # The CI container cannot run git, so environment.json takes the commit from here.
+          NWR_BENCH_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           args=(--vendors "$VENDORS" --runs "$RUNS" --transport "$TRANSPORT" --region "$REGION" --wait-idle 900 --out bench-results)
           if [ "$VENDORS" != "all" ]; then args+=(--require); fi

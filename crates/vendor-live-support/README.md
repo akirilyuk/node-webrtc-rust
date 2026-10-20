@@ -33,6 +33,7 @@ Use `--test-threads=1`: vendors cap concurrent requests and the tests print timi
 CI: `.github/workflows/vendor-live-<id>.yml`. `tests/workflow_lockstep_test.rs` fails the PR when a
 `crates/vendor-*/tests/live_test.rs` has no such workflow, or the workflow lacks the fork-skip
 `if`, `_LIVE_REQUIRED: '1'`, `--test-threads=1` or the path filter.
+The Google, Azure and AWS workflows are additionally gated by the repository variables `GOOGLE_LIVE_ENABLED`, `AZURE_LIVE_ENABLED` and `AWS_LIVE_ENABLED` (skipped until set); no other vendor workflow may carry such a gate.
 
 ## Latency bench
 

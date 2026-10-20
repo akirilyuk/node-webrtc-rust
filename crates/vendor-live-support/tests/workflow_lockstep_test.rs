@@ -105,6 +105,39 @@ fn check_live_workflow(id: &str, workflow: &str, has_fullstack: bool) -> Vec<Str
     problems
 }
 
+/// The repository variable that may gate vendor `id`'s live workflow.
+fn gate_expression(id: &str) -> String {
+    format!("vars.{}_LIVE_ENABLED == 'true'", id.to_uppercase())
+}
+
+/// Whether the live workflow carries any `*_LIVE_ENABLED` gate.
+fn has_any_gate(workflow: &str) -> bool {
+    workflow.contains("_LIVE_ENABLED")
+}
+
+/// Vendors whose live workflow is gated by a repository variable until their keys exist
+/// (user decision 2026-10-20). The set is closed: the gate must not spread silently.
+const GATED_VENDORS: [&str; 3] = ["aws", "azure", "google"];
+
+/// Everything wrong with a gate: a workflow that carries one still needs the fork-skip and
+/// `_LIVE_REQUIRED: '1'` (checked by `check_live_workflow`), and the gate must be exactly the
+/// vendor's own variable, on the job-level `if:`.
+fn check_gate(id: &str, workflow: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !has_any_gate(workflow) {
+        return problems;
+    }
+    let gate = gate_expression(id);
+    let gated_if = workflow.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("if:") && l.contains(&gate)
+    });
+    if !gated_if {
+        problems.push(format!("the job `if:` must contain `{gate}`"));
+    }
+    problems
+}
+
 /// Everything wrong with `vendor-bench.yml` for vendor `id`.
 fn check_bench_workflow(id: &str, workflow: &str) -> Vec<String> {
     let listed = workflow
@@ -554,4 +587,78 @@ fn pr_integration_checker_rejects_a_missing_target_and_a_missing_feature() {
     assert_eq!(check_pr_integration(missing_target, &crates).len(), 1);
     let no_feature = "cargo test -p node-webrtc-rust-vendor-azure\n";
     assert_eq!(check_pr_integration(no_feature, &crates).len(), 1);
+}
+
+// ---- repository-variable gate on the keyless vendors ----
+
+#[test]
+fn only_google_azure_and_aws_are_gated_and_each_by_its_own_variable() {
+    let mut gated = Vec::new();
+    let mut failures = Vec::new();
+    for id in vendors_with("live_test.rs") {
+        let name = format!("vendor-live-{id}.yml");
+        let workflow = read_workflow(&name).unwrap_or_default();
+        if has_any_gate(&workflow) {
+            gated.push(id.clone());
+        }
+        for problem in check_gate(&id, &workflow) {
+            failures.push(format!("{name}: {problem}"));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    assert_eq!(
+        gated, GATED_VENDORS,
+        "the set of gated live workflows changed"
+    );
+}
+
+fn gated_workflow(id: &str) -> String {
+    good_workflow(id).replace(
+        "    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository\n",
+        &format!(
+            "    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && {}\n",
+            gate_expression(id)
+        ),
+    )
+}
+
+#[test]
+fn gated_workflow_with_everything_else_intact_is_accepted() {
+    let workflow = gated_workflow("google");
+    assert!(workflow.contains("vars.GOOGLE_LIVE_ENABLED == 'true'"));
+    assert_eq!(check_gate("google", &workflow), Vec::<String>::new());
+    assert_eq!(
+        check_live_workflow("google", &workflow, false),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn gated_workflow_without_the_required_flag_is_reported() {
+    let bad = gated_workflow("azure").replace("X_LIVE_REQUIRED: '1'", "X_LIVE_REQUIRED: '0'");
+    let problems = check_live_workflow("azure", &bad, false);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("_LIVE_REQUIRED: '1'"), "{problems:?}");
+}
+
+#[test]
+fn gated_workflow_that_lost_the_fork_skip_is_reported() {
+    let bad = gated_workflow("aws").replace(
+        "github.event.pull_request.head.repo.full_name == github.repository",
+        "true",
+    );
+    let problems = check_live_workflow("aws", &bad, false);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("fork-skip"), "{problems:?}");
+}
+
+#[test]
+fn gate_on_the_wrong_variable_is_reported() {
+    let bad = gated_workflow("google").replace("GOOGLE_LIVE_ENABLED", "AZURE_LIVE_ENABLED");
+    let problems = check_gate("google", &bad);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("vars.GOOGLE_LIVE_ENABLED == 'true'"),
+        "{problems:?}"
+    );
 }

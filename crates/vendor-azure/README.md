@@ -81,6 +81,8 @@ NWR_BENCH_RUNS=3 AZURE_SPEECH_KEY=... AZURE_SPEECH_REGION=... cargo test -p node
 
 Without both variables they skip; `AZURE_LIVE_REQUIRED=1` turns a missing one into a panic that names it (CI sets it, `.github/workflows/vendor-live-azure.yml`; secrets `AZURE_LIVE_SPEECH_KEY` and `AZURE_LIVE_SPEECH_REGION`). The STT test synthesizes its phrase with Azure TTS. The bench runs through `vendor-bench.yml`. The mock-server tests run in PR integration (`cargo vendor-azure`).
 
+The live workflow runs only when the repository variable `AZURE_LIVE_ENABLED` is `true` (set it when the keys exist); until then the job shows as skipped.
+
 ## Latency benchmark
 
 The TTS and STT latency of this crate against the real API is measured with

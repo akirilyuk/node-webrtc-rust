@@ -4,6 +4,9 @@ name: Vendor live — Azure
 # The repo secrets AZURE_LIVE_SPEECH_KEY and AZURE_LIVE_SPEECH_REGION are mapped to the library's
 # AZURE_SPEECH_KEY and AZURE_SPEECH_REGION env vars.
 #
+# Runs only when the repository variable AZURE_LIVE_ENABLED is `true` (set it when the Azure keys exist).
+# Until then the job shows as skipped, not green.
+#
 # Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
 # runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
 # from branches of this repo and manual dispatches run the job.
@@ -30,7 +33,7 @@ concurrency:
 jobs:
   live:
     name: Azure live
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && vars.AZURE_LIVE_ENABLED == 'true'
     runs-on: self-hosted
     # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
     # ci-run-integration-tests docker run).

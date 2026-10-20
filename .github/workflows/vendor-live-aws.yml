@@ -4,6 +4,9 @@ name: Vendor live — AWS
 # The repo secrets AWS_LIVE_ACCESS_KEY_ID, AWS_LIVE_SECRET_ACCESS_KEY and AWS_LIVE_REGION are mapped to
 # the SDK's AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION env vars.
 #
+# Runs only when the repository variable AWS_LIVE_ENABLED is `true` (set it when the AWS keys exist).
+# Until then the job shows as skipped, not green.
+#
 # Fork PRs are skipped on purpose: this repo is public and the job runs on a self-hosted
 # runner, so fork code must never run there, and forks get no secrets anyway. Pull requests
 # from branches of this repo and manual dispatches run the job.
@@ -30,7 +33,7 @@ concurrency:
 jobs:
   live:
     name: AWS live
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && vars.AWS_LIVE_ENABLED == 'true'
     runs-on: self-hosted
     # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
     # ci-run-integration-tests docker run).

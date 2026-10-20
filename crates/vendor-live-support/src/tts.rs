@@ -35,6 +35,15 @@ pub struct TtsSample {
     pub first_before_return: bool,
     /// RMS of the sink audio (s16le).
     pub rms: f64,
+    /// Only with `NWR_BENCH_TRACE_ARRIVALS=1`: per sink chunk `(arrival offset ms, chunk duration
+    /// ms, bytes)`, in arrival order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrivals: Option<Vec<(u64, u32, usize)>>,
+}
+
+/// True when env `NWR_BENCH_TRACE_ARRIVALS` is `1`.
+pub fn trace_arrivals_from_env() -> bool {
+    std::env::var("NWR_BENCH_TRACE_ARRIVALS").is_ok_and(|v| v.trim() == "1")
 }
 
 /// `stall_ms` from `(arrival offset ms, chunk duration ms)` pairs in arrival order:
@@ -54,6 +63,15 @@ pub fn stall_ms(arrivals: &[(u64, u32)]) -> u64 {
 
 /// Runs one `synthesize_progressive` with a sink and timestamps every chunk.
 pub async fn measure_tts(provider: &dyn TtsProvider, text: &str) -> SpeechResult<TtsSample> {
+    measure_tts_traced(provider, text, trace_arrivals_from_env()).await
+}
+
+/// [`measure_tts`] with the per-chunk arrival trace switched explicitly.
+pub async fn measure_tts_traced(
+    provider: &dyn TtsProvider,
+    text: &str,
+    trace: bool,
+) -> SpeechResult<TtsSample> {
     let (tx, mut rx) = mpsc::unbounded_channel::<TtsAudioChunk>();
     let sink = TtsProgressiveSink {
         tx,
@@ -62,12 +80,17 @@ pub async fn measure_tts(provider: &dyn TtsProvider, text: &str) -> SpeechResult
     let started = Instant::now();
     let receiver = tokio::spawn(async move {
         let mut arrivals: Vec<(u64, u32)> = Vec::new();
+        let mut trace_rows: Vec<(u64, u32, usize)> = Vec::new();
         let mut pcm: Vec<u8> = Vec::new();
         while let Some(chunk) = rx.recv().await {
-            arrivals.push((started.elapsed().as_millis() as u64, chunk.duration_ms));
+            let at = started.elapsed().as_millis() as u64;
+            arrivals.push((at, chunk.duration_ms));
+            if trace {
+                trace_rows.push((at, chunk.duration_ms, chunk.pcm.len()));
+            }
             pcm.extend_from_slice(&chunk.pcm);
         }
-        (arrivals, pcm)
+        (arrivals, pcm, trace_rows)
     });
 
     let result = tokio::time::timeout(
@@ -87,7 +110,7 @@ pub async fn measure_tts(provider: &dyn TtsProvider, text: &str) -> SpeechResult
         }
     };
     // The sink moved into the call and is dropped by now, so the receiver finishes.
-    let (arrivals, pcm) = receiver
+    let (arrivals, pcm, trace_rows) = receiver
         .await
         .map_err(|err| SpeechError::Internal(format!("sink task: {err}")))?;
 
@@ -101,6 +124,7 @@ pub async fn measure_tts(provider: &dyn TtsProvider, text: &str) -> SpeechResult
         returned_bytes: returned.iter().map(|c| c.pcm.len()).sum(),
         first_before_return: arrivals.first().is_some_and(|(at, _)| *at < returned_ms),
         rms: rms(&pcm),
+        arrivals: trace.then_some(trace_rows),
     })
 }
 
@@ -231,6 +255,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn arrivals_are_none_unless_traced_and_populated_when_traced() {
+        let plain = measure_tts_traced(&FakeTts { send_to_sink: true }, "hi", false)
+            .await
+            .unwrap();
+        assert_eq!(plain.arrivals, None);
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("arrivals").is_none(), "skipped when None");
+
+        let traced = measure_tts_traced(&FakeTts { send_to_sink: true }, "hi", true)
+            .await
+            .unwrap();
+        let rows = traced.arrivals.expect("arrivals");
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|&(_, ms, bytes)| ms == 20 && bytes == 3840));
+        assert!(rows.windows(2).all(|w| w[0].0 <= w[1].0));
+        // The other metrics are unchanged by tracing.
+        assert_eq!(traced.chunks, plain.chunks);
+        assert_eq!(traced.bytes, plain.bytes);
+    }
+
+    #[test]
+    fn trace_env_is_read_from_nwr_bench_trace_arrivals() {
+        // Single test touching this variable.
+        std::env::remove_var("NWR_BENCH_TRACE_ARRIVALS");
+        assert!(!trace_arrivals_from_env());
+        std::env::set_var("NWR_BENCH_TRACE_ARRIVALS", "1");
+        assert!(trace_arrivals_from_env());
+        std::env::set_var("NWR_BENCH_TRACE_ARRIVALS", "0");
+        assert!(!trace_arrivals_from_env());
+        std::env::remove_var("NWR_BENCH_TRACE_ARRIVALS");
+    }
+
+    #[tokio::test]
     async fn measure_exposes_a_vendor_that_never_streams() {
         let sample = measure_tts(
             &FakeTts {
@@ -277,6 +334,7 @@ mod tests {
             returned_bytes: 576_000,
             first_before_return: true,
             rms: 1500.0,
+            arrivals: None,
         }
     }
 

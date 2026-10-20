@@ -328,6 +328,30 @@ mod tests {
     }
 
     #[test]
+    fn upsampler_holds_back_at_most_one_sample_with_odd_sized_pushes() {
+        // Odd byte counts per push: output duration after each push is input duration minus at
+        // most one source sample (the interpolator waits for the next neighbour).
+        let samples: Vec<i16> = (0..2400).map(|i| (i % 300) as i16).collect();
+        let input = mono_bytes(&samples);
+        for split in [1usize, 3, 5, 7, 101, 999] {
+            let mut up = MonoToStereo48k::new(24_000).unwrap();
+            let mut out_samples = 0usize;
+            let mut in_bytes = 0usize;
+            for part in input.chunks(split) {
+                in_bytes += part.len();
+                out_samples += up.push(part).len() / 4;
+                let in_samples = in_bytes / 2;
+                // 24 kHz -> 48 kHz: two output frames per source sample.
+                let expected = in_samples * 2;
+                assert!(
+                    out_samples + 2 >= expected && out_samples <= expected,
+                    "split {split}: {out_samples} frames out for {in_samples} samples in"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn upsampler_24k_sine_keeps_its_frequency() {
         // 440 Hz for 2 s at 24 kHz.
         let samples: Vec<i16> = (0..48_000)

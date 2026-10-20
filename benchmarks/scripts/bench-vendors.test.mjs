@@ -363,6 +363,21 @@ test('a healthy vendor is not inconclusive; a failed one is', () => {
   for (const g of summary.groups) assert.equal(g.inconclusive, g.vendor === 'deepgram')
 })
 
+test('NWR_BENCH_TRACE_ARRIVALS is passed on to the child only when set in the parent', () => {
+  let t = setup()
+  t.run(['--vendors', 'groq', '--runs', '1'], {
+    GROQ_API_KEY: OTHER_KEY,
+    NWR_BENCH_TRACE_ARRIVALS: '1',
+  })
+  assert.match(
+    readFileSync(path.join(t.dir, 'flags-groq'), 'utf8'),
+    /^NWR_BENCH_TRACE_ARRIVALS=1$/m,
+  )
+  t = setup()
+  t.run(['--vendors', 'groq', '--runs', '1'], { GROQ_API_KEY: OTHER_KEY })
+  assert.doesNotMatch(readFileSync(path.join(t.dir, 'flags-groq'), 'utf8'), /TRACE_ARRIVALS/)
+})
+
 test('groq gets its request interval, a parent value wins, and it is recorded', () => {
   let t = setup()
   t.run(['--vendors', 'groq', '--runs', '1'], { GROQ_API_KEY: OTHER_KEY })

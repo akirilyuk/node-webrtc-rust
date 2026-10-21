@@ -1,0 +1,27 @@
+[package]
+name = "node-webrtc-rust-vendor-mistral"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mistral Voxtral TTS in-repo client"
+
+[features]
+default = []
+# Gates the real-network tests (tests/live_test.rs, added with the live CI job). The HTTP client
+# itself is always built, because the mock-server tests run without it.
+live = []
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+bytes = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+node-webrtc-rust-speech = { path = "../speech" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

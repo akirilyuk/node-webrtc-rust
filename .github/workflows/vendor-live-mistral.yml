@@ -14,11 +14,15 @@ name: Vendor live — Mistral
 # A missing key fails the job (first step, and MISTRAL_LIVE_REQUIRED=1 makes the tests panic
 # instead of skipping), so a skipped live test can never show green.
 
+# Pull request triggers: this vendor's crate and this workflow. Shared harness code
+# (crates/vendor-live-support/src, its Cargo.toml) triggers every vendor; docs and the lockstep
+# test do not.
 on:
   pull_request:
     paths:
       - 'crates/vendor-mistral/**'
-      - 'crates/vendor-live-support/**'
+      - 'crates/vendor-live-support/src/**'
+      - 'crates/vendor-live-support/Cargo.toml'
       - '.github/workflows/vendor-live-mistral.yml'
   workflow_dispatch:
 

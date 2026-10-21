@@ -39,6 +39,8 @@ Use `--test-threads=1`: vendors cap concurrent requests and the tests print timi
 CI: `.github/workflows/vendor-live-<id>.yml`. `tests/workflow_lockstep_test.rs` fails the PR when a
 `crates/vendor-*/tests/live_test.rs` has no such workflow, or the workflow lacks the fork-skip
 `if`, `_LIVE_REQUIRED: '1'`, `--test-threads=1` or the path filter.
+A pull request that adds or changes one vendor runs only that vendor's live job, because each workflow's `pull_request` paths are its own crate, its own workflow file, and this crate's `src/**` and `Cargo.toml`. Changing the shared harness (`src/` or `Cargo.toml`) runs every vendor's live job; this README and the lockstep test do not. `pull_request_paths_are_scoped_to_the_vendor` enforces it.
+
 The Google, Azure and AWS workflows are additionally gated by the repository variables `GOOGLE_LIVE_ENABLED`, `AZURE_LIVE_ENABLED` and `AWS_LIVE_ENABLED` (skipped until set); no other vendor workflow may carry such a gate.
 
 ## Latency bench

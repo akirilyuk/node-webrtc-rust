@@ -162,12 +162,12 @@ export function voiceConfigForVendor(id: LiveVendorId) {
     case 'mistral':
       return {
         stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
-        tts: { provider: 'mistral' as const, model: 'voxtral-mini-tts-realtime-3-0' },
+        tts: { provider: 'mistral' as const, model: 'voxtral-mini-tts-3-0' },
       }
     case 'mistral-stt':
       return {
         stt: { provider: 'mistral' as const, model: 'voxtral-mini-transcribe-realtime-3-0' },
-        tts: { provider: 'mistral' as const, model: 'voxtral-mini-tts-realtime-3-0' },
+        tts: { provider: 'mistral' as const, model: 'voxtral-mini-tts-3-0' },
         // Mistral bills realtime STT per streamed minute: gate STT on VAD. It emits partials,
         // so barge-in keeps its default (it waits for a partial).
         vad: VOICE_AGENT_VAD_PRESET,

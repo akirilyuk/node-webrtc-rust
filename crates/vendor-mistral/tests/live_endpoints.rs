@@ -283,14 +283,10 @@ fn all_serve_all_the_fastest_wins() {
 }
 
 #[test]
-fn fastest_without_the_realtime_tts_model_loses_to_the_next() {
+fn fastest_without_the_default_tts_model_loses_to_the_next() {
     let probes = [
         probe("global", Some(180), &all_defaults()),
-        probe(
-            "eu",
-            Some(40),
-            &["voxtral-mini-tts-3-0", *DEFAULT_STT_MODEL],
-        ),
+        probe("eu", Some(40), &["voxtral-mini-tts-3", *DEFAULT_STT_MODEL]),
         probe("us", Some(300), &all_defaults()),
     ];
     assert_eq!(choose_endpoint(&probes).unwrap().label, "global");
@@ -300,17 +296,14 @@ fn fastest_without_the_realtime_tts_model_loses_to_the_next() {
 fn none_serves_all_falls_back_and_names_the_tts_model() {
     let probes = [
         probe("global", Some(180), &[*DEFAULT_TTS_MODEL]),
-        probe(
-            "eu",
-            Some(60),
-            &["voxtral-mini-tts-3-0", *DEFAULT_STT_MODEL],
-        ),
-        probe("us", Some(30), &["voxtral-mini-tts-3-0"]),
+        probe("eu", Some(60), &["voxtral-mini-tts-3", *DEFAULT_STT_MODEL]),
+        probe("us", Some(30), &["voxtral-mini-tts-3"]),
     ];
     let choice = choose_endpoint(&probes).unwrap();
     assert_eq!(choice.label, "eu");
     assert!(
-        choice.reason.contains("voxtral-mini-tts-3-0") && choice.reason.contains("no endpoint"),
+        choice.reason.contains("TTS model voxtral-mini-tts-3;")
+            && choice.reason.contains("no endpoint"),
         "{}",
         choice.reason
     );

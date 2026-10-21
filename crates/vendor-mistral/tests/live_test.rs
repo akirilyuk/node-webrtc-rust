@@ -15,7 +15,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
@@ -116,9 +116,67 @@ async fn assert_streams(model: &str) {
     );
 }
 
+/// Documented `GET {base}/v1/models`, shape `{"data": [{"id": ..}, ..]}`. Bounded to 10 s.
+async fn listed_model_ids(base: &str, key: &str) -> Vec<String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    let response = client
+        .get(format!("{base}/v1/models"))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap_or_else(|err| panic!("GET /v1/models failed: {}", err.without_url()));
+    assert!(
+        response.status().is_success(),
+        "GET /v1/models answered {}",
+        response.status()
+    );
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .unwrap_or_else(|err| panic!("unreadable /v1/models body: {}", err.without_url()));
+    body.get("data")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The realtime TTS model is Premier-tagged. When the key's model list has it, it must stream;
+/// when it does not, synthesis must fail with `400 invalid_model`. The second branch starts
+/// failing once Mistral enables the model for our key, which is the signal to revisit the default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tts_realtime_3_streams() {
-    assert_streams("voxtral-mini-tts-realtime-3-0").await;
+async fn tts_realtime_3_access_matches_the_model_list() {
+    const REALTIME: &str = "voxtral-mini-tts-realtime-3-0";
+    let Some(key) = live_key() else { return };
+    let base = resolve_base_url_from_env(None);
+    let listed = listed_model_ids(&base, &key)
+        .await
+        .iter()
+        .any(|id| id == REALTIME);
+    println!("mistral_tts_realtime_access {{\"listed\":{listed}}}");
+    if listed {
+        assert_streams(REALTIME).await;
+        return;
+    }
+    let (sink, task) = sink();
+    let err = tts(&key, REALTIME)
+        .synthesize_progressive(TEXT, Some(sink))
+        .await
+        .expect_err("the realtime model is not listed, so synthesis must fail");
+    let _ = task.await;
+    let message = err.to_string();
+    assert!(
+        message.contains("400") && message.contains("invalid_model"),
+        "unexpected error: {message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -133,7 +191,7 @@ async fn tts_3_streams() {
 async fn transcribe_realtime_3_live_vad_gated_roundtrip() {
     let Some(key) = live_key() else { return };
 
-    let speech: Vec<u8> = tts(&key, "voxtral-mini-tts-realtime-3-0")
+    let speech: Vec<u8> = tts(&key, "voxtral-mini-tts-3-0")
         .synthesize_progressive(COUNT_PHRASE, None)
         .await
         .unwrap_or_else(|err| panic!("voxtral tts failed: {err}"))

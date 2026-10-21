@@ -168,7 +168,7 @@ mod tests {
     /// The crate takes its defaults from the catalog; the plan pins the values.
     #[test]
     fn defaults_come_from_the_catalog() {
-        assert_eq!(*DEFAULT_TTS_MODEL, "voxtral-mini-tts-realtime-3-0");
+        assert_eq!(*DEFAULT_TTS_MODEL, "voxtral-mini-tts-3-0");
         assert_eq!(*DEFAULT_TTS_VOICE, "voice_478");
         assert_eq!(
             voice_catalog::default_tts_model("mistral"),

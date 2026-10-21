@@ -100,13 +100,13 @@ describe('crate-aligned allowlist snapshots', () => {
     const vendor = getVendor('mistral')
     expect(vendor?.stt).toBe(true)
     expect(vendor?.tts).toBe(true)
-    expect(vendor?.defaultTtsModel).toBe('voxtral-mini-tts-realtime-3-0')
+    expect(vendor?.defaultTtsModel).toBe('voxtral-mini-tts-3-0')
     expect(vendor?.defaultTtsVoice).toBe('voice_478')
     expect(vendor?.defaultSttModel).toBe('voxtral-mini-transcribe-realtime-3-0')
     expect(ttsModelAllowlist('mistral')).toEqual([
-      'voxtral-mini-tts-realtime-3-0',
       'voxtral-mini-tts-3-0',
       'voxtral-mini-tts-3',
+      'voxtral-mini-tts-realtime-3-0',
     ])
     expect(ttsModelAllowlist('mistral')).not.toContain('voxtral-mini-tts-latest')
     expect(sttModelAllowlist('mistral')).toEqual([
@@ -116,16 +116,9 @@ describe('crate-aligned allowlist snapshots', () => {
     expect(vendor?.ttsVoiceIds).toBe('open')
     // The defaults are valid for their models.
     expect(
-      validateVoiceCatalogChoice(
-        'mistral',
-        'ttsVoice',
-        'voice_478',
-        'voxtral-mini-tts-realtime-3-0',
-      ),
+      validateVoiceCatalogChoice('mistral', 'ttsVoice', 'voice_478', 'voxtral-mini-tts-3-0'),
     ).toBeNull()
-    expect(
-      validateVoiceCatalogChoice('mistral', 'ttsModel', 'voxtral-mini-tts-realtime-3-0'),
-    ).toBeNull()
+    expect(validateVoiceCatalogChoice('mistral', 'ttsModel', 'voxtral-mini-tts-3-0')).toBeNull()
     expect(
       validateVoiceCatalogChoice('mistral', 'ttsModel', 'voxtral-mini-tts-latest'),
     ).not.toBeNull()

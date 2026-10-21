@@ -326,7 +326,7 @@ mod tests {
     fn mistral_catalog_entry() {
         assert_eq!(
             default_tts_model("mistral"),
-            Some("voxtral-mini-tts-realtime-3-0")
+            Some("voxtral-mini-tts-3-0")
         );
         assert_eq!(default_tts_voice("mistral"), Some("voice_478"));
         assert_eq!(
@@ -342,9 +342,9 @@ mod tests {
             tts_models("mistral"),
             Some(
                 &[
-                    "voxtral-mini-tts-realtime-3-0",
                     "voxtral-mini-tts-3-0",
-                    "voxtral-mini-tts-3"
+                    "voxtral-mini-tts-3",
+                    "voxtral-mini-tts-realtime-3-0"
                 ][..]
             )
         );

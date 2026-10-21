@@ -236,25 +236,25 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
   },
   mistral: {
     id: 'mistral',
-    label: 'Mistral TTS (Voxtral TTS Realtime 3)',
+    label: 'Mistral TTS (Voxtral TTS 3)',
     requiredEnv: ['MISTRAL_API_KEY', 'OPENAI_API_KEY'],
     config: withKeys(
       { provider: 'openai', model: 'whisper-1', language: 'en' },
       {
         provider: 'mistral',
-        model: 'voxtral-mini-tts-realtime-3-0',
+        model: 'voxtral-mini-tts-3-0',
         // Unset: the catalog default voice (voice_478).
         voice: process.env.MISTRAL_VOICE_ID,
         apiKey: env('MISTRAL_API_KEY'),
       },
     ),
-    ttsPhrase: 'Mistral Voxtral realtime synthesis check.',
+    ttsPhrase: 'Mistral Voxtral synthesis check.',
     notes:
       'MISTRAL_VOICE_ID optional (a Voxtral 3 preset such as voice_478, or a workspace voice id; unset uses voice_478). STT uses OpenAI for the demo pairing.',
   },
   'mistral-stt': {
     id: 'mistral-stt',
-    label: 'Mistral STT (Voxtral Mini Transcribe Realtime 3) + TTS (Voxtral TTS Realtime 3)',
+    label: 'Mistral STT (Voxtral Mini Transcribe Realtime 3) + TTS (Voxtral TTS 3)',
     requiredEnv: ['MISTRAL_API_KEY'],
     config: withKeys(
       {
@@ -264,7 +264,7 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
       },
       {
         provider: 'mistral',
-        model: 'voxtral-mini-tts-realtime-3-0',
+        model: 'voxtral-mini-tts-3-0',
         voice: process.env.MISTRAL_VOICE_ID,
         apiKey: env('MISTRAL_API_KEY'),
       },

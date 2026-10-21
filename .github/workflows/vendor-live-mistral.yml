@@ -1,0 +1,78 @@
+name: Vendor live — Mistral
+
+# Runs the Mistral Voxtral 3 live tests (crates/vendor-mistral/tests/live_test.rs: TTS, realtime
+# STT) and the endpoint probe (live_endpoints.rs: documented GET /v1/models on the global, EU and
+# US endpoints plus TCP+TLS connect times; no billed call) against the real API. The API key is
+# the repo secret MISTRAL_API_KEY, the name Mistral documents. MISTRAL_BASE_URL is not set here,
+# so the tests use the global endpoint.
+#
+# Fork PRs are skipped on purpose: this repo is public and the job runs on our own runners
+# (ARC scale set nwr-large; the repo variable NWR_RUNNER_LARGE=self-hosted falls back to the
+# old runners), so fork code must never run there, and forks get no secrets anyway. Pull requests
+# from branches of this repo and manual dispatches run the job.
+#
+# A missing key fails the job (first step, and MISTRAL_LIVE_REQUIRED=1 makes the tests panic
+# instead of skipping), so a skipped live test can never show green.
+
+# Pull request triggers: this vendor's crate and this workflow. Shared harness code
+# (crates/vendor-live-support/src, its Cargo.toml) triggers every vendor; docs and the lockstep
+# test do not.
+on:
+  pull_request:
+    paths:
+      - 'crates/vendor-mistral/**'
+      - 'crates/vendor-live-support/src/**'
+      - 'crates/vendor-live-support/Cargo.toml'
+      - '.github/workflows/vendor-live-mistral.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read # pull the ci-build image from GHCR
+
+concurrency:
+  group: vendor-live-mistral-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: Mistral live
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
+    # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
+    # ci-run-integration-tests docker run).
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+    steps:
+      # Migration measurement: CPUs, cgroup limits and CPU model of the runner this job got.
+      - name: Runner facts
+        run: |
+          echo "runner=${RUNNER_NAME:-unknown} nproc=$(nproc)"
+          echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+          grep -m1 'model name' /proc/cpuinfo || true
+
+      - uses: actions/checkout@v4
+
+      - name: Require Mistral key
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: |
+          if [ -z "$MISTRAL_API_KEY" ]; then
+            echo "::error::secret MISTRAL_API_KEY is empty"
+            exit 1
+          fi
+
+      - name: Voxtral 3 live tests
+        shell: bash
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          MISTRAL_LIVE_REQUIRED: '1'
+        run: |
+          cargo test -p node-webrtc-rust-vendor-mistral --features live --test live_test --test live_endpoints -- --nocapture --test-threads=1 2>&1 | tee live.log; status=${PIPESTATUS[0]}; grep -oE 'mistral_[a-z_]+ .*' live.log >> "$GITHUB_STEP_SUMMARY" || true; exit $status

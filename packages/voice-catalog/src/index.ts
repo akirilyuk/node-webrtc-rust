@@ -9,6 +9,7 @@ export type VoiceVendorId =
   | 'elevenlabs'
   | 'cartesia'
   | 'fishaudio'
+  | 'mistral'
   | 'assemblyai'
   | 'google'
   | 'groq'
@@ -19,6 +20,14 @@ export type VoiceVendorId =
 
 /** Concrete speech transport a customer can select (`auto` is the SDK-level alias for the catalog default). */
 export type VoiceTransport = 'websocket' | 'http'
+
+/** One suggested voice for a vendor whose voice ids are open. */
+export interface TtsPresetVoice {
+  id: string
+  name: string
+  /** BCP 47 tag, e.g. `en-US`, `en-GB`, `fr`. */
+  language: string
+}
 
 export interface VoiceVendorEntry {
   id: VoiceVendorId
@@ -48,6 +57,11 @@ export interface VoiceVendorEntry {
    * - `model`: the voice is selected by the model id.
    */
   ttsVoiceIds?: 'listed' | 'open' | 'model'
+  /**
+   * Suggested voices for `open` vendors, for a voice picker. Not a validation list: the vendor still
+   * accepts any voice id, and nothing rejects ids missing from here.
+   */
+  ttsPresetVoices?: TtsPresetVoice[]
   /** Relative to `catalog/` — load via {@link azureTtsVoices} / {@link googleTtsVoices}. */
   ttsVoiceListFile?: string
   home: string
@@ -134,6 +148,11 @@ export function ttsVoiceAllowlist(vendorId: string, model?: string): readonly st
   return vendor?.ttsVoices ?? []
 }
 
+/** Suggested voices for a vendor (empty when it lists none). Not a validation list. */
+export function ttsPresetVoices(vendorId: string): readonly TtsPresetVoice[] {
+  return getVendor(vendorId)?.ttsPresetVoices ?? []
+}
+
 /** Selectable STT transports for a vendor (empty when none). */
 export function sttTransports(vendorId: string): readonly VoiceTransport[] {
   return getVendor(vendorId)?.sttTransports ?? []
@@ -157,7 +176,7 @@ export function defaultTtsTransport(vendorId: string): VoiceTransport | undefine
 export type VoiceCatalogValidationKind = 'sttModel' | 'ttsModel' | 'ttsVoice'
 
 export interface VoiceCatalogValidationError {
-  kind: VoiceCatalogValidationKind
+  kind: VoiceCatalogValidationKind | 'ttsPresetVoices'
   vendorId: string
   value: string
   message: string
@@ -233,6 +252,42 @@ export function validateVoiceCatalogChoice(
   }
 
   return null
+}
+
+/**
+ * Checks the preset-voice rules for a catalog: presets only on `open` vendors, unique ids, and
+ * `defaultTtsVoice` (when set) is one of them. Returns every violation; empty when valid.
+ */
+export function validateVoiceCatalogPresets(
+  vendors: readonly VoiceVendorEntry[] = VOICE_VENDORS,
+): VoiceCatalogValidationError[] {
+  const errors: VoiceCatalogValidationError[] = []
+  for (const vendor of vendors) {
+    const presets = vendor.ttsPresetVoices
+    if (!presets) continue
+    const fail = (value: string, message: string) =>
+      errors.push({ kind: 'ttsPresetVoices', vendorId: vendor.id, value, message })
+    if (vendor.ttsVoiceIds !== 'open') {
+      fail(
+        vendor.ttsVoiceIds ?? '',
+        `vendor \`${vendor.id}\` has ttsPresetVoices but ttsVoiceIds is not \`open\``,
+      )
+    }
+    const ids = new Set<string>()
+    for (const preset of presets) {
+      if (ids.has(preset.id)) {
+        fail(preset.id, `duplicate preset voice id \`${preset.id}\` for vendor \`${vendor.id}\``)
+      }
+      ids.add(preset.id)
+    }
+    if (vendor.defaultTtsVoice !== undefined && !ids.has(vendor.defaultTtsVoice)) {
+      fail(
+        vendor.defaultTtsVoice,
+        `defaultTtsVoice \`${vendor.defaultTtsVoice}\` is not a preset voice of vendor \`${vendor.id}\``,
+      )
+    }
+  }
+  return errors
 }
 
 export {

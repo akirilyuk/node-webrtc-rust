@@ -3786,6 +3786,7 @@ dependencies = [
  "node-webrtc-rust-vendor-fishaudio",
  "node-webrtc-rust-vendor-google",
  "node-webrtc-rust-vendor-groq",
+ "node-webrtc-rust-vendor-mistral",
  "node-webrtc-rust-vendor-mock",
  "node-webrtc-rust-vendor-openai",
  "node-webrtc-rust-vendor-sherpa-onnx",
@@ -4101,6 +4102,27 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "node-webrtc-rust-vendor-mistral"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "node-webrtc-rust-speech",
+ "node-webrtc-rust-vendor-live-support",
+ "node-webrtc-rust-voice-catalog",
+ "reqwest 0.12.28",
+ "rustls 0.23.40",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tokio-tungstenite",
+ "webpki-roots 1.0.7",
 ]
 
 [[package]]

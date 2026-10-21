@@ -97,6 +97,7 @@ if suite_enabled rust; then
     cargo test --no-run -p node-webrtc-rust-vendor-deepgram --features live --lib --test http_pool_test --test mock_server_test --test stt_agent_mock_test --test stt_mock_server_test --test vendor_test
     cargo test --no-run -p node-webrtc-rust-vendor-elevenlabs --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test
     cargo test --no-run -p node-webrtc-rust-vendor-fishaudio --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test
+    cargo test --no-run -p node-webrtc-rust-vendor-mistral --features live --lib --test live_endpoints --test stt_mock_server_test --test tts_mock_server_test
     cargo test --no-run -p node-webrtc-rust-vendor-azure --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
     cargo test --no-run -p node-webrtc-rust-vendor-groq --features live --lib --test http_pool_test --test mock_server_test --test vendor_test
     cargo test --no-run -p node-webrtc-rust-vendor-openai --features live --lib --test vendor_test --test http_pool_test --test mock_server_test
@@ -134,6 +135,8 @@ if suite_enabled rust; then
     cargo test -p node-webrtc-rust-vendor-elevenlabs --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-fishaudio" -- \
     cargo test -p node-webrtc-rust-vendor-fishaudio --features live --lib --test http_pool_test --test mock_server_test --test stt_mock_server_test --test vendor_test -- --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendor-mistral" -- \
+    cargo test -p node-webrtc-rust-vendor-mistral --features live --lib --test live_endpoints --test stt_mock_server_test --test tts_mock_server_test -- --test-threads=1
   # Cloud vendors with a pooled HTTP client (HTTP pool reuse, last_transport, timeout bounds) and
   # their mock-server tests (progressive TTS body, loud STT failures). Test
   # targets are listed instead of a bare `cargo test` so a live_test / live_bench target (they need

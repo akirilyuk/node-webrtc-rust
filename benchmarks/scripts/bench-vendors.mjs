@@ -266,10 +266,13 @@ export async function main(argv, processEnv = process.env) {
   }
   const sources = [(name) => processEnv[name], (name) => fileEnv.get(name)]
   const resolved = new Map(VENDORS.map((v) => [v.id, resolveVendorEnv(v, sources)]))
-  // Every resolved value of length >= 8 must appear in no output file.
+  // Every resolved value of length >= 8 must appear in no output file, except values of vars
+  // marked `public` (an endpoint URL is printed by the bench on purpose).
   const secrets = [
     ...new Set(
-      [...resolved.values()].flatMap((r) => Object.values(r.env)).filter((v) => v.length >= 8),
+      VENDORS.flatMap((v) =>
+        v.vars.filter((x) => !x.public).map((x) => resolved.get(v.id).env[x.name]),
+      ).filter((value) => value && value.length >= 8),
     ),
   ]
 

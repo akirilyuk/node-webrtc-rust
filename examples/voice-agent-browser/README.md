@@ -49,30 +49,33 @@ Presets live in [`examples/shared/voice-vendor-presets.ts`](../shared/voice-vend
 
 ### Supported vendors
 
-| Vendor         | `VOICE_VENDOR`  | STT                                    | TTS              | Required env                           | npm script                 |
-| -------------- | --------------- | -------------------------------------- | ---------------- | -------------------------------------- | -------------------------- |
-| OpenAI         | `openai`        | OpenAI                                 | OpenAI           | `OPENAI_API_KEY`                       | `start:live:openai`        |
-| Deepgram       | `deepgram`      | Deepgram                               | OpenAI (pairing) | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`   | `start:live:deepgram`      |
-| ElevenLabs     | `elevenlabs`    | OpenAI (pairing)                       | ElevenLabs       | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` | `start:live:elevenlabs`    |
-| Cartesia       | `cartesia`      | OpenAI (pairing)                       | Cartesia         | `CARTESIA_API_KEY`, `OPENAI_API_KEY`   | `start:live:cartesia`      |
-| Fish Audio     | `fishaudio`     | OpenAI (pairing)                       | Fish Audio       | `FISH_API_KEY`, `OPENAI_API_KEY`       | `start:live:fishaudio`     |
-| Fish Audio STT | `fishaudio-stt` | Fish Audio (`transcribe-1`, VAD-gated) | Fish Audio       | `FISH_API_KEY`                         | `start:live:fishaudio-stt` |
-| AssemblyAI     | `assemblyai`    | AssemblyAI                             | OpenAI (pairing) | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY` | `start:live:assemblyai`    |
-| Google Cloud   | `google`        | Google                                 | Google           | `GOOGLE_APPLICATION_CREDENTIALS`       | `start:live:google`        |
+| Vendor         | `VOICE_VENDOR`  | STT                                                         | TTS              | Required env                           | npm script                 |
+| -------------- | --------------- | ----------------------------------------------------------- | ---------------- | -------------------------------------- | -------------------------- |
+| OpenAI         | `openai`        | OpenAI                                                      | OpenAI           | `OPENAI_API_KEY`                       | `start:live:openai`        |
+| Deepgram       | `deepgram`      | Deepgram                                                    | OpenAI (pairing) | `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`   | `start:live:deepgram`      |
+| ElevenLabs     | `elevenlabs`    | OpenAI (pairing)                                            | ElevenLabs       | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` | `start:live:elevenlabs`    |
+| Cartesia       | `cartesia`      | OpenAI (pairing)                                            | Cartesia         | `CARTESIA_API_KEY`, `OPENAI_API_KEY`   | `start:live:cartesia`      |
+| Fish Audio     | `fishaudio`     | OpenAI (pairing)                                            | Fish Audio       | `FISH_API_KEY`, `OPENAI_API_KEY`       | `start:live:fishaudio`     |
+| Fish Audio STT | `fishaudio-stt` | Fish Audio (`transcribe-1`, VAD-gated)                      | Fish Audio       | `FISH_API_KEY`                         | `start:live:fishaudio-stt` |
+| Mistral        | `mistral`       | OpenAI (pairing)                                            | Mistral          | `MISTRAL_API_KEY`, `OPENAI_API_KEY`    | `start:live:mistral`       |
+| Mistral STT    | `mistral-stt`   | Mistral (`voxtral-mini-transcribe-realtime-3-0`, VAD-gated) | Mistral          | `MISTRAL_API_KEY`                      | `start:live:mistral-stt`   |
+| AssemblyAI     | `assemblyai`    | AssemblyAI                                                  | OpenAI (pairing) | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY` | `start:live:assemblyai`    |
+| Google Cloud   | `google`        | Google                                                      | Google           | `GOOGLE_APPLICATION_CREDENTIALS`       | `start:live:google`        |
 
 **Pairing note:** Not every vendor supports both STT and TTS in this SDK. Demos pair STT-only vendors with OpenAI TTS (or Google with Google). In production you can mix `VoiceAgentConfig.stt` and `.tts` freely.
 
 ### Official API documentation
 
-| Vendor       | STT                                                                         | TTS                                                                           |
-| ------------ | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| OpenAI       | [Docs](https://platform.openai.com/docs/guides/speech-to-text)              | [Docs](https://platform.openai.com/docs/guides/text-to-speech)                |
-| Deepgram     | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio) | —                                                                             |
-| ElevenLabs   | —                                                                           | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)    |
-| Cartesia     | —                                                                           | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes)                 |
-| Fish Audio   | —                                                                           | [TTS live](https://docs.fish.audio/api-reference/endpoint/websocket/tts-live) |
-| AssemblyAI   | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)   | —                                                                             |
-| Google Cloud | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs)              | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs)                |
+| Vendor       | STT                                                                                                  | TTS                                                                                    |
+| ------------ | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| OpenAI       | [Docs](https://platform.openai.com/docs/guides/speech-to-text)                                       | [Docs](https://platform.openai.com/docs/guides/text-to-speech)                         |
+| Deepgram     | [Live streaming](https://developers.deepgram.com/docs/live-streaming-audio)                          | —                                                                                      |
+| ElevenLabs   | —                                                                                                    | [TTS API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)             |
+| Cartesia     | —                                                                                                    | [TTS bytes](https://docs.cartesia.ai/api-reference/tts/bytes)                          |
+| Fish Audio   | —                                                                                                    | [TTS live](https://docs.fish.audio/api-reference/endpoint/websocket/tts-live)          |
+| Mistral      | [Realtime transcription](https://docs.mistral.ai/studio/audio/speech-to-text/transcribe-in-realtime) | [Generate speech](https://docs.mistral.ai/studio/audio/text-to-speech/generate-speech) |
+| AssemblyAI   | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                            | —                                                                                      |
+| Google Cloud | [Speech-to-Text](https://cloud.google.com/speech-to-text/docs)                                       | [Text-to-Speech](https://cloud.google.com/text-to-speech/docs)                         |
 
 Local STT (no cloud): [`voice-agent-local-sherpa`](../voice-agent-local-sherpa/README.md) — **free on-device Sherpa STT** (privacy-friendly: mic audio stays off third-party STT APIs; lower latency); per-language `download-stt:es|fr|de|zh|…`; full list in [`VOICE_VENDOR_REFERENCE`](../shared/VOICE_VENDOR_REFERENCE.md#local-sherpa-onnx--free-on-device-stt-recommended) · [Sherpa-ONNX docs](https://k2-fsa.github.io/sherpa/onnx/)
 
@@ -105,6 +108,14 @@ FISH_API_KEY=... OPENAI_API_KEY=sk-... \
 FISH_API_KEY=... \
   npm run start:live:fishaudio-stt --workspace=@node-webrtc-rust/example-voice-agent-browser
 
+# Mistral TTS + OpenAI STT
+MISTRAL_API_KEY=... OPENAI_API_KEY=sk-... \
+  npm run start:live:mistral --workspace=@node-webrtc-rust/example-voice-agent-browser
+
+# Mistral STT (Voxtral Mini Transcribe Realtime 3, VAD-gated) + Mistral TTS
+MISTRAL_API_KEY=... \
+  npm run start:live:mistral-stt --workspace=@node-webrtc-rust/example-voice-agent-browser
+
 # AssemblyAI STT + OpenAI TTS
 ASSEMBLYAI_API_KEY=... OPENAI_API_KEY=sk-... \
   npm run start:live:assemblyai --workspace=@node-webrtc-rust/example-voice-agent-browser
@@ -128,6 +139,7 @@ VOICE_VENDOR=openai OPENAI_API_KEY=sk-... \
 | `ELEVENLABS_VOICE_ID` | `VOICE_VENDOR=elevenlabs` (default: Rachel)           |
 | `CARTESIA_VOICE_ID`   | `VOICE_VENDOR=cartesia`                               |
 | `FISH_VOICE_ID`       | `VOICE_VENDOR=fishaudio` / `fishaudio-stt` (optional) |
+| `MISTRAL_VOICE_ID`    | `VOICE_VENDOR=mistral` / `mistral-stt` (optional)     |
 | `GOOGLE_API_KEY`      | Alternative to ADC for some Google setups             |
 
 ### Verify live mode

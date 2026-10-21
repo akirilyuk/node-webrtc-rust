@@ -181,12 +181,12 @@ sendTextToTTS(text) ──► TTS vendor adapter ──► TtsPlaybackBuffer
                               LocalAudioTrack.writeSample() ──► Outbound RTP (agent)
 ```
 
-| Layer         | Location                      | Role                                                                                                                        |
-| ------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Orchestration | `crates/speech`               | Config, event bus, VAD, barge-in, TTS queue                                                                                 |
-| Vendors       | `crates/vendor-*`             | OpenAI ([STT matrix](crates/vendor-openai/README.md)), Deepgram, ElevenLabs, Google, Cartesia, Fish Audio, AssemblyAI, mock |
-| Node API      | `@node-webrtc-rust/sdk/voice` | `VoiceAgent`, typed config, callbacks + `speechEvents()`                                                                    |
-| Transport     | `@node-webrtc-rust/sdk`       | `RTCPeerConnection`, `LocalAudioTrack`, `RemoteAudioTrack`                                                                  |
+| Layer         | Location                      | Role                                                                                                                                 |
+| ------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Orchestration | `crates/speech`               | Config, event bus, VAD, barge-in, TTS queue                                                                                          |
+| Vendors       | `crates/vendor-*`             | OpenAI ([STT matrix](crates/vendor-openai/README.md)), Deepgram, ElevenLabs, Google, Cartesia, Fish Audio, Mistral, AssemblyAI, mock |
+| Node API      | `@node-webrtc-rust/sdk/voice` | `VoiceAgent`, typed config, callbacks + `speechEvents()`                                                                             |
+| Transport     | `@node-webrtc-rust/sdk`       | `RTCPeerConnection`, `LocalAudioTrack`, `RemoteAudioTrack`                                                                           |
 
 **Frame format:** 48 kHz stereo, 16-bit PCM, 20 ms frames (3 840 bytes) on the WebRTC track path. VAD resamples to mono 16 kHz internally.
 
@@ -203,6 +203,7 @@ STT and TTS providers are **independently configurable** — mix vendors per ses
 | `elevenlabs`       | —   | ✓   | `ELEVENLABS_API_KEY`                                                    |
 | `cartesia`         | —   | ✓   | `CARTESIA_API_KEY`                                                      |
 | `fishaudio`        | ✓   | ✓   | `FISH_API_KEY`                                                          |
+| `mistral`          | ✓   | ✓   | `MISTRAL_API_KEY`                                                       |
 | `assemblyai`       | ✓   | —   | `ASSEMBLYAI_API_KEY`                                                    |
 | `google`           | ✓   | ✓   | `GOOGLE_APPLICATION_CREDENTIALS`                                        |
 | **`local-sherpa`** | ✓   | ✓   | `SHERPA_STT_MODEL_PATH`, `SHERPA_TTS_MODEL_PATH`, `SHERPA_STT_LANGUAGE` |
@@ -642,10 +643,10 @@ When enabled, `VoiceAgent::start` accepts optional session attributes (`session_
 
 **Span / metric attributes for vendor grouping:**
 
-| Attribute    | Spans / metrics                                      | Values                                                                            |
-| ------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `stt.vendor` | `voice.session`, `voice.stt`, `voice_stt_latency_ms` | `openai`, `deepgram`, `google`, `assemblyai`, `local-sherpa`, `mock`              |
-| `tts.vendor` | `voice.session`, `voice.tts`, `voice_tts_latency_ms` | `openai`, `elevenlabs`, `google`, `cartesia`, `fishaudio`, `local-sherpa`, `mock` |
+| Attribute    | Spans / metrics                                      | Values                                                                                       |
+| ------------ | ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `stt.vendor` | `voice.session`, `voice.stt`, `voice_stt_latency_ms` | `openai`, `deepgram`, `google`, `assemblyai`, `local-sherpa`, `mock`                         |
+| `tts.vendor` | `voice.session`, `voice.tts`, `voice_tts_latency_ms` | `openai`, `elevenlabs`, `google`, `cartesia`, `fishaudio`, `mistral`, `local-sherpa`, `mock` |
 
 **Metrics:** `voice_stt_latency_ms`, `voice_tts_latency_ms`, `sherpa_pool_wait_ms`, `sherpa_pool_entries` (histograms/gauge), plus the per-project turn latency series below.
 

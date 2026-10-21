@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
-import { VoiceAgent } from '../src/voice'
+import { VOICE_AGENT_VAD_PRESET, VoiceAgent } from '../src/voice'
+import { toJsSttConfig, toJsTtsConfig } from '../src/voice/VoiceAgent'
 import { LIVE_VENDOR_METAS, type LiveVendorId, voiceConfigForVendor } from './voice-vendor-presets'
 
 describe('VoiceAgent vendor config surface', () => {
@@ -26,8 +27,54 @@ describe('VoiceAgent vendor config surface', () => {
     expect('vad' in cfg && cfg.vad.bargeIn.requireSttPartial).toBe(false)
   })
 
-  test('lists eleven supported live vendor presets', () => {
-    expect(LIVE_VENDOR_METAS).toHaveLength(11)
+  test('mistral-stt preset gates STT on VAD and keeps the default partial rule', () => {
+    const cfg = voiceConfigForVendor('mistral-stt')
+    expect(cfg.stt.provider).toBe('mistral')
+    expect(cfg.stt.model).toBe('voxtral-mini-transcribe-realtime-3-0')
+    expect(cfg.tts.provider).toBe('mistral')
+    expect('vad' in cfg && cfg.vad.gateStt).toBe(true)
+    expect('vad' in cfg && cfg.vad.bargeIn.requireSttPartial).toBe(
+      VOICE_AGENT_VAD_PRESET.bargeIn.requireSttPartial,
+    )
+  })
+
+  test('mistral TTS and STT configs reach the native config', () => {
+    expect(toJsTtsConfig({ provider: 'mistral', model: 'voxtral-mini-tts-3-0' })).toMatchObject({
+      provider: 'mistral',
+      model: 'voxtral-mini-tts-3-0',
+    })
+    expect(
+      toJsSttConfig({
+        provider: 'mistral',
+        model: 'voxtral-mini-transcribe-realtime-3',
+        language: 'en',
+      }),
+    ).toMatchObject({
+      provider: 'mistral',
+      model: 'voxtral-mini-transcribe-realtime-3',
+      language: 'en',
+    })
+  })
+
+  test('mistral rejects a model that is not documented', () => {
+    const make = (tts: string, stt: string) =>
+      new VoiceAgent({
+        stt: { provider: 'mistral', model: stt },
+        tts: { provider: 'mistral', model: tts },
+      })
+    expect(() => make('voxtral-mini-tts-latest', 'voxtral-mini-transcribe-realtime-3-0')).toThrow(
+      /unsupported Mistral TTS model/,
+    )
+    expect(() =>
+      make('voxtral-mini-tts-realtime-3-0', 'voxtral-mini-transcribe-realtime-latest'),
+    ).toThrow(/unsupported Mistral STT model/)
+    expect(() =>
+      make('voxtral-mini-tts-realtime-3-0', 'voxtral-mini-transcribe-realtime-3-0'),
+    ).not.toThrow()
+  })
+
+  test('lists thirteen supported live vendor presets', () => {
+    expect(LIVE_VENDOR_METAS).toHaveLength(13)
     expect(LIVE_VENDOR_METAS.map((m) => m.id).sort()).toEqual(
       [
         'assemblyai',
@@ -40,6 +87,8 @@ describe('VoiceAgent vendor config surface', () => {
         'fishaudio-stt',
         'google',
         'groq',
+        'mistral',
+        'mistral-stt',
         'openai',
       ].sort(),
     )

@@ -13,6 +13,8 @@
     "start:live:cartesia": "VOICE_VENDOR=cartesia tsx src/index.ts",
     "start:live:fishaudio": "VOICE_VENDOR=fishaudio tsx src/index.ts",
     "start:live:fishaudio-stt": "VOICE_VENDOR=fishaudio-stt tsx src/index.ts",
+    "start:live:mistral": "VOICE_VENDOR=mistral tsx src/index.ts",
+    "start:live:mistral-stt": "VOICE_VENDOR=mistral-stt tsx src/index.ts",
     "start:live:assemblyai": "VOICE_VENDOR=assemblyai tsx src/index.ts",
     "start:live:google": "VOICE_VENDOR=google tsx src/index.ts",
     "typecheck": "tsc --noEmit"

@@ -12,6 +12,8 @@ export type LiveVendorId =
   | 'cartesia'
   | 'fishaudio'
   | 'fishaudio-stt'
+  | 'mistral'
+  | 'mistral-stt'
   | 'assemblyai'
   | 'google'
   | 'groq'
@@ -61,6 +63,18 @@ export const LIVE_VENDOR_METAS: LiveVendorPresetMeta[] = [
     requiredEnv: ['FISH_API_KEY'],
     sttProvider: 'fishaudio',
     ttsProvider: 'fishaudio',
+  },
+  {
+    id: 'mistral',
+    requiredEnv: ['MISTRAL_API_KEY', 'OPENAI_API_KEY'],
+    sttProvider: 'openai',
+    ttsProvider: 'mistral',
+  },
+  {
+    id: 'mistral-stt',
+    requiredEnv: ['MISTRAL_API_KEY'],
+    sttProvider: 'mistral',
+    ttsProvider: 'mistral',
   },
   {
     id: 'assemblyai',
@@ -144,6 +158,19 @@ export function voiceConfigForVendor(id: LiveVendorId) {
           ...VOICE_AGENT_VAD_PRESET,
           bargeIn: { ...VOICE_AGENT_VAD_PRESET.bargeIn, requireSttPartial: false },
         },
+      }
+    case 'mistral':
+      return {
+        stt: { provider: 'openai' as const, model: 'whisper-1', language: 'en' },
+        tts: { provider: 'mistral' as const, model: 'voxtral-mini-tts-3-0' },
+      }
+    case 'mistral-stt':
+      return {
+        stt: { provider: 'mistral' as const, model: 'voxtral-mini-transcribe-realtime-3-0' },
+        tts: { provider: 'mistral' as const, model: 'voxtral-mini-tts-3-0' },
+        // Mistral bills realtime STT per streamed minute: gate STT on VAD. It emits partials,
+        // so barge-in keeps its default (it waits for a partial).
+        vad: VOICE_AGENT_VAD_PRESET,
       }
     case 'assemblyai':
       return {

@@ -15,6 +15,7 @@ use node_webrtc_rust_vendor_elevenlabs::ElevenLabsFactory;
 use node_webrtc_rust_vendor_fishaudio::FishAudioFactory;
 use node_webrtc_rust_vendor_google::GoogleFactory;
 use node_webrtc_rust_vendor_groq::GroqFactory;
+use node_webrtc_rust_vendor_mistral::MistralFactory;
 use node_webrtc_rust_vendor_mock::MockFactory;
 use node_webrtc_rust_vendor_openai::OpenAiFactory;
 use node_webrtc_rust_vendor_sherpa_onnx::SherpaFactory;
@@ -42,6 +43,9 @@ pub fn default_vendor_registry() -> Arc<VendorRegistry> {
 
     registry.register_stt(SttVendor::Fishaudio, arc_factory(FishAudioFactory));
     registry.register_tts(TtsVendor::Fishaudio, arc_factory(FishAudioFactory));
+
+    registry.register_stt(SttVendor::Mistral, arc_factory(MistralFactory));
+    registry.register_tts(TtsVendor::Mistral, arc_factory(MistralFactory));
 
     registry.register_stt(SttVendor::Assemblyai, arc_factory(AssemblyAiFactory));
 

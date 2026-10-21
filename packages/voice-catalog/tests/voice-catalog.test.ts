@@ -14,8 +14,11 @@ import {
   sttTransports,
   ttsModelAllowlist,
   ttsTransports,
+  ttsPresetVoices,
   ttsVoiceAllowlist,
   validateVoiceCatalogChoice,
+  validateVoiceCatalogPresets,
+  type VoiceVendorEntry,
 } from '../src/index.js'
 
 const EXPECTED_VENDOR_IDS = [
@@ -24,6 +27,7 @@ const EXPECTED_VENDOR_IDS = [
   'elevenlabs',
   'cartesia',
   'fishaudio',
+  'mistral',
   'assemblyai',
   'google',
   'groq',
@@ -95,6 +99,37 @@ describe('validateVoiceCatalogChoice', () => {
 })
 
 describe('crate-aligned allowlist snapshots', () => {
+  test('mistral models, defaults and open voice ids', () => {
+    const vendor = getVendor('mistral')
+    expect(vendor?.stt).toBe(true)
+    expect(vendor?.tts).toBe(true)
+    expect(vendor?.defaultTtsModel).toBe('voxtral-mini-tts-3-0')
+    expect(vendor?.defaultTtsVoice).toBe('voice_478')
+    expect(vendor?.defaultSttModel).toBe('voxtral-mini-transcribe-realtime-3-0')
+    expect(ttsModelAllowlist('mistral')).toEqual([
+      'voxtral-mini-tts-3-0',
+      'voxtral-mini-tts-3',
+      'voxtral-mini-tts-realtime-3-0',
+    ])
+    expect(ttsModelAllowlist('mistral')).not.toContain('voxtral-mini-tts-latest')
+    expect(sttModelAllowlist('mistral')).toEqual([
+      'voxtral-mini-transcribe-realtime-3-0',
+      'voxtral-mini-transcribe-realtime-3',
+    ])
+    expect(vendor?.ttsVoiceIds).toBe('open')
+    // The defaults are valid for their models.
+    expect(
+      validateVoiceCatalogChoice('mistral', 'ttsVoice', 'voice_478', 'voxtral-mini-tts-3-0'),
+    ).toBeNull()
+    expect(validateVoiceCatalogChoice('mistral', 'ttsModel', 'voxtral-mini-tts-3-0')).toBeNull()
+    expect(
+      validateVoiceCatalogChoice('mistral', 'ttsModel', 'voxtral-mini-tts-latest'),
+    ).not.toBeNull()
+    expect(
+      validateVoiceCatalogChoice('mistral', 'sttModel', 'voxtral-mini-transcribe-realtime-3-0'),
+    ).toBeNull()
+  })
+
   test('openai STT models', () => {
     expect(sttModelAllowlist('openai')).toEqual([
       'whisper-1',
@@ -276,7 +311,7 @@ describe('documented TTS voice lists', () => {
   })
 
   test('open vendors accept any voice id', () => {
-    for (const id of ['cartesia', 'elevenlabs', 'fishaudio', 'local-sherpa']) {
+    for (const id of ['cartesia', 'elevenlabs', 'fishaudio', 'mistral', 'local-sherpa']) {
       expect(getVendor(id)?.ttsVoiceIds).toBe('open')
       expect(validateVoiceCatalogChoice(id, 'ttsVoice', 'any-customer-clone')).toBeNull()
     }
@@ -300,6 +335,13 @@ describe('voice catalog transports', () => {
   test('cartesia defaults to http TTS', () => {
     expect([...ttsTransports('cartesia')]).toEqual(['websocket', 'http'])
     expect(defaultTtsTransport('cartesia')).toBe('http')
+  })
+
+  test('mistral: http TTS and websocket STT, one transport each', () => {
+    expect([...ttsTransports('mistral')]).toEqual(['http'])
+    expect(defaultTtsTransport('mistral')).toBe('http')
+    expect([...sttTransports('mistral')]).toEqual(['websocket'])
+    expect(defaultSttTransport('mistral')).toBe('websocket')
   })
 
   test('fish audio keeps http TTS as the default', () => {
@@ -330,5 +372,47 @@ describe('voice catalog transports', () => {
         for (const t of list) expect(['websocket', 'http']).toContain(t)
       }
     }
+  })
+})
+
+describe('ttsPresetVoices', () => {
+  test('mistral lists 36 Voxtral 3 preset voices and the default is one of them', () => {
+    const presets = ttsPresetVoices('mistral')
+    expect(presets).toHaveLength(36)
+    expect(presets[0]).toEqual({ id: 'voice_478', name: 'Sheila', language: 'en-US' })
+    expect(presets.map((p) => p.id)).toContain(getVendor('mistral')?.defaultTtsVoice)
+    expect(ttsPresetVoices('openai')).toEqual([])
+    expect(validateVoiceCatalogPresets()).toEqual([])
+  })
+
+  test('preset voices appear only on open vendors', () => {
+    for (const vendor of VOICE_VENDORS) {
+      if (vendor.ttsPresetVoices) expect(vendor.ttsVoiceIds, vendor.id).toBe('open')
+    }
+  })
+
+  test('preset voice ids are unique per vendor', () => {
+    for (const vendor of VOICE_VENDORS) {
+      const ids = (vendor.ttsPresetVoices ?? []).map((p) => p.id)
+      expect(new Set(ids).size, vendor.id).toBe(ids.length)
+    }
+  })
+
+  test('validation rejects presets on a listed vendor', () => {
+    const mutated: VoiceVendorEntry[] = VOICE_VENDORS.map((v) =>
+      v.id === 'openai'
+        ? { ...v, ttsPresetVoices: [{ id: 'alloy', name: 'Alloy', language: 'en-US' }] }
+        : v,
+    )
+    const errors = validateVoiceCatalogPresets(mutated)
+    expect(errors.some((e) => e.vendorId === 'openai' && e.kind === 'ttsPresetVoices')).toBe(true)
+  })
+
+  test('validation rejects a default voice outside the presets', () => {
+    const mutated: VoiceVendorEntry[] = VOICE_VENDORS.map((v) =>
+      v.id === 'mistral' ? { ...v, defaultTtsVoice: 'not_a_preset' } : v,
+    )
+    const errors = validateVoiceCatalogPresets(mutated)
+    expect(errors.some((e) => e.vendorId === 'mistral' && e.value === 'not_a_preset')).toBe(true)
   })
 })

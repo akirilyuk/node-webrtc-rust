@@ -25,6 +25,12 @@ s16le with their own `duration_ms`.
 FISH_API_KEY=... cargo test -p node-webrtc-rust-vendor-fishaudio --features live --test live_test -- --nocapture --test-threads=1
 ```
 
+Mistral (also runs the endpoint probe; `MISTRAL_BASE_URL` picks the endpoint):
+
+```bash
+MISTRAL_API_KEY=... cargo test -p node-webrtc-rust-vendor-mistral --features live --test live_test --test live_endpoints -- --nocapture --test-threads=1
+```
+
 Without the key the tests print `<id> live test skipped: <VARS> unset` and pass. With
 `<ID>_LIVE_REQUIRED=1` (CI sets it) they panic instead, so a skipped run can never show green.
 Use `--test-threads=1`: vendors cap concurrent requests and the tests print timing lines

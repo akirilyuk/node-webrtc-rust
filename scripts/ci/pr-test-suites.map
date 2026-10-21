@@ -15,6 +15,7 @@ crates/vendor-cluster-speech/* rust,node
 crates/vendor-deepgram/* rust,node
 crates/vendor-elevenlabs/* rust,node
 crates/vendor-fishaudio/* rust,node
+crates/vendor-mistral/* rust,node
 crates/vendor-google/* rust,node
 crates/vendor-groq/* rust,node
 crates/vendor-live-support/* rust

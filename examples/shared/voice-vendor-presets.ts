@@ -14,6 +14,8 @@
  * | cartesia   | no         | yes        | OpenAI STT + Cartesia TTS     |
  * | fishaudio  | no         | yes        | OpenAI STT + Fish Audio TTS   |
  * | fishaudio-stt | yes     | yes        | Fish STT + Fish Audio TTS     |
+ * | mistral    | no         | yes        | OpenAI STT + Mistral TTS      |
+ * | mistral-stt | yes       | yes        | Mistral STT + Mistral TTS     |
  * | assemblyai | yes        | no         | AssemblyAI STT + OpenAI TTS   |
  * | google     | yes        | yes        | Google STT + Google TTS       |
  * | groq       | yes        | yes        | Groq Whisper file + Orpheus   |
@@ -53,6 +55,8 @@ export type LiveVendorId =
   | 'cartesia'
   | 'fishaudio'
   | 'fishaudio-stt'
+  | 'mistral'
+  | 'mistral-stt'
   | 'assemblyai'
   | 'google'
   | 'groq'
@@ -79,7 +83,7 @@ function env(key: string): string | undefined {
 
 /**
  * Shared defaults for live demos: VAD + barge-in on, deliver events both ways. `vad` replaces
- * the default VAD block (the Fish STT preset passes `VOICE_AGENT_VAD_PRESET` for `gateStt`).
+ * the default VAD block (the Fish and Mistral STT presets pass `VOICE_AGENT_VAD_PRESET` for `gateStt`).
  */
 function withKeys(stt: SttConfig, tts: TtsConfig, vad?: VadConfig): VoiceAgentConfig {
   return {
@@ -107,6 +111,8 @@ function resolveTtsApiKey(tts: TtsConfig): string | undefined {
       return env('CARTESIA_API_KEY')
     case 'fishaudio':
       return env('FISH_API_KEY')
+    case 'mistral':
+      return env('MISTRAL_API_KEY')
     case 'google':
       return env('GOOGLE_API_KEY')
     case 'groq':
@@ -227,6 +233,48 @@ export const LIVE_VENDOR_PRESETS: Record<LiveVendorId, LiveVendorPreset> = {
     ttsPhrase: 'Fish Audio transcribe and Drama three live check.',
     notes:
       'Single FISH_API_KEY. Fish STT returns finals only (manual commit after VAD end). Fish STT sends no partial transcripts, so this preset sets bargeIn.requireSttPartial to false; without that, barge-in never fires during agent speech. No language option: Fish auto-detects.',
+  },
+  mistral: {
+    id: 'mistral',
+    label: 'Mistral TTS (Voxtral TTS 3)',
+    requiredEnv: ['MISTRAL_API_KEY', 'OPENAI_API_KEY'],
+    config: withKeys(
+      { provider: 'openai', model: 'whisper-1', language: 'en' },
+      {
+        provider: 'mistral',
+        model: 'voxtral-mini-tts-3-0',
+        // Unset: the catalog default voice (voice_478).
+        voice: process.env.MISTRAL_VOICE_ID,
+        apiKey: env('MISTRAL_API_KEY'),
+      },
+    ),
+    ttsPhrase: 'Mistral Voxtral synthesis check.',
+    notes:
+      'MISTRAL_VOICE_ID optional (a Voxtral 3 preset such as voice_478, or a workspace voice id; unset uses voice_478). STT uses OpenAI for the demo pairing.',
+  },
+  'mistral-stt': {
+    id: 'mistral-stt',
+    label: 'Mistral STT (Voxtral Mini Transcribe Realtime 3) + TTS (Voxtral TTS 3)',
+    requiredEnv: ['MISTRAL_API_KEY'],
+    config: withKeys(
+      {
+        provider: 'mistral',
+        model: 'voxtral-mini-transcribe-realtime-3-0',
+        apiKey: env('MISTRAL_API_KEY'),
+      },
+      {
+        provider: 'mistral',
+        model: 'voxtral-mini-tts-3-0',
+        voice: process.env.MISTRAL_VOICE_ID,
+        apiKey: env('MISTRAL_API_KEY'),
+      },
+      // gateStt: true streams only VAD-gated speech to Mistral, which bills realtime STT per
+      // streamed minute. Mistral sends partials, so barge-in keeps the default partial rule.
+      VOICE_AGENT_VAD_PRESET,
+    ),
+    ttsPhrase: 'Mistral Voxtral transcribe and synthesis check.',
+    notes:
+      'Single MISTRAL_API_KEY. Mistral realtime STT streams partials and a final per utterance. The language is sent only when the STT config sets a two-letter code; otherwise Mistral detects it.',
   },
   assemblyai: {
     id: 'assemblyai',

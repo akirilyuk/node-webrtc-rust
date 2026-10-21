@@ -3,7 +3,8 @@
 //!
 //! - Every `crates/vendor-*/tests/live_test.rs` has `.github/workflows/vendor-live-<id>.yml`
 //!   with the fork-skip `if`, `_LIVE_REQUIRED: '1'`, the cargo command, `--test-threads=1`, and a
-//!   pull_request path filter that covers the vendor crate, this support crate and the workflow.
+//!   pull_request path filter that covers the vendor crate, the support crate's `src/**` and
+//!   `Cargo.toml` (not its docs or tests) and the workflow, and no other vendor's crate.
 //! - A vendor with `tests/live_fullstack.rs` (the real `VoiceAgent` / STT actor path) also runs
 //!   it in that workflow, as an extra `--test live_fullstack` step of the same job.
 //! - Every `crates/vendor-*/tests/live_bench.rs` is a vendor option of `vendor-bench.yml`.
@@ -94,13 +95,36 @@ fn check_live_workflow(id: &str, workflow: &str, has_fullstack: bool) -> Vec<Str
     let paths = pull_request_section(workflow);
     for wanted in [
         format!("crates/vendor-{id}/**"),
-        "crates/vendor-live-support/**".to_string(),
+        "crates/vendor-live-support/src/**".to_string(),
+        "crates/vendor-live-support/Cargo.toml".to_string(),
         format!(".github/workflows/vendor-live-{id}.yml"),
     ] {
         require(
             paths.contains(&wanted),
             format!("pull_request `paths` is missing `{wanted}`"),
         );
+    }
+    // One vendor's change runs only its own live job; the shared harness runs all of them.
+    let listed: Vec<&str> = paths
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("- "))
+        .map(|p| p.trim_matches('\''))
+        .collect();
+    for path in &listed {
+        if *path == "crates/vendor-live-support/**" {
+            problems.push(
+                "pull_request `paths` has the `crates/vendor-live-support/**` wildcard; use `src/**` and `Cargo.toml`"
+                    .to_string(),
+            );
+        }
+        if let Some(rest) = path.strip_prefix("crates/vendor-") {
+            let owner = rest.split('/').next().unwrap_or("");
+            if owner != id && owner != "live-support" {
+                problems.push(format!(
+                    "pull_request `paths` lists another vendor's crate `{path}`"
+                ));
+            }
+        }
     }
     problems
 }
@@ -181,6 +205,52 @@ fn every_live_test_has_a_complete_workflow() {
                 for problem in check_live_workflow(id, &workflow, fullstack.contains(id)) {
                     failures.push(format!("{name}: {problem}"));
                 }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+#[test]
+fn pull_request_paths_are_scoped_to_the_vendor() {
+    let ids = vendors_with("live_test.rs");
+    assert!(
+        !ids.is_empty(),
+        "no crates/vendor-*/tests/live_test.rs found"
+    );
+    let mut failures = Vec::new();
+    for id in &ids {
+        let name = format!("vendor-live-{id}.yml");
+        let Some(workflow) = read_workflow(&name) else {
+            failures.push(format!("{name}: missing"));
+            continue;
+        };
+        let listed: Vec<String> = pull_request_section(&workflow)
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("- "))
+            .map(|p| p.trim_matches('\'').to_string())
+            .collect();
+        for wanted in [
+            format!("crates/vendor-{id}/**"),
+            format!(".github/workflows/vendor-live-{id}.yml"),
+            "crates/vendor-live-support/src/**".to_string(),
+            "crates/vendor-live-support/Cargo.toml".to_string(),
+        ] {
+            if !listed.contains(&wanted) {
+                failures.push(format!("{name}: pull_request `paths` lacks `{wanted}`"));
+            }
+        }
+        if listed.iter().any(|p| p == "crates/vendor-live-support/**") {
+            failures.push(format!(
+                "{name}: pull_request `paths` still has the `crates/vendor-live-support/**` wildcard"
+            ));
+        }
+        for other in ids.iter().filter(|o| *o != id) {
+            let foreign = format!("crates/vendor-{other}/");
+            if listed.iter().any(|p| p.starts_with(&foreign)) {
+                failures.push(format!(
+                    "{name}: pull_request `paths` lists vendor-{other}'s crate"
+                ));
             }
         }
     }
@@ -377,7 +447,8 @@ fn good_workflow(id: &str) -> String {
   pull_request:
     paths:
       - 'crates/vendor-{id}/**'
-      - 'crates/vendor-live-support/**'
+      - 'crates/vendor-live-support/src/**'
+      - 'crates/vendor-live-support/Cargo.toml'
       - '.github/workflows/vendor-live-{id}.yml'
   workflow_dispatch:
 jobs:
@@ -439,13 +510,27 @@ fn checker_rejects_a_missing_required_flag() {
 
 #[test]
 fn checker_rejects_a_wrong_path_filter() {
-    let bad = good_workflow("x").replace("      - 'crates/vendor-live-support/**'\n", "");
+    let bad = good_workflow("x").replace("      - 'crates/vendor-live-support/src/**'\n", "");
     let problems = check_live_workflow("x", &bad, false);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
-        problems[0].contains("crates/vendor-live-support/**"),
+        problems[0].contains("crates/vendor-live-support/src/**"),
         "{problems:?}"
     );
+
+    let wildcard = good_workflow("x").replace(
+        "      - 'crates/vendor-live-support/src/**'\n      - 'crates/vendor-live-support/Cargo.toml'\n",
+        "      - 'crates/vendor-live-support/**'\n",
+    );
+    assert!(!check_live_workflow("x", &wildcard, false).is_empty());
+
+    let foreign = good_workflow("x").replace(
+        "      - 'crates/vendor-live-support/Cargo.toml'\n",
+        "      - 'crates/vendor-live-support/Cargo.toml'\n      - 'crates/vendor-y/**'\n",
+    );
+    let problems = check_live_workflow("x", &foreign, false);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("another vendor"), "{problems:?}");
 
     // A path that is only mentioned outside the pull_request block does not count.
     let elsewhere = good_workflow("x")

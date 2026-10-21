@@ -4113,12 +4113,16 @@ dependencies = [
  "bytes",
  "futures-util",
  "node-webrtc-rust-speech",
+ "node-webrtc-rust-vendor-live-support",
  "node-webrtc-rust-voice-catalog",
  "reqwest 0.12.28",
+ "rustls 0.23.40",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tokio-tungstenite",
+ "webpki-roots 1.0.7",
 ]
 
 [[package]]

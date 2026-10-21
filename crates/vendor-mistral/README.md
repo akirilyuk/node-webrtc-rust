@@ -12,11 +12,12 @@ Mistral Voxtral TTS and realtime STT for `@node-webrtc-rust/sdk` VoiceAgent. Def
 
 ## Environment
 
-| Variable          | Use                                                          |
-| ----------------- | ------------------------------------------------------------ |
-| `MISTRAL_API_KEY` | API key (`Authorization: Bearer`) when `tts.apiKey` is unset |
+| Variable           | Use                                                          |
+| ------------------ | ------------------------------------------------------------ |
+| `MISTRAL_API_KEY`  | API key (`Authorization: Bearer`) when `tts.apiKey` is unset |
+| `MISTRAL_BASE_URL` | API origin for TTS and STT when the config sets no endpoint  |
 
-`tts.endpoint` replaces the API origin (default `https://api.mistral.ai`).
+Base URL for both TTS and STT: the config `endpoint` if set, else `MISTRAL_BASE_URL` if non-empty, else the global endpoint `https://api.mistral.ai`. Documented endpoints ([regional inference](https://docs.mistral.ai/studio/regional-inference)): global `https://api.mistral.ai`, EU `https://api.eu.mistral.ai`, US `https://api.us.mistral.ai`. A regional endpoint serves only the models hosted there.
 
 ## TTS path
 
@@ -55,4 +56,12 @@ Docs: [transcribe-in-realtime](https://docs.mistral.ai/studio/audio/speech-to-te
 cargo test -p node-webrtc-rust-vendor-mistral --features live --lib --test stt_mock_server_test --test tts_mock_server_test
 ```
 
-The `live` feature is declared for the real-network tests that come with the live CI job.
+Real-network tests (feature `live`, key in `MISTRAL_API_KEY`; `MISTRAL_LIVE_REQUIRED=1` turns a missing key into a failure):
+
+```bash
+MISTRAL_API_KEY=... cargo test -p node-webrtc-rust-vendor-mistral --features live --test live_endpoints --test live_test -- --nocapture --test-threads=1
+```
+
+- `live_test`: TTS first audio and decoded length for both TTS models, and a VAD-gated realtime STT round trip on the counting phrase. They honour `MISTRAL_BASE_URL`.
+- `live_endpoints`: for each documented endpoint, the documented `GET /v1/models` (which of our model ids it serves) and the median of 5 TCP+TLS connect times, then the choice: of the endpoints serving the default TTS and STT models, the lowest median connect; else the lowest one serving the default STT model plus any TTS model. No billed call is made.
+- `live_bench`: latency legs for the bench (`vendor-bench.yml`, vendor `mistral`): both TTS models, and STT with `target_streaming_delay_ms` 160, 240 and 480 (the model field reads `<model>@delay<ms>`).

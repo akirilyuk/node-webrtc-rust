@@ -126,10 +126,10 @@ pub fn session_language(language: Option<&str>) -> Option<String> {
         .then(|| language.to_ascii_lowercase())
 }
 
-pub(crate) fn session_update_json(language: Option<&str>) -> String {
+pub(crate) fn session_update_json(language: Option<&str>, delay_ms: u32) -> String {
     let mut session = json!({
         "audio_format": {"encoding": "pcm_s16le", "sample_rate": STT_SAMPLE_RATE},
-        "target_streaming_delay_ms": STREAMING_DELAY_MS,
+        "target_streaming_delay_ms": delay_ms,
     });
     if let Some(language) = session_language(language) {
         session["language"] = Value::String(language);
@@ -207,6 +207,14 @@ mod tests {
             assert!(validate_streaming_delay(bad).is_err(), "{bad}");
         }
         assert!(validate_streaming_delay(STREAMING_DELAY_MS).is_ok());
+    }
+
+    #[test]
+    fn session_update_carries_the_given_delay() {
+        for delay in [160, STREAMING_DELAY_MS, 480] {
+            let json: Value = serde_json::from_str(&session_update_json(None, delay)).unwrap();
+            assert_eq!(json["session"]["target_streaming_delay_ms"], delay);
+        }
     }
 
     #[test]

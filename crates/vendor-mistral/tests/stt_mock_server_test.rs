@@ -841,3 +841,19 @@ async fn second_close_before_any_event_is_an_error() {
     );
     mock.assert_no_conn(Duration::from_millis(300)).await;
 }
+
+/// `MISTRAL_BASE_URL` is used when the config has no endpoint. No other test in this file reads
+/// the env with an unset endpoint, and each passes an explicit endpoint.
+#[tokio::test]
+async fn env_base_url_is_used_when_the_config_has_none() {
+    let mut mock = Mock::start().await;
+    std::env::set_var("MISTRAL_BASE_URL", mock.endpoint());
+    let mut cfg = config("unused", None);
+    cfg.endpoint = None;
+    let created = MistralFactory.create_stt(&cfg);
+    std::env::remove_var("MISTRAL_BASE_URL");
+    let mut stt = created.unwrap_or_else(|_| panic!("create_stt"));
+    within(stt.start()).await.expect("start");
+    let mut conn = mock.next_conn().await;
+    assert_eq!(read_frame(&mut conn.ws).await["type"], "session.update");
+}

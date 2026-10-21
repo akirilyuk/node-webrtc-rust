@@ -8,8 +8,9 @@ description = "Mistral Voxtral TTS and realtime STT in-repo clients"
 
 [features]
 default = []
-# Gates the real-network tests (tests/live_test.rs, added with the live CI job). The HTTP client
-# itself is always built, because the mock-server tests run without it.
+# Gates the real-network tests (tests/live_test.rs, live_endpoints.rs, live_bench.rs) and the
+# bench-only `__test` module. The HTTP client itself is always built, because the mock-server
+# tests run without it.
 live = []
 
 [dependencies]
@@ -26,4 +27,9 @@ tokio = { workspace = true }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 
 [dev-dependencies]
+node-webrtc-rust-vendor-live-support = { path = "../vendor-live-support" }
+# TCP+TLS connect timing in tests/live_endpoints.rs (same stack as reqwest/tokio-tungstenite).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { workspace = true, features = ["test-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"

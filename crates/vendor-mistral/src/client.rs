@@ -95,9 +95,7 @@ impl MistralClient {
         base_url: Option<String>,
         timeouts: Timeouts,
     ) -> SpeechResult<Self> {
-        let base_url = base_url
-            .filter(|url| !url.trim().is_empty())
-            .unwrap_or_else(|| crate::matrix::DEFAULT_BASE_URL.to_string());
+        let base_url = crate::matrix::resolve_base_url_from_env(base_url.as_deref());
         Ok(Self {
             api_key,
             base_url,

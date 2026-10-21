@@ -37,7 +37,7 @@ use crate::error::vendor_error;
 use crate::stt_matrix::{
     append_json, parse_server_event, realtime_stt_url, resolve_stt_transport, session_update_json,
     validate_stt_model, ServerEvent, SttTimeouts, APPEND_MAX_BYTES, APPEND_TARGET_BYTES,
-    DEFAULT_STT_MODEL, END_JSON,
+    DEFAULT_STT_MODEL, END_JSON, STREAMING_DELAY_MS,
 };
 
 /// What the provider tells a session task.
@@ -143,6 +143,8 @@ struct Shared {
     api_key: Option<String>,
     url: String,
     language: Option<String>,
+    /// `target_streaming_delay_ms` of the `session.update`.
+    delay_ms: u32,
     timeouts: SttTimeouts,
     state: Mutex<State>,
     /// Sessions still connecting (connect + `session.update`).
@@ -309,7 +311,7 @@ async fn open(shared: &Shared, api_key: &str) -> Result<(WsTx, WsRx), String> {
     send_text(
         &mut ws_tx,
         shared,
-        session_update_json(shared.language.as_deref()),
+        session_update_json(shared.language.as_deref(), shared.delay_ms),
     )
     .await?;
     shared.lock().last_transport = Some("websocket".into());
@@ -591,6 +593,18 @@ impl MistralStt {
 
     /// Same as [`MistralStt::new`] with explicit bounds (tests shorten them).
     pub fn with_timeouts(config: &SttConfig, timeouts: SttTimeouts) -> SpeechResult<Self> {
+        Self::build(config, timeouts, STREAMING_DELAY_MS)
+    }
+
+    /// Bench only (see `__test`): an explicit `target_streaming_delay_ms`, validated against
+    /// the documented range. The production default stays [`STREAMING_DELAY_MS`].
+    #[cfg_attr(not(feature = "live"), allow(dead_code))]
+    pub(crate) fn with_streaming_delay(config: &SttConfig, delay_ms: u32) -> SpeechResult<Self> {
+        crate::stt_matrix::validate_streaming_delay(delay_ms)?;
+        Self::build(config, SttTimeouts::default(), delay_ms)
+    }
+
+    fn build(config: &SttConfig, timeouts: SttTimeouts, delay_ms: u32) -> SpeechResult<Self> {
         resolve_stt_transport(config.transport)?;
         let model = config
             .model
@@ -601,8 +615,14 @@ impl MistralStt {
         Ok(Self {
             shared: Arc::new(Shared {
                 api_key: config.api_key.clone(),
-                url: realtime_stt_url(config.endpoint.as_deref(), &model),
+                url: realtime_stt_url(
+                    Some(&crate::matrix::resolve_base_url_from_env(
+                        config.endpoint.as_deref(),
+                    )),
+                    &model,
+                ),
                 language: config.language.clone(),
+                delay_ms,
                 timeouts,
                 state: Mutex::new(State::default()),
                 connecting,

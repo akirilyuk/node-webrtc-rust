@@ -21,8 +21,39 @@ pub const VOICES_DOC: &str = "https://docs.mistral.ai/studio/audio/text-to-speec
 pub const TTS_REALTIME_MODEL_DOC: &str =
     "https://docs.mistral.ai/models/voxtral-mini-tts-realtime-3-0";
 
-/// Default API origin. `TtsConfig.endpoint` replaces it (tests point it at a local mock).
+/// Regional inference endpoints: <https://docs.mistral.ai/studio/regional-inference>
+pub const REGIONAL_INFERENCE_DOC: &str = "https://docs.mistral.ai/studio/regional-inference";
+
+/// Default API origin (the documented global endpoint). The config `endpoint` replaces it
+/// (tests point it at a local mock), and so does env [`BASE_URL_ENV`].
 pub const DEFAULT_BASE_URL: &str = "https://api.mistral.ai";
+
+/// The documented endpoints as `(label, base url)`. A regional endpoint serves only the models
+/// hosted in that region.
+pub const ENDPOINTS: [(&str, &str); 3] = [
+    ("global", "https://api.mistral.ai"),
+    ("eu", "https://api.eu.mistral.ai"),
+    ("us", "https://api.us.mistral.ai"),
+];
+
+/// Env var that picks the base URL when the config sets none.
+pub const BASE_URL_ENV: &str = "MISTRAL_BASE_URL";
+
+/// Base URL for TTS and STT: the config value if set, else `env` if non-empty, else the global
+/// endpoint. Blank values count as unset.
+pub fn resolve_base_url(config: Option<&str>, env: Option<&str>) -> String {
+    [config, env]
+        .into_iter()
+        .flatten()
+        .find(|url| !url.trim().is_empty())
+        .unwrap_or(DEFAULT_BASE_URL)
+        .to_string()
+}
+
+/// [`resolve_base_url`] with `MISTRAL_BASE_URL` read from the process environment.
+pub fn resolve_base_url_from_env(config: Option<&str>) -> String {
+    resolve_base_url(config, std::env::var(BASE_URL_ENV).ok().as_deref())
+}
 
 /// Documented model ids and aliases, read from the voice catalog (`packages/voice-catalog`),
 /// the one source of truth. `voxtral-mini-tts-realtime-3-0` is Voxtral TTS Realtime 3 on the
@@ -162,6 +193,19 @@ mod tests {
         assert_eq!(implemented, catalog);
         assert_eq!(resolve_tts_transport(None).unwrap(), SpeechTransport::Http);
         assert!(resolve_tts_transport(Some(SpeechTransport::Websocket)).is_err());
+    }
+
+    #[test]
+    fn base_url_prefers_config_then_env_then_global() {
+        assert_eq!(
+            resolve_base_url(Some("http://c"), Some("http://e")),
+            "http://c"
+        );
+        assert_eq!(resolve_base_url(None, Some("http://e")), "http://e");
+        assert_eq!(resolve_base_url(Some(" "), Some("http://e")), "http://e");
+        assert_eq!(resolve_base_url(None, Some("")), DEFAULT_BASE_URL);
+        assert_eq!(resolve_base_url(None, None), DEFAULT_BASE_URL);
+        assert_eq!(ENDPOINTS[0].1, DEFAULT_BASE_URL);
     }
 
     #[test]

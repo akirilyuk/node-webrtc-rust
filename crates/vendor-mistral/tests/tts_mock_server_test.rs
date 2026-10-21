@@ -613,3 +613,51 @@ async fn missing_api_key_is_a_named_error() {
     assert!(err.to_string().contains("missing MISTRAL_API_KEY"), "{err}");
     assert_eq!(mock.hits(), 0);
 }
+
+// ---- MISTRAL_BASE_URL ---------------------------------------------------------------------
+
+/// The env is process-global: tests that set it hold this lock and restore it. Every other test
+/// in this file passes an explicit endpoint, which wins over the env.
+static BASE_URL_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn wav_ok() -> Vec<u8> {
+    let mut wav = wav_header(1, 16, 24_000, 0, &[]);
+    wav.extend_from_slice(&s16_bytes(&samples(100)));
+    wav
+}
+
+#[tokio::test]
+async fn env_base_url_is_used_when_the_config_has_none() {
+    let _guard = BASE_URL_ENV_LOCK.lock().await;
+    let wav = wav_ok();
+    let mock = Mock::start(move |stream| serve_deltas(stream, vec![wav.clone()])).await;
+    std::env::set_var("MISTRAL_BASE_URL", mock.endpoint());
+    let mut cfg = config("unused", None, None);
+    cfg.endpoint = None;
+    let tts = MistralTts::new(&cfg).unwrap();
+    std::env::remove_var("MISTRAL_BASE_URL");
+    within(tts.synthesize("Hello there.")).await.unwrap();
+    assert_eq!(mock.hits(), 1);
+    assert_eq!(
+        mock.request(0).request_line,
+        "POST /v1/audio/speech HTTP/1.1"
+    );
+}
+
+#[tokio::test]
+async fn config_base_url_wins_over_env() {
+    let _guard = BASE_URL_ENV_LOCK.lock().await;
+    let wav = wav_ok();
+    let from_config = Mock::start({
+        let wav = wav.clone();
+        move |stream| serve_deltas(stream, vec![wav.clone()])
+    })
+    .await;
+    let from_env = Mock::start(move |stream| serve_deltas(stream, vec![wav.clone()])).await;
+    std::env::set_var("MISTRAL_BASE_URL", from_env.endpoint());
+    let tts = MistralTts::new(&config(&from_config.endpoint(), None, None)).unwrap();
+    std::env::remove_var("MISTRAL_BASE_URL");
+    within(tts.synthesize("Hello there.")).await.unwrap();
+    assert_eq!(from_config.hits(), 1);
+    assert_eq!(from_env.hits(), 0, "the env endpoint must not be called");
+}

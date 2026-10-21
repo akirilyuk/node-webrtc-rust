@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use node_webrtc_rust_speech::config::{SpeechTransport, SttConfig};
+use node_webrtc_rust_speech::config::SttConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pipeline::{FinalizeMode, SttOutput, SttProvider, SttTranscript};
 use tokio::sync::{mpsc, watch};
@@ -35,8 +35,9 @@ use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValu
 
 use crate::error::vendor_error;
 use crate::stt_matrix::{
-    append_json, parse_server_event, realtime_stt_url, session_update_json, validate_stt_model,
-    ServerEvent, SttTimeouts, APPEND_MAX_BYTES, APPEND_TARGET_BYTES, DEFAULT_STT_MODEL, END_JSON,
+    append_json, parse_server_event, realtime_stt_url, resolve_stt_transport, session_update_json,
+    validate_stt_model, ServerEvent, SttTimeouts, APPEND_MAX_BYTES, APPEND_TARGET_BYTES,
+    DEFAULT_STT_MODEL, END_JSON,
 };
 
 /// What the provider tells a session task.
@@ -590,11 +591,7 @@ impl MistralStt {
 
     /// Same as [`MistralStt::new`] with explicit bounds (tests shorten them).
     pub fn with_timeouts(config: &SttConfig, timeouts: SttTimeouts) -> SpeechResult<Self> {
-        if config.transport == Some(SpeechTransport::Http) {
-            return Err(SpeechError::Config(
-                "mistral stt supports only the websocket transport".into(),
-            ));
-        }
+        resolve_stt_transport(config.transport)?;
         let model = config
             .model
             .clone()
@@ -779,11 +776,11 @@ impl SttProvider for MistralStt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use node_webrtc_rust_speech::config::SttVendor;
+    use node_webrtc_rust_speech::config::{SpeechTransport, SttVendor};
 
     fn config(model: Option<&str>) -> SttConfig {
         SttConfig {
-            provider: SttVendor::Mock,
+            provider: SttVendor::Mistral,
             model: model.map(str::to_string),
             model_path: None,
             language: None,

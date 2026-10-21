@@ -141,6 +141,7 @@ interface VoiceAgentConfig {
       | 'google'
       | 'cartesia'
       | 'fishaudio'
+      | 'mistral'
       | 'local-sherpa'
       | 'mock'
     model?: string
@@ -166,6 +167,7 @@ Providers are **mix-and-match** per session. **Official API docs:** [`examples/s
 | `elevenlabs`   | ✓   | ✓   | `ELEVENLABS_API_KEY`                                                    | [Scribe STT](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) · [TTS stream](https://elevenlabs.io/docs/api-reference/text-to-speech/stream)                                                                                                                                    |
 | `cartesia`     | —   | ✓   | `CARTESIA_API_KEY`                                                      | [TTS WebSocket](https://docs.cartesia.ai/api-reference/tts/websocket) · [bytes](https://docs.cartesia.ai/api-reference/tts/bytes)                                                                                                                                                                                   |
 | `fishaudio`    | ✓   | ✓   | `FISH_API_KEY`, optional `FISH_VOICE_ID`                                | [STT realtime (ElevenLabs-compatible socket, finals only)](https://docs.fish.audio/developer-guide/compat/migrate-from-elevenlabs) · [TTS HTTP](https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech) · [WebSocket fallback](https://docs.fish.audio/api-reference/endpoint/websocket/tts-live) |
+| `mistral`      | ✓   | ✓   | `MISTRAL_API_KEY`                                                       | [Realtime STT (partials + final)](https://docs.mistral.ai/studio/audio/speech-to-text/transcribe-in-realtime) · [TTS (SSE stream)](https://docs.mistral.ai/studio/audio/text-to-speech/generate-speech) · [Voices](https://docs.mistral.ai/studio/audio/text-to-speech/voices)                                      |
 | `assemblyai`   | ✓   | —   | `ASSEMBLYAI_API_KEY`                                                    | [Streaming STT](https://www.assemblyai.com/docs/speech-to-text/streaming)                                                                                                                                                                                                                                           |
 | `google`       | ✓   | ✓   | `GOOGLE_APPLICATION_CREDENTIALS`                                        | [STT](https://cloud.google.com/speech-to-text/docs) · [TTS](https://cloud.google.com/text-to-speech/docs)                                                                                                                                                                                                           |
 | `groq`         | ✓   | ✓   | `GROQ_API_KEY`                                                          | [STT](https://console.groq.com/docs/speech-to-text) · [TTS](https://console.groq.com/docs/text-to-speech) — file STT, no live partials                                                                                                                                                                              |
@@ -184,6 +186,7 @@ Providers are **mix-and-match** per session. **Official API docs:** [`examples/s
 | `elevenlabs`           | `http`, `websocket`        | `websocket`                |
 | `cartesia`             | `websocket`, `http`        | — (no cloud STT)           |
 | `fishaudio`            | `http`, `websocket`        | `websocket`                |
+| `mistral`              | `http`                     | `websocket`                |
 | `openai`               | `http`                     | the model decides (`auto`) |
 | `assemblyai`           | —                          | `websocket`                |
 | `groq`, `azure`, `aws` | `http`                     | `http`                     |
@@ -349,7 +352,7 @@ dc.onopen = () => {
 
 Full browser + Node demo: [`examples/voice-agent-browser`](../../examples/voice-agent-browser/README.md).
 
-**Live vendors:** default is mock. Presets in [`examples/shared/voice-vendor-presets.ts`](../../examples/shared/voice-vendor-presets.ts) cover `openai`, `deepgram`, `elevenlabs`, `cartesia`, `fishaudio` (also `fishaudio-stt`), `assemblyai`, `google`, `groq`, `azure`, and `aws`. Browser demos: set `VOICE_VENDOR` + keys — see [`voice-agent-browser/README.md`](../../examples/voice-agent-browser/README.md). Streaming caveats (partials, Flux listen, Azure finals-only): [`VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#streaming-transport-matrix-voiceagent).
+**Live vendors:** default is mock. Presets in [`examples/shared/voice-vendor-presets.ts`](../../examples/shared/voice-vendor-presets.ts) cover `openai`, `deepgram`, `elevenlabs`, `cartesia`, `fishaudio` (also `fishaudio-stt`), `mistral` (also `mistral-stt`), `assemblyai`, `google`, `groq`, `azure`, and `aws`. Browser demos: set `VOICE_VENDOR` + keys — see [`voice-agent-browser/README.md`](../../examples/voice-agent-browser/README.md). Streaming caveats (partials, Flux listen, Azure finals-only): [`VOICE_VENDOR_REFERENCE.md`](../../examples/shared/VOICE_VENDOR_REFERENCE.md#streaming-transport-matrix-voiceagent).
 
 ### API summary
 

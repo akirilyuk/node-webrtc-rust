@@ -5,7 +5,9 @@ use node_webrtc_rust_speech::pcm::{duration_ms_from_mono_s16le, WEBRTC_PCM_SAMPL
 use node_webrtc_rust_speech::pipeline::{TtsAudioChunk, TtsProgressiveSink, TtsProvider};
 
 use crate::client::MistralClient;
-use crate::matrix::{validate_tts_model, Timeouts, DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE};
+use crate::matrix::{
+    resolve_tts_transport, validate_tts_model, Timeouts, DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE,
+};
 
 pub struct MistralTts {
     client: MistralClient,
@@ -24,6 +26,8 @@ impl MistralTts {
             .model
             .clone()
             .unwrap_or_else(|| DEFAULT_TTS_MODEL.to_string());
+        // The only transport is HTTP SSE; any other value fails the config here.
+        resolve_tts_transport(config.transport)?;
         // An unknown id is a config error: nothing is sent, nothing falls back to another model.
         validate_tts_model(&model)?;
         Ok(Self {
@@ -46,7 +50,7 @@ impl MistralTts {
 fn resolve_voice(voice: Option<&str>) -> String {
     match voice {
         Some(voice) if !voice.is_empty() && voice != "default" => voice.to_string(),
-        _ => DEFAULT_TTS_VOICE.to_string(),
+        _ => (*DEFAULT_TTS_VOICE).to_string(),
     }
 }
 
@@ -93,7 +97,7 @@ mod tests {
     #[test]
     fn unset_empty_and_default_use_the_catalog_voice() {
         for voice in [None, Some(""), Some("default")] {
-            assert_eq!(resolve_voice(voice), DEFAULT_TTS_VOICE);
+            assert_eq!(resolve_voice(voice), *DEFAULT_TTS_VOICE);
         }
         assert_eq!(resolve_voice(Some("gb_jane_neutral")), "gb_jane_neutral");
     }

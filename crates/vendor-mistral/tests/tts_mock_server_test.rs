@@ -244,9 +244,7 @@ fn expected_stereo(samples: &[i16]) -> Vec<u8> {
 
 fn config(endpoint: &str, voice: Option<&str>, model: Option<&str>) -> TtsConfig {
     TtsConfig {
-        // The Mistral vendor id is added to `TtsVendor` with the SDK wiring; the factory
-        // ignores the field.
-        provider: TtsVendor::Mock,
+        provider: TtsVendor::Mistral,
         model: model.map(str::to_string),
         model_path: None,
         voice: voice.map(str::to_string),

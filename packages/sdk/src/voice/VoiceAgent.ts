@@ -131,6 +131,8 @@ export function sttVendorToJs(vendor: SttConfig['provider']): JsSttVendor {
       return JsSttVendor.Elevenlabs
     case 'fishaudio':
       return JsSttVendor.Fishaudio
+    case 'mistral':
+      return JsSttVendor.Mistral
     case 'google':
       return JsSttVendor.Google
     case 'assemblyai':
@@ -165,6 +167,8 @@ export function ttsVendorToJs(vendor: TtsConfig['provider']): JsTtsVendor {
       return JsTtsVendor.Cartesia
     case 'fishaudio':
       return JsTtsVendor.Fishaudio
+    case 'mistral':
+      return JsTtsVendor.Mistral
     case 'groq':
       return JsTtsVendor.Groq
     case 'azure':
@@ -186,6 +190,7 @@ export const STT_VENDOR_VALUES = [
   'deepgram',
   'elevenlabs',
   'fishaudio',
+  'mistral',
   'google',
   'assemblyai',
   'groq',
@@ -204,6 +209,7 @@ export const TTS_VENDOR_VALUES = [
   'google',
   'cartesia',
   'fishaudio',
+  'mistral',
   'groq',
   'azure',
   'aws',

@@ -134,9 +134,7 @@ async fn within<T>(fut: impl Future<Output = T>) -> T {
 
 fn config(endpoint: &str, language: Option<&str>) -> SttConfig {
     SttConfig {
-        // The Mistral vendor id is added to `SttVendor` with the SDK wiring; the factory
-        // ignores the field.
-        provider: SttVendor::Mock,
+        provider: SttVendor::Mistral,
         model: None,
         model_path: None,
         language: language.map(str::to_string),

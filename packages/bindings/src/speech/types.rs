@@ -192,6 +192,8 @@ pub enum JsSttVendor {
     Elevenlabs,
     #[napi(value = "fishaudio")]
     Fishaudio,
+    #[napi(value = "mistral")]
+    Mistral,
     #[napi(value = "google")]
     Google,
     #[napi(value = "assemblyai")]
@@ -218,6 +220,7 @@ impl From<JsSttVendor> for SttVendor {
             JsSttVendor::Deepgram => Self::Deepgram,
             JsSttVendor::Elevenlabs => Self::Elevenlabs,
             JsSttVendor::Fishaudio => Self::Fishaudio,
+            JsSttVendor::Mistral => Self::Mistral,
             JsSttVendor::Google => Self::Google,
             JsSttVendor::Assemblyai => Self::Assemblyai,
             JsSttVendor::Groq => Self::Groq,
@@ -245,6 +248,8 @@ pub enum JsTtsVendor {
     Cartesia,
     #[napi(value = "fishaudio")]
     Fishaudio,
+    #[napi(value = "mistral")]
+    Mistral,
     #[napi(value = "groq")]
     Groq,
     #[napi(value = "azure")]
@@ -269,6 +274,7 @@ impl From<JsTtsVendor> for TtsVendor {
             JsTtsVendor::Google => Self::Google,
             JsTtsVendor::Cartesia => Self::Cartesia,
             JsTtsVendor::Fishaudio => Self::Fishaudio,
+            JsTtsVendor::Mistral => Self::Mistral,
             JsTtsVendor::Groq => Self::Groq,
             JsTtsVendor::Azure => Self::Azure,
             JsTtsVendor::Aws => Self::Aws,

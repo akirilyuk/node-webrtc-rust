@@ -6,7 +6,12 @@
 //! read here: `transcription.text.delta`, `transcription.done`, `error`. Everything else
 //! (`session.created`, `session.updated`, `transcription.language`, ...) is ignored.
 
+use std::sync::LazyLock;
 use std::time::Duration;
+
+use node_webrtc_rust_speech::config::SpeechTransport;
+use node_webrtc_rust_speech::resolve_transport;
+use node_webrtc_rust_voice_catalog as voice_catalog;
 
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use serde_json::{json, Value};
@@ -14,11 +19,14 @@ use serde_json::{json, Value};
 pub const STT_DOC: &str =
     "https://docs.mistral.ai/studio/audio/speech-to-text/transcribe-in-realtime";
 
-pub const DOCUMENTED_STT_MODELS: &[&str] = &[
-    "voxtral-mini-transcribe-realtime-3-0",
-    "voxtral-mini-transcribe-realtime-3",
-];
-pub const DEFAULT_STT_MODEL: &str = "voxtral-mini-transcribe-realtime-3-0";
+/// Documented realtime STT ids, read from the voice catalog (`packages/voice-catalog`).
+pub static DOCUMENTED_STT_MODELS: LazyLock<&'static [&'static str]> =
+    LazyLock::new(|| voice_catalog::stt_models("mistral").expect("mistral in voice catalog"));
+
+/// Catalog default STT model.
+pub static DEFAULT_STT_MODEL: LazyLock<&'static str> = LazyLock::new(|| {
+    voice_catalog::default_stt_model("mistral").expect("mistral default STT model in catalog")
+});
 
 /// The speech pipeline hands STT providers 16 kHz mono s16le (as for the Fish vendor).
 pub const STT_SAMPLE_RATE: u32 = 16_000;
@@ -58,6 +66,18 @@ impl Default for SttTimeouts {
             close: STT_CLOSE_TIMEOUT,
         }
     }
+}
+
+/// The only STT transport is the WebSocket; any other value fails the config.
+pub(crate) fn resolve_stt_transport(requested: Option<SpeechTransport>) -> SpeechResult<()> {
+    resolve_transport(
+        "mistral",
+        "stt",
+        requested,
+        voice_catalog::stt_transports("mistral"),
+        voice_catalog::default_stt_transport("mistral"),
+    )
+    .map(|_| ())
 }
 
 /// An unknown id is rejected before anything is sent.
@@ -191,7 +211,7 @@ mod tests {
 
     #[test]
     fn model_validation_names_the_documented_ids() {
-        for model in DOCUMENTED_STT_MODELS {
+        for model in DOCUMENTED_STT_MODELS.iter() {
             assert!(validate_stt_model(model).is_ok());
         }
         let err = validate_stt_model("voxtral-mini-transcribe-realtime-latest")
@@ -201,13 +221,14 @@ mod tests {
             err.contains("voxtral-mini-transcribe-realtime-3-0"),
             "{err}"
         );
-        assert!(DOCUMENTED_STT_MODELS.contains(&DEFAULT_STT_MODEL));
+        assert!(DOCUMENTED_STT_MODELS.contains(&*DEFAULT_STT_MODEL));
+        assert_eq!(*DEFAULT_STT_MODEL, "voxtral-mini-transcribe-realtime-3-0");
     }
 
     #[test]
     fn url_building() {
         assert_eq!(
-            realtime_stt_url(None, DEFAULT_STT_MODEL),
+            realtime_stt_url(None, *DEFAULT_STT_MODEL),
             "wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=voxtral-mini-transcribe-realtime-3-0"
         );
         assert_eq!(

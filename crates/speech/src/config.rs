@@ -332,6 +332,7 @@ pub enum SttVendor {
     Deepgram,
     Elevenlabs,
     Fishaudio,
+    Mistral,
     Google,
     Assemblyai,
     Groq,
@@ -353,6 +354,7 @@ impl SttVendor {
             Self::Deepgram => "deepgram",
             Self::Elevenlabs => "elevenlabs",
             Self::Fishaudio => "fishaudio",
+            Self::Mistral => "mistral",
             Self::Google => "google",
             Self::Assemblyai => "assemblyai",
             Self::Groq => "groq",
@@ -375,6 +377,7 @@ pub enum TtsVendor {
     Google,
     Cartesia,
     Fishaudio,
+    Mistral,
     Groq,
     Azure,
     Aws,
@@ -396,6 +399,7 @@ impl TtsVendor {
             Self::Google => "google",
             Self::Cartesia => "cartesia",
             Self::Fishaudio => "fishaudio",
+            Self::Mistral => "mistral",
             Self::Groq => "groq",
             Self::Azure => "azure",
             Self::Aws => "aws",
@@ -1022,6 +1026,22 @@ mod vendor_wire_tests {
         assert_eq!(parsed, SttVendor::Fishaudio);
         assert_eq!(parsed.as_str(), "fishaudio");
         assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"fishaudio\"");
+    }
+
+    #[test]
+    fn mistral_tts_vendor_serde_round_trip() {
+        let parsed: TtsVendor = serde_json::from_str("\"mistral\"").unwrap();
+        assert_eq!(parsed, TtsVendor::Mistral);
+        assert_eq!(parsed.as_str(), "mistral");
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"mistral\"");
+    }
+
+    #[test]
+    fn mistral_stt_vendor_serde_round_trip() {
+        let parsed: SttVendor = serde_json::from_str("\"mistral\"").unwrap();
+        assert_eq!(parsed, SttVendor::Mistral);
+        assert_eq!(parsed.as_str(), "mistral");
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"mistral\"");
     }
 }
 

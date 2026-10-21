@@ -14,11 +14,13 @@
 //   optional  on a var: a missing value does not skip the vendor
 //   crateEnv  on a var: read by the vendor crate itself (a `"NAME"` literal in `crates/vendor-<id>/src`),
 //             not by `live_env`. It is still passed to the child run
+//   public    on a var: the value is not secret (an endpoint URL, a region). It is not scrubbed
+//             from logs, so the bench may print it
 //   hosts     API hosts the crate's default configuration connects to for the transports the bench
 //             uses. `{region}` is filled from `regionVar`; the probe skips a templated host when
 //             that variable is unset. `vendors.test.mjs` checks every host against the crate source.
 
-/** @typedef {{ name: string, secret?: string, optional?: boolean, crateEnv?: boolean }} VendorVar */
+/** @typedef {{ name: string, secret?: string, optional?: boolean, crateEnv?: boolean, public?: boolean }} VendorVar */
 
 export const VENDORS = [
   {
@@ -126,7 +128,7 @@ export const VENDORS = [
     vars: [
       { name: 'MISTRAL_API_KEY', secret: 'MISTRAL_API_KEY' },
       // Picks the global, EU or US endpoint (docs.mistral.ai/studio/regional-inference).
-      { name: 'MISTRAL_BASE_URL', optional: true, crateEnv: true },
+      { name: 'MISTRAL_BASE_URL', optional: true, crateEnv: true, public: true },
     ],
     hosts: ['api.mistral.ai', 'api.eu.mistral.ai', 'api.us.mistral.ai'],
   },

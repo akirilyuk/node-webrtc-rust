@@ -37,6 +37,7 @@ for run in 0 1; do
   echo "noise line $run"
 done
 if [ -n "$FAKE_NOISE_KEY" ]; then echo "debug $DEEPGRAM_API_KEY"; fi
+if [ -n "$FAKE_ECHO_ENV" ]; then eval "echo \\"echo \\$$FAKE_ECHO_ENV\\""; fi
 if [ "$crate" = "$FAKE_FAIL_CRATE" ]; then exit 3; fi
 exit 0
 `
@@ -251,6 +252,21 @@ test('mistral named explicitly runs and MISTRAL_BASE_URL reaches only its child'
   assert.ok(names('mistral').includes('MISTRAL_API_KEY'))
   assert.equal(names('groq').includes('MISTRAL_BASE_URL'), false)
   assert.match(readFileSync(path.join(dir, 'flags-mistral'), 'utf8'), /^MISTRAL_LIVE_REQUIRED=1$/m)
+})
+
+test('a public var printed in a log is kept; a key printed in the same run is still deleted', () => {
+  const { run } = setup()
+  const env = {
+    MISTRAL_API_KEY: 'mistral-test-key-4444444444',
+    MISTRAL_BASE_URL: 'https://api.eu.mistral.ai',
+  }
+  const kept = run(['--vendors', 'mistral'], { ...env, FAKE_ECHO_ENV: 'MISTRAL_BASE_URL' })
+  assert.equal(kept.status, 0, kept.stderr)
+  assert.equal(/key value found/.test(kept.stderr), false)
+  const { run: run2 } = setup()
+  const deleted = run2(['--vendors', 'mistral'], { ...env, FAKE_ECHO_ENV: 'MISTRAL_API_KEY' })
+  assert.equal(deleted.status, 1)
+  assert.match(deleted.stderr, /key value found in log mistral\.run\.log; deleted/)
 })
 
 test('mistral without MISTRAL_BASE_URL runs (the endpoint is optional)', () => {

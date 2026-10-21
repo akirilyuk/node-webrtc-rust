@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **speech:** Mistral Voxtral 3 vendor `mistral`. TTS streams `POST /v1/audio/speech` as server-sent events (default `voxtral-mini-tts-realtime-3-0`; `voxtral-mini-tts-3-0` and `voxtral-mini-tts-3` also accepted, `voxtral-mini-tts-latest` rejected) and decodes the WAV header of the deltas. Realtime STT (`voxtral-mini-transcribe-realtime-3-0`) opens one WebSocket session per utterance with partials and a final, and replays an utterance once when its socket dies before the server said anything. Set `MISTRAL_API_KEY`. New crate `vendor-mistral`, `TtsVendor::Mistral` / `SttVendor::Mistral`, a `mistral` entry in `@node-webrtc-rust/voice-catalog` (open voice ids, default voice `voice_478`), and the `mistral` and `mistral-stt` example presets (`start:live:mistral[-stt]`).
+
 ## [0.12.2] - 2026-10-20
 
 ### Added

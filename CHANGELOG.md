@@ -8,9 +8,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-22
+
 ### Added
 
 - **speech:** Mistral Voxtral 3 vendor `mistral`. TTS streams `POST /v1/audio/speech` as server-sent events (default Voxtral TTS 3, `voxtral-mini-tts-3-0`; `voxtral-mini-tts-3` also accepted, and `voxtral-mini-tts-realtime-3-0` accepted but not served to our API key on 2026-10-21 (not in `GET /v1/models` on any endpoint, `400 invalid_model`; Mistral tags it Premier); `voxtral-mini-tts-latest` rejected) and decodes the WAV header of the deltas. Realtime STT (`voxtral-mini-transcribe-realtime-3-0`) opens one WebSocket session per utterance with partials and a final, and replays an utterance once when its socket dies before the server said anything. Set `MISTRAL_API_KEY`. New crate `vendor-mistral`, `TtsVendor::Mistral` / `SttVendor::Mistral`, a `mistral` entry in `@node-webrtc-rust/voice-catalog` (open voice ids, default voice `voice_478`, and the 36 Voxtral 3 preset voices as `ttsPresetVoices` for voice pickers), and the `mistral` and `mistral-stt` example presets (`start:live:mistral[-stt]`).
+- **bench:** `mistral` bench legs (TTS per model, realtime STT per `target_streaming_delay_ms`) and an endpoint probe (`live_endpoints`: `GET /v1/models` and connect time on the global, EU and US endpoints). Mistral is not in the published bench set.
+
+### Changed
+
+- **ci:** a vendor's live workflow runs only when that vendor's crate or workflow changes, or the shared harness code (`crates/vendor-live-support/src`, its `Cargo.toml`); docs and the lockstep test no longer start every vendor (#493).
+
+### Fixed
+
+- **bench:** vendor variables marked `public` (such as `MISTRAL_BASE_URL`) are no longer treated as secrets, so a bench that prints its endpoint keeps its log and exits 0.
 
 ## [0.12.2] - 2026-10-20
 

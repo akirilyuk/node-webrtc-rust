@@ -25,7 +25,10 @@ use node_webrtc_rust_vendor_mistral::{
 };
 use serde_json::json;
 
-const TTS_MODELS: [&str; 2] = ["voxtral-mini-tts-realtime-3-0", "voxtral-mini-tts-3-0"];
+// voxtral-mini-tts-realtime-3-0 is not benched: on 2026-10-21 it was missing from
+// `GET /v1/models` on every endpoint and answered `400 invalid_model` (live_test.rs
+// `tts_realtime_3_access_matches_the_model_list` flips when Mistral serves it).
+const TTS_MODELS: [&str; 1] = ["voxtral-mini-tts-3-0"];
 const STT_DELAYS_MS: [u32; 3] = [160, 240, 480];
 
 fn tts(key: &str, model: &str) -> Box<dyn TtsProvider> {

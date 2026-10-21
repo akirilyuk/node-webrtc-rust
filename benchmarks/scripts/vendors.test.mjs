@@ -18,7 +18,7 @@ const benchIds = readdirSync(path.join(root, 'crates'))
   .sort()
 
 test('every live_bench.rs has exactly one VENDORS entry and vice versa', () => {
-  assert.equal(benchIds.length, 10)
+  assert.equal(benchIds.length, 11)
   assert.deepEqual(VENDORS.map((v) => v.id).sort(), benchIds)
   assert.equal(new Set(VENDORS.map((v) => v.id)).size, VENDORS.length)
 })
@@ -59,7 +59,15 @@ test('vars and envId match the live_env calls of the bench', () => {
       assert.deepEqual(ids.sort(), vendor.anyOf.map((s) => s.envId).sort(), `${vendor.id}: sets`)
     }
     const body = calls.join('\n')
+    const crateSrc = sourceText(path.join(root, 'crates', `vendor-${vendor.id}`, 'src'))
     for (const v of vendor.vars) {
+      if (v.crateEnv) {
+        // Read by the crate itself: optional, and a literal in the crate source.
+        assert.ok(v.optional, `${vendor.id}: crateEnv var ${v.name} must be optional`)
+        assert.ok(crateSrc.includes(`"${v.name}"`), `${vendor.id}: ${v.name} is not in the crate`)
+        assert.equal(body.includes(`"${v.name}"`), false, `${vendor.id}: ${v.name} in live_env`)
+        continue
+      }
       assert.ok(body.includes(`"${v.name}"`), `${vendor.id}: ${v.name} is not read by live_env`)
     }
     // Every variable of a live_env call is in the table.

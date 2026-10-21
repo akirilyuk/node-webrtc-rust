@@ -11,11 +11,14 @@
 //   minRequestIntervalMs  minimum time between two requests, from the vendor's documented rate
 //             limit; the CLI passes it as NWR_BENCH_MIN_REQUEST_INTERVAL_MS (a value set in the
 //             parent env wins). The bench waits before a sample, outside the measured time.
+//   optional  on a var: a missing value does not skip the vendor
+//   crateEnv  on a var: read by the vendor crate itself (a `"NAME"` literal in `crates/vendor-<id>/src`),
+//             not by `live_env`. It is still passed to the child run
 //   hosts     API hosts the crate's default configuration connects to for the transports the bench
 //             uses. `{region}` is filled from `regionVar`; the probe skips a templated host when
 //             that variable is unset. `vendors.test.mjs` checks every host against the crate source.
 
-/** @typedef {{ name: string, secret?: string, optional?: boolean }} VendorVar */
+/** @typedef {{ name: string, secret?: string, optional?: boolean, crateEnv?: boolean }} VendorVar */
 
 export const VENDORS = [
   {
@@ -114,6 +117,18 @@ export const VENDORS = [
     envId: 'fish',
     vars: [{ name: 'FISH_API_KEY', secret: 'FISH_AUDIO_API' }],
     hosts: ['api.fish.audio'],
+  },
+  {
+    id: 'mistral',
+    unpublished:
+      "vendor terms: Voxtral 3 public preview, publishing needs Mistral's written approval",
+    envId: 'mistral',
+    vars: [
+      { name: 'MISTRAL_API_KEY', secret: 'MISTRAL_API_KEY' },
+      // Picks the global, EU or US endpoint (docs.mistral.ai/studio/regional-inference).
+      { name: 'MISTRAL_BASE_URL', optional: true, crateEnv: true },
+    ],
+    hosts: ['api.mistral.ai', 'api.eu.mistral.ai', 'api.us.mistral.ai'],
   },
 ]
 

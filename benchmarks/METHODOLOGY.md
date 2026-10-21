@@ -172,7 +172,7 @@ Each `raw.jsonl` line is a `BenchRecord` (`bench.rs`). The grouping fields are t
 
 | Field          | Meaning                                                                                                                                                                                                                              |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `vendor`       | Vendor id, same as the crate suffix: `deepgram`, `elevenlabs`, `cartesia`, `assemblyai`, `google`, `groq`, `azure`, `aws`, `openai`, `fishaudio`.                                                                                    |
+| `vendor`       | Vendor id, same as the crate suffix: `deepgram`, `elevenlabs`, `cartesia`, `assemblyai`, `google`, `groq`, `azure`, `aws`, `openai`, `fishaudio`, `mistral`.                                                                         |
 | `leg`          | `tts` or `stt`.                                                                                                                                                                                                                      |
 | `transport`    | TTS: each transport the catalog lists for the vendor (`tts_transports`), such as `websocket` or `http`. STT: a fixed label per bench (`websocket`, `http`, `rest`, `grpc`).                                                          |
 | `model`        | The catalog default model that ran, `default` where the catalog has none, and the voice for Google TTS.                                                                                                                              |
@@ -414,6 +414,10 @@ anyone measuring with their own account, under their own agreement. Terms:
 
 Google Cloud, Azure and AWS: supported, not measured yet.
 
+Mistral (Voxtral 3, public preview): supported for internal measurements, not published; publishing
+needs Mistral's written approval. `MISTRAL_BASE_URL` picks the endpoint (global, EU or US). Its STT
+records carry the `target_streaming_delay_ms` in the model field (`<model>@delay<ms>`).
+
 ## Reproduce
 
 Prerequisites: a Rust toolchain, Node 18 or newer, a vendor key. From the repository root:
@@ -448,6 +452,7 @@ Variables and hosts per vendor:
 | `aws`        | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`                                     | `polly.<region>.amazonaws.com`, `transcribestreaming.<region>.amazonaws.com` |
 | `openai`     | `OPENAI_API_KEY`                                                                               | `api.openai.com`                                                             |
 | `fishaudio`  | `FISH_API_KEY`                                                                                 | `api.fish.audio`                                                             |
+| `mistral`    | `MISTRAL_API_KEY`, optional `MISTRAL_BASE_URL`                                                 | `api.mistral.ai`, `api.eu.mistral.ai`, `api.us.mistral.ai`                   |
 
 To compare your machine with a published run:
 

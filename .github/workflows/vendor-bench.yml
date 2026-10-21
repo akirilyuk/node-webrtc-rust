@@ -51,6 +51,7 @@ on:
           - aws
           - openai
           - fishaudio
+          - mistral
       runs:
         description: 'Runs per sample'
         required: false
@@ -69,6 +70,10 @@ on:
         description: 'Label for where this runs (result folder and summary)'
         required: false
         default: ci-eu
+      mistral_base_url:
+        description: 'Mistral only: API origin (https://api.mistral.ai, https://api.eu.mistral.ai or https://api.us.mistral.ai); empty = global'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -109,6 +114,9 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_LIVE_REGION }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_LIVE_KEY }}
       FISH_API_KEY: ${{ secrets.FISH_AUDIO_API }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      # Empty means unset: the Mistral crate then uses the global endpoint.
+      MISTRAL_BASE_URL: ${{ inputs.mistral_base_url }}
     steps:
       - uses: actions/checkout@v4
 

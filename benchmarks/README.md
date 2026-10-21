@@ -81,7 +81,7 @@ Five vendor pairs on one conversation of 10 turns each, warm turns. Source table
 
 ### Not published
 
-Deepgram and AssemblyAI: their terms do not allow benchmarking. Google, Azure and AWS: no account
+Deepgram and AssemblyAI: their terms do not allow benchmarking. Mistral: public preview terms, not published. Google, Azure and AWS: no account
 yet. Details: [vendors in the published results](METHODOLOGY.md#vendors-in-the-published-results).
 
 ## Prerequisites

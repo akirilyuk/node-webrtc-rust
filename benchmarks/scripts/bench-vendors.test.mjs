@@ -70,9 +70,11 @@ test('without keys every vendor is skipped and cargo never runs', () => {
   assert.equal(result.status, 0, result.stderr)
   assert.equal(existsSync(path.join(dir, 'marker')), false)
   const summary = json('summary.json')
-  assert.equal(summary.skipped.length, 10)
+  assert.equal(summary.skipped.length, 11)
   for (const s of summary.skipped) {
-    const unpublished = ['deepgram', 'assemblyai', 'google', 'azure', 'aws'].includes(s.vendor)
+    const unpublished = ['deepgram', 'assemblyai', 'google', 'azure', 'aws', 'mistral'].includes(
+      s.vendor,
+    )
     assert.match(s.reason, unpublished ? /^not published: / : /^no key: /)
   }
   assert.deepEqual(summary.vendors_run, [])
@@ -209,6 +211,7 @@ test('--vendors all skips unpublished vendors with their reason even when keys a
   const result = run([], {
     DEEPGRAM_API_KEY: KEY,
     ASSEMBLYAI_API_KEY: OTHER_KEY,
+    MISTRAL_API_KEY: 'mistral-test-key-4444444444',
     GROQ_API_KEY: 'groq-test-key-5555555555',
   })
   assert.equal(result.status, 0, result.stderr)
@@ -218,11 +221,43 @@ test('--vendors all skips unpublished vendors with their reason even when keys a
     const entry = summary.skipped.find((s) => s.vendor === id)
     assert.match(entry.reason, /^not published: vendor terms do not allow benchmarking$/)
   }
+  const mistral = summary.skipped.find((s) => s.vendor === 'mistral')
+  assert.match(
+    mistral.reason,
+    /^not published: vendor terms: Voxtral 3 public preview, publishing needs Mistral's written approval$/,
+  )
   const calls = readFileSync(path.join(dir, 'calls'), 'utf8')
-  assert.equal(/^(deepgram|assemblyai) /m.test(calls), false, 'cargo ran for an unpublished vendor')
+  assert.equal(
+    /^(deepgram|assemblyai|mistral) /m.test(calls),
+    false,
+    'cargo ran for an unpublished vendor',
+  )
   assert.ok(existsSync(path.join(dir, 'envnames-groq')))
   assert.equal(existsSync(path.join(dir, 'envnames-deepgram')), false)
   assert.equal(existsSync(path.join(dir, 'envnames-assemblyai')), false)
+})
+
+test('mistral named explicitly runs and MISTRAL_BASE_URL reaches only its child', () => {
+  const { dir, run, json } = setup()
+  const result = run(['--vendors', 'mistral,groq'], {
+    MISTRAL_API_KEY: 'mistral-test-key-4444444444',
+    MISTRAL_BASE_URL: 'https://api.eu.mistral.ai',
+    GROQ_API_KEY: 'groq-test-key-5555555555',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(json('summary.json').vendors_run.sort(), ['groq', 'mistral'])
+  const names = (id) => readFileSync(path.join(dir, `envnames-${id}`), 'utf8').split('\n')
+  assert.ok(names('mistral').includes('MISTRAL_BASE_URL'))
+  assert.ok(names('mistral').includes('MISTRAL_API_KEY'))
+  assert.equal(names('groq').includes('MISTRAL_BASE_URL'), false)
+  assert.match(readFileSync(path.join(dir, 'flags-mistral'), 'utf8'), /^MISTRAL_LIVE_REQUIRED=1$/m)
+})
+
+test('mistral without MISTRAL_BASE_URL runs (the endpoint is optional)', () => {
+  const { json, run } = setup()
+  const result = run(['--vendors', 'mistral'], { MISTRAL_API_KEY: 'mistral-test-key-4444444444' })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(json('summary.json').vendors_run, ['mistral'])
 })
 
 test('an unpublished vendor named explicitly runs', () => {

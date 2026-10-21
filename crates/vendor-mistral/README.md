@@ -1,6 +1,6 @@
 # vendor-mistral
 
-Mistral Voxtral TTS for `@node-webrtc-rust/sdk` VoiceAgent. Default model: `voxtral-mini-tts-3-0`. Realtime STT is added in a later change.
+Mistral Voxtral TTS and realtime STT for `@node-webrtc-rust/sdk` VoiceAgent. Default TTS model: `voxtral-mini-tts-3-0`. Default STT model: `voxtral-mini-transcribe-realtime-3-0`.
 
 ## Docs
 
@@ -33,10 +33,26 @@ Mistral Voxtral TTS for `@node-webrtc-rust/sdk` VoiceAgent. Default model: `voxt
 | Errors        | `mistral http <status>: type=<type> code=<code> <message>`; 422 lists `message.detail[].msg`                       | Request text is never logged and never appears in an error.                                                                         |
 | Sink contract | Every PCM chunk goes to the sink once, as it arrives                                                               | The returned chunk is the whole utterance for the phrase cache and is never re-sent to the sink.                                    |
 
+## Realtime STT path
+
+Docs: [transcribe-in-realtime](https://docs.mistral.ai/studio/audio/speech-to-text/transcribe-in-realtime). Models: `voxtral-mini-transcribe-realtime-3-0` (default) and `voxtral-mini-transcribe-realtime-3`. `stt.endpoint` replaces the origin (`https` maps to `wss`, `http` to `ws`).
+
+| Choice          | What we implemented                                                                                                                                           | Why                                                                                                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Session         | `wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=<id>`, `Authorization: Bearer`. One session per utterance                                        | `input_audio.end` then `transcription.done` is the only documented final signal.                                            |
+| Settings        | One `session.update` right after connect: `audio_format` `pcm_s16le` at 16000 Hz, `target_streaming_delay_ms: 240`, `language` only for a 2-letter code       | A later update is an error. `en-US`, `multi` and the like are left out so Mistral detects the language.                     |
+| Audio           | 16 kHz mono s16le, batched into `input_audio.append` of at least 3200 bytes (100 ms) and at most 262144 bytes                                                 | The docs sample uses 100 ms chunks; 262144 is the documented maximum. The rest is flushed before the end.                   |
+| Connect timing  | Audio pushed while the socket connects waits in order and is sent after `session.update`; the next session is opened in the background after each utterance   | A new utterance finds a ready socket. A spare the server closes before use is replaced without an error.                    |
+| Partials, final | `transcription.text.delta` builds the partial text; the text of `transcription.done` is the final. Empty text gives no final, only the finalize marker        | Same contract as the other vendors: every finalize gets exactly one marker, in request order.                               |
+| Failures        | `error` gives `mistral stt error <code>: <message>`; a close or read failure gives `mistral stt websocket closed`; no `done` within 8 s gives a named timeout | One error per utterance, then the finalize marker. The next push opens a new session. Transcript text is never in an error. |
+| Ignored         | `session.created`, `session.updated`, `transcription.language`, `transcription.segment`, Ping/Pong, unknown types                                             | They never end the reader.                                                                                                  |
+| Not used        | `input_audio.flush`, `turn_detection`, diarization, context bias                                                                                              | Flush semantics are undocumented, and the VAD of this library owns turn detection.                                          |
+| Cost            | Billed per streamed minute, so presets use `vad.gateStt: true`                                                                                                | Same as Fish Audio.                                                                                                         |
+
 ## Tests
 
 ```bash
-cargo test -p node-webrtc-rust-vendor-mistral --features live --lib --test tts_mock_server_test
+cargo test -p node-webrtc-rust-vendor-mistral --features live --lib --test stt_mock_server_test --test tts_mock_server_test
 ```
 
 The `live` feature is declared for the real-network tests that come with the live CI job.

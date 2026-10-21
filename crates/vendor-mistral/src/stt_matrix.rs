@@ -125,6 +125,8 @@ pub(crate) const END_JSON: &str = r#"{"type":"input_audio.end"}"#;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ServerEvent {
+    /// `session.updated`: the answer to our `session.update`.
+    Updated,
     Delta(String),
     /// `transcription.done`; `None` when the event carries no `text`.
     Done(Option<String>),
@@ -150,6 +152,7 @@ pub(crate) fn parse_server_event(text: &str) -> ServerEvent {
                 .and_then(Value::as_str)
                 .map(str::to_string),
         ),
+        Some("session.updated") => ServerEvent::Updated,
         Some("error") => {
             let error = value.get("error");
             let code = match error.and_then(|e| e.get("code")) {
@@ -243,6 +246,10 @@ mod tests {
         assert_eq!(
             parse_server_event(r#"{"type":"session.created"}"#),
             ServerEvent::Other
+        );
+        assert_eq!(
+            parse_server_event(r#"{"type":"session.updated"}"#),
+            ServerEvent::Updated
         );
         assert_eq!(parse_server_event("not json"), ServerEvent::Other);
     }

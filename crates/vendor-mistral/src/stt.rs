@@ -40,6 +40,7 @@ use crate::stt_matrix::{
 };
 
 /// What the provider tells a session task.
+#[derive(Clone)]
 enum Cmd {
     /// The provider adopted this session for the next utterance. `after` is the id of the last
     /// finalize registered so far: this utterance's partials wait for it.
@@ -278,11 +279,7 @@ fn die(
     }
 }
 
-async fn send_text(
-    ws_tx: &mut futures_util::stream::SplitSink<Ws, Message>,
-    shared: &Shared,
-    text: String,
-) -> Result<(), String> {
+async fn send_text(ws_tx: &mut WsTx, shared: &Shared, text: String) -> Result<(), String> {
     match tokio::time::timeout(
         shared.timeouts.connect,
         ws_tx.send(Message::Text(text.into())),
@@ -296,169 +293,285 @@ async fn send_text(
 }
 
 /// Sends `buf` as appends of at most [`APPEND_MAX_BYTES`].
-async fn send_appends(
-    ws_tx: &mut futures_util::stream::SplitSink<Ws, Message>,
-    shared: &Shared,
-    buf: &mut Vec<u8>,
-) -> Result<(), String> {
-    while !buf.is_empty() {
-        let take = buf.len().min(APPEND_MAX_BYTES);
-        let chunk: Vec<u8> = buf.drain(..take).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
-        send_text(ws_tx, shared, append_json(&encoded)).await?;
-    }
-    Ok(())
+async fn close_ws(ws_tx: &mut WsTx, shared: &Shared) {
+    let _ = tokio::time::timeout(shared.timeouts.close, ws_tx.send(Message::Close(None))).await;
 }
 
-async fn close_ws(ws_tx: &mut futures_util::stream::SplitSink<Ws, Message>, shared: &Shared) {
-    let _ = tokio::time::timeout(shared.timeouts.close, ws_tx.send(Message::Close(None))).await;
+type WsTx = futures_util::stream::SplitSink<Ws, Message>;
+type WsRx = futures_util::stream::SplitStream<Ws>;
+
+/// Connects and sends the one `session.update`. The caller has counted this attempt in
+/// `connecting` and uncounts it afterwards.
+async fn open(shared: &Shared, api_key: &str) -> Result<(WsTx, WsRx), String> {
+    let ws = connect(shared, api_key).await?;
+    let (mut ws_tx, ws_rx) = ws.split();
+    send_text(
+        &mut ws_tx,
+        shared,
+        session_update_json(shared.language.as_deref()),
+    )
+    .await?;
+    shared.lock().last_transport = Some("websocket".into());
+    Ok((ws_tx, ws_rx))
+}
+
+/// How one socket's run ended.
+enum Exit {
+    /// The session is over (final, error event, timeout, close request).
+    Finished,
+    /// The socket closed or a read or write failed.
+    Lost(String),
+}
+
+/// One utterance's state, kept across a replay on a second socket.
+struct Run {
+    shared: Arc<Shared>,
+    generation: u64,
+    rx: mpsc::UnboundedReceiver<Cmd>,
+    local: Local,
+    /// Audio received and not yet sent.
+    buf: Vec<u8>,
+    text: String,
+    deadline: Option<Instant>,
+    rx_open: bool,
+    /// Every PCM byte sent for this utterance, kept until the first server event that belongs
+    /// to it arrives: if the socket dies before that, the server never answered anything and
+    /// the utterance can be sent again on a new socket, once.
+    replay: Vec<u8>,
+    event_seen: bool,
+    replayed: bool,
+    /// Commands taken off the channel while deciding on a replay; handled first on the next
+    /// socket.
+    pending: VecDeque<Cmd>,
+}
+
+impl Run {
+    fn drain_pending(&mut self) {
+        while let Ok(cmd) = self.rx.try_recv() {
+            self.local.apply(cmd.clone());
+            self.pending.push_back(cmd);
+        }
+    }
+
+    fn fail(&mut self, message: String) {
+        die(
+            &self.shared,
+            self.generation,
+            &mut self.rx,
+            &mut self.local,
+            message,
+        );
+    }
+
+    /// Sends the buffered audio as appends of at most [`APPEND_MAX_BYTES`].
+    async fn flush(&mut self, ws_tx: &mut WsTx) -> Result<(), String> {
+        while !self.buf.is_empty() {
+            let take = self.buf.len().min(APPEND_MAX_BYTES);
+            let chunk: Vec<u8> = self.buf.drain(..take).collect();
+            if !self.event_seen {
+                self.replay.extend_from_slice(&chunk);
+            }
+            let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
+            send_text(ws_tx, &self.shared, append_json(&encoded)).await?;
+        }
+        Ok(())
+    }
+
+    /// New socket after a loss: the saved audio again, then `input_audio.end` when the
+    /// finalize was already sent.
+    async fn restore(&mut self, ws_tx: &mut WsTx) -> Result<(), String> {
+        for chunk in self.replay.chunks(APPEND_MAX_BYTES) {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
+            send_text(ws_tx, &self.shared, append_json(&encoded)).await?;
+        }
+        if self.local.ticket.is_some() {
+            send_text(ws_tx, &self.shared, END_JSON.to_string()).await?;
+            self.deadline = Some(Instant::now() + self.shared.timeouts.done);
+        }
+        Ok(())
+    }
+
+    /// `Ok(true)` ends the session task.
+    async fn command(&mut self, ws_tx: &mut WsTx, cmd: Option<Cmd>) -> Result<bool, String> {
+        match cmd {
+            // The provider drops its end of the channel once it has sent `End`; the session
+            // then still waits for its `transcription.done`.
+            None if self.local.ticket.is_some() => self.rx_open = false,
+            None | Some(Cmd::Close) => {
+                close_ws(ws_tx, &self.shared).await;
+                return Ok(true);
+            }
+            Some(Cmd::Audio(pcm)) => {
+                self.local.claimed = true;
+                self.buf.extend_from_slice(&pcm);
+                if self.buf.len() >= APPEND_TARGET_BYTES {
+                    self.flush(ws_tx).await?;
+                }
+            }
+            Some(Cmd::End { ticket }) => {
+                self.local.ticket = Some(ticket);
+                self.flush(ws_tx).await?;
+                send_text(ws_tx, &self.shared, END_JSON.to_string()).await?;
+                self.deadline = Some(Instant::now() + self.shared.timeouts.done);
+            }
+            Some(other) => self.local.apply(other),
+        }
+        Ok(false)
+    }
+
+    /// The first server event that belongs to the utterance: from now on a loss is an error.
+    fn note_event(&mut self) {
+        if self.local.claimed && !self.event_seen {
+            self.event_seen = true;
+            self.replay = Vec::new();
+        }
+    }
+
+    async fn serve(&mut self, ws_tx: &mut WsTx, ws_rx: &mut WsRx) -> Exit {
+        while let Some(cmd) = self.pending.pop_front() {
+            match self.command(ws_tx, Some(cmd)).await {
+                Ok(false) => {}
+                Ok(true) => return Exit::Finished,
+                Err(message) => return Exit::Lost(message),
+            }
+        }
+        loop {
+            let deadline = self.deadline;
+            let timer = async {
+                match deadline {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let rx_open = self.rx_open;
+            tokio::select! {
+                cmd = self.rx.recv(), if rx_open => {
+                    match self.command(ws_tx, cmd).await {
+                        Ok(false) => {}
+                        Ok(true) => return Exit::Finished,
+                        Err(message) => return Exit::Lost(message),
+                    }
+                }
+                message = ws_rx.next() => match message {
+                    Some(Ok(Message::Text(raw))) => match parse_server_event(&raw) {
+                        ServerEvent::Updated => self.note_event(),
+                        ServerEvent::Delta(delta) => {
+                            self.note_event();
+                            if self.local.claimed {
+                                self.text.push_str(&delta);
+                                let partial = self.text.trim();
+                                if !partial.is_empty() {
+                                    self.shared.emit(
+                                        self.generation,
+                                        self.local.after,
+                                        Item::Output(SttOutput::Transcript(
+                                            SttTranscript::Partial(partial.to_string()),
+                                        )),
+                                    );
+                                }
+                            }
+                        }
+                        ServerEvent::Done(done_text) => {
+                            self.note_event();
+                            let Some(ticket) = self.local.ticket else { continue };
+                            let final_text = done_text.unwrap_or_else(|| self.text.clone());
+                            let final_text = final_text.trim();
+                            let mut items = Vec::new();
+                            if !final_text.is_empty() {
+                                items.push(Item::Output(SttOutput::Transcript(
+                                    SttTranscript::Final(final_text.to_string()),
+                                )));
+                            }
+                            self.shared.answer(self.generation, ticket, items);
+                            close_ws(ws_tx, &self.shared).await;
+                            let _ = self.shared.ensure_spare();
+                            return Exit::Finished;
+                        }
+                        ServerEvent::Error(message) => {
+                            self.note_event();
+                            let used = self.local.claimed || self.local.ticket.is_some();
+                            self.fail(message);
+                            if used {
+                                close_ws(ws_tx, &self.shared).await;
+                                let _ = self.shared.ensure_spare();
+                            }
+                            return Exit::Finished;
+                        }
+                        ServerEvent::Other => {}
+                    },
+                    // Ping, Pong, binary and unknown frames never end the reader.
+                    Some(Ok(Message::Close(_))) | None => {
+                        return Exit::Lost("mistral stt websocket closed".into());
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(err)) => {
+                        return Exit::Lost(format!(
+                            "mistral stt websocket closed: read failed: {err}"
+                        ));
+                    }
+                },
+                () = timer => {
+                    let message = format!(
+                        "mistral stt transcription.done timed out after {} ms",
+                        self.shared.timeouts.done.as_millis()
+                    );
+                    self.fail(message);
+                    close_ws(ws_tx, &self.shared).await;
+                    return Exit::Finished;
+                }
+            }
+        }
+    }
 }
 
 async fn run_session(
     shared: Arc<Shared>,
     generation: u64,
     api_key: String,
-    mut rx: mpsc::UnboundedReceiver<Cmd>,
+    rx: mpsc::UnboundedReceiver<Cmd>,
 ) {
-    let mut local = Local::default();
-    let connected = connect(&shared, &api_key).await;
-    let (mut ws_tx, mut ws_rx) = match connected {
-        Ok(ws) => ws.split(),
-        Err(message) => {
-            shared.connecting.send_modify(|n| *n -= 1);
-            die(&shared, generation, &mut rx, &mut local, message);
-            return;
-        }
+    let mut run = Run {
+        shared: shared.clone(),
+        generation,
+        rx,
+        local: Local::default(),
+        buf: Vec::new(),
+        text: String::new(),
+        deadline: None,
+        rx_open: true,
+        replay: Vec::new(),
+        event_seen: false,
+        replayed: false,
+        pending: VecDeque::new(),
     };
-    let update = send_text(
-        &mut ws_tx,
-        &shared,
-        session_update_json(shared.language.as_deref()),
-    )
-    .await;
+    let mut conn = open(&shared, &api_key).await;
     shared.connecting.send_modify(|n| *n -= 1);
-    if let Err(message) = update {
-        die(&shared, generation, &mut rx, &mut local, message);
-        return;
-    }
-    shared.lock().last_transport = Some("websocket".into());
-
-    let mut buf: Vec<u8> = Vec::new();
-    let mut text = String::new();
-    let mut deadline: Option<Instant> = None;
-    let mut rx_open = true;
     loop {
-        let timer = async {
-            match deadline {
-                Some(at) => tokio::time::sleep_until(at).await,
-                None => std::future::pending().await,
+        let (mut ws_tx, mut ws_rx) = match conn {
+            Ok(conn) => conn,
+            Err(message) => {
+                run.fail(message);
+                return;
             }
         };
-        tokio::select! {
-            cmd = rx.recv(), if rx_open => match cmd {
-                // The provider drops its end of the channel once it has sent `End`; the session
-                // then still waits for its `transcription.done`.
-                None if local.ticket.is_some() => rx_open = false,
-                None | Some(Cmd::Close) => {
-                    close_ws(&mut ws_tx, &shared).await;
-                    return;
-                }
-                Some(Cmd::Audio(pcm)) => {
-                    local.claimed = true;
-                    buf.extend_from_slice(&pcm);
-                    if buf.len() >= APPEND_TARGET_BYTES {
-                        if let Err(message) = send_appends(&mut ws_tx, &shared, &mut buf).await {
-                            die(&shared, generation, &mut rx, &mut local, message);
-                            return;
-                        }
-                    }
-                }
-                Some(Cmd::End { ticket }) => {
-                    local.ticket = Some(ticket);
-                    let sent = async {
-                        send_appends(&mut ws_tx, &shared, &mut buf).await?;
-                        send_text(&mut ws_tx, &shared, END_JSON.to_string()).await
-                    }
-                    .await;
-                    if let Err(message) = sent {
-                        die(&shared, generation, &mut rx, &mut local, message);
-                        return;
-                    }
-                    deadline = Some(Instant::now() + shared.timeouts.done);
-                }
-                Some(other) => local.apply(other),
-            },
-            message = ws_rx.next() => match message {
-                Some(Ok(Message::Text(raw))) => match parse_server_event(&raw) {
-                    ServerEvent::Delta(delta) => {
-                        if local.claimed {
-                            text.push_str(&delta);
-                            let partial = text.trim();
-                            if !partial.is_empty() {
-                                shared.emit(
-                                    generation,
-                                    local.after,
-                                    Item::Output(SttOutput::Transcript(SttTranscript::Partial(
-                                        partial.to_string(),
-                                    ))),
-                                );
-                            }
-                        }
-                    }
-                    ServerEvent::Done(done_text) => {
-                        let Some(ticket) = local.ticket else { continue };
-                        let final_text = done_text.unwrap_or_else(|| text.clone());
-                        let final_text = final_text.trim();
-                        let mut items = Vec::new();
-                        if !final_text.is_empty() {
-                            items.push(Item::Output(SttOutput::Transcript(SttTranscript::Final(
-                                final_text.to_string(),
-                            ))));
-                        }
-                        shared.answer(generation, ticket, items);
-                        close_ws(&mut ws_tx, &shared).await;
-                        let _ = shared.ensure_spare();
-                        return;
-                    }
-                    ServerEvent::Error(message) => {
-                        if local.claimed || local.ticket.is_some() {
-                            die(&shared, generation, &mut rx, &mut local, message);
-                            close_ws(&mut ws_tx, &shared).await;
-                            let _ = shared.ensure_spare();
-                        } else {
-                            // An unused spare: the next push opens a session and meets the
-                            // error itself.
-                            die(&shared, generation, &mut rx, &mut local, message);
-                        }
-                        return;
-                    }
-                    ServerEvent::Other => {}
-                },
-                // Ping, Pong, binary and unknown frames never end the reader.
-                Some(Ok(Message::Close(_))) | None => {
-                    die(&shared, generation, &mut rx, &mut local, "mistral stt websocket closed".into());
-                    return;
-                }
-                Some(Ok(_)) => {}
-                Some(Err(err)) => {
-                    die(
-                        &shared,
-                        generation,
-                        &mut rx,
-                        &mut local,
-                        format!("mistral stt websocket closed: read failed: {err}"),
-                    );
-                    return;
-                }
-            },
-            () = timer => {
-                let message = format!(
-                    "mistral stt transcription.done timed out after {} ms",
-                    shared.timeouts.done.as_millis()
-                );
-                die(&shared, generation, &mut rx, &mut local, message);
-                close_ws(&mut ws_tx, &shared).await;
-                return;
+        let message = match run.serve(&mut ws_tx, &mut ws_rx).await {
+            Exit::Finished => return,
+            Exit::Lost(message) => message,
+        };
+        // Nothing the server said belongs to this utterance yet: the socket died before it
+        // answered anything, so send the utterance again, once, on a fresh socket.
+        run.drain_pending();
+        if !run.local.claimed || run.event_seen || run.replayed {
+            run.fail(message);
+            return;
+        }
+        run.replayed = true;
+        shared.connecting.send_modify(|n| *n += 1);
+        conn = open(&shared, &api_key).await;
+        shared.connecting.send_modify(|n| *n -= 1);
+        if let Ok((tx, _)) = &mut conn {
+            if let Err(message) = run.restore(tx).await {
+                conn = Err(message);
             }
         }
     }

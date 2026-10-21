@@ -484,9 +484,12 @@ async fn server_close_mid_utterance_is_a_named_error_and_next_push_reconnects() 
     let mut stt = provider(&mock.endpoint());
     let (mut conn1, _) = started(&mut mock, &mut stt).await;
 
-    // Close before the finalize: one error, and the later finalize still gets its marker.
+    // The server answered (a delta) and then closed, before the finalize: one error, and the
+    // later finalize still gets its marker. An answered utterance is never replayed.
     stt.push_audio(pcm(3200, 1)).await.unwrap();
     let _ = read_frame(&mut conn1.ws).await;
+    delta(&mut conn1.ws, "partial").await;
+    expect_partial(&mut stt, "partial").await;
     drop(conn1);
     expect_error(&mut stt, "mistral stt websocket closed").await;
     stt.request_finalize().await.unwrap();
@@ -502,6 +505,8 @@ async fn server_close_mid_utterance_is_a_named_error_and_next_push_reconnects() 
     let mut conn2 = mock.next_conn().await;
     assert_eq!(read_frame(&mut conn2.ws).await["type"], "session.update");
     let _ = read_appends_until_end(&mut conn2.ws).await;
+    delta(&mut conn2.ws, "again").await;
+    expect_partial(&mut stt, "again").await;
     // Close with the finalize pending: the error, then the marker.
     drop(conn2);
     expect_error(&mut stt, "mistral stt websocket closed").await;
@@ -758,4 +763,83 @@ async fn bearer_header_and_model_query_are_sent() {
     within(alias.stop()).await.unwrap();
     within(stt.stop()).await.unwrap();
     assert_eq!(stt.last_transport().as_deref(), Some("websocket"));
+}
+
+#[tokio::test]
+async fn spare_closed_before_any_event_replays_the_utterance_once() {
+    let mut mock = Mock::start().await;
+    let mut stt = provider(&mock.endpoint());
+    let (mut conn1, _) = started(&mut mock, &mut stt).await;
+
+    let first = pcm(3200, 1);
+    let second = pcm(3200, 60);
+    stt.push_audio(first.clone()).await.unwrap();
+    let append = read_frame(&mut conn1.ws).await;
+    assert_eq!(append["type"], "input_audio.append");
+    // The server closes without having sent a single event.
+    drop(conn1);
+    stt.push_audio(second.clone()).await.unwrap();
+    stt.request_finalize().await.unwrap();
+
+    let mut conn2 = mock.next_conn().await;
+    assert_eq!(read_frame(&mut conn2.ws).await["type"], "session.update");
+    let appends = read_appends_until_end(&mut conn2.ws).await;
+    let expected: Vec<u8> = [first.to_vec(), second.to_vec()].concat();
+    assert_eq!(
+        appends.concat(),
+        expected,
+        "all pushed bytes, once, in order"
+    );
+    delta(&mut conn2.ws, "replayed").await;
+    done(&mut conn2.ws, "replayed text").await;
+    expect_partial(&mut stt, "replayed").await;
+    expect_final(&mut stt, "replayed text").await;
+    expect_done(&mut stt).await;
+    assert!(stt.poll_output().await.unwrap().is_none(), "no error");
+}
+
+#[tokio::test]
+async fn close_after_a_delta_is_an_error_not_a_replay() {
+    let mut mock = Mock::start().await;
+    let mut stt = provider(&mock.endpoint());
+    let (mut conn1, _) = started(&mut mock, &mut stt).await;
+
+    stt.push_audio(pcm(3200, 1)).await.unwrap();
+    let _ = read_frame(&mut conn1.ws).await;
+    delta(&mut conn1.ws, "heard").await;
+    expect_partial(&mut stt, "heard").await;
+    drop(conn1);
+    expect_error(&mut stt, "mistral stt websocket closed").await;
+    stt.request_finalize().await.unwrap();
+    expect_done(&mut stt).await;
+    assert!(
+        stt.poll_output().await.unwrap().is_none(),
+        "exactly one error"
+    );
+    mock.assert_no_conn(Duration::from_millis(300)).await;
+}
+
+#[tokio::test]
+async fn second_close_before_any_event_is_an_error() {
+    let mut mock = Mock::start().await;
+    let mut stt = provider(&mock.endpoint());
+    let (mut conn1, _) = started(&mut mock, &mut stt).await;
+
+    stt.push_audio(pcm(3200, 1)).await.unwrap();
+    stt.request_finalize().await.unwrap();
+    let _ = read_frame(&mut conn1.ws).await;
+    drop(conn1);
+
+    // The replay socket closes before any event too: one error, no third attempt.
+    let mut conn2 = mock.next_conn().await;
+    assert_eq!(read_frame(&mut conn2.ws).await["type"], "session.update");
+    let _ = read_frame(&mut conn2.ws).await;
+    drop(conn2);
+    expect_error(&mut stt, "mistral stt websocket closed").await;
+    expect_done(&mut stt).await;
+    assert!(
+        stt.poll_output().await.unwrap().is_none(),
+        "exactly one error"
+    );
+    mock.assert_no_conn(Duration::from_millis(300)).await;
 }

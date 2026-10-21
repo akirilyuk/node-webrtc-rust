@@ -266,6 +266,27 @@ fn check_bench_trigger(workflow: &str) -> Vec<String> {
     problems
 }
 
+/// A vendor with `tests/live_endpoints.rs` (the endpoint probe) runs it in its live workflow,
+/// in the same cargo command as `live_test`.
+#[test]
+fn endpoint_probe_runs_in_the_live_workflow() {
+    let ids = vendors_with("live_endpoints.rs");
+    assert!(
+        ids.iter().any(|id| id == "mistral"),
+        "mistral has the probe"
+    );
+    for id in ids {
+        let workflow = read_workflow(&format!("vendor-live-{id}.yml"))
+            .unwrap_or_else(|| panic!("vendor-live-{id}.yml"));
+        assert!(
+            workflow.contains(&format!(
+                "cargo test -p node-webrtc-rust-vendor-{id} --features live --test live_test --test live_endpoints"
+            )),
+            "{id}: the live workflow does not run --test live_endpoints"
+        );
+    }
+}
+
 #[test]
 fn vendor_bench_trigger_if_and_vendor_lists_are_in_lockstep() {
     let workflow = read_workflow("vendor-bench.yml").expect("vendor-bench.yml");
@@ -282,6 +303,7 @@ fn vendor_bench_trigger_if_and_vendor_lists_are_in_lockstep() {
         "aws",
         "openai",
         "fishaudio",
+        "mistral",
     ];
     let options = dispatch_options(&workflow);
     for id in expected {

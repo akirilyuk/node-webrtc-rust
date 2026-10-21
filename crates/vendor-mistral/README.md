@@ -53,7 +53,7 @@ Docs: [transcribe-in-realtime](https://docs.mistral.ai/studio/audio/speech-to-te
 ## Tests
 
 ```bash
-cargo test -p node-webrtc-rust-vendor-mistral --features live --lib --test stt_mock_server_test --test tts_mock_server_test
+cargo test -p node-webrtc-rust-vendor-mistral --features live --lib --test live_endpoints --test stt_mock_server_test --test tts_mock_server_test
 ```
 
 Real-network tests (feature `live`, key in `MISTRAL_API_KEY`; `MISTRAL_LIVE_REQUIRED=1` turns a missing key into a failure):

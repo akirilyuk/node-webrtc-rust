@@ -3,6 +3,7 @@
 //! Generate speech: <https://docs.mistral.ai/studio/audio/text-to-speech/generate-speech>
 //! Stream speech: <https://docs.mistral.ai/studio/audio/text-to-speech/stream-speech>
 //! Voices: <https://docs.mistral.ai/studio/audio/text-to-speech/voices>
+//! Voxtral TTS Realtime 3 (same endpoint): <https://docs.mistral.ai/models/voxtral-mini-tts-realtime-3-0>
 
 use std::time::Duration;
 
@@ -13,14 +14,22 @@ pub const GENERATE_SPEECH_DOC: &str =
 pub const STREAM_SPEECH_DOC: &str =
     "https://docs.mistral.ai/studio/audio/text-to-speech/stream-speech";
 pub const VOICES_DOC: &str = "https://docs.mistral.ai/studio/audio/text-to-speech/voices";
+pub const TTS_REALTIME_MODEL_DOC: &str =
+    "https://docs.mistral.ai/models/voxtral-mini-tts-realtime-3-0";
 
 /// Default API origin. `TtsConfig.endpoint` replaces it (tests point it at a local mock).
 pub const DEFAULT_BASE_URL: &str = "https://api.mistral.ai";
 
-/// Documented model ids and aliases. `voxtral-mini-tts-latest` does not point to v3 yet, so it
-/// is not accepted.
-pub const DOCUMENTED_TTS_MODELS: &[&str] = &["voxtral-mini-tts-3-0", "voxtral-mini-tts-3"];
-pub const DEFAULT_TTS_MODEL: &str = "voxtral-mini-tts-3-0";
+/// Documented model ids and aliases. `voxtral-mini-tts-realtime-3-0` is Voxtral TTS Realtime 3
+/// on the same `/v1/audio/speech` endpoint ("streaming with ~90 ms time-to-first-audio",
+/// [`TTS_REALTIME_MODEL_DOC`]). `voxtral-mini-tts-latest` does not point to v3 yet, so it is not
+/// accepted.
+pub const DOCUMENTED_TTS_MODELS: &[&str] = &[
+    "voxtral-mini-tts-realtime-3-0",
+    "voxtral-mini-tts-3-0",
+    "voxtral-mini-tts-3",
+];
+pub const DEFAULT_TTS_MODEL: &str = "voxtral-mini-tts-realtime-3-0";
 
 /// Voxtral 3 preset voice (Sheila, en-US). Mistral rejects a request without a voice (400).
 pub const DEFAULT_TTS_VOICE: &str = "voice_478";
@@ -91,11 +100,14 @@ mod tests {
         for model in ["voxtral-mini-tts-latest", "", "voxtral-mini-tts-2", "tts-1"] {
             let err = validate_tts_model(model).unwrap_err().to_string();
             assert!(
-                err.contains("voxtral-mini-tts-3-0") && err.contains("voxtral-mini-tts-3"),
+                err.contains("voxtral-mini-tts-realtime-3-0")
+                    && err.contains("voxtral-mini-tts-3-0")
+                    && err.contains("voxtral-mini-tts-3"),
                 "{err}"
             );
         }
         assert!(DOCUMENTED_TTS_MODELS.contains(&DEFAULT_TTS_MODEL));
+        assert_eq!(DEFAULT_TTS_MODEL, "voxtral-mini-tts-realtime-3-0");
     }
 
     #[test]

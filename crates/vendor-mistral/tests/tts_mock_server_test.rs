@@ -519,12 +519,8 @@ async fn request_body_has_only_documented_fields() {
     let mut wav = wav_header(1, 16, 24_000, 0, &[]);
     wav.extend_from_slice(&s16_bytes(&pcm));
     let mock = Mock::start(move |stream| serve_deltas(stream, vec![wav.clone()])).await;
-    let tts = MistralTts::new(&config(
-        &mock.endpoint(),
-        Some("gb_jane_neutral"),
-        Some("voxtral-mini-tts-3"),
-    ))
-    .unwrap();
+    // No model configured: the default is sent.
+    let tts = MistralTts::new(&config(&mock.endpoint(), Some("gb_jane_neutral"), None)).unwrap();
     within(tts.synthesize("Hello there.")).await.unwrap();
 
     let req = mock.request(0);
@@ -535,7 +531,7 @@ async fn request_body_has_only_documented_fields() {
         keys,
         ["input", "model", "response_format", "stream", "voice_id"]
     );
-    assert_eq!(req.body["model"], "voxtral-mini-tts-3");
+    assert_eq!(req.body["model"], "voxtral-mini-tts-realtime-3-0");
     assert_eq!(req.body["input"], "Hello there.");
     assert_eq!(req.body["voice_id"], "gb_jane_neutral");
     assert_eq!(req.body["response_format"], "wav");
@@ -544,6 +540,23 @@ async fn request_body_has_only_documented_fields() {
     assert_eq!(req.headers["content-type"], "application/json");
     assert_eq!(req.headers["accept"], "text/event-stream");
     assert_eq!(tts.last_transport().as_deref(), Some("http/1.1"));
+}
+
+#[tokio::test]
+async fn non_realtime_tts_model_is_accepted() {
+    let pcm = samples(100);
+    let mut wav = wav_header(1, 16, 24_000, 0, &[]);
+    wav.extend_from_slice(&s16_bytes(&pcm));
+    let mock = Mock::start(move |stream| serve_deltas(stream, vec![wav.clone()])).await;
+    for (index, model) in ["voxtral-mini-tts-3-0", "voxtral-mini-tts-3"]
+        .into_iter()
+        .enumerate()
+    {
+        let tts = MistralTts::new(&config(&mock.endpoint(), None, Some(model))).unwrap();
+        within(tts.synthesize("Hello there.")).await.unwrap();
+        assert_eq!(mock.request(index).body["model"], model, "sent verbatim");
+    }
+    assert_eq!(mock.hits(), 2);
 }
 
 #[tokio::test]
@@ -560,7 +573,10 @@ async fn default_voice_used_when_unset_or_default() {
     for i in 0..3 {
         let body = mock.request(i).body;
         assert_eq!(body["voice_id"], "voice_478", "request {i}");
-        assert_eq!(body["model"], "voxtral-mini-tts-3-0", "request {i}");
+        assert_eq!(
+            body["model"], "voxtral-mini-tts-realtime-3-0",
+            "request {i}"
+        );
     }
 }
 
@@ -578,7 +594,7 @@ async fn unknown_model_is_rejected_before_any_request() {
         assert!(matches!(err, SpeechError::Config(_)), "{err}");
         let message = err.to_string();
         assert!(
-            message.contains(model) && message.contains("voxtral-mini-tts-3-0"),
+            message.contains(model) && message.contains("voxtral-mini-tts-realtime-3-0"),
             "{message}"
         );
     }

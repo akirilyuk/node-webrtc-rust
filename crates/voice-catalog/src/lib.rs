@@ -37,6 +37,8 @@ struct VendorEntryRaw {
     tts_voices_by_model: HashMap<String, Vec<String>>,
     #[serde(default)]
     tts_voice_ids: Option<String>,
+    #[serde(default)]
+    tts_preset_voices: Vec<TtsPresetVoiceRaw>,
     id: String,
     label: String,
     stt: bool,
@@ -57,6 +59,22 @@ struct VendorEntryRaw {
     stt_docs: Option<String>,
     tts_docs: Option<String>,
     models_docs: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TtsPresetVoiceRaw {
+    id: String,
+    name: String,
+    language: String,
+}
+
+/// A suggested voice for a vendor with `open` voice ids. Not a validation list.
+#[derive(Debug)]
+pub struct TtsPresetVoice {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// BCP 47 tag, e.g. `en-US`.
+    pub language: &'static str,
 }
 
 /// One vendor row from `vendors.json` (string fields are leaked for `'static` lifetimes).
@@ -82,6 +100,7 @@ pub struct VendorEntry {
     tts_voices: &'static [&'static str],
     tts_voices_by_model: HashMap<&'static str, &'static [&'static str]>,
     tts_voice_ids: Option<&'static str>,
+    tts_preset_voices: &'static [TtsPresetVoice],
 }
 
 impl VendorEntry {
@@ -115,6 +134,11 @@ impl VendorEntry {
     /// How voice ids are described by the vendor (`listed`, `model`, `open`).
     pub fn tts_voice_ids(&self) -> Option<&'static str> {
         self.tts_voice_ids
+    }
+
+    /// Suggested voices for a voice picker (empty when none). Not a validation list.
+    pub fn tts_preset_voices(&self) -> &'static [TtsPresetVoice] {
+        self.tts_preset_voices
     }
 }
 
@@ -177,6 +201,17 @@ fn catalog() -> &'static Catalog {
                     .map(|(model, voices)| (leak_str(model.clone()), leak_str_slice(voices)))
                     .collect(),
                 tts_voice_ids: raw.tts_voice_ids.map(leak_str),
+                tts_preset_voices: Box::leak(
+                    raw.tts_preset_voices
+                        .into_iter()
+                        .map(|p| TtsPresetVoice {
+                            id: leak_str(p.id),
+                            name: leak_str(p.name),
+                            language: leak_str(p.language),
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                ),
             };
             by_id.insert(id, vendors.len());
             vendors.push(entry);
@@ -226,6 +261,13 @@ pub fn tts_voices_for_model(
 
 pub fn tts_voice_ids(vendor_id: &str) -> Option<&'static str> {
     vendor(vendor_id).and_then(|v| v.tts_voice_ids())
+}
+
+/// Suggested voices for `vendor_id` (empty when none, or the vendor is unknown).
+pub fn tts_preset_voices(vendor_id: &str) -> &'static [TtsPresetVoice] {
+    vendor(vendor_id)
+        .map(|v| v.tts_preset_voices())
+        .unwrap_or(&[])
 }
 
 pub fn stt_models(vendor_id: &str) -> Option<&'static [&'static str]> {
@@ -324,10 +366,7 @@ mod tests {
 
     #[test]
     fn mistral_catalog_entry() {
-        assert_eq!(
-            default_tts_model("mistral"),
-            Some("voxtral-mini-tts-3-0")
-        );
+        assert_eq!(default_tts_model("mistral"), Some("voxtral-mini-tts-3-0"));
         assert_eq!(default_tts_voice("mistral"), Some("voice_478"));
         assert_eq!(
             default_stt_model("mistral"),
@@ -348,6 +387,36 @@ mod tests {
                 ][..]
             )
         );
+    }
+
+    #[test]
+    fn mistral_preset_voices() {
+        let presets = tts_preset_voices("mistral");
+        assert_eq!(presets.len(), 36);
+        assert_eq!(presets[0].id, "voice_478");
+        assert_eq!(presets[0].name, "Sheila");
+        assert_eq!(presets[0].language, "en-US");
+        let default = default_tts_voice("mistral").expect("default voice");
+        assert!(presets.iter().any(|p| p.id == default));
+    }
+
+    #[test]
+    fn preset_voices_only_on_open_vendors() {
+        for v in catalog().vendors.iter() {
+            let presets = v.tts_preset_voices();
+            if presets.is_empty() {
+                continue;
+            }
+            assert_eq!(v.tts_voice_ids(), Some("open"), "{}", v.id);
+            let mut ids: Vec<&str> = presets.iter().map(|p| p.id).collect();
+            let n = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), n, "{} has duplicate preset ids", v.id);
+            if let Some(d) = v.default_tts_voice {
+                assert!(ids.contains(&d), "{} default voice {d} not a preset", v.id);
+            }
+        }
     }
 
     #[test]

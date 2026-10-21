@@ -19,6 +19,10 @@ Mistral Voxtral TTS and realtime STT for `@node-webrtc-rust/sdk` VoiceAgent. Def
 
 Base URL for both TTS and STT: the config `endpoint` if set, else `MISTRAL_BASE_URL` if non-empty, else the global endpoint `https://api.mistral.ai`. Documented endpoints ([regional inference](https://docs.mistral.ai/studio/regional-inference)): global `https://api.mistral.ai`, EU `https://api.eu.mistral.ai`, US `https://api.us.mistral.ai`. A regional endpoint serves only the models hosted there. Measured on 2026-10-21 (run 39624297612): all three endpoints serve the default models, and connect medians from the EU CI runner were global 43 ms, EU 482 ms and US 504 ms, so the default stays global.
 
+## Voices
+
+Pick a voice with `voice` / `MISTRAL_VOICE_ID`. The 36 Voxtral 3 presets (`voice_478` Sheila is the default) are listed in the voice catalog as `ttsPresetVoices` (`id`, `name`, `language`) for a voice picker; the list is a suggestion, not a validation list. Voxtral 2 presets (for example `gb_jane_neutral`) and workspace or cloned voice ids also work. An unknown id returns Mistral's 404 as a named error.
+
 ## TTS path
 
 | Choice        | What we implemented                                                                                                                                                                                                                                | Why                                                                                                                                                                                                                                                                                                                           |

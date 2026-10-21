@@ -185,6 +185,13 @@ mod tests {
     }
 
     #[test]
+    fn default_voice_is_a_catalog_preset() {
+        assert!(voice_catalog::tts_preset_voices("mistral")
+            .iter()
+            .any(|p| p.id == *DEFAULT_TTS_VOICE));
+    }
+
+    #[test]
     fn implemented_transports_match_the_catalog() {
         let mut implemented = implemented_tts_transports().to_vec();
         let mut catalog = voice_catalog::tts_transports("mistral").to_vec();

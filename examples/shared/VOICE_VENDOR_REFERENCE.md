@@ -96,6 +96,10 @@ export SHERPA_STT_LANGUAGE=de   # optional — inferred from model path when omi
 
 ---
 
+### Mistral voices
+
+Pick a voice with `voice` / `MISTRAL_VOICE_ID`. The 36 Voxtral 3 presets (`voice_478` Sheila is the default) are listed in the voice catalog as `ttsPresetVoices` (`id`, `name`, `language`) for a voice picker; the list is a suggestion, not a validation list. Voxtral 2 presets (for example `gb_jane_neutral`) and workspace or cloned voice ids also work. An unknown id returns Mistral's 404 as a named error.
+
 ## Streaming transport matrix (VoiceAgent)
 
 How each vendor maps to **`user_speech_partial`** and progressive TTS playback. Matrices live in `crates/vendor-*/src/matrix.rs` (and `tts_matrix.rs` for Deepgram).

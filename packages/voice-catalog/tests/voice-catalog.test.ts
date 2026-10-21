@@ -14,8 +14,11 @@ import {
   sttTransports,
   ttsModelAllowlist,
   ttsTransports,
+  ttsPresetVoices,
   ttsVoiceAllowlist,
   validateVoiceCatalogChoice,
+  validateVoiceCatalogPresets,
+  type VoiceVendorEntry,
 } from '../src/index.js'
 
 const EXPECTED_VENDOR_IDS = [
@@ -369,5 +372,47 @@ describe('voice catalog transports', () => {
         for (const t of list) expect(['websocket', 'http']).toContain(t)
       }
     }
+  })
+})
+
+describe('ttsPresetVoices', () => {
+  test('mistral lists 36 Voxtral 3 preset voices and the default is one of them', () => {
+    const presets = ttsPresetVoices('mistral')
+    expect(presets).toHaveLength(36)
+    expect(presets[0]).toEqual({ id: 'voice_478', name: 'Sheila', language: 'en-US' })
+    expect(presets.map((p) => p.id)).toContain(getVendor('mistral')?.defaultTtsVoice)
+    expect(ttsPresetVoices('openai')).toEqual([])
+    expect(validateVoiceCatalogPresets()).toEqual([])
+  })
+
+  test('preset voices appear only on open vendors', () => {
+    for (const vendor of VOICE_VENDORS) {
+      if (vendor.ttsPresetVoices) expect(vendor.ttsVoiceIds, vendor.id).toBe('open')
+    }
+  })
+
+  test('preset voice ids are unique per vendor', () => {
+    for (const vendor of VOICE_VENDORS) {
+      const ids = (vendor.ttsPresetVoices ?? []).map((p) => p.id)
+      expect(new Set(ids).size, vendor.id).toBe(ids.length)
+    }
+  })
+
+  test('validation rejects presets on a listed vendor', () => {
+    const mutated: VoiceVendorEntry[] = VOICE_VENDORS.map((v) =>
+      v.id === 'openai'
+        ? { ...v, ttsPresetVoices: [{ id: 'alloy', name: 'Alloy', language: 'en-US' }] }
+        : v,
+    )
+    const errors = validateVoiceCatalogPresets(mutated)
+    expect(errors.some((e) => e.vendorId === 'openai' && e.kind === 'ttsPresetVoices')).toBe(true)
+  })
+
+  test('validation rejects a default voice outside the presets', () => {
+    const mutated: VoiceVendorEntry[] = VOICE_VENDORS.map((v) =>
+      v.id === 'mistral' ? { ...v, defaultTtsVoice: 'not_a_preset' } : v,
+    )
+    const errors = validateVoiceCatalogPresets(mutated)
+    expect(errors.some((e) => e.vendorId === 'mistral' && e.value === 'not_a_preset')).toBe(true)
   })
 })

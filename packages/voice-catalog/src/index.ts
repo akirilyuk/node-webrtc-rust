@@ -9,6 +9,7 @@ export type VoiceVendorId =
   | 'elevenlabs'
   | 'cartesia'
   | 'fishaudio'
+  | 'mistral'
   | 'assemblyai'
   | 'google'
   | 'groq'

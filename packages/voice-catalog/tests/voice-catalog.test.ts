@@ -24,6 +24,7 @@ const EXPECTED_VENDOR_IDS = [
   'elevenlabs',
   'cartesia',
   'fishaudio',
+  'mistral',
   'assemblyai',
   'google',
   'groq',
@@ -95,6 +96,44 @@ describe('validateVoiceCatalogChoice', () => {
 })
 
 describe('crate-aligned allowlist snapshots', () => {
+  test('mistral models, defaults and open voice ids', () => {
+    const vendor = getVendor('mistral')
+    expect(vendor?.stt).toBe(true)
+    expect(vendor?.tts).toBe(true)
+    expect(vendor?.defaultTtsModel).toBe('voxtral-mini-tts-realtime-3-0')
+    expect(vendor?.defaultTtsVoice).toBe('voice_478')
+    expect(vendor?.defaultSttModel).toBe('voxtral-mini-transcribe-realtime-3-0')
+    expect(ttsModelAllowlist('mistral')).toEqual([
+      'voxtral-mini-tts-realtime-3-0',
+      'voxtral-mini-tts-3-0',
+      'voxtral-mini-tts-3',
+    ])
+    expect(ttsModelAllowlist('mistral')).not.toContain('voxtral-mini-tts-latest')
+    expect(sttModelAllowlist('mistral')).toEqual([
+      'voxtral-mini-transcribe-realtime-3-0',
+      'voxtral-mini-transcribe-realtime-3',
+    ])
+    expect(vendor?.ttsVoiceIds).toBe('open')
+    // The defaults are valid for their models.
+    expect(
+      validateVoiceCatalogChoice(
+        'mistral',
+        'ttsVoice',
+        'voice_478',
+        'voxtral-mini-tts-realtime-3-0',
+      ),
+    ).toBeNull()
+    expect(
+      validateVoiceCatalogChoice('mistral', 'ttsModel', 'voxtral-mini-tts-realtime-3-0'),
+    ).toBeNull()
+    expect(
+      validateVoiceCatalogChoice('mistral', 'ttsModel', 'voxtral-mini-tts-latest'),
+    ).not.toBeNull()
+    expect(
+      validateVoiceCatalogChoice('mistral', 'sttModel', 'voxtral-mini-transcribe-realtime-3-0'),
+    ).toBeNull()
+  })
+
   test('openai STT models', () => {
     expect(sttModelAllowlist('openai')).toEqual([
       'whisper-1',
@@ -276,7 +315,7 @@ describe('documented TTS voice lists', () => {
   })
 
   test('open vendors accept any voice id', () => {
-    for (const id of ['cartesia', 'elevenlabs', 'fishaudio', 'local-sherpa']) {
+    for (const id of ['cartesia', 'elevenlabs', 'fishaudio', 'mistral', 'local-sherpa']) {
       expect(getVendor(id)?.ttsVoiceIds).toBe('open')
       expect(validateVoiceCatalogChoice(id, 'ttsVoice', 'any-customer-clone')).toBeNull()
     }
@@ -300,6 +339,13 @@ describe('voice catalog transports', () => {
   test('cartesia defaults to http TTS', () => {
     expect([...ttsTransports('cartesia')]).toEqual(['websocket', 'http'])
     expect(defaultTtsTransport('cartesia')).toBe('http')
+  })
+
+  test('mistral: http TTS and websocket STT, one transport each', () => {
+    expect([...ttsTransports('mistral')]).toEqual(['http'])
+    expect(defaultTtsTransport('mistral')).toBe('http')
+    expect([...sttTransports('mistral')]).toEqual(['websocket'])
+    expect(defaultSttTransport('mistral')).toBe('websocket')
   })
 
   test('fish audio keeps http TTS as the default', () => {

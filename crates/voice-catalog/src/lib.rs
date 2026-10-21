@@ -323,6 +323,34 @@ mod tests {
     }
 
     #[test]
+    fn mistral_catalog_entry() {
+        assert_eq!(
+            default_tts_model("mistral"),
+            Some("voxtral-mini-tts-realtime-3-0")
+        );
+        assert_eq!(default_tts_voice("mistral"), Some("voice_478"));
+        assert_eq!(
+            default_stt_model("mistral"),
+            Some("voxtral-mini-transcribe-realtime-3-0")
+        );
+        assert_eq!(tts_voice_ids("mistral"), Some("open"));
+        assert_eq!(tts_transports("mistral"), &["http"]);
+        assert_eq!(default_tts_transport("mistral"), Some("http"));
+        assert_eq!(stt_transports("mistral"), &["websocket"]);
+        assert_eq!(default_stt_transport("mistral"), Some("websocket"));
+        assert_eq!(
+            tts_models("mistral"),
+            Some(
+                &[
+                    "voxtral-mini-tts-realtime-3-0",
+                    "voxtral-mini-tts-3-0",
+                    "voxtral-mini-tts-3"
+                ][..]
+            )
+        );
+    }
+
+    #[test]
     fn google_has_no_selectable_transport() {
         assert!(tts_transports("google").is_empty());
         assert!(stt_transports("google").is_empty());

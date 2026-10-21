@@ -261,6 +261,27 @@
       "modelsDocs": "https://docs.fish.audio/developer-guide/models-pricing/models-overview"
     },
     {
+      "id": "mistral",
+      "label": "Mistral (Voxtral 3)",
+      "stt": true,
+      "tts": true,
+      "defaultSttModel": "voxtral-mini-transcribe-realtime-3-0",
+      "defaultTtsModel": "voxtral-mini-tts-realtime-3-0",
+      "defaultTtsVoice": "voice_478",
+      "sttModels": ["voxtral-mini-transcribe-realtime-3-0", "voxtral-mini-transcribe-realtime-3"],
+      "ttsModels": ["voxtral-mini-tts-realtime-3-0", "voxtral-mini-tts-3-0", "voxtral-mini-tts-3"],
+      "ttsVoices": [],
+      "ttsTransports": ["http"],
+      "defaultTtsTransport": "http",
+      "sttTransports": ["websocket"],
+      "defaultSttTransport": "websocket",
+      "ttsVoiceIds": "open",
+      "home": "https://docs.mistral.ai/studio/audio/text-to-speech/generate-speech",
+      "sttDocs": "https://docs.mistral.ai/studio/audio/speech-to-text/transcribe-in-realtime",
+      "ttsDocs": "https://docs.mistral.ai/studio/audio/text-to-speech/generate-speech",
+      "modelsDocs": "https://docs.mistral.ai/studio/audio/text-to-speech/voices"
+    },
+    {
       "id": "assemblyai",
       "label": "AssemblyAI",
       "stt": true,

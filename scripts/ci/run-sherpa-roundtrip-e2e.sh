@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one Sherpa roundtrip npm script for CI: [speech] events on, [voice-debug] off.
-# On failure, re-run once with VOICE_DEBUG=1 (matches scripts/ci/README.md).
+# On failure, re-run once with VOICE_DEBUG=1 for diagnostics; the step fails either way (matches scripts/ci/README.md).
 #
 # Usage:
 #   bash scripts/ci/run-sherpa-roundtrip-e2e.sh start:roundtrip-counting
@@ -65,5 +65,10 @@ if [[ -n "$STEP_CAP_SEC" ]]; then
   export SHERPA_ROUNDTRIP_WALL_MAX_MS=$((left_sec * 1000))
 fi
 
-echo "[sherpa-e2e] $SCRIPT failed (VOICE_DEBUG=0) — re-running with VOICE_DEBUG=1" >&2
-run_pass 1
+echo "[sherpa-e2e] $SCRIPT failed (VOICE_DEBUG=0) — re-running with VOICE_DEBUG=1 for diagnostics" >&2
+# The re-run only collects [voice-debug] output. The step fails either way: a pass here would turn
+# a flake into green (flaky-tests-root-cause.md).
+if run_pass 1; then
+  echo "[sherpa-e2e] $SCRIPT passed only on the VOICE_DEBUG=1 re-run: nondeterministic, failing the step" >&2
+fi
+exit 1

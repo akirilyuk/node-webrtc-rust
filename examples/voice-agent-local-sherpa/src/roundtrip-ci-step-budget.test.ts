@@ -121,13 +121,18 @@ describe('Sherpa roundtrip CI step caps', () => {
 
 describe('run-sherpa-roundtrip-e2e.sh re-run budget', () => {
   /** Runs the wrapper against a fake `npm` that always fails; returns its calls and exit code. */
-  function runWrapper(stepCapSec: string): { status: number | null; calls: string[] } {
+  function runWrapper(
+    stepCapSec: string,
+    passOnDebugRerun = false,
+  ): { status: number | null; calls: string[] } {
     const dir = mkdtempSync(join(tmpdir(), 'sherpa-e2e-wrapper-'))
     const callsFile = join(dir, 'calls.log')
     const fakeNpm = join(dir, 'npm')
     writeFileSync(
       fakeNpm,
-      `#!/bin/bash\necho "voice_debug=$VOICE_DEBUG wall_max=\${SHERPA_ROUNDTRIP_WALL_MAX_MS:-}" >> "${callsFile}"\nexit 1\n`,
+      `#!/bin/bash\necho "voice_debug=$VOICE_DEBUG wall_max=\${SHERPA_ROUNDTRIP_WALL_MAX_MS:-}" >> "${callsFile}"\n` +
+        (passOnDebugRerun ? `[ "$VOICE_DEBUG" = 1 ] && exit 0\n` : '') +
+        `exit 1\n`,
     )
     chmodSync(fakeNpm, 0o755)
     const proc = spawnSync('bash', ['scripts/ci/run-sherpa-roundtrip-e2e.sh', 'start:fake'], {
@@ -159,6 +164,13 @@ describe('run-sherpa-roundtrip-e2e.sh re-run budget', () => {
     // 100s cap - 10s reserve - (first pass takes well under 5s) -> 85..90s.
     expect(Number(match![1])).toBeGreaterThan(85_000)
     expect(Number(match![1])).toBeLessThanOrEqual(90_000)
+  })
+
+  it('fails the step even when the VOICE_DEBUG=1 re-run passes (no retry to green)', () => {
+    const { status, calls } = runWrapper('100', true)
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toMatch(/^voice_debug=1 /)
+    expect(status).toBe(1)
   })
 
   it('skips the re-run when too little time is left under the cap', () => {

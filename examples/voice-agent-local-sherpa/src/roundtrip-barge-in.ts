@@ -32,6 +32,7 @@ import {
   evaluateBargeUtteranceFinal,
   evaluateBargePathLifecycle,
   DEFAULT_BARGE_PHRASE_MIN_SIMILARITY,
+  DEFAULT_BARGE_TTS_PHRASE,
   evaluateSemanticBargeEventOrder,
   evaluateTonePhaseLifecycle,
   formatRecordedSpeechEvent,
@@ -64,8 +65,6 @@ import {
 
 const DEFAULT_AGENT_PHRASE =
   'The quick brown fox jumps over the lazy dog and then continues speaking for several more seconds so we can interrupt playback.'
-
-const DEFAULT_BARGE_TTS_PHRASE = 'stop now please'
 
 const DEFAULT_BARGE_DELAY_MS = 700
 const DEFAULT_TONE_INTERRUPT_S = 1.0

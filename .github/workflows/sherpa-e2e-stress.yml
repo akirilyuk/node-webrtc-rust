@@ -26,13 +26,16 @@ on:
       cpu_burn:
         description: Busy-loop processes pinning spare cores during the loop (reproduce CPU starvation); 0 = none
         default: '0'
+      runner:
+        description: runs-on override for A/B runs (e.g. self-hosted = the old runners); empty = NWR_RUNNER_LARGE or nwr-large
+        default: ''
 
 permissions:
   contents: read
   packages: read
 
 concurrency:
-  group: sherpa-e2e-stress-${{ github.ref }}
+  group: sherpa-e2e-stress-${{ github.ref }}-${{ inputs.runner || 'default' }}
   cancel-in-progress: false
 
 env:
@@ -52,7 +55,7 @@ defaults:
 jobs:
   stress:
     name: Sherpa e2e x${{ inputs.iterations }}
-    runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
+    runs-on: ${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     timeout-minutes: 420
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:test

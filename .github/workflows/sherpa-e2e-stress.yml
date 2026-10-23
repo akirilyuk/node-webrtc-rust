@@ -172,6 +172,7 @@ jobs:
             fi
             rm -f "$stress_dir/iteration-$i.log"
             rm -rf "$stress_dir/native-trace"
+            rm -rf .test-logs/sherpa-e2e/audio-tap
             echo "| $i | $((SECONDS - start)) |" >>"$GITHUB_STEP_SUMMARY"
           done
           echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"

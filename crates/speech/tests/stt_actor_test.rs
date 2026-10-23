@@ -202,6 +202,8 @@ fn options() -> SttActorOptions {
     SttActorOptions {
         open_wait_max_ms: 120_000,
         test_final_delay_ms: 0,
+        audio_tap_dir: None,
+        audio_tap_agent_id: 0,
     }
 }
 
@@ -347,6 +349,8 @@ async fn open_pending_extends_deadline_up_to_open_wait_max() {
         SttActorOptions {
             open_wait_max_ms: 5_000,
             test_final_delay_ms: 0,
+            audio_tap_dir: None,
+            audio_tap_agent_id: 0,
         },
     );
     assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
@@ -608,6 +612,8 @@ async fn test_final_delay_holds_final_and_marker_but_keeps_accepting_audio() {
         SttActorOptions {
             open_wait_max_ms: 120_000,
             test_final_delay_ms: 3_000,
+            audio_tap_dir: None,
+            audio_tap_agent_id: 0,
         },
     );
     assert!(handle.send(SttCommand::EndUtterance { key: 1 }));

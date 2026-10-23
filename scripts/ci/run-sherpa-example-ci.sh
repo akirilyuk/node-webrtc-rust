@@ -67,7 +67,7 @@ WORKSPACE="@node-webrtc-rust/example-voice-agent-local-sherpa"
 # Every start:roundtrip* / start:record script that runs in CI is in exactly one of them; the guard
 # scripts/ci/sherpa-e2e-groups.test.sh checks that against the example's package.json.
 #
-# SERIAL: timing-sensitive (barge-in, utterance timing, real-time phases, load). Run one at a time,
+# SERIAL: timing-sensitive (barge-in, utterance timing, real-time phases) or CPU-heavy (load, 10-session multi). Run one at a time,
 # after the parallel group, so nothing else overlaps them.
 SHERPA_ROUNDTRIP_E2E_SERIAL=(
   start:roundtrip-utterance-timing
@@ -79,6 +79,9 @@ SHERPA_ROUNDTRIP_E2E_SERIAL=(
   start:roundtrip-concurrent-multi-client
   start:roundtrip-load-ci
   start:roundtrip-barge-replay
+  # 10 concurrent voice sessions in one process: CPU-heavy, so never next to other roundtrips on
+  # the 4-CPU job pod (starvation drops/doubles words: features/2026-10-14-voice-starvation-*).
+  start:roundtrip-counting-echo-lid-multi
 )
 # PARALLEL: up to SHERPA_E2E_PARALLEL at a time (default 3 when CI=true, else 1). They are mostly
 # real-time audio, so the CPU is idle most of the time. Each uses an in-process loopback on port 0 and
@@ -90,7 +93,6 @@ SHERPA_ROUNDTRIP_E2E_PARALLEL=(
   start:roundtrip-two-phrases
   start:roundtrip-counting-echo
   start:roundtrip-counting-echo-lid
-  start:roundtrip-counting-echo-lid-multi
   start:roundtrip-language-id
   start:roundtrip-tts-stream
   start:roundtrip

@@ -211,7 +211,7 @@ Unit tests (no models): `npx vitest run examples/voice-agent-local-sherpa/src/ro
 | `VOICE_DEBUG`                 | off             | Rust `[voice-debug]` in parent + echo child when `1`                                     |
 | `VOICE_FINALIZE_TRACE`        | off             | Only the Rust `[voice-debug] finalize path=…` timing lines when `1` (no per-frame noise) |
 
-CI: `start:roundtrip-counting-echo-lid-multi` in `SHERPA_ROUNDTRIP_E2E` (`run-sherpa-example-ci.sh`).
+CI: `start:roundtrip-counting-echo-lid-multi` in `SHERPA_ROUNDTRIP_E2E_PARALLEL` (`run-sherpa-example-ci.sh`).
 
 ## Counting barge-in recovery roundtrip
 

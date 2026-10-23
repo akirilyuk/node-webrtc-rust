@@ -202,7 +202,7 @@ jobs:
           bash scripts/ci/build-ts-workspace.sh
 
   # Reusable workflow_call checks are named "<caller> / <job>" (e.g. "Integration
-  # tests / Test"). Branch protection requires a check named exactly "Test"; without
+  # tests / Rust tests"). Branch protection requires a check named exactly "Test"; without
   # a thin gate job PRs stick on "Expected — Waiting for status to be reported".
   integration-test:
     name: Integration tests

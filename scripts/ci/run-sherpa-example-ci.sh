@@ -7,6 +7,9 @@
 #   bash scripts/ci/run-sherpa-example-ci.sh e2e       # models + rust ignored TTS cache + roundtrips
 #   bash scripts/ci/run-sherpa-example-ci.sh rust      # models + vendor ignored cargo tests only
 #   bash scripts/ci/run-sherpa-example-ci.sh all       # typecheck + vitest + e2e
+#
+# e2e runs the roundtrips in two groups: a parallel group (up to SHERPA_E2E_PARALLEL at a time,
+# default 3 when CI=true, else 1), then a serial group of timing-sensitive ones.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -60,27 +63,37 @@ sherpa_roundtrip_timeout_sec() {
 
 WORKSPACE="@node-webrtc-rust/example-voice-agent-local-sherpa"
 
-# Sherpa roundtrip E2E entry points (see examples/voice-agent-local-sherpa/ROUNDTRIP.md).
-SHERPA_ROUNDTRIP_E2E=(
-  start:roundtrip-counting
-  start:record
+# Sherpa roundtrip E2E entry points (see examples/voice-agent-local-sherpa/ROUNDTRIP.md), in two groups.
+# Every start:roundtrip* / start:record script that runs in CI is in exactly one of them; the guard
+# scripts/ci/sherpa-e2e-groups.test.sh checks that against the example's package.json.
+#
+# SERIAL: timing-sensitive (barge-in, utterance timing, real-time phases, load). Run one at a time,
+# after the parallel group, so nothing else overlaps them.
+SHERPA_ROUNDTRIP_E2E_SERIAL=(
   start:roundtrip-utterance-timing
   start:roundtrip-c1-timeouts
   start:roundtrip-slow-final
-  start:roundtrip-doubled-first-word
-  start:roundtrip-two-phrases
   start:roundtrip-barge-in
   start:roundtrip-barge-in-buffered
+  start:roundtrip-counting-barge-recovery
+  start:roundtrip-concurrent-multi-client
+  start:roundtrip-load-ci
+  start:roundtrip-barge-replay
+)
+# PARALLEL: up to SHERPA_E2E_PARALLEL at a time (default 3 when CI=true, else 1). They are mostly
+# real-time audio, so the CPU is idle most of the time. Each uses an in-process loopback on port 0 and
+# writes only to paths unique to it (see the shared-state notes in scripts/ci/README.md).
+SHERPA_ROUNDTRIP_E2E_PARALLEL=(
+  start:roundtrip-counting
+  start:record
+  start:roundtrip-doubled-first-word
+  start:roundtrip-two-phrases
   start:roundtrip-counting-echo
   start:roundtrip-counting-echo-lid
   start:roundtrip-counting-echo-lid-multi
-  start:roundtrip-counting-barge-recovery
-  start:roundtrip-concurrent-multi-client
   start:roundtrip-language-id
   start:roundtrip-tts-stream
-  start:roundtrip-load-ci
   start:roundtrip
-  start:roundtrip-barge-replay
 )
 
 ensure_ts_dist() {
@@ -184,23 +197,192 @@ run_rust_ignored() {
       --ignored --nocapture --test-threads=1
 }
 
+# Parallel width: SHERPA_E2E_PARALLEL, default 3 on CI and 1 elsewhere. Width 1 runs serially with
+# the plain step output.
+sherpa_e2e_parallel_width() {
+  local width="${SHERPA_E2E_PARALLEL:-}"
+  if [[ -z "$width" ]]; then
+    if [[ "${CI:-}" == "true" ]]; then width=3; else width=1; fi
+  fi
+  if ! [[ "$width" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SHERPA_E2E_PARALLEL must be a positive integer, got: $width" >&2
+    exit 2
+  fi
+  echo "$width"
+}
+
+# Test hook: SHERPA_E2E_ONLY="start:record,start:roundtrip" keeps only those entries (both groups).
+sherpa_e2e_selected() {
+  local script="$1"
+  [[ -z "${SHERPA_E2E_ONLY:-}" || ",${SHERPA_E2E_ONLY}," == *",${script},"* ]]
+}
+
+# One roundtrip through ci-step.sh with its per-script cap. Test hook: SHERPA_E2E_DRY_COMMAND is a
+# bash -c script that replaces the real roundtrip; it gets the npm script name as $1.
+run_one_roundtrip() {
+  local script="$1" idx="$2" total="$3"
+  local step_timeout
+  step_timeout="$(sherpa_roundtrip_timeout_sec "$script")"
+  local cmd=(bash "$ROOT/scripts/ci/run-sherpa-roundtrip-e2e.sh" "$script")
+  if [[ -n "${SHERPA_E2E_DRY_COMMAND:-}" ]]; then
+    cmd=(bash -c "$SHERPA_E2E_DRY_COMMAND" sherpa-e2e-dry "$script")
+  fi
+  SHERPA_ROUNDTRIP_STEP_TIMEOUT_SEC="$step_timeout" CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
+    bash "$CI_STEP" --timeout "$step_timeout" \
+      "sherpa e2e $script" -- "${cmd[@]}"
+}
+
+# Kill a pool member and everything below it (the roundtrip is npm > tsx > node, under timeout).
+sherpa_e2e_kill_tree() {
+  local pid="$1" child
+  if command -v pgrep >/dev/null 2>&1; then
+    for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+      sherpa_e2e_kill_tree "$child"
+    done
+  fi
+  kill "$pid" 2>/dev/null || true
+}
+
+# Pool state (globals: the helpers below and the EXIT trap read it).
+POOL_PIDS=()
+POOL_NAMES=()
+POOL_DONE=()
+POOL_FAILED=()
+POOL_RUNNING=0
+POOL_LOG_DIR=""
+
+# Print the block of every member that finished since the last call. A member is finished when its
+# status file exists (written last, atomically) or when its process is gone without one (killed).
+pool_report_finished() {
+  local k status name
+  for k in "${!POOL_PIDS[@]}"; do
+    [[ "${POOL_DONE[$k]}" == 1 ]] && continue
+    name="${POOL_NAMES[$k]}"
+    if [[ -f "$POOL_LOG_DIR/$name.status" ]]; then
+      status="$(cat "$POOL_LOG_DIR/$name.status")"
+    elif ! kill -0 "${POOL_PIDS[$k]}" 2>/dev/null; then
+      status="killed"
+    else
+      continue
+    fi
+    POOL_DONE[$k]=1
+    POOL_RUNNING=$((POOL_RUNNING - 1))
+    echo "==> [sherpa e2e parallel] $name (exit $status)"
+    cat "$POOL_LOG_DIR/$name.log" 2>/dev/null || true
+    if [[ "$status" != "0" ]]; then
+      POOL_FAILED+=("$name (exit $status)")
+    fi
+  done
+}
+
+# EXIT trap while a pool runs: never leave background roundtrips behind.
+pool_cleanup() {
+  local k
+  for k in ${POOL_PIDS[@]+"${!POOL_PIDS[@]}"}; do
+    [[ "${POOL_DONE[$k]}" == 1 ]] && continue
+    sherpa_e2e_kill_tree "${POOL_PIDS[$k]}"
+  done
+  wait 2>/dev/null || true
+}
+
+# Run the given scripts with at most $width at a time. Each roundtrip writes its combined output to
+# .test-logs/sherpa-e2e/<script>.log; when it finishes, its header and whole log are printed in one
+# block, so the CI output never interleaves. A failure does not stop the others; the pool drains and
+# then the failing names are reported and the function returns 1.
+run_roundtrips_parallel() {
+  local width="$1" idx_base="$2" total="$3"
+  shift 3
+  local scripts=("$@")
+
+  if [[ "$width" -gt 1 ]] && (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+    echo "SHERPA_E2E_PARALLEL>1 needs bash >= 4.3 (wait -n); this is bash $BASH_VERSION" >&2
+    return 2
+  fi
+
+  POOL_LOG_DIR="${SHERPA_E2E_LOG_DIR:-$ROOT/.test-logs/sherpa-e2e}"
+  mkdir -p "$POOL_LOG_DIR"
+  POOL_PIDS=()
+  POOL_NAMES=()
+  POOL_DONE=()
+  POOL_FAILED=()
+  POOL_RUNNING=0
+  trap pool_cleanup EXIT
+
+  local i script
+  for i in "${!scripts[@]}"; do
+    script="${scripts[$i]}"
+    while [[ "$POOL_RUNNING" -ge "$width" ]]; do
+      wait -n 2>/dev/null || true
+      pool_report_finished
+    done
+    rm -f "$POOL_LOG_DIR/$script.status"
+    (
+      rc=0
+      run_one_roundtrip "$script" "$((idx_base + i + 1))" "$total" >"$POOL_LOG_DIR/$script.log" 2>&1 || rc=$?
+      echo "$rc" >"$POOL_LOG_DIR/$script.status.tmp"
+      mv "$POOL_LOG_DIR/$script.status.tmp" "$POOL_LOG_DIR/$script.status"
+    ) &
+    POOL_PIDS+=("$!")
+    POOL_NAMES+=("$script")
+    POOL_DONE+=(0)
+    POOL_RUNNING=$((POOL_RUNNING + 1))
+  done
+  while [[ "$POOL_RUNNING" -gt 0 ]]; do
+    wait -n 2>/dev/null || true
+    pool_report_finished
+  done
+  wait 2>/dev/null || true
+  trap - EXIT
+
+  if [[ ${#POOL_FAILED[@]} -gt 0 ]]; then
+    echo "==> [sherpa e2e parallel] FAILED (${#POOL_FAILED[@]}/${#scripts[@]}): ${POOL_FAILED[*]}" >&2
+    return 1
+  fi
+  return 0
+}
+
 run_e2e() {
   ensure_native_node
   ensure_ts_dist
   bash "$ROOT/scripts/ci/sync-workspace-bindings.sh"
   ensure_sherpa_models
   run_rust_ignored
+  run_roundtrips
+}
 
-  local total="${#SHERPA_ROUNDTRIP_E2E[@]}"
-  local idx=0
-  for script in "${SHERPA_ROUNDTRIP_E2E[@]}"; do
-    idx=$((idx + 1))
-    local step_timeout
-    step_timeout="$(sherpa_roundtrip_timeout_sec "$script")"
-    SHERPA_ROUNDTRIP_STEP_TIMEOUT_SEC="$step_timeout" CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
-      bash "$CI_STEP" --timeout "$step_timeout" \
-        "sherpa e2e $script" -- bash "$ROOT/scripts/ci/run-sherpa-roundtrip-e2e.sh" "$script"
+# The roundtrips: the parallel group first, then the serial (timing-sensitive) group on its own.
+run_roundtrips() {
+  local width script idx=0
+  width="$(sherpa_e2e_parallel_width)"
+  local parallel=() serial=()
+  for script in ${SHERPA_ROUNDTRIP_E2E_PARALLEL[@]+"${SHERPA_ROUNDTRIP_E2E_PARALLEL[@]}"}; do
+    sherpa_e2e_selected "$script" && parallel+=("$script")
   done
+  for script in ${SHERPA_ROUNDTRIP_E2E_SERIAL[@]+"${SHERPA_ROUNDTRIP_E2E_SERIAL[@]}"}; do
+    sherpa_e2e_selected "$script" && serial+=("$script")
+  done
+  local total=$(( ${#parallel[@]} + ${#serial[@]} ))
+
+  if [[ ${#parallel[@]} -gt 0 ]]; then
+    if [[ "$width" -gt 1 ]]; then
+      echo "==> Sherpa roundtrips, parallel group (${#parallel[@]} scripts, up to $width at a time)"
+      run_roundtrips_parallel "$width" 0 "$total" "${parallel[@]}" || return 1
+    else
+      echo "==> Sherpa roundtrips, parallel group run serially (SHERPA_E2E_PARALLEL=1)"
+      for script in "${parallel[@]}"; do
+        idx=$((idx + 1))
+        run_one_roundtrip "$script" "$idx" "$total"
+      done
+    fi
+  fi
+  idx=${#parallel[@]}
+  if [[ ${#serial[@]} -gt 0 ]]; then
+    echo "==> Sherpa roundtrips, serial group (${#serial[@]} scripts, timing-sensitive)"
+    for script in "${serial[@]}"; do
+      idx=$((idx + 1))
+      run_one_roundtrip "$script" "$idx" "$total"
+    done
+  fi
 }
 
 run_rust() {
@@ -212,10 +394,25 @@ mode="${1:-all}"
 case "$mode" in
   step-timeouts)
     # "<npm script> <step cap seconds>" per roundtrip E2E step (read by roundtrip-ci-step-budget.test.ts).
-    for script in "${SHERPA_ROUNDTRIP_E2E[@]}"; do
+    for script in "${SHERPA_ROUNDTRIP_E2E_SERIAL[@]}" "${SHERPA_ROUNDTRIP_E2E_PARALLEL[@]}"; do
       echo "$script $(sherpa_roundtrip_timeout_sec "$script")"
     done
     exit 0
+    ;;
+  groups)
+    # "<serial|parallel> <npm script>" per roundtrip E2E step (read by sherpa-e2e-groups.test.sh).
+    for script in "${SHERPA_ROUNDTRIP_E2E_SERIAL[@]}"; do echo "serial $script"; done
+    for script in "${SHERPA_ROUNDTRIP_E2E_PARALLEL[@]}"; do echo "parallel $script"; done
+    exit 0
+    ;;
+  parallel-width)
+    # Test hook: the width the parallel group would use with the current env.
+    sherpa_e2e_parallel_width
+    exit 0
+    ;;
+  roundtrips)
+    # Test hook: only the roundtrip phase (no models, no .node check, no Rust ignored tests).
+    run_roundtrips
     ;;
   typecheck) run_typecheck ;;
   vitest) run_vitest ;;
@@ -227,7 +424,7 @@ case "$mode" in
     run_e2e
     ;;
   *)
-    echo "Usage: $0 {typecheck|vitest|e2e|rust|all|step-timeouts}" >&2
+    echo "Usage: $0 {typecheck|vitest|e2e|rust|all|step-timeouts|groups|parallel-width|roundtrips}" >&2
     exit 2
     ;;
 esac

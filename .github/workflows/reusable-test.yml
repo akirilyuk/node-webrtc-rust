@@ -42,8 +42,11 @@ defaults:
     shell: bash
 
 jobs:
-  test:
-    name: Test
+  # The two jobs run in parallel on separate runner pods: `rust` (lint, cargo tests) and `node-sherpa`
+  # (native binding, npm tests, helpers integration, Sherpa E2E). Each runs scripts/ci/run-pr-integration.sh
+  # with CI_TEST_SUITES limited to the suites it owns. A caller's `needs.<job>.result` covers both.
+  rust:
+    name: Rust tests
     runs-on: ${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:test
@@ -74,6 +77,7 @@ jobs:
           SKIP: ${{ inputs.skip }}
           NEEDS_NATIVE: ${{ inputs.needs_native_binding }}
           NEEDS_TS: ${{ inputs.needs_ts_dist }}
+          SUITES: ${{ inputs.test_suites }}
         run: |
           is_true() {
             case "$1" in
@@ -81,9 +85,110 @@ jobs:
               *) return 1 ;;
             esac
           }
+          # Suites this job owns: (inputs.test_suites, or every suite when empty) intersected with
+          # rust. An empty intersection skips the work and the job still succeeds; it must never
+          # pass an empty CI_TEST_SUITES to the script, because empty there means every suite.
+          OWNED="rust"
+          suites="${SUITES//[[:space:]]/}"
+          selected=""
+          for suite in ${OWNED//,/ }; do
+            if [[ -z "$suites" || ",$suites," == *",$suite,"* ]]; then
+              selected="${selected:+$selected,}$suite"
+            fi
+          done
+          echo "suites=$selected" >> "$GITHUB_OUTPUT"
           if is_true "$SKIP"; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping integration tests — no source code changes in this PR."
+          elif [[ -z "$selected" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Nothing to run in this job: test suites '${suites:-all}' do not include rust."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          if is_true "$NEEDS_NATIVE"; then
+            echo "needs_native=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_native=false" >> "$GITHUB_OUTPUT"
+          fi
+          if is_true "$NEEDS_TS"; then
+            echo "needs_ts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_ts=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+
+      - name: Run integration tests (ci-test container, coturn in-process)
+        id: integration
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          CI_TEST_SUITES: ${{ steps.gate.outputs.suites }}
+        run: bash "${{ inputs.test_script }}"
+
+      - name: Runner facts (end)
+        if: always()
+        run: echo "memory.peak=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+
+  node-sherpa:
+    name: Node + Sherpa tests
+    runs-on: ${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:test
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      TURN_AVAILABLE: '1'
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+      # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: '*'
+    steps:
+      # Migration measurement: CPUs, cgroup limits and CPU model of the runner this job got.
+      - name: Runner facts
+        run: |
+          echo "runner=${RUNNER_NAME:-unknown} nproc=$(nproc)"
+          echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+          grep -m1 'model name' /proc/cpuinfo || true
+
+      # workflow_call coerces booleans; normalize once in bash for reliable step if: gates.
+      - name: Resolve integration test gates
+        id: gate
+        env:
+          SKIP: ${{ inputs.skip }}
+          NEEDS_NATIVE: ${{ inputs.needs_native_binding }}
+          NEEDS_TS: ${{ inputs.needs_ts_dist }}
+          SUITES: ${{ inputs.test_suites }}
+        run: |
+          is_true() {
+            case "$1" in
+              true|True|TRUE|1|yes|Yes|YES) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          # Suites this job owns: (inputs.test_suites, or every suite when empty) intersected with
+          # node,sherpa. An empty intersection skips the work and the job still succeeds; it must never
+          # pass an empty CI_TEST_SUITES to the script, because empty there means every suite.
+          OWNED="node,sherpa"
+          suites="${SUITES//[[:space:]]/}"
+          selected=""
+          for suite in ${OWNED//,/ }; do
+            if [[ -z "$suites" || ",$suites," == *",$suite,"* ]]; then
+              selected="${selected:+$selected,}$suite"
+            fi
+          done
+          echo "suites=$selected" >> "$GITHUB_OUTPUT"
+          if is_true "$SKIP"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping integration tests — no source code changes in this PR."
+          elif [[ -z "$selected" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Nothing to run in this job: test suites '${suites:-all}' do not include node,sherpa."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -135,7 +240,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         env:
           TS_DIST_CACHE_HIT: ${{ steps.ts-cache.outputs.cache-hit || 'false' }}
-          CI_TEST_SUITES: ${{ inputs.test_suites }}
+          CI_TEST_SUITES: ${{ steps.gate.outputs.suites }}
         run: bash "${{ inputs.test_script }}"
 
       - name: Runner facts (end)

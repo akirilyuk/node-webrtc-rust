@@ -115,18 +115,30 @@ jobs:
             echo "| iteration | seconds |"
             echo "|---|---|"
           } >>"$GITHUB_STEP_SUMMARY"
+          # Each iteration's output is also kept in a file: the job log can be missing (run 39933589322
+          # had no log blob), and a failure must stay explainable. Uploaded as an artifact on failure.
+          stress_dir="$PWD/.test-logs/stress"
+          mkdir -p "$stress_dir"
           for ((i = 1; i <= ITERATIONS; i++)); do
             echo "==> stress iteration $i/$ITERATIONS"
             start=$SECONDS
-            if ! bash scripts/ci/run-sherpa-example-ci.sh "$MODE"; then
+            bash scripts/ci/run-sherpa-example-ci.sh "$MODE" 2>&1 | tee "$stress_dir/iteration-$i.log"
+            rc=${PIPESTATUS[0]}
+            if [[ "$rc" -ne 0 ]]; then
               green=$((i - 1))
-              echo "stress FAILED at iteration $i after $green green"
+              echo "stress FAILED at iteration $i after $green green (exit $rc)"
               {
                 echo
-                echo "stress FAILED at iteration $i after $green green"
+                echo "stress FAILED at iteration $i after $green green (exit $rc)"
+                echo
+                echo '```'
+                grep -E 'FAILED|FAIL |roundtrip failure|expected|passed only on|user_speech_final|timed out|panicked|Error' \
+                  "$stress_dir/iteration-$i.log" | tail -n 40
+                echo '```'
               } >>"$GITHUB_STEP_SUMMARY"
               exit 1
             fi
+            rm -f "$stress_dir/iteration-$i.log"
             echo "| $i | $((SECONDS - start)) |" >>"$GITHUB_STEP_SUMMARY"
           done
           echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"
@@ -134,6 +146,17 @@ jobs:
             echo
             echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"
           } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload stress logs (failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sherpa-stress-logs-${{ github.run_id }}
+          path: |
+            .test-logs/stress
+            .test-logs/sherpa-e2e
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Runner facts (end)
         if: always()

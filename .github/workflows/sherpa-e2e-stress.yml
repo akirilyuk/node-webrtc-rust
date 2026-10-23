@@ -29,6 +29,13 @@ on:
       runner:
         description: runs-on override for A/B runs (e.g. self-hosted = the old runners); empty = NWR_RUNNER_LARGE or nwr-large
         default: ''
+      voice_debug:
+        description: 'true = VOICE_DEBUG=1 already on the first pass, so a failing pass has [voice-debug] internals'
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
       native_trace:
         description: 'true = native DTLS/ICE/SCTP trace per process (WNR_LOG_FILE), kept only for the failing iteration'
         type: choice
@@ -100,6 +107,7 @@ jobs:
           PARALLEL: ${{ inputs.parallel }}
           CPU_BURN: ${{ inputs.cpu_burn }}
           NATIVE_TRACE: ${{ inputs.native_trace }}
+          FIRST_PASS_VOICE_DEBUG: ${{ inputs.voice_debug }}
         run: |
           set -uo pipefail
           if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then
@@ -112,6 +120,7 @@ jobs:
             for ((b = 0; b < CPU_BURN; b++)); do yes >/dev/null & burn_pids+=($!); done
             trap 'kill "${burn_pids[@]}" 2>/dev/null || true' EXIT
           fi
+          [[ "$FIRST_PASS_VOICE_DEBUG" == "true" ]] && export SHERPA_ROUNDTRIP_FIRST_PASS_VOICE_DEBUG=1
           [[ -n "$ONLY" ]] && export SHERPA_E2E_ONLY="$ONLY"
           [[ -n "$PARALLEL" ]] && export SHERPA_E2E_PARALLEL="$PARALLEL"
           if [[ "$MODE" == "roundtrips" ]]; then

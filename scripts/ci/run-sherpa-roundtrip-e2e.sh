@@ -46,7 +46,9 @@ run_pass() {
 
 STARTED_AT=$SECONDS
 
-if run_pass 0; then
+# SHERPA_ROUNDTRIP_FIRST_PASS_VOICE_DEBUG=1: the first pass already runs with VOICE_DEBUG=1, so a
+# failing pass has [voice-debug] internals (stress investigations; CI keeps the quiet first pass).
+if run_pass "${SHERPA_ROUNDTRIP_FIRST_PASS_VOICE_DEBUG:-0}"; then
   exit 0
 fi
 

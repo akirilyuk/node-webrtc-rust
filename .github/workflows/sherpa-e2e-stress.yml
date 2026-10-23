@@ -1,0 +1,103 @@
+name: Sherpa E2E stress
+
+# Runs the Sherpa e2e block (scripts/ci/run-sherpa-example-ci.sh e2e) N times in one job on
+# nwr-large and stops at the first failure: proof for flaky-tests-root-cause.md (20 consecutive
+# green runs) before changing how the roundtrips run. Dispatch-only; spends no vendor credit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: Consecutive Sherpa e2e runs (stop at first failure)
+        default: '20'
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: sherpa-e2e-stress-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: 'true'
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+  OPUS_STATIC: '1'
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  stress:
+    name: Sherpa e2e x${{ inputs.iterations }}
+    runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
+    timeout-minutes: 420
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:test
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # Migration measurement: CPUs, cgroup limits and CPU model of the runner this job got.
+      - name: Runner facts
+        run: |
+          echo "runner=${RUNNER_NAME:-unknown} nproc=$(nproc)"
+          echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+          grep -m1 'model name' /proc/cpuinfo || true
+
+      - uses: actions/checkout@v4
+
+      # Same preparation as scripts/ci/run-pr-integration.sh before its Sherpa block (the Sherpa
+      # block needs the debug .node, synced bindings and the TS dist; models come from
+      # run-sherpa-example-ci.sh itself).
+      - name: Prepare (npm ci, debug .node, TS dist)
+        run: |
+          bash scripts/ci/npm-ci-workspace.sh
+          bash scripts/ci/build-native-addon.sh --target x86_64-unknown-linux-gnu --profile debug
+          bash scripts/ci/sync-workspace-bindings.sh
+          bash scripts/ci/ensure-ts-dist.sh
+
+      - name: Sherpa e2e loop
+        env:
+          ITERATIONS: ${{ inputs.iterations }}
+        run: |
+          set -uo pipefail
+          if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then
+            echo "iterations must be a positive integer, got: $ITERATIONS" >&2
+            exit 2
+          fi
+          {
+            echo "## Sherpa e2e stress (${ITERATIONS} iterations)"
+            echo
+            echo "| iteration | seconds |"
+            echo "|---|---|"
+          } >>"$GITHUB_STEP_SUMMARY"
+          for ((i = 1; i <= ITERATIONS; i++)); do
+            echo "==> stress iteration $i/$ITERATIONS"
+            start=$SECONDS
+            if ! bash scripts/ci/run-sherpa-example-ci.sh e2e; then
+              green=$((i - 1))
+              echo "stress FAILED at iteration $i after $green green"
+              {
+                echo
+                echo "stress FAILED at iteration $i after $green green"
+              } >>"$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "| $i | $((SECONDS - start)) |" >>"$GITHUB_STEP_SUMMARY"
+          done
+          echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"
+          {
+            echo
+            echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Runner facts (end)
+        if: always()
+        run: echo "memory.peak=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"

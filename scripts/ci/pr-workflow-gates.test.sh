@@ -87,8 +87,9 @@ if grep -Eq '^[^#]*docker run' "$reusable"; then
   exit 1
 fi
 # ARC migration guards over every workflow (plan: 2026-10-20-nwr-ci-arc-migration.md):
-#   a. no plain `runs-on: self-hosted` (vendor-bench.yml is allowlisted: its runner location is a
-#      pending decision);
+#   a. no plain `runs-on: self-hosted`. vendor-bench.yml picks its runner by an input (`location`:
+#      eu = the one old self-hosted EU runner kept for benchmarks, th = nwr-large), so it has no plain
+#      line either; the allowlist below stays empty unless a workflow must pin the EU runner;
 #   b. no docker commands (ARC runner pods have no Docker daemon). ci-image.yml builds images on
 #      GitHub-hosted ubuntu-latest through docker/* actions (`uses:` lines), so it is exempt;
 #   c. every job that runs on NWR_RUNNER_* also has container:, so the NWR_RUNNER_* fallback to
@@ -97,10 +98,10 @@ fi
 #      safe.directory env (container-mode run: steps default to `sh -e`; the job pod runs as root on
 #      a workspace owned by another user);
 #   e. nothing under .github mentions CARGO_VIA_CI_IMAGE (cargo is on PATH inside ci-build).
-# Allowlist for (a): location decision pending.
-SELF_HOSTED_ALLOWLIST="vendor-bench.yml"
+# Allowlist for (a): none (vendor-bench chooses self-hosted only through its location input).
+SELF_HOSTED_ALLOWLIST=""
 # Allowlist for (b): builds images with docker/* actions on ubuntu-latest.
-DOCKER_ALLOWLIST="ci-image.yml vendor-bench.yml"
+DOCKER_ALLOWLIST="ci-image.yml"
 # Allowlist for (d): the vendor-live-* jobs set `shell: bash` on the steps that need it and run no git
 # commands, so they carry no workflow-level defaults.
 DEFAULTS_ALLOWLIST_GLOB="vendor-live-*.yml"

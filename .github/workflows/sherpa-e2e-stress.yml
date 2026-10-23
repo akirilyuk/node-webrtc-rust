@@ -10,6 +10,19 @@ on:
       iterations:
         description: Consecutive Sherpa e2e runs (stop at first failure)
         default: '20'
+      mode:
+        description: e2e = the full CI Sherpa block per iteration; roundtrips = roundtrips only (models prepared once, no Rust ignored tests)
+        type: choice
+        default: e2e
+        options:
+          - e2e
+          - roundtrips
+      only:
+        description: Comma list of roundtrip npm scripts to keep (SHERPA_E2E_ONLY); empty = all
+        default: ''
+      parallel:
+        description: Parallel-group width (SHERPA_E2E_PARALLEL); empty = the CI default
+        default: ''
 
 permissions:
   contents: read
@@ -62,18 +75,32 @@ jobs:
           bash scripts/ci/build-native-addon.sh --target x86_64-unknown-linux-gnu --profile debug
           bash scripts/ci/sync-workspace-bindings.sh
           bash scripts/ci/ensure-ts-dist.sh
+          if [[ "${{ inputs.mode }}" == "roundtrips" ]]; then
+            bash scripts/ci/ensure-sherpa-models.sh
+          fi
 
       - name: Sherpa e2e loop
         env:
           ITERATIONS: ${{ inputs.iterations }}
+          MODE: ${{ inputs.mode }}
+          ONLY: ${{ inputs.only }}
+          PARALLEL: ${{ inputs.parallel }}
         run: |
           set -uo pipefail
           if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then
             echo "iterations must be a positive integer, got: $ITERATIONS" >&2
             exit 2
           fi
+          [[ -n "$ONLY" ]] && export SHERPA_E2E_ONLY="$ONLY"
+          [[ -n "$PARALLEL" ]] && export SHERPA_E2E_PARALLEL="$PARALLEL"
+          if [[ "$MODE" == "roundtrips" ]]; then
+            # roundtrips mode expects the model paths in the environment (prepared once above).
+            # shellcheck source=/dev/null
+            source scripts/export-sherpa-local-models.sh
+            export SHERPA_LID_MODEL_PATH="${SHERPA_LID_MODEL_PATH:-$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny}"
+          fi
           {
-            echo "## Sherpa e2e stress (${ITERATIONS} iterations)"
+            echo "## Sherpa e2e stress (${ITERATIONS} iterations, mode=${MODE}, only=${ONLY:-all}, parallel=${PARALLEL:-default})"
             echo
             echo "| iteration | seconds |"
             echo "|---|---|"
@@ -81,7 +108,7 @@ jobs:
           for ((i = 1; i <= ITERATIONS; i++)); do
             echo "==> stress iteration $i/$ITERATIONS"
             start=$SECONDS
-            if ! bash scripts/ci/run-sherpa-example-ci.sh e2e; then
+            if ! bash scripts/ci/run-sherpa-example-ci.sh "$MODE"; then
               green=$((i - 1))
               echo "stress FAILED at iteration $i after $green green"
               {

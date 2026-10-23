@@ -66,6 +66,9 @@ jobs:
       - name: Sherpa e2e loop
         env:
           ITERATIONS: ${{ inputs.iterations }}
+          # No debug re-run: run-sherpa-roundtrip-e2e.sh exits with the re-run's result, so a
+          # first-pass failure followed by a passing re-run would count as green and hide a flake.
+          SHERPA_ROUNDTRIP_E2E_RETRIES: '0'
         run: |
           set -uo pipefail
           if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then

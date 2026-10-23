@@ -3,6 +3,15 @@ name: Reusable — build Linux native targets
 env:
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
   OPUS_STATIC: '1'
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
 
 on:
   workflow_call:
@@ -32,7 +41,7 @@ jobs:
   build-linux-x64:
     name: Build - ${{ matrix.target }}
     if: inputs.linux_x64_matrix != '[]' && inputs.linux_x64_matrix != ''
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:
@@ -65,7 +74,7 @@ jobs:
   build-linux-x64-musl:
     name: Build - x86_64-unknown-linux-musl
     if: inputs.build_linux_musl
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
       credentials:

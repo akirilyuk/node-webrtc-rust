@@ -10,10 +10,11 @@
 #      calls `docker run` (Kubernetes runner pods have no Docker daemon), and run-pr-integration.sh
 #      starts and stops turnserver itself.
 #   4. Path-based suite selection (CI_TEST_SUITES / test_suites): empty means every suite.
-#   5. ARC runners: build.yml has no docker commands, every build.yml job with runs-on also has
-#      container:, and every runs-on in build.yml and reusable-test.yml uses the NWR_RUNNER_* variables.
-#   6. Container-mode jobs: build.yml and reusable-test.yml default run: steps to bash and set the
-#      wildcard safe.directory through GIT_CONFIG_* env.
+#   5. ARC runners, all workflows (allowlists in the block below): no plain `runs-on: self-hosted`,
+#      no docker commands, every NWR_RUNNER_* job also has container:, and every workflow that uses
+#      NWR_RUNNER_* defaults run: steps to bash and sets the wildcard safe.directory through
+#      GIT_CONFIG_* env. Nothing under .github mentions CARGO_VIA_CI_IMAGE. Every runs-on in build.yml
+#      and reusable-test.yml uses the NWR_RUNNER_* variables.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -85,38 +86,121 @@ if grep -Eq '^[^#]*docker run' "$reusable"; then
   echo "$reusable: must not call 'docker run' (Kubernetes runners have no Docker daemon)" >&2
   exit 1
 fi
-# build.yml: no Docker at all (ARC runner pods have no Docker daemon, and no Prepare workspace
-# permission reset is needed on a fresh pod). Comment lines may mention it.
-if grep -Ev '^[[:space:]]*#' "$build" | grep -Ewn 'docker' >&2; then
-  echo "$build: must not contain docker commands (docker run/build/login); ARC runners have no Docker daemon" >&2
-  exit 1
-fi
+# ARC migration guards over every workflow (plan: 2026-10-20-nwr-ci-arc-migration.md):
+#   a. no plain `runs-on: self-hosted` (vendor-bench.yml is allowlisted: its runner location is a
+#      pending decision);
+#   b. no docker commands (ARC runner pods have no Docker daemon). ci-image.yml builds images on
+#      GitHub-hosted ubuntu-latest through docker/* actions (`uses:` lines), so it is exempt;
+#   c. every job that runs on NWR_RUNNER_* also has container:, so the NWR_RUNNER_* fallback to
+#      self-hosted runs the same YAML;
+#   d. every workflow that uses NWR_RUNNER_* sets a top-level bash default shell and the wildcard
+#      safe.directory env (container-mode run: steps default to `sh -e`; the job pod runs as root on
+#      a workspace owned by another user);
+#   e. nothing under .github mentions CARGO_VIA_CI_IMAGE (cargo is on PATH inside ci-build).
+# Allowlist for (a): location decision pending.
+SELF_HOSTED_ALLOWLIST="vendor-bench.yml"
+# Allowlist for (b): builds images with docker/* actions on ubuntu-latest.
+DOCKER_ALLOWLIST="ci-image.yml vendor-bench.yml"
+# Allowlist for (d): the vendor-live-* jobs set `shell: bash` on the steps that need it and run no git
+# commands, so they carry no workflow-level defaults.
+DEFAULTS_ALLOWLIST_GLOB="vendor-live-*.yml"
 
-# Every build.yml job that has runs-on also has a container: block, so the same YAML runs on the
-# ARC scale sets and (via NWR_RUNNER_* = self-hosted) on the old runners. Jobs that call a reusable
-# workflow (uses:) have no runs-on and are skipped. Prints the offending job names.
+in_allowlist() {
+  local name="$1" list="$2" item
+  for item in $list; do
+    [ "$item" = "$name" ] && return 0
+  done
+  return 1
+}
+
+# Non-comment lines of a workflow.
+code_lines() { grep -Ev '^[[:space:]]*#' "$1" || true; }
+
+check_no_plain_self_hosted() {
+  if code_lines "$1" | grep -Eq '^[[:space:]]*runs-on:[[:space:]]*self-hosted[[:space:]]*$'; then
+    echo "$1: plain 'runs-on: self-hosted'; use \${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }} (or _LARGE) with a container: block" >&2
+    return 1
+  fi
+  return 0
+}
+
+check_no_docker_commands() {
+  if code_lines "$1" | grep -Ewn 'docker' >&2; then
+    echo "$1: must not contain docker commands (docker run/build/login); ARC runners have no Docker daemon" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Prints the jobs that run on NWR_RUNNER_* (or any runs-on in $2=all) but have no container: block.
+# Jobs that call a reusable workflow (uses:) have no runs-on and are skipped; GitHub-hosted jobs are
+# skipped.
 jobs_missing_container() {
   awk '
-    function flush() { if (job != "" && has_runs_on && !has_container) print job }
+    function flush() { if (job != "" && has_nwr && !has_container) print job }
     /^jobs:/ { in_jobs = 1; next }
     in_jobs && /^[^[:space:]#]/ { flush(); job = ""; in_jobs = 0 }
     in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
       flush()
-      job = $1; sub(/:$/, "", job); has_runs_on = 0; has_container = 0; next
+      job = $1; sub(/:$/, "", job); has_nwr = 0; has_container = 0; next
     }
-    in_jobs && /^    runs-on:/ { has_runs_on = 1 }
+    in_jobs && /^    runs-on:.*NWR_RUNNER_/ { has_nwr = 1 }
     in_jobs && /^    container:/ { has_container = 1 }
     END { flush() }
   ' "$1"
 }
-missing="$(jobs_missing_container "$build")"
-if [ -n "$missing" ]; then
-  echo "$build: jobs with runs-on but no container: block: $(echo "$missing" | tr '\n' ' ')" >&2
-  echo "$build: every Linux job is a container: job so the NWR_RUNNER_* fallback to self-hosted keeps working" >&2
+
+check_nwr_jobs_have_container() {
+  local missing
+  missing="$(jobs_missing_container "$1")"
+  if [ -n "$missing" ]; then
+    echo "$1: NWR_RUNNER_* jobs without a container: block: $(echo "$missing" | tr '\n' ' ')" >&2
+    echo "$1: every Linux job is a container: job so the NWR_RUNNER_* fallback to self-hosted keeps working" >&2
+    return 1
+  fi
+  return 0
+}
+
+check_bash_default_and_safe_directory() {
+  if ! awk '
+    /^defaults:/ { in_defaults = 1; next }
+    in_defaults && /^[^[:space:]#]/ { in_defaults = 0 }
+    in_defaults && /^    shell:[[:space:]]*bash[[:space:]]*$/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$1"; then
+    echo "$1: must set 'shell: bash' under a top-level defaults.run block (container-mode run: steps default to sh -e)" >&2
+    return 1
+  fi
+  if ! grep -Eq '^[[:space:]]*GIT_CONFIG_KEY_0:[[:space:]]*safe\.directory[[:space:]]*$' "$1"; then
+    echo "$1: must set GIT_CONFIG_KEY_0: safe.directory (with GIT_CONFIG_COUNT/VALUE_0) so git works on the root-owned-vs-runner workspace" >&2
+    return 1
+  fi
+  return 0
+}
+
+for wf in .github/workflows/*.yml; do
+  name="$(basename "$wf")"
+  if ! in_allowlist "$name" "$SELF_HOSTED_ALLOWLIST"; then
+    check_no_plain_self_hosted "$wf" || exit 1
+  fi
+  if ! in_allowlist "$name" "$DOCKER_ALLOWLIST"; then
+    check_no_docker_commands "$wf" || exit 1
+  fi
+  check_nwr_jobs_have_container "$wf" || exit 1
+  if grep -q 'NWR_RUNNER_' "$wf"; then
+    # shellcheck disable=SC2254
+    case "$name" in
+      $DEFAULTS_ALLOWLIST_GLOB) ;;
+      *) check_bash_default_and_safe_directory "$wf" || exit 1 ;;
+    esac
+  fi
+done
+if grep -rn 'CARGO_VIA_CI_IMAGE' .github >&2; then
+  echo ".github: CARGO_VIA_CI_IMAGE must not appear (cargo is on PATH inside the ci-build container)" >&2
   exit 1
 fi
 
-# Self-test: a job without container: must be reported, one with container: must not.
+# Self-tests: each guard must bite on a minimal YAML and accept its good counterpart.
 tmp_jobs="$(mktemp)"
 trap 'rm -f "$tmp" "$tmp_jobs"' EXIT
 cat >"$tmp_jobs" <<'YAML'
@@ -131,35 +215,72 @@ jobs:
     runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     steps:
       - run: true
+  github-hosted:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
   reusable:
     uses: ./.github/workflows/reusable-test.yml
 YAML
 if [ "$(jobs_missing_container "$tmp_jobs")" != "no-container" ]; then
-  echo "self-test failed: jobs_missing_container did not report exactly the job without container:" >&2
+  echo "self-test failed: jobs_missing_container did not report exactly the NWR job without container:" >&2
+  exit 1
+fi
+if check_nwr_jobs_have_container "$tmp_jobs" 2>/dev/null; then
+  echo "self-test failed: an NWR job without container: was accepted" >&2
+  exit 1
+fi
+cat >"$tmp_jobs" <<'YAML'
+jobs:
+  old-runner:
+    runs-on: self-hosted
+    steps:
+      - run: true
+YAML
+if check_no_plain_self_hosted "$tmp_jobs" 2>/dev/null; then
+  echo "self-test failed: a plain runs-on: self-hosted job was accepted" >&2
+  exit 1
+fi
+cat >"$tmp_jobs" <<'YAML'
+jobs:
+  old-runner:
+    # runs-on: self-hosted (comment only)
+    runs-on: ubuntu-latest
+    steps:
+      # docker run is mentioned in a comment only
+      - uses: docker/setup-buildx-action@v3
+YAML
+if ! check_no_plain_self_hosted "$tmp_jobs" 2>/dev/null; then
+  echo "self-test failed: a commented-out self-hosted line was rejected" >&2
+  exit 1
+fi
+cat >"$tmp_jobs" <<'YAML'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker run --rm alpine true
+YAML
+if check_no_docker_commands "$tmp_jobs" 2>/dev/null; then
+  echo "self-test failed: a docker run command was accepted" >&2
+  exit 1
+fi
+cat >"$tmp_jobs" <<'YAML'
+name: x
+env:
+  A: b
+jobs: {}
+YAML
+if check_bash_default_and_safe_directory "$tmp_jobs" 2>/dev/null; then
+  echo "self-test failed: a workflow without defaults.run.shell: bash was accepted" >&2
   exit 1
 fi
 
-# Runners come from the NWR_RUNNER_* variables with an ARC default, never a hard-coded self-hosted.
+# Runners in build.yml and reusable-test.yml come from the NWR_RUNNER_* variables with an ARC
+# default, never a hard-coded runner label.
 for wf in "$build" "$reusable"; do
   if grep -E '^[[:space:]]*runs-on:' "$wf" | grep -Fv 'NWR_RUNNER_' >&2; then
     echo "$wf: every runs-on must use the NWR_RUNNER_* repo variables with an ARC default (no plain self-hosted)" >&2
-    exit 1
-  fi
-done
-# Container mode defaults run: steps to `sh -e`, and job pods run as root on a workspace owned by
-# another user: both workflows set a top-level bash default shell and a wildcard safe.directory.
-for wf in "$build" "$reusable"; do
-  if ! awk '
-    /^defaults:/ { in_defaults = 1; next }
-    in_defaults && /^[^[:space:]#]/ { in_defaults = 0 }
-    in_defaults && /^    shell:[[:space:]]*bash[[:space:]]*$/ { found = 1 }
-    END { exit found ? 0 : 1 }
-  ' "$wf"; then
-    echo "$wf: must set 'shell: bash' under a top-level defaults.run block (container-mode run: steps default to sh -e)" >&2
-    exit 1
-  fi
-  if ! grep -Eq '^[[:space:]]*GIT_CONFIG_KEY_0:[[:space:]]*safe\.directory[[:space:]]*$' "$wf"; then
-    echo "$wf: must set GIT_CONFIG_KEY_0: safe.directory (with GIT_CONFIG_COUNT/VALUE_0) so git works on the root-owned-vs-runner workspace" >&2
     exit 1
   fi
 done

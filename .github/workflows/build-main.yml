@@ -22,22 +22,26 @@ env:
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
   OPUS_STATIC: '1'
   NATIVE_TOOL_MODE: declared
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   validate-package-lock:
     name: Package-lock optional bindings
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      # Composite ownership action needs a checkout; pre-checkout reset stays inline.
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -49,17 +53,13 @@ jobs:
   quality:
     name: Typecheck & lint
     needs: validate-package-lock
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -71,17 +71,13 @@ jobs:
   build-ts:
     name: Build TypeScript
     needs: [validate-package-lock, quality]
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -104,7 +100,12 @@ jobs:
   plan:
     name: Plan native builds
     needs: [validate-package-lock, quality, build-ts]
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       linux_x64_matrix: ${{ steps.plan.outputs.linux_x64_matrix }}
       build_linux_arm64: ${{ steps.plan.outputs.build_linux_arm64 }}
@@ -116,15 +117,6 @@ jobs:
       all_cached: ${{ steps.plan.outputs.all_cached }}
       aggregate_digest: ${{ steps.plan.outputs.aggregate_digest }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/plan-native-builds
@@ -216,8 +208,6 @@ jobs:
       require_binding_artifact: 'true'
       needs_native_binding: 'true'
       needs_ts_dist: 'true'
-      # old runners until build-main/release move (ARC migration chunks 4/5)
-      runner: self-hosted
     secrets: inherit
 
   assemble-native-bundle:
@@ -230,23 +220,17 @@ jobs:
       (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
       (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped')
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       contents: read
       actions: write
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/ci-restore-workspace-ownership
 
       # Bundle assembly recomputes every target fingerprint with CI_IMAGE cargo metadata.
       - name: Download all binding artifacts
@@ -261,7 +245,6 @@ jobs:
         shell: bash
         env:
           NATIVE_TOOL_MODE: declared
-          CARGO_VIA_CI_IMAGE: '1'
           NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
           NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
           NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}

@@ -20,11 +20,22 @@ on:
         type: string
         default: release
 
+env:
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   stage-linux-x64:
     name: Stage cache - ${{ matrix.target }}
     if: inputs.cached_linux_x64 != '[]' && inputs.cached_linux_x64 != ''
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:

@@ -21,19 +21,14 @@ surface_tool="scripts/ci/bindings-napi-surface.sh"
 manifest_write="scripts/ci/write-native-artifact-manifest.sh"
 summary=scripts/ci/write-native-ci-summary.sh
 
-# --- Plan runner: cargo metadata via CI_IMAGE on bare self-hosted hosts ---
+# --- Plan runner: every native-contract job runs in the ci-build container (cargo on PATH) ---
 if grep -q 'dtolnay/rust-toolchain@1.99.0' "$plan"; then
-  fail "plan action must not install host rust-toolchain (use CARGO_VIA_CI_IMAGE)"
+  fail "plan action must not install host rust-toolchain (the calling job runs in ci-build)"
 fi
-grep -q 'CARGO_VIA_CI_IMAGE' "$plan" || fail "plan action must set CARGO_VIA_CI_IMAGE on contract step"
-plan_line="$(grep -n 'name: Plan per-target native builds' "$plan" | cut -d: -f1)"
-cargo_via_line="$(grep -n 'CARGO_VIA_CI_IMAGE' "$plan" | head -1 | cut -d: -f1)"
-[[ "$cargo_via_line" -gt "$plan_line" ]] || fail "CARGO_VIA_CI_IMAGE must be on the Plan step env block"
-echo "ok: plan uses CARGO_VIA_CI_IMAGE instead of host rust-toolchain"
-
-# Every bare self-hosted job that computes or validates the native contract must
-# set CARGO_VIA_CI_IMAGE on its contract step (not host rust-toolchain).
-python3 - "$main" "$release" "$smoke" <<'PY' || fail "bare native-contract job missing CARGO_VIA_CI_IMAGE"
+if git grep -n 'CARGO_VIA_CI_IMAGE' -- .github | grep -q .; then
+  fail "CARGO_VIA_CI_IMAGE must not appear under .github (all Linux jobs run in a ci-build container)"
+fi
+python3 - "$main" "$release" "$smoke" <<'PY' || fail "native-contract job must run in a container with no host rust-toolchain"
 from pathlib import Path
 import re
 import sys
@@ -49,28 +44,24 @@ def job(text: str, name: str) -> str:
     return match.group(1)
 
 
-def require_cargo_via_image(path: str, job_name: str, marker: str) -> None:
+def require_container_cargo(path: str, job_name: str) -> None:
     block = job(Path(path).read_text(encoding="utf-8"), job_name)
     if "dtolnay/rust-toolchain@1.99.0" in block:
         raise SystemExit(f"{path}:{job_name}: must not install host rust-toolchain")
-    contract = block.find(marker)
-    if contract < 0:
-        raise SystemExit(f"{path}:{job_name}: missing contract marker {marker!r}")
-    cargo_via = block.find("CARGO_VIA_CI_IMAGE")
-    if cargo_via < 0 or cargo_via > contract:
-        raise SystemExit(
-            f"{path}:{job_name}: CARGO_VIA_CI_IMAGE must precede {marker!r}"
-        )
+    if not re.search(r"(?m)^    container:\n", block):
+        raise SystemExit(f"{path}:{job_name}: must run in a ci-build container: job")
 
 
 main, release, smoke = sys.argv[1:]
-require_cargo_via_image(main, "assemble-native-bundle", "native-artifact-bundle.sh assemble")
-require_cargo_via_image(release, "plan", "resolve-native-main-bundle.sh")
-require_cargo_via_image(release, "reuse-bundle", "native-artifact-bundle.sh validate")
-require_cargo_via_image(smoke, "assemble-smoke-bundle", "native-artifact-bundle.sh assemble")
-require_cargo_via_image(smoke, "resolve-release-style", "resolve-native-main-bundle.sh")
+require_container_cargo(main, "plan")
+require_container_cargo(main, "assemble-native-bundle")
+require_container_cargo(release, "plan")
+require_container_cargo(release, "reuse-bundle")
+require_container_cargo(smoke, "plan")
+require_container_cargo(smoke, "assemble-smoke-bundle")
+require_container_cargo(smoke, "resolve-release-style")
 PY
-echo "ok: all bare native-contract jobs use CARGO_VIA_CI_IMAGE"
+echo "ok: all native-contract jobs run in a ci-build container, no CARGO_VIA_CI_IMAGE"
 
 grep -q 'allow-distribution-drift' .github/actions/native-binding-cache/action.yml \
   || fail "native-binding-cache must tolerate distribution drift on restore"
@@ -108,6 +99,8 @@ def require_no_host_toolchain_or_cargo_via(job: str) -> None:
         raise SystemExit(f"{job}: must not install host rust-toolchain (container has cargo)")
     if "CARGO_VIA_CI_IMAGE" in block:
         raise SystemExit(f"{job}: must not set CARGO_VIA_CI_IMAGE (container has cargo)")
+    if "container:" not in block:
+        raise SystemExit(f"{job}: must run in a ci-build container: job")
     if block.find("write-native-artifact-manifest.sh") < 0:
         raise SystemExit(f"{job}: missing manifest refresh")
 

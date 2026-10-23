@@ -249,11 +249,15 @@ jobs:
 
       # Native DTLS/ICE trace written by scripts/ci/run-pr-integration.sh. The script deletes the
       # directory when the helpers integration step passes, so files exist only after that step failed.
+      # The same artifact carries the Sherpa audio tap (inbound-*.wav, stt-in-*.wav) that
+      # scripts/ci/run-sherpa-roundtrip-e2e.sh keeps for a failed roundtrip pass.
       - name: Upload native trace (helpers integration failed)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: native-trace-${{ github.run_id }}
-          path: .test-logs/native-trace
+          path: |
+            .test-logs/native-trace
+            .test-logs/sherpa-e2e/audio-tap
           if-no-files-found: ignore
           retention-days: 7

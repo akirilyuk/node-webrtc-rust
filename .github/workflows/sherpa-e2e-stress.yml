@@ -141,6 +141,10 @@ jobs:
           mkdir -p "$stress_dir"
           for ((i = 1; i <= ITERATIONS; i++)); do
             echo "==> stress iteration $i/$ITERATIONS"
+            # Leftovers from earlier roundtrips (accumulation hypothesis): node/tsx/npm still alive.
+            leftovers="$(ps -eo pid,etimes,pcpu,rss,args --sort=-pcpu | grep -E '[n]ode |[t]sx |[n]pm ' | grep -v 'k8s/index.js' | head -n 10 || true)"
+            echo "[stress] leftover processes before iteration $i: $(printf '%s' "$leftovers" | grep -c . || true)"
+            [[ -n "$leftovers" ]] && printf '%s\n' "$leftovers" | sed 's/^/[stress]   /'
             start=$SECONDS
             if [[ "$NATIVE_TRACE" == "true" ]]; then
               # Same targets as the helpers integration trace (run-pr-integration.sh); one file per process.
@@ -153,6 +157,8 @@ jobs:
             if [[ "$rc" -ne 0 ]]; then
               green=$((i - 1))
               echo "stress FAILED at iteration $i after $green green (exit $rc)"
+              { echo "--- process snapshot at failure"; ps -eo pid,etimes,pcpu,rss,args --sort=-pcpu | head -n 25; } \
+                | tee -a "$stress_dir/iteration-$i.log"
               {
                 echo
                 echo "stress FAILED at iteration $i after $green green (exit $rc)"

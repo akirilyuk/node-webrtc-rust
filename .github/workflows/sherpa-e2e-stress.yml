@@ -23,6 +23,9 @@ on:
       parallel:
         description: Parallel-group width (SHERPA_E2E_PARALLEL); empty = the CI default
         default: ''
+      cpu_burn:
+        description: Busy-loop processes pinning spare cores during the loop (reproduce CPU starvation); 0 = none
+        default: '0'
 
 permissions:
   contents: read
@@ -85,11 +88,18 @@ jobs:
           MODE: ${{ inputs.mode }}
           ONLY: ${{ inputs.only }}
           PARALLEL: ${{ inputs.parallel }}
+          CPU_BURN: ${{ inputs.cpu_burn }}
         run: |
           set -uo pipefail
           if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then
             echo "iterations must be a positive integer, got: $ITERATIONS" >&2
             exit 2
+          fi
+          if [[ "$CPU_BURN" =~ ^[0-9]+$ ]] && [[ "$CPU_BURN" -gt 0 ]]; then
+            echo "==> burning ${CPU_BURN} core(s) for the whole loop (starvation reproduction)"
+            burn_pids=()
+            for ((b = 0; b < CPU_BURN; b++)); do yes >/dev/null & burn_pids+=($!); done
+            trap 'kill "${burn_pids[@]}" 2>/dev/null || true' EXIT
           fi
           [[ -n "$ONLY" ]] && export SHERPA_E2E_ONLY="$ONLY"
           [[ -n "$PARALLEL" ]] && export SHERPA_E2E_PARALLEL="$PARALLEL"
@@ -100,7 +110,7 @@ jobs:
             export SHERPA_LID_MODEL_PATH="${SHERPA_LID_MODEL_PATH:-$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny}"
           fi
           {
-            echo "## Sherpa e2e stress (${ITERATIONS} iterations, mode=${MODE}, only=${ONLY:-all}, parallel=${PARALLEL:-default})"
+            echo "## Sherpa e2e stress (${ITERATIONS} iterations, mode=${MODE}, only=${ONLY:-all}, parallel=${PARALLEL:-default}, cpu_burn=${CPU_BURN:-0})"
             echo
             echo "| iteration | seconds |"
             echo "|---|---|"

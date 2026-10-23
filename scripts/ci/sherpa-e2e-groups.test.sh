@@ -73,7 +73,8 @@ for name in "${serial[@]}"; do
 done
 
 # Width: SHERPA_E2E_PARALLEL, else 3 on CI and 1 elsewhere.
-[[ "$(env -u SHERPA_E2E_PARALLEL CI=true bash "$CI_SCRIPT" parallel-width)" == 3 ]] || fail "default width on CI must be 3"
+# 2, not 3: with ~1 core per roundtrip the voice pipeline starves and STT mishears (reproduced 2026-10-23).
+[[ "$(env -u SHERPA_E2E_PARALLEL CI=true bash "$CI_SCRIPT" parallel-width)" == 2 ]] || fail "default width on CI must be 2 (CPU headroom per roundtrip)"
 [[ "$(env -u SHERPA_E2E_PARALLEL -u CI bash "$CI_SCRIPT" parallel-width)" == 1 ]] || fail "default width off CI must be 1"
 [[ "$(SHERPA_E2E_PARALLEL=5 CI=true bash "$CI_SCRIPT" parallel-width)" == 5 ]] || fail "SHERPA_E2E_PARALLEL must override"
 if SHERPA_E2E_PARALLEL=0 bash "$CI_SCRIPT" parallel-width >/dev/null 2>&1; then fail "width 0 must be rejected"; fi

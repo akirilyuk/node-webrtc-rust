@@ -9,7 +9,7 @@
 #   bash scripts/ci/run-sherpa-example-ci.sh all       # typecheck + vitest + e2e
 #
 # e2e runs the roundtrips in two groups: a parallel group (up to SHERPA_E2E_PARALLEL at a time,
-# default 3 when CI=true, else 1), then a serial group of timing-sensitive ones.
+# default 2 when CI=true, else 1), then a serial group of timing-sensitive ones.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -83,7 +83,7 @@ SHERPA_ROUNDTRIP_E2E_SERIAL=(
   # the 4-CPU job pod (starvation drops/doubles words: features/2026-10-14-voice-starvation-*).
   start:roundtrip-counting-echo-lid-multi
 )
-# PARALLEL: up to SHERPA_E2E_PARALLEL at a time (default 3 when CI=true, else 1). They are mostly
+# PARALLEL: up to SHERPA_E2E_PARALLEL at a time (default 2 when CI=true, else 1). They are mostly
 # real-time audio, so the CPU is idle most of the time. Each uses an in-process loopback on port 0 and
 # writes only to paths unique to it (see the shared-state notes in scripts/ci/README.md).
 SHERPA_ROUNDTRIP_E2E_PARALLEL=(
@@ -199,12 +199,15 @@ run_rust_ignored() {
       --ignored --nocapture --test-threads=1
 }
 
-# Parallel width: SHERPA_E2E_PARALLEL, default 3 on CI and 1 elsewhere. Width 1 runs serially with
+# Parallel width: SHERPA_E2E_PARALLEL, default 2 on CI and 1 elsewhere. 2 keeps about 2 cores per
+# roundtrip on the 4-CPU job pod: with ~1 core left (3 cores busy) the two-agent pipeline falls behind
+# and STT mishears ("I am done speaking" -> "Amdon speaking", reproduced 2026-10-23 with 3 burned
+# cores; 30/30 green with 2 burned; width 3 failed 1 of 39 parallel-group runs). Width 1 runs serially with
 # the plain step output.
 sherpa_e2e_parallel_width() {
   local width="${SHERPA_E2E_PARALLEL:-}"
   if [[ -z "$width" ]]; then
-    if [[ "${CI:-}" == "true" ]]; then width=3; else width=1; fi
+    if [[ "${CI:-}" == "true" ]]; then width=2; else width=1; fi
   fi
   if ! [[ "$width" =~ ^[1-9][0-9]*$ ]]; then
     echo "SHERPA_E2E_PARALLEL must be a positive integer, got: $width" >&2

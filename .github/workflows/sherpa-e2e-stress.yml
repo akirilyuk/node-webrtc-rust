@@ -29,6 +29,13 @@ on:
       runner:
         description: runs-on override for A/B runs (e.g. self-hosted = the old runners); empty = NWR_RUNNER_LARGE or nwr-large
         default: ''
+      native_trace:
+        description: 'true = native DTLS/ICE/SCTP trace per process (WNR_LOG_FILE), kept only for the failing iteration'
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
   contents: read
@@ -92,6 +99,7 @@ jobs:
           ONLY: ${{ inputs.only }}
           PARALLEL: ${{ inputs.parallel }}
           CPU_BURN: ${{ inputs.cpu_burn }}
+          NATIVE_TRACE: ${{ inputs.native_trace }}
         run: |
           set -uo pipefail
           if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then
@@ -125,6 +133,12 @@ jobs:
           for ((i = 1; i <= ITERATIONS; i++)); do
             echo "==> stress iteration $i/$ITERATIONS"
             start=$SECONDS
+            if [[ "$NATIVE_TRACE" == "true" ]]; then
+              # Same targets as the helpers integration trace (run-pr-integration.sh); one file per process.
+              rm -rf "$stress_dir/native-trace" && mkdir -p "$stress_dir/native-trace"
+              export WNR_LOG_FILE="$stress_dir/native-trace/native-{pid}.log"
+              export RUST_LOG="dtls=trace,webrtc_dtls=trace,webrtc::dtls_transport=trace,webrtc::peer_connection=trace,webrtc::mux=debug,webrtc_ice=trace,webrtc_sctp=trace,webrtc::sctp_transport=trace"
+            fi
             bash scripts/ci/run-sherpa-example-ci.sh "$MODE" 2>&1 | tee "$stress_dir/iteration-$i.log"
             rc=${PIPESTATUS[0]}
             if [[ "$rc" -ne 0 ]]; then
@@ -142,6 +156,7 @@ jobs:
               exit 1
             fi
             rm -f "$stress_dir/iteration-$i.log"
+            rm -rf "$stress_dir/native-trace"
             echo "| $i | $((SECONDS - start)) |" >>"$GITHUB_STEP_SUMMARY"
           done
           echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"

@@ -87,7 +87,9 @@ job_names() {
     in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { n = $1; sub(/:$/, "", n); print n }
   ' "$1"
 }
-# The text of one job (from its `  name:` line up to the next job).
+# The text of one job (from its `  name:` line up to the next job). Check it with
+# `grep -q PATTERN <<<"$(job_block …)"`, never `job_block … | grep -q`: grep -q exits at the first
+# match, the still-writing awk gets SIGPIPE, and under pipefail that reads as "no match".
 job_block() {
   awk -v want="$2" '
     /^jobs:/ { in_jobs = 1; next }
@@ -111,7 +113,7 @@ jobs:
     steps:
       - run: echo two
 YAML
-if [ "$(job_names "$tmp_two" | tr '\n' ' ')" != "first second " ] || ! job_block "$tmp_two" second | grep -q 'echo two' || job_block "$tmp_two" second | grep -q 'echo one'; then
+if [ "$(job_names "$tmp_two" | tr '\n' ' ')" != "first second " ] || ! grep -q 'echo two' <<<"$(job_block "$tmp_two" second)" || grep -q 'echo one' <<<"$(job_block "$tmp_two" second)"; then
   echo "self-test failed: job_names/job_block did not split the jobs" >&2
   exit 1
 fi
@@ -157,21 +159,21 @@ for job in rust node-sherpa; do
     exit 1
   fi
 done
-if ! job_block "$reusable" rust | grep -Fq 'OWNED="rust"'; then
+if ! grep -Fq 'OWNED="rust"' <<<"$(job_block "$reusable" rust)"; then
   echo "$reusable: job rust must own exactly the rust suite (OWNED=\"rust\")" >&2
   exit 1
 fi
-if ! job_block "$reusable" node-sherpa | grep -Fq 'OWNED="node,sherpa"'; then
+if ! grep -Fq 'OWNED="node,sherpa"' <<<"$(job_block "$reusable" node-sherpa)"; then
   echo "$reusable: job node-sherpa must own the node and sherpa suites (OWNED=\"node,sherpa\")" >&2
   exit 1
 fi
 # Only node-sherpa needs the native binding, the TS dist and the helpers native trace.
-if job_block "$reusable" rust | grep -Eq 'download-artifact|ci-cache-ts-dist|upload-artifact'; then
+if grep -Eq 'download-artifact|ci-cache-ts-dist|upload-artifact' <<<"$(job_block "$reusable" rust)"; then
   echo "$reusable: job rust must not download the binding, restore the TS cache or upload the native trace" >&2
   exit 1
 fi
 for needle in 'actions/download-artifact' './.github/actions/ci-cache-ts-dist' 'actions/upload-artifact'; do
-  if ! job_block "$reusable" node-sherpa | grep -Fq "$needle"; then
+  if ! grep -Fq "$needle" <<<"$(job_block "$reusable" node-sherpa)"; then
     echo "$reusable: job node-sherpa must use $needle" >&2
     exit 1
   fi

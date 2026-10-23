@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **speech:** `barge_in` could arrive after `agent_speaking_end` when the TTS drain saw the flush first; the order is now always `barge_in` -> `agent_speaking_end`, with a single `agent_speaking_end` per playback. A manual `flush_tts()` with barge-in enabled (`use_vad: false`) now emits `agent_speaking_end` itself after `barge_in` when speaking was active.
+
 ## [0.13.0] - 2026-10-22
 
 ### Added

@@ -62,8 +62,9 @@ export function evaluateRelativeSpread(
 }
 
 /** Distinct phrases — keyword is a token Sherpa usually preserves (not always NATO). */
+// Qualified in `stt-phrase-qualification.json`; `alpha` was misheard as "Halfa"/"half a" in 4 of 300 clean syntheses.
 export const LEG_CATALOG = [
-  { phrase: 'alpha one two three', keyword: 'alpha' },
+  { phrase: 'charlie one two three', keyword: 'charlie' },
   { phrase: 'bravo four five six', keyword: 'four' },
   { phrase: 'delta seven eight nine', keyword: 'delta' },
   { phrase: 'echo ten eleven twelve', keyword: 'ten' },

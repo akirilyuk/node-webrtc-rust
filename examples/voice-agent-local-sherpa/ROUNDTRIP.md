@@ -229,14 +229,14 @@ npm run build:native
 npm run start:roundtrip-counting-barge-recovery --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-| Env                                      | Default                                | Purpose                                                               |
-| ---------------------------------------- | -------------------------------------- | --------------------------------------------------------------------- |
-| `SHERPA_BARGE_RECOVERY_PHRASE`           | `hello testing recovery one two three` | Round 3 source phrase                                                 |
-| `SHERPA_BARGE_RECOVERY_DELAY_MS`         | `400`                                  | Ms after Agent2 TTS starts before barge TTS on `agentOut`             |
-| `SHERPA_BARGE_RECOVERY_BARGE_PHRASE`     | `stop now please`                      | Sherpa TTS phrase Agent1 plays to barge Agent2                        |
-| `SHERPA_BARGE_RECOVERY_TONE_S`           | `1.0`                                  | Silence tail after barge TTS on `agentOut`                            |
-| `SHERPA_BARGE_RECOVERY_MAX_NUMBER_WORDS` | `7`                                    | Max number tokens on interrupted leg B (allows 2-token barge latency) |
-| `SHERPA_BARGE_RECOVERY_MAX_SIMILARITY`   | `0.70`                                 | Max word similarity vs full `You said: …` text on interrupted leg     |
+| Env                                      | Default                                   | Purpose                                                               |
+| ---------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------- |
+| `SHERPA_BARGE_RECOVERY_PHRASE`           | `good morning, this is the recovery test` | Round 3 source phrase                                                 |
+| `SHERPA_BARGE_RECOVERY_DELAY_MS`         | `400`                                     | Ms after Agent2 TTS starts before barge TTS on `agentOut`             |
+| `SHERPA_BARGE_RECOVERY_BARGE_PHRASE`     | `stop now please`                         | Sherpa TTS phrase Agent1 plays to barge Agent2                        |
+| `SHERPA_BARGE_RECOVERY_TONE_S`           | `1.0`                                     | Silence tail after barge TTS on `agentOut`                            |
+| `SHERPA_BARGE_RECOVERY_MAX_NUMBER_WORDS` | `7`                                       | Max number tokens on interrupted leg B (allows 2-token barge latency) |
+| `SHERPA_BARGE_RECOVERY_MAX_SIMILARITY`   | `0.70`                                    | Max word similarity vs full `You said: …` text on interrupted leg     |
 
 Unit tests include `roundtrip-counting-barge-recovery.test.ts` in `npm run test:roundtrip-counting`.
 

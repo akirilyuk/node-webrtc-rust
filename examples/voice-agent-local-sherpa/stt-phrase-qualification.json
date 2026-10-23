@@ -1,0 +1,104 @@
+{
+  "stt": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
+  "tts": "vits-piper-en_US-amy-low",
+  "tool": "cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep",
+  "date": "2026-10-24",
+  "phrases": [
+    {
+      "phrase": "good morning, this is the recovery test",
+      "n": 300,
+      "minObserved": 1,
+      "below075": 0,
+      "below060": 0,
+      "keyword": null,
+      "keywordMissing": null,
+      "topTexts": [
+        ["Good morning. This is the recovery test.", 298],
+        ["Good morning. This is the recovery test", 2]
+      ]
+    },
+    {
+      "phrase": "You said: good morning, this is the recovery test",
+      "n": 300,
+      "minObserved": 1,
+      "below075": 0,
+      "below060": 0,
+      "keyword": null,
+      "keywordMissing": null,
+      "topTexts": [
+        ["You said good morning. This is the recovery test.", 193],
+        ["You said good morning, this is the recovery test.", 73],
+        ["You said good morning this is the recovery test.", 26],
+        ["You said, good morning. This is the recovery test.", 5],
+        ["You said, good morning, this is the recovery test.", 2]
+      ]
+    },
+    {
+      "phrase": "stop now please",
+      "n": 300,
+      "minObserved": 1,
+      "below075": 0,
+      "below060": 0,
+      "keyword": null,
+      "keywordMissing": null,
+      "topTexts": [
+        ["Stop now, please.", 226],
+        ["Stop now, please", 25],
+        ["Stop, now please.", 24],
+        ["Stop now please.", 8],
+        ["Stop, now, please.", 8]
+      ]
+    },
+    {
+      "phrase": "I am done speaking",
+      "n": 300,
+      "minObserved": 0.75,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "done",
+      "keywordMissing": 0,
+      "topTexts": [
+        ["I am done speaking.", 182],
+        ["I am done speaking", 112],
+        ["I'm done speaking", 4],
+        ["I'm done speaking.", 2]
+      ]
+    },
+    {
+      "phrase": "charlie one two three",
+      "n": 300,
+      "minObserved": 0.75,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "charlie",
+      "keywordMissing": 0,
+      "topTexts": [
+        ["Charlie one two three", 249],
+        ["Charlie won two three", 51]
+      ]
+    },
+    {
+      "phrase": "bravo four five six",
+      "n": 300,
+      "minObserved": 1,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "four",
+      "keywordMissing": 0,
+      "topTexts": [["Bravo four five six", 300]]
+    },
+    {
+      "phrase": "delta seven eight nine",
+      "n": 300,
+      "minObserved": 1,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "delta",
+      "keywordMissing": 0,
+      "topTexts": [
+        ["Delta seven eight nine", 298],
+        ["delta seven eight nine", 2]
+      ]
+    }
+  ]
+}

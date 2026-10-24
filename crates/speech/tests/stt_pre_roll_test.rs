@@ -1708,3 +1708,52 @@ async fn gate_stt_agent_tts_pre_roll_includes_pre_vad_lead_in() {
         "during agent TTS, STT pre-roll flush should include continuous lookback before VAD SpeechStart"
     );
 }
+
+/// Feeds a marked sub-threshold onset frame, 29 more soft frames and loud frames until VAD
+/// `SpeechStart`, with every 4th frame flagged by `flag_for(i)`. Returns the STT input.
+async fn stt_input_for_lossy_onset(flag_for: impl Fn(usize) -> bool) -> (Vec<u8>, Vec<u8>) {
+    let vad = sherpa_like_vad_config();
+    let (agent, chunks) = agent_with_recording_stt(vad).await;
+    let marker = stereo_frame_with_sample(900);
+    assert!(
+        pcm_rms_i16(&stereo_48k_to_mono_16k(&marker)) < 0.05,
+        "marker must stay below VAD threshold"
+    );
+    let marker_mono = i16_samples_to_bytes(&stereo_48k_to_mono_16k(&marker));
+    let soft = soft_onset_stereo_frame();
+    let loud = loud_stereo_frame();
+    for i in 0..60usize {
+        let frame = if i == 0 {
+            &marker
+        } else if i < 30 {
+            &soft
+        } else {
+            &loud
+        };
+        agent
+            .process_inbound_pcm_with_meta(Bytes::from(frame.clone()), 20, flag_for(i))
+            .await
+            .unwrap();
+    }
+    idle(&agent).await;
+    let all = concat_stt_chunks(&chunks.lock().unwrap().clone());
+    (all, marker_mono.to_vec())
+}
+
+#[tokio::test]
+async fn gate_stt_pre_roll_keeps_onset_when_losses_were_concealed() {
+    // Control: the same audio with nothing flagged overflows the received budget (35 frames),
+    // so the marked onset falls out of the ring.
+    let (all, marker) = stt_input_for_lossy_onset(|_| false).await;
+    assert!(
+        !all.windows(marker.len()).any(|w| w == marker.as_slice()),
+        "control: unflagged frames must push the onset out of the pre-roll ring"
+    );
+
+    // Every 4th frame concealed: they do not use the received budget, so the onset stays.
+    let (all, marker) = stt_input_for_lossy_onset(|i| i % 4 == 3).await;
+    assert!(
+        all.windows(marker.len()).any(|w| w == marker.as_slice()),
+        "STT input after SpeechStart must contain the marked onset frame"
+    );
+}

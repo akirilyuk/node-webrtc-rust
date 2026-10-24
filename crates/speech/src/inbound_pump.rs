@@ -25,7 +25,12 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[derive(Debug, Clone)]
 pub enum InboundRead {
     /// One decoded frame (48 kHz stereo s16le).
-    Pcm { pcm: Bytes, duration_ms: u32 },
+    Pcm {
+        pcm: Bytes,
+        duration_ms: u32,
+        /// Synthesized by loss concealment, not decoded from a received packet.
+        concealed: bool,
+    },
     /// The receiver stopped: wait for the next RTP burst.
     StreamEnd,
     /// Any other read error (retried after a short pause).
@@ -81,7 +86,7 @@ impl InboundPumpHandles {
 /// * `read` — next frame from the remote track.
 /// * `on_read` — runs on the reader task for every real frame, before it is queued (mix graph,
 ///   read tee). Must not block.
-/// * `process` — feeds the agent; runs on the processor task, one frame at a time, in order.
+/// * `process` — feeds the agent (`pcm`, `duration_ms`, `concealed`); runs on the processor task, one frame at a time, in order.
 ///   An `Err` is logged under `VOICE_DEBUG` only.
 /// * `running` — the pump stops reading once this returns `false`; the processor then drains
 ///   what is queued and exits.
@@ -97,14 +102,14 @@ where
     Rd: FnMut() -> RdFut + Send + 'static,
     RdFut: Future<Output = InboundRead> + Send + 'static,
     OnRead: Fn(&Bytes, u32) + Send + 'static,
-    Proc: Fn(Bytes, u32) -> ProcFut + Send + 'static,
+    Proc: Fn(Bytes, u32, bool) -> ProcFut + Send + 'static,
     ProcFut: Future<Output = Result<(), String>> + Send + 'static,
     Run: Fn() -> bool + Send + 'static,
 {
     let backlog = Arc::new(AtomicUsize::new(0));
     let max_backlog = Arc::new(AtomicUsize::new(0));
     let warned = Arc::new(AtomicBool::new(false));
-    let (tx, mut rx) = mpsc::unbounded_channel::<(Bytes, u32)>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<(Bytes, u32, bool)>();
     let warn_frames = (INBOUND_BACKLOG_WARN_MS / INBOUND_FRAME_MS) as usize;
 
     let reader = {
@@ -112,7 +117,7 @@ where
         let max_backlog = Arc::clone(&max_backlog);
         let warned = Arc::clone(&warned);
         spawn(Box::pin(async move {
-            let enqueue = |pcm: Bytes, duration_ms: u32| {
+            let enqueue = |pcm: Bytes, duration_ms: u32, concealed: bool| {
                 let now = backlog.fetch_add(1, Ordering::SeqCst) + 1;
                 max_backlog.fetch_max(now, Ordering::SeqCst);
                 if now > warn_frames && !warned.swap(true, Ordering::SeqCst) {
@@ -121,15 +126,19 @@ where
                         now as u64 * INBOUND_FRAME_MS
                     );
                 }
-                tx.send((pcm, duration_ms)).is_ok()
+                tx.send((pcm, duration_ms, concealed)).is_ok()
             };
             let mut awaiting_next_burst = false;
             while running() {
                 match read().await {
-                    InboundRead::Pcm { pcm, duration_ms } => {
+                    InboundRead::Pcm {
+                        pcm,
+                        duration_ms,
+                        concealed,
+                    } => {
                         awaiting_next_burst = false;
                         on_read(&pcm, duration_ms);
-                        if !enqueue(pcm, duration_ms) {
+                        if !enqueue(pcm, duration_ms, concealed) {
                             break;
                         }
                     }
@@ -141,7 +150,7 @@ where
                                 if !running() {
                                     break;
                                 }
-                                if !enqueue(silent.clone(), INBOUND_FRAME_MS as u32) {
+                                if !enqueue(silent.clone(), INBOUND_FRAME_MS as u32, false) {
                                     return;
                                 }
                                 tokio::time::sleep(Duration::from_millis(INBOUND_FRAME_MS)).await;
@@ -164,8 +173,8 @@ where
         let backlog = Arc::clone(&backlog);
         let warned = Arc::clone(&warned);
         spawn(Box::pin(async move {
-            while let Some((pcm, duration_ms)) = rx.recv().await {
-                if let Err(err) = process(pcm, duration_ms).await {
+            while let Some((pcm, duration_ms, concealed)) = rx.recv().await {
+                if let Err(err) = process(pcm, duration_ms, concealed).await {
                     if voice_debug_enabled() {
                         eprintln!("[voice-debug] native inbound processInboundPcm error: {err}");
                     }
@@ -223,6 +232,7 @@ mod tests {
                 InboundRead::Pcm {
                     pcm: indexed_frame(i),
                     duration_ms: INBOUND_FRAME_MS as u32,
+                    concealed: false,
                 }
             })
         }
@@ -246,12 +256,12 @@ mod tests {
 
         fn process_fn(
             &self,
-        ) -> impl Fn(Bytes, u32) -> BoxFuture<'static, Result<(), String>> + Send + 'static
+        ) -> impl Fn(Bytes, u32, bool) -> BoxFuture<'static, Result<(), String>> + Send + 'static
         {
             let gate = Arc::clone(&self.gate);
             let first_done = Arc::clone(&self.first_done);
             let received = Arc::clone(&self.received);
-            move |pcm, _ms| {
+            move |pcm, _ms, _concealed| {
                 let gate = Arc::clone(&gate);
                 let first_done = Arc::clone(&first_done);
                 let received = Arc::clone(&received);
@@ -351,7 +361,7 @@ mod tests {
                 Box::pin(async move { next }) as BoxFuture<'static, InboundRead>
             },
             |_pcm, _ms| {},
-            move |pcm, _ms| {
+            move |pcm, _ms, _concealed| {
                 received_p.lock().unwrap().push(pcm);
                 Box::pin(async { Ok(()) }) as BoxFuture<'static, Result<(), String>>
             },
@@ -383,6 +393,7 @@ mod tests {
         script.lock().unwrap().push_back(InboundRead::Pcm {
             pcm: indexed_frame(7),
             duration_ms: 20,
+            concealed: false,
         });
         sleep(Duration::from_millis(1_800)).await;
         assert_eq!(

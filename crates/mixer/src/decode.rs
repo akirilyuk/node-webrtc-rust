@@ -25,6 +25,9 @@ pub enum DecodeError {
 /// Longest Opus packet: 120 ms at 48 kHz.
 const MAX_PACKET_SAMPLES_PER_CHANNEL: usize = 5_760;
 
+/// Samples per channel of a 20 ms packet at 48 kHz (initial `last_packet_samples`).
+const DEFAULT_PACKET_SAMPLES: usize = 960;
+
 /// Decodes RTP Opus payloads (2.5 to 120 ms) into 20 ms stereo PCM frames.
 ///
 /// A payload may hold several 20 ms frames (e.g. a 60 ms packet decodes to three). A packet
@@ -33,6 +36,7 @@ const MAX_PACKET_SAMPLES_PER_CHANNEL: usize = 5_760;
 pub struct OpusDecoder {
     inner: Decoder,
     pcm_scratch: Vec<i16>,
+    last_packet_samples: usize,
 }
 
 impl OpusDecoder {
@@ -41,6 +45,7 @@ impl OpusDecoder {
         Ok(Self {
             inner: Decoder::new(SampleRate::Hz48000, Channels::Stereo)?,
             pcm_scratch: vec![0; MAX_PACKET_SAMPLES_PER_CHANNEL * 2],
+            last_packet_samples: DEFAULT_PACKET_SAMPLES,
         })
     }
 
@@ -75,14 +80,60 @@ impl OpusDecoder {
                 .map_err(|e| DecodeError::Output(e.to_string()))?;
             self.inner.decode(Some(packet), output, false)?
         };
-        let pcm = &mut self.pcm_scratch[..decoded * 2];
+        self.last_packet_samples = decoded;
+        Ok(self.split_scratch(decoded))
+    }
+
+    /// Samples per channel of the last successfully decoded packet (default 960 = 20 ms).
+    pub fn last_packet_samples(&self) -> usize {
+        self.last_packet_samples
+    }
+
+    /// Packet loss concealment: asks libopus to synthesize `samples_per_channel` samples
+    /// (clamped to 120 ms) for a lost packet. Does not change [`Self::last_packet_samples`].
+    pub fn conceal_plc(&mut self, samples_per_channel: usize) -> Result<Vec<Frame>, DecodeError> {
+        let n = samples_per_channel.clamp(1, MAX_PACKET_SAMPLES_PER_CHANNEL);
+        let decoded = {
+            let output = MutSignals::try_from(&mut self.pcm_scratch[..n * 2])
+                .map_err(|e| DecodeError::Output(e.to_string()))?;
+            self.inner.decode(None::<Packet>, output, false)?
+        };
+        Ok(self.split_scratch(decoded))
+    }
+
+    /// Recovers the packet that preceded `next_payload` from its in-band FEC data (libopus
+    /// falls back to PLC when the packet carries none). Does not change
+    /// [`Self::last_packet_samples`].
+    pub fn decode_fec(
+        &mut self,
+        next_payload: &[u8],
+        samples_per_channel: usize,
+    ) -> Result<Vec<Frame>, DecodeError> {
+        if next_payload.is_empty() {
+            return Err(DecodeError::EmptyPayload);
+        }
+        let n = samples_per_channel.clamp(1, MAX_PACKET_SAMPLES_PER_CHANNEL);
+        let packet =
+            Packet::try_from(next_payload).map_err(|e| DecodeError::Packet(e.to_string()))?;
+        let decoded = {
+            let output = MutSignals::try_from(&mut self.pcm_scratch[..n * 2])
+                .map_err(|e| DecodeError::Output(e.to_string()))?;
+            self.inner.decode(Some(packet), output, true)?
+        };
+        Ok(self.split_scratch(decoded))
+    }
+
+    /// Splits the first `decoded` samples per channel of the scratch buffer into 20 ms
+    /// frames; the last chunk is zero-padded.
+    fn split_scratch(&self, decoded: usize) -> Vec<Frame> {
+        let pcm = &self.pcm_scratch[..decoded * 2];
         let mut frames = Vec::with_capacity(decoded.div_ceil(SAMPLES_PER_FRAME / 2));
         for chunk in pcm.chunks(SAMPLES_PER_FRAME) {
             let mut samples = [0i16; SAMPLES_PER_FRAME];
             samples[..chunk.len()].copy_from_slice(chunk);
             frames.push(pcm_to_frame(&samples));
         }
-        Ok(frames)
+        frames
     }
 }
 
@@ -202,5 +253,96 @@ mod tests {
         // Still usable afterwards.
         let payload = encode_test_frame(&tone(20));
         assert_eq!(decoder.decode_payload(&payload).len(), 1);
+    }
+
+    fn tone_at(start_sample: usize, ms: usize) -> Vec<i16> {
+        (start_sample..start_sample + 48 * ms)
+            .flat_map(|n| {
+                let v = ((n as f32 * 440.0 * 2.0 * std::f32::consts::PI / 48_000.0).sin()
+                    * 10_000.0) as i16;
+                [v, v]
+            })
+            .collect()
+    }
+
+    fn frames_pcm(frames: &[Frame]) -> Vec<f64> {
+        frames
+            .iter()
+            .flat_map(|f| {
+                f.pcm
+                    .chunks(4)
+                    .map(|c| f64::from(i16::from_le_bytes([c[0], c[1]])))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn norm_corr(a: &[f64], b: &[f64]) -> f64 {
+        let n = a.len().min(b.len());
+        let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+        for i in 0..n {
+            ab += a[i] * b[i];
+            aa += a[i] * a[i];
+            bb += b[i] * b[i];
+        }
+        if aa == 0.0 || bb == 0.0 {
+            return 0.0;
+        }
+        ab / (aa.sqrt() * bb.sqrt())
+    }
+
+    #[test]
+    fn fec_recovers_dropped_packet_and_plc_is_non_silent() {
+        let mut enc =
+            Encoder::new(SampleRate::Hz48000, Channels::Stereo, Application::Voip).unwrap();
+        enc.set_bitrate(Bitrate::BitsPerSecond(32_000)).unwrap();
+        enc.set_inband_fec(true).unwrap();
+        enc.set_packet_loss_perc(20).unwrap();
+        let mut packets = Vec::new();
+        for i in 0..14usize {
+            let pcm = tone_at(i * 960, 20);
+            let mut out = vec![0u8; 4_000];
+            let len = enc.encode(&pcm, &mut out).unwrap();
+            out.truncate(len);
+            packets.push(out);
+        }
+        let drop_idx = 12;
+        let original = frames_pcm(&{
+            // Reference: decode everything without loss.
+            let mut d = OpusDecoder::new().unwrap();
+            let mut all = Vec::new();
+            for p in &packets[..=drop_idx] {
+                all = d.try_decode_payload(p).unwrap();
+            }
+            all
+        });
+
+        // Lossy path: decode up to drop_idx-1, skip drop_idx, recover via FEC from drop_idx+1.
+        let mut d = OpusDecoder::new().unwrap();
+        for p in &packets[..drop_idx] {
+            d.try_decode_payload(p).unwrap();
+        }
+        assert_eq!(d.last_packet_samples(), 960);
+        let fec = frames_pcm(&d.decode_fec(&packets[drop_idx + 1], 960).unwrap());
+        assert_eq!(d.last_packet_samples(), 960);
+        let fec_corr = norm_corr(&fec, &original);
+        let zero_corr = norm_corr(&vec![0.0; original.len()], &original);
+        assert!(fec_corr > 0.5, "fec correlation {fec_corr}");
+        assert!(zero_corr < 0.5, "zero-fill correlation {zero_corr}");
+
+        // PLC after a tone returns non-silent frames.
+        let mut d = OpusDecoder::new().unwrap();
+        for p in &packets[..drop_idx] {
+            d.try_decode_payload(p).unwrap();
+        }
+        let plc = d.conceal_plc(960).unwrap();
+        assert_eq!(plc.len(), 1);
+        assert!(rms(&plc[0]) > 100.0, "plc rms {}", rms(&plc[0]));
+
+        // last_packet_samples follows a 60 ms packet.
+        let payload = encode_test_frame(&tone(60));
+        let mut d = OpusDecoder::new().unwrap();
+        d.try_decode_payload(&payload).unwrap();
+        assert_eq!(d.last_packet_samples(), 2_880);
     }
 }

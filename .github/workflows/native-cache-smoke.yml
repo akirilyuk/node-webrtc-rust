@@ -39,11 +39,25 @@ env:
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
   OPUS_STATIC: '1'
   NATIVE_TOOL_MODE: declared
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   plan:
     name: Plan native builds
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       aggregate_digest: ${{ steps.plan.outputs.aggregate_digest }}
       all_cached: ${{ steps.plan.outputs.all_cached }}
@@ -57,15 +71,6 @@ jobs:
       cached_targets: ${{ steps.plan.outputs.cached_targets }}
       rebuilt_targets: ${{ steps.plan.outputs.rebuilt_targets }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/plan-native-builds
@@ -174,19 +179,14 @@ jobs:
       (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
       (needs.build-host.result == 'success' || needs.build-host.result == 'skipped') &&
       (needs.stage-cached.result == 'success' || needs.stage-cached.result == 'skipped')
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/ci-restore-workspace-ownership
 
       # Bundle assembly recomputes every target fingerprint with CI_IMAGE cargo metadata.
       - name: Download binding artifacts
@@ -200,7 +200,6 @@ jobs:
         shell: bash
         env:
           NATIVE_TOOL_MODE: declared
-          CARGO_VIA_CI_IMAGE: '1'
           NATIVE_PRODUCER_GIT_SHA: ${{ github.sha }}
           NATIVE_PRODUCER_RUN_ID: ${{ github.run_id }}
           NATIVE_PRODUCER_WORKFLOW: ${{ github.workflow }}
@@ -237,17 +236,13 @@ jobs:
       !cancelled() &&
       needs.plan.result == 'success' &&
       (inputs.phase == 'reuse-check' || inputs.phase == 'first-build')
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       # Release-style resolution computes the current native contract via CI_IMAGE cargo.
@@ -257,7 +252,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           NATIVE_TOOL_MODE: declared
-          CARGO_VIA_CI_IMAGE: '1'
         # Resolver only reads successful build-main.yml artifacts — exit 0 on fallback.
         run: bash scripts/ci/resolve-native-main-bundle.sh --profile release
 

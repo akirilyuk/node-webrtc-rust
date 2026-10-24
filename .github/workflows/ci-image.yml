@@ -8,6 +8,9 @@ name: CI Docker image
 # fingerprint input (fingerprints hash docker/ci/Dockerfile only), so it has no content digest.
 # Workflows may pull `:latest` for convenience, but native fingerprints use content/@sha256
 # image contracts — never treat mutable `latest` as identity.
+#
+# Runs on GitHub-hosted ubuntu-latest: the build needs a Docker daemon (buildx), which the ARC
+# runner pods (Kubernetes container mode) do not have.
 
 on:
   push:
@@ -57,7 +60,7 @@ env:
 jobs:
   build-and-push:
     name: Build and push CI image
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -68,15 +71,6 @@ jobs:
       glibc_content: ${{ steps.meta.outputs.glibc_content }}
       alpine_content: ${{ steps.meta.outputs.alpine_content }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx

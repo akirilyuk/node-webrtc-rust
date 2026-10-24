@@ -66,10 +66,18 @@ on:
           - websocket
           - http
           - auto
-      region:
-        description: 'Label for where this runs (result folder and summary)'
+      location:
+        description: 'Where the bench runs: eu = the self-hosted EU runner kept for benchmarks, th = ARC nwr-large on staging-local (Thailand)'
         required: false
-        default: ci-eu
+        type: choice
+        default: eu
+        options:
+          - eu
+          - th
+      region:
+        description: 'Label for the result folder and summary; empty = ci-<location>'
+        required: false
+        default: ''
       mistral_base_url:
         description: 'Mistral only: API origin (https://api.mistral.ai, https://api.eu.mistral.ai or https://api.us.mistral.ai); empty = global'
         required: false
@@ -79,6 +87,15 @@ permissions:
   contents: read
   packages: read # pull the ci-build image from GHCR
 
+env:
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: vendor-bench
   cancel-in-progress: false
@@ -87,7 +104,9 @@ jobs:
   bench:
     name: Bench ${{ github.event_name == 'workflow_dispatch' && inputs.vendor || 'all' }}
     if: github.event_name == 'workflow_dispatch' || (github.event.label.name == 'vendor-bench' && github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: self-hosted
+    # eu: the one old self-hosted runner kept in the EU for benchmarks (label-triggered PR runs too).
+    # th: ARC nwr-large on staging-local. The location changes the measured latency, so it is a choice.
+    runs-on: ${{ (github.event_name == 'workflow_dispatch' && inputs.location == 'th') && (vars.NWR_RUNNER_LARGE || 'nwr-large') || 'self-hosted' }}
     # Same image and build env as the other cargo jobs (reusable-test.yml CI_IMAGE and the
     # ci-run-integration-tests docker run).
     container:
@@ -138,7 +157,7 @@ jobs:
           VENDORS: ${{ github.event_name == 'workflow_dispatch' && inputs.vendor || 'all' }}
           RUNS: ${{ inputs.runs || '10' }}
           TRANSPORT: ${{ inputs.transport || 'all' }}
-          REGION: ${{ inputs.region || 'ci-eu' }}
+          REGION: ${{ inputs.region || (inputs.location == 'th' && 'ci-th' || 'ci-eu') }}
           # The CI container cannot run git, so environment.json takes the commit from here.
           NWR_BENCH_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |

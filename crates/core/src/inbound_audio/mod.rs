@@ -6,9 +6,11 @@
 pub mod conceal;
 pub mod impair;
 pub mod reorder;
+pub mod stage;
 pub mod stats;
 
 pub use conceal::{conceal_lost, MAX_CONCEALED_PACKETS};
 pub use impair::{Impairment, ImpairmentConfig};
 pub use reorder::{InboundReorderBuffer, StageOut};
+pub use stage::InboundStage;
 pub use stats::{InboundAudioStageStats, InboundAudioStatsSnapshot};

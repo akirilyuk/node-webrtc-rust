@@ -1,7 +1,7 @@
 //! MediaStream and track abstractions.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -11,9 +11,12 @@ use webrtc::track::track_remote::TrackRemote;
 
 use crate::debug_call;
 use crate::error::CoreError;
+use crate::inbound_audio::stage::read_raw_rtp;
+use crate::inbound_audio::{
+    ImpairmentConfig, InboundAudioStageStats, InboundAudioStatsSnapshot, InboundStage,
+};
 use crate::pcm_audio_track::PcmAudioTrackLocal;
 use crate::pcm_encoder::NegotiatedAudioFormat;
-use node_webrtc_rust_mixer::OpusDecoder;
 
 /// Track media kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,16 +185,17 @@ pub struct RemoteTrack {
     inner: Arc<TrackRemote>,
     track_id: String,
     stream_id: String,
-    decoder: Arc<Mutex<OpusDecoder>>,
+    stage: Arc<InboundStage>,
 }
 
 impl RemoteTrack {
     pub(crate) fn from_inner(inner: Arc<TrackRemote>) -> Self {
+        let track_id = inner.id();
         Self {
-            track_id: inner.id(),
+            stage: Arc::new(InboundStage::new(Arc::clone(&inner), track_id.clone())),
+            track_id,
             stream_id: inner.stream_id(),
             inner,
-            decoder: Arc::new(Mutex::new(OpusDecoder::new().expect("Opus decoder init"))),
         }
     }
 
@@ -225,100 +229,56 @@ impl RemoteTrack {
         }
     }
 
-    /// Reads the next RTP packet, decodes Opus to PCM, and returns its audio.
+    /// Counters of this track's inbound audio stage (reorder, loss, concealment).
+    pub fn inbound_stats(&self) -> InboundAudioStatsSnapshot {
+        self.stage.snapshot()
+    }
+
+    /// Shared counters of the inbound stage (for the peer connection's stats registry).
+    pub(crate) fn stage_stats(&self) -> Arc<InboundAudioStageStats> {
+        self.stage.stats()
+    }
+
+    /// Turns the inbound reorder/concealment stage on or off. Only effective before the
+    /// first [`Self::read_sample`]. Test and diagnostics hook; default comes from
+    /// `NWR_INBOUND_REORDER`.
+    #[doc(hidden)]
+    pub fn set_inbound_reorder_enabled(&self, on: bool) {
+        self.stage.set_enabled(on);
+    }
+
+    /// Applies seeded RTP impairment (loss, bursts, reorder, duplicates) to this track's
+    /// inbound packets before the stage. Only effective before the first
+    /// [`Self::read_sample`]. Test hook; default comes from `NWR_TEST_RTP_IMPAIRMENT`.
+    #[doc(hidden)]
+    pub fn set_test_impairment(&self, cfg: Option<ImpairmentConfig>) {
+        self.stage.set_impairment(cfg);
+    }
+
+    /// Reads the next PCM from the track's inbound audio stage.
+    ///
+    /// Packets are returned in RTP sequence order. On a clean link nothing waits. When a
+    /// sequence gap appears, the stage holds later packets for an adaptive 20-60 ms, then
+    /// declares the gap lost and conceals up to 100 ms of it with Opus PLC (or the next
+    /// packet's in-band FEC); a packet that arrives late fills the gap if it is in time,
+    /// otherwise it is dropped. Duplicates are dropped. Each received packet's audio is
+    /// returned exactly once. `NWR_INBOUND_REORDER=0` restores the old path (arrival order,
+    /// silence for an undecodable packet).
     ///
     /// A packet longer than 20 ms (e.g. 60 ms Opus) returns all of its audio in one sample
     /// (`pcm` is a multiple of 3 840 bytes, `duration` the matching multiple of 20 ms).
-    /// A packet shorter than 20 ms returns one zero-padded frame. An
-    /// undecodable packet yields one 20 ms silence sample.
+    /// A packet shorter than 20 ms returns one zero-padded frame. A concealed gap is
+    /// returned as its own sample.
     pub async fn read_sample(&self) -> Result<PcmSample, CoreError> {
-        loop {
-            let packet = self.read_rtp().await?;
-            let decoded = self
-                .decoder
-                .lock()
-                .expect("remote track decoder lock")
-                .try_decode_payload(&packet.payload);
-            let frames = match decoded {
-                Ok(frames) => frames,
-                Err(reason) => {
-                    debug_call!(
-                        "core::media",
-                        "read_sample:decode_failed",
-                        "id={}, seq={}, payload_bytes={}, reason={}",
-                        self.track_id,
-                        packet.sequence_number,
-                        packet.payload.len(),
-                        reason
-                    );
-                    vec![node_webrtc_rust_mixer::silence_frame()]
-                }
-            };
-            if frames.is_empty() {
-                continue;
-            }
-            if crate::debug::is_debug_enabled() {
-                let peak = frames
-                    .iter()
-                    .flat_map(|f| f.pcm.as_chunks::<2>().0.iter())
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs())
-                    .max()
-                    .unwrap_or(0);
-                debug_call!(
-                    "core::media",
-                    "read_sample:decoded",
-                    "id={}, seq={}, payload_bytes={}, frames={}, peak={}",
-                    self.track_id,
-                    packet.sequence_number,
-                    packet.payload.len(),
-                    frames.len(),
-                    peak
-                );
-            }
-            let duration = Duration::from_millis(
-                node_webrtc_rust_mixer::FRAME_MS as u64 * frames.len() as u64,
-            );
-            let pcm = if frames.len() == 1 {
-                frames[0].pcm.clone()
-            } else {
-                let mut all =
-                    Vec::with_capacity(frames.len() * node_webrtc_rust_mixer::FRAME_BYTES);
-                for f in &frames {
-                    all.extend_from_slice(&f.pcm);
-                }
-                Bytes::from(all)
-            };
-            return Ok(PcmSample { pcm, duration });
-        }
+        self.stage.read_sample().await
     }
 
-    /// Reads the next RTP packet from the track.
+    /// Raw RTP in arrival order. Bypasses the inbound reorder/concealment stage; do not use
+    /// together with `read_sample` on the same track.
     pub async fn read_rtp(&self) -> Result<RtpPacket, CoreError> {
-        debug_call!("core::media", "read_rtp", "id={}", self.track_id);
-        let (packet, _) = self
-            .inner
-            .read_rtp()
+        read_raw_rtp(&self.inner, &self.track_id)
             .await
-            .map_err(|e| CoreError::Track(e.to_string()))?;
-        debug_call!(
-            "core::media",
-            "read_rtp:packet",
-            "id={}, ssrc={}, seq={}, ts={}, pt={}, marker={}, payload_bytes={}",
-            self.track_id,
-            packet.header.ssrc,
-            packet.header.sequence_number,
-            packet.header.timestamp,
-            packet.header.payload_type,
-            packet.header.marker,
-            packet.payload.len()
-        );
-
-        Ok(RtpPacket {
-            payload: packet.payload,
-            sequence_number: packet.header.sequence_number,
-            timestamp: packet.header.timestamp,
-            payload_type: packet.header.payload_type,
-        })
+            .map_err(CoreError::Track)
     }
 }
 

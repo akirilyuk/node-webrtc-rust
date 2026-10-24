@@ -1,6 +1,7 @@
 //! PeerConnection wrapper around webrtc-rs.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, Weak};
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS};
@@ -32,6 +33,8 @@ use crate::debug_call;
 use crate::debug_evt;
 use crate::error::{is_benign_teardown_error, CoreError};
 use crate::events::{PeerConnectionEventSenders, PeerConnectionEvents};
+use crate::inbound_audio::stats::merge_inbound_stage_stats;
+use crate::inbound_audio::{InboundAudioStageStats, InboundAudioStatsSnapshot};
 use crate::media::RemoteTrack;
 use crate::offer_answer::{AnswerOptions, OfferOptions};
 use crate::pcm_encoder::{enrich_opus_sdp_fmtp, opus_sdp_fmtp_line};
@@ -244,6 +247,17 @@ pub struct PeerConnection {
     inner: Arc<RTCPeerConnection>,
     /// Config as the caller set it (hostnames intact); `inner` holds the DNS-resolved rewrite.
     requested_config: Arc<std::sync::Mutex<PeerConnectionConfig>>,
+    /// Inbound audio stage counters per remote track id (merged into `getStats`).
+    inbound_stage_stats: InboundStageRegistry,
+}
+
+type InboundStageRegistry = Arc<std::sync::Mutex<HashMap<String, Weak<InboundAudioStageStats>>>>;
+
+/// Registers a remote track's stage counters, pruning entries whose track is gone.
+fn register_inbound_stage(registry: &InboundStageRegistry, track: &RemoteTrack) {
+    let mut map = registry.lock().unwrap_or_else(|e| e.into_inner());
+    map.retain(|_, w| w.strong_count() > 0);
+    map.insert(track.id().to_owned(), Arc::downgrade(&track.stage_stats()));
 }
 
 impl Clone for PeerConnection {
@@ -251,6 +265,7 @@ impl Clone for PeerConnection {
         Self {
             inner: Arc::clone(&self.inner),
             requested_config: Arc::clone(&self.requested_config),
+            inbound_stage_stats: Arc::clone(&self.inbound_stage_stats),
         }
     }
 }
@@ -356,6 +371,7 @@ impl PeerConnection {
         Ok(Self {
             inner: pc,
             requested_config: Arc::new(std::sync::Mutex::new(original)),
+            inbound_stage_stats: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -623,7 +639,17 @@ impl PeerConnection {
     /// Collects WebRTC statistics as a JSON object keyed by stat id.
     pub async fn get_stats_json(&self) -> Result<String, CoreError> {
         let report = self.inner.get_stats().await;
-        serde_json::to_string(&report.reports)
+        let value = serde_json::to_value(&report.reports)
+            .map_err(|e| CoreError::InvalidState(format!("stats serialization failed: {e}")))?;
+        let snapshots: HashMap<String, InboundAudioStatsSnapshot> = self
+            .inbound_stage_stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|(id, w)| w.upgrade().map(|s| (id.clone(), s.snapshot())))
+            .collect();
+        let merged = merge_inbound_stage_stats(value, &snapshots);
+        serde_json::to_string(&merged)
             .map_err(|e| CoreError::InvalidState(format!("stats serialization failed: {e}")))
     }
 
@@ -644,8 +670,10 @@ impl PeerConnection {
 
     /// Registers a handler for incoming remote tracks.
     pub fn on_track(&self, handler: impl Fn(RemoteTrack) + Send + Sync + 'static) {
+        let registry = Arc::clone(&self.inbound_stage_stats);
         self.inner.on_track(Box::new(move |track, _, _| {
             let remote = RemoteTrack::from_inner(track);
+            register_inbound_stage(&registry, &remote);
             debug_evt!("core::peer_connection", "track", "id={}", remote.id());
             handler(remote);
             Box::pin(async {})
@@ -752,8 +780,10 @@ impl PeerConnection {
         }));
 
         let track_tx = senders.tracks;
+        let registry = Arc::clone(&self.inbound_stage_stats);
         self.inner.on_track(Box::new(move |track, _, _| {
             let remote = RemoteTrack::from_inner(track);
+            register_inbound_stage(&registry, &remote);
             debug_evt!("core::peer_connection", "track", "id={}", remote.id());
             let _ = track_tx.send(remote);
             Box::pin(async {})

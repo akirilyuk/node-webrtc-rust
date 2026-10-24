@@ -8,7 +8,7 @@ use node_webrtc_rust_core::{
     debug_call, debug_evt, ConnectionState, LocalAudioTrack, PeerConnection, RemoteTrack,
 };
 use node_webrtc_rust_denoise::Stereo48kRnnoise;
-use node_webrtc_rust_mixer::{Frame, MixGraph, OpusDecoder, FRAME_MS};
+use node_webrtc_rust_mixer::{Frame, MixGraph, FRAME_BYTES, FRAME_MS};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -134,40 +134,36 @@ async fn run_inbound_loop(
         participant_id
     );
 
-    let mut decoder = match OpusDecoder::new() {
-        Ok(decoder) => decoder,
-        Err(_) => return,
-    };
-
     let mut denoiser = if noise_suppression {
         Some(Stereo48kRnnoise::new())
     } else {
         None
     };
+    let mut seen_undecodable = 0u64;
 
     loop {
-        match track.read_rtp().await {
-            Ok(packet) => {
-                let mixing_enabled = mix_graph.lock().await.mixing_enabled();
-                if mixing_enabled {
-                    // One RTP packet may carry several 20 ms frames (e.g. 60 ms Opus).
-                    let frames = match decoder.try_decode_payload(&packet.payload) {
-                        Ok(frames) => frames,
-                        Err(err) => {
-                            let mut graph = mix_graph.lock().await;
-                            graph.note_decode_error(
-                                &participant_id,
-                                &err.to_string(),
-                                std::time::Instant::now(),
-                            );
-                            continue;
-                        }
-                    };
-                    let mut graph = mix_graph.lock().await;
-                    for frame in frames {
-                        let frame = apply_noise_suppression(denoiser.as_mut(), frame);
-                        graph.push_frame(&participant_id, frame);
-                    }
+        // The track's inbound stage orders packets and conceals loss; read even while
+        // mixing is disabled so the stage keeps flowing.
+        match track.read_sample().await {
+            Ok(sample) => {
+                let undecodable = track.inbound_stats().undecodable;
+                let mut graph = mix_graph.lock().await;
+                if undecodable > seen_undecodable {
+                    seen_undecodable = undecodable;
+                    graph.note_decode_error(
+                        &participant_id,
+                        "undecodable Opus payload",
+                        std::time::Instant::now(),
+                    );
+                }
+                if !graph.mixing_enabled() {
+                    continue;
+                }
+                // A sample may carry several 20 ms frames (60 ms Opus, concealed gap).
+                for chunk in sample.pcm.chunks(FRAME_BYTES) {
+                    let frame = Frame::new(Bytes::copy_from_slice(chunk), None);
+                    let frame = apply_noise_suppression(denoiser.as_mut(), frame);
+                    graph.push_frame(&participant_id, frame);
                 }
             }
             Err(_) => {

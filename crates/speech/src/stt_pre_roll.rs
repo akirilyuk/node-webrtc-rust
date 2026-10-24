@@ -13,10 +13,24 @@ use bytes::Bytes;
 use crate::config::VadConfig;
 use crate::pcm::STT_PCM_SAMPLE_RATE;
 
+/// Cap on concealed (PLC/FEC) audio kept in the ring, in ms. Concealed frames do not use the
+/// received-audio budget, but an unbounded run would grow the ring without limit; at 15 % bursty
+/// loss the onset sat 0.7-0.9 s before VAD `SpeechStart`, and 500 ms of concealment covers it.
+pub const PRE_ROLL_MAX_CONCEALED_MS: u32 = 500;
+
 /// Rolling buffer of mono s16le PCM at 16 kHz for STT pre-roll.
+///
+/// The capacity applies to **received** audio. Frames flagged as concealed (synthesized by loss
+/// concealment) are kept too, but do not consume that budget (they have their own cap of
+/// [`PRE_ROLL_MAX_CONCEALED_MS`]), so loss does not push the onset out of the ring.
 pub struct SttPreRollBuffer {
     max_bytes: usize,
+    max_concealed_bytes: usize,
     data: VecDeque<u8>,
+    /// (byte length, concealed) per pushed segment, oldest first; lengths sum to `data.len()`.
+    segments: VecDeque<(usize, bool)>,
+    received_bytes: usize,
+    concealed_bytes: usize,
 }
 
 impl SttPreRollBuffer {
@@ -28,7 +42,11 @@ impl SttPreRollBuffer {
         let max_bytes = mono_s16le_bytes_for_duration_ms(capacity_ms.max(1));
         Self {
             max_bytes,
+            max_concealed_bytes: mono_s16le_bytes_for_duration_ms(PRE_ROLL_MAX_CONCEALED_MS),
             data: VecDeque::with_capacity(max_bytes.min(65_536)),
+            segments: VecDeque::new(),
+            received_bytes: 0,
+            concealed_bytes: 0,
         }
     }
 
@@ -44,15 +62,62 @@ impl SttPreRollBuffer {
         self.data.is_empty()
     }
 
-    /// Append mono PCM and drop the oldest samples when over capacity.
+    /// Append received mono PCM and drop the oldest samples when over capacity.
     pub fn push(&mut self, mono_bytes: &[u8]) {
+        self.push_frame(mono_bytes, false);
+    }
+
+    /// Append mono PCM flagged as received (`concealed = false`) or concealed, then trim:
+    /// received bytes over the capacity are dropped from the front, concealed bytes over
+    /// [`PRE_ROLL_MAX_CONCEALED_MS`] are dropped oldest-concealed-first.
+    pub fn push_frame(&mut self, mono_bytes: &[u8], concealed: bool) {
         if mono_bytes.is_empty() {
             return;
         }
         self.data.extend(mono_bytes);
-        while self.data.len() > self.max_bytes {
-            let overflow = self.data.len() - self.max_bytes;
-            self.data.drain(0..overflow);
+        self.segments.push_back((mono_bytes.len(), concealed));
+        if concealed {
+            self.concealed_bytes += mono_bytes.len();
+        } else {
+            self.received_bytes += mono_bytes.len();
+        }
+        // Received overflow: drop from the front (everything there is older).
+        while self.received_bytes > self.max_bytes {
+            let over = self.received_bytes - self.max_bytes;
+            self.drop_from_segment(0, over);
+        }
+        // Concealed overflow: drop the oldest concealed bytes, wherever they sit, so received
+        // audio is never sacrificed for concealment.
+        while self.concealed_bytes > self.max_concealed_bytes {
+            let over = self.concealed_bytes - self.max_concealed_bytes;
+            let Some(idx) = self.segments.iter().position(|(_, c)| *c) else {
+                break;
+            };
+            self.drop_from_segment(idx, over);
+        }
+    }
+
+    /// Drop up to `want` bytes (even count, at most the segment) from the start of segment
+    /// `idx`, keeping the segment list and counters exact.
+    fn drop_from_segment(&mut self, idx: usize, want: usize) {
+        let (seg_len, seg_concealed) = self.segments[idx];
+        let drop_len = if want >= seg_len {
+            seg_len
+        } else {
+            // Keep s16 samples aligned: drop an even number of bytes, at least 2.
+            ((want + 1) & !1).max(2).min(seg_len)
+        };
+        let offset: usize = self.segments.iter().take(idx).map(|(l, _)| *l).sum();
+        self.data.drain(offset..offset + drop_len);
+        if seg_concealed {
+            self.concealed_bytes -= drop_len;
+        } else {
+            self.received_bytes -= drop_len;
+        }
+        if drop_len == seg_len {
+            self.segments.remove(idx);
+        } else {
+            self.segments[idx].0 -= drop_len;
         }
     }
 
@@ -61,8 +126,15 @@ impl SttPreRollBuffer {
         if self.data.is_empty() {
             return Bytes::new();
         }
+        self.reset_counters();
         let out: Vec<u8> = self.data.drain(..).collect();
         Bytes::from(out)
+    }
+
+    fn reset_counters(&mut self) {
+        self.segments.clear();
+        self.received_bytes = 0;
+        self.concealed_bytes = 0;
     }
 
     /// Drain buffered mono PCM, left-padding with digital silence when the ring is not full.
@@ -70,7 +142,8 @@ impl SttPreRollBuffer {
     /// Streaming recognizers (e.g. Zipformer) need lead-in context before the first spoken
     /// sample. A cold inbound path (DTX sender, push-to-talk, loopback harness) may deliver no
     /// frames before the talker's onset, so the ring holds only the TTS/speech onset at
-    /// VAD `SpeechStart`. Padding to [`Self::capacity_ms`] makes that flush byte-identical in
+    /// VAD `SpeechStart`. Padding to [`Self::capacity_ms`] (counting received bytes only, so
+    /// concealed frames add real time on top of the pad) makes that flush byte-identical in
     /// shape to a warm path where silence filled the ring first: `[silence pad][buffered onset]`.
     ///
     /// Returns empty when the ring is empty — that means the STT stream was already receiving
@@ -81,29 +154,30 @@ impl SttPreRollBuffer {
         if self.data.is_empty() {
             return Bytes::new();
         }
-        let buffered_len = self.data.len();
-        if buffered_len >= self.max_bytes {
+        if self.received_bytes >= self.max_bytes {
             return self.drain();
         }
-        let pad_len = self.max_bytes - buffered_len;
+        let pad_len = self.max_bytes - self.received_bytes;
         let even_pad_len = pad_len & !1;
-        let mut out = Vec::with_capacity(self.max_bytes);
+        let mut out = Vec::with_capacity(self.max_bytes + self.data.len());
         out.resize(even_pad_len, 0);
         out.extend(self.data.drain(..));
+        self.reset_counters();
         Bytes::from(out)
     }
 
     /// Milliseconds of silence padding [`drain_padded_to_capacity`] would prepend for the
-    /// current buffered length (0 when the ring is empty or already at capacity).
+    /// current received-byte count (0 when the ring is empty or received bytes are at capacity).
     pub fn pad_ms_for_len(&self) -> u32 {
-        if self.data.is_empty() || self.data.len() >= self.max_bytes {
+        if self.data.is_empty() || self.received_bytes >= self.max_bytes {
             return 0;
         }
-        mono_duration_ms_from_bytes(self.max_bytes - self.data.len())
+        mono_duration_ms_from_bytes(self.max_bytes - self.received_bytes)
     }
 
     pub fn clear(&mut self) {
         self.data.clear();
+        self.reset_counters();
     }
 }
 
@@ -222,6 +296,90 @@ fn mono_duration_ms_from_bytes(byte_len: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FRAME: usize = 640;
+
+    fn frame(fill: u8) -> Vec<u8> {
+        vec![fill; FRAME]
+    }
+
+    #[test]
+    fn concealed_frames_do_not_use_the_received_budget() {
+        let mut r = SttPreRollBuffer::new(700);
+        let mut pushed = 0;
+        let mut received = 0;
+        let mut concealed = 0;
+        while received < 35 || concealed < 7 {
+            let conceal = pushed % 6 == 5 && concealed < 7;
+            if conceal {
+                r.push_frame(&frame(2), true);
+                concealed += 1;
+            } else if received < 35 {
+                r.push_frame(&frame(1), false);
+                received += 1;
+            }
+            pushed += 1;
+        }
+        assert_eq!(r.len(), 42 * FRAME);
+    }
+
+    #[test]
+    fn concealed_extension_is_capped() {
+        let mut r = SttPreRollBuffer::new(700);
+        let (mut rec, mut con) = (0u32, 0u32);
+        for i in 0..75u32 {
+            // 35 received + 40 concealed, interleaved roughly evenly.
+            let conceal = (i % 2 == 1 && con < 40) || rec >= 35;
+            if conceal {
+                r.push_frame(&frame(2), true);
+                con += 1;
+            } else {
+                r.push_frame(&frame(1), false);
+                rec += 1;
+            }
+        }
+        assert_eq!((rec, con), (35, 40));
+        let out = r.drain();
+        let ones = out.iter().filter(|b| **b == 1).count();
+        let twos = out.iter().filter(|b| **b == 2).count();
+        assert_eq!(ones, 700 * 32);
+        assert!(twos <= 500 * 32, "concealed bytes {twos}");
+        assert_eq!(*out.last().unwrap(), 2, "newest frame is last");
+    }
+
+    #[test]
+    fn unflagged_push_is_unchanged() {
+        let mut r = SttPreRollBuffer::new(700);
+        let max = 700 * 32;
+        let mut reference: VecDeque<u8> = VecDeque::new();
+        for i in 0..100usize {
+            let chunk: Vec<u8> = (0..FRAME).map(|j| ((i * 7 + j) % 251) as u8).collect();
+            r.push(&chunk);
+            reference.extend(&chunk);
+            while reference.len() > max {
+                let o = reference.len() - max;
+                reference.drain(0..o);
+            }
+        }
+        let want: Vec<u8> = reference.into_iter().collect();
+        assert_eq!(r.drain().to_vec(), want);
+    }
+
+    #[test]
+    fn pad_counts_received_bytes_only() {
+        let mut r = SttPreRollBuffer::new(700);
+        for _ in 0..15 {
+            r.push_frame(&frame(1), false);
+        }
+        for _ in 0..5 {
+            r.push_frame(&frame(2), true);
+        }
+        assert_eq!(r.pad_ms_for_len(), 400);
+        let out = r.drain_padded_to_capacity();
+        assert_eq!(out.len(), (700 + 100) * 32);
+        assert!(out[..400 * 32].iter().all(|b| *b == 0));
+        assert_eq!(out[400 * 32], 1);
+    }
 
     #[test]
     fn ring_drops_oldest_samples_when_over_capacity() {

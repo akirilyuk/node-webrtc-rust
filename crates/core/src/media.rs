@@ -177,6 +177,9 @@ impl MediaStreamTrack for LocalAudioTrack {
 pub struct PcmSample {
     pub pcm: Bytes,
     pub duration: Duration,
+    /// True when the audio was synthesized by loss concealment (PLC/FEC), not decoded from a
+    /// received packet.
+    pub concealed: bool,
 }
 
 /// Remote track received from a peer connection.

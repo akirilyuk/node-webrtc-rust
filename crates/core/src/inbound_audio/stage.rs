@@ -217,19 +217,22 @@ impl InboundStage {
 
         loop {
             if let Some(out) = st.pending.pop_front() {
-                let frames = match out {
+                let (frames, concealed) = match out {
                     StageOut::Packet(packet) => self.decode_packet(&mut st.decoder, &packet),
-                    StageOut::Lost { count, next } => conceal_lost(
-                        &mut st.decoder,
-                        count,
-                        next.as_ref().map(Bytes::as_ref),
-                        &self.stats,
+                    StageOut::Lost { count, next } => (
+                        conceal_lost(
+                            &mut st.decoder,
+                            count,
+                            next.as_ref().map(Bytes::as_ref),
+                            &self.stats,
+                        ),
+                        true,
                     ),
                 };
                 if frames.is_empty() {
                     continue;
                 }
-                return Ok(frames_to_sample(&frames));
+                return Ok(frames_to_sample(&frames, concealed));
             }
 
             st.pending.extend(st.buffer.poll(Instant::now()));
@@ -296,7 +299,7 @@ impl InboundStage {
                 if frames.is_empty() {
                     continue;
                 }
-                return Ok(frames_to_sample(&frames));
+                return Ok(frames_to_sample(&frames, false));
             }
             if let Some(reason) = st.raw_ended.clone() {
                 return Err(CoreError::Track(reason));
@@ -330,16 +333,18 @@ impl InboundStage {
         }
     }
 
-    fn decode_packet(&self, decoder: &mut OpusDecoder, packet: &RtpPacket) -> Vec<Frame> {
+    /// Returns the frames and whether they were concealed (undecodable payload).
+    fn decode_packet(&self, decoder: &mut OpusDecoder, packet: &RtpPacket) -> (Vec<Frame>, bool) {
         match decoder.try_decode_payload(&packet.payload) {
-            Ok(frames) => self.log_decoded(packet, frames),
+            Ok(frames) => (self.log_decoded(packet, frames), false),
             Err(reason) => {
                 self.log_decode_failed(packet, &reason.to_string());
                 InboundAudioStageStats::add(&self.stats.undecodable, 1);
-                match decoder.conceal_plc(decoder.last_packet_samples()) {
+                let frames = match decoder.conceal_plc(decoder.last_packet_samples()) {
                     Ok(frames) => frames,
                     Err(_) => vec![node_webrtc_rust_mixer::silence_frame()],
-                }
+                };
+                (frames, true)
             }
         }
     }
@@ -379,7 +384,7 @@ impl InboundStage {
     }
 }
 
-fn frames_to_sample(frames: &[Frame]) -> PcmSample {
+fn frames_to_sample(frames: &[Frame], concealed: bool) -> PcmSample {
     let duration =
         Duration::from_millis(node_webrtc_rust_mixer::FRAME_MS as u64 * frames.len() as u64);
     let pcm = if frames.len() == 1 {
@@ -391,5 +396,9 @@ fn frames_to_sample(frames: &[Frame]) -> PcmSample {
         }
         Bytes::from(all)
     };
-    PcmSample { pcm, duration }
+    PcmSample {
+        pcm,
+        duration,
+        concealed,
+    }
 }

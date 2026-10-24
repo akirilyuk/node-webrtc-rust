@@ -26,6 +26,17 @@ permissions:
   # Required to docker-pull ghcr.io/<repo>/ci-build (same-repo package).
   packages: read
 
+env:
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: publish-npm-if-needed-${{ inputs.package }}-${{ inputs.version }}
   cancel-in-progress: false
@@ -33,7 +44,7 @@ concurrency:
 jobs:
   publish:
     name: Publish @node-webrtc-rust/${{ inputs.package }} if needed
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:

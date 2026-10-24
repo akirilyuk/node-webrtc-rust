@@ -29,21 +29,26 @@ env:
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
   OPUS_STATIC: '1'
   NATIVE_TOOL_MODE: declared
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   validate-package-lock:
     name: Package-lock optional bindings
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -55,17 +60,13 @@ jobs:
   quality:
     name: Typecheck & lint
     needs: validate-package-lock
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -96,7 +97,12 @@ jobs:
     needs: [validate-package-lock, quality, wait-main]
     # A failed or skipped wait must never block a release; the other needs still must pass.
     if: ${{ !cancelled() && needs.validate-package-lock.result == 'success' && needs.quality.result == 'success' }}
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       linux_x64_matrix: ${{ steps.matrices.outputs.linux_x64_matrix }}
       build_linux_arm64: ${{ steps.matrices.outputs.build_linux_arm64 }}
@@ -113,15 +119,6 @@ jobs:
       aggregate_digest: ${{ steps.resolve.outputs.aggregate_digest }}
       fallback_reason: ${{ steps.resolve.outputs.fallback_reason }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
 
       # Bundle resolution computes the current contract with `cargo metadata`
@@ -132,7 +129,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           NATIVE_TOOL_MODE: declared
-          CARGO_VIA_CI_IMAGE: '1'
         run: bash scripts/ci/resolve-native-main-bundle.sh --profile release
 
       - name: Plan per-target cache rebuilds (fallback / accelerator)
@@ -230,20 +226,14 @@ jobs:
       needs.quality.result == 'success' &&
       needs.plan.result == 'success' &&
       needs.plan.outputs.bundle_reused == 'true'
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/ci-restore-workspace-ownership
 
       # Validation recomputes the current six-target native contract via CI_IMAGE cargo.
       - name: Download native-main-bundle from producer run
@@ -258,7 +248,6 @@ jobs:
         shell: bash
         env:
           NATIVE_TOOL_MODE: declared
-          CARGO_VIA_CI_IMAGE: '1'
         run: |
           set -euo pipefail
           bash scripts/ci/native-artifact-bundle.sh validate \
@@ -405,8 +394,6 @@ jobs:
       require_binding_artifact: 'true'
       needs_native_binding: 'true'
       needs_ts_dist: 'true'
-      # old runners until build-main/release move (ARC migration chunks 4/5)
-      runner: self-hosted
     secrets: inherit
 
   publish:
@@ -426,7 +413,7 @@ jobs:
     # for publish/build time. Registry lag reached ~90 min in 0.9.34. Guard:
     # wait-for-pending-npm-packages.test.sh (timeout-minutes*60 >= budget + 1200).
     timeout-minutes: 180
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
       credentials:
@@ -617,22 +604,18 @@ jobs:
     name: Sync main package-lock (PR)
     needs: publish
     if: ${{ !cancelled() && needs.publish.result == 'success' }}
-    runs-on: self-hosted
+    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       contents: write
       pull-requests: write
       # createWorkflowDispatch (build.yml) on the bot PR branch
       actions: write
     steps:
-      - name: Prepare workspace
-        run: |
-          if [[ -n "${RUNNER_WORKSPACE:-}" && -d "${RUNNER_WORKSPACE}" ]]; then
-            docker run --rm \
-              -v "${RUNNER_WORKSPACE}:${RUNNER_WORKSPACE}" \
-              alpine:3.20 \
-              chown -R "$(id -u):$(id -g)" "${RUNNER_WORKSPACE}" || true
-          fi
-
       - uses: actions/checkout@v4
         with:
           ref: main

@@ -60,6 +60,12 @@ struct StageState {
     decoder: OpusDecoder,
     pending: VecDeque<StageOut>,
     ended: Option<String>,
+    /// Disabled (raw) path only: test impairment, applied in arrival order with no reorder
+    /// buffer or concealment, so the old behaviour can be measured on the same lossy link.
+    raw_impairment: Option<Impairment>,
+    raw_impairment_init: bool,
+    raw_pending: VecDeque<RtpPacket>,
+    raw_ended: Option<String>,
 }
 
 pub struct InboundStage {
@@ -114,6 +120,10 @@ impl InboundStage {
                 decoder: OpusDecoder::new().expect("Opus decoder init"),
                 pending: VecDeque::new(),
                 ended: None,
+                raw_impairment: None,
+                raw_impairment_init: false,
+                raw_pending: VecDeque::new(),
+                raw_ended: None,
             }),
             stats,
         }
@@ -265,15 +275,44 @@ impl InboundStage {
 
     /// Old path: arrival order, decode, silence on error.
     async fn read_sample_raw(&self, st: &mut StageState) -> Result<PcmSample, CoreError> {
+        if !st.raw_impairment_init {
+            st.raw_impairment_init = true;
+            let cfg = self
+                .impairment
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            st.raw_impairment = cfg.map(|c| {
+                log::warn!(
+                    "inbound RTP impairment active on track {}: {c:?}",
+                    self.track_id
+                );
+                Impairment::new(c)
+            });
+        }
         loop {
-            let packet = read_raw_rtp(&self.track, &self.track_id)
-                .await
-                .map_err(CoreError::Track)?;
-            let frames = self.decode_packet_or_silence(&mut st.decoder, &packet);
-            if frames.is_empty() {
-                continue;
+            if let Some(packet) = st.raw_pending.pop_front() {
+                let frames = self.decode_packet_or_silence(&mut st.decoder, &packet);
+                if frames.is_empty() {
+                    continue;
+                }
+                return Ok(frames_to_sample(&frames));
             }
-            return Ok(frames_to_sample(&frames));
+            if let Some(reason) = st.raw_ended.clone() {
+                return Err(CoreError::Track(reason));
+            }
+            match read_raw_rtp(&self.track, &self.track_id).await {
+                Ok(p) => match st.raw_impairment.as_mut() {
+                    Some(imp) => st.raw_pending.extend(imp.apply(p)),
+                    None => st.raw_pending.push_back(p),
+                },
+                Err(e) => {
+                    if let Some(imp) = st.raw_impairment.as_mut() {
+                        st.raw_pending.extend(imp.flush());
+                    }
+                    st.raw_ended = Some(e);
+                }
+            }
         }
     }
 

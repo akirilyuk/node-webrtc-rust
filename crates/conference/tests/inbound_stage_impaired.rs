@@ -240,3 +240,24 @@ async fn clean_link_adds_no_wait() {
     assert!(report.played >= 90, "{report:?}");
     finish(pair, reader).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disabled_stage_applies_the_test_impairment() {
+    let _serial = SERIAL.lock().await;
+    let pair = connect().await;
+    pair.remote.set_inbound_reorder_enabled(false);
+    pair.remote.set_test_impairment(Some(
+        ImpairmentConfig::parse("loss=0.2,seed=7").expect("parse"),
+    ));
+    let (received, reader) = spawn_reader(pair.remote.clone());
+    send_paced(&pair.track, 100).await;
+
+    let frames = received.lock().await.clone();
+    let report = analyze(&frames);
+    eprintln!("[inbound-stage disabled+impaired] {report:?}");
+    assert!(frames.len() <= 95, "{} frames, {report:?}", frames.len());
+    assert!(report.gaps > 0, "{report:?}");
+    // The stage never ran: its counters stay untouched.
+    assert_eq!(pair.remote.inbound_stats().packets_received, 0);
+    finish(pair, reader).await;
+}

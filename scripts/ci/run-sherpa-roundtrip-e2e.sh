@@ -14,6 +14,11 @@
 #     (SHERPA_ROUNDTRIP_WALL_MAX_MS) and is skipped when too little is left, so a slow first
 #     pass can no longer push the re-run past the step cap (exit 124 hid the real failure).
 #   SHERPA_ROUNDTRIP_RERUN_MIN_SEC — minimum time left to bother with the re-run (default 45)
+#   SHERPA_E2E_AUDIO_TAP — default on; 0 disables the test audio tap. Each pass sets
+#     SPEECH_TEST_AUDIO_TAP_DIR=.test-logs/sherpa-e2e/audio-tap/<script>-pass1|pass2, so a failed
+#     pass keeps the listener's inbound audio (inbound-*.wav) and the audio pushed to STT
+#     (stt-in-*.wav). A passing pass deletes its directory. Replay a file with
+#     `cargo run -p node-webrtc-rust-vendor-sherpa-onnx --example stt_replay -- "$SHERPA_STT_MODEL_PATH" <file.wav>`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -26,7 +31,14 @@ source "$ROOT/scripts/export-sherpa-local-models.sh"
 
 run_pass() {
   local voice_debug="${1:?}"
+  local pass="${2:?pass label (pass1|pass2)}"
   local extra_env=()
+  local tap_dir=""
+  if [[ "${SHERPA_E2E_AUDIO_TAP:-1}" != "0" ]]; then
+    tap_dir="$ROOT/.test-logs/sherpa-e2e/audio-tap/${SCRIPT#start:}-$pass"
+    rm -rf "$tap_dir" && mkdir -p "$tap_dir"
+    extra_env+=(SPEECH_TEST_AUDIO_TAP_DIR="$tap_dir")
+  fi
   if [[ "$SCRIPT" == *barge-recovery* ]]; then
     # Linux CI STT partials lag macOS; barge slightly earlier than local default (400ms).
     extra_env+=(SHERPA_BARGE_RECOVERY_DELAY_MS="${SHERPA_BARGE_RECOVERY_DELAY_MS:-350}")
@@ -35,19 +47,29 @@ run_pass() {
     # Linux CI: partial→barge_in can lag; agent_speaking_end still truncates playback.
     extra_env+=(SHERPA_BARGE_IN_MAX_RATIO="${SHERPA_BARGE_IN_MAX_RATIO:-0.80}")
   fi
+  local rc=0
   env \
     CI=true \
     SHERPA_ROUNDTRIP_CI_HARNESS_POST_SILENCE=1 \
     VOICE_DEBUG="$voice_debug" \
     SHERPA_ROUNDTRIP_TOPOLOGY_LOG=0 \
     ${extra_env[@]+"${extra_env[@]}"} \
-    npm run "$SCRIPT" --workspace="$WORKSPACE"
+    npm run "$SCRIPT" --workspace="$WORKSPACE" || rc=$?
+  if [[ -n "$tap_dir" && "$rc" -eq 0 ]]; then
+    rm -rf "$tap_dir"
+  fi
+  return "$rc"
 }
 
 STARTED_AT=$SECONDS
 
-if run_pass 0; then
+# SHERPA_ROUNDTRIP_FIRST_PASS_VOICE_DEBUG=1: the first pass already runs with VOICE_DEBUG=1, so a
+# failing pass has [voice-debug] internals (stress investigations; CI keeps the quiet first pass).
+if run_pass "${SHERPA_ROUNDTRIP_FIRST_PASS_VOICE_DEBUG:-0}" pass1; then
   exit 0
+fi
+if [[ "${SHERPA_E2E_AUDIO_TAP:-1}" != "0" ]]; then
+  echo "[sherpa-e2e] audio tap kept: $ROOT/.test-logs/sherpa-e2e/audio-tap/${SCRIPT#start:}-pass1" >&2
 fi
 
 if [[ "$RETRIES" -lt 1 ]]; then
@@ -68,7 +90,7 @@ fi
 echo "[sherpa-e2e] $SCRIPT failed (VOICE_DEBUG=0) — re-running with VOICE_DEBUG=1 for diagnostics" >&2
 # The re-run only collects [voice-debug] output. The step fails either way: a pass here would turn
 # a flake into green (flaky-tests-root-cause.md).
-if run_pass 1; then
+if run_pass 1 pass2; then
   echo "[sherpa-e2e] $SCRIPT passed only on the VOICE_DEBUG=1 re-run: nondeterministic, failing the step" >&2
 fi
 exit 1

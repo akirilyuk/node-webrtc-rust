@@ -10,13 +10,46 @@ on:
       iterations:
         description: Consecutive Sherpa e2e runs (stop at first failure)
         default: '20'
+      mode:
+        description: e2e = the full CI Sherpa block per iteration; roundtrips = roundtrips only (models prepared once, no Rust ignored tests)
+        type: choice
+        default: e2e
+        options:
+          - e2e
+          - roundtrips
+      only:
+        description: Comma list of roundtrip npm scripts to keep (SHERPA_E2E_ONLY); empty = all
+        default: ''
+      parallel:
+        description: Parallel-group width (SHERPA_E2E_PARALLEL); empty = the CI default
+        default: ''
+      cpu_burn:
+        description: Busy-loop processes pinning spare cores during the loop (reproduce CPU starvation); 0 = none
+        default: '0'
+      runner:
+        description: runs-on override for A/B runs (e.g. self-hosted = the old runners); empty = NWR_RUNNER_LARGE or nwr-large
+        default: ''
+      voice_debug:
+        description: 'true = VOICE_DEBUG=1 already on the first pass, so a failing pass has [voice-debug] internals'
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
+      native_trace:
+        description: 'true = native DTLS/ICE/SCTP trace per process (WNR_LOG_FILE), kept only for the failing iteration'
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
   contents: read
   packages: read
 
 concurrency:
-  group: sherpa-e2e-stress-${{ github.ref }}
+  group: sherpa-e2e-stress-${{ github.ref }}-${{ inputs.runner || 'default' }}
   cancel-in-progress: false
 
 env:
@@ -36,7 +69,7 @@ defaults:
 jobs:
   stress:
     name: Sherpa e2e x${{ inputs.iterations }}
-    runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
+    runs-on: ${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     timeout-minutes: 420
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:test
@@ -62,34 +95,84 @@ jobs:
           bash scripts/ci/build-native-addon.sh --target x86_64-unknown-linux-gnu --profile debug
           bash scripts/ci/sync-workspace-bindings.sh
           bash scripts/ci/ensure-ts-dist.sh
+          if [[ "${{ inputs.mode }}" == "roundtrips" ]]; then
+            bash scripts/ci/ensure-sherpa-models.sh
+          fi
 
       - name: Sherpa e2e loop
         env:
           ITERATIONS: ${{ inputs.iterations }}
+          MODE: ${{ inputs.mode }}
+          ONLY: ${{ inputs.only }}
+          PARALLEL: ${{ inputs.parallel }}
+          CPU_BURN: ${{ inputs.cpu_burn }}
+          NATIVE_TRACE: ${{ inputs.native_trace }}
+          FIRST_PASS_VOICE_DEBUG: ${{ inputs.voice_debug }}
         run: |
           set -uo pipefail
           if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then
             echo "iterations must be a positive integer, got: $ITERATIONS" >&2
             exit 2
           fi
+          if [[ "$CPU_BURN" =~ ^[0-9]+$ ]] && [[ "$CPU_BURN" -gt 0 ]]; then
+            echo "==> burning ${CPU_BURN} core(s) for the whole loop (starvation reproduction)"
+            burn_pids=()
+            for ((b = 0; b < CPU_BURN; b++)); do yes >/dev/null & burn_pids+=($!); done
+            trap 'kill "${burn_pids[@]}" 2>/dev/null || true' EXIT
+          fi
+          [[ "$FIRST_PASS_VOICE_DEBUG" == "true" ]] && export SHERPA_ROUNDTRIP_FIRST_PASS_VOICE_DEBUG=1
+          [[ -n "$ONLY" ]] && export SHERPA_E2E_ONLY="$ONLY"
+          [[ -n "$PARALLEL" ]] && export SHERPA_E2E_PARALLEL="$PARALLEL"
+          if [[ "$MODE" == "roundtrips" ]]; then
+            # roundtrips mode expects the model paths in the environment (prepared once above).
+            # shellcheck source=/dev/null
+            source scripts/export-sherpa-local-models.sh
+            export SHERPA_LID_MODEL_PATH="${SHERPA_LID_MODEL_PATH:-$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny}"
+          fi
           {
-            echo "## Sherpa e2e stress (${ITERATIONS} iterations)"
+            echo "## Sherpa e2e stress (${ITERATIONS} iterations, mode=${MODE}, only=${ONLY:-all}, parallel=${PARALLEL:-default}, cpu_burn=${CPU_BURN:-0})"
             echo
             echo "| iteration | seconds |"
             echo "|---|---|"
           } >>"$GITHUB_STEP_SUMMARY"
+          # Each iteration's output is also kept in a file: the job log can be missing (run 39933589322
+          # had no log blob), and a failure must stay explainable. Uploaded as an artifact on failure.
+          stress_dir="$PWD/.test-logs/stress"
+          mkdir -p "$stress_dir"
           for ((i = 1; i <= ITERATIONS; i++)); do
             echo "==> stress iteration $i/$ITERATIONS"
+            # Leftovers from earlier roundtrips (accumulation hypothesis): node/tsx/npm still alive.
+            leftovers="$(ps -eo pid,etimes,pcpu,rss,args --sort=-pcpu | grep -E '[n]ode |[t]sx |[n]pm ' | grep -v 'k8s/index.js' | head -n 10 || true)"
+            echo "[stress] leftover processes before iteration $i: $(printf '%s' "$leftovers" | grep -c . || true)"
+            [[ -n "$leftovers" ]] && printf '%s\n' "$leftovers" | sed 's/^/[stress]   /'
             start=$SECONDS
-            if ! bash scripts/ci/run-sherpa-example-ci.sh e2e; then
+            if [[ "$NATIVE_TRACE" == "true" ]]; then
+              # Same targets as the helpers integration trace (run-pr-integration.sh); one file per process.
+              rm -rf "$stress_dir/native-trace" && mkdir -p "$stress_dir/native-trace"
+              export WNR_LOG_FILE="$stress_dir/native-trace/native-{pid}.log"
+              export RUST_LOG="dtls=trace,webrtc_dtls=trace,webrtc::dtls_transport=trace,webrtc::peer_connection=trace,webrtc::mux=debug,webrtc_ice=trace,webrtc_sctp=trace,webrtc::sctp_transport=trace"
+            fi
+            bash scripts/ci/run-sherpa-example-ci.sh "$MODE" 2>&1 | tee "$stress_dir/iteration-$i.log"
+            rc=${PIPESTATUS[0]}
+            if [[ "$rc" -ne 0 ]]; then
               green=$((i - 1))
-              echo "stress FAILED at iteration $i after $green green"
+              echo "stress FAILED at iteration $i after $green green (exit $rc)"
+              { echo "--- process snapshot at failure"; ps -eo pid,etimes,pcpu,rss,args --sort=-pcpu | head -n 25; } \
+                | tee -a "$stress_dir/iteration-$i.log"
               {
                 echo
-                echo "stress FAILED at iteration $i after $green green"
+                echo "stress FAILED at iteration $i after $green green (exit $rc)"
+                echo
+                echo '```'
+                grep -E 'FAILED|FAIL |roundtrip failure|expected|passed only on|user_speech_final|timed out|panicked|Error' \
+                  "$stress_dir/iteration-$i.log" | tail -n 40
+                echo '```'
               } >>"$GITHUB_STEP_SUMMARY"
               exit 1
             fi
+            rm -f "$stress_dir/iteration-$i.log"
+            rm -rf "$stress_dir/native-trace"
+            rm -rf .test-logs/sherpa-e2e/audio-tap
             echo "| $i | $((SECONDS - start)) |" >>"$GITHUB_STEP_SUMMARY"
           done
           echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"
@@ -97,6 +180,17 @@ jobs:
             echo
             echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"
           } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload stress logs (failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sherpa-stress-logs-${{ github.run_id }}
+          path: |
+            .test-logs/stress
+            .test-logs/sherpa-e2e
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Runner facts (end)
         if: always()

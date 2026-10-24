@@ -48,6 +48,7 @@
 //! Debug: set env `VOICE_DEBUG=1` for stderr `[voice-debug]` lines.
 
 pub mod agent;
+pub mod audio_tap;
 pub mod config;
 pub mod error;
 pub mod events;

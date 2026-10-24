@@ -12,6 +12,7 @@
 //! vendor's own marker arrives (which is then swallowed).
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -21,6 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, timeout, Instant};
 
+use crate::audio_tap::UtteranceTap;
 use crate::config::{SttConfig, VoiceSessionContext};
 use crate::error::{SpeechError, SpeechResult};
 use crate::otel;
@@ -187,6 +189,10 @@ pub struct SttActorOptions {
     pub open_wait_max_ms: u64,
     /// Test-only delay of finals and finalize markers; see [`test_final_delay_ms_from_env`].
     pub test_final_delay_ms: u64,
+    /// Test-only: directory for the STT input tap (see [`crate::audio_tap`]); `None` = off.
+    pub audio_tap_dir: Option<&'static Path>,
+    /// Test-only: agent id used in the tap file names (see [`crate::audio_tap`]).
+    pub audio_tap_agent_id: u64,
 }
 
 /// `SPEECH_STT_TEST_FINAL_DELAY_MS` (test-only), default 0. Read once.
@@ -244,10 +250,14 @@ pub fn spawn_stt_actor(
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (res_tx, res_rx) = mpsc::unbounded_channel();
     let status = Arc::new(SttActorStatus::default());
+    let tap = options
+        .audio_tap_dir
+        .map(|d| UtteranceTap::new(d, options.audio_tap_agent_id, "stt-in", 16_000, 1));
     let actor = Actor {
         provider,
         registry,
         options,
+        tap,
         status: Arc::clone(&status),
         results: res_tx,
         outstanding: VecDeque::new(),
@@ -285,6 +295,8 @@ struct Actor {
     provider: Option<Box<dyn SttProvider>>,
     registry: Arc<VendorRegistry>,
     options: SttActorOptions,
+    /// Test-only copy of the audio pushed to the provider (see [`crate::audio_tap`]).
+    tap: Option<UtteranceTap>,
     status: Arc<SttActorStatus>,
     results: mpsc::UnboundedSender<SttResult>,
     outstanding: VecDeque<Outstanding>,
@@ -326,6 +338,7 @@ impl Actor {
                 cmd = rx.recv(), if can_read => {
                     match cmd {
                         None => {
+                            self.flush_tap("stop");
                             self.stop_provider().await;
                             break;
                         }
@@ -667,6 +680,7 @@ impl Actor {
                 self.parked = Some(cmd);
             }
             SttCommand::Stop { done } => {
+                self.flush_tap("stop");
                 self.stop_provider().await;
                 let _ = done.send(());
                 return false;
@@ -721,8 +735,17 @@ impl Actor {
         self.publish_status();
     }
 
+    fn flush_tap(&mut self, label: &str) {
+        if let Some(tap) = self.tap.as_mut() {
+            tap.flush(label);
+        }
+    }
+
     async fn on_audio(&mut self, pcm: Bytes) {
         let len = pcm.len() as u64;
+        if let Some(tap) = self.tap.as_mut() {
+            tap.push(&pcm);
+        }
         self.last_work_at = Some(Instant::now());
         self.reopen_dead_stream().await;
         if let Some(key) = self.inline_late_key.take() {
@@ -765,6 +788,7 @@ impl Actor {
     }
 
     async fn on_end_utterance(&mut self, key: u64) {
+        self.flush_tap(&format!("utt{key}"));
         self.last_work_at = Some(Instant::now());
         let gen = self.gen;
         let Some(provider) = self.provider.as_mut() else {

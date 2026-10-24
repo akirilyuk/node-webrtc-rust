@@ -38,10 +38,18 @@ grep -q 'exit "\$helpers_rc"' "$SCRIPT" || fail "failure must exit with the step
 
 # Artifact upload: failure only, 7 days.
 grep -q 'actions/upload-artifact@v4' "$WORKFLOW" || fail "upload-artifact@v4 missing"
-up="$(grep -n 'upload-artifact@v4' "$WORKFLOW" | cut -d: -f1)"
-sed -n "$((up - 3)),$((up + 8))p" "$WORKFLOW" | grep -q 'if: failure()' || fail "upload must be if: failure()"
+# Anchor on the native-trace artifact name: the workflow has more than one upload step.
+up="$(grep -n 'name: native-trace-' "$WORKFLOW" | head -n 1 | cut -d: -f1)"
+[[ -n "$up" ]] || fail "native-trace upload step missing"
+sed -n "$((up - 4)),$((up))p" "$WORKFLOW" | grep -q 'if: failure()' || fail "upload must be if: failure()"
 grep -q 'name: native-trace-\${{ github.run_id }}' "$WORKFLOW" || fail "artifact name must be native-trace-<run_id>"
 grep -q 'path: .test-logs/native-trace' "$WORKFLOW" || fail "artifact path"
 grep -q 'retention-days: 7' "$WORKFLOW" || fail "retention-days: 7 missing"
+
+# Sherpa audio tap: its own failure-only artifact, so a misheard roundtrip turn keeps its audio.
+grep -q 'path: .test-logs/sherpa-e2e/audio-tap' "$WORKFLOW" || fail "audio tap upload path missing"
+tap="$(grep -n 'name: sherpa-audio-tap-' "$WORKFLOW" | cut -d: -f1)"
+[[ -n "$tap" ]] || fail "audio tap artifact name must be sherpa-audio-tap-<run_id>-<attempt>"
+sed -n "$((tap - 4)),$((tap))p" "$WORKFLOW" | grep -q 'if: failure()' || fail "audio tap upload must be if: failure()"
 
 echo "native-trace-wiring.test.sh: OK"

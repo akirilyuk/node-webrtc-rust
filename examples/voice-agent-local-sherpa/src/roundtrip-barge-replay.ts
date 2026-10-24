@@ -36,6 +36,7 @@ import {
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
 import {
   agentSpeakingDurationMs,
+  DEFAULT_BARGE_TTS_PHRASE,
   evaluateBargeReplayDurations,
   formatRecordedSpeechEvent,
   phase2EventsComplete,
@@ -65,7 +66,7 @@ const FOUR_SENTENCES =
   'The third sentence mentions a small cafe near the station. ' +
   'The fourth sentence closes the reply politely.'
 
-const BARGE_PHRASE = 'stop now please'
+const BARGE_PHRASE = DEFAULT_BARGE_TTS_PHRASE
 const BARGE_DELAY_MS = 1500
 const MAX_PHASE_MS = 40_000
 const WARMUP_S = 0.6

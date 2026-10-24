@@ -36,7 +36,7 @@ import {
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { evaluateNormalUtteranceLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
-const DEFAULT_PHRASE_TWO = 'I am done speaking'
+export const DEFAULT_PHRASE_TWO = 'I am done speaking'
 /** Per-phrase STT wait — keep low; wall clock is the backstop. */
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MIN_NUMBER_WORDS = 8

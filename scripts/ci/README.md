@@ -22,11 +22,11 @@ Every PR/main/release workflow starts with **`validate-package-lock`** (no path 
 
 Reusable workflows (called via `workflow_call`, not triggered directly):
 
-| File                                                                           | Role                                                           |
-| ------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| [`reusable-build-linux.yml`](../../.github/workflows/reusable-build-linux.yml) | Linux release matrix (gnu, musl, arm64)                        |
-| [`reusable-build-host.yml`](../../.github/workflows/reusable-build-host.yml)   | macOS + Windows release matrix                                 |
-| [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)               | Download binding artifact → cache fallback → host Docker tests |
+| File                                                                           | Role                                                             |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| [`reusable-build-linux.yml`](../../.github/workflows/reusable-build-linux.yml) | Linux release matrix (gnu, musl, arm64)                          |
+| [`reusable-build-host.yml`](../../.github/workflows/reusable-build-host.yml)   | macOS + Windows release matrix                                   |
+| [`reusable-test.yml`](../../.github/workflows/reusable-test.yml)               | Integration tests as two parallel jobs: `rust` and `node-sherpa` |
 
 Composite actions live in [`.github/actions/`](../../.github/actions/).
 
@@ -135,9 +135,12 @@ Single CI build of publishable `dist/` for the Test job. Release-publish compile
 ### 6. Test
 
 - **Always runs** on every PR (for branch-protection required checks).
-- **Required check name:** a thin `Test` job in [`build.yml`](../../.github/workflows/build.yml) gates on the reusable workflow. `workflow_call` jobs alone report as `Integration tests / Test`, which does **not** satisfy the required `Test` context. The gate requires `Typecheck & lint` = success, `Build TypeScript` = success or skipped, and `Integration tests` = success.
+- **Required check name:** a thin `Test` job in [`build.yml`](../../.github/workflows/build.yml) gates on the reusable workflow. `workflow_call` jobs alone report as `Integration tests / Rust tests` and `Integration tests / Node + Sherpa tests`, which do **not** satisfy the required `Test` context. The gate requires `Typecheck & lint` = success, `Build TypeScript` = success or skipped, and `Integration tests` = success (the result of the reusable workflow covers both of its jobs).
 - **When:** tests are not skipped (`skip_test` false) — otherwise the integration job succeeds immediately (`skip: 'true'`), e.g. docs-only and version-only PRs.
-- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (called as **Integration tests**), runs on `nwr-large` in the `ci-test` container (`container:` job, no `docker` calls in steps)
+- **Workflow:** [`reusable-test.yml`](../../.github/workflows/reusable-test.yml) (called as **Integration tests**). It has two jobs that run in parallel, each on its own `nwr-large` pod in the `ci-test` container (`container:` job, no `docker` calls in steps):
+  - `rust` (**Rust tests**): the `rust` suite only. Needs neither the binding nor the TS `dist/`.
+  - `node-sherpa` (**Node + Sherpa tests**): the `node` and `sherpa` suites. It downloads and stages the binding artifact, restores the TS `dist/` cache and uploads the native trace on failure.
+  - Each job intersects `test_suites` (empty means all) with the suites it owns and passes the result as `CI_TEST_SUITES`. An empty intersection skips the job's work and the job still succeeds; it never passes an empty list, because empty means every suite to the script.
 - **Script:** [`run-pr-integration.sh`](run-pr-integration.sh)
 
 Inside the job:
@@ -155,7 +158,7 @@ Local contract checks: `bash scripts/ci/native-build-fingerprint.test.sh`, `bash
 
 ### Path-based test suites (PRs)
 
-The integration job runs three suites, each with its own cost: **rust** (Rust fmt + clippy and every `cargo test` step, including the vendored `dtls` and `webrtc-ice` crates and the bench check), **node** (`npm test`, the native exports check, helpers native integration; needs TURN) and **sherpa** ([`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh)). Node and sherpa need the debug `.node` and the TS `dist/`; rust needs neither.
+The integration jobs run three suites (`rust` in the `rust` job, `node` and `sherpa` in the `node-sherpa` job), each with its own cost: **rust** (Rust fmt + clippy and every `cargo test` step, including the vendored `dtls` and `webrtc-ice` crates and the bench check), **node** (`npm test`, the native exports check, helpers native integration; needs TURN) and **sherpa** ([`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh)). Node and sherpa need the debug `.node` and the TS `dist/`; rust needs neither.
 
 On PRs, [`compute-pr-job-gates.sh`](compute-pr-job-gates.sh) emits `test_suites` (a comma list in the order `rust,node,sherpa`, empty when no tests run). `build.yml` passes it to [`reusable-test.yml`](../../.github/workflows/reusable-test.yml), which exports it as `CI_TEST_SUITES` for [`run-pr-integration.sh`](run-pr-integration.sh).
 
@@ -170,7 +173,17 @@ After `cargo test`, `npm test`, and helpers `test:integration`, [`run-pr-integra
 1. Link the STT (`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`) and TTS (`vits-piper-en_US-amy-low`) models from the image into `examples/voice-agent-local-sherpa/.models/` (downloaded locally if missing)
 2. Set `SHERPA_STT_MODEL_PATH` / `SHERPA_TTS_MODEL_PATH`
 3. Run ignored Rust vendor tests that need those weights: `cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test tts_cancel_not_cached_test -- --ignored` (asserts a cancelled synthesis is not cached). Timeout **420s** (`CI_SHERPA_RUST_IGNORED_TIMEOUT_SEC`). Models-only path: `bash scripts/ci/run-sherpa-example-ci.sh rust`.
-4. Run each `start:roundtrip*` script in order (exit on first failure). Each step uses [`run-sherpa-roundtrip-e2e.sh`](run-sherpa-roundtrip-e2e.sh): streams **`[speech]` events** (browser parity) with **`[voice-debug]` / topology off**; **automatic re-run with `VOICE_DEBUG=1`** if that pass fails, for diagnostics only: the step fails either way (no retry to green). Wrapped in [`run-with-timeout.sh`](run-with-timeout.sh) (default **180s** per script; override `CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC`). Model downloads cap at **900s** (`CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC`). The re-run only gets the time left under the step cap (`SHERPA_ROUNDTRIP_STEP_TIMEOUT_SEC` -> `SHERPA_ROUNDTRIP_WALL_MAX_MS`) and is skipped when under 45s is left. A script's in-process wall-clock limit must fit in its step cap; `examples/voice-agent-local-sherpa/src/roundtrip-ci-step-budget.test.ts` (part of `run-sherpa-example-ci.sh vitest`) fails otherwise. `run-sherpa-example-ci.sh step-timeouts` prints every cap.
+4. Run the `start:roundtrip*` scripts in two groups (see below). Each step uses [`run-sherpa-roundtrip-e2e.sh`](run-sherpa-roundtrip-e2e.sh): streams **`[speech]` events** (browser parity) with **`[voice-debug]` / topology off**; **automatic re-run with `VOICE_DEBUG=1`** if that pass fails, for diagnostics only: the step fails either way (no retry to green). Wrapped in [`run-with-timeout.sh`](run-with-timeout.sh) (default **180s** per script; override `CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC`). Model downloads cap at **900s** (`CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC`). The re-run only gets the time left under the step cap (`SHERPA_ROUNDTRIP_STEP_TIMEOUT_SEC` -> `SHERPA_ROUNDTRIP_WALL_MAX_MS`) and is skipped when under 45s is left. A script's in-process wall-clock limit must fit in its step cap; `examples/voice-agent-local-sherpa/src/roundtrip-ci-step-budget.test.ts` (part of `run-sherpa-example-ci.sh vitest`) fails otherwise. `run-sherpa-example-ci.sh step-timeouts` prints every cap.
+
+#### Serial and parallel groups
+
+`run-sherpa-example-ci.sh` keeps the roundtrip list in two arrays. The parallel group runs first, then the serial group, so a timing-sensitive script never overlaps another roundtrip.
+
+- **`SHERPA_ROUNDTRIP_E2E_SERIAL`** (one at a time, in this order): `start:roundtrip-utterance-timing`, `start:roundtrip-c1-timeouts`, `start:roundtrip-slow-final`, `start:roundtrip-barge-in`, `start:roundtrip-barge-in-buffered`, `start:roundtrip-counting-barge-recovery`, `start:roundtrip-concurrent-multi-client`, `start:roundtrip-load-ci`, `start:roundtrip-barge-replay`, `start:roundtrip-counting-echo-lid-multi` (10 concurrent sessions, CPU-heavy).
+- **`SHERPA_ROUNDTRIP_E2E_PARALLEL`**: `start:roundtrip-counting`, `start:record`, `start:roundtrip-doubled-first-word`, `start:roundtrip-two-phrases`, `start:roundtrip-counting-echo`, `start:roundtrip-counting-echo-lid`, `start:roundtrip-language-id`, `start:roundtrip-tts-stream`, `start:roundtrip`.
+- **Width:** `SHERPA_E2E_PARALLEL` (default `2` when `CI=true`, else `1`; 3 starved the voice pipeline on the 4-CPU job pod and STT misheard, reproduced with burned cores). Width 1 runs the group serially with the plain step output. Above 1 the script keeps at most that many roundtrips running (bash 4.3+ `wait -n`), writes each one's output to `.test-logs/sherpa-e2e/<script>.log` and prints `==> [sherpa e2e parallel] <script> (exit N)` followed by the whole log when it finishes, so the CI output does not interleave. A failure does not stop the others; after the pool drains, the failing names are printed and the step exits non-zero. An EXIT trap kills any pool member still running. The serial group stops at the first failure.
+- **Per-run state:** the parallel roundtrips use an in-process loopback on port 0 and write only to paths no other roundtrip uses: `start:record` writes a timestamped file in `examples/voice-agent-local-sherpa/.recordings/` (or `NWR_RECORD_OUTPUT_PATH`), `start:roundtrip-doubled-first-word` owns `.test-logs/doubled-word/`, and (serial) `start:roundtrip-counting-echo-lid-multi` owns `.test-logs/multi-wav/<timestamp>/` (or `SHERPA_MULTI_WAV_DIR`). Model directories are read-only.
+- **Guard:** [`sherpa-e2e-groups.test.sh`](sherpa-e2e-groups.test.sh) checks that the two arrays cover exactly the `start:roundtrip*` and `start:record` scripts of the example (minus the load benchmarks that were never in CI), that the timing-sensitive scripts stay serial, and the pool behaviour (width, failure reporting, no leftover processes, order) through the hooks `SHERPA_E2E_DRY_COMMAND` and `SHERPA_E2E_ONLY`.
 
 | Quality job ([`run-pr-quality.sh`](run-pr-quality.sh))                              | Integration job ([`run-pr-integration.sh`](run-pr-integration.sh)) |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------ |

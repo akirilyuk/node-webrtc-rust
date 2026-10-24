@@ -157,7 +157,18 @@ struct Outcome {
 }
 
 async fn run_pattern(pattern: Pattern) -> Outcome {
+    run_pattern_with(pattern, None).await
+}
+
+/// `impairment`: seeded `NWR_TEST_RTP_IMPAIRMENT` value applied to the room's inbound track
+/// of the speaker. The env is read when the room creates that track, and every test holds
+/// `SERIAL` for its whole run, so setting and clearing it here cannot reach another test.
+async fn run_pattern_with(pattern: Pattern, impairment: Option<&str>) -> Outcome {
     let _serial = SERIAL.lock().await;
+    match impairment {
+        Some(v) => std::env::set_var("NWR_TEST_RTP_IMPAIRMENT", v),
+        None => std::env::remove_var("NWR_TEST_RTP_IMPAIRMENT"),
+    }
     // The loopback-candidate switch must be set before the room creates its first peer.
     let _ = peer_config();
 
@@ -247,6 +258,7 @@ async fn run_pattern(pattern: Pattern) -> Outcome {
     let _ = listener.close().await;
     let _ = room.lock().await.close().await;
     server.destroy_room("continuity").await.ok();
+    std::env::remove_var("NWR_TEST_RTP_IMPAIRMENT");
     sleep(Duration::from_millis(500)).await;
     Outcome { report, stats }
 }
@@ -282,6 +294,21 @@ async fn jittered_input_loses_no_frames_beyond_counted_compression() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sixty_ms_packets_reach_the_listener_without_loss() {
     assert_continuity(&run_pattern(Pattern::Packet60).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn impaired_input_stays_ordered_and_counted() {
+    let o = run_pattern_with(
+        Pattern::Paced,
+        Some("loss=0.05,burst=3,burst_rate=0.01,reorder=0.03,reorder_depth=2,dup=0.02,seed=7"),
+    )
+    .await;
+    let r = &o.report;
+    let s = o.stats.expect("source stats");
+    // Reordered and duplicated packets are fixed by the inbound stage before the mixer.
+    assert_eq!(r.reordered, 0, "{r:?} {s:?}");
+    assert_eq!(s.decode_errors, 0, "{s:?}");
+    assert_accounting(&o);
 }
 
 /// The queue's books balance: every pushed frame is played, absorbed by a counted

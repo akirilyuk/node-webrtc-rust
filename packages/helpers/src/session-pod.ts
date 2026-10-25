@@ -97,6 +97,8 @@ export interface SessionPodOptions {
   resolveVoiceAgentSessionContext?: VoiceAgentSessionHostOptions['resolveVoiceAgentSessionContext']
   /** Passed to each room's {@link VoiceAgentSessionHost}. */
   transportDisconnectGraceMs?: VoiceAgentSessionHostOptions['transportDisconnectGraceMs']
+  /** Passed to each room's {@link VoiceAgentSessionHost}: re-offer a replacement peer after transport loss. */
+  transportReofferAfterMs?: VoiceAgentSessionHostOptions['transportReofferAfterMs']
   /** Passed to each room's {@link VoiceAgentSessionHost}: ICE connected but no `connected` in time closes the peer. */
   connectStallTimeoutMs?: VoiceAgentSessionHostOptions['connectStallTimeoutMs']
   /** Passed to each room's {@link VoiceAgentSessionHost}; called when the connect-stall watchdog fires. */
@@ -369,6 +371,7 @@ export class SessionPod {
       wrapAudioTracks: this.options.wrapAudioTracks,
       resolveVoiceAgentSessionContext: this.options.resolveVoiceAgentSessionContext,
       transportDisconnectGraceMs: this.options.transportDisconnectGraceMs,
+      transportReofferAfterMs: this.options.transportReofferAfterMs,
       connectStallTimeoutMs: this.options.connectStallTimeoutMs,
       onConnectStall: this.options.onConnectStall,
       resolveParticipantId: (clientId) => this.resolveParticipantId(clientId),

@@ -285,6 +285,8 @@ async fn two_queued_replies_each_get_start_and_end() {
         let played = end.played_ms.expect("played_ms");
         assert!((160..=240).contains(&played), "played_ms={played}");
         assert_eq!(end.interrupted, Some(false));
+        assert_eq!(end.synthesis_complete, Some(true));
+        assert_eq!(end.synthesized_ms, Some(played));
     }
     for start in events
         .iter()
@@ -338,6 +340,12 @@ async fn barge_in_mid_reply_ends_current_and_queued_as_interrupted() {
     let played_a = end_a.played_ms.expect("played_ms a");
     assert!((150..=400).contains(&played_a), "played_ms a={played_a}");
     assert_eq!(end_a.interrupted, Some(true));
+    let synthesized_a = end_a.synthesized_ms.expect("synthesized_ms a");
+    assert!(
+        synthesized_a >= played_a,
+        "synthesized_ms a={synthesized_a} played_ms a={played_a}"
+    );
+    assert!(end_a.synthesis_complete.is_some());
     let end_b = &events[2];
     assert_eq!(end_b.played_ms, Some(0));
     assert_eq!(end_b.interrupted, Some(true));

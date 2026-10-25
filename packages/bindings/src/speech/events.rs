@@ -61,6 +61,8 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         chars: event.chars,
         reply_id: event.reply_id,
         played_ms: event.played_ms,
+        synthesized_ms: event.synthesized_ms,
+        synthesis_complete: event.synthesis_complete,
         interrupted: event.interrupted,
     }
 }
@@ -156,10 +158,12 @@ mod speech_event_to_js_tests {
         assert_eq!(js.reply_id.as_deref(), Some("r1"));
         assert_eq!(js.first_chunk_ms, Some(120));
 
-        let js = speech_event_to_js(SpeechEvent::agent_reply_end("r1", 900, true));
+        let js = speech_event_to_js(SpeechEvent::agent_reply_end("r1", 900, true, 1500, false));
         assert_eq!(js.event_type, JsSpeechEventType::AgentReplyEnd);
         assert_eq!(js.played_ms, Some(900));
         assert_eq!(js.interrupted, Some(true));
+        assert_eq!(js.synthesized_ms, Some(1500));
+        assert_eq!(js.synthesis_complete, Some(false));
 
         let js = speech_event_to_js(SpeechEvent::tts_phrase_cache_hit(3).with_reply_id(Some("r2")));
         assert_eq!(js.reply_id.as_deref(), Some("r2"));

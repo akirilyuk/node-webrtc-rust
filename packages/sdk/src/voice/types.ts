@@ -324,7 +324,7 @@ export type SpeechEventType =
   | 'agent_reply_start'
   /**
    * A reply sent with a `replyId` finished playing or was cut off (`replyId`, `playedMs`,
-   * `interrupted`). Emitted once per reply, also for a reply dropped from the queue (`playedMs: 0`).
+   * `interrupted`, `synthesizedMs`, `synthesisComplete`). Emitted once per reply, also for a reply dropped from the queue (`playedMs: 0`).
    */
   | 'agent_reply_end'
   /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
@@ -444,6 +444,10 @@ export interface SpeechEvent {
   replyId?: string
   /** `agent_reply_end`: ms of this reply's audio written to the outbound track. */
   playedMs?: number
+  /** `agent_reply_end`: ms of this reply's audio queued for synthesis so far. */
+  synthesizedMs?: number
+  /** `agent_reply_end`: true when no more audio would have been queued for the reply. */
+  synthesisComplete?: boolean
   /** `agent_reply_end`: true when the reply was cut off (barge-in, flush, stop) before its last frame. */
   interrupted?: boolean
 }

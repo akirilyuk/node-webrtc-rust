@@ -11,6 +11,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **speech / bindings / sdk:** `agent_reply_end` carries `synthesizedMs` and `synthesisComplete`.
+- **core:** the Opus SDP fmtp now also carries `sprop-stereo=1` (RFC 7587: the sender encodes stereo), next to `stereo=1` (the receive preference).
+- **sdk:** `opusStereoPreference(sdp)` returns whether an SDP asks for stereo Opus (`stereo=1`), `false` for a likely mono decoder, `null` when unknown.
+- **helpers:** a listener whose answer lacks `stereo=1` in a mix that can pan gets one `mix_listener_mono_decoder peerId=<id>` warning. New `getMonoDecoderListenerWarnings()` on `ClientAudioMixer`, `VoiceAgentSessionHost` and `SessionPod`, and `listenerReceivesStereo` in the client mix status. The mix itself is unchanged.
 
 ## [0.13.2] - 2026-10-25
 

@@ -18,6 +18,7 @@ export { LocalAudioTrack } from './LocalAudioTrack'
 export { RemoteAudioTrack } from './RemoteAudioTrack'
 export { debugEvent, debugFn, isDebugEnabled, setDebugEnabled } from './debug'
 export { assertSdpHasIceCredentials, describeSdpIce } from './sdp-ice-guard'
+export { opusStereoPreference } from './opus-fmtp'
 export type { SdpIceKind, SdpIceMeta } from './sdp-ice-guard'
 export {
   ensureLocalDescriptionHasIceCredentials,

@@ -63,6 +63,11 @@ export type ClientMixSnapshot = {
   /** Listener client ids that have muted this target. */
   mutedBy: string[]
   groupId: string | null
+  /**
+   * Whether this client's SDP answer asked for stereo Opus (`stereo=1`); `null` when unknown.
+   * `false` means its decoder may be mono, so server-side panning can collapse.
+   */
+  listenerReceivesStereo: boolean | null
 }
 
 export type ClientMixStatus = ClientMixSnapshot & {
@@ -135,6 +140,36 @@ function getGraphGroupState(graph: ClientMixGraph): GraphGroupState {
     graphGroupState.set(graph, state)
   }
   return state
+}
+
+/** Panning config shared by every mixer that wraps the same graph. */
+type GraphPanState = {
+  positionalEnabled: boolean
+  defaultPlacement: MixPlacement
+  ttsPlacement: MixPlacement
+  sourcePlacements: Map<string, MixPlacement>
+  mixers: Set<ClientAudioMixer>
+}
+
+const graphPanState = new WeakMap<ClientMixGraph, GraphPanState>()
+
+function getGraphPanState(graph: ClientMixGraph): GraphPanState {
+  let state = graphPanState.get(graph)
+  if (!state) {
+    state = {
+      positionalEnabled: false,
+      defaultPlacement: 'center',
+      ttsPlacement: 'center',
+      sourcePlacements: new Map(),
+      mixers: new Set(),
+    }
+    graphPanState.set(graph, state)
+  }
+  return state
+}
+
+function recheckAllMixers(graph: ClientMixGraph): void {
+  for (const mixer of getGraphPanState(graph).mixers) mixer.recheckMonoListeners()
 }
 
 /** @internal Shared group membership for hosts that inject the same graph. */
@@ -332,11 +367,16 @@ export class ClientAudioMixer {
   private readonly nativePumpEnabled: boolean
   /** Shared 1 Hz poll for native pump stats and queue pressure. */
   private nativeStatsTimer?: ReturnType<typeof setInterval>
+  /** Per listener: did its SDP answer ask for stereo Opus (`null` unknown). */
+  private readonly listenerStereo = new Map<string, boolean | null>()
+  private readonly monoWarned = new Set<string>()
+  private monoDecoderListenerWarnings = 0
 
   constructor(options?: ClientAudioMixerOptions) {
     this.graph = options?.graph ?? new AudioMixGraph()
     this.warn = options?.warn ?? ((message) => console.warn(message))
     this.nativePumpEnabled = options?.nativePump !== false
+    getGraphPanState(this.graph).mixers.add(this)
   }
 
   /** Per-source mix queue counters (`null` when the graph has no stats or the source is unknown). */
@@ -408,6 +448,9 @@ export class ClientAudioMixer {
     getGraphGroupState(this.graph).knownClientIds.delete(peerId)
     this.registered.delete(peerId)
     this.peers.delete(peerId)
+    this.listenerStereo.delete(peerId)
+    this.monoWarned.delete(peerId)
+    getGraphPanState(this.graph).sourcePlacements.delete(peerId)
   }
 
   setGroupMembers(groupId: string, clientIds: string[]): void {
@@ -571,6 +614,7 @@ export class ClientAudioMixer {
       ttsPose: ttsPose ?? null,
       mutedBy,
       groupId: state.memberGroups.get(clientId) ?? null,
+      listenerReceivesStereo: this.listenerStereo.get(clientId) ?? null,
     }
   }
 
@@ -585,22 +629,68 @@ export class ClientAudioMixer {
 
   setPositionalEnabled(enabled: boolean): void {
     this.graph.setPositionalEnabled(enabled)
+    getGraphPanState(this.graph).positionalEnabled = enabled
+    recheckAllMixers(this.graph)
   }
 
   setDefaultMixPlacement(placement: MixPlacement): void {
     this.graph.setDefaultMixPlacement(placement)
+    getGraphPanState(this.graph).defaultPlacement = placement
+    recheckAllMixers(this.graph)
   }
 
   setSourceMixPlacement(participantId: string, placement: MixPlacement): void {
     this.graph.setSourceMixPlacement?.(participantId, placement)
+    getGraphPanState(this.graph).sourcePlacements.set(participantId, placement)
+    recheckAllMixers(this.graph)
   }
 
   clearSourceMixPlacement(participantId: string): void {
     this.graph.clearSourceMixPlacement?.(participantId)
+    getGraphPanState(this.graph).sourcePlacements.delete(participantId)
   }
 
   setTtsMixPlacement(placement: MixPlacement): void {
     this.graph.setTtsMixPlacement(placement)
+    getGraphPanState(this.graph).ttsPlacement = placement
+    recheckAllMixers(this.graph)
+  }
+
+  /**
+   * Records whether a listener's SDP answer asked for stereo Opus (`null` unknown). A listener
+   * known to decode mono while the mix can pan gets one `mix_listener_mono_decoder` warning.
+   */
+  setListenerReceivesStereo(peerId: string, receivesStereo: boolean | null): void {
+    this.listenerStereo.set(peerId, receivesStereo)
+    this.checkMonoListener(peerId)
+  }
+
+  /** Number of `mix_listener_mono_decoder` warnings emitted by this mixer. */
+  getMonoDecoderListenerWarnings(): number {
+    return this.monoDecoderListenerWarnings
+  }
+
+  private mayPan(): boolean {
+    const pan = getGraphPanState(this.graph)
+    if (pan.positionalEnabled) return true
+    if (pan.defaultPlacement !== 'center' || pan.ttsPlacement !== 'center') return true
+    for (const placement of pan.sourcePlacements.values()) {
+      if (placement !== 'center') return true
+    }
+    return false
+  }
+
+  /** @internal Re-evaluates every known listener after a shared panning change. */
+  recheckMonoListeners(): void {
+    for (const peerId of this.listenerStereo.keys()) this.checkMonoListener(peerId)
+  }
+
+  private checkMonoListener(peerId: string): void {
+    if (this.listenerStereo.get(peerId) !== false) return
+    if (!this.mayPan() || this.monoWarned.has(peerId)) return
+    this.monoWarned.add(peerId)
+    this.monoDecoderListenerWarnings++
+    this.warn(`mix_listener_mono_decoder peerId=${peerId}`, { peerId })
   }
 
   /** Updates TTS pan pose on the mix graph; queued sidecar PCM is panned at mix time. */
@@ -684,6 +774,11 @@ export class ClientAudioMixer {
    * `sum(panTtsFrame(ttsOrSilence), renderOutput(listener))`.
    */
   startMixPump(peerId: string, pcOutbound: MixPumpOutboundTrack): void {
+    this.startMixPumpInner(peerId, pcOutbound)
+    this.checkMonoListener(peerId)
+  }
+
+  private startMixPumpInner(peerId: string, pcOutbound: MixPumpOutboundTrack): void {
     const state = this.peerState(peerId)
     if (state.pumpInterval || state.nativePump) return
 

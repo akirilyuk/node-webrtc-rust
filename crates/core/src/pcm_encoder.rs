@@ -84,9 +84,10 @@ fn parse_opus_application(raw: Option<&str>) -> Application {
     }
 }
 
-/// Opus SDP fmtp advertised on local PCM tracks (FEC + stereo; optional bitrate cap).
+/// Opus SDP fmtp advertised on local PCM tracks (FEC + stereo receive preference + stereo send;
+/// optional bitrate cap).
 pub fn opus_sdp_fmtp_line() -> String {
-    let mut line = "minptime=10;useinbandfec=1;stereo=1".to_string();
+    let mut line = "minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1".to_string();
     if let Some(bps) = opus_bitrate_bps_from_env() {
         line.push_str(&format!(";maxaveragebitrate={bps}"));
     }
@@ -421,7 +422,7 @@ mod tests {
             "WEBRTC_OPUS_BITRATE_BPS is set; OnceLock captures it for the process. Unset it, or run via scripts/ci/run-pr-integration.sh."
         );
         let line = opus_sdp_fmtp_line();
-        assert_eq!(line, "minptime=10;useinbandfec=1;stereo=1");
+        assert_eq!(line, "minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1");
         assert!(!line.contains("maxaveragebitrate"));
         assert!(line.contains("useinbandfec=1"));
         assert!(line.contains("stereo=1"));
@@ -442,6 +443,17 @@ a=rtpmap:9 G722/8000\r\n\
         assert!(!enriched.contains("maxaveragebitrate"));
         assert!(enriched.contains("stereo=1"));
         assert!(enriched.contains("a=rtpmap:9 G722/8000"));
+    }
+
+    #[test]
+    fn enrich_opus_sdp_fmtp_advertises_sprop_stereo_once() {
+        let sdp = "\
+a=rtpmap:111 opus/48000/2\r\n\
+a=fmtp:111 minptime=10;useinbandfec=1;sprop-stereo=1\r\n\
+";
+        let enriched = enrich_opus_sdp_fmtp(sdp);
+        assert_eq!(enriched.matches("sprop-stereo=1").count(), 1);
+        assert!(enriched.contains("stereo=1"));
     }
 
     #[test]

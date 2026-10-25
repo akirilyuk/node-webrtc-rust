@@ -665,6 +665,13 @@ export class SessionPod {
     })
   }
 
+  /** Sum of `mix_listener_mono_decoder` warnings; each host owns its own mixer, so nothing is counted twice. */
+  getMonoDecoderListenerWarnings(): number {
+    let total = 0
+    for (const slot of this.slots.values()) total += slot.host.getMonoDecoderListenerWarnings()
+    return total
+  }
+
   private findMixCapableHost(): VoiceAgentSessionHost | undefined {
     for (const slot of this.slots.values()) {
       if (this.options.sessionMode === 'voice+data') {

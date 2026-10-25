@@ -25,7 +25,7 @@ use tokio::time::{sleep_until, timeout, Instant};
 use crate::audio_tap::UtteranceTap;
 use crate::config::{SttConfig, VoiceSessionContext};
 use crate::error::{SpeechError, SpeechResult};
-use crate::otel;
+use crate::otel::{self, SttMetricAttrs};
 use crate::pipeline::{FinalizeMode, SttOutput, SttProvider, SttTranscript};
 use crate::registry::VendorRegistry;
 
@@ -182,8 +182,18 @@ impl SttActorHandle {
     }
 }
 
+/// Receives one STT latency sample (ms from finalize request to the first final) per utterance.
+pub type SttLatencySink = Arc<dyn Fn(f64, &SttMetricAttrs) + Send + Sync>;
+
+/// The production sink: records `voice_stt_latency_ms`.
+// The explicit call keeps the `record_*` call site visible to `otel_record_fns_have_callers_test`.
+#[allow(clippy::redundant_closure)]
+pub fn default_stt_latency_sink() -> SttLatencySink {
+    Arc::new(|ms, attrs| otel::record_stt_latency_ms(ms, attrs))
+}
+
 /// Options for [`spawn_stt_actor`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub struct SttActorOptions {
     /// `VadConfig::stt_open_wait_max_ms` (default 120_000).
     pub open_wait_max_ms: u64,
@@ -193,6 +203,23 @@ pub struct SttActorOptions {
     pub audio_tap_dir: Option<&'static Path>,
     /// Test-only: agent id used in the tap file names (see [`crate::audio_tap`]).
     pub audio_tap_agent_id: u64,
+    /// Initial vendor/model/language/project attributes of the latency samples.
+    pub metric_attrs: SttMetricAttrs,
+    /// Where latency samples go ([`default_stt_latency_sink`] in production).
+    pub stt_latency_sink: SttLatencySink,
+}
+
+impl std::fmt::Debug for SttActorOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SttActorOptions")
+            .field("open_wait_max_ms", &self.open_wait_max_ms)
+            .field("test_final_delay_ms", &self.test_final_delay_ms)
+            .field("audio_tap_dir", &self.audio_tap_dir)
+            .field("audio_tap_agent_id", &self.audio_tap_agent_id)
+            .field("metric_attrs", &self.metric_attrs)
+            .field("stt_latency_sink", &"<sink>")
+            .finish()
+    }
 }
 
 /// `SPEECH_STT_TEST_FINAL_DELAY_MS` (test-only), default 0. Read once.
@@ -253,10 +280,12 @@ pub fn spawn_stt_actor(
     let tap = options
         .audio_tap_dir
         .map(|d| UtteranceTap::new(d, options.audio_tap_agent_id, "stt-in", 16_000, 1));
+    let metric_attrs = options.metric_attrs.clone();
     let actor = Actor {
         provider,
         registry,
         options,
+        metric_attrs,
         tap,
         status: Arc::clone(&status),
         results: res_tx,
@@ -286,6 +315,10 @@ struct Outstanding {
     key: u64,
     gen: u64,
     requested_at: Instant,
+    /// When the finalize was requested; unlike `requested_at` it is never reset.
+    finalize_requested_at: Instant,
+    /// Set once the latency sample of this utterance has been sent.
+    latency_recorded: bool,
     deadline_base_ms: u64,
     timed_out: bool,
     timed_out_at: Option<Instant>,
@@ -295,6 +328,8 @@ struct Actor {
     provider: Option<Box<dyn SttProvider>>,
     registry: Arc<VendorRegistry>,
     options: SttActorOptions,
+    /// Attributes of the latency samples; follows `Start` (project) and applied swaps.
+    metric_attrs: SttMetricAttrs,
     /// Test-only copy of the audio pushed to the provider (see [`crate::audio_tap`]).
     tap: Option<UtteranceTap>,
     status: Arc<SttActorStatus>,
@@ -467,6 +502,18 @@ impl Actor {
 
     fn emit_transcript(&mut self, transcript: SttTranscript, fallback_key: Option<u64>) {
         let (key, gen) = self.front_key_gen();
+        if matches!(transcript, SttTranscript::Final(_)) {
+            let mut sample = None;
+            if let Some(front) = self.outstanding.front_mut() {
+                if !front.latency_recorded {
+                    front.latency_recorded = true;
+                    sample = Some(front.finalize_requested_at.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            if let Some(ms) = sample {
+                (self.options.stt_latency_sink)(ms, &self.metric_attrs);
+            }
+        }
         self.emit(SttResult::Transcript {
             key: key.or(fallback_key),
             gen,
@@ -652,6 +699,9 @@ impl Actor {
     async fn handle_command(&mut self, cmd: SttCommand) -> bool {
         match cmd {
             SttCommand::Start { ctx, done } => {
+                if let Some(id) = ctx.project_id.as_deref().filter(|id| !id.is_empty()) {
+                    self.metric_attrs.project_id = id.to_string();
+                }
                 let result = match self.provider.as_mut() {
                     Some(provider) => {
                         provider.bind_session_context(&ctx);
@@ -800,10 +850,13 @@ impl Actor {
             return;
         };
         let wait_ms = provider.finalize_wait_ms();
+        let now = Instant::now();
         let entry = Outstanding {
             key,
             gen,
-            requested_at: Instant::now(),
+            requested_at: now,
+            finalize_requested_at: now,
+            latency_recorded: false,
             deadline_base_ms: wait_ms,
             timed_out: false,
             timed_out_at: None,
@@ -914,6 +967,13 @@ impl Actor {
         self.status
             .emits_partials
             .store(new.emits_partials(), Ordering::SeqCst);
+        let project_id = ctx
+            .project_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&self.metric_attrs.project_id)
+            .to_string();
+        self.metric_attrs = SttMetricAttrs::from_stt_config(&config, &project_id);
         self.provider = Some(new);
         self.gen += 1;
         self.status.generation.store(self.gen, Ordering::SeqCst);

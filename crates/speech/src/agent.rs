@@ -23,7 +23,7 @@ use crate::config::{
 };
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
-use crate::otel;
+use crate::otel::{self, SttMetricAttrs};
 use crate::pcm::i16_samples_to_bytes;
 use crate::pipeline::{
     tts_stream_chunks_enabled, LanguageIdProvider, SttProvider, SttTranscript, TtsAudioChunk,
@@ -31,8 +31,8 @@ use crate::pipeline::{
 };
 use crate::registry::VendorRegistry;
 use crate::stt_actor::{
-    spawn_stt_actor, test_final_delay_ms_from_env, SttActorHandle, SttActorOptions, SttCommand,
-    SttResult, STT_ACTOR_START_MS, STT_ACTOR_STOP_MS,
+    default_stt_latency_sink, spawn_stt_actor, test_final_delay_ms_from_env, SttActorHandle,
+    SttActorOptions, SttCommand, SttResult, STT_ACTOR_START_MS, STT_ACTOR_STOP_MS,
 };
 use crate::stt_hold::{
     resolved_hold_max_buffer_ms, resolved_replay_max_age_ms, BeginSttHoldOptions,
@@ -1723,7 +1723,7 @@ impl VoiceAgent {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
-        let (provider, open_wait_max_ms, tap_dir, tap_agent_id) = {
+        let (provider, open_wait_max_ms, tap_dir, tap_agent_id, metric_attrs) = {
             let mut inner = self.inner.lock().await;
             let provider = match (held, inner.config.stt.as_ref()) {
                 (Some(provider), _) => Some(provider),
@@ -1744,8 +1744,15 @@ impl VoiceAgent {
                 inner.config.vad.stt_open_wait_max_ms as u64,
                 tap_dir,
                 inner.audio_tap_agent_id,
+                inner.config.stt.as_ref().map(|config| {
+                    SttMetricAttrs::from_stt_config(
+                        config,
+                        session_ctx.project_id.as_deref().unwrap_or(""),
+                    )
+                }),
             )
         };
+        let metric_attrs = metric_attrs.unwrap_or_default();
         let vendor = provider.as_ref().map(|p| p.vendor_name());
         let (handle, results) = spawn_stt_actor(
             provider,
@@ -1755,6 +1762,8 @@ impl VoiceAgent {
                 test_final_delay_ms: test_final_delay_ms_from_env(),
                 audio_tap_dir: tap_dir,
                 audio_tap_agent_id: tap_agent_id,
+                metric_attrs,
+                stt_latency_sink: default_stt_latency_sink(),
             },
         );
         let handle = Arc::new(handle);

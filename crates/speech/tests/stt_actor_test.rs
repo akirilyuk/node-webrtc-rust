@@ -9,12 +9,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, VoiceSessionContext};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
+use node_webrtc_rust_speech::otel::SttMetricAttrs;
 use node_webrtc_rust_speech::pipeline::{
     FinalizeMode, SttOutput, SttProvider, SttTranscript, TtsProvider, VendorFactory,
 };
 use node_webrtc_rust_speech::stt_actor::{
-    backlog_episode, spawn_stt_actor, SttActorHandle, SttActorOptions, SttCommand, SttResult,
-    STT_ACTOR_BUSY_WINDOW_MS, STT_ACTOR_STOP_MS,
+    backlog_episode, default_stt_latency_sink, spawn_stt_actor, SttActorHandle, SttActorOptions,
+    SttCommand, SttResult, STT_ACTOR_BUSY_WINDOW_MS, STT_ACTOR_STOP_MS,
 };
 use node_webrtc_rust_speech::VendorRegistry;
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -204,7 +205,40 @@ fn options() -> SttActorOptions {
         test_final_delay_ms: 0,
         audio_tap_dir: None,
         audio_tap_agent_id: 0,
+        metric_attrs: SttMetricAttrs::default(),
+        stt_latency_sink: default_stt_latency_sink(),
     }
+}
+
+type Samples = Arc<Mutex<Vec<(f64, SttMetricAttrs)>>>;
+
+/// Options whose latency samples land in the returned list.
+fn recording_options() -> (SttActorOptions, Samples) {
+    let samples: Samples = Arc::new(Mutex::new(Vec::new()));
+    let sink_samples = Arc::clone(&samples);
+    let mut o = options();
+    o.metric_attrs = SttMetricAttrs {
+        stt_vendor: "scripted".into(),
+        stt_model: "m1".into(),
+        stt_language: "en".into(),
+        project_id: String::new(),
+    };
+    o.stt_latency_sink = Arc::new(move |ms, attrs| {
+        sink_samples.lock().unwrap().push((ms, attrs.clone()));
+    });
+    (o, samples)
+}
+
+async fn start_with_project(handle: &SttActorHandle, project: &str) {
+    let (done_tx, done_rx) = oneshot::channel();
+    assert!(handle.send(SttCommand::Start {
+        ctx: VoiceSessionContext {
+            project_id: Some(project.into()),
+            ..Default::default()
+        },
+        done: done_tx,
+    }));
+    done_rx.await.unwrap().unwrap();
 }
 
 fn spawn(
@@ -348,9 +382,7 @@ async fn open_pending_extends_deadline_up_to_open_wait_max() {
         provider,
         SttActorOptions {
             open_wait_max_ms: 5_000,
-            test_final_delay_ms: 0,
-            audio_tap_dir: None,
-            audio_tap_agent_id: 0,
+            ..options()
         },
     );
     assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
@@ -610,10 +642,8 @@ async fn test_final_delay_holds_final_and_marker_but_keeps_accepting_audio() {
     let (handle, mut rx) = spawn(
         provider,
         SttActorOptions {
-            open_wait_max_ms: 120_000,
             test_final_delay_ms: 3_000,
-            audio_tap_dir: None,
-            audio_tap_agent_id: 0,
+            ..options()
         },
     );
     assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
@@ -786,4 +816,128 @@ async fn inline_agent_goes_idle_after_its_last_turn() {
     run_for(5_000).await;
     let tail = polls() - before_tail;
     assert_eq!(tail, 0, "idle polls in the last 5 s: {tail}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn stt_latency_recorded_once_per_utterance_from_finalize_request() {
+    let (provider, probe) = scripted(FinalizeMode::Deferred);
+    let (opts, samples) = recording_options();
+    let (handle, mut rx) = spawn(provider, opts);
+    start_with_project(&handle, "proj-1").await;
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    probe.finalize_requested.notified().await;
+    tokio::time::advance(Duration::from_millis(250)).await;
+    probe.out(final_out("a"));
+    probe.out(final_out("b"));
+    probe.out(SttOutput::FinalizeDone);
+
+    expect_transcript(
+        next_result(&mut rx, 1000).await,
+        Some(1),
+        0,
+        SttTranscript::Final("a".into()),
+    );
+    expect_transcript(
+        next_result(&mut rx, 1000).await,
+        Some(1),
+        0,
+        SttTranscript::Final("b".into()),
+    );
+    expect_done(next_result(&mut rx, 1000).await, 1, 0, false);
+
+    let got = samples.lock().unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    let (ms, attrs) = &got[0];
+    assert!(*ms >= 250.0 && *ms < 1000.0, "ms={ms}");
+    assert_eq!(attrs.stt_vendor, "scripted");
+    assert_eq!(attrs.stt_model, "m1");
+    assert_eq!(attrs.stt_language, "en");
+    assert_eq!(attrs.project_id, "proj-1");
+}
+
+#[tokio::test(start_paused = true)]
+async fn stt_latency_late_final_counts_from_its_own_request() {
+    let (provider, probe) = scripted(FinalizeMode::Deferred);
+    let (opts, samples) = recording_options();
+    let (handle, mut rx) = spawn(provider, opts);
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    probe.finalize_requested.notified().await;
+    tokio::time::advance(Duration::from_millis(100)).await;
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    assert!(handle.send(SttCommand::EndUtterance { key: 2 }));
+    probe.finalize_requested.notified().await;
+    tokio::time::advance(Duration::from_millis(500)).await;
+    // The final of utterance 1 arrives after utterance 2 was requested.
+    probe.out(final_out("one"));
+    expect_transcript(
+        next_result(&mut rx, 1000).await,
+        Some(1),
+        0,
+        SttTranscript::Final("one".into()),
+    );
+    let got = samples.lock().unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].0 >= 600.0 && got[0].0 < 1500.0, "ms={}", got[0].0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn stt_latency_not_recorded_without_final() {
+    let (mut provider, probe) = scripted(FinalizeMode::Deferred);
+    provider.wait_ms = 1_000;
+    let (opts, samples) = recording_options();
+    let (handle, mut rx) = spawn(provider, opts);
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    probe.finalize_requested.notified().await;
+    probe.out(SttOutput::FinalizeDone);
+    expect_done(next_result(&mut rx, 1000).await, 1, 0, false);
+
+    assert!(handle.send(SttCommand::EndUtterance { key: 2 }));
+    probe.finalize_requested.notified().await;
+    tokio::time::advance(Duration::from_millis(1_001)).await;
+    expect_done(next_result(&mut rx, 1000).await, 2, 0, true);
+    assert!(samples.lock().unwrap().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn stt_latency_attrs_follow_swap() {
+    let (old, _old_probe) = scripted(FinalizeMode::Deferred);
+    let (new, new_probe) = scripted(FinalizeMode::Inline);
+    new_probe
+        .state
+        .lock()
+        .unwrap()
+        .on_finalize
+        .push(SttTranscript::Final("hallo".into()));
+    let registry = swap_registry(Some(Box::new(new)));
+    let (opts, samples) = recording_options();
+    let (handle, mut rx) = spawn_stt_actor(Some(Box::new(old)), registry, opts);
+    start_with_project(&handle, "proj-1").await;
+
+    let mut config = stt_config();
+    config.language = Some("de".into());
+    let (done_tx, done_rx) = oneshot::channel();
+    assert!(handle.send(SttCommand::Swap {
+        config,
+        ctx: VoiceSessionContext::default(),
+        running: true,
+        done: done_tx,
+    }));
+    done_rx.await.unwrap().unwrap();
+    assert!(matches!(
+        next_result(&mut rx, 1000).await,
+        SttResult::SwapApplied { result: Ok(()), .. }
+    ));
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    assert!(handle.send(SttCommand::EndUtterance { key: 1 }));
+    expect_transcript(
+        next_result(&mut rx, 1000).await,
+        Some(1),
+        1,
+        SttTranscript::Final("hallo".into()),
+    );
+    let got = samples.lock().unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].1.stt_language, "de");
+    assert_eq!(got[0].1.stt_vendor, "mock");
+    assert_eq!(got[0].1.project_id, "proj-1");
 }

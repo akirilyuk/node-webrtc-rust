@@ -142,6 +142,36 @@ function getGraphGroupState(graph: ClientMixGraph): GraphGroupState {
   return state
 }
 
+/** Panning config shared by every mixer that wraps the same graph. */
+type GraphPanState = {
+  positionalEnabled: boolean
+  defaultPlacement: MixPlacement
+  ttsPlacement: MixPlacement
+  sourcePlacements: Map<string, MixPlacement>
+  mixers: Set<ClientAudioMixer>
+}
+
+const graphPanState = new WeakMap<ClientMixGraph, GraphPanState>()
+
+function getGraphPanState(graph: ClientMixGraph): GraphPanState {
+  let state = graphPanState.get(graph)
+  if (!state) {
+    state = {
+      positionalEnabled: false,
+      defaultPlacement: 'center',
+      ttsPlacement: 'center',
+      sourcePlacements: new Map(),
+      mixers: new Set(),
+    }
+    graphPanState.set(graph, state)
+  }
+  return state
+}
+
+function recheckAllMixers(graph: ClientMixGraph): void {
+  for (const mixer of getGraphPanState(graph).mixers) mixer.recheckMonoListeners()
+}
+
 /** @internal Shared group membership for hosts that inject the same graph. */
 export function getSharedMixGroupState(graph: ClientMixGraph): GraphGroupState {
   return getGraphGroupState(graph)
@@ -341,15 +371,12 @@ export class ClientAudioMixer {
   private readonly listenerStereo = new Map<string, boolean | null>()
   private readonly monoWarned = new Set<string>()
   private monoDecoderListenerWarnings = 0
-  private positionalEnabled = false
-  private defaultPlacement: MixPlacement = 'center'
-  private ttsPlacement: MixPlacement = 'center'
-  private readonly sourcePlacements = new Map<string, MixPlacement>()
 
   constructor(options?: ClientAudioMixerOptions) {
     this.graph = options?.graph ?? new AudioMixGraph()
     this.warn = options?.warn ?? ((message) => console.warn(message))
     this.nativePumpEnabled = options?.nativePump !== false
+    getGraphPanState(this.graph).mixers.add(this)
   }
 
   /** Per-source mix queue counters (`null` when the graph has no stats or the source is unknown). */
@@ -423,7 +450,7 @@ export class ClientAudioMixer {
     this.peers.delete(peerId)
     this.listenerStereo.delete(peerId)
     this.monoWarned.delete(peerId)
-    this.sourcePlacements.delete(peerId)
+    getGraphPanState(this.graph).sourcePlacements.delete(peerId)
   }
 
   setGroupMembers(groupId: string, clientIds: string[]): void {
@@ -602,31 +629,31 @@ export class ClientAudioMixer {
 
   setPositionalEnabled(enabled: boolean): void {
     this.graph.setPositionalEnabled(enabled)
-    this.positionalEnabled = enabled
-    this.checkAllMonoListeners()
+    getGraphPanState(this.graph).positionalEnabled = enabled
+    recheckAllMixers(this.graph)
   }
 
   setDefaultMixPlacement(placement: MixPlacement): void {
     this.graph.setDefaultMixPlacement(placement)
-    this.defaultPlacement = placement
-    this.checkAllMonoListeners()
+    getGraphPanState(this.graph).defaultPlacement = placement
+    recheckAllMixers(this.graph)
   }
 
   setSourceMixPlacement(participantId: string, placement: MixPlacement): void {
     this.graph.setSourceMixPlacement?.(participantId, placement)
-    this.sourcePlacements.set(participantId, placement)
-    this.checkAllMonoListeners()
+    getGraphPanState(this.graph).sourcePlacements.set(participantId, placement)
+    recheckAllMixers(this.graph)
   }
 
   clearSourceMixPlacement(participantId: string): void {
     this.graph.clearSourceMixPlacement?.(participantId)
-    this.sourcePlacements.delete(participantId)
+    getGraphPanState(this.graph).sourcePlacements.delete(participantId)
   }
 
   setTtsMixPlacement(placement: MixPlacement): void {
     this.graph.setTtsMixPlacement(placement)
-    this.ttsPlacement = placement
-    this.checkAllMonoListeners()
+    getGraphPanState(this.graph).ttsPlacement = placement
+    recheckAllMixers(this.graph)
   }
 
   /**
@@ -644,15 +671,17 @@ export class ClientAudioMixer {
   }
 
   private mayPan(): boolean {
-    if (this.positionalEnabled) return true
-    if (this.defaultPlacement !== 'center' || this.ttsPlacement !== 'center') return true
-    for (const placement of this.sourcePlacements.values()) {
+    const pan = getGraphPanState(this.graph)
+    if (pan.positionalEnabled) return true
+    if (pan.defaultPlacement !== 'center' || pan.ttsPlacement !== 'center') return true
+    for (const placement of pan.sourcePlacements.values()) {
       if (placement !== 'center') return true
     }
     return false
   }
 
-  private checkAllMonoListeners(): void {
+  /** @internal Re-evaluates every known listener after a shared panning change. */
+  recheckMonoListeners(): void {
     for (const peerId of this.listenerStereo.keys()) this.checkMonoListener(peerId)
   }
 

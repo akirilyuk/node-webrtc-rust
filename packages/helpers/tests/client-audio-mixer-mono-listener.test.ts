@@ -97,4 +97,27 @@ describe('ClientAudioMixer mono-decoder listener warning', () => {
     mixer.setListenerReceivesStereo('client-a', true)
     expect(mixer.listMixSnapshots()[0].listenerReceivesStereo).toBe(true)
   })
+
+  it('panning set through another mixer on the same graph warns the mono listener', () => {
+    const warn = vi.fn<ClientMixerWarn>()
+    const graph = createGraph()
+    const a = new ClientAudioMixer({ graph, nativePump: false })
+    const b = new ClientAudioMixer({ graph, warn, nativePump: false })
+    b.registerPeer('client-b')
+    b.setListenerReceivesStereo('client-b', false)
+    expect(b.getMonoDecoderListenerWarnings()).toBe(0)
+    a.setPositionalEnabled(true)
+    expect(b.getMonoDecoderListenerWarnings()).toBe(1)
+    expect(warn.mock.calls[0][0]).toBe('mix_listener_mono_decoder peerId=client-b')
+    expect(a.getMonoDecoderListenerWarnings()).toBe(0)
+  })
+
+  it('mixers on different graphs do not share panning', () => {
+    const a = new ClientAudioMixer({ graph: createGraph(), warn: vi.fn(), nativePump: false })
+    const b = new ClientAudioMixer({ graph: createGraph(), warn: vi.fn(), nativePump: false })
+    b.registerPeer('client-b')
+    b.setListenerReceivesStereo('client-b', false)
+    a.setPositionalEnabled(true)
+    expect(b.getMonoDecoderListenerWarnings()).toBe(0)
+  })
 })

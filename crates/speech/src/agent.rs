@@ -4190,6 +4190,19 @@ impl VoiceAgent {
     /// fed the audio; [`wait_stt_idle`](Self::wait_stt_idle) waits for them. No-op when
     /// [`stop`](Self::stop) has run. Set `VOICE_DEBUG=1` for per-frame diagnostics.
     pub async fn process_inbound_pcm(&self, pcm: Bytes, duration_ms: u32) -> SpeechResult<()> {
+        self.process_inbound_pcm_with_meta(pcm, duration_ms, false)
+            .await
+    }
+
+    /// Like [`process_inbound_pcm`](Self::process_inbound_pcm), with a `concealed` flag: true when
+    /// the frame was synthesized by loss concealment. Concealed frames do not consume the STT
+    /// pre-roll's received-audio budget.
+    pub async fn process_inbound_pcm_with_meta(
+        &self,
+        pcm: Bytes,
+        duration_ms: u32,
+        concealed: bool,
+    ) -> SpeechResult<()> {
         let _in_flight = InboundInFlight::enter(self);
         // One whole call at a time with pumped STT results, ticker checks and host APIs.
         let _step = self.utterance_step.lock().await;
@@ -4778,7 +4791,7 @@ impl VoiceAgent {
         } else if gate_stt && stt_active {
             let mut inner = self.inner.lock().await;
             if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
-                pre_roll.push(&mono_bytes);
+                pre_roll.push_frame(&mono_bytes, concealed);
             }
             inner.short_burst.on_frame(
                 &mono_bytes,

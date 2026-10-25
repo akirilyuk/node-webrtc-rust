@@ -237,6 +237,7 @@ impl JsVoiceAgent {
                         Ok(sample) => InboundRead::Pcm {
                             duration_ms: sample.duration.as_millis() as u32,
                             pcm: sample.pcm,
+                            concealed: sample.concealed,
                         },
                         Err(err) if is_stream_end(&err.to_string()) => InboundRead::StreamEnd,
                         Err(err) => InboundRead::Error(err.to_string()),
@@ -258,11 +259,11 @@ impl JsVoiceAgent {
                 }
                 crate::media::notify_write_tee_handle(&read_tee, pcm.as_ref(), dur);
             },
-            move |pcm, dur| {
+            move |pcm, dur, concealed| {
                 let agent = Arc::clone(&process_agent);
                 async move {
                     agent
-                        .process_inbound_pcm(pcm, dur)
+                        .process_inbound_pcm_with_meta(pcm, dur, concealed)
                         .await
                         .map_err(|e| e.to_string())
                 }

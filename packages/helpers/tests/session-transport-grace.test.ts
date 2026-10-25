@@ -30,6 +30,7 @@ type FakeSession = {
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
   transportDownSince?: number
   transportReofferTimer?: ReturnType<typeof setTimeout>
+  signalingLeft?: boolean
   clientHangup?: boolean
 }
 
@@ -440,7 +441,7 @@ describe('transport disconnect grace', () => {
       const connect = vi.spyOn(host, 'connectClientInner').mockResolvedValue(undefined)
       const close = vi.spyOn(host, 'closeClientInner')
       const session = createFakeSession()
-      session.peerSignalingJoined = false
+      session.signalingLeft = true
       host.sessions.set('client-1', session)
       host.scheduleTransportDisconnect('client-1', session)
 
@@ -467,8 +468,31 @@ describe('transport disconnect grace', () => {
       ;(handlers.get('peer-left') as (peerId: string) => void)('client-1')
 
       await vi.advanceTimersByTimeAsync(3_000)
-      expect(session.peerSignalingJoined).toBe(false)
+      expect(session.signalingLeft).toBe(true)
+      expect(session.peerSignalingJoined).toBe(true)
       expect(connect).not.toHaveBeenCalled()
+    })
+
+    it('peer-left on a pre-transport session still calls onPeerSignalingLost on close', async () => {
+      vi.useFakeTimers()
+      const handlers = new Map<string, (...args: never[]) => void>()
+      const onPeerSignalingLost = vi.fn()
+      const onPeerDisconnected = vi.fn()
+      const host = createHost({
+        handlers,
+        voiceHandler: { onPeerSignalingLost, onPeerDisconnected } as VoiceSessionHandler,
+      })
+      const session = createFakeSession('connecting')
+      session.peerTransportReadyNotified = false
+      host.sessions.set('client-1', session)
+      ;(handlers.get('peer-left') as (peerId: string) => void)('client-1')
+      expect(session.signalingLeft).toBe(true)
+
+      await host.disconnectPeer('client-1')
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(onPeerSignalingLost).toHaveBeenCalledTimes(1)
+      expect(onPeerDisconnected).not.toHaveBeenCalled()
     })
 
     it('no re-offer when the transport recovers within 3 s', async () => {

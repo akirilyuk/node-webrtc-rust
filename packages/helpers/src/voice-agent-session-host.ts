@@ -353,6 +353,8 @@ interface ClientSession {
   /** Cleared in {@link VoiceAgentSessionHost.closeClient}. */
   micTrackTimer?: ReturnType<typeof setTimeout>
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
+  /** Set on peer-left; the host does not re-offer to a client that left signaling. */
+  signalingLeft?: boolean
   /** Armed with the disconnect timer; see `transportReofferAfterMs`. */
   transportReofferTimer?: ReturnType<typeof setTimeout>
   /** Wall-clock ms when the transport last went down; cleared on restore or close. */
@@ -587,7 +589,7 @@ export class VoiceAgentSessionHost {
         )
       }
       const session = this.sessions.get(peerId)
-      if (session) session.peerSignalingJoined = false
+      if (session) session.signalingLeft = true
       if (session?.clientHangup) {
         closeNow()
         return
@@ -1689,7 +1691,7 @@ export class VoiceAgentSessionHost {
   private maybeReofferAfterTransportLoss(peerId: string, session: ClientSession): void {
     if (this.hostClosing || this.sessions.get(peerId) !== session || session.clientHangup) return
     const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
-    if (!session.peerSignalingJoined) {
+    if (session.signalingLeft) {
       this.log(`[${tag} ${peerId}] transport down — not re-offering (client left signaling)`)
       return
     }

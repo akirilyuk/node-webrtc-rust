@@ -5,17 +5,19 @@
 //! `RemoteAudioTrack.readSample()` in a loop after [`VoiceAgent::start`].
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::{broadcast, oneshot, Mutex, Notify};
 
+use crate::audio_tap::{audio_tap_dir_from_env, next_tap_agent_id, ContinuousTap};
 use crate::config::{
     effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
     language_id_early, language_id_enabled, resolved_language_id_min_speech_ms,
-    resolved_post_utterance_silence_ms, EventDeliveryMode, NoiseSuppressionProvider,
+    resolved_post_utterance_silence_ms, BargeInConfig, EventDeliveryMode, NoiseSuppressionProvider,
     SendTextToTtsOptions, SttConfig, TtsConfig, TtsVendor, UpdateTtsConfigOptions, VadConfig,
     VoiceAgentConfig, VoiceSessionContext,
 };
@@ -42,7 +44,7 @@ use crate::tts_cache::{normalize_phrase_text, wrap_tts_for_agent};
 use crate::tts_text::prepare_engine_text;
 use crate::turn_latency::TurnLatencyTracker;
 use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
-use crate::vad::{handle_barge_in, VadEngine, VadTransition};
+use crate::vad::{VadEngine, VadTransition};
 use node_webrtc_rust_denoise::Stereo48kRnnoise;
 
 /// Callback invoked when PCM should be written to the outbound track.
@@ -407,6 +409,12 @@ struct AgentInner {
     /// Utterance key for which the old-model-result-ignored line was already logged during the
     /// current hold (one line per utterance).
     held_ignore_logged_key: Option<u64>,
+    /// Test-only: audio tap directory set by `set_audio_tap_dir_for_test` (wins over the env).
+    audio_tap_dir_override: Option<&'static Path>,
+    /// Test-only: agent id in tap file names; 0 while the tap is off.
+    audio_tap_agent_id: u64,
+    /// Test-only: the listener's inbound mono 16 kHz PCM (see [`crate::audio_tap`]).
+    inbound_tap: Option<ContinuousTap>,
 }
 
 impl AgentInner {
@@ -554,6 +562,8 @@ pub struct VoiceAgent {
     /// Host/test override (ms) for the STT readiness wait before a replay; 0 = use
     /// `SPEECH_STT_READY_WAIT_MS` (default 15000).
     stt_ready_wait_override_ms: AtomicU64,
+    /// Test-only delay (ms, 0 = none) between the barge-in TTS flush and the `barge_in` event.
+    barge_in_flush_delay_ms: AtomicU64,
     language_id: Mutex<Option<Arc<dyn LanguageIdProvider>>>,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
@@ -705,12 +715,16 @@ impl VoiceAgent {
                 closing: VecDeque::new(),
                 lid_retained: VecDeque::new(),
                 held_ignore_logged_key: None,
+                audio_tap_dir_override: None,
+                audio_tap_agent_id: 0,
+                inbound_tap: None,
             })),
             stt_provider: std::sync::Mutex::new(stt),
             stt_actor: std::sync::Mutex::new(None),
             stt_pump: std::sync::Mutex::new(None),
             utterance_step: Mutex::new(()),
             stt_ready_wait_override_ms: AtomicU64::new(0),
+            barge_in_flush_delay_ms: AtomicU64::new(0),
             language_id: Mutex::new(language_id),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
@@ -834,6 +848,21 @@ impl VoiceAgent {
     /// `SPEECH_STT_READY_WAIT_MS`, else 15 s). `0` restores the default.
     pub fn set_stt_ready_wait_ms(&self, ms: u64) {
         self.stt_ready_wait_override_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// Test-only: sleep this long between the barge-in TTS flush and the `barge_in` event, so a
+    /// test can make the TTS drain observe the flush first. `None` (default) disables the delay.
+    #[doc(hidden)]
+    pub fn set_barge_in_flush_delay_for_test(&self, delay: Option<Duration>) {
+        let ms = delay.map_or(0, |d| d.as_millis() as u64);
+        self.barge_in_flush_delay_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// Test-only: write the listener's inbound audio and the STT input as WAV files into `dir`
+    /// (see [`crate::audio_tap`]). Must be called before [`start`](Self::start).
+    #[doc(hidden)]
+    pub async fn set_audio_tap_dir_for_test(&self, dir: &'static Path) {
+        self.inner.lock().await.audio_tap_dir_override = Some(dir);
     }
 
     fn stt_ready_wait_ms(&self) -> u64 {
@@ -1694,15 +1723,28 @@ impl VoiceAgent {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
-        let (provider, open_wait_max_ms) = {
-            let inner = self.inner.lock().await;
+        let (provider, open_wait_max_ms, tap_dir, tap_agent_id) = {
+            let mut inner = self.inner.lock().await;
             let provider = match (held, inner.config.stt.as_ref()) {
                 (Some(provider), _) => Some(provider),
                 // Started again after `stop`: the actor took the previous provider with it.
                 (None, Some(config)) => Some(self.registry.create_stt(config)?),
                 (None, None) => None,
             };
-            (provider, inner.config.vad.stt_open_wait_max_ms as u64)
+            // Test-only audio tap: off unless a test or `SPEECH_TEST_AUDIO_TAP_DIR` turns it on.
+            let tap_dir = inner.audio_tap_dir_override.or_else(audio_tap_dir_from_env);
+            if let Some(dir) = tap_dir {
+                let id = next_tap_agent_id();
+                inner.audio_tap_agent_id = id;
+                inner.inbound_tap = Some(ContinuousTap::new(dir, id));
+                eprintln!("[speech] audio tap on: agent a{id} -> {}", dir.display());
+            }
+            (
+                provider,
+                inner.config.vad.stt_open_wait_max_ms as u64,
+                tap_dir,
+                inner.audio_tap_agent_id,
+            )
         };
         let vendor = provider.as_ref().map(|p| p.vendor_name());
         let (handle, results) = spawn_stt_actor(
@@ -1711,6 +1753,8 @@ impl VoiceAgent {
             SttActorOptions {
                 open_wait_max_ms,
                 test_final_delay_ms: test_final_delay_ms_from_env(),
+                audio_tap_dir: tap_dir,
+                audio_tap_agent_id: tap_agent_id,
             },
         );
         let handle = Arc::new(handle);
@@ -1859,6 +1903,10 @@ impl VoiceAgent {
             inner.running = false;
             self.running_flag.store(false, Ordering::Release);
             inner.stt_hold = None;
+            if let Some(tap) = inner.inbound_tap.as_mut() {
+                tap.flush_segment();
+            }
+            inner.inbound_tap = None;
             otel::end_session(&mut inner.otel);
             true
         };
@@ -2876,16 +2924,17 @@ impl VoiceAgent {
             inner.config.vad.barge_in.clone()
         };
         if barge_in.enabled && !barge_in.use_vad {
-            handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
-            self.end_agent_speaking(false).await;
+            self.barge_in_with_speaking_end(&barge_in).await;
             voice_debug("agent_speaking=false (manual barge-in flush)");
         } else {
             self.tts_buffer
                 .flush_with_reply_events(|event| self.emit(event))
                 .await;
-            self.end_agent_speaking(true).await;
+            let was_speaking = self.end_agent_speaking(true).await;
             voice_debug("agent_speaking=false (flush_tts)");
-            self.emit(SpeechEvent::agent_speaking_end());
+            if was_speaking {
+                self.emit(SpeechEvent::agent_speaking_end());
+            }
         }
         self.emit_dropped_reply_ends(dropped);
         Ok(())
@@ -2897,8 +2946,38 @@ impl VoiceAgent {
     }
 
     /// Clears TTS playback state; optionally arms STT hold when playback ends and VAD is idle.
-    async fn end_agent_speaking(&self, arm_stt_hold_after_playback: bool) {
-        Self::end_agent_speaking_inner(&self.inner, arm_stt_hold_after_playback).await;
+    /// Returns whether `agent_speaking` was true (read and cleared under one lock).
+    async fn end_agent_speaking(&self, arm_stt_hold_after_playback: bool) -> bool {
+        Self::end_agent_speaking_inner(&self.inner, arm_stt_hold_after_playback).await
+    }
+
+    /// Barge-in with a single owner for `agent_speaking_end`: end speaking BEFORE the flush, so the
+    /// TTS drain (which observes the flush) finds `agent_speaking == false` and does not emit; then
+    /// flush + `agent_reply_end{interrupted}` + `barge_in`; then `agent_speaking_end` if this call
+    /// ended speaking. Order is always reply_end(s) -> barge_in -> agent_speaking_end.
+    async fn barge_in_with_speaking_end(&self, barge_in: &BargeInConfig) {
+        if !barge_in.enabled {
+            return;
+        }
+        let ended = if barge_in.flush_tts {
+            self.end_agent_speaking(false).await
+        } else {
+            false
+        };
+        if barge_in.flush_tts {
+            self.tts_buffer
+                .flush_with_reply_events(|event| self.emit(event))
+                .await;
+        }
+        let delay_ms = self.barge_in_flush_delay_ms.load(Ordering::Relaxed);
+        if delay_ms > 0 {
+            // Test-only hook (`set_barge_in_flush_delay_for_test`).
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        self.emit(SpeechEvent::barge_in());
+        if ended {
+            self.emit(SpeechEvent::agent_speaking_end());
+        }
     }
 
     fn agent_playback_guard_active(inner: &AgentInner) -> bool {
@@ -2976,18 +3055,8 @@ impl VoiceAgent {
                 otel::record_voice_turn_response_abandoned(Self::project_id_label(&guard));
             }
         }
-        handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+        self.barge_in_with_speaking_end(&barge_in).await;
         self.cancel_pending_tts_synthesis().await;
-        if barge_in.flush_tts {
-            let was_agent_speaking = {
-                let inner = self.inner.lock().await;
-                inner.agent_speaking
-            };
-            if was_agent_speaking {
-                self.end_agent_speaking(false).await;
-                self.emit(SpeechEvent::agent_speaking_end());
-            }
-        }
         Ok(())
     }
 
@@ -3091,18 +3160,8 @@ impl VoiceAgent {
                 voice_debug(format!(
                     "immediate barge-in on VAD SpeechStart (require_stt_partial={require_stt_partial}, emits_partials={emits_partials})"
                 ));
-                handle_barge_in(&barge_in, &self.tts_buffer, |event| self.emit(event)).await;
+                self.barge_in_with_speaking_end(&barge_in).await;
                 self.cancel_pending_tts_synthesis().await;
-                if barge_in.flush_tts {
-                    let was_agent_speaking = {
-                        let inner = self.inner.lock().await;
-                        inner.agent_speaking
-                    };
-                    self.end_agent_speaking(false).await;
-                    if was_agent_speaking {
-                        self.emit(SpeechEvent::agent_speaking_end());
-                    }
-                }
             }
         }
         Ok(())
@@ -4198,12 +4257,20 @@ impl VoiceAgent {
         ) = {
             let mut inner = self.inner.lock().await;
             let gate_stt = inner.config.vad.gate_stt;
+            if let Some(tap) = inner.inbound_tap.as_mut() {
+                tap.push(&mono_bytes);
+            }
 
             let (transitions, frame_active) = match inner.vad.as_mut() {
                 Some(vad) => vad.process_webrtc_pcm(pcm.as_ref(), duration_ms)?,
                 // No VAD: every frame counts as voiced (LID `minSpeechMs` keeps buffer-length behaviour).
                 None => (Vec::new(), true),
             };
+            if transitions.contains(&VadTransition::SpeechEnd) {
+                if let Some(tap) = inner.inbound_tap.as_mut() {
+                    tap.flush_segment();
+                }
+            }
 
             let vad_pending = inner
                 .vad
@@ -5203,9 +5270,13 @@ impl VoiceAgent {
         }
 
         if played_any && agent_start_emitted && !tts_buffer.is_producing().await {
-            Self::end_agent_speaking_inner(inner, true).await;
-            voice_debug("agent_speaking=false (TTS drained)");
-            event_bus.emit(SpeechEvent::agent_speaking_end());
+            if Self::end_agent_speaking_inner(inner, true).await {
+                voice_debug("agent_speaking=false (TTS drained)");
+                event_bus.emit(SpeechEvent::agent_speaking_end());
+            } else {
+                // A barge-in/flush path already ended speaking and owns the `agent_speaking_end`.
+                voice_debug("TTS drained after speaking already ended (barge-in)");
+            }
             Self::maybe_spawn_deferred_lid_after_tts(weak_self, tts_synthesis_queue, inner).await;
 
             let silence_ms = {
@@ -5307,12 +5378,7 @@ impl VoiceAgent {
 
             if tts_buffer.current_generation().await != drain_generation {
                 voice_debug("TTS drain stopped (barge-in flush)");
-                let still_speaking = {
-                    let guard = inner.lock().await;
-                    guard.agent_speaking
-                };
-                if still_speaking {
-                    Self::end_agent_speaking_inner(inner, false).await;
+                if Self::end_agent_speaking_inner(inner, false).await {
                     event_bus.emit(SpeechEvent::agent_speaking_end());
                 }
                 return Ok(TtsDrainWrite::Stopped);
@@ -5341,12 +5407,7 @@ impl VoiceAgent {
                     return Ok(TtsDrainWrite::Stopped);
                 }
                 voice_debug("TTS drain stopped during frame pacing (barge-in flush / stop)");
-                let still_speaking = {
-                    let guard = inner.lock().await;
-                    guard.agent_speaking
-                };
-                if still_speaking {
-                    Self::end_agent_speaking_inner(inner, false).await;
+                if Self::end_agent_speaking_inner(inner, false).await {
                     event_bus.emit(SpeechEvent::agent_speaking_end());
                 }
                 return Ok(TtsDrainWrite::Stopped);
@@ -5403,8 +5464,9 @@ impl VoiceAgent {
     async fn end_agent_speaking_inner(
         inner: &Arc<Mutex<AgentInner>>,
         arm_stt_hold_after_playback: bool,
-    ) {
+    ) -> bool {
         let mut guard = inner.lock().await;
+        let was_speaking = guard.agent_speaking;
         Self::clear_pending_first_audio(&mut guard);
         guard.agent_speaking = false;
         guard.agent_speaking_since = None;
@@ -5413,6 +5475,7 @@ impl VoiceAgent {
         if arm_stt_hold_after_playback {
             Self::arm_stt_hold_if_idle(&mut guard);
         }
+        was_speaking
     }
 
     /// Real-time pacing between PCM frames; returns false when flushed (barge-in) or stopped.

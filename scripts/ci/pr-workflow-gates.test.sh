@@ -15,6 +15,10 @@
 #      NWR_RUNNER_* defaults run: steps to bash and sets the wildcard safe.directory through
 #      GIT_CONFIG_* env. Nothing under .github mentions CARGO_VIA_CI_IMAGE. Every runs-on in build.yml
 #      and reusable-test.yml uses the NWR_RUNNER_* variables.
+#   6. reusable-test.yml has exactly two parallel jobs, `rust` and `node-sherpa`. Every guard of the
+#      single integration job (container image, NWR runner expression, TURN_AVAILABLE, safe.directory)
+#      applies to both; each computes the suites it owns (an empty intersection skips, never "all");
+#      only node-sherpa stages the binding, restores the TS dist cache and uploads the native trace.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -72,16 +76,109 @@ if grep -q 'pull_request.number' "$build"; then
   exit 1
 fi
 
-# Integration job: ci-test container + in-process coturn.
+# Integration jobs: ci-test container + in-process coturn. reusable-test.yml has exactly two jobs
+# that run in parallel, and every guard below applies to each of them.
 reusable=".github/workflows/reusable-test.yml"
-if ! grep -Fq 'image: ghcr.io/${{ github.repository }}/ci-build:test' "$reusable"; then
-  echo "$reusable: the test job must run in container image ghcr.io/\${{ github.repository }}/ci-build:test (Dockerfile.test)" >&2
+
+# Names of the top-level jobs of a workflow file, one per line.
+job_names() {
+  awk '
+    /^jobs:/ { in_jobs = 1; next }
+    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { n = $1; sub(/:$/, "", n); print n }
+  ' "$1"
+}
+# The text of one job (from its `  name:` line up to the next job). Check it with
+# `grep -q PATTERN <<<"$(job_block …)"`, never `job_block … | grep -q`: grep -q exits at the first
+# match, the still-writing awk gets SIGPIPE, and under pipefail that reads as "no match".
+job_block() {
+  awk -v want="$2" '
+    /^jobs:/ { in_jobs = 1; next }
+    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { cur = $1; sub(/:$/, "", cur) }
+    in_jobs && cur == want { print }
+  ' "$1"
+}
+
+tmp_two="$(mktemp)"
+trap 'rm -f "$tmp" "${tmp_jobs:-}" "$tmp_two"' EXIT
+cat >"$tmp_two" <<'YAML'
+jobs:
+  # comment
+  first:
+    name: First
+    steps:
+      - run: echo one
+  second:
+    name: Second
+    steps:
+      - run: echo two
+YAML
+if [ "$(job_names "$tmp_two" | tr '\n' ' ')" != "first second " ] || ! grep -q 'echo two' <<<"$(job_block "$tmp_two" second)" || grep -q 'echo one' <<<"$(job_block "$tmp_two" second)"; then
+  echo "self-test failed: job_names/job_block did not split the jobs" >&2
   exit 1
 fi
-if ! grep -Eq "^[[:space:]]*TURN_AVAILABLE:[[:space:]]*'1'" "$reusable"; then
-  echo "$reusable: must set TURN_AVAILABLE: '1' (packages/sdk/tests/turn.test.ts skips silently without it)" >&2
+
+if [ "$(job_names "$reusable" | sort | tr '\n' ' ')" != "node-sherpa rust " ]; then
+  echo "$reusable: must have exactly the two jobs 'rust' and 'node-sherpa' (found: $(job_names "$reusable" | tr '\n' ' '))" >&2
   exit 1
 fi
+for job in rust node-sherpa; do
+  block="$(job_block "$reusable" "$job")"
+  if ! grep -Fq 'image: ghcr.io/${{ github.repository }}/ci-build:test' <<<"$block"; then
+    echo "$reusable: job $job must run in container image ghcr.io/\${{ github.repository }}/ci-build:test (Dockerfile.test)" >&2
+    exit 1
+  fi
+  if ! grep -Eq '^    container:' <<<"$block"; then
+    echo "$reusable: job $job must have a container: block" >&2
+    exit 1
+  fi
+  if ! grep -Fq "runs-on: \${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}" <<<"$block"; then
+    echo "$reusable: job $job must use runs-on: \${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}" >&2
+    exit 1
+  fi
+  if ! grep -Eq "^[[:space:]]*TURN_AVAILABLE:[[:space:]]*'1'" <<<"$block"; then
+    echo "$reusable: job $job must set TURN_AVAILABLE: '1' (packages/sdk/tests/turn.test.ts skips silently without it)" >&2
+    exit 1
+  fi
+  if ! grep -Eq '^[[:space:]]*GIT_CONFIG_KEY_0:[[:space:]]*safe\.directory[[:space:]]*$' <<<"$block"; then
+    echo "$reusable: job $job must set GIT_CONFIG_KEY_0: safe.directory" >&2
+    exit 1
+  fi
+  # Suite selection: the job reads inputs.test_suites, keeps only the suites it owns, skips on an
+  # empty intersection and hands the (never empty) list to the script.
+  if ! grep -Fq 'SUITES: ${{ inputs.test_suites }}' <<<"$block"; then
+    echo "$reusable: job $job must read the suite list from inputs.test_suites" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'CI_TEST_SUITES: ${{ steps.gate.outputs.suites }}' <<<"$block"; then
+    echo "$reusable: job $job must pass CI_TEST_SUITES: \${{ steps.gate.outputs.suites }} to the test script" >&2
+    exit 1
+  fi
+  if ! grep -Fq '[[ -z "$selected" ]]' <<<"$block" || ! grep -Fq 'skip=true' <<<"$block"; then
+    echo "$reusable: job $job must skip (not run everything) when none of its suites is selected" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'OWNED="rust"' <<<"$(job_block "$reusable" rust)"; then
+  echo "$reusable: job rust must own exactly the rust suite (OWNED=\"rust\")" >&2
+  exit 1
+fi
+if ! grep -Fq 'OWNED="node,sherpa"' <<<"$(job_block "$reusable" node-sherpa)"; then
+  echo "$reusable: job node-sherpa must own the node and sherpa suites (OWNED=\"node,sherpa\")" >&2
+  exit 1
+fi
+# Only node-sherpa needs the native binding, the TS dist and the helpers native trace.
+if grep -Eq 'download-artifact|ci-cache-ts-dist|upload-artifact' <<<"$(job_block "$reusable" rust)"; then
+  echo "$reusable: job rust must not download the binding, restore the TS cache or upload the native trace" >&2
+  exit 1
+fi
+for needle in 'actions/download-artifact' './.github/actions/ci-cache-ts-dist' 'actions/upload-artifact'; do
+  if ! grep -Fq "$needle" <<<"$(job_block "$reusable" node-sherpa)"; then
+    echo "$reusable: job node-sherpa must use $needle" >&2
+    exit 1
+  fi
+done
 if grep -Eq '^[^#]*docker run' "$reusable"; then
   echo "$reusable: must not call 'docker run' (Kubernetes runners have no Docker daemon)" >&2
   exit 1
@@ -203,7 +300,7 @@ fi
 
 # Self-tests: each guard must bite on a minimal YAML and accept its good counterpart.
 tmp_jobs="$(mktemp)"
-trap 'rm -f "$tmp" "$tmp_jobs"' EXIT
+trap 'rm -f "$tmp" "$tmp_jobs" "$tmp_two"' EXIT
 cat >"$tmp_jobs" <<'YAML'
 jobs:
   with-container:
@@ -299,10 +396,6 @@ fi
 # computed list through the reusable workflow's test_suites input (default '' = all).
 if ! grep -Eq '^suite_enabled\(\)' "$integration" || ! grep -Fq -- '-z "$CI_TEST_SUITES"' "$integration"; then
   echo "$integration: must define suite_enabled() with the empty-means-all rule (-z \"\$CI_TEST_SUITES\")" >&2
-  exit 1
-fi
-if ! grep -Fq 'CI_TEST_SUITES: ${{ inputs.test_suites }}' "$reusable"; then
-  echo "$reusable: must pass CI_TEST_SUITES: \${{ inputs.test_suites }} to the test script" >&2
   exit 1
 fi
 if ! awk '

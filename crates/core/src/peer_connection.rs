@@ -290,20 +290,56 @@ fn apply_nat_1to1_from_env(settings: &mut SettingEngine) {
     settings.set_nat_1to1_ips(ips, RTCIceCandidateType::Host);
 }
 
+/// Which host candidates the ICE agent gathers, from the loopback env flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopbackMode {
+    /// webrtc-rs default: real interfaces only.
+    Default,
+    /// `WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1`: real interfaces plus loopback.
+    Include,
+    /// `WEBRTC_LOOPBACK_ONLY_CANDIDATES=1`: loopback only. Wins over `Include`.
+    Only,
+}
+
 /// `WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1` also gathers 127.0.0.1 host candidates. Off by default
 /// (webrtc-rs default). Loopback-only tests use it: on macOS with the application firewall on,
 /// inbound UDP on en0 to an unsigned test binary is dropped, while lo0 is exempt.
+///
+/// `WEBRTC_LOOPBACK_ONLY_CANDIDATES=1` gathers loopback candidates only, so ICE can never nominate
+/// a pair on a real interface (the include flag only adds loopback, and ICE may still pick an en0
+/// pair that the firewall then drops). For local test gates only (macOS application firewall):
+/// never set it in production. CI leaves it unset.
 fn apply_loopback_candidates_from_env(settings: &mut SettingEngine) {
-    if include_loopback_candidates(
-        std::env::var("WEBRTC_INCLUDE_LOOPBACK_CANDIDATES")
-            .ok()
-            .as_deref(),
-    ) {
-        settings.set_include_loopback_candidate(true);
+    let include = std::env::var("WEBRTC_INCLUDE_LOOPBACK_CANDIDATES").ok();
+    let only = std::env::var("WEBRTC_LOOPBACK_ONLY_CANDIDATES").ok();
+    apply_loopback_mode(
+        settings,
+        loopback_settings(include.as_deref(), only.as_deref()),
+    );
+}
+
+fn apply_loopback_mode(settings: &mut SettingEngine, mode: LoopbackMode) {
+    match mode {
+        LoopbackMode::Default => {}
+        LoopbackMode::Include => settings.set_include_loopback_candidate(true),
+        LoopbackMode::Only => {
+            settings.set_include_loopback_candidate(true);
+            settings.set_ip_filter(Box::new(|ip: std::net::IpAddr| ip.is_loopback()));
+        }
     }
 }
 
-fn include_loopback_candidates(raw: Option<&str>) -> bool {
+fn loopback_settings(include_raw: Option<&str>, only_raw: Option<&str>) -> LoopbackMode {
+    if flag_on(only_raw) {
+        LoopbackMode::Only
+    } else if flag_on(include_raw) {
+        LoopbackMode::Include
+    } else {
+        LoopbackMode::Default
+    }
+}
+
+fn flag_on(raw: Option<&str>) -> bool {
     matches!(raw.map(str::trim), Some("1") | Some("true"))
 }
 
@@ -872,14 +908,24 @@ impl PeerConnection {
 
 #[cfg(test)]
 mod loopback_env_tests {
-    use super::include_loopback_candidates;
+    use super::{loopback_settings, LoopbackMode};
 
     #[test]
-    fn include_loopback_candidates_parses_flag() {
-        assert!(!include_loopback_candidates(None));
-        assert!(include_loopback_candidates(Some("1")));
-        assert!(include_loopback_candidates(Some("true")));
-        assert!(!include_loopback_candidates(Some("0")));
-        assert!(!include_loopback_candidates(Some("")));
+    fn loopback_settings_parses_flags() {
+        assert_eq!(loopback_settings(None, None), LoopbackMode::Default);
+        assert_eq!(loopback_settings(Some("1"), None), LoopbackMode::Include);
+        assert_eq!(loopback_settings(Some("true"), None), LoopbackMode::Include);
+        assert_eq!(loopback_settings(None, Some("1")), LoopbackMode::Only);
+        assert_eq!(loopback_settings(None, Some("true")), LoopbackMode::Only);
+        assert_eq!(loopback_settings(Some("1"), Some("1")), LoopbackMode::Only);
+        assert_eq!(
+            loopback_settings(Some("0"), Some("0")),
+            LoopbackMode::Default
+        );
+        assert_eq!(loopback_settings(Some(""), Some("")), LoopbackMode::Default);
+        assert_eq!(
+            loopback_settings(Some("1"), Some("0")),
+            LoopbackMode::Include
+        );
     }
 }

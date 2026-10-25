@@ -14,6 +14,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **core:** inbound audio reorder and loss concealment before decode. Every remote audio track now goes through one stage inside `RemoteTrack::read_sample()` (JS `readSample`, the native `VoiceAgent` inbound loop, and the conference participant loop, which no longer decodes RTP itself). Packets are put back in sequence order; the stage waits only when a packet is missing (adaptive 20–60 ms, back to 20 ms on a clean link). A lost packet is concealed with Opus PLC, or recovered from the next packet's in-band FEC (at most 100 ms per gap). Duplicates and packets that arrive after their gap was concealed are dropped. `NWR_INBOUND_REORDER=0` restores the old arrival-order path (#499).
 - **core:** `getStats()` `inbound-rtp` entries for audio tracks gain `packetsDiscarded`, `concealedSamples`, `concealmentEvents` and `nwrReorderedPackets`, `nwrLostPackets`, `nwrLateAfterLossPackets`, `nwrFecDecodes`, `nwrPlcDecodes`, `nwrLostNotConcealed`, `nwrUndecodablePackets`, `nwrReorderWaitMs`. Rust: `RemoteTrack::inbound_stats()`, `PcmSample::concealed`.
+- **core:** `WEBRTC_LOOPBACK_ONLY_CANDIDATES=1` gathers only loopback ICE candidates (local test gates behind the macOS application firewall; the local release gate sets it on macOS).
 
 ### Changed
 

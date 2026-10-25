@@ -53,4 +53,16 @@ if assert_order "$bad" 2>/dev/null; then
   exit 1
 fi
 
+# Darwin exports loopback-only ICE; other hosts leave it unset.
+darwin_env="$(env -u WEBRTC_LOOPBACK_ONLY_CANDIDATES -u WEBRTC_INCLUDE_LOOPBACK_CANDIDATES \
+  RELEASE_GATE_UNAME=Darwin bash "$GATE" --print-ice-env)"
+echo "$darwin_env" | grep -qx 'WEBRTC_LOOPBACK_ONLY_CANDIDATES=1' \
+  || { echo "Darwin gate must export WEBRTC_LOOPBACK_ONLY_CANDIDATES=1" >&2; exit 1; }
+echo "$darwin_env" | grep -qx 'WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1' \
+  || { echo "Darwin gate must export WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1" >&2; exit 1; }
+linux_env="$(env -u WEBRTC_LOOPBACK_ONLY_CANDIDATES -u WEBRTC_INCLUDE_LOOPBACK_CANDIDATES \
+  RELEASE_GATE_UNAME=Linux bash "$GATE" --print-ice-env)"
+echo "$linux_env" | grep -qx 'WEBRTC_LOOPBACK_ONLY_CANDIDATES=' \
+  || { echo "Linux gate must not set WEBRTC_LOOPBACK_ONLY_CANDIDATES" >&2; exit 1; }
+
 echo "OK: run-release-tag-local-ci order test"

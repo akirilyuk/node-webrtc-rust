@@ -19,6 +19,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+# macOS application firewall drops inbound UDP to en0 (IPv4 and IPv6) for unsigned test binaries, and
+# WEBRTC_INCLUDE_LOOPBACK_CANDIDATES only adds loopback, so ICE can still nominate an en0 pair.
+# Local gate only: gather loopback candidates only. CI (Linux) leaves both unset.
+# RELEASE_GATE_UNAME exists only so the test can exercise the Darwin branch.
+if [[ "${RELEASE_GATE_UNAME:-$(uname -s)}" == "Darwin" ]]; then
+  echo "==> Darwin: WEBRTC_LOOPBACK_ONLY_CANDIDATES=1 WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1 (loopback-only ICE)"
+  export WEBRTC_LOOPBACK_ONLY_CANDIDATES=1
+  export WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1
+fi
+
+if [[ "${1:-}" == "--print-ice-env" ]]; then
+  echo "WEBRTC_LOOPBACK_ONLY_CANDIDATES=${WEBRTC_LOOPBACK_ONLY_CANDIDATES:-}"
+  echo "WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=${WEBRTC_INCLUDE_LOOPBACK_CANDIDATES:-}"
+  exit 0
+fi
+
 run_step() {
   local label="$1"
   local log="$2"

@@ -14,6 +14,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **sdk:** `opusStereoPreference(sdp)` returns whether an SDP asks for stereo Opus (`stereo=1`), `false` for a likely mono decoder, `null` when unknown.
 - **helpers:** a listener whose answer lacks `stereo=1` in a mix that can pan gets one `mix_listener_mono_decoder peerId=<id>` warning. New `getMonoDecoderListenerWarnings()` on `ClientAudioMixer`, `VoiceAgentSessionHost` and `SessionPod`, and `listenerReceivesStereo` in the client mix status. The mix itself is unchanged.
 
+## [0.13.2] - 2026-10-25
+
 ### Fixed
 
 - **helpers:** when a client's transport goes down and the client is still on signaling, the host re-offers a replacement peer after 3 s (`transportReofferAfterMs`, `0` disables) instead of waiting for the client to notice the loss. A one-way network loss no longer ends the call when the client's own ICE reports `disconnected` only after the host has closed the peer.

@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **speech / bindings / sdk:** `agent_reply_end` carries `synthesizedMs` and `synthesisComplete`.
+
 ## [0.13.2] - 2026-10-25
 
 ### Fixed

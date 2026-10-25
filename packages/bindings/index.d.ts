@@ -437,6 +437,10 @@ export interface JsSpeechEvent {
   replyId?: string
   /** `agent_reply_end`: ms of the reply's audio written to the outbound track. */
   playedMs?: number
+  /** `agent_reply_end`: ms of the reply's audio queued for synthesis so far. */
+  synthesizedMs?: number
+  /** `agent_reply_end`: no more audio would have been queued for the reply. */
+  synthesisComplete?: boolean
   /** `agent_reply_end`: true when the reply was cut off before its last frame was written. */
   interrupted?: boolean
 }

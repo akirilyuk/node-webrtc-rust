@@ -35,7 +35,21 @@ pub enum ReplyTransition {
         first_chunk_ms: Option<u32>,
     },
     /// The last byte of a complete reply reached the outbound track.
-    Ended { id: Arc<str>, played_ms: u32 },
+    /// An ended reply is always complete: `synthesized_ms` equals what was queued.
+    Ended {
+        id: Arc<str>,
+        played_ms: u32,
+        synthesized_ms: u32,
+    },
+}
+
+/// A reply dropped by [`TtsBuffer::flush`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlushedReply {
+    pub id: Arc<str>,
+    pub played_ms: u32,
+    pub synthesized_ms: u32,
+    pub synthesis_complete: bool,
 }
 
 fn played_ms(played_bytes: u64) -> u32 {
@@ -87,7 +101,7 @@ struct TtsBufferInner {
     /// audio creates no entry.
     reply_ledger: VecDeque<ReplyLedgerEntry>,
     /// Ledger entries dropped by [`TtsBuffer::flush`], until [`TtsBuffer::take_flushed_replies`].
-    flushed_replies: Vec<(Arc<str>, u32)>,
+    flushed_replies: Vec<FlushedReply>,
 }
 
 impl TtsBuffer {
@@ -203,6 +217,7 @@ impl TtsBuffer {
                 out.push(ReplyTransition::Ended {
                     id: Arc::clone(&head.reply_id),
                     played_ms: played_ms(head.played_bytes),
+                    synthesized_ms: played_ms(head.queued_bytes),
                 });
                 inner.reply_ledger.pop_front();
                 continue;
@@ -214,7 +229,7 @@ impl TtsBuffer {
 
     /// Replies dropped by [`flush`](Self::flush), in queue order, with the ms of each that was
     /// played. Clears the list.
-    pub async fn take_flushed_replies(&self) -> Vec<(Arc<str>, u32)> {
+    pub async fn take_flushed_replies(&self) -> Vec<FlushedReply> {
         std::mem::take(&mut self.inner.lock().await.flushed_replies)
     }
 
@@ -222,8 +237,14 @@ impl TtsBuffer {
     /// reply it dropped.
     pub async fn flush_with_reply_events(&self, emit: impl Fn(SpeechEvent)) -> u64 {
         let generation = self.flush().await;
-        for (id, ms) in self.take_flushed_replies().await {
-            emit(SpeechEvent::agent_reply_end(&id, ms, true));
+        for r in self.take_flushed_replies().await {
+            emit(SpeechEvent::agent_reply_end(
+                &r.id,
+                r.played_ms,
+                true,
+                r.synthesized_ms,
+                r.synthesis_complete,
+            ));
         }
         generation
     }
@@ -248,10 +269,15 @@ impl TtsBuffer {
         let mut inner = self.inner.lock().await;
         inner.queue.clear();
         inner.frame_carry.clear();
-        let dropped: Vec<(Arc<str>, u32)> = inner
+        let dropped: Vec<FlushedReply> = inner
             .reply_ledger
             .drain(..)
-            .map(|e| (e.reply_id, played_ms(e.played_bytes)))
+            .map(|e| FlushedReply {
+                id: e.reply_id,
+                played_ms: played_ms(e.played_bytes),
+                synthesized_ms: played_ms(e.queued_bytes),
+                synthesis_complete: e.complete,
+            })
             .collect();
         inner.flushed_replies.extend(dropped);
         inner.speaking = false;
@@ -435,7 +461,8 @@ mod tests {
             vec![
                 ReplyTransition::Ended {
                     id: a.clone(),
-                    played_ms: 26
+                    played_ms: 26,
+                    synthesized_ms: 26
                 },
                 ReplyTransition::Started {
                     id: b.clone(),
@@ -443,7 +470,8 @@ mod tests {
                 },
                 ReplyTransition::Ended {
                     id: b.clone(),
-                    played_ms: 13
+                    played_ms: 13,
+                    synthesized_ms: 13
                 },
             ]
         );
@@ -464,7 +492,8 @@ mod tests {
             end,
             vec![ReplyTransition::Ended {
                 id: a,
-                played_ms: 40
+                played_ms: 40,
+                synthesized_ms: 40
             }]
         );
     }
@@ -487,8 +516,80 @@ mod tests {
         let _ = buf.consume_played(9_600).await;
         buf.flush().await;
         let flushed = buf.take_flushed_replies().await;
-        assert_eq!(flushed, vec![(a, 50), (b, 0)]);
+        assert_eq!(
+            flushed,
+            vec![
+                FlushedReply {
+                    id: a,
+                    played_ms: 50,
+                    synthesized_ms: 100,
+                    synthesis_complete: false
+                },
+                FlushedReply {
+                    id: b,
+                    played_ms: 0,
+                    synthesized_ms: 20,
+                    synthesis_complete: false
+                }
+            ]
+        );
         assert!(buf.take_flushed_replies().await.is_empty());
         assert!(buf.consume_played(3840).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn flush_mid_reply_reports_synthesized_and_played_ms() {
+        let buf = TtsBuffer::new();
+        let a: Arc<str> = Arc::from("a");
+        buf.enqueue_tagged(tagged(38_400), Some((&a, None))).await;
+        buf.enqueue_tagged(tagged(38_400), Some((&a, None))).await;
+        let _ = buf.consume_played(19_200).await;
+        buf.flush().await;
+        assert_eq!(
+            buf.take_flushed_replies().await,
+            vec![FlushedReply {
+                id: a,
+                played_ms: 100,
+                synthesized_ms: 400,
+                synthesis_complete: false
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_of_complete_reply_reports_synthesis_complete() {
+        let buf = TtsBuffer::new();
+        let a: Arc<str> = Arc::from("a");
+        buf.enqueue_tagged(tagged(38_400), Some((&a, None))).await;
+        buf.enqueue_tagged(tagged(38_400), Some((&a, None))).await;
+        buf.mark_reply_complete("a").await;
+        let _ = buf.consume_played(19_200).await;
+        buf.flush().await;
+        assert_eq!(
+            buf.take_flushed_replies().await,
+            vec![FlushedReply {
+                id: a,
+                played_ms: 100,
+                synthesized_ms: 400,
+                synthesis_complete: true
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn ended_reply_reports_synthesized_equal_to_played() {
+        let buf = TtsBuffer::new();
+        let a: Arc<str> = Arc::from("a");
+        buf.enqueue_tagged(tagged(38_400), Some((&a, None))).await;
+        buf.mark_reply_complete("a").await;
+        let t = buf.consume_played(38_400).await;
+        assert_eq!(
+            t.last(),
+            Some(&ReplyTransition::Ended {
+                id: a,
+                played_ms: 200,
+                synthesized_ms: 200
+            })
+        );
     }
 }

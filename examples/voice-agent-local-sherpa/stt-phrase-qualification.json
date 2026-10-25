@@ -2,7 +2,7 @@
   "stt": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
   "tts": "vits-piper-en_US-amy-low",
   "tool": "cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep",
-  "date": "2026-10-24",
+  "date": "2026-10-25",
   "phrases": [
     {
       "phrase": "good morning, this is the recovery test",
@@ -98,6 +98,79 @@
       "topTexts": [
         ["Delta seven eight nine", 298],
         ["delta seven eight nine", 2]
+      ]
+    },
+    {
+      "phrase": "This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.",
+      "n": 300,
+      "minObserved": 0.92,
+      "below075": 0,
+      "below060": 0,
+      "keyword": null,
+      "keywordMissing": null,
+      "topTexts": [
+        [
+          "This is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          299
+        ],
+        [
+          "This is a very long sentence may be the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          1
+        ]
+      ]
+    },
+    {
+      "phrase": "You said: This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.",
+      "n": 300,
+      "minObserved": 0.9259259259259259,
+      "below075": 0,
+      "below060": 0,
+      "keyword": null,
+      "keywordMissing": null,
+      "topTexts": [
+        [
+          "You said this is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          153
+        ],
+        [
+          "You said this is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured.",
+          59
+        ],
+        [
+          "You said this is a very long sentence. Maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          31
+        ],
+        [
+          "You said this is a very long sentence, baby the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          14
+        ],
+        [
+          "You said this is a very long sentence. They be the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          10
+        ]
+      ]
+    },
+    {
+      "phrase": "Why do you need so much time until you start speaking clearly to the listener. Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again.",
+      "n": 300,
+      "minObserved": 0.972972972972973,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "why,need,time,speaking",
+      "keywordMissing": 0,
+      "topTexts": [
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again",
+          267
+        ],
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again.",
+          32
+        ],
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following the long can understand the complete answer without needing to ask for clarification again",
+          1
+        ]
       ]
     }
   ]

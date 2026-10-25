@@ -4,12 +4,17 @@
 //!
 //! ```text
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep -- \
-//!   --stt <stt-model-dir> --tts <tts-model-dir> --n <N> [--keyword <word>] "<phrase>"
+//!   --stt <stt-model-dir> --tts <tts-model-dir> --n <N> [--keyword <word>]... "<phrase>"
 //! ```
 //!
 //! Each iteration feeds 300 ms of silence, the clip, then 2500 ms of silence (so the recognizer
 //! flushes its last words), in 20 ms chunks on a fresh stream. The score is the roundtrip oracle's
-//! `wordSimilarity` (`examples/voice-agent-local-sherpa/src/roundtrip-counting.ts`).
+//! `wordSimilarity` (`examples/voice-agent-local-sherpa/src/roundtrip-counting.ts`). `--keyword` may
+//! be given several times; a synthesis counts as `keywordMissing` when any of them is not a whole
+//! token of its transcript, and the table's `keyword` is the list joined with `,`.
+//!
+//! Text longer than one sentence (or a first sentence over 12 words) is synthesized as the same
+//! engine calls nwr makes (`engine_pieces`), concatenated as the agent plays them.
 //!
 //! Output: one JSON object on stdout; progress goes to stderr.
 
@@ -73,6 +78,12 @@ fn word_similarity(input: &str, recognized: &str) -> f64 {
     hits as f64 / words.len() as f64
 }
 
+fn all_keywords_are_tokens(text: &str, keywords: &[String]) -> bool {
+    keywords
+        .iter()
+        .all(|keyword| keyword_is_token(text, keyword))
+}
+
 fn keyword_is_token(text: &str, keyword: &str) -> bool {
     let haystack = format!(" {} ", normalize_for_compare(text));
     haystack.contains(&format!(" {} ", normalize_for_compare(keyword)))
@@ -100,7 +111,7 @@ struct Args {
     stt: PathBuf,
     tts: PathBuf,
     n: usize,
-    keyword: Option<String>,
+    keywords: Vec<String>,
     phrase: String,
 }
 
@@ -108,7 +119,7 @@ fn parse_args() -> Result<Args, String> {
     let mut stt = None;
     let mut tts = None;
     let mut n = None;
-    let mut keyword = None;
+    let mut keywords = Vec::new();
     let mut phrase = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -123,7 +134,7 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|e| format!("--n: {e}"))?,
                 )
             }
-            "--keyword" => keyword = Some(value("--keyword")?),
+            "--keyword" => keywords.push(value("--keyword")?),
             other if other.starts_with("--") => return Err(format!("unknown flag {other}")),
             other => {
                 if phrase.replace(other.to_string()).is_some() {
@@ -136,7 +147,7 @@ fn parse_args() -> Result<Args, String> {
         stt: stt.ok_or("missing --stt")?,
         tts: tts.ok_or("missing --tts")?,
         n: n.filter(|n| *n > 0).ok_or("missing or zero --n")?,
-        keyword,
+        keywords,
         phrase: phrase.ok_or("missing phrase")?,
     })
 }
@@ -174,10 +185,8 @@ fn run(args: &Args) -> Result<String, String> {
         if similarity < 0.60 {
             below_060 += 1;
         }
-        if let Some(keyword) = &args.keyword {
-            if !keyword_is_token(&text, keyword) {
-                keyword_missing += 1;
-            }
+        if !all_keywords_are_tokens(&text, &args.keywords) {
+            keyword_missing += 1;
         }
         *texts.entry(text).or_insert(0) += 1;
         if (i + 1) % 50 == 0 {
@@ -193,9 +202,13 @@ fn run(args: &Args) -> Result<String, String> {
         .map(|(text, count)| format!("[{},{count}]", json_string(text)))
         .collect::<Vec<_>>()
         .join(",");
-    let (keyword_json, missing_json) = match &args.keyword {
-        Some(keyword) => (json_string(keyword), keyword_missing.to_string()),
-        None => ("null".to_string(), "null".to_string()),
+    let (keyword_json, missing_json) = if args.keywords.is_empty() {
+        ("null".to_string(), "null".to_string())
+    } else {
+        (
+            json_string(&args.keywords.join(",")),
+            keyword_missing.to_string(),
+        )
     };
     Ok(format!(
         "{{\"phrase\":{},\"n\":{},\"minObserved\":{},\"below075\":{below_075},\"below060\":{below_060},\"keyword\":{keyword_json},\"keywordMissing\":{missing_json},\"topTexts\":[{top_json}]}}",
@@ -210,7 +223,7 @@ fn main() {
         Ok(a) => a,
         Err(e) => {
             eprintln!(
-                "phrase_sweep: {e}\nusage: phrase_sweep --stt <dir> --tts <dir> --n <N> [--keyword <word>] \"<phrase>\""
+                "phrase_sweep: {e}\nusage: phrase_sweep --stt <dir> --tts <dir> --n <N> [--keyword <word>]... \"<phrase>\""
             );
             std::process::exit(2);
         }
@@ -257,5 +270,26 @@ mod tests {
     fn keyword_must_be_a_whole_token() {
         assert!(keyword_is_token("Alpha, one two", "alpha"));
         assert!(!keyword_is_token("alphabet one two", "alpha"));
+    }
+
+    #[test]
+    fn synthesis_makes_the_engine_calls_nwr_makes() {
+        // Multi-sentence phrases are several engine calls in nwr; the sweep must make the same
+        // ones through the product's own split, not a copy of it.
+        let src = include_str!("support/mod.rs");
+        let body = src
+            .split("pub fn synthesize(")
+            .nth(1)
+            .expect("synthesize body");
+        assert!(body.contains("engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto)"));
+        assert!(!body.contains("prepare_engine_text"));
+    }
+
+    #[test]
+    fn every_keyword_must_be_present() {
+        let keywords = vec!["why".to_string(), "time".to_string()];
+        assert!(all_keywords_are_tokens("Why so much time?", &keywords));
+        assert!(!all_keywords_are_tokens("Why so much?", &keywords));
+        assert!(all_keywords_are_tokens("anything", &[]));
     }
 }

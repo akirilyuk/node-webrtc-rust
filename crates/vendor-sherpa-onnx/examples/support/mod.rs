@@ -154,19 +154,27 @@ pub fn generation_config() -> GenerationConfig {
     }
 }
 
-/// Synthesize `text` as nwr's Sherpa TTS would hand it to the engine (sentence-start
-/// capitalization from `prepare_engine_text`, `SentenceCase::Auto`). Returns the samples and the
-/// engine sample rate. Texts up to 12 words are one engine call in nwr too (`split_for_first_audio`).
+/// Synthesize `text` with the engine calls nwr's Sherpa TTS makes for it: whitespace
+/// normalization (`normalize_phrase_text`), then [`engine_pieces`] (sentence-start capitalization
+/// under `SentenceCase::Auto`, split into sentences with a short first piece), one engine call per
+/// piece, samples concatenated back to back as `synthesize_miss` streams them. Returns the samples
+/// and the engine sample rate.
+///
+/// [`engine_pieces`]: node_webrtc_rust_vendor_sherpa_onnx::engine_pieces
 pub fn synthesize(tts: &OfflineTts, text: &str) -> Result<(Vec<f32>, i32), String> {
     use node_webrtc_rust_speech::config::SentenceCase;
-    use node_webrtc_rust_speech::tts_text::prepare_engine_text;
-    let engine_text = prepare_engine_text(text, SentenceCase::Auto).text;
-    let audio = tts
-        .generate_with_config(
-            &engine_text,
-            &generation_config(),
-            None::<fn(&[f32], f32) -> bool>,
-        )
-        .ok_or_else(|| "OfflineTts generation returned no audio".to_string())?;
-    Ok((audio.samples().to_vec(), tts.sample_rate()))
+    use node_webrtc_rust_speech::tts_cache::normalize_phrase_text;
+    use node_webrtc_rust_vendor_sherpa_onnx::engine_pieces;
+    let mut samples = Vec::new();
+    for piece in engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto) {
+        let audio = tts
+            .generate_with_config(
+                &piece,
+                &generation_config(),
+                None::<fn(&[f32], f32) -> bool>,
+            )
+            .ok_or_else(|| format!("OfflineTts generation returned no audio for {piece:?}"))?;
+        samples.extend_from_slice(audio.samples());
+    }
+    Ok((samples, tts.sample_rate()))
 }

@@ -98,6 +98,23 @@ pub fn split_for_first_audio(text: &str) -> Vec<String> {
     pieces
 }
 
+/// The pieces nwr hands to the TTS engine for `normalized` text, in order: sentence-start
+/// capitalization ([`prepare_engine_text`] under `mode`), then [`split_for_first_audio`]. Text
+/// without letters or digits goes to the engine whole.
+///
+/// `synthesize_miss` in `tts.rs` synthesizes exactly these pieces, one engine call each, and
+/// plays them back to back. Public (hidden) so the `phrase_sweep` example synthesizes the same
+/// engine calls instead of a copy of the split.
+#[doc(hidden)]
+pub fn engine_pieces(normalized: &str, mode: SentenceCase) -> Vec<String> {
+    let engine_text = prepare_engine_text(normalized, mode).text;
+    let mut pieces = split_for_first_audio(&engine_text);
+    if pieces.is_empty() {
+        pieces.push(engine_text.to_string());
+    }
+    pieces
+}
+
 fn push_trimmed(out: &mut Vec<String>, current: &mut String) {
     let trimmed = current.trim();
     if !trimmed.is_empty() {
@@ -449,5 +466,29 @@ mod tests {
     #[test]
     fn empty_text_yields_nothing() {
         assert!(split_for_first_audio("  ").is_empty());
+    }
+
+    #[test]
+    fn engine_pieces_capitalizes_then_splits_a_long_first_sentence() {
+        let pieces = engine_pieces(
+            "this is a very long sentence, maybe the longest sentence ever spoken. it is so long, that the lenght of it cannot even be measured.",
+            SentenceCase::Auto,
+        );
+        assert_eq!(
+            pieces,
+            vec![
+                // Auto uppercases after a sentence end only, not the text's first letter.
+                "this is a very long sentence, maybe the longest sentence ever spoken.".to_string(),
+                "It is so long, that the lenght of it cannot even be measured.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn engine_pieces_keeps_symbol_only_text_whole() {
+        assert_eq!(
+            engine_pieces("...", SentenceCase::Auto),
+            vec!["...".to_string()]
+        );
     }
 }

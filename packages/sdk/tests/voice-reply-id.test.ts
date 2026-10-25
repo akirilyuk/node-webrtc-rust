@@ -37,9 +37,13 @@ describe('replyId', () => {
       replyId: 'r1',
       playedMs: 900,
       interrupted: true,
+      synthesizedMs: 1500,
+      synthesisComplete: false,
     })
     expect(end.type).toBe('agent_reply_end')
     expect(end.playedMs).toBe(900)
     expect(end.interrupted).toBe(true)
+    expect(end.synthesizedMs).toBe(1500)
+    expect(end.synthesisComplete).toBe(false)
   })
 })

@@ -326,6 +326,8 @@ export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     chars: event.chars ?? undefined,
     replyId: event.replyId ?? undefined,
     playedMs: event.playedMs ?? undefined,
+    synthesizedMs: event.synthesizedMs ?? undefined,
+    synthesisComplete: event.synthesisComplete ?? undefined,
     interrupted: event.interrupted ?? undefined,
   }
 }

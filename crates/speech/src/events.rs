@@ -24,7 +24,7 @@
 //! | `TtsPhraseCacheHit` | A reply (or one synthesis job of it) was served from the phrase cache (`chars`); no text |
 //! | `AgentSpeakFailed` | One reply could not be synthesized (`reason`); the session keeps running |
 //! | `AgentReplyStart` | First outbound frame of one reply sent with a `replyId` (`reply_id`, `first_chunk_ms`); never emitted for replies without a reply id |
-//! | `AgentReplyEnd` | One reply sent with a `replyId` finished playing or was cut off (`reply_id`, `played_ms`, `interrupted`) |
+//! | `AgentReplyEnd` | One reply sent with a `replyId` finished playing or was cut off (`reply_id`, `played_ms`, `interrupted`, `synthesized_ms`, `synthesis_complete`) |
 //! | `Error` | Vendor or internal failure |
 //!
 //! ## Event order contract
@@ -139,6 +139,10 @@ pub struct SpeechEvent {
     pub reply_id: Option<String>,
     /// `agent_reply_end`: ms of this reply's audio that reached the outbound track.
     pub played_ms: Option<u32>,
+    /// Reply audio queued for synthesis so far, in ms; set on `AgentReplyEnd`.
+    pub synthesized_ms: Option<u32>,
+    /// No more audio would have been queued for the reply; set on `AgentReplyEnd`.
+    pub synthesis_complete: Option<bool>,
     /// `agent_reply_end`: true when the reply was cut off (barge-in, flush, stop) before its
     /// last frame was written.
     pub interrupted: Option<bool>,
@@ -172,6 +176,8 @@ impl SpeechEvent {
             chars: None,
             reply_id: None,
             played_ms: None,
+            synthesized_ms: None,
+            synthesis_complete: None,
             interrupted: None,
         }
     }
@@ -186,11 +192,19 @@ impl SpeechEvent {
     }
 
     /// Reply `reply_id` is over: `played_ms` of its audio was written, `interrupted` when cut off.
-    pub fn agent_reply_end(reply_id: &str, played_ms: u32, interrupted: bool) -> Self {
+    pub fn agent_reply_end(
+        reply_id: &str,
+        played_ms: u32,
+        interrupted: bool,
+        synthesized_ms: u32,
+        synthesis_complete: bool,
+    ) -> Self {
         let mut ev = Self::base(SpeechEventKind::AgentReplyEnd);
         ev.reply_id = Some(reply_id.to_string());
         ev.played_ms = Some(played_ms);
         ev.interrupted = Some(interrupted);
+        ev.synthesized_ms = Some(synthesized_ms);
+        ev.synthesis_complete = Some(synthesis_complete);
         ev
     }
 
@@ -492,10 +506,12 @@ mod user_language_event_tests {
         assert_eq!(start.reply_id.as_deref(), Some("r1"));
         assert_eq!(start.first_chunk_ms, Some(120));
 
-        let end = SpeechEvent::agent_reply_end("r1", 900, true);
+        let end = SpeechEvent::agent_reply_end("r1", 900, true, 1500, false);
         assert_eq!(end.kind, SpeechEventKind::AgentReplyEnd);
         assert_eq!(end.played_ms, Some(900));
         assert_eq!(end.interrupted, Some(true));
+        assert_eq!(end.synthesized_ms, Some(1500));
+        assert_eq!(end.synthesis_complete, Some(false));
 
         let tagged = SpeechEvent::tts_phrase_cache_hit(4).with_reply_id(Some("r2"));
         assert_eq!(tagged.reply_id.as_deref(), Some("r2"));

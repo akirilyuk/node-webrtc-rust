@@ -705,6 +705,10 @@ pub struct JsSpeechEvent {
     pub reply_id: Option<String>,
     /// `agent_reply_end`: ms of the reply's audio written to the outbound track.
     pub played_ms: Option<u32>,
+    /// `agent_reply_end`: ms of the reply's audio queued for synthesis so far.
+    pub synthesized_ms: Option<u32>,
+    /// `agent_reply_end`: no more audio would have been queued for the reply.
+    pub synthesis_complete: Option<bool>,
     /// `agent_reply_end`: true when the reply was cut off before its last frame was written.
     pub interrupted: Option<bool>,
 }

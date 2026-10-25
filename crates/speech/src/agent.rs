@@ -2603,7 +2603,7 @@ impl VoiceAgent {
     /// dropped from the synthesis queue) ends with nothing played. Only for jobs with a reply id.
     fn emit_discarded_reply_end(event_bus: &SpeechEventBus, reply_id: Option<&str>) {
         if let Some(id) = reply_id {
-            event_bus.emit(SpeechEvent::agent_reply_end(id, 0, true));
+            event_bus.emit(SpeechEvent::agent_reply_end(id, 0, true, 0, false));
         }
     }
 
@@ -2614,8 +2614,18 @@ impl VoiceAgent {
                 ReplyTransition::Started { id, first_chunk_ms } => {
                     event_bus.emit(SpeechEvent::agent_reply_start(&id, first_chunk_ms));
                 }
-                ReplyTransition::Ended { id, played_ms } => {
-                    event_bus.emit(SpeechEvent::agent_reply_end(&id, played_ms, false));
+                ReplyTransition::Ended {
+                    id,
+                    played_ms,
+                    synthesized_ms,
+                } => {
+                    event_bus.emit(SpeechEvent::agent_reply_end(
+                        &id,
+                        played_ms,
+                        false,
+                        synthesized_ms,
+                        true,
+                    ));
                 }
             }
         }
@@ -2912,7 +2922,7 @@ impl VoiceAgent {
 
     fn emit_dropped_reply_ends(&self, dropped: Vec<Arc<str>>) {
         for id in dropped {
-            self.emit(SpeechEvent::agent_reply_end(&id, 0, true));
+            self.emit(SpeechEvent::agent_reply_end(&id, 0, true, 0, false));
         }
     }
 

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use tokio::sync::{broadcast, oneshot, Mutex, Notify};
 
-use crate::audio_tap::{audio_tap_dir_from_env, next_tap_agent_id, ContinuousTap};
+use crate::audio_tap::{audio_tap_dir_from_env, next_tap_agent_id, ContinuousTap, TtsOutTap};
 use crate::config::{
     effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
     language_id_early, language_id_enabled, resolved_language_id_min_speech_ms,
@@ -415,6 +415,8 @@ struct AgentInner {
     audio_tap_agent_id: u64,
     /// Test-only: the listener's inbound mono 16 kHz PCM (see [`crate::audio_tap`]).
     inbound_tap: Option<ContinuousTap>,
+    /// Test-only: outbound TTS frames (see [`crate::audio_tap`]).
+    tts_out_tap: Option<Arc<std::sync::Mutex<TtsOutTap>>>,
 }
 
 impl AgentInner {
@@ -718,6 +720,7 @@ impl VoiceAgent {
                 audio_tap_dir_override: None,
                 audio_tap_agent_id: 0,
                 inbound_tap: None,
+                tts_out_tap: None,
             })),
             stt_provider: std::sync::Mutex::new(stt),
             stt_actor: std::sync::Mutex::new(None),
@@ -1737,6 +1740,7 @@ impl VoiceAgent {
                 let id = next_tap_agent_id();
                 inner.audio_tap_agent_id = id;
                 inner.inbound_tap = Some(ContinuousTap::new(dir, id));
+                inner.tts_out_tap = Some(Arc::new(std::sync::Mutex::new(TtsOutTap::new(dir, id))));
                 eprintln!("[speech] audio tap on: agent a{id} -> {}", dir.display());
             }
             (
@@ -1907,6 +1911,9 @@ impl VoiceAgent {
                 tap.flush_segment();
             }
             inner.inbound_tap = None;
+            if let Some(tap) = inner.tts_out_tap.take() {
+                tap.lock().unwrap_or_else(|e| e.into_inner()).finish(true);
+            }
             otel::end_session(&mut inner.otel);
             true
         };
@@ -5173,9 +5180,12 @@ impl VoiceAgent {
         _tts_synthesis_busy: &Arc<AtomicBool>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
-        let writer = {
+        let (writer, tts_out_tap) = {
             let guard = inner.lock().await;
-            guard.pcm_writer.clone().ok_or(SpeechError::NotAttached)?
+            (
+                guard.pcm_writer.clone().ok_or(SpeechError::NotAttached)?,
+                guard.tts_out_tap.clone(),
+            )
         };
 
         let drain_generation = tts_buffer.current_generation().await;
@@ -5225,6 +5235,7 @@ impl VoiceAgent {
                 &mut pace,
                 frames,
                 None,
+                tts_out_tap.as_ref(),
             )
             .await?
             {
@@ -5254,6 +5265,7 @@ impl VoiceAgent {
                 &mut pace,
                 vec![(frame, duration_ms)],
                 Some(real_bytes),
+                tts_out_tap.as_ref(),
             )
             .await?
             {
@@ -5276,6 +5288,10 @@ impl VoiceAgent {
             } else {
                 // A barge-in/flush path already ended speaking and owns the `agent_speaking_end`.
                 voice_debug("TTS drained after speaking already ended (barge-in)");
+            }
+            // End of the utterance file before post-utterance silence, so silence is not in it.
+            if let Some(tap) = tts_out_tap.as_ref() {
+                tap.lock().unwrap_or_else(|e| e.into_inner()).finish(false);
             }
             Self::maybe_spawn_deferred_lid_after_tts(weak_self, tts_synthesis_queue, inner).await;
 
@@ -5316,6 +5332,7 @@ impl VoiceAgent {
         pace: &mut TtsDrainPaceState,
         frames: Vec<(Bytes, u32)>,
         last_frame_real_bytes: Option<usize>,
+        tts_out_tap: Option<&Arc<std::sync::Mutex<TtsOutTap>>>,
     ) -> SpeechResult<TtsDrainWrite> {
         let frame_count = frames.len();
         for (index, (frame, duration_ms)) in frames.into_iter().enumerate() {
@@ -5381,12 +5398,18 @@ impl VoiceAgent {
                 if Self::end_agent_speaking_inner(inner, false).await {
                     event_bus.emit(SpeechEvent::agent_speaking_end());
                 }
+                if let Some(tap) = tts_out_tap {
+                    tap.lock().unwrap_or_else(|e| e.into_inner()).finish(true);
+                }
                 return Ok(TtsDrainWrite::Stopped);
             }
             let ledger_bytes = match last_frame_real_bytes {
                 Some(real) if index + 1 == frame_count => real,
                 _ => frame.len(),
             };
+            if let Some(tap) = tts_out_tap {
+                tap.lock().unwrap_or_else(|e| e.into_inner()).push(&frame);
+            }
             writer(frame, duration_ms)?;
             Self::emit_reply_transitions(
                 event_bus,
@@ -5409,6 +5432,9 @@ impl VoiceAgent {
                 voice_debug("TTS drain stopped during frame pacing (barge-in flush / stop)");
                 if Self::end_agent_speaking_inner(inner, false).await {
                     event_bus.emit(SpeechEvent::agent_speaking_end());
+                }
+                if let Some(tap) = tts_out_tap {
+                    tap.lock().unwrap_or_else(|e| e.into_inner()).finish(true);
                 }
                 return Ok(TtsDrainWrite::Stopped);
             }

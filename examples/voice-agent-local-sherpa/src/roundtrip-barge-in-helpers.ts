@@ -510,3 +510,52 @@ export {
   evaluateTonePhaseLifecycle,
   type LifecycleSpeechEvent,
 } from './roundtrip-stt-lifecycle-helpers.js'
+
+export const INBOUND_AUDIO_COUNTER_KEYS = [
+  'packetsReceived',
+  'packetsLost',
+  'packetsDiscarded',
+  'concealedSamples',
+  'concealmentEvents',
+  'nwrLostPackets',
+  'nwrReorderedPackets',
+  'nwrLateAfterLossPackets',
+  'nwrFecDecodes',
+  'nwrPlcDecodes',
+  'nwrLostNotConcealed',
+  'nwrUndecodablePackets',
+] as const
+
+export type InboundAudioCounters = Record<(typeof INBOUND_AUDIO_COUNTER_KEYS)[number], number>
+
+/** Sums the counters over every inbound-rtp audio entry; a missing or non-numeric field counts 0. */
+export function inboundAudioCounters(
+  report: ReadonlyMap<string, Record<string, unknown>>,
+): InboundAudioCounters {
+  const sums = Object.fromEntries(
+    INBOUND_AUDIO_COUNTER_KEYS.map((key) => [key, 0]),
+  ) as InboundAudioCounters
+  for (const entry of report.values()) {
+    if (entry.type !== 'inbound-rtp' || entry.kind !== 'audio') continue
+    for (const key of INBOUND_AUDIO_COUNTER_KEYS) {
+      const value = entry[key]
+      if (typeof value === 'number' && Number.isFinite(value)) sums[key] += value
+    }
+  }
+  return sums
+}
+
+/** after − before per key. */
+export function diffInboundAudioCounters(
+  before: InboundAudioCounters,
+  after: InboundAudioCounters,
+): InboundAudioCounters {
+  const diff = {} as InboundAudioCounters
+  for (const key of INBOUND_AUDIO_COUNTER_KEYS) diff[key] = after[key] - before[key]
+  return diff
+}
+
+/** `key=value` pairs joined by spaces, in INBOUND_AUDIO_COUNTER_KEYS order. */
+export function formatInboundAudioCounters(c: InboundAudioCounters): string {
+  return INBOUND_AUDIO_COUNTER_KEYS.map((key) => `${key}=${c[key]}`).join(' ')
+}

@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep -- \
-//!   --stt <stt-model-dir> --tts <tts-model-dir> --n <N> [--keyword <word>]... "<phrase>"
+//!   --stt <stt-model-dir> --tts <tts-model-dir> --n <N> [--keyword <word>]... [--dump-misses <dir>] "<phrase>"
 //! ```
 //!
 //! Each iteration feeds 300 ms of silence, the clip, then 2500 ms of silence (so the recognizer
@@ -16,6 +16,10 @@
 //! Text longer than one sentence (or a first sentence over 12 words) is synthesized as the same
 //! engine calls nwr makes (`engine_pieces`), concatenated as the agent plays them.
 //!
+//! `--dump-misses <dir>` writes every synthesis that is not a perfect match (similarity < 1 or a
+//! keyword missing) as `<dir>/miss-<iteration>.wav` (16 kHz mono, the clip without padding), so a
+//! rare misrecognition can be compared with audio captured in a roundtrip.
+//!
 //! Output: one JSON object on stdout; progress goes to stderr.
 
 use std::collections::HashMap;
@@ -24,7 +28,7 @@ use std::path::PathBuf;
 #[path = "support/mod.rs"]
 mod support;
 
-use support::{create_recognizer, create_tts, recognize, synthesize};
+use support::{create_recognizer, create_tts, recognize, synthesize, write_wav};
 
 const LEAD_SILENCE_MS: usize = 300;
 const TAIL_SILENCE_MS: usize = 2500;
@@ -112,6 +116,7 @@ struct Args {
     tts: PathBuf,
     n: usize,
     keywords: Vec<String>,
+    dump_misses: Option<PathBuf>,
     phrase: String,
 }
 
@@ -120,6 +125,7 @@ fn parse_args() -> Result<Args, String> {
     let mut tts = None;
     let mut n = None;
     let mut keywords = Vec::new();
+    let mut dump_misses = None;
     let mut phrase = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -135,6 +141,7 @@ fn parse_args() -> Result<Args, String> {
                 )
             }
             "--keyword" => keywords.push(value("--keyword")?),
+            "--dump-misses" => dump_misses = Some(PathBuf::from(value("--dump-misses")?)),
             other if other.starts_with("--") => return Err(format!("unknown flag {other}")),
             other => {
                 if phrase.replace(other.to_string()).is_some() {
@@ -148,6 +155,7 @@ fn parse_args() -> Result<Args, String> {
         tts: tts.ok_or("missing --tts")?,
         n: n.filter(|n| *n > 0).ok_or("missing or zero --n")?,
         keywords,
+        dump_misses,
         phrase: phrase.ok_or("missing phrase")?,
     })
 }
@@ -155,6 +163,9 @@ fn parse_args() -> Result<Args, String> {
 fn run(args: &Args) -> Result<String, String> {
     let recognizer = create_recognizer(&args.stt)?;
     let tts = create_tts(&args.tts)?;
+    if let Some(dir) = &args.dump_misses {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
     let lead = vec![0.0_f32; SAMPLE_RATE as usize * LEAD_SILENCE_MS / 1000];
     let tail = vec![0.0_f32; SAMPLE_RATE as usize * TAIL_SILENCE_MS / 1000];
 
@@ -185,8 +196,15 @@ fn run(args: &Args) -> Result<String, String> {
         if similarity < 0.60 {
             below_060 += 1;
         }
-        if !all_keywords_are_tokens(&text, &args.keywords) {
+        let keywords_ok = all_keywords_are_tokens(&text, &args.keywords);
+        if !keywords_ok {
             keyword_missing += 1;
+        }
+        if let Some(dir) = &args.dump_misses {
+            if similarity < 1.0 || !keywords_ok {
+                write_wav(&dir.join(format!("miss-{i:05}.wav")), &clip)?;
+                eprintln!("phrase_sweep: miss {i}: {text:?}");
+            }
         }
         *texts.entry(text).or_insert(0) += 1;
         if (i + 1) % 50 == 0 {
@@ -223,7 +241,7 @@ fn main() {
         Ok(a) => a,
         Err(e) => {
             eprintln!(
-                "phrase_sweep: {e}\nusage: phrase_sweep --stt <dir> --tts <dir> --n <N> [--keyword <word>]... \"<phrase>\""
+                "phrase_sweep: {e}\nusage: phrase_sweep --stt <dir> --tts <dir> --n <N> [--keyword <word>]... [--dump-misses <dir>] \"<phrase>\""
             );
             std::process::exit(2);
         }

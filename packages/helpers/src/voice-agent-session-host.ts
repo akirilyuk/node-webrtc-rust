@@ -80,6 +80,14 @@ import type {
 export const DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS = 10_000
 
 /**
+ * Default for {@link VoiceAgentSessionHostOptions.transportReofferAfterMs}: after this long with
+ * the transport down while the client is still joined on signaling, the host replaces the peer by
+ * sending a new offer. `0` disables. A one-way network loss can leave the client's own ICE
+ * unaware for ~30 s, far longer than the transport grace plus the pod rejoin grace.
+ */
+export const DEFAULT_TRANSPORT_REOFFER_AFTER_MS = 3_000
+
+/**
  * Default for {@link VoiceAgentSessionHostOptions.connectStallTimeoutMs}: how long a peer whose ICE
  * transport connected may stay below connectionState `connected` (DTLS handshake still running).
  * The vendored DTLS has no handshake timeout, so without this bound the peer never goes `failed`.
@@ -345,6 +353,10 @@ interface ClientSession {
   /** Cleared in {@link VoiceAgentSessionHost.closeClient}. */
   micTrackTimer?: ReturnType<typeof setTimeout>
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
+  /** Set on peer-left; the host does not re-offer to a client that left signaling. */
+  signalingLeft?: boolean
+  /** Armed with the disconnect timer; see `transportReofferAfterMs`. */
+  transportReofferTimer?: ReturnType<typeof setTimeout>
   /** Wall-clock ms when the transport last went down; cleared on restore or close. */
   transportDownSince?: number
   /** Armed when ICE connects while connectionState is not `connected`; see `connectStallTimeoutMs`. */
@@ -446,6 +458,14 @@ export interface VoiceAgentSessionHostOptions {
    */
   transportDisconnectGraceMs?: number
   /**
+   * After the transport has been down this long while the client is still joined on signaling,
+   * the host closes the stale peer and sends a replacement offer over the open signaling socket
+   * (the client replaces its peer connection, as on first connect). Default
+   * {@link DEFAULT_TRANSPORT_REOFFER_AFTER_MS}; `0` disables. Has no effect unless it is smaller
+   * than `transportDisconnectGraceMs`.
+   */
+  transportReofferAfterMs?: number
+  /**
    * After ICE connects, the peer must reach connectionState `connected` within this time;
    * otherwise the host treats the connection as failed, logs it and closes the peer so the
    * client can reconnect. Default {@link CONNECT_STALL_TIMEOUT_MS}; `0` disables.
@@ -468,6 +488,7 @@ export class VoiceAgentSessionHost {
   private readonly sessionBudget: VoiceSessionBudget
   private readonly sessionMode: 'voice' | 'voice+data' | 'data-only'
   private readonly transportDisconnectGraceMs: number
+  private readonly transportReofferAfterMs: number
   private readonly connectStallTimeoutMs: number
   private clientMixer: ClientAudioMixer | undefined
   /** Last explicit {@link setSttEnabled} per client (default true when agent is started). */
@@ -516,6 +537,8 @@ export class VoiceAgentSessionHost {
     this.sessionMode = options.sessionMode ?? 'voice'
     this.transportDisconnectGraceMs =
       options.transportDisconnectGraceMs ?? DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS
+    this.transportReofferAfterMs =
+      options.transportReofferAfterMs ?? DEFAULT_TRANSPORT_REOFFER_AFTER_MS
     this.connectStallTimeoutMs = options.connectStallTimeoutMs ?? CONNECT_STALL_TIMEOUT_MS
     this.clientMixer =
       this.sessionMode === 'data-only'
@@ -543,12 +566,7 @@ export class VoiceAgentSessionHost {
           this.log(`[voice ${peerId}] peer re-joined — replacing stale session`)
           await this.closeClientInner(peerId)
         }
-        try {
-          await this.connectClientInner(peerId)
-        } catch (error: unknown) {
-          console.error(`Failed to connect client ${peerId}:`, error)
-          await this.closeClientInner(peerId)
-        }
+        await this.connectOrClose(peerId)
       }).catch((error: unknown) => {
         console.error(`Failed to handle peer-joined for ${peerId}:`, error)
       })
@@ -571,6 +589,7 @@ export class VoiceAgentSessionHost {
         )
       }
       const session = this.sessions.get(peerId)
+      if (session) session.signalingLeft = true
       if (session?.clientHangup) {
         closeNow()
         return
@@ -736,7 +755,17 @@ export class VoiceAgentSessionHost {
     return false
   }
 
-  private async connectClientInner(peerId: string): Promise<void> {
+  /** Connects `peerId`; a failed connect closes whatever was half-built. */
+  private async connectOrClose(peerId: string, opts?: { reoffer?: boolean }): Promise<void> {
+    try {
+      await (opts ? this.connectClientInner(peerId, opts) : this.connectClientInner(peerId))
+    } catch (error: unknown) {
+      console.error(`Failed to connect client ${peerId}:`, error)
+      await this.closeClientInner(peerId)
+    }
+  }
+
+  private async connectClientInner(peerId: string, opts?: { reoffer?: boolean }): Promise<void> {
     if (this.hostClosing) {
       this.log(`[voice ${peerId}] connect skipped — host is closing`)
       return
@@ -783,6 +812,7 @@ export class VoiceAgentSessionHost {
     } = { budgetLease, registered: false }
     try {
       await this.connectClientBuildSession(peerId, budgetLease, {
+        reoffer: opts?.reoffer,
         onPeerCreated: (pc) => {
           partial.pc = pc
         },
@@ -849,6 +879,8 @@ export class VoiceAgentSessionHost {
     peerId: string,
     budgetLease: VoiceSessionLease,
     hooks: {
+      /** True for a replacement offered after transport loss; widens the connect-stall bound. */
+      reoffer?: boolean
       onPeerCreated: (pc: RTCPeerConnection) => void
       onAgentCreated: (agent: VoiceAgent) => void
       onRegistered: (built: { pc: RTCPeerConnection; agent?: VoiceAgent }) => void
@@ -948,7 +980,7 @@ export class VoiceAgentSessionHost {
       }
       if (iceState === 'connected' || iceState === 'completed') {
         this.noteTransportRestored(peerId, session, 'ice-restart')
-        this.armConnectStallTimer(peerId, session)
+        this.armConnectStallTimer(peerId, session, { reoffer: hooks.reoffer })
       } else if (iceState === 'disconnected') {
         this.scheduleTransportDisconnect(peerId, session)
       } else if (iceState === 'failed') {
@@ -1544,8 +1576,17 @@ export class VoiceAgentSessionHost {
    * The vendored DTLS never times out, so bound it here and close the peer (client reconnects).
    * One timer per peer; cleared on connected/failed/closed and in teardown.
    */
-  private armConnectStallTimer(peerId: string, session: ClientSession): void {
-    const timeoutMs = this.connectStallTimeoutMs
+  private armConnectStallTimer(
+    peerId: string,
+    session: ClientSession,
+    opts?: { reoffer?: boolean },
+  ): void {
+    const reoffer = opts?.reoffer === true
+    // A replacement offered after transport loss may have to wait out the rest of the outage.
+    const timeoutMs =
+      reoffer && this.connectStallTimeoutMs > 0
+        ? this.connectStallTimeoutMs + this.transportDisconnectGraceMs
+        : this.connectStallTimeoutMs
     if (!(timeoutMs > 0) || session.connectStallTimer) return
     if (session.pc.connectionState === 'connected') return
     session.connectStallTimer = setTimeout(() => {
@@ -1560,7 +1601,7 @@ export class VoiceAgentSessionHost {
       const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
       const iceState = pc.iceConnectionState
       this.log(
-        `[${tag} ${peerId}] connect stalled: ice=${iceState} connectionState=${connectionState} after ${timeoutMs}ms — closing peer`,
+        `[${tag} ${peerId}] connect stalled: ice=${iceState} connectionState=${connectionState} after ${timeoutMs}ms${reoffer ? ' reoffer=true' : ''} — closing peer`,
       )
       try {
         this.options.onConnectStall?.({ peerId, iceState, connectionState, afterMs: timeoutMs })
@@ -1576,6 +1617,10 @@ export class VoiceAgentSessionHost {
     if (session.transportDisconnectTimer) {
       clearTimeout(session.transportDisconnectTimer)
       session.transportDisconnectTimer = undefined
+    }
+    if (session.transportReofferTimer) {
+      clearTimeout(session.transportReofferTimer)
+      session.transportReofferTimer = undefined
     }
     session.transportDownSince = undefined
   }
@@ -1605,6 +1650,16 @@ export class VoiceAgentSessionHost {
           : session.pc.iceConnectionState
       this.log(`[${tag} ${peerId}] transport down (${state}) — keeping session for ${graceMs}ms`)
     }
+    if (
+      this.transportReofferAfterMs > 0 &&
+      this.transportReofferAfterMs < graceMs &&
+      !session.transportReofferTimer
+    ) {
+      session.transportReofferTimer = setTimeout(() => {
+        session.transportReofferTimer = undefined
+        this.maybeReofferAfterTransportLoss(peerId, session)
+      }, this.transportReofferAfterMs)
+    }
     session.transportDisconnectTimer = setTimeout(() => {
       session.transportDisconnectTimer = undefined
       session.transportDownSince = undefined
@@ -1627,6 +1682,32 @@ export class VoiceAgentSessionHost {
         this.voidCloseClient(peerId, session)
       }
     }, graceMs)
+  }
+
+  /**
+   * The transport has been down for `transportReofferAfterMs` and the client may not have noticed
+   * (one-way loss). While it is still on signaling, replace the peer with a fresh offer.
+   */
+  private maybeReofferAfterTransportLoss(peerId: string, session: ClientSession): void {
+    if (this.hostClosing || this.sessions.get(peerId) !== session || session.clientHangup) return
+    const tag = this.sessionMode === 'data-only' ? 'data' : 'voice'
+    if (session.signalingLeft) {
+      this.log(`[${tag} ${peerId}] transport down — not re-offering (client left signaling)`)
+      return
+    }
+    const pc = session.pc
+    const ice = pc.iceConnectionState
+    if (pc.connectionState === 'connected' && (ice === 'connected' || ice === 'completed')) return
+    this.log(
+      `[${tag} ${peerId}] transport down for ${this.transportReofferAfterMs}ms with signaling joined — re-offering a replacement session`,
+    )
+    void this.enqueuePeerOp(peerId, async () => {
+      if (this.hostClosing || this.sessions.get(peerId) !== session) return
+      await this.closeClientInner(peerId)
+      await this.connectOrClose(peerId, { reoffer: true })
+    }).catch((error: unknown) => {
+      console.error(`Failed to re-offer client ${peerId} after transport loss:`, error)
+    })
   }
 
   /** Close `peerId` only while `expected` is still its live session (a replaced peer's late events are ignored). */

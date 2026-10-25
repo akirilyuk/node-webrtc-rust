@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **helpers:** when a client's transport goes down and the client is still on signaling, the host re-offers a replacement peer after 3 s (`transportReofferAfterMs`, `0` disables) instead of waiting for the client to notice the loss. A one-way network loss no longer ends the call when the client's own ICE reports `disconnected` only after the host has closed the peer.
+
 ## [0.13.1] - 2026-10-24
 
 ### Added

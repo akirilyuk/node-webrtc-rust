@@ -21,6 +21,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **speech:** concealed inbound frames do not count toward the STT pre-roll budget (up to 500 ms extra), so the first word is kept when VAD fires late on a lossy link. Agents fed by the native inbound loop get this; agents fed from JS `readSample` do not see the concealed flag. Unflagged audio behaves as before (#499).
 - On a lossy link the time to the final transcript stays flat: about 2040 ms median at 5 % and 15 % simulated loss, against 2194 ms and 2490 ms on the old path (Sherpa roundtrip, same seeded impairment on both paths).
 
+### Fixed
+
+- **speech:** `barge_in` could arrive after `agent_speaking_end` when the TTS drain saw the flush first; the order is now always `barge_in` -> `agent_speaking_end`, with a single `agent_speaking_end` per playback. A manual `flush_tts()` with barge-in enabled (`use_vad: false`) now emits `agent_speaking_end` itself after `barge_in` when speaking was active.
+
 ## [0.13.0] - 2026-10-22
 
 ### Added

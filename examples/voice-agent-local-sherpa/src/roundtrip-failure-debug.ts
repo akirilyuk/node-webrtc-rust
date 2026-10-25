@@ -147,6 +147,13 @@ export function reportSherpaRoundtripFailure(ctx: SherpaRoundtripFailureContext)
   if (countingVerbose !== '1') {
     console.error('For TS speech events add SHERPA_COUNTING_VERBOSE=1 (or set at start of script).')
   }
+  const audioTapDir = process.env.SPEECH_TEST_AUDIO_TAP_DIR
+  if (audioTapDir) {
+    console.error(`Audio tap (inbound-* = listener inbound, stt-in-* = STT input): ${audioTapDir}`)
+    console.error(
+      `Replay: cargo run -p node-webrtc-rust-vendor-sherpa-onnx --example stt_replay -- "$SHERPA_STT_MODEL_PATH" ${audioTapDir}/stt-in-*.wav`,
+    )
+  }
   console.error('Re-run example:')
   console.error(
     `  SHERPA_COUNTING_VERBOSE=1 npm run start:<script> --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`,

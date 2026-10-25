@@ -127,6 +127,8 @@ fn actor_options(dir: Option<&'static Path>, agent_id: u64) -> SttActorOptions {
         test_final_delay_ms: 0,
         audio_tap_dir: dir,
         audio_tap_agent_id: agent_id,
+        metric_attrs: Default::default(),
+        stt_latency_sink: node_webrtc_rust_speech::stt_actor::default_stt_latency_sink(),
     }
 }
 

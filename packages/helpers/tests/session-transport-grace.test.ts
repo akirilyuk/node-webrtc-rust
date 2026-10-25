@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   DEFAULT_PEER_TRANSPORT_DISCONNECT_GRACE_MS,
+  DEFAULT_TRANSPORT_REOFFER_AFTER_MS,
   VoiceAgentSessionHost,
 } from '../src/voice-agent-session-host.js'
 import { DEFAULT_SESSION_REJOIN_GRACE_MS, SessionPod } from '../src/session-pod.js'
@@ -28,6 +29,8 @@ type FakeSession = {
   pendingIce: never[]
   transportDisconnectTimer?: ReturnType<typeof setTimeout>
   transportDownSince?: number
+  transportReofferTimer?: ReturnType<typeof setTimeout>
+  signalingLeft?: boolean
   clientHangup?: boolean
 }
 
@@ -39,7 +42,8 @@ type HostAccess = VoiceAgentSessionHost & {
     session: FakeSession,
     via: 'ice-restart' | 'rejoin',
   ) => void
-  connectClientInner: (peerId: string) => Promise<void>
+  connectClientInner: (peerId: string, opts?: { reoffer?: boolean }) => Promise<void>
+  closeClientInner: (peerId: string) => Promise<void>
   installClientHangupInterceptor: (
     peerId: string,
     session: FakeSession,
@@ -68,6 +72,7 @@ function createHost(
   opts: {
     voiceHandler?: VoiceSessionHandler
     transportDisconnectGraceMs?: number
+    transportReofferAfterMs?: number
     logs?: string[]
     handlers?: Map<string, (...args: never[]) => void>
   } = {},
@@ -86,6 +91,7 @@ function createHost(
     sessionMode: 'data-only',
     voiceHandler: opts.voiceHandler,
     transportDisconnectGraceMs: opts.transportDisconnectGraceMs,
+    transportReofferAfterMs: opts.transportReofferAfterMs,
     log: opts.logs ? (m) => opts.logs!.push(m) : () => undefined,
     sessionBudget: {
       tryAcquire: () => 'lease-test',
@@ -105,7 +111,7 @@ describe('transport disconnect grace', () => {
   it('keeps a peer whose transport is down for 6 s and resumes on reconnected', async () => {
     vi.useFakeTimers()
     const logs: string[] = []
-    const host = createHost({ logs })
+    const host = createHost({ logs, transportReofferAfterMs: 0 })
     const session = createFakeSession()
     host.sessions.set('client-1', session)
 
@@ -140,7 +146,11 @@ describe('transport disconnect grace', () => {
       teardownSession: (id: string, reason?: string) => Promise<void>
     }
     const teardown = vi.spyOn(pod, 'teardownSession').mockResolvedValue(undefined)
-    const host = createHost({ logs, voiceHandler: pod.wrapVoiceHandler('session-1') })
+    const host = createHost({
+      logs,
+      voiceHandler: pod.wrapVoiceHandler('session-1'),
+      transportReofferAfterMs: 0,
+    })
     pod.slots.set('session-1', { sessionId: 'session-1', host })
 
     const session = createFakeSession()
@@ -179,9 +189,9 @@ describe('transport disconnect grace', () => {
     const stale = createFakeSession()
     host.sessions.set('client-1', stale)
     host.scheduleTransportDisconnect('client-1', stale)
-    expect(vi.getTimerCount()).toBe(1)
+    expect(vi.getTimerCount()).toBe(2)
 
-    await vi.advanceTimersByTimeAsync(4_000)
+    await vi.advanceTimersByTimeAsync(2_000)
     ;(handlers.get('peer-joined') as (peerId: string) => void)('client-1')
     await vi.advanceTimersByTimeAsync(0)
 
@@ -189,7 +199,7 @@ describe('transport disconnect grace', () => {
     expect(stale.transportDisconnectTimer).toBeUndefined()
     expect(connect).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
-    expect(logs).toContain('[data client-1] transport restored after 4000ms (rejoin)')
+    expect(logs).toContain('[data client-1] transport restored after 2000ms (rejoin)')
 
     await vi.advanceTimersByTimeAsync(60_000)
     expect(connect).toHaveBeenCalledTimes(1)
@@ -211,8 +221,8 @@ describe('transport disconnect grace', () => {
     expect(logs).toContain('[data client-1] transport still down after 2000ms — closing peer')
   })
   /** Connects a real (never-negotiated) data-only peer and lets the test force its states. */
-  async function connectRealPeer(host: HostAccess, peerId: string) {
-    await host.connectClientInner(peerId)
+  async function connectRealPeer(host: HostAccess, peerId: string, opts?: { reoffer?: boolean }) {
+    await host.connectClientInner(peerId, opts)
     const session = host.sessions.get(peerId)!
     const state = { ice: 'connected', conn: 'connected' }
     Object.defineProperty(session.pc, 'iceConnectionState', { get: () => state.ice })
@@ -227,7 +237,7 @@ describe('transport disconnect grace', () => {
 
   it('ICE failed keeps the peer until the transport grace', async () => {
     vi.useFakeTimers()
-    const host = createHost()
+    const host = createHost({ transportReofferAfterMs: 0 })
     const { session, state, pc } = await connectRealPeer(host, 'client-1')
 
     state.ice = 'disconnected'
@@ -396,5 +406,214 @@ describe('transport disconnect grace', () => {
     wrapped?.onPeerDisconnected?.({ peerId: 'client-1' } as never, 'transport')
     await vi.advanceTimersByTimeAsync(1)
     expect(schedule).toHaveBeenCalledWith('session-1', undefined, DEFAULT_SESSION_REJOIN_GRACE_MS)
+  })
+
+  describe('re-offer after transport loss', () => {
+    it('transport down with signaling joined re-offers a replacement after 3 s', async () => {
+      vi.useFakeTimers()
+      const logs: string[] = []
+      const host = createHost({ logs })
+      const connect = vi.spyOn(host, 'connectClientInner').mockResolvedValue(undefined)
+      const close = vi.spyOn(host, 'closeClientInner')
+      const session = createFakeSession()
+      host.sessions.set('client-1', session)
+      host.scheduleTransportDisconnect('client-1', session)
+
+      expect(DEFAULT_TRANSPORT_REOFFER_AFTER_MS).toBe(3_000)
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(connect).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(close).toHaveBeenCalledTimes(1)
+      expect(connect).toHaveBeenCalledTimes(1)
+      expect(connect).toHaveBeenCalledWith('client-1', { reoffer: true })
+      expect(close.mock.invocationCallOrder[0]).toBeLessThan(connect.mock.invocationCallOrder[0]!)
+      expect(session.pc.close).toHaveBeenCalledTimes(1)
+      expect(logs).toContain(
+        '[data client-1] transport down for 3000ms with signaling joined — re-offering a replacement session',
+      )
+    })
+
+    it('no re-offer when the client already left signaling', async () => {
+      vi.useFakeTimers()
+      const logs: string[] = []
+      const host = createHost({ logs })
+      const connect = vi.spyOn(host, 'connectClientInner').mockResolvedValue(undefined)
+      const close = vi.spyOn(host, 'closeClientInner')
+      const session = createFakeSession()
+      session.signalingLeft = true
+      host.sessions.set('client-1', session)
+      host.scheduleTransportDisconnect('client-1', session)
+
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(connect).not.toHaveBeenCalled()
+      expect(close).not.toHaveBeenCalled()
+      expect(logs).toContain(
+        '[data client-1] transport down — not re-offering (client left signaling)',
+      )
+
+      await vi.advanceTimersByTimeAsync(7_000)
+      expect(host.sessions.has('client-1')).toBe(false)
+      expect(session.pc.close).toHaveBeenCalledTimes(1)
+      expect(connect).not.toHaveBeenCalled()
+    })
+
+    it('peer-left marks the session as off signaling, so no re-offer follows', async () => {
+      vi.useFakeTimers()
+      const handlers = new Map<string, (...args: never[]) => void>()
+      const host = createHost({ handlers })
+      const connect = vi.spyOn(host, 'connectClientInner').mockResolvedValue(undefined)
+      const session = createFakeSession()
+      host.sessions.set('client-1', session)
+      ;(handlers.get('peer-left') as (peerId: string) => void)('client-1')
+
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(session.signalingLeft).toBe(true)
+      expect(session.peerSignalingJoined).toBe(true)
+      expect(connect).not.toHaveBeenCalled()
+    })
+
+    it('peer-left on a pre-transport session still calls onPeerSignalingLost on close', async () => {
+      vi.useFakeTimers()
+      const handlers = new Map<string, (...args: never[]) => void>()
+      const onPeerSignalingLost = vi.fn()
+      const onPeerDisconnected = vi.fn()
+      const host = createHost({
+        handlers,
+        voiceHandler: { onPeerSignalingLost, onPeerDisconnected } as VoiceSessionHandler,
+      })
+      const session = createFakeSession('connecting')
+      session.peerTransportReadyNotified = false
+      host.sessions.set('client-1', session)
+      ;(handlers.get('peer-left') as (peerId: string) => void)('client-1')
+      expect(session.signalingLeft).toBe(true)
+
+      await host.disconnectPeer('client-1')
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(onPeerSignalingLost).toHaveBeenCalledTimes(1)
+      expect(onPeerDisconnected).not.toHaveBeenCalled()
+    })
+
+    it('no re-offer when the transport recovers within 3 s', async () => {
+      vi.useFakeTimers()
+      const host = createHost()
+      const connect = vi.spyOn(host, 'connectClientInner').mockResolvedValue(undefined)
+      const session = createFakeSession()
+      host.sessions.set('client-1', session)
+      host.scheduleTransportDisconnect('client-1', session)
+
+      await vi.advanceTimersByTimeAsync(2_000)
+      session.pc.connectionState = 'connected'
+      session.pc.iceConnectionState = 'connected'
+      host.noteTransportRestored('client-1', session, 'ice-restart')
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(session.transportReofferTimer).toBeUndefined()
+      expect(connect).not.toHaveBeenCalled()
+      expect(host.sessions.get('client-1')).toBe(session)
+    })
+
+    it('re-offer runs once per down episode', async () => {
+      vi.useFakeTimers()
+      const host = createHost()
+      const connect = vi.spyOn(host, 'connectClientInner').mockResolvedValue(undefined)
+      // The stale session stays in the map, so its own 10 s timer is still live.
+      vi.spyOn(host, 'closeClientInner').mockResolvedValue(undefined)
+      const session = createFakeSession()
+      host.sessions.set('client-1', session)
+      host.scheduleTransportDisconnect('client-1', session)
+      host.scheduleTransportDisconnect('client-1', session)
+
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(connect).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(connect).toHaveBeenCalledTimes(1)
+    })
+
+    it('transportReofferAfterMs: 0 disables the re-offer', async () => {
+      vi.useFakeTimers()
+      const host = createHost({ transportReofferAfterMs: 0 })
+      const connect = vi.spyOn(host, 'connectClientInner').mockResolvedValue(undefined)
+      const session = createFakeSession()
+      host.sessions.set('client-1', session)
+      host.scheduleTransportDisconnect('client-1', session)
+
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(host.sessions.has('client-1')).toBe(true)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(host.sessions.has('client-1')).toBe(false)
+      expect(connect).not.toHaveBeenCalled()
+    })
+
+    it('a replacement offered after transport loss gets the transport grace added to its connect-stall bound', async () => {
+      vi.useFakeTimers()
+      const logs: string[] = []
+      const host = createHost({ logs })
+      const { session, state, pc } = await connectRealPeer(host, 'client-1', { reoffer: true })
+      state.conn = 'connecting'
+      state.ice = 'connected'
+      pc.oniceconnectionstatechange()
+
+      await vi.advanceTimersByTimeAsync(19_999)
+      expect(host.sessions.get('client-1')).toBe(session)
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(host.sessions.has('client-1')).toBe(false)
+      expect(logs.some((l) => l.includes('after 20000ms reoffer=true — closing peer'))).toBe(true)
+    })
+
+    it('a normal connect keeps the 10 s connect-stall bound', async () => {
+      vi.useFakeTimers()
+      const host = createHost()
+      const { session, state, pc } = await connectRealPeer(host, 'client-1')
+      state.conn = 'connecting'
+      state.ice = 'connected'
+      pc.oniceconnectionstatechange()
+
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(host.sessions.get('client-1')).toBe(session)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(host.sessions.has('client-1')).toBe(false)
+    })
+
+    it('one-way loss the client has not noticed: the server re-offers before the window ends', async () => {
+      vi.useFakeTimers()
+      const pod = new SessionPod({} as never, {
+        signalingUrl: 'ws://127.0.0.1/ws',
+        iceServers: [],
+        voiceConfig: {} as never,
+        teardownIdleSessions: true,
+      }) as unknown as {
+        wrapVoiceHandler: (id: string, h?: VoiceSessionHandler) => VoiceSessionHandler | undefined
+        slots: Map<string, unknown>
+        teardownSession: (id: string, reason?: string) => Promise<void>
+      }
+      const teardown = vi.spyOn(pod, 'teardownSession').mockResolvedValue(undefined)
+      const host = createHost({ voiceHandler: pod.wrapVoiceHandler('session-1') })
+      pod.slots.set('session-1', { sessionId: 'session-1', host })
+      const replacement = createFakeSession('connecting')
+      // The replacement is connecting: it holds the slot and is not yet transport-ready.
+      const connect = vi
+        .spyOn(host, 'connectClientInner')
+        .mockImplementation(async (peerId: string) => {
+          host.sessions.set(peerId, replacement)
+        })
+
+      const stale = createFakeSession()
+      host.sessions.set('client-1', stale)
+      host.scheduleTransportDisconnect('client-1', stale)
+
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(connect).toHaveBeenCalledTimes(1)
+      expect(connect).toHaveBeenCalledWith('client-1', { reoffer: true })
+      expect(stale.pc.close).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(12_000)
+      expect(host.sessions.get('client-1')).toBe(replacement)
+      expect(teardown).not.toHaveBeenCalled()
+    })
   })
 })

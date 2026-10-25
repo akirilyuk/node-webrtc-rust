@@ -16,6 +16,7 @@ import {
   RTCPeerConnection,
   RTCSessionDescription,
   RemoteAudioTrack,
+  opusStereoPreference,
   type RTCDataChannel,
   type RTCIceCandidateInit,
   type RTCSessionDescriptionInit,
@@ -1524,6 +1525,7 @@ export class VoiceAgentSessionHost {
     try {
       await session.pc.setRemoteDescription(new RTCSessionDescription(sdp))
       session.remoteDescriptionSet = true
+      this.clientMixer?.setListenerReceivesStereo(peerId, opusStereoPreference(sdp.sdp))
       for (const candidate of session.pendingIce) {
         await session.pc.addIceCandidate(new RTCIceCandidate(candidate))
       }
@@ -2301,6 +2303,11 @@ export class VoiceAgentSessionHost {
         this.clientMixer!.resumeMixPump(listenerPeer)
       }
     }
+  }
+
+  /** `mix_listener_mono_decoder` warnings emitted for this host's mix (0 without a mixer). */
+  getMonoDecoderListenerWarnings(): number {
+    return this.clientMixer?.getMonoDecoderListenerWarnings() ?? 0
   }
 
   getClientMixStatus(clientId: string): ClientMixStatus {

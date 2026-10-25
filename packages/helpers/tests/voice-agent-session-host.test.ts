@@ -558,6 +558,29 @@ describe('VoiceAgentSessionHost deferred agent start', () => {
   })
 })
 
+describe('VoiceAgentSessionHost answer stereo preference', () => {
+  it('reports a Chrome default answer (no stereo=1) to the mixer as a mono listener', async () => {
+    const host = createHost({}) as HostTestAccess & {
+      ensureClientMixer: () => { setListenerReceivesStereo: (p: string, v: boolean | null) => void }
+    }
+    const mixer = host.ensureClientMixer()
+    const spy = vi.spyOn(mixer, 'setListenerReceivesStereo')
+    const session = createFakeSession({
+      pc: {
+        connectionState: 'connecting',
+        close: vi.fn(),
+        setRemoteDescription: vi.fn(async () => undefined),
+        addIceCandidate: vi.fn(async () => undefined),
+      } as FakeSession['pc'],
+    })
+    host.sessions.set('client-chrome', session)
+    const sdp =
+      'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n'
+    await host.applyAnswer('client-chrome', { type: 'answer', sdp })
+    expect(spy).toHaveBeenCalledWith('client-chrome', false)
+  })
+})
+
 describe('VoiceAgentSessionHost mic track timer', () => {
   it('does not start mic track timer when answer is applied before PC is connected', async () => {
     vi.useFakeTimers()

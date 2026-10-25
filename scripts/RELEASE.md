@@ -253,7 +253,7 @@ git pull origin main
 bash scripts/ci/run-release-tag-local-ci.sh
 ```
 
-That wrapper runs `build:native`, the native export check (`scripts/ci/check-native-exports.mjs`), `run-pr-quality.sh`, and `run-pr-tests-full.sh`, then writes `.test-logs/release-tag-gate/<sha>.json`. All must exit 0. Do not hand-run `build:native` to fix a Release quality failure: the Release quality job uses the previous published binding on purpose, so fix the test instead (it must be `*.integration.test.ts` if it needs new native APIs). Cursor **denies** `git tag release/…` / tag push without that stamp.
+That wrapper runs `build:native`, the native export check (`scripts/ci/check-native-exports.mjs`), `run-pr-quality.sh`, and `run-pr-tests-full.sh`, then writes `.test-logs/release-tag-gate/<sha>.json`. All must exit 0. Do not hand-run `build:native` to fix a Release quality failure: the Release quality job uses the previous published binding on purpose, so fix the test instead (it must be `*.integration.test.ts` if it needs new native APIs). Cursor **denies** `git tag release/…` / tag push without that stamp. On macOS it also sets `WEBRTC_LOOPBACK_ONLY_CANDIDATES=1` and `WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1`, because the application firewall drops inbound UDP on en0 (IPv4 and IPv6) for unsigned test binaries and ICE could otherwise nominate an en0 pair.
 
 `npm run ci:verify:release-ts` may fail with **`ETARGET`** for `@node-webrtc-rust/bindings@X.Y.Z` **before the first npm publish**. That is expected. Do **not** skip the wrapper because of it (0.9.6: agent skipped local `eslint .` after ETARGET and tagged a broken main).
 

@@ -5330,6 +5330,7 @@ impl VoiceAgent {
                     drain_generation,
                     silence_ms,
                     &mut pace,
+                    tts_synthesis_queue,
                 )
                 .await?;
             }
@@ -5461,6 +5462,7 @@ impl VoiceAgent {
         Ok(TtsDrainWrite::Continued)
     }
 
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn stream_post_utterance_silence(
         writer: &PcmWriter,
         tts_buffer: &TtsBuffer,
@@ -5469,9 +5471,14 @@ impl VoiceAgent {
         drain_generation: u64,
         silence_ms: u32,
         pace: &mut TtsDrainPaceState,
+        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
         let frame_count = silence_ms.div_ceil(20);
         let silent = Bytes::from(vec![0_u8; STEREO_FRAME_20MS_BYTES]);
+        if Self::next_tts_work_pending(tts_buffer, tts_synthesis_queue).await {
+            voice_debug("post-TTS silence skipped (next utterance queued)");
+            return Ok(());
+        }
         voice_debug(format!(
             "post-TTS outbound silence: {silence_ms} ms ({frame_count} frames)"
         ));
@@ -5486,6 +5493,13 @@ impl VoiceAgent {
             }
             if tts_buffer.current_generation().await != drain_generation {
                 voice_debug("post-TTS silence stopped (barge-in flush)");
+                return Ok(());
+            }
+            // The next utterance never waits for the tail: stop before writing another silent
+            // frame. The next drain pass paces from its own anchor, one frame after the last
+            // write, so there is no catch-up burst.
+            if Self::next_tts_work_pending(tts_buffer, tts_synthesis_queue).await {
+                voice_debug("post-TTS silence stopped (next utterance queued)");
                 return Ok(());
             }
             writer(silent.clone(), 20)?;
@@ -5504,6 +5518,17 @@ impl VoiceAgent {
             }
         }
         Ok(())
+    }
+
+    /// True when another utterance is queued, being synthesized, or has audio buffered.
+    /// Cheap: one buffer lock and one queue lock, none held across a write. The synthesis
+    /// busy flag is not used: the finished utterance's own job still holds it for up to one
+    /// poll interval after `agent_speaking_end`.
+    async fn next_tts_work_pending(
+        tts_buffer: &TtsBuffer,
+        tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
+    ) -> bool {
+        tts_buffer.is_speaking().await || !tts_synthesis_queue.lock().await.is_empty()
     }
 
     async fn end_agent_speaking_inner(

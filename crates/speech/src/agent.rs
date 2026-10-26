@@ -5462,6 +5462,7 @@ impl VoiceAgent {
         Ok(TtsDrainWrite::Continued)
     }
 
+    #[allow(clippy::too_many_arguments)] // shared handles of the TTS worker, kept as plain params (hot path)
     async fn stream_post_utterance_silence(
         writer: &PcmWriter,
         tts_buffer: &TtsBuffer,

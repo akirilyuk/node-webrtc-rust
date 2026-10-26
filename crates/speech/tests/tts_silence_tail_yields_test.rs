@@ -12,7 +12,6 @@ use node_webrtc_rust_speech::config::{
     SendTextToTtsOptions, SttConfig, TtsConfig, TtsVendor, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::error::SpeechResult;
-use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
 use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, VendorFactory,
 };

@@ -66,7 +66,9 @@ export function evaluateRelativeSpread(
 export const LEG_CATALOG = [
   { phrase: 'charlie one two three', keyword: 'charlie' },
   { phrase: 'bravo four five six', keyword: 'four' },
-  { phrase: 'delta seven eight nine', keyword: 'delta' },
+  // Not 'delta seven eight nine': "delta" was misheard ("fell to", "belt a") in 5 of 3000 clean
+  // syntheses (stt-phrase-qualification.json).
+  { phrase: 'victor seven eight nine', keyword: 'victor' },
   { phrase: 'echo ten eleven twelve', keyword: 'ten' },
   { phrase: 'foxtrot thirteen fourteen fifteen', keyword: 'thirteen' },
   { phrase: 'golf sixteen seventeen eighteen', keyword: 'sixteen' },
@@ -77,8 +79,6 @@ export const LEG_CATALOG = [
  * Keys and values are matched after {@link normalizeForKeyword}.
  */
 const KEYWORD_ALIASES: Record<string, readonly string[]> = {
-  // "delta" often lands as "belta" / "belt a" under concurrent TTS crosstalk.
-  delta: ['belta', 'belt a'],
   // "four" and "for" are homophones; STT cannot tell them apart (test.wrong-oracle).
   four: ['for'],
 }

@@ -34,8 +34,12 @@ export {
 /** Default max gap barge_in → agent_speaking_end after flush. */
 export const DEFAULT_MAX_BARGE_TO_AGENT_END_MS = 2000
 
-/** Phrase the barge-in roundtrips synthesize to interrupt the agent (qualified in `stt-phrase-qualification.json`). */
-export const DEFAULT_BARGE_TTS_PHRASE = 'stop now please'
+/**
+ * Phrase the barge-in roundtrips synthesize to interrupt the agent (qualified in
+ * `stt-phrase-qualification.json`). Not "stop now please": Piper sometimes drops the /t/ closure,
+ * so the recognizer hears "Sop now please" in about 1 of 750 clean syntheses (4 / 3000).
+ */
+export const DEFAULT_BARGE_TTS_PHRASE = 'excuse me please'
 
 /** Default min word similarity for barge phrase `user_speech_final` (matches roundtrip default). */
 export const DEFAULT_BARGE_PHRASE_MIN_SIMILARITY = 0.75

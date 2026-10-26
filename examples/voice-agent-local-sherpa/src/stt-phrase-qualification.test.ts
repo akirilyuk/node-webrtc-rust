@@ -32,11 +32,16 @@ import {
   DEFAULT_MIN_SIMILARITY as TTS_STREAM_MIN_SIMILARITY,
   REQUIRED_WORDS as TTS_STREAM_REQUIRED_WORDS,
 } from './roundtrip-tts-stream.js'
-import { DEFAULT_PHRASE_TWO } from './roundtrip-two-phrases.js'
+import { DEFAULT_PHRASE_TWO, PHRASE_TWO_KEYWORD } from './roundtrip-two-phrases.js'
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url))
 const EXAMPLE_DIR = join(SRC_DIR, '..')
-const MIN_SYNTHESES = 300
+/**
+ * Zero misses in 3000 syntheses bounds a phrase's miss rate below ~0.1 % (rule of three, 95 %).
+ * 300 was not enough: "stop now please" was clean in 300 and misheard as "Sop now please" in 4 of
+ * 3000, which failed the barge-in roundtrips in CI and a release.
+ */
+const MIN_SYNTHESES = 3000
 
 /** `roundtrip-counting-echo.ts` `DEFAULT_ECHO_MIN_SIMILARITY` / `SHERPA_ECHO_LEG_MIN_SIMILARITY`. */
 const ECHO_LEG_MIN_SIMILARITY = 0.6
@@ -77,8 +82,8 @@ const JUDGED: Judged[] = [
   // Barge phrases (barge-in, barge replay, counting barge recovery).
   { phrase: DEFAULT_BARGE_TTS_PHRASE, threshold: DEFAULT_BARGE_PHRASE_MIN_SIMILARITY },
   { phrase: DEFAULT_BARGE_PHRASE, threshold: DEFAULT_BARGE_PHRASE_MIN_SIMILARITY },
-  // Two-phrase roundtrip: phase 2 passes when the final contains "done" (`textIncludes`).
-  { phrase: DEFAULT_PHRASE_TWO, keyword: 'done' },
+  // Two-phrase roundtrip: phase 2 passes when the final contains its keyword (`textIncludes`).
+  { phrase: DEFAULT_PHRASE_TWO, keyword: PHRASE_TWO_KEYWORD },
   // Echo long-sentence round: leg A scores the phrase, leg B the "You said: ..." echo. nwr speaks
   // it as two engine calls (two sentences); phrase_sweep makes the same calls.
   { phrase: DEFAULT_LONG_SENTENCE_PHRASE, threshold: LONG_SENTENCE_LEG_A_MIN_SIMILARITY },

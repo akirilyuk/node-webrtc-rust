@@ -7,7 +7,7 @@
  * Phases:
  *   1. Full agent TTS playback (no interrupt).
  *   2. Random tone on user leg mid-playback → must **not** emit `barge_in`; playback ~full length.
- *   3. User-leg Sherpa TTS ("stop now please") mid-playback → must emit `barge_in`; playback truncated.
+ *   3. User-leg Sherpa TTS ("excuse me please") mid-playback → must emit `barge_in`; playback truncated.
  *
  * Run (streaming TTS chunks — product default):
  *   npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa

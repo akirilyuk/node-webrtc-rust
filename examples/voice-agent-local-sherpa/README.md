@@ -196,11 +196,11 @@ Inter-phrase separation comes from **listener VAD** (`sttGateHoldMs`, `minSilenc
 
 Same loopback as §3b, but the **listener** uses `VOICE_AGENT_VAD_PRESET` (`requireSttPartial: true`): agent TTS stops only after Sherpa recognizes words on the user leg, not on tone alone.
 
-| Phase | Inject on `userOut`                         | Expected                                                                      |
-| ----- | ------------------------------------------- | ----------------------------------------------------------------------------- |
-| 1     | — (full agent phrase)                       | Full playback baseline                                                        |
-| 2     | 440 Hz tone mid-playback                    | **No** `barge_in`; ~full length                                               |
-| 3     | Sherpa TTS barge phrase (`stop now please`) | `user_speech_partial` → `barge_in` → `agent_speaking_end`; truncated playback |
+| Phase | Inject on `userOut`                          | Expected                                                                      |
+| ----- | -------------------------------------------- | ----------------------------------------------------------------------------- |
+| 1     | — (full agent phrase)                        | Full playback baseline                                                        |
+| 2     | 440 Hz tone mid-playback                     | **No** `barge_in`; ~full length                                               |
+| 3     | Sherpa TTS barge phrase (`excuse me please`) | `user_speech_partial` → `barge_in` → `agent_speaking_end`; truncated playback |
 
 ```bash
 npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa

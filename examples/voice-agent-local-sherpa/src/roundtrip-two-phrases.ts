@@ -36,7 +36,11 @@ import {
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { evaluateNormalUtteranceLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 
-export const DEFAULT_PHRASE_TWO = 'I am done speaking'
+// Not 'I am done speaking': its keyword "done" was dropped in 2 of 3000 clean syntheses
+// (stt-phrase-qualification.json).
+export const DEFAULT_PHRASE_TWO = 'I have finished talking'
+/** Word phase 2's final must contain (qualified with `phrase_sweep --keyword`). */
+export const PHRASE_TWO_KEYWORD = 'finished'
 /** Per-phrase STT wait — keep low; wall clock is the backstop. */
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MIN_NUMBER_WORDS = 8
@@ -167,7 +171,7 @@ async function main(): Promise<void> {
     expectedCount: 2,
     maxGapMs,
     minNumberWordsFirst: minNumberWords,
-    textIncludes: ['', 'done'],
+    textIncludes: ['', PHRASE_TWO_KEYWORD],
     label: 'two-phrase',
   })
 

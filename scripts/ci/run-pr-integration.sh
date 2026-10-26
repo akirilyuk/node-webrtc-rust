@@ -15,6 +15,9 @@ cd "$ROOT"
 CI_STEP="$ROOT/scripts/ci/ci-step.sh"
 DEFAULT_CARGO_LIB_TIMEOUT_SEC="${CI_CARGO_LIB_TIMEOUT_SEC:-180}"
 DEFAULT_CARGO_PEER_TEST_TIMEOUT_SEC="${CI_CARGO_PEER_TEST_TIMEOUT_SEC:-420}"
+# The speech crate runs far more test binaries than the other libs: 115-173 s locally on
+# 2026-10-24/25, so the shared 180 s lib cap left no headroom and the step timed out mid-run.
+DEFAULT_CARGO_SPEECH_TIMEOUT_SEC="${CI_CARGO_SPEECH_TIMEOUT_SEC:-420}"
 DEFAULT_NPM_TEST_TIMEOUT_SEC="${CI_NPM_TEST_TIMEOUT_SEC:-600}"
 # Budget for compiling every cargo test binary below (cache-dependent: cold cache ~2x warm).
 DEFAULT_CARGO_BUILD_TIMEOUT_SEC="${CI_CARGO_BUILD_TIMEOUT_SEC:-900}"
@@ -120,7 +123,7 @@ if suite_enabled rust; then
     cargo test -p node-webrtc-rust-mixer
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo conference" -- \
     cargo test -p node-webrtc-rust-conference
-  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo speech" -- \
+  bash "$CI_STEP" --timeout "$DEFAULT_CARGO_SPEECH_TIMEOUT_SEC" "cargo speech" -- \
     cargo test -p node-webrtc-rust-speech
   # Streaming TTS vendors: their mock-server tests (one-send-path-per-unit) only run with `live`.
   # Cloud vendors are not live-tested in CI, so these local mock servers are the only guard of the

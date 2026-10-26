@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.4] - 2026-10-26
+
+### Fixed
+
+- **speech:** post-utterance silence now stops as soon as another utterance is queued, and is skipped when one is already queued, so sentences spoken back to back no longer have a ~1.75 s pause between them (#514).
+
 ## [0.13.3] - 2026-10-25
 
 ### Added

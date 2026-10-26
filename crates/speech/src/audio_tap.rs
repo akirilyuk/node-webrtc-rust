@@ -3,11 +3,15 @@
 //! Enabled by the env var `SPEECH_TEST_AUDIO_TAP_DIR`. It writes raw audio to disk, so it must
 //! never be set in production services. Off when the variable is unset or empty.
 //!
-//! Two taps exist:
+//! Three taps exist:
 //! - [`ContinuousTap`]: the listener's inbound mono 16 kHz PCM right after it arrives, written
 //!   as `inbound-<pid>-a<agent>-seg<NNNN>.wav` (a segment per VAD speech end, or every 10 s).
 //! - [`UtteranceTap`]: the PCM the STT actor pushes to the provider, written as
 //!   `stt-in-<pid>-a<agent>-utt<key>.wav` (one file per utterance).
+//! - [`TtsOutTap`]: the stereo 48 kHz frames the TTS drain writes to the outbound track, written
+//!   as `tts-out-<pid>-a<agent>-utt<NNNN>[-cut].wav` (one file per utterance; `-cut` when a
+//!   barge-in or stop ended it). Post-utterance silence is not included. Capped like other
+//!   utterance taps ([`UTTERANCE_TAP_MAX_BYTES`], i.e. 10 s of stereo 48 kHz).
 //!
 //! Files are written on a short-lived thread so the audio path never waits for the disk.
 
@@ -22,7 +26,8 @@ pub const AUDIO_TAP_DIR_ENV: &str = "SPEECH_TEST_AUDIO_TAP_DIR";
 
 /// Most files one process writes; further writes are skipped.
 const MAX_TAP_FILES_PER_PROCESS: u64 = 2000;
-/// Longest utterance kept by an [`UtteranceTap`] (60 s mono 16 kHz s16le).
+/// Longest utterance kept by an [`UtteranceTap`] (60 s mono 16 kHz s16le, equal to 10 s of
+/// stereo 48 kHz s16le).
 const UTTERANCE_TAP_MAX_BYTES: usize = 60 * 16_000 * 2;
 /// Segment size at which a [`ContinuousTap`] rotates (10 s mono 16 kHz s16le).
 const CONTINUOUS_TAP_SEGMENT_BYTES: usize = 10 * 16_000 * 2;
@@ -115,6 +120,11 @@ impl UtteranceTap {
         self.buf.extend_from_slice(&pcm[..take]);
     }
 
+    /// True when no audio is collected.
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
     /// Writes the collected PCM as `<kind>-<pid>-a<agent>-<label>.wav` and clears it.
     /// Nothing is written when no audio was collected.
     pub fn flush(&mut self, label: &str) {
@@ -131,6 +141,42 @@ impl UtteranceTap {
         let bytes = wav_bytes(&self.buf, self.sample_rate, self.channels);
         self.buf.clear();
         write_file_async(self.dir.join(name), bytes);
+    }
+}
+
+/// Outbound TTS frames of one agent, one WAV per utterance (see the module docs).
+pub struct TtsOutTap {
+    tap: UtteranceTap,
+    next_utterance: u64,
+}
+
+impl TtsOutTap {
+    pub fn new(dir: &'static Path, agent_id: u64) -> Self {
+        Self {
+            tap: UtteranceTap::new(dir, agent_id, "tts-out", 48_000, 2),
+            next_utterance: 0,
+        }
+    }
+
+    /// Appends one stereo 48 kHz s16le frame exactly as handed to the outbound PCM writer.
+    pub fn push(&mut self, frame: &[u8]) {
+        self.tap.push(frame);
+    }
+
+    /// Ends the utterance: writes `tts-out-<pid>-a<agent>-utt<NNNN>.wav` (`-cut` suffix when
+    /// barge-in or stop ended it) and starts the next one. Nothing is written for an empty
+    /// utterance, and the counter only advances when a file was written.
+    pub fn finish(&mut self, cut: bool) {
+        if self.tap.is_empty() {
+            return;
+        }
+        let label = if cut {
+            format!("utt{:04}-cut", self.next_utterance)
+        } else {
+            format!("utt{:04}", self.next_utterance)
+        };
+        self.tap.flush(&label);
+        self.next_utterance += 1;
     }
 }
 
@@ -271,5 +317,70 @@ mod tests {
         let data_len = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
         assert_eq!(data_len, CONTINUOUS_TAP_SEGMENT_BYTES);
         assert_eq!(bytes.len(), 44 + CONTINUOUS_TAP_SEGMENT_BYTES);
+    }
+
+    #[test]
+    fn tts_out_tap_writes_one_wav_per_utterance_with_cut_suffix() {
+        let dir = unique_dir("ttsout");
+        let mut tap = TtsOutTap::new(dir, 7);
+        let a = vec![1u8; 3840];
+        let b = vec![2u8; 3840];
+        tap.push(&a);
+        tap.push(&a);
+        tap.finish(false);
+        tap.push(&b);
+        tap.finish(true);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let files = loop {
+            let files = wav_files(dir);
+            let complete = files.len() == 2
+                && files.iter().all(|f| {
+                    std::fs::read(f).is_ok_and(|b| {
+                        b.len() >= 44
+                            && u32::from_le_bytes([b[40], b[41], b[42], b[43]]) as usize
+                                == b.len() - 44
+                    })
+                });
+            if complete || Instant::now() > deadline {
+                break files;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(files.len(), 2, "{files:?}");
+        let n0 = files[0].file_name().unwrap().to_string_lossy().to_string();
+        let n1 = files[1].file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            n0.starts_with("tts-out-") && n0.ends_with("-a7-utt0000.wav"),
+            "{n0}"
+        );
+        assert!(n1.ends_with("-a7-utt0001-cut.wav"), "{n1}");
+        let w0 = std::fs::read(&files[0]).unwrap();
+        assert_eq!(&w0[44..], [a.clone(), a].concat().as_slice());
+        assert_eq!(u16::from_le_bytes([w0[22], w0[23]]), 2);
+        assert_eq!(u32::from_le_bytes([w0[24], w0[25], w0[26], w0[27]]), 48_000);
+        let w1 = std::fs::read(&files[1]).unwrap();
+        assert_eq!(&w1[44..], b.as_slice());
+    }
+
+    #[test]
+    fn tts_out_tap_empty_finish_writes_nothing_and_keeps_counter() {
+        let dir = unique_dir("ttsout-empty");
+        let mut tap = TtsOutTap::new(dir, 8);
+        tap.finish(true);
+        tap.finish(false);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(wav_files(dir).is_empty());
+        tap.push(&[3u8; 3840]);
+        tap.finish(false);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let files = loop {
+            let files = wav_files(dir);
+            if !files.is_empty() || Instant::now() > deadline {
+                break files;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(files[0].to_string_lossy().ends_with("-a8-utt0000.wav"));
     }
 }

@@ -20,6 +20,8 @@ pub use loader::{
     tts_engine_create_count,
 };
 pub use pool::SherpaModelPool;
+#[doc(hidden)]
+pub use sentences::engine_pieces;
 pub use stt::{
     reset_sherpa_get_result_count, reset_sherpa_poll_blocking_hops, sherpa_get_result_count,
     sherpa_poll_blocking_hops,

@@ -12,7 +12,6 @@ use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis,
 };
 use node_webrtc_rust_speech::tts_cache::normalize_phrase_text;
-use node_webrtc_rust_speech::tts_text::prepare_engine_text;
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
@@ -20,7 +19,7 @@ use crate::audio::{pad_stereo_pcm_to_20ms, slice_for_sink, StreamingStereo48kRes
 use crate::loader::voice_debug;
 use crate::native_calls::NativeCallGuard;
 use crate::pool::{SherpaModelPool, TtsEnginePool};
-use crate::sentences::split_for_first_audio;
+use crate::sentences::engine_pieces;
 use crate::tts_model_paths::resolve_tts_model_dir_path;
 use crate::tts_slots::TtsPriority;
 
@@ -183,12 +182,7 @@ impl SherpaTts {
         let tts_slots = self.pool.tts_slots();
 
         // Only the engine input is adjusted; `normalized` (phrase cache key, callers) is not.
-        let engine_text = prepare_engine_text(normalized, self.config.sentence_case).text;
-        let mut sentences = split_for_first_audio(&engine_text);
-        if sentences.is_empty() {
-            // No letters or digits: keep the old behaviour and hand the text to the engine.
-            sentences.push(engine_text.to_string());
-        }
+        let sentences = engine_pieces(normalized, self.config.sentence_case);
         voice_debug(format!(
             "tts synthesis start text_len={} sentences={} stream={}",
             normalized.len(),
@@ -551,7 +545,9 @@ impl TtsProvider for SherpaTts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sentences::split_for_first_audio;
     use node_webrtc_rust_speech::config::SentenceCase;
+    use node_webrtc_rust_speech::tts_text::prepare_engine_text;
 
     #[test]
     fn build_metric_attrs_prefers_catalog_model_id() {
@@ -594,8 +590,7 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("/// One resampler shared").next())
             .expect("synthesize_miss body");
-        assert!(body.contains("prepare_engine_text(normalized, self.config.sentence_case)"));
-        assert!(body.contains("split_for_first_audio(&engine_text)"));
-        assert!(!body.contains("split_for_first_audio(normalized)"));
+        assert!(body.contains("engine_pieces(normalized, self.config.sentence_case)"));
+        assert!(!body.contains("split_for_first_audio("));
     }
 }

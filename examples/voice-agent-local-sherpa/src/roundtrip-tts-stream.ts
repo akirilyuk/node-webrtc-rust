@@ -41,12 +41,15 @@ import {
 const DEFAULT_TIMEOUT_MS = 60_000
 const DEFAULT_WARMUP_S = 0.6
 /** Streaming must not regress STT quality vs buffered (was ~0.70 when sentence deltas were sliced wrong). */
-const DEFAULT_MIN_SIMILARITY = 0.9
-/** Long enough that ONNX generate wall time is measurable vs first callback. */
-const DEFAULT_PHRASE =
-  'Why do you need so much time until you start speaking clearly to the listener. ' +
-  'Please explain every step carefully so that anyone following along can understand ' +
-  'the complete answer without needing to ask for clarification again.'
+export const DEFAULT_MIN_SIMILARITY = 0.9
+/**
+ * Long enough that ONNX generate wall time is measurable vs first callback. One literal so the
+ * phrase qualification guard (`stt-phrase-qualification.test.ts`) sees the whole phrase.
+ */
+export const DEFAULT_PHRASE =
+  'Why do you need so much time until you start speaking clearly to the listener. Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again.'
+/** Words both legs' transcripts must contain (`evaluateRecognizedContainsWords`). */
+export const REQUIRED_WORDS = ['why', 'need', 'time', 'speaking'] as const
 
 type StreamMode = 'streaming' | 'buffered'
 
@@ -222,7 +225,7 @@ async function main(): Promise<void> {
     maxRegressionMs,
   })
 
-  const requiredWords = ['why', 'need', 'time', 'speaking']
+  const requiredWords = [...REQUIRED_WORDS]
   const sttBuffered = evaluateRecognizedContainsWords({
     recognized: buffered.recognized,
     requiredWords,
@@ -284,9 +287,13 @@ async function main(): Promise<void> {
   process.exit(0)
 }
 
-main().catch((err) => {
-  exitSherpaRoundtripFailure({
-    reason: err instanceof Error ? err.message : String(err),
-    error: err,
+const isMain = process.argv[1]?.endsWith('roundtrip-tts-stream.ts') === true
+
+if (isMain) {
+  main().catch((err) => {
+    exitSherpaRoundtripFailure({
+      reason: err instanceof Error ? err.message : String(err),
+      error: err,
+    })
   })
-})
+}

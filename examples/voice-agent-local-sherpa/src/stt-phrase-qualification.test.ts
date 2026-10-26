@@ -21,11 +21,27 @@ import {
   DEFAULT_BARGE_PHRASE,
   DEFAULT_RECOVERY_PHRASE,
 } from './roundtrip-counting-barge-recovery.js'
-import { DEFAULT_PHRASE_TWO } from './roundtrip-two-phrases.js'
+import {
+  DEFAULT_ECHO_MIN_SIMILARITY,
+  DEFAULT_LONG_SENTENCE_PHRASE,
+  DEFAULT_MIN_SIMILARITY as LONG_SENTENCE_LEG_A_MIN_SIMILARITY,
+  ECHO_REPLY_PREFIX,
+} from './roundtrip-counting-echo.js'
+import {
+  DEFAULT_PHRASE as TTS_STREAM_PHRASE,
+  DEFAULT_MIN_SIMILARITY as TTS_STREAM_MIN_SIMILARITY,
+  REQUIRED_WORDS as TTS_STREAM_REQUIRED_WORDS,
+} from './roundtrip-tts-stream.js'
+import { DEFAULT_PHRASE_TWO, PHRASE_TWO_KEYWORD } from './roundtrip-two-phrases.js'
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url))
 const EXAMPLE_DIR = join(SRC_DIR, '..')
-const MIN_SYNTHESES = 300
+/**
+ * Zero misses in 3000 syntheses bounds a phrase's miss rate below ~0.1 % (rule of three, 95 %).
+ * 300 was not enough: "stop now please" was clean in 300 and misheard as "Sop now please" in 4 of
+ * 3000, which failed the barge-in roundtrips in CI and a release.
+ */
+const MIN_SYNTHESES = 3000
 
 /** `roundtrip-counting-echo.ts` `DEFAULT_ECHO_MIN_SIMILARITY` / `SHERPA_ECHO_LEG_MIN_SIMILARITY`. */
 const ECHO_LEG_MIN_SIMILARITY = 0.6
@@ -46,7 +62,13 @@ interface QualificationTable {
   phrases: QualifiedPhrase[]
 }
 
-type Judged = { phrase: string; threshold: number } | { phrase: string; keyword: string }
+/**
+ * `threshold`: minimum word similarity; `keyword`: word(s) every transcript must contain as whole
+ * tokens (several joined with `,`, as `phrase_sweep` writes them for repeated `--keyword`).
+ */
+type Judged =
+  | { phrase: string; threshold: number; keyword?: string }
+  | { phrase: string; threshold?: number; keyword: string }
 
 const table = JSON.parse(
   readFileSync(join(EXAMPLE_DIR, 'stt-phrase-qualification.json'), 'utf8'),
@@ -60,8 +82,21 @@ const JUDGED: Judged[] = [
   // Barge phrases (barge-in, barge replay, counting barge recovery).
   { phrase: DEFAULT_BARGE_TTS_PHRASE, threshold: DEFAULT_BARGE_PHRASE_MIN_SIMILARITY },
   { phrase: DEFAULT_BARGE_PHRASE, threshold: DEFAULT_BARGE_PHRASE_MIN_SIMILARITY },
-  // Two-phrase roundtrip: phase 2 passes when the final contains "done" (`textIncludes`).
-  { phrase: DEFAULT_PHRASE_TWO, keyword: 'done' },
+  // Two-phrase roundtrip: phase 2 passes when the final contains its keyword (`textIncludes`).
+  { phrase: DEFAULT_PHRASE_TWO, keyword: PHRASE_TWO_KEYWORD },
+  // Echo long-sentence round: leg A scores the phrase, leg B the "You said: ..." echo. nwr speaks
+  // it as two engine calls (two sentences); phrase_sweep makes the same calls.
+  { phrase: DEFAULT_LONG_SENTENCE_PHRASE, threshold: LONG_SENTENCE_LEG_A_MIN_SIMILARITY },
+  {
+    phrase: `${ECHO_REPLY_PREFIX}${DEFAULT_LONG_SENTENCE_PHRASE}`,
+    threshold: DEFAULT_ECHO_MIN_SIMILARITY,
+  },
+  // TTS stream roundtrip: similarity on both legs plus required words.
+  {
+    phrase: TTS_STREAM_PHRASE,
+    threshold: TTS_STREAM_MIN_SIMILARITY,
+    keyword: TTS_STREAM_REQUIRED_WORDS.join(','),
+  },
   // The 3 legs CI runs in the concurrent multi-client roundtrip: judged by keyword only.
   ...LEG_CATALOG.slice(0, 3).map(({ phrase, keyword }) => ({ phrase, keyword })),
 ]
@@ -77,10 +112,6 @@ const UNQUALIFIED_PHRASES: Record<string, string> = {
     'counting phrase, judged by number-word counts, not by word similarity',
   'The quick brown fox jumps over the lazy dog and then continues speaking for several more seconds so we can interrupt playback.':
     'agent speech that barge-in cuts off; judged by playback duration ratios, its transcript is not compared',
-  'This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.':
-    'NOT QUALIFIED YET: long-sentence echo round judged at 0.75 / 0.6 similarity; it is over 12 words, so nwr splits it into several engine calls, which phrase_sweep (one call per phrase) does not reproduce',
-  'Why do you need so much time until you start speaking clearly to the listener. ':
-    'NOT QUALIFIED YET: tts-stream roundtrip judged at 0.9 similarity; multi-sentence, so nwr splits it into several engine calls, which phrase_sweep (one call per phrase) does not reproduce',
 }
 
 interface PhraseConstant {
@@ -103,7 +134,7 @@ export function findPhraseConstants(source: string): PhraseConstant[] {
 }
 
 function sweepCommand(item: Judged): string {
-  const keyword = 'keyword' in item ? ` --keyword ${item.keyword}` : ''
+  const keyword = (item.keyword?.split(',') ?? []).map((word) => ` --keyword ${word}`).join('')
   return (
     'cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep -- ' +
     `--stt <stt-model-dir> --tts <tts-model-dir> --n ${MIN_SYNTHESES}${keyword} "${item.phrase}"`
@@ -129,7 +160,7 @@ describe('STT phrase qualification', () => {
       const hint = `phrase ${JSON.stringify(item.phrase)} is judged by a roundtrip but not qualified; run: ${sweepCommand(item)} and add the output to stt-phrase-qualification.json`
       expect(entry, hint).toBeDefined()
       expect(entry!.n, `${hint} (n < ${MIN_SYNTHESES})`).toBeGreaterThanOrEqual(MIN_SYNTHESES)
-      if ('keyword' in item) {
+      if (item.keyword !== undefined) {
         expect(entry!.keyword, `${hint} (swept without --keyword ${item.keyword})`).toBe(
           item.keyword,
         )
@@ -137,7 +168,8 @@ describe('STT phrase qualification', () => {
           entry!.keywordMissing,
           `phrase ${JSON.stringify(item.phrase)}: keyword "${item.keyword}" missing in ${entry!.keywordMissing} of ${entry!.n} syntheses; pick another phrase, then run: ${sweepCommand(item)}`,
         ).toBe(0)
-      } else {
+      }
+      if (item.threshold !== undefined) {
         expect(
           entry!.minObserved,
           `phrase ${JSON.stringify(item.phrase)}: min similarity ${entry!.minObserved} < ${item.threshold}; pick another phrase, then run: ${sweepCommand(item)}`,

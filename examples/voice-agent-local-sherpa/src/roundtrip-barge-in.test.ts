@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
   agentSpeakingDurationMs,
+  diffInboundAudioCounters,
+  formatInboundAudioCounters,
+  inboundAudioCounters,
+  INBOUND_AUDIO_COUNTER_KEYS,
+  type InboundAudioCounters,
   evaluateBargeReplayDurations,
   evaluateBargeUtteranceFinal,
   evaluateSemanticBargeEventOrder,
@@ -321,5 +326,65 @@ describe('evaluateBargeReplayDurations', () => {
       dReplayMs: 12_000,
     })
     expect(result.passed).toBe(false)
+  })
+})
+
+describe('inbound audio counters', () => {
+  it('inboundAudioCounters sums inbound-rtp audio entries only', () => {
+    const report = new Map<string, Record<string, unknown>>([
+      [
+        'a',
+        {
+          type: 'inbound-rtp',
+          kind: 'audio',
+          packetsReceived: 10,
+          packetsLost: 1,
+          nwrPlcDecodes: 2,
+        },
+      ],
+      [
+        'b',
+        {
+          type: 'inbound-rtp',
+          kind: 'audio',
+          packetsReceived: 5,
+          packetsLost: 2,
+          concealedSamples: 960,
+        },
+      ],
+      ['c', { type: 'inbound-rtp', kind: 'video', packetsReceived: 100, packetsLost: 50 }],
+      ['d', { type: 'outbound-rtp', kind: 'audio', packetsReceived: 100, packetsLost: 50 }],
+    ])
+    const c = inboundAudioCounters(report)
+    expect(c.packetsReceived).toBe(15)
+    expect(c.packetsLost).toBe(3)
+    expect(c.nwrPlcDecodes).toBe(2)
+    expect(c.concealedSamples).toBe(960)
+  })
+
+  it('inboundAudioCounters counts missing or non-numeric fields as 0', () => {
+    const report = new Map<string, Record<string, unknown>>([
+      ['a', { type: 'inbound-rtp', kind: 'audio', packetsReceived: 'x', packetsLost: null }],
+    ])
+    const c = inboundAudioCounters(report)
+    for (const key of INBOUND_AUDIO_COUNTER_KEYS) expect(c[key]).toBe(0)
+  })
+
+  it('diffInboundAudioCounters subtracts per key', () => {
+    const zero = inboundAudioCounters(new Map())
+    const before: InboundAudioCounters = { ...zero, packetsReceived: 10, nwrLostPackets: 1 }
+    const after: InboundAudioCounters = { ...zero, packetsReceived: 25, nwrLostPackets: 4 }
+    const d = diffInboundAudioCounters(before, after)
+    expect(d.packetsReceived).toBe(15)
+    expect(d.nwrLostPackets).toBe(3)
+    expect(d.packetsLost).toBe(0)
+  })
+
+  it('formatInboundAudioCounters keeps key order', () => {
+    const c = inboundAudioCounters(new Map())
+    const text = formatInboundAudioCounters({ ...c, packetsReceived: 7, nwrUndecodablePackets: 2 })
+    expect(text.split(' ').map((p) => p.split('=')[0])).toEqual([...INBOUND_AUDIO_COUNTER_KEYS])
+    expect(text.startsWith('packetsReceived=7 ')).toBe(true)
+    expect(text.endsWith('nwrUndecodablePackets=2')).toBe(true)
   })
 })

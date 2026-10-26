@@ -16,7 +16,7 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
   })
 
   it('DEFAULT_BARGE_PHRASE matches semantic barge-in default', () => {
-    expect(DEFAULT_BARGE_PHRASE).toBe('stop now please')
+    expect(DEFAULT_BARGE_PHRASE).toBe('excuse me please')
   })
 
   it('echoPayloadForCompare strips You said prefix', () => {

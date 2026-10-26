@@ -34,8 +34,12 @@ export {
 /** Default max gap barge_in → agent_speaking_end after flush. */
 export const DEFAULT_MAX_BARGE_TO_AGENT_END_MS = 2000
 
-/** Phrase the barge-in roundtrips synthesize to interrupt the agent (qualified in `stt-phrase-qualification.json`). */
-export const DEFAULT_BARGE_TTS_PHRASE = 'stop now please'
+/**
+ * Phrase the barge-in roundtrips synthesize to interrupt the agent (qualified in
+ * `stt-phrase-qualification.json`). Not "stop now please": Piper sometimes drops the /t/ closure,
+ * so the recognizer hears "Sop now please" in about 1 of 750 clean syntheses (4 / 3000).
+ */
+export const DEFAULT_BARGE_TTS_PHRASE = 'excuse me please'
 
 /** Default min word similarity for barge phrase `user_speech_final` (matches roundtrip default). */
 export const DEFAULT_BARGE_PHRASE_MIN_SIMILARITY = 0.75
@@ -510,3 +514,52 @@ export {
   evaluateTonePhaseLifecycle,
   type LifecycleSpeechEvent,
 } from './roundtrip-stt-lifecycle-helpers.js'
+
+export const INBOUND_AUDIO_COUNTER_KEYS = [
+  'packetsReceived',
+  'packetsLost',
+  'packetsDiscarded',
+  'concealedSamples',
+  'concealmentEvents',
+  'nwrLostPackets',
+  'nwrReorderedPackets',
+  'nwrLateAfterLossPackets',
+  'nwrFecDecodes',
+  'nwrPlcDecodes',
+  'nwrLostNotConcealed',
+  'nwrUndecodablePackets',
+] as const
+
+export type InboundAudioCounters = Record<(typeof INBOUND_AUDIO_COUNTER_KEYS)[number], number>
+
+/** Sums the counters over every inbound-rtp audio entry; a missing or non-numeric field counts 0. */
+export function inboundAudioCounters(
+  report: ReadonlyMap<string, Record<string, unknown>>,
+): InboundAudioCounters {
+  const sums = Object.fromEntries(
+    INBOUND_AUDIO_COUNTER_KEYS.map((key) => [key, 0]),
+  ) as InboundAudioCounters
+  for (const entry of report.values()) {
+    if (entry.type !== 'inbound-rtp' || entry.kind !== 'audio') continue
+    for (const key of INBOUND_AUDIO_COUNTER_KEYS) {
+      const value = entry[key]
+      if (typeof value === 'number' && Number.isFinite(value)) sums[key] += value
+    }
+  }
+  return sums
+}
+
+/** after − before per key. */
+export function diffInboundAudioCounters(
+  before: InboundAudioCounters,
+  after: InboundAudioCounters,
+): InboundAudioCounters {
+  const diff = {} as InboundAudioCounters
+  for (const key of INBOUND_AUDIO_COUNTER_KEYS) diff[key] = after[key] - before[key]
+  return diff
+}
+
+/** `key=value` pairs joined by spaces, in INBOUND_AUDIO_COUNTER_KEYS order. */
+export function formatInboundAudioCounters(c: InboundAudioCounters): string {
+  return INBOUND_AUDIO_COUNTER_KEYS.map((key) => `${key}=${c[key]}`).join(' ')
+}

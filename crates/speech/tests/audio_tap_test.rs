@@ -13,6 +13,7 @@ use node_webrtc_rust_speech::config::{
     SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::error::SpeechResult;
+use node_webrtc_rust_speech::pipeline::TtsAudioChunk;
 use node_webrtc_rust_speech::pipeline::{
     FinalizeMode, SttOutput, SttProvider, SttTranscript, VendorFactory,
 };
@@ -293,6 +294,104 @@ async fn agent_inbound_tap_flushes_a_segment_at_speech_end() {
         .collect();
     assert!(!stt_in.is_empty(), "{files:?}");
     assert!(name_of(stt_in[0]).contains("-utt"), "{files:?}");
+
+    let _ = agent.stop().await;
+}
+
+/// Ten 20 ms stereo frames with distinct levels, as a single chunk.
+struct TenFrameTts;
+
+#[async_trait]
+impl node_webrtc_rust_speech::TtsProvider for TenFrameTts {
+    fn vendor_name(&self) -> &'static str {
+        "ten-frame"
+    }
+    async fn synthesize(&self, _text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+        let mut pcm = Vec::new();
+        for i in 0..10 {
+            pcm.extend_from_slice(&stereo_frame(100 * (i + 1)));
+        }
+        Ok(vec![TtsAudioChunk {
+            pcm: Bytes::from(pcm),
+            duration_ms: 200,
+        }])
+    }
+}
+
+struct TenFrameFactory;
+
+impl VendorFactory for TenFrameFactory {
+    fn create_stt(&self, config: &SttConfig) -> SpeechResult<Box<dyn SttProvider>> {
+        MockFactory.create_stt(config)
+    }
+    fn create_tts(
+        &self,
+        _config: &TtsConfig,
+    ) -> SpeechResult<Box<dyn node_webrtc_rust_speech::TtsProvider>> {
+        Ok(Box::new(TenFrameTts))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tts_out_tap_writes_the_frames_sent_to_the_outbound_writer() {
+    let dir = unique_dir("tts-out");
+    let mut registry = VendorRegistry::new();
+    registry.register_tts(TtsVendor::Mock, Arc::new(TenFrameFactory));
+    let config = VoiceAgentConfig {
+        stt: None,
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+            endpoint: None,
+            sentence_case: Default::default(),
+            transport: None,
+        }),
+        ..Default::default()
+    };
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let written: Arc<Mutex<Vec<Bytes>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&written);
+    let writer: PcmWriter = Arc::new(move |pcm, _ms| {
+        sink.lock().unwrap().push(pcm);
+        Ok(())
+    });
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.set_audio_tap_dir_for_test(dir).await;
+    agent.start(None).await.unwrap();
+
+    agent.send_text_to_tts("hello tap").await.unwrap();
+    agent.wait_tts_playback_idle().await.unwrap();
+
+    let files = wait_files(dir, |f| {
+        f.iter().any(|p| name_of(p).starts_with("tts-out-"))
+    })
+    .await;
+    let tts_out: Vec<&PathBuf> = files
+        .iter()
+        .filter(|p| name_of(p).starts_with("tts-out-"))
+        .collect();
+    assert_eq!(tts_out.len(), 1, "{files:?}");
+    assert!(name_of(tts_out[0]).ends_with("-utt0000.wav"), "{files:?}");
+
+    // The first 10 writer calls are the TTS frames; anything after is post-utterance silence.
+    let expected: Vec<u8> = written
+        .lock()
+        .unwrap()
+        .iter()
+        .take(10)
+        .flat_map(|b| b.to_vec())
+        .collect();
+    assert_eq!(expected.len(), 10 * 3840);
+    let bytes = std::fs::read(tts_out[0]).unwrap();
+    assert_eq!(u16::from_le_bytes([bytes[22], bytes[23]]), 2);
+    assert_eq!(
+        u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
+        48_000
+    );
+    assert_eq!(&bytes[44..], expected.as_slice());
 
     let _ = agent.stop().await;
 }

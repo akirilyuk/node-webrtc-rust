@@ -2,102 +2,185 @@
   "stt": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
   "tts": "vits-piper-en_US-amy-low",
   "tool": "cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep",
-  "date": "2026-10-24",
+  "date": "2026-10-26",
   "phrases": [
     {
       "phrase": "good morning, this is the recovery test",
-      "n": 300,
+      "n": 3000,
       "minObserved": 1,
       "below075": 0,
       "below060": 0,
       "keyword": null,
       "keywordMissing": null,
       "topTexts": [
-        ["Good morning. This is the recovery test.", 298],
-        ["Good morning. This is the recovery test", 2]
+        ["Good morning. This is the recovery test.", 2922],
+        ["Good morning. This is the recovery test", 74],
+        ["Good morning this is the recovery test.", 4]
       ]
     },
     {
       "phrase": "You said: good morning, this is the recovery test",
-      "n": 300,
-      "minObserved": 1,
+      "n": 3000,
+      "minObserved": 0.8888888888888888,
       "below075": 0,
       "below060": 0,
       "keyword": null,
       "keywordMissing": null,
       "topTexts": [
-        ["You said good morning. This is the recovery test.", 193],
-        ["You said good morning, this is the recovery test.", 73],
-        ["You said good morning this is the recovery test.", 26],
-        ["You said, good morning. This is the recovery test.", 5],
-        ["You said, good morning, this is the recovery test.", 2]
+        ["You said good morning. This is the recovery test.", 1860],
+        ["You said good morning, this is the recovery test.", 707],
+        ["You said good morning this is the recovery test.", 354],
+        ["You said, good morning, this is the recovery test.", 29],
+        ["You said, good morning. This is the recovery test.", 25]
       ]
     },
     {
-      "phrase": "stop now please",
-      "n": 300,
+      "phrase": "excuse me please",
+      "n": 3000,
       "minObserved": 1,
       "below075": 0,
       "below060": 0,
-      "keyword": null,
-      "keywordMissing": null,
-      "topTexts": [
-        ["Stop now, please.", 226],
-        ["Stop now, please", 25],
-        ["Stop, now please.", 24],
-        ["Stop now please.", 8],
-        ["Stop, now, please.", 8]
-      ]
-    },
-    {
-      "phrase": "I am done speaking",
-      "n": 300,
-      "minObserved": 0.75,
-      "below075": 0,
-      "below060": 0,
-      "keyword": "done",
+      "keyword": "excuse",
       "keywordMissing": 0,
       "topTexts": [
-        ["I am done speaking.", 182],
-        ["I am done speaking", 112],
-        ["I'm done speaking", 4],
-        ["I'm done speaking.", 2]
+        ["Excuse me, please.", 2355],
+        ["Excuse me, please", 642],
+        ["Excuse me please", 3]
+      ]
+    },
+    {
+      "phrase": "I have finished talking",
+      "n": 3000,
+      "minObserved": 1,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "finished",
+      "keywordMissing": 0,
+      "topTexts": [
+        ["I have finished talking", 2799],
+        ["I have finished talking.", 201]
       ]
     },
     {
       "phrase": "charlie one two three",
-      "n": 300,
+      "n": 3000,
       "minObserved": 0.75,
       "below075": 0,
       "below060": 0,
       "keyword": "charlie",
       "keywordMissing": 0,
       "topTexts": [
-        ["Charlie one two three", 249],
-        ["Charlie won two three", 51]
+        ["Charlie one two three", 2525],
+        ["Charlie won two three", 474],
+        ["Charlie one, two, three", 1]
       ]
     },
     {
       "phrase": "bravo four five six",
-      "n": 300,
+      "n": 3000,
       "minObserved": 1,
       "below075": 0,
       "below060": 0,
       "keyword": "four",
       "keywordMissing": 0,
-      "topTexts": [["Bravo four five six", 300]]
+      "topTexts": [["Bravo four five six", 3000]]
     },
     {
-      "phrase": "delta seven eight nine",
-      "n": 300,
+      "phrase": "victor seven eight nine",
+      "n": 3000,
       "minObserved": 1,
       "below075": 0,
       "below060": 0,
-      "keyword": "delta",
+      "keyword": "victor",
       "keywordMissing": 0,
       "topTexts": [
-        ["Delta seven eight nine", 298],
-        ["delta seven eight nine", 2]
+        ["Victor Seven eight nine", 1798],
+        ["Victor seven eight nine", 1202]
+      ]
+    },
+    {
+      "phrase": "This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.",
+      "n": 3000,
+      "minObserved": 0.92,
+      "below075": 0,
+      "below060": 0,
+      "keyword": null,
+      "keywordMissing": null,
+      "topTexts": [
+        [
+          "This is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          2989
+        ],
+        [
+          "This is a very long sentence may be the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          7
+        ],
+        [
+          "This is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured.",
+          3
+        ],
+        [
+          "This is a very long sentence maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          1
+        ]
+      ]
+    },
+    {
+      "phrase": "You said: This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.",
+      "n": 3000,
+      "minObserved": 0.8888888888888888,
+      "below075": 0,
+      "below060": 0,
+      "keyword": null,
+      "keywordMissing": null,
+      "topTexts": [
+        [
+          "You said this is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          1490
+        ],
+        [
+          "You said this is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured.",
+          514
+        ],
+        [
+          "You said this is a very long sentence. Maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          290
+        ],
+        [
+          "You said this is a very long sentence, baby the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          188
+        ],
+        [
+          "You said this is a very long sentence. They be the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
+          147
+        ]
+      ]
+    },
+    {
+      "phrase": "Why do you need so much time until you start speaking clearly to the listener. Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again.",
+      "n": 3000,
+      "minObserved": 0.972972972972973,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "why,need,time,speaking",
+      "keywordMissing": 0,
+      "topTexts": [
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again",
+          2740
+        ],
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again.",
+          250
+        ],
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following the long can understand the complete answer without needing to ask for clarification again",
+          7
+        ],
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so but anyone following along can understand the complete answer without needing to ask for clarification again",
+          3
+        ]
       ]
     }
   ]

@@ -49,6 +49,29 @@ pub fn create_recognizer(model_dir: &Path) -> Result<OnlineRecognizer, String> {
     OnlineRecognizer::create(&config).ok_or_else(|| "failed to create OnlineRecognizer".to_string())
 }
 
+/// Writes f32 `samples` as a 16 kHz mono s16le PCM WAV (the format [`read_wav`] reads).
+pub fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + samples.len() * 2);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&(SAMPLE_RATE as u32).to_le_bytes());
+    out.extend_from_slice(&(SAMPLE_RATE as u32 * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        let value = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    fs::write(path, out).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
 /// Samples of a 16 kHz mono s16le PCM WAV, normalized to f32.
 pub fn read_wav(path: &Path) -> Result<Vec<f32>, String> {
     let bytes = fs::read(path).map_err(|e| format!("read: {e}"))?;
@@ -154,19 +177,27 @@ pub fn generation_config() -> GenerationConfig {
     }
 }
 
-/// Synthesize `text` as nwr's Sherpa TTS would hand it to the engine (sentence-start
-/// capitalization from `prepare_engine_text`, `SentenceCase::Auto`). Returns the samples and the
-/// engine sample rate. Texts up to 12 words are one engine call in nwr too (`split_for_first_audio`).
+/// Synthesize `text` with the engine calls nwr's Sherpa TTS makes for it: whitespace
+/// normalization (`normalize_phrase_text`), then [`engine_pieces`] (sentence-start capitalization
+/// under `SentenceCase::Auto`, split into sentences with a short first piece), one engine call per
+/// piece, samples concatenated back to back as `synthesize_miss` streams them. Returns the samples
+/// and the engine sample rate.
+///
+/// [`engine_pieces`]: node_webrtc_rust_vendor_sherpa_onnx::engine_pieces
 pub fn synthesize(tts: &OfflineTts, text: &str) -> Result<(Vec<f32>, i32), String> {
     use node_webrtc_rust_speech::config::SentenceCase;
-    use node_webrtc_rust_speech::tts_text::prepare_engine_text;
-    let engine_text = prepare_engine_text(text, SentenceCase::Auto).text;
-    let audio = tts
-        .generate_with_config(
-            &engine_text,
-            &generation_config(),
-            None::<fn(&[f32], f32) -> bool>,
-        )
-        .ok_or_else(|| "OfflineTts generation returned no audio".to_string())?;
-    Ok((audio.samples().to_vec(), tts.sample_rate()))
+    use node_webrtc_rust_speech::tts_cache::normalize_phrase_text;
+    use node_webrtc_rust_vendor_sherpa_onnx::engine_pieces;
+    let mut samples = Vec::new();
+    for piece in engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto) {
+        let audio = tts
+            .generate_with_config(
+                &piece,
+                &generation_config(),
+                None::<fn(&[f32], f32) -> bool>,
+            )
+            .ok_or_else(|| format!("OfflineTts generation returned no audio for {piece:?}"))?;
+        samples.extend_from_slice(audio.samples());
+    }
+    Ok((samples, tts.sample_rate()))
 }

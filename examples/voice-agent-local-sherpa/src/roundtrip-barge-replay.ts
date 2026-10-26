@@ -15,7 +15,7 @@
  *
  * d(agent) = agent_speaking_start → agent_speaking_end for one `sendTextToTTS` call.
  *   Phase R: separate agent, own cache scope (`ref-<nonce>`), phrase P, no barge → dRef
- *   Phase A: main agent (`p1-<nonce>`) speaks P, user leg says "stop now please" 1500 ms after
+ *   Phase A: main agent (`p1-<nonce>`) speaks P, user leg says "excuse me please" 1500 ms after
  *            agent_speaking_start → barge_in → dA
  *   Phase B: main agent speaks P again, no barge → dB
  * Pass: dA < 0.5 x dRef (the barge happened) and dB >= 0.85 x dRef (the replay is complete).

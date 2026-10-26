@@ -45,7 +45,10 @@ import {
   runEchoRound,
   transcriptIncludesYouSaid,
 } from './roundtrip-counting-echo.js'
-import { evaluateBargeUtteranceFinal } from './roundtrip-barge-in-helpers.js'
+import {
+  DEFAULT_BARGE_TTS_PHRASE,
+  evaluateBargeUtteranceFinal,
+} from './roundtrip-barge-in-helpers.js'
 import { evaluateBargePathLifecycle } from './roundtrip-stt-lifecycle-helpers.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 
@@ -91,7 +94,7 @@ function agent1VadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['
 // Qualified against the recognizer in `stt-phrase-qualification.json`; the old phrase was misheard
 // ("hello" -> "the low", "two" -> "to") in ~3 % of clean syntheses.
 export const DEFAULT_RECOVERY_PHRASE = 'good morning, this is the recovery test'
-export const DEFAULT_BARGE_PHRASE = 'stop now please'
+export const DEFAULT_BARGE_PHRASE = DEFAULT_BARGE_TTS_PHRASE
 
 const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_MIN_NUMBER_WORDS = 8

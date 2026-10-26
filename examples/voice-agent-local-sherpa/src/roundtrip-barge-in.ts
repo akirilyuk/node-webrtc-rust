@@ -7,7 +7,7 @@
  * Phases:
  *   1. Full agent TTS playback (no interrupt).
  *   2. Random tone on user leg mid-playback → must **not** emit `barge_in`; playback ~full length.
- *   3. User-leg Sherpa TTS ("stop now please") mid-playback → must emit `barge_in`; playback truncated.
+ *   3. User-leg Sherpa TTS ("excuse me please") mid-playback → must emit `barge_in`; playback truncated.
  *
  * Run (streaming TTS chunks — product default):
  *   npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
@@ -36,7 +36,10 @@ import {
   evaluateSemanticBargeEventOrder,
   evaluateTonePhaseLifecycle,
   formatRecordedSpeechEvent,
+  diffInboundAudioCounters,
+  formatInboundAudioCounters,
   hasUserSpeechFinal,
+  inboundAudioCounters,
   logRecordedSpeechEvents,
   phase1BaselineComplete,
   phase2EventsComplete,
@@ -364,6 +367,18 @@ async function main(): Promise<void> {
   logSignalingReady({ port: server.port })
   attachRoundtripConnectionLogs({ agentPc, userPc })
 
+  /** Listener inbound audio counters; a getStats failure is logged and never fails the run. */
+  const readInboundAudioCounters = async () => {
+    try {
+      return inboundAudioCounters(await agentPc.getStats())
+    } catch (err) {
+      console.log(
+        `[Phase 3] listener inbound audio stats unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      return undefined
+    }
+  }
+
   const listener = new VoiceAgent({
     stt: config.stt,
     tts: config.tts,
@@ -475,6 +490,9 @@ async function main(): Promise<void> {
   await streamSilence(agentOut, 0.3)
   await streamSilence(userOut, interPhaseDrainS)
 
+  // When the barge phrase is misheard, these counters tell transport loss on the loopback from a
+  // bad synthesis (the sender's own audio is in the tts-out tap files).
+  const phase3InboundBefore = await readInboundAudioCounters()
   logE2ePhase({ phase: 'Phase 3', detail: 'user TTS barge phrase on user-pc — must barge' })
   console.log('--- Phase 3: user TTS barge phrase mid-playback (must barge) ---')
   const postSilenceS = postTtsSilenceSeconds(config)
@@ -513,6 +531,17 @@ async function main(): Promise<void> {
     ])
     phase3Events = [...phase3Events, ...finalizeEvents]
     logRecordedSpeechEvents(finalizeEvents, 'Phase 3 finalize')
+  }
+
+  if (phase3InboundBefore) {
+    const phase3InboundAfter = await readInboundAudioCounters()
+    if (phase3InboundAfter) {
+      console.log(
+        `[Phase 3] listener inbound audio (agent-pc, phase delta): ${formatInboundAudioCounters(
+          diffInboundAudioCounters(phase3InboundBefore, phase3InboundAfter),
+        )}`,
+      )
+    }
   }
 
   const orderEval = evaluateSemanticBargeEventOrder({

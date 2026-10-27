@@ -72,6 +72,10 @@ const LEVELS: [i32; 4] = [-6, -10, -15, -20];
 const BABBLE_UNDER_DB: i32 = -20;
 const LEAD_MS: usize = 300;
 const TAIL_MS: usize = 1500;
+/// Gap between S3 turns. It must exceed `VadConfig::default().min_silence_duration_ms` (1100 ms)
+/// by a margin, so the default VAD ends an utterance in every gap (guarded by a unit test).
+const S3_GAP_MIN_MS: usize = 1400;
+const S3_GAP_MAX_MS: usize = 2000;
 const MAIN_BUNDLE: &str = "vits-piper-en_US-amy-low";
 const BACKGROUND: &str = include_str!("support/background_sentences.txt");
 
@@ -607,7 +611,7 @@ impl Ctx {
             let clip = self.main_clip(&text)?;
             let seg = segment("main", &MAIN_VOICE, &text, pos, clip.len(), true);
             let start = pos;
-            pos += clip.len() + ms(rng.range(600, 900));
+            pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
             placed.push(Placed {
                 clip,
                 start,
@@ -621,7 +625,7 @@ impl Ctx {
                 let clip = self.main_clip(&text)?;
                 let seg = segment("main", &MAIN_VOICE, &text, pos, clip.len(), false);
                 let start = pos;
-                pos += clip.len() + ms(rng.range(600, 900));
+                pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
                 placed.push(Placed {
                     clip,
                     start,
@@ -632,7 +636,7 @@ impl Ctx {
                 let clip = normalize_to(&self.synth.clip(&bystander, &text)?, MAIN_REF_DB);
                 let seg = segment("bystander", &bystander, &text, pos, clip.len(), false);
                 let start = pos;
-                pos += clip.len() + ms(rng.range(600, 900));
+                pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
                 placed.push(Placed {
                     clip,
                     start,
@@ -886,6 +890,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn s3_gaps_exceed_default_vad_silence() {
+        let min_silence =
+            node_webrtc_rust_speech::config::VadConfig::default().min_silence_duration_ms as usize;
+        assert!(S3_GAP_MIN_MS >= min_silence + 300);
+        assert!(S3_GAP_MAX_MS >= S3_GAP_MIN_MS);
+    }
 
     #[test]
     fn sha256_known_vectors() {

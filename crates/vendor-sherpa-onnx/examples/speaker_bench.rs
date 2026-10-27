@@ -5,7 +5,7 @@
 //! ```text
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_bench -- \
 //!   --fixtures <speaker_fixtures out dir> --models <speaker dir> --stt-model <zipformer dir> \
-//!   --out <dir> [--vad-min-silence-ms <n>]
+//!   --out <dir> [--vad energy|silero|both] [--vad-min-silence-ms <n>]
 //! ```
 //!
 //! Every Sherpa object is single-threaded (`num_threads: 1`); pin the process to one core
@@ -27,12 +27,16 @@
 //!
 //! **Part 2, end to end** (the voice agent's path): every S3 scene of the test set (of the tune
 //! set when the fixtures have no test-set S3, marked in the summary) is fed in 20 ms frames of
-//! 48 kHz stereo PCM through the speech crate's `VadEngine` with `VadConfig::default()` (energy VAD;
-//! only `min_silence_duration_ms` may be overridden with `--vad-min-silence-ms`). For each VAD
-//! utterance:
-//! - the Zipformer online recognizer transcribes the VAD window (pre-roll + speech + trailing
-//!   silence) and the transcript is scored with the roundtrip oracle (`wordSimilarity`);
-//! - the first `check` seconds from the start of the speech are embedded (model and check length
+//! 48 kHz stereo PCM through the speech crate's `VadEngine`, once per VAD variant (`--vad`,
+//! default `both`): `energy` = `VadConfig::default()`, `silero` = the same with provider `silero`
+//! and threshold 0.5 (needs `--features node-webrtc-rust-speech/silero-vad`; if Silero cannot load, that variant is
+//! recorded as `{"error": ...}` and the run still exits 0). Only `min_silence_duration_ms` may be
+//! overridden, with `--vad-min-silence-ms`. For each VAD utterance:
+//! - the Zipformer online recognizer transcribes the VAD window (the product STT pre-roll,
+//!   `speech_pad_ms + min_speech_duration_ms`, before the SpeechStart frame, + speech + trailing
+//!   silence); qualified phrases are scored with the roundtrip oracle (`wordSimilarity`), long
+//!   sentences are only measured (WER, `wordSimilarity`; they are not qualified);
+//! - the first `check` seconds from the start of that window are embedded (model and check length
 //!   with the lowest tune-set EER in row `all`) and compared with the scene's enrollment using
 //!   the tune-set threshold: caller or other;
 //! - the utterance is matched to the manifest segment (main or bystander) it overlaps most, if
@@ -47,7 +51,12 @@
 //! that no utterance matches are counted as missed.
 //!
 //! Output: `<out>/results.json` (all numbers plus `nproc`, CPU model, git sha from
-//! `NWR_BENCH_GIT_SHA` or `git rev-parse HEAD`, manifest sha256) and `<out>/summary.md`.
+//! `NWR_BENCH_GIT_SHA` or `git rev-parse HEAD`, manifest sha256), `<out>/summary.md`, and the
+//! per-turn record: `<out>/turns.jsonl` (one row per manifest segment of every S3 scene and VAD
+//! variant: who spoke, what was said, what was expected, which VAD utterances overlapped it, the
+//! transcript, the speaker score and verdict, the result; plus one row per VAD utterance that
+//! matches no segment, and `merged` ids when an utterance covers two or more turns) and
+//! `<out>/conversations.md` (the same as a timeline table per scene).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -84,12 +93,21 @@ enum Set {
     Test,
 }
 
+#[derive(Clone)]
 struct Seg {
     start_ms: usize,
     end_ms: usize,
     role: String,
+    voice: String,
+    sid: i32,
     text: String,
     enroll: bool,
+    /// `qualified` (swept, may be judged), `long` (measured only) or `background`.
+    kind: String,
+    /// `caller` or `other`: who the agent should attribute the segment to.
+    expected_speaker: String,
+    /// What should be heard; `None` for babble.
+    expected_transcript: Option<String>,
 }
 
 struct SceneInfo {
@@ -131,12 +149,25 @@ fn load_manifest(text: &str) -> Result<Vec<SceneInfo>, String> {
         };
         let mut segments = Vec::new();
         for seg in segs {
+            let expected = seg
+                .get("expected")
+                .ok_or("manifest: segment without \"expected\"")?;
+            let expected_transcript = match expected.get("transcript") {
+                Some(Json::Str(t)) => Some(t.clone()),
+                Some(Json::Null) => None,
+                _ => return Err("manifest: expected.transcript must be a string or null".into()),
+            };
             segments.push(Seg {
                 start_ms: num_of(seg, "start_ms")? as usize,
                 end_ms: num_of(seg, "end_ms")? as usize,
                 role: str_of(seg, "role")?,
+                voice: str_of(seg, "voice")?,
+                sid: num_of(seg, "sid")? as i32,
                 text: str_of(seg, "text")?,
                 enroll: matches!(seg.get("enroll"), Some(Json::Bool(true))),
+                kind: str_of(seg, "kind")?,
+                expected_speaker: str_of(expected, "speaker")?,
+                expected_transcript,
             });
         }
         out.push(SceneInfo {
@@ -562,8 +593,17 @@ fn real_voice_row(
 struct LevelStats {
     main_turns: usize,
     main_missed: usize,
-    main_recognized: usize,
     main_caller: usize,
+    /// Qualified phrases: judged with the oracle.
+    q_turns: usize,
+    q_recognized: usize,
+    q_caller: usize,
+    /// Long sentences: measured only (WER, word similarity), never judged.
+    l_turns: usize,
+    l_caller: usize,
+    l_edits: usize,
+    l_ref_words: usize,
+    l_sim_sum: f64,
     byst_turns: usize,
     byst_missed: usize,
     byst_other: usize,
@@ -574,11 +614,15 @@ struct LevelStats {
     unmatched_caller: usize,
     unmatched_other: usize,
     utterances: usize,
+    /// VAD utterances that cover two or more non-babble segments.
+    merged: usize,
 }
 
 struct Utt {
     /// Start of speech (SpeechStart minus the minimum speech duration).
     start_ms: usize,
+    /// The frame where the VAD declared SpeechStart.
+    speech_start_ms: usize,
     /// End of the last active frame.
     end_active_ms: usize,
     /// SpeechEnd frame (includes the trailing silence).
@@ -589,7 +633,7 @@ fn run_vad(pcm: &[u8], config: &VadConfig) -> Result<Vec<Utt>, String> {
     let mut vad = VadEngine::new(config.clone()).map_err(|e| e.to_string())?;
     let frame_bytes = 960 * 2 * 2; // 20 ms of 48 kHz stereo s16le
     let mut utterances = Vec::new();
-    let mut start: Option<usize> = None;
+    let mut start: Option<(usize, usize)> = None; // (start_ms, speech_start_ms)
     let mut last_active_end = 0usize;
     let mut total_ms = 0usize;
     for (i, frame) in pcm.chunks_exact(frame_bytes).enumerate() {
@@ -604,12 +648,16 @@ fn run_vad(pcm: &[u8], config: &VadConfig) -> Result<Vec<Utt>, String> {
         for transition in transitions {
             match transition {
                 VadTransition::SpeechStart => {
-                    start = Some((t + 20).saturating_sub(config.min_speech_duration_ms as usize));
+                    start = Some((
+                        (t + 20).saturating_sub(config.min_speech_duration_ms as usize),
+                        t + 20,
+                    ));
                 }
                 VadTransition::SpeechEnd => {
-                    if let Some(s) = start.take() {
+                    if let Some((s, speech_start)) = start.take() {
                         utterances.push(Utt {
                             start_ms: s,
+                            speech_start_ms: speech_start,
                             end_active_ms: last_active_end.max(s),
                             window_end_ms: t + 20,
                         });
@@ -618,9 +666,10 @@ fn run_vad(pcm: &[u8], config: &VadConfig) -> Result<Vec<Utt>, String> {
             }
         }
     }
-    if let Some(s) = start {
+    if let Some((s, speech_start)) = start {
         utterances.push(Utt {
             start_ms: s,
+            speech_start_ms: speech_start,
             end_active_ms: last_active_end.max(s),
             window_end_ms: total_ms,
         });
@@ -632,11 +681,66 @@ fn overlap_ms(a: (usize, usize), b: (usize, usize)) -> usize {
     a.1.min(b.1).saturating_sub(a.0.max(b.0))
 }
 
+/// The pre-roll the product STT feed prepends at VAD `SpeechStart`
+/// (`SttPreRollBuffer::from_vad_config`: `speech_pad_ms + min_speech_duration_ms`).
+fn pre_roll_ms(config: &VadConfig) -> u32 {
+    node_webrtc_rust_speech::stt_pre_roll::stt_pre_roll_capacity_ms(config)
+}
+
+/// Ids of the non-babble segments an utterance covers (at least half of the segment lies inside
+/// the utterance span), when it covers two or more: such an utterance merged two turns.
+/// `segments` are `(start_ms, end_ms, is_babble)`, the id is the index.
+fn merged_segments(span: (usize, usize), segments: &[(usize, usize, bool)]) -> Vec<usize> {
+    let covered: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, (s, e, babble))| {
+            !babble && overlap_ms(span, (*s, *e)) * 2 >= e.saturating_sub(*s).max(1)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if covered.len() >= 2 {
+        covered
+    } else {
+        Vec::new()
+    }
+}
+
+/// Word-level Levenshtein distance between the normalized texts, and the reference word count.
+fn word_edits(reference: &str, hypothesis: &str) -> (usize, usize) {
+    let r = words_of(reference);
+    let h = words_of(hypothesis);
+    let mut prev: Vec<usize> = (0..=h.len()).collect();
+    for i in 1..=r.len() {
+        let mut cur = vec![i; h.len() + 1];
+        for j in 1..=h.len() {
+            let sub = prev[j - 1] + usize::from(r[i - 1] != h[j - 1]);
+            cur[j] = sub.min(prev[j] + 1).min(cur[j - 1] + 1);
+        }
+        prev = cur;
+    }
+    (prev[h.len()], r.len())
+}
+
+/// Word error rate: edits divided by the reference words.
+#[cfg(test)]
+fn wer(reference: &str, hypothesis: &str) -> f64 {
+    let (edits, n) = word_edits(reference, hypothesis);
+    if n == 0 {
+        0.0
+    } else {
+        edits as f64 / n as f64
+    }
+}
+
 struct Verdict {
     seg: Option<usize>,
     overlap: usize,
     transcript: String,
     caller: bool,
+    score: f32,
+    span: (usize, usize),
+    merged: Vec<usize>,
 }
 
 fn words_of(text: &str) -> Vec<String> {
@@ -647,36 +751,68 @@ fn words_of(text: &str) -> Vec<String> {
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn part2_scene(
-    fx: &mut Fixtures,
-    scene: usize,
-    emb: &Embedder,
+/// A VAD utterance that overlaps a segment.
+struct Noticed {
+    id: usize,
+    start_ms: usize,
+    end_ms: usize,
+}
+
+/// One line of the per-turn record: a manifest segment (enrollment, main, bystander) or a VAD
+/// utterance that matches no segment.
+struct Row {
+    scene: String,
+    level_db: i32,
+    vad: String,
+    seg_id: Option<usize>,
+    start_ms: usize,
+    end_ms: usize,
+    role: String,
+    voice: String,
+    sid: Option<i32>,
+    kind: String,
+    text: String,
+    expected_speaker: String,
+    expected_transcript: Option<String>,
+    utts: Vec<Noticed>,
+    transcript: Option<String>,
+    score: Option<f32>,
+    /// `caller`, `other`, `not noticed` or `enrollment`.
+    verdict: String,
+    merged: Vec<usize>,
+    attribution_ok: Option<bool>,
+    wer: Option<f64>,
+    word_similarity: Option<f64>,
+    oracle_ok: Option<bool>,
+}
+
+struct P2<'a> {
+    emb: &'a Embedder,
     check_s: f32,
     threshold: f32,
-    recognizer: &sherpa_onnx::OnlineRecognizer,
-    vad_config: &VadConfig,
-    leak_vocab: &HashSet<String>,
-) -> Result<LevelStats, String> {
+    recognizer: &'a sherpa_onnx::OnlineRecognizer,
+    vad_name: &'a str,
+    vad_config: &'a VadConfig,
+    leak_vocab: &'a HashSet<String>,
+}
+
+fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, Vec<Row>), String> {
     let id = fx.scenes[scene].id.clone();
+    let level_db = fx.scenes[scene].level_db;
     let pcm = read_wav_stereo_48k_pcm(&fx.dir.join("scenes").join(format!("{id}.wav")))?;
     let audio = fx.audio16(scene)?.clone();
     let enroll = enrollment(fx, scene)?;
-    let (reference, _) = emb.embed(&enroll).ok_or("enrollment too short to embed")?;
-    let utterances = run_vad(&pcm, vad_config)?;
+    let (reference, _) = p
+        .emb
+        .embed(&enroll)
+        .ok_or("enrollment too short to embed")?;
+    let utterances = run_vad(&pcm, p.vad_config)?;
+    let pre_roll = pre_roll_ms(p.vad_config) as usize;
 
-    let segs: Vec<(usize, usize, String, bool, String)> = fx.scenes[scene]
-        .segments
+    let segs: Vec<Seg> = fx.scenes[scene].segments.clone();
+    let seg_info: Vec<(usize, usize, bool)> = segs
         .iter()
-        .map(|s| {
-            (
-                s.start_ms,
-                s.end_ms,
-                s.role.clone(),
-                s.enroll,
-                s.text.clone(),
-            )
-        })
+        .map(|s| (s.start_ms, s.end_ms, s.role == "babble"))
         .collect();
     let mut stats = LevelStats {
         utterances: utterances.len(),
@@ -684,27 +820,31 @@ fn part2_scene(
     };
     let mut verdicts: Vec<Verdict> = Vec::new();
     for utt in &utterances {
-        let window_from = utt
-            .start_ms
-            .saturating_sub(vad_config.speech_pad_ms as usize)
-            * 16;
+        // STT input and embedding clip both start where the product's STT feed starts: the
+        // SpeechStart frame minus the pre-roll.
+        let from_ms = utt.speech_start_ms.saturating_sub(pre_roll);
+        let window_from = from_ms * 16;
         let window_to = (utt.window_end_ms * 16).min(audio.len());
         let mut window = audio[window_from.min(window_to)..window_to].to_vec();
         window.extend(std::iter::repeat_n(0.0f32, TAIL_SILENCE_MS * 16));
-        let transcript = recognize(recognizer, &window);
+        let transcript = recognize(p.recognizer, &window);
 
-        let (from, to) = part2_clip_range(utt.start_ms, utt.window_end_ms, check_s);
+        let (from, to) = part2_clip_range(from_ms, utt.window_end_ms, p.check_s);
         let from = from.min(audio.len());
         let clip = &audio[from..to.min(audio.len()).max(from)];
-        let caller = emb
-            .embed(clip)
-            .is_some_and(|(e, _)| cosine(&reference, &e) > threshold);
+        let (caller, score) = match p.emb.embed(clip) {
+            Some((e, _)) => {
+                let score = cosine(&reference, &e);
+                (score > p.threshold, score)
+            }
+            None => (false, f32::NAN),
+        };
 
         let span = (utt.start_ms, utt.end_active_ms);
         let len = span.1.saturating_sub(span.0).max(1);
         let mut best: Option<(usize, usize)> = None;
-        for (i, (s, e, role, _, _)) in segs.iter().enumerate() {
-            if role == "babble" {
+        for (i, (s, e, babble)) in seg_info.iter().enumerate() {
+            if *babble {
                 continue;
             }
             let o = overlap_ms(span, (*s, *e));
@@ -721,41 +861,128 @@ fn part2_scene(
                 stats.unmatched_other += 1;
             }
         }
+        let merged = merged_segments(span, &seg_info);
+        if !merged.is_empty() {
+            stats.merged += 1;
+        }
         verdicts.push(Verdict {
             seg: matched.map(|m| m.0),
             overlap: matched.map_or(0, |m| m.1),
             transcript,
             caller,
+            score,
+            span,
+            merged,
         });
     }
 
-    for (i, (_, _, role, enroll, text)) in segs.iter().enumerate() {
-        if *enroll || role == "babble" {
+    let mut rows: Vec<Row> = Vec::new();
+    for (i, seg) in segs.iter().enumerate() {
+        if seg.role == "babble" {
             continue;
         }
         let mine: Vec<&Verdict> = verdicts.iter().filter(|v| v.seg == Some(i)).collect();
         // Utterances are in time order; the attribution of a turn is its best-overlapping one.
         let best = mine.iter().max_by_key(|v| v.overlap).copied();
-        if role == "main" {
-            stats.main_turns += 1;
-            let Some(best) = best else {
-                stats.main_missed += 1;
-                continue;
-            };
-            let transcript = mine
-                .iter()
+        let transcript = (!mine.is_empty()).then(|| {
+            mine.iter()
                 .map(|v| v.transcript.as_str())
                 .collect::<Vec<_>>()
-                .join(" ");
-            if word_similarity(text, &transcript) >= ORACLE_MIN {
-                stats.main_recognized += 1;
+                .join(" ")
+        });
+        let mut merged: Vec<usize> = Vec::new();
+        let mut utts = Vec::new();
+        for (u, v) in verdicts.iter().enumerate() {
+            if overlap_ms(v.span, (seg.start_ms, seg.end_ms)) > 0 {
+                utts.push(Noticed {
+                    id: u,
+                    start_ms: v.span.0,
+                    end_ms: v.span.1,
+                });
+                merged.extend(v.merged.iter().copied());
             }
-            if best.caller {
-                stats.main_caller += 1;
+        }
+        merged.sort_unstable();
+        merged.dedup();
+        let verdict = if seg.enroll {
+            "enrollment"
+        } else {
+            match best {
+                Some(v) if v.caller => "caller",
+                Some(_) => "other",
+                None => "not noticed",
             }
-            let words = words_of(&transcript);
-            stats.main_words += words.len();
-            stats.leak_words += words.iter().filter(|w| leak_vocab.contains(*w)).count();
+        };
+        let mut row = Row {
+            scene: id.clone(),
+            level_db,
+            vad: p.vad_name.to_string(),
+            seg_id: Some(i),
+            start_ms: seg.start_ms,
+            end_ms: seg.end_ms,
+            role: if seg.enroll {
+                "main (enrollment)".to_string()
+            } else {
+                seg.role.clone()
+            },
+            voice: seg.voice.clone(),
+            sid: Some(seg.sid),
+            kind: seg.kind.clone(),
+            text: seg.text.clone(),
+            expected_speaker: seg.expected_speaker.clone(),
+            expected_transcript: seg.expected_transcript.clone(),
+            utts,
+            transcript: transcript.clone(),
+            score: best.map(|v| v.score),
+            verdict: verdict.to_string(),
+            merged,
+            attribution_ok: (!seg.enroll).then(|| verdict == seg.expected_speaker),
+            wer: None,
+            word_similarity: None,
+            oracle_ok: None,
+        };
+        let long = seg.kind == "long";
+        if seg.role == "main" {
+            let heard = transcript.clone().unwrap_or_default();
+            let sim = word_similarity(&seg.text, &heard);
+            let (edits, n) = word_edits(&seg.text, &heard);
+            if long {
+                row.wer = Some(if n == 0 { 0.0 } else { edits as f64 / n as f64 });
+                row.word_similarity = Some(sim);
+            } else {
+                row.oracle_ok = Some(sim >= ORACLE_MIN);
+            }
+            if !seg.enroll {
+                stats.main_turns += 1;
+                if long {
+                    stats.l_turns += 1;
+                    stats.l_edits += edits;
+                    stats.l_ref_words += n;
+                    stats.l_sim_sum += sim;
+                } else {
+                    stats.q_turns += 1;
+                    if sim >= ORACLE_MIN {
+                        stats.q_recognized += 1;
+                    }
+                }
+                match best {
+                    None => stats.main_missed += 1,
+                    Some(b) => {
+                        if b.caller {
+                            stats.main_caller += 1;
+                            if long {
+                                stats.l_caller += 1;
+                            } else {
+                                stats.q_caller += 1;
+                            }
+                        }
+                        let words = words_of(&heard);
+                        stats.main_words += words.len();
+                        stats.leak_words +=
+                            words.iter().filter(|w| p.leak_vocab.contains(*w)).count();
+                    }
+                }
+            }
         } else {
             stats.byst_turns += 1;
             match best {
@@ -764,15 +991,59 @@ fn part2_scene(
                 Some(_) => stats.byst_other += 1,
             }
         }
+        rows.push(row);
     }
-    Ok(stats)
+    // VAD utterances that matched no segment: babble (or a split turn) that the VAD kept.
+    for (u, v) in verdicts.iter().enumerate() {
+        if v.seg.is_some() {
+            continue;
+        }
+        let verdict = if v.caller { "caller" } else { "other" };
+        rows.push(Row {
+            scene: id.clone(),
+            level_db,
+            vad: p.vad_name.to_string(),
+            seg_id: None,
+            start_ms: v.span.0,
+            end_ms: v.span.1,
+            role: "none/babble".to_string(),
+            voice: "-".to_string(),
+            sid: None,
+            kind: "-".to_string(),
+            text: String::new(),
+            expected_speaker: "other".to_string(),
+            expected_transcript: None,
+            utts: vec![Noticed {
+                id: u,
+                start_ms: v.span.0,
+                end_ms: v.span.1,
+            }],
+            transcript: Some(v.transcript.clone()),
+            score: Some(v.score),
+            verdict: verdict.to_string(),
+            merged: v.merged.clone(),
+            attribution_ok: Some(verdict == "other"),
+            wer: None,
+            word_similarity: None,
+            oracle_ok: None,
+        });
+    }
+    rows.sort_by_key(|r| (r.start_ms, r.end_ms));
+    Ok((stats, rows))
 }
 
 fn add_stats(into: &mut LevelStats, other: &LevelStats) {
     into.main_turns += other.main_turns;
     into.main_missed += other.main_missed;
-    into.main_recognized += other.main_recognized;
     into.main_caller += other.main_caller;
+    into.q_turns += other.q_turns;
+    into.q_recognized += other.q_recognized;
+    into.q_caller += other.q_caller;
+    into.l_turns += other.l_turns;
+    into.l_caller += other.l_caller;
+    into.l_edits += other.l_edits;
+    into.l_ref_words += other.l_ref_words;
+    into.l_sim_sum += other.l_sim_sum;
     into.byst_turns += other.byst_turns;
     into.byst_missed += other.byst_missed;
     into.byst_other += other.byst_other;
@@ -783,6 +1054,174 @@ fn add_stats(into: &mut LevelStats, other: &LevelStats) {
     into.unmatched_caller += other.unmatched_caller;
     into.unmatched_other += other.unmatched_other;
     into.utterances += other.utterances;
+    into.merged += other.merged;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-turn record (turns.jsonl, conversations.md)
+// ---------------------------------------------------------------------------------------------
+
+fn jstr(s: &str) -> String {
+    format!("\"{}\"", json_escape(s))
+}
+
+fn jopt_str(s: Option<&str>) -> String {
+    s.map_or("null".to_string(), jstr)
+}
+
+fn jopt_bool(b: Option<bool>) -> String {
+    b.map_or("null".to_string(), |b| b.to_string())
+}
+
+fn jopt_f(v: Option<f64>, digits: usize) -> String {
+    v.filter(|x| x.is_finite())
+        .map_or("null".to_string(), |x| format!("{x:.digits$}"))
+}
+
+fn row_json(r: &Row) -> String {
+    let utts: Vec<String> = r
+        .utts
+        .iter()
+        .map(|u| {
+            format!(
+                "{{\"id\": {}, \"start_ms\": {}, \"end_ms\": {}}}",
+                u.id, u.start_ms, u.end_ms
+            )
+        })
+        .collect();
+    let merged: Vec<String> = r.merged.iter().map(usize::to_string).collect();
+    format!(
+        "{{\"scene\": {}, \"level_db\": {}, \"vad\": {}, \"segment_id\": {}, \"start_ms\": {}, \"end_ms\": {}, \
+         \"who\": {{\"role\": {}, \"voice\": {}, \"sid\": {}}}, \"said\": {{\"kind\": {}, \"text\": {}}}, \
+         \"expected\": {{\"speaker\": {}, \"transcript\": {}}}, \
+         \"noticed\": {{\"utterances\": [{}], \"transcript\": {}, \"score\": {}, \"verdict\": {}}}, \
+         \"merged\": [{}], \
+         \"result\": {{\"attribution_ok\": {}, \"wer\": {}, \"word_similarity\": {}, \"oracle_ok\": {}}}}}",
+        jstr(&r.scene),
+        r.level_db,
+        jstr(&r.vad),
+        r.seg_id.map_or("null".to_string(), |i| i.to_string()),
+        r.start_ms,
+        r.end_ms,
+        jstr(&r.role),
+        jstr(&r.voice),
+        r.sid.map_or("null".to_string(), |i| i.to_string()),
+        jstr(&r.kind),
+        jstr(&r.text),
+        jstr(&r.expected_speaker),
+        jopt_str(r.expected_transcript.as_deref()),
+        utts.join(", "),
+        jopt_str(r.transcript.as_deref()),
+        jopt_f(r.score.map(f64::from), 3),
+        jstr(&r.verdict),
+        merged.join(", "),
+        jopt_bool(r.attribution_ok),
+        jopt_f(r.wer, 4),
+        jopt_f(r.word_similarity, 4),
+        jopt_bool(r.oracle_ok),
+    )
+}
+
+fn md_cell(text: &str) -> String {
+    text.replace('|', "\\|").replace('\n', " ")
+}
+
+fn mark(ok: Option<bool>) -> &'static str {
+    match ok {
+        Some(true) => "✓",
+        Some(false) => "✗",
+        None => "-",
+    }
+}
+
+fn secs(ms: usize) -> String {
+    format!("{:.1}", ms as f64 / 1000.0)
+}
+
+/// One timeline table per (VAD variant, scene). Scores and transcripts are bench data from
+/// synthetic voices, not customer content.
+fn conversations_md(rows: &[Row]) -> String {
+    let mut md = String::from(
+        "# Speaker bench: conversations\n\nOne table per scene and VAD variant. `noticed` is what the \
+         VAD heard and what the recognizer transcribed for it; `score` is the speaker score against \
+         the enrollment (higher = more like the caller). The last column is attribution (verdict equals \
+         expected speaker); a qualified phrase adds the oracle result, a long sentence its WER.\n\n",
+    );
+    let mut keys: Vec<(String, String)> = Vec::new();
+    for r in rows {
+        let key = (r.vad.clone(), r.scene.clone());
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    for (vad, scene) in keys {
+        let scene_rows: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.vad == vad && r.scene == scene)
+            .collect();
+        md.push_str(&format!(
+            "## {scene} ({} dB), VAD {vad}\n\n| time | who spoke | said | expected | noticed (transcript) | verdict | ✓/✗ |\n|---|---|---|---|---|---|---|\n",
+            scene_rows[0].level_db
+        ));
+        for r in scene_rows {
+            let who = match r.sid {
+                Some(sid) => format!("{} {} (sid {sid})", r.role, r.voice),
+                None => r.role.clone(),
+            };
+            let said = if r.text.is_empty() {
+                "-".to_string()
+            } else {
+                format!("[{}] {}", r.kind, r.text)
+            };
+            let mut noticed = if r.utts.is_empty() {
+                "no VAD utterance".to_string()
+            } else {
+                let ids: Vec<String> = r
+                    .utts
+                    .iter()
+                    .map(|u| format!("utt#{} {}-{} s", u.id, secs(u.start_ms), secs(u.end_ms)))
+                    .collect();
+                format!(
+                    "{}: \"{}\"",
+                    ids.join(", "),
+                    r.transcript.as_deref().unwrap_or("")
+                )
+            };
+            if let Some(score) = r.score.filter(|s| s.is_finite()) {
+                noticed.push_str(&format!(" (score {score:.3})"));
+            }
+            if !r.merged.is_empty() {
+                let ids: Vec<String> = r.merged.iter().map(usize::to_string).collect();
+                noticed.push_str(&format!(" MERGED with segments [{}]", ids.join(", ")));
+            }
+            let mut result = mark(r.attribution_ok).to_string();
+            if let Some(w) = r.wer {
+                result.push_str(&format!(", WER {:.0}%", w * 100.0));
+            }
+            if r.oracle_ok.is_some() {
+                result.push_str(&format!(", oracle {}", mark(r.oracle_ok)));
+            }
+            md.push_str(&format!(
+                "| {}-{} s | {} | {} | {} | {} | {} | {} |\n",
+                secs(r.start_ms),
+                secs(r.end_ms),
+                md_cell(&who),
+                md_cell(&said),
+                md_cell(&format!(
+                    "{} ({})",
+                    r.expected_speaker,
+                    r.expected_transcript
+                        .as_deref()
+                        .map_or("no transcript", |_| "same text")
+                )),
+                md_cell(&noticed),
+                md_cell(&r.verdict),
+                md_cell(&result)
+            ));
+        }
+        md.push('\n');
+    }
+    md
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -822,16 +1261,27 @@ fn git_sha() -> String {
 // main
 // ---------------------------------------------------------------------------------------------
 
+struct VariantOutcome {
+    name: &'static str,
+    min_silence_ms: u32,
+    pre_roll_ms: u32,
+    /// Per level, or why the variant did not run (Silero failed to load).
+    levels: Result<BTreeMap<i32, LevelStats>, String>,
+}
+
 struct Args {
     fixtures: PathBuf,
     models: PathBuf,
     stt_model: PathBuf,
     out: PathBuf,
     vad_min_silence_ms: Option<u32>,
+    /// `energy`, `silero` or `both`.
+    vad: String,
 }
 
 fn parse_args() -> Result<Args, String> {
     let (mut fixtures, mut models, mut stt, mut out, mut silence) = (None, None, None, None, None);
+    let mut vad = "both".to_string();
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -847,6 +1297,12 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|e| format!("--vad-min-silence-ms: {e}"))?,
                 )
             }
+            "--vad" => {
+                vad = value("--vad")?;
+                if !matches!(vad.as_str(), "energy" | "silero" | "both") {
+                    return Err("--vad must be energy, silero or both".into());
+                }
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -856,6 +1312,7 @@ fn parse_args() -> Result<Args, String> {
         stt_model: stt.ok_or("--stt-model is required")?,
         out: out.ok_or("--out is required")?,
         vad_min_silence_ms: silence,
+        vad,
     })
 }
 
@@ -974,27 +1431,88 @@ fn run() -> Result<(), String> {
         .filter(|w| w.len() >= 4 && !phrases_main.contains(w))
         .collect();
 
-    let mut vad_config = VadConfig::default();
+    // The two VAD variants: the product default (energy) and Silero with its documented
+    // defaults (threshold 0.5, packages/sdk/VOICE-VAD-AND-BARGE-IN.md).
+    let mut variants: Vec<(&'static str, VadConfig)> = Vec::new();
+    if args.vad != "silero" {
+        variants.push(("energy", VadConfig::default()));
+    }
+    if args.vad != "energy" {
+        variants.push((
+            "silero",
+            VadConfig {
+                provider: "silero".to_string(),
+                threshold: 0.5,
+                ..VadConfig::default()
+            },
+        ));
+    }
     if let Some(ms) = args.vad_min_silence_ms {
-        vad_config.min_silence_duration_ms = ms;
+        for (_, config) in &mut variants {
+            config.min_silence_duration_ms = ms;
+        }
     }
     let recognizer = create_recognizer(&args.stt_model)?;
-    let mut by_level: BTreeMap<i32, LevelStats> = BTreeMap::new();
-    for scene in part2_scenes {
-        let level = fx.scenes[scene].level_db;
-        eprintln!("part 2 scene {}", fx.scenes[scene].id);
-        let stats = part2_scene(
-            &mut fx,
-            scene,
-            &embedders[best_model],
-            best_check,
-            best_threshold,
-            &recognizer,
-            &vad_config,
-            &leak_vocab,
-        )?;
-        add_stats(by_level.entry(level).or_default(), &stats);
+    let mut outcomes: Vec<VariantOutcome> = Vec::new();
+    let mut rows: Vec<Row> = Vec::new();
+    for (name, vad_config) in variants {
+        // Silero can fail to load (no ONNX Runtime, or built without the feature): record it and
+        // go on, so the run still produces the other variant and exits 0.
+        // The ONNX Runtime loader of the `ort` crate panics (instead of returning an error) when
+        // the shared library is missing, so the probe also catches a panic.
+        let probe = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            VadEngine::new(vad_config.clone()).map(|_| ())
+        }));
+        let failure = match probe {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(e.to_string()),
+            Err(panic) => Some(
+                panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_else(|| "panic while loading the VAD".to_string()),
+            ),
+        };
+        if let Some(msg) = failure {
+            eprintln!("part 2 vad {name}: cannot start: {msg}");
+            outcomes.push(VariantOutcome {
+                name,
+                min_silence_ms: vad_config.min_silence_duration_ms,
+                pre_roll_ms: pre_roll_ms(&vad_config),
+                levels: Err(msg),
+            });
+            continue;
+        }
+        let p2 = P2 {
+            emb: &embedders[best_model],
+            check_s: best_check,
+            threshold: best_threshold,
+            recognizer: &recognizer,
+            vad_name: name,
+            vad_config: &vad_config,
+            leak_vocab: &leak_vocab,
+        };
+        let mut by_level: BTreeMap<i32, LevelStats> = BTreeMap::new();
+        for &scene in &part2_scenes {
+            let level = fx.scenes[scene].level_db;
+            eprintln!("part 2 vad {name} scene {}", fx.scenes[scene].id);
+            let (stats, scene_rows) = part2_scene(&mut fx, scene, &p2)?;
+            add_stats(by_level.entry(level).or_default(), &stats);
+            rows.extend(scene_rows);
+        }
+        outcomes.push(VariantOutcome {
+            name,
+            min_silence_ms: vad_config.min_silence_duration_ms,
+            pre_roll_ms: pre_roll_ms(&vad_config),
+            levels: Ok(by_level),
+        });
     }
+    let turns_jsonl: String = rows.iter().map(|r| row_json(r) + "\n").collect();
+    fs::write(args.out.join("turns.jsonl"), turns_jsonl)
+        .map_err(|e| format!("write turns.jsonl: {e}"))?;
+    fs::write(args.out.join("conversations.md"), conversations_md(&rows))
+        .map_err(|e| format!("write conversations.md: {e}"))?;
 
     // ---- Output ----
     let nproc = std::thread::available_parallelism().map_or(0, |n| n.get());
@@ -1051,26 +1569,48 @@ fn run() -> Result<(), String> {
     }
     json.push_str("    ]\n  },\n");
     json.push_str(&format!(
-        "  \"part2\": {{\n    \"model\": \"{}\",\n    \"check_s\": {},\n    \"threshold\": {:.6},\n    \"set\": \"{}\",\n    \"vad_min_silence_ms\": {},\n    \"levels\": [\n",
+        "  \"part2\": {{\n    \"model\": \"{}\",\n    \"check_s\": {},\n    \"threshold\": {:.6},\n    \"set\": \"{}\",\n    \"vad\": {{\n",
         json_escape(&embedders[best_model].id), best_check, best_threshold, json_escape(part2_set),
-        vad_config.min_silence_duration_ms
     ));
-    let level_count = by_level.len();
-    for (i, (level, s)) in by_level.iter().enumerate() {
-        json.push_str(&format!(
-            "      {{\"level_db\": {level}, \"vad_utterances\": {}, \"main_turns\": {}, \"main_missed\": {}, \"a_main_recognized_pct\": {}, \"b_main_caller_pct\": {}, \"bystander_turns\": {}, \"bystander_missed\": {}, \"c_bystander_other_pct\": {}, \"d_bystander_caller_pct\": {}, \"e_leakage_pct\": {}, \"f_unmatched_utterances\": {}, \"f_unmatched_caller\": {}, \"f_unmatched_other\": {}}}{}\n",
-            s.utterances, s.main_turns, s.main_missed,
-            json_num(pct(s.main_recognized, s.main_turns)),
-            json_num(pct(s.main_caller, s.main_turns)),
-            s.byst_turns, s.byst_missed,
-            json_num(pct(s.byst_other, s.byst_turns)),
-            json_num(pct(s.byst_caller, s.byst_turns)),
-            json_num(pct(s.leak_words, s.main_words)),
-            s.unmatched, s.unmatched_caller, s.unmatched_other,
-            if i + 1 < level_count { "," } else { "" }
-        ));
+    for (v, o) in outcomes.iter().enumerate() {
+        let comma = if v + 1 < outcomes.len() { "," } else { "" };
+        match &o.levels {
+            Err(msg) => json.push_str(&format!(
+                "      \"{}\": {{\"error\": \"{}\"}}{comma}\n",
+                o.name,
+                json_escape(msg)
+            )),
+            Ok(by_level) => {
+                json.push_str(&format!(
+                    "      \"{}\": {{\n        \"vad_min_silence_ms\": {},\n        \"pre_roll_ms\": {},\n        \"levels\": [\n",
+                    o.name, o.min_silence_ms, o.pre_roll_ms
+                ));
+                let level_count = by_level.len();
+                for (i, (level, s)) in by_level.iter().enumerate() {
+                    json.push_str(&format!(
+                        "          {{\"level_db\": {level}, \"vad_utterances\": {}, \"merged_utterances\": {}, \"main_turns\": {}, \"main_missed\": {}, \"qualified_turns\": {}, \"a_qualified_oracle_pct\": {}, \"long_turns\": {}, \"long_wer_pct\": {}, \"long_word_similarity_pct\": {}, \"b_main_caller_pct\": {}, \"b_qualified_caller_pct\": {}, \"b_long_caller_pct\": {}, \"bystander_turns\": {}, \"bystander_missed\": {}, \"c_bystander_other_pct\": {}, \"d_bystander_caller_pct\": {}, \"e_leakage_pct\": {}, \"f_unmatched_utterances\": {}, \"f_unmatched_caller\": {}, \"f_unmatched_other\": {}}}{}\n",
+                        s.utterances, s.merged, s.main_turns, s.main_missed,
+                        s.q_turns,
+                        json_num(pct(s.q_recognized, s.q_turns)),
+                        s.l_turns,
+                        json_num(pct(s.l_edits, s.l_ref_words)),
+                        json_num((s.l_turns > 0).then(|| 100.0 * s.l_sim_sum / s.l_turns as f64)),
+                        json_num(pct(s.main_caller, s.main_turns)),
+                        json_num(pct(s.q_caller, s.q_turns)),
+                        json_num(pct(s.l_caller, s.l_turns)),
+                        s.byst_turns, s.byst_missed,
+                        json_num(pct(s.byst_other, s.byst_turns)),
+                        json_num(pct(s.byst_caller, s.byst_turns)),
+                        json_num(pct(s.leak_words, s.main_words)),
+                        s.unmatched, s.unmatched_caller, s.unmatched_other,
+                        if i + 1 < level_count { "," } else { "" }
+                    ));
+                }
+                json.push_str(&format!("        ]\n      }}{comma}\n"));
+            }
+        }
     }
-    json.push_str("    ]\n  }\n}\n");
+    json.push_str("    }\n  }\n}\n");
     fs::write(args.out.join("results.json"), json)
         .map_err(|e| format!("write results.json: {e}"))?;
 
@@ -1126,27 +1666,42 @@ fn run() -> Result<(), String> {
         ));
     }
     md.push_str(&format!(
-        "\n## Part 2: end to end\n\nModel `{}`, check {} s, threshold {:.4} (tune set, FAR 1 %). Scenes: {}. VAD `VadConfig::default()` with min_silence {} ms.\n\n",
-        embedders[best_model].id, best_check, best_threshold, part2_set, vad_config.min_silence_duration_ms
+        "\n## Part 2: end to end\n\nModel `{}`, check {} s, threshold {:.4} (tune set, FAR 1 %). Scenes: {}. STT input and embedding clip start at SpeechStart minus the product pre-roll (`speech_pad_ms + min_speech_duration_ms`). Qualified phrases are judged with the 0.75 oracle; long sentences are measured (WER, not qualified). `turns.jsonl` and `conversations.md` list every turn.\n",
+        embedders[best_model].id, best_check, best_threshold, part2_set
     ));
-    md.push_str("| level | VAD utt | main turns (missed) | (a) recognized % | (b) caller % | bystander turns (missed) | (c) other % | (d) caller % | (e) leakage % | (f) unmatched utt (caller/other) |\n|---|---|---|---|---|---|---|---|---|---|\n");
-    for (level, s) in &by_level {
-        md.push_str(&format!(
-            "| {level} dB | {} | {} ({}) | {} | {} | {} ({}) | {} | {} | {} | {} ({}/{}) |\n",
-            s.utterances,
-            s.main_turns,
-            s.main_missed,
-            fmt_opt(pct(s.main_recognized, s.main_turns), 1),
-            fmt_opt(pct(s.main_caller, s.main_turns), 1),
-            s.byst_turns,
-            s.byst_missed,
-            fmt_opt(pct(s.byst_other, s.byst_turns), 1),
-            fmt_opt(pct(s.byst_caller, s.byst_turns), 1),
-            fmt_opt(pct(s.leak_words, s.main_words), 2),
-            s.unmatched,
-            s.unmatched_caller,
-            s.unmatched_other
-        ));
+    for o in &outcomes {
+        match &o.levels {
+            Err(msg) => md.push_str(&format!("\n### VAD {}\n\nNot run: {msg}\n", o.name)),
+            Ok(by_level) => {
+                md.push_str(&format!(
+                    "\n### VAD {} (min_silence {} ms, pre-roll {} ms)\n\n",
+                    o.name, o.min_silence_ms, o.pre_roll_ms
+                ));
+                md.push_str("| level | VAD utt | merged utt | main turns (missed) | (a) oracle % (qualified) | WER % (long, measured, not qualified) | (b) main to caller %: all / qualified / long | bystander turns (missed) | (c) other % | (d) caller % | (e) leakage % | (f) unmatched utt (caller/other) |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+                for (level, s) in by_level {
+                    md.push_str(&format!(
+                        "| {level} dB | {} | {} | {} ({}) | {} | {} | {} / {} / {} | {} ({}) | {} | {} | {} | {} ({}/{}) |\n",
+                        s.utterances,
+                        s.merged,
+                        s.main_turns,
+                        s.main_missed,
+                        fmt_opt(pct(s.q_recognized, s.q_turns), 1),
+                        fmt_opt(pct(s.l_edits, s.l_ref_words), 1),
+                        fmt_opt(pct(s.main_caller, s.main_turns), 1),
+                        fmt_opt(pct(s.q_caller, s.q_turns), 1),
+                        fmt_opt(pct(s.l_caller, s.l_turns), 1),
+                        s.byst_turns,
+                        s.byst_missed,
+                        fmt_opt(pct(s.byst_other, s.byst_turns), 1),
+                        fmt_opt(pct(s.byst_caller, s.byst_turns), 1),
+                        fmt_opt(pct(s.leak_words, s.main_words), 2),
+                        s.unmatched,
+                        s.unmatched_caller,
+                        s.unmatched_other
+                    ));
+                }
+            }
+        }
     }
     fs::write(args.out.join("summary.md"), md).map_err(|e| format!("write summary.md: {e}"))?;
     eprintln!("wrote {}/results.json and summary.md", args.out.display());
@@ -1194,6 +1749,59 @@ mod tests {
     fn part2_clip_stops_at_utterance_end() {
         assert_eq!(part2_clip_range(0, 800, 1.5), (0, 800 * 16));
         assert_eq!(part2_clip_range(0, 2000, 1.5), (0, 24_000));
+    }
+
+    #[test]
+    fn manifest_segments_have_expected() {
+        let json = r#"{"scenes":[{"id":"s3_test_m10","kind":"conversation","set":"test","level_db":-10,
+            "segments":[
+              {"start_ms":0,"end_ms":900,"role":"main","voice":"v","sid":0,"text":"a b","enroll":true,
+               "kind":"long","expected":{"speaker":"caller","transcript":"a b"}},
+              {"start_ms":1000,"end_ms":1900,"role":"babble","voice":"w","sid":3,"text":"x y",
+               "kind":"background","expected":{"speaker":"other","transcript":null}}]}]}"#;
+        let scenes = load_manifest(json).unwrap();
+        let segs = &scenes[0].segments;
+        assert_eq!(segs[0].kind, "long");
+        assert_eq!(segs[0].expected_speaker, "caller");
+        assert_eq!(segs[0].expected_transcript.as_deref(), Some("a b"));
+        assert!(segs[1].expected_transcript.is_none());
+        // A segment without `expected` is rejected.
+        let bad = json.replace(
+            "\"expected\":{\"speaker\":\"other\",\"transcript\":null}",
+            "\"x\":1",
+        );
+        assert!(load_manifest(&bad).is_err());
+    }
+
+    #[test]
+    fn wer_counts_word_edits() {
+        assert!((wer("a b c", "a x c") - 1.0 / 3.0).abs() < 1e-9);
+        assert_eq!(wer("a b c", "a b c"), 0.0);
+        assert!((wer("a b c", "") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn merged_utterance_lists_both_segments() {
+        // Two turns 0-1000 ms and 1500-2500 ms with one VAD utterance over both.
+        let two = [(0, 1000, false), (1500, 2500, false)];
+        assert_eq!(merged_segments((0, 2600), &two), vec![0, 1]);
+        // A babble segment in between is not a turn.
+        let with_babble = [(0, 1000, false), (1100, 1400, true), (1500, 2500, false)];
+        assert_eq!(merged_segments((0, 2600), &with_babble), vec![0, 2]);
+        // An utterance over one turn only is not merged.
+        assert!(merged_segments((0, 1000), &two).is_empty());
+    }
+
+    #[test]
+    fn pre_roll_matches_product() {
+        let config = VadConfig::default();
+        let buffer =
+            node_webrtc_rust_speech::stt_pre_roll::SttPreRollBuffer::from_vad_config(&config);
+        assert_eq!(pre_roll_ms(&config), buffer.capacity_ms());
+        assert_eq!(
+            pre_roll_ms(&config),
+            config.speech_pad_ms + config.min_speech_duration_ms
+        );
     }
 
     #[test]

@@ -18,25 +18,31 @@
 //!     `en_US-libritts_r-medium` sids 10 and 50;
 //!   - test set: `en_US-joe-medium`, `en_US-hfc_female-medium`, `en_US-lessac-medium`,
 //!     `en_US-libritts_r-medium` sids 120 and 300.
+//! - Long sentences: `examples/support/long_sentences.txt` (16 customer-service style sentences of
+//!   12-20 words, also spoken by the main voice). They are **not qualified** by the 3000-run
+//!   sweep, so the bench measures them (WER) but never judges them pass/fail.
 //! - Background text: `examples/support/background_sentences.txt` (40 short neutral sentences,
-//!   none sharing a content word with a main phrase).
+//!   none sharing a content word (4+ letters) with a main phrase or a long sentence).
 //! - Levels: the main voice is normalized to [`MAIN_REF_DB`] (mean RMS over voiced 20 ms frames,
 //!   frame RMS above -45 dBFS). The background voices are scaled to a level relative to that:
 //!   -6, -10, -15, -20 dB, plus 0 dB for a bystander as loud as the caller.
 //!
 //! Scenes (files in `<out>/scenes/<id>.wav`, 48 kHz **stereo** s16le with the same audio in both
 //! channels, what the agent receives, and `<id>.16k.wav`, 16 kHz mono, for embedding/STT):
-//! - `main_over_babble` (S1): per main phrase x level x set: 300 ms lead, the phrase, 1500 ms
-//!   tail; babble (2 simultaneous other voices, 150-400 ms between sentences) all the way through.
-//! - `bystander_alone` (S2): per set 20 utterances, one other voice saying one sentence at 0 or
+//! - `main_over_babble` (S1): per main phrase (qualified phrases and long sentences) x level x set:
+//!   300 ms lead, the phrase, 1500 ms tail; babble (2 simultaneous other voices, 150-400 ms between sentences) all the way through.
+//! - `bystander_alone` (S2): per set 60 utterances (30 at 0 dB, 30 at -10 dB), one other voice saying one sentence at 0 or
 //!   -10 dB re the main voice's level, babble at -20 dB underneath, no main speech.
-//! - `conversation` (S3): per level x set one file: two enrollment utterances of the main voice
-//!   (babble -20 dB), then 16 turns alternating main and bystander (one other voice at 0 dB), babble
-//!   at the scene level throughout.
+//! - `conversation` (S3): per level x set one file: two enrollment utterances of the main voice,
+//!   both long sentences (babble -20 dB), then 16 turns alternating main and bystander (one other
+//!   voice at 0 dB); the 8 main turns alternate a qualified phrase and a long sentence (never an
+//!   enrollment sentence); babble at the scene level throughout.
 //!
 //! `manifest.json` lists per scene `id`, `kind`, `set`, `level_db`, `seed` and
-//! `segments: [{start_ms, end_ms, role: main|bystander|babble, voice, sid, text}]` (enrollment
-//! utterances carry `"enroll": true`). The seed of every random choice derives from 20261027 and
+//! `segments: [{start_ms, end_ms, role: main|bystander|babble, voice, sid, text, kind, expected}]`
+//! (enrollment utterances carry `"enroll": true`). `kind` is `qualified`, `long` or `background`;
+//! `expected` is `{speaker: "caller"|"other", transcript: <text, null for babble>}`: who the agent
+//! should attribute the segment to and what it should hear. The seed of every random choice derives from 20261027 and
 //! the scene id.
 //!
 //! **Determinism.** VITS sampling is random, so two syntheses of the same text differ. Every
@@ -45,8 +51,8 @@
 //! the same clips and writes byte-identical files. Delete the cache to re-roll the voices. The
 //! manifest carries the sha256 of every wav, and the sha256 of `manifest.json` is printed last.
 //!
-//! `--quick`: S1 for 3 phrases at -10 dB, S2 with 4 utterances per set, one S3 at -10 dB (tune
-//! set) of 6 turns.
+//! `--quick`: S1 for 3 qualified phrases and 2 long sentences at -10 dB, S2 with 4 utterances per
+//! set, one S3 at -10 dB (tune set) of 6 turns.
 
 use std::collections::HashMap;
 use std::fs;
@@ -78,6 +84,38 @@ const S3_GAP_MIN_MS: usize = 1400;
 const S3_GAP_MAX_MS: usize = 2000;
 const MAIN_BUNDLE: &str = "vits-piper-en_US-amy-low";
 const BACKGROUND: &str = include_str!("support/background_sentences.txt");
+const LONG: &str = include_str!("support/long_sentences.txt");
+const S2_PER_SET: usize = 60;
+
+fn lines_of(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `qualified` (swept, may be judged), `long` (measured only) or `background`.
+fn segment_kind(role: &str, text: &str) -> &'static str {
+    if role == "main" {
+        if lines_of(LONG).iter().any(|l| l == text) {
+            "long"
+        } else {
+            "qualified"
+        }
+    } else {
+        "background"
+    }
+}
+
+/// Who the agent should attribute a segment to: the caller for the main voice, else others.
+fn expected_speaker(role: &str) -> &'static str {
+    if role == "main" {
+        "caller"
+    } else {
+        "other"
+    }
+}
 
 fn ms(n: usize) -> usize {
     n * SR as usize / 1000
@@ -433,6 +471,7 @@ struct Ctx {
     synth: Synth,
     sentences: Vec<String>,
     phrases: Vec<String>,
+    longs: Vec<String>,
     out: PathBuf,
     scenes: Vec<Scene>,
 }
@@ -486,17 +525,18 @@ impl Ctx {
         Ok(normalize_to(&clip, MAIN_REF_DB))
     }
 
-    /// S1: the main phrase over continuous babble at `level_db` re the main voice.
+    /// S1: the main phrase (`tag` is `pNN` for a qualified phrase, `lNN` for a long sentence)
+    /// over continuous babble at `level_db` re the main voice.
     fn main_over_babble(
         &mut self,
         set: Set,
-        phrase_idx: usize,
+        tag: &str,
+        phrase: String,
         level_db: i32,
     ) -> Result<(), String> {
-        let id = format!("s1_{}_p{:02}_m{}", set.name(), phrase_idx, level_db.abs());
+        let id = format!("s1_{}_{}_m{}", set.name(), tag, level_db.abs());
         let seed = scene_seed(&id);
         let mut rng = Rng::new(seed);
-        let phrase = self.phrases[phrase_idx].clone();
         let main = self.main_clip(&phrase)?;
         let total = ms(LEAD_MS) + main.len() + ms(TAIL_MS);
         let (mut bab, mut segments) = babble(
@@ -582,15 +622,13 @@ impl Ctx {
         let id = format!("s3_{}_m{}", set.name(), level_db.abs());
         let seed = scene_seed(&id);
         let mut rng = Rng::new(seed);
-        let pool: Vec<String> = self
+        let qualified: Vec<String> = self
             .phrases
             .iter()
             .filter(|p| p.split_whitespace().count() <= 12)
             .cloned()
             .collect();
-        if pool.len() < 3 {
-            return Err("fewer than 3 short qualified phrases for the conversation scene".into());
-        }
+        let texts = plan_s3_texts(&mut rng, &qualified, &self.longs, turns.div_ceil(2))?;
         let bystander = set.voices()[rng.below(5)];
 
         // Build the voiced timeline first (positions), then the babble under it.
@@ -601,16 +639,9 @@ impl Ctx {
         }
         let mut placed: Vec<Placed> = Vec::new();
         let mut pos = ms(LEAD_MS);
-        let first = rng.below(pool.len());
-        let mut second = rng.below(pool.len() - 1);
-        if second >= first {
-            second += 1;
-        }
-        let turn_pool = turn_phrase_indices(pool.len(), first, second);
-        for phrase_idx in [first, second] {
-            let text = pool[phrase_idx].clone();
-            let clip = self.main_clip(&text)?;
-            let seg = segment("main", &MAIN_VOICE, &text, pos, clip.len(), true);
+        for text in &texts.enroll {
+            let clip = self.main_clip(text)?;
+            let seg = segment("main", &MAIN_VOICE, text, pos, clip.len(), true);
             let start = pos;
             pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
             placed.push(Placed {
@@ -622,7 +653,7 @@ impl Ctx {
         let enroll_end = pos;
         for turn in 0..turns {
             if turn % 2 == 0 {
-                let text = pool[turn_pool[rng.below(turn_pool.len())]].clone();
+                let text = texts.main_turns[turn / 2].clone();
                 let clip = self.main_clip(&text)?;
                 let seg = segment("main", &MAIN_VOICE, &text, pos, clip.len(), false);
                 let start = pos;
@@ -690,6 +721,52 @@ impl Ctx {
     }
 }
 
+/// Texts of one S3 scene: two long enrollment sentences and the main turns, which alternate a
+/// qualified phrase and a long sentence (qualified first). No turn reuses an enrollment sentence
+/// (same text, same waveform) or another turn of the scene.
+struct S3Texts {
+    enroll: [String; 2],
+    main_turns: Vec<String>,
+}
+
+fn plan_s3_texts(
+    rng: &mut Rng,
+    qualified: &[String],
+    long: &[String],
+    main_turns: usize,
+) -> Result<S3Texts, String> {
+    let nq = qualified.len();
+    if long.len() < 2 {
+        return Err("fewer than 2 long sentences for the enrollment".into());
+    }
+    let pool: Vec<&String> = qualified.iter().chain(long).collect();
+    let first = nq + rng.below(long.len());
+    let mut second = nq + rng.below(long.len() - 1);
+    if second >= first {
+        second += 1;
+    }
+    let turn_pool = turn_phrase_indices(pool.len(), first, second);
+    let mut q_left: Vec<usize> = turn_pool.iter().copied().filter(|i| *i < nq).collect();
+    let mut l_left: Vec<usize> = turn_pool.iter().copied().filter(|i| *i >= nq).collect();
+    let mut texts = Vec::new();
+    for turn in 0..main_turns {
+        let left = if turn % 2 == 0 {
+            &mut q_left
+        } else {
+            &mut l_left
+        };
+        if left.is_empty() {
+            return Err("not enough distinct phrases for the conversation scene".into());
+        }
+        let pick = left.remove(rng.below(left.len()));
+        texts.push(pool[pick].clone());
+    }
+    Ok(S3Texts {
+        enroll: [pool[first].clone(), pool[second].clone()],
+        main_turns: texts,
+    })
+}
+
 /// Indices of the phrases a turn may use: every pool phrase except the two enrollment phrases
 /// (the clip cache makes the same text the same waveform, so a reused phrase would be a trial
 /// identical to the enrollment).
@@ -734,8 +811,14 @@ fn manifest_json(scenes: &[Scene]) -> String {
         out.push_str("      \"segments\": [\n");
         for (j, seg) in scene.segments.iter().enumerate() {
             let enroll = if seg.enroll { ", \"enroll\": true" } else { "" };
+            // Babble is not a turn: nothing in it is expected to be transcribed.
+            let expected_transcript = if seg.role == "babble" {
+                "null".to_string()
+            } else {
+                format!("\"{}\"", json_escape(&seg.text))
+            };
             out.push_str(&format!(
-                "        {{\"start_ms\": {}, \"end_ms\": {}, \"role\": \"{}\", \"voice\": \"{}\", \"sid\": {}, \"text\": \"{}\"{}}}{}\n",
+                "        {{\"start_ms\": {}, \"end_ms\": {}, \"role\": \"{}\", \"voice\": \"{}\", \"sid\": {}, \"text\": \"{}\"{}, \"kind\": \"{}\", \"expected\": {{\"speaker\": \"{}\", \"transcript\": {}}}}}{}\n",
                 seg.start_ms,
                 seg.end_ms,
                 seg.role,
@@ -743,6 +826,9 @@ fn manifest_json(scenes: &[Scene]) -> String {
                 seg.sid,
                 json_escape(&seg.text),
                 enroll,
+                segment_kind(seg.role, &seg.text),
+                expected_speaker(seg.role),
+                expected_transcript,
                 if j + 1 < scene.segments.len() { "," } else { "" }
             ));
         }
@@ -847,6 +933,7 @@ fn run() -> Result<(), String> {
         },
         sentences,
         phrases,
+        longs: lines_of(LONG),
         out: args.out.clone(),
         scenes: Vec::new(),
     };
@@ -855,7 +942,12 @@ fn run() -> Result<(), String> {
     if args.quick {
         for set in sets {
             for phrase_idx in 0..3.min(ctx.phrases.len()) {
-                ctx.main_over_babble(set, phrase_idx, -10)?;
+                let phrase = ctx.phrases[phrase_idx].clone();
+                ctx.main_over_babble(set, &format!("p{phrase_idx:02}"), phrase, -10)?;
+            }
+            for long_idx in 0..2.min(ctx.longs.len()) {
+                let phrase = ctx.longs[long_idx].clone();
+                ctx.main_over_babble(set, &format!("l{long_idx:02}"), phrase, -10)?;
             }
             for index in 0..4 {
                 ctx.bystander_alone(set, index, if index % 2 == 0 { 0 } else { -10 })?;
@@ -866,10 +958,15 @@ fn run() -> Result<(), String> {
         for set in sets {
             for level in LEVELS {
                 for phrase_idx in 0..ctx.phrases.len() {
-                    ctx.main_over_babble(set, phrase_idx, level)?;
+                    let phrase = ctx.phrases[phrase_idx].clone();
+                    ctx.main_over_babble(set, &format!("p{phrase_idx:02}"), phrase, level)?;
+                }
+                for long_idx in 0..ctx.longs.len() {
+                    let phrase = ctx.longs[long_idx].clone();
+                    ctx.main_over_babble(set, &format!("l{long_idx:02}"), phrase, level)?;
                 }
             }
-            for index in 0..20 {
+            for index in 0..S2_PER_SET {
                 ctx.bystander_alone(set, index, if index % 2 == 0 { 0 } else { -10 })?;
             }
             for level in LEVELS {
@@ -957,13 +1054,120 @@ mod tests {
             .iter()
             .flat_map(|p| words(p))
             .collect();
-        for sentence in sentences {
+        for sentence in &sentences {
             for word in words(sentence).into_iter().filter(|w| w.len() >= 4) {
                 assert!(
                     !main.contains(&word),
                     "{sentence:?} shares {word:?} with a main phrase"
                 );
             }
+        }
+        // Long sentences and background sentences share no 4+ letter word, either way.
+        let longs = lines_of(LONG);
+        assert_eq!(longs.len(), 16);
+        let long_words: Vec<String> = longs
+            .iter()
+            .flat_map(|l| words(l))
+            .filter(|w| w.len() >= 4)
+            .collect();
+        let bg_words: Vec<String> = sentences
+            .iter()
+            .flat_map(|l| words(l))
+            .filter(|w| w.len() >= 4)
+            .collect();
+        for word in &long_words {
+            assert!(
+                !bg_words.contains(word),
+                "a long sentence and a background sentence share {word:?}"
+            );
+        }
+        for word in &bg_words {
+            assert!(
+                !long_words.contains(word),
+                "a background sentence and a long sentence share {word:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_segments_have_expected() {
+        let long = lines_of(LONG)[0].clone();
+        let seg = |role: &'static str, text: &str, enroll: bool| Segment {
+            start_ms: 0,
+            end_ms: 1000,
+            role,
+            voice: "v".into(),
+            sid: 0,
+            text: text.into(),
+            enroll,
+        };
+        let scene = Scene {
+            id: "s3_test_m10".into(),
+            kind: "conversation",
+            set: Set::Test,
+            level_db: -10,
+            babble_db: -10,
+            seed: 1,
+            segments: vec![
+                seg("main", &long, true),
+                seg("main", "charlie one two three", false),
+                seg("bystander", "Rain tapped on the glass.", false),
+                seg("babble", "Some background words.", false),
+            ],
+            peak_scale: 1.0,
+            sha256_16k: "a".into(),
+            sha256_48k: "b".into(),
+        };
+        let root = parse_json(&manifest_json(&[scene])).unwrap();
+        let Some(Json::Arr(scenes)) = root.get("scenes") else {
+            panic!("no scenes");
+        };
+        let Some(Json::Arr(segs)) = scenes[0].get("segments") else {
+            panic!("no segments");
+        };
+        let field = |s: &Json, key: &str| match s.get(key) {
+            Some(Json::Str(v)) => v.clone(),
+            other => panic!("{key}: {other:?}"),
+        };
+        let expected = |s: &Json| s.get("expected").cloned().expect("expected object");
+        let kinds: Vec<String> = segs.iter().map(|s| field(s, "kind")).collect();
+        assert_eq!(kinds, ["long", "qualified", "background", "background"]);
+        let speakers: Vec<String> = segs
+            .iter()
+            .map(|s| field(&expected(s), "speaker"))
+            .collect();
+        assert_eq!(speakers, ["caller", "caller", "other", "other"]);
+        assert_eq!(
+            field(&expected(&segs[1]), "transcript"),
+            "charlie one two three"
+        );
+        // Babble is not expected to be transcribed.
+        assert!(matches!(
+            expected(&segs[3]).get("transcript"),
+            Some(Json::Null)
+        ));
+    }
+
+    #[test]
+    fn s3_enrollment_uses_two_long_sentences_not_reused() {
+        let longs = lines_of(LONG);
+        let qualified: Vec<String> = (0..30).map(|i| format!("qualified phrase {i}")).collect();
+        for seed in 0..50u64 {
+            let mut rng = Rng::new(seed);
+            let texts = plan_s3_texts(&mut rng, &qualified, &longs, 8).unwrap();
+            assert_ne!(texts.enroll[0], texts.enroll[1]);
+            for e in &texts.enroll {
+                assert!(longs.contains(e), "enrollment {e:?} is not a long sentence");
+                assert!(!texts.main_turns.contains(e), "enrollment {e:?} reused");
+            }
+            assert_eq!(texts.main_turns.len(), 8);
+            for (i, t) in texts.main_turns.iter().enumerate() {
+                assert_eq!(longs.contains(t), i % 2 == 1, "turn {i} kind");
+            }
+            let mut sorted = texts.main_turns.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(sorted.len(), 8, "a turn text repeats");
         }
     }
 

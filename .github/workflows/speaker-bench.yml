@@ -1,0 +1,130 @@
+name: Speaker-ID bench
+
+# Measures how well a speaker-embedding model tells the main voice from quieter background
+# voices (benchmarks/speaker/README.md): generates the speaker test scenes (crates/vendor-sherpa-onnx
+# examples `speaker_fixtures`), then runs `speaker_bench` on them pinned to one core
+# (`taskset -c 2`) so the CPU numbers map onto a 1000m pod. Dispatch-only; spends no vendor credit
+# and needs no secrets.
+#
+# Runs on the EU self-hosted runners by default. The ARC scale sets (nwr-small / nwr-large) are
+# reserved for PR CI, main CI and releases: a bench run holds a runner for a long time.
+#
+# The step summary is summary.md of the bench. The artifact speaker-bench-<run id> holds
+# results.json, summary.md and manifest.json (no audio); the artifact speaker-scenes-<run id>
+# holds the test-set conversation scenes (S3) as wav files, kept 14 days, so a human can listen.
+#
+# GitHub only dispatches workflow_dispatch workflows that exist on the default branch, so this
+# file must be on main before it can be run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'runs-on label. EU self-hosted runners; never ARC for load'
+        required: false
+        default: self-hosted
+      quick:
+        description: 'true = smoke-sized fixtures (a few scenes), false = the full set'
+        required: false
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+  packages: read # pull the ci-build image from GHCR
+
+env:
+  # Job pods run as root on a workspace owned by the runner user; checkout's safe.directory is temporary.
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+# Kubernetes container mode defaults run: steps to `sh -e`; the steps use bash syntax.
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: speaker-bench
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: Speaker-ID bench (quick=${{ inputs.quick }})
+    runs-on: ${{ inputs.runner || 'self-hosted' }}
+    timeout-minutes: 120
+    # Same image and build env as the other cargo jobs (vendor-bench.yml).
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CI: 'true'
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+    steps:
+      - name: Runner facts
+        run: |
+          echo "runner=${RUNNER_NAME:-unknown} nproc=$(nproc)"
+          echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+          grep -m1 'model name' /proc/cpuinfo || true
+
+      - uses: actions/checkout@v4
+
+      - name: Models (kroko Zipformer STT, amy-low TTS, speaker assets)
+        run: |
+          node examples/voice-agent-local-sherpa/scripts/download-stt.mjs --lang=en
+          node examples/voice-agent-local-sherpa/scripts/download-tts.mjs --lang=en
+          node examples/voice-agent-local-sherpa/scripts/download-speaker.mjs
+
+      - name: Build the examples
+        run: cargo build --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures --example speaker_bench
+
+      - name: Fixtures
+        env:
+          QUICK: ${{ inputs.quick }}
+        run: |
+          M=examples/voice-agent-local-sherpa/.models
+          args=()
+          if [ "$QUICK" = "true" ]; then args+=(--quick); fi
+          ./target/release/examples/speaker_fixtures \
+            --models "$M/speaker" \
+            --main-tts "$M/vits-piper-en_US-amy-low" \
+            --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json \
+            --out speaker-fixtures "${args[@]}"
+
+      - name: Bench (pinned to one core)
+        env:
+          # The CI container cannot run git, so results.json takes the commit from here.
+          NWR_BENCH_GIT_SHA: ${{ github.sha }}
+        run: |
+          M=examples/voice-agent-local-sherpa/.models
+          status=0
+          taskset -c 2 ./target/release/examples/speaker_bench \
+            --fixtures speaker-fixtures \
+            --models "$M/speaker" \
+            --stt-model "$M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06" \
+            --out bench-results || status=$?
+          cp speaker-fixtures/manifest.json bench-results/manifest.json 2>/dev/null || true
+          if [ -f bench-results/summary.md ]; then cat bench-results/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+          exit "$status"
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: speaker-bench-${{ github.run_id }}
+          path: bench-results/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload test-set conversation scenes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: speaker-scenes-${{ github.run_id }}
+          path: speaker-fixtures/scenes/s3_test_*.wav
+          retention-days: 14
+          if-no-files-found: warn

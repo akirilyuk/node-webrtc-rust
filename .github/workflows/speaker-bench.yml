@@ -97,6 +97,16 @@ jobs:
           test -f "$lib"
           echo "ORT_DYLIB_PATH=$lib" >> "$GITHUB_ENV"
 
+      # `silero-vad-rust` enables ort's default features, so the `ort-sys` build script pulls in
+      # ureq with native-tls (openssl-sys). The ci-build image (ubuntu:24.04) has no OpenSSL headers.
+      - name: OpenSSL headers for the Silero build
+        run: |
+          set -euo pipefail
+          SUDO=""; if [ "$(id -u)" != "0" ]; then SUDO=sudo; fi
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y -qq --no-install-recommends libssl-dev pkg-config
+          pkg-config --exists openssl
+
       - name: Build the examples
         run: cargo build --release -p node-webrtc-rust-vendor-sherpa-onnx --features node-webrtc-rust-speech/silero-vad --example speaker_fixtures --example speaker_bench
 

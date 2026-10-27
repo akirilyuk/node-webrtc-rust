@@ -9,18 +9,24 @@ Licensed Work:        node-webrtc-rust (the Rust crates and npm packages
                       and later. The Licensed Work is (c) 2026 Alexander
                       Kirilyuk.
 
-Additional Use Grant: You may use the Licensed Work in production, including
-                      for commercial purposes, to build, run and sell your own
-                      applications and agents. You may not offer the Licensed
-                      Work, or applications or agents built with it, to third
-                      parties as part of a hosted or managed service whose
-                      purpose is to let those third parties deploy, host or
-                      run their own applications, agents, or realtime audio,
-                      video or data sessions (an "Agent Hosting Service").
-                      Providing an Agent Hosting Service requires a commercial
-                      license from the Licensor. Use through the VoiceThere
-                      platform is always permitted, including building and
-                      reselling services that run on the VoiceThere platform.
+Additional Use Grant: You may make production use of the Licensed Work,
+                      including for commercial purposes, provided that your
+                      use does not include offering an Agent Hosting Service.
+                      You and your affiliates may build, run, sell and operate
+                      your own applications and agents with the Licensed Work,
+                      and you may operate such an application or agent on
+                      behalf of a single client.
+
+                      An "Agent Hosting Service" is a hosted or managed
+                      service, offered to third parties, whose purpose is to
+                      let those third parties deploy, host or run their own
+                      applications or agents built with the Licensed Work.
+                      Offering an Agent Hosting Service requires a commercial
+                      license from the Licensor.
+
+                      Use through the VoiceThere platform is always
+                      permitted, including building and reselling services
+                      that run on the VoiceThere platform.
 
 Change Date:          Four years from the date the Licensed Work is published.
 

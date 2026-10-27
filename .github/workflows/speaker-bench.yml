@@ -10,8 +10,12 @@ name: Speaker-ID bench
 # reserved for PR CI, main CI and releases: a bench run holds a runner for a long time.
 #
 # The step summary is summary.md of the bench. The artifact speaker-bench-<run id> holds
-# results.json, summary.md and manifest.json (no audio); the artifact speaker-scenes-<run id>
-# holds the test-set conversation scenes (S3) as wav files, kept 14 days, so a human can listen.
+# results.json, summary.md, manifest.json, turns.jsonl and conversations.md (the per-turn record:
+# who spoke what, what was expected, what the VAD and recognizer noticed; no audio); the artifact
+# speaker-scenes-<run id> holds the test-set conversation scenes (S3) as wav files, kept 14 days,
+# so a human can listen. Part 2 runs with both the energy and the Silero VAD (--vad both); when
+# Silero cannot load in the container (no ONNX Runtime) its section says so and the run still
+# succeeds.
 #
 # GitHub only dispatches workflow_dispatch workflows that exist on the default branch, so this
 # file must be on main before it can be run.
@@ -80,7 +84,7 @@ jobs:
           node examples/voice-agent-local-sherpa/scripts/download-speaker.mjs
 
       - name: Build the examples
-        run: cargo build --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures --example speaker_bench
+        run: cargo build --release -p node-webrtc-rust-vendor-sherpa-onnx --features node-webrtc-rust-speech/silero-vad --example speaker_fixtures --example speaker_bench
 
       - name: Fixtures
         env:
@@ -106,6 +110,7 @@ jobs:
             --fixtures speaker-fixtures \
             --models "$M/speaker" \
             --stt-model "$M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06" \
+            --vad both \
             --out bench-results || status=$?
           cp speaker-fixtures/manifest.json bench-results/manifest.json 2>/dev/null || true
           if [ -f bench-results/summary.md ]; then cat bench-results/summary.md >> "$GITHUB_STEP_SUMMARY"; fi

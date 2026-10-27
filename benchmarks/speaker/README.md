@@ -15,20 +15,21 @@ A **main speaker** says the test phrases. **Other voices** talk in the backgroun
 - **Other voices**, split so a threshold is never tuned on the voices it is tested on:
   - tune set (thresholds are chosen here): `en_US-ryan-medium`, `en_US-kristin-medium`, `en_US-hfc_male-medium`, `en_US-libritts_r-medium` sids 10 and 50;
   - test set (pass rates are reported here): `en_US-joe-medium`, `en_US-hfc_female-medium`, `en_US-lessac-medium`, `en_US-libritts_r-medium` sids 120 and 300.
-- **Background text:** 40 short neutral sentences we wrote ourselves (`crates/vendor-sherpa-onnx/examples/support/background_sentences.txt`). None shares a content word (4+ letters) with a main phrase, so leaked background words are detectable in main transcripts. The generator has a test for this.
+- **Long sentences:** 16 customer-service style sentences of 12-20 words (`crates/vendor-sherpa-onnx/examples/support/long_sentences.txt`), also spoken by the main voice. They are **not qualified** by the 3000-run sweep, so the bench never judges them pass/fail; it reports their word error rate (WER) and word similarity, labelled "long (measured, not qualified)". Qualified phrases keep the 0.75 oracle and are reported separately.
+- **Background text:** 40 short neutral sentences we wrote ourselves (`crates/vendor-sherpa-onnx/examples/support/background_sentences.txt`). None shares a content word (4+ letters) with a main phrase or a long sentence, so leaked background words are detectable in main transcripts. The generator has a test for this.
 - **Relative level:** the RMS over voiced 20 ms frames (frame RMS above -45 dBFS) of the other voice divided by that of the main voice: **-6, -10, -15, -20 dB**, plus **0 dB** for a bystander as loud as the caller. The main voice is normalized to -20 dBFS in every scene; if a scene would clip, the whole scene is scaled down and `peak_scale` in the manifest records it.
 
 Scenes (`<out>/scenes/<id>.wav` is 48 kHz stereo s16le with the same audio in both channels, what the agent receives; `<id>.16k.wav` is 16 kHz mono, for embedding and STT):
 
-| Scene                 | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1 `main_over_babble` | Per main phrase x level (-6/-10/-15/-20) x set: 300 ms lead, the phrase, 1500 ms tail. Babble (two simultaneous other voices reading background sentences with 150-400 ms gaps, level-matched together, then scaled to the level) runs across the whole clip.                                                                                                                                                                                                                     |
-| S2 `bystander_alone`  | Per set 20 utterances: one other voice says one background sentence at 0 or -10 dB re the main voice, with babble at -20 dB underneath. There is no main speech.                                                                                                                                                                                                                                                                                                                  |
-| S3 `conversation`     | Per level x set one file of about a minute: two enrollment utterances of the main voice (babble at -20 dB), then 16 turns alternating main (a qualified phrase) and bystander (one other voice, a background sentence, at 0 dB), with 1400-2000 ms gaps (longer than the default VAD's 1100 ms `min_silence_duration_ms` by a margin, so the default VAD ends an utterance in every gap; a unit test guards it). Babble runs throughout, at the scene level after the enrollment. |
+| Scene                 | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1 `main_over_babble` | Per main phrase (every qualified phrase and every long sentence) x level (-6/-10/-15/-20) x set: 300 ms lead, the phrase, 1500 ms tail. Babble (two simultaneous other voices reading background sentences with 150-400 ms gaps, level-matched together, then scaled to the level) runs across the whole clip.                                                                                                                                                                                                                                             |
+| S2 `bystander_alone`  | Per set 60 utterances (30 at 0 dB, 30 at -10 dB): one other voice says one background sentence at 0 or -10 dB re the main voice, with babble at -20 dB underneath. There is no main speech.                                                                                                                                                                                                                                                                                                                                                                |
+| S3 `conversation`     | Per level x set one file of about a minute: two enrollment utterances of the main voice, both long sentences (babble at -20 dB), then 16 turns alternating main (4 qualified phrases and 4 long sentences, never an enrollment sentence) and bystander (one other voice, a background sentence, at 0 dB), with 1400-2000 ms gaps (longer than the default VAD's 1100 ms `min_silence_duration_ms` by a margin, so the default VAD ends an utterance in every gap; a unit test guards it). Babble runs throughout, at the scene level after the enrollment. |
 
-`manifest.json` lists per scene `id`, `kind`, `set`, `level_db`, `babble_db`, `seed`, `peak_scale`, the sha256 of both wav files and `segments: [{start_ms, end_ms, role, voice, sid, text}]` with `role` one of `main`, `bystander`, `babble`. Enrollment utterances carry `"enroll": true`. Every random choice is seeded from 20261027 and the scene id.
+`manifest.json` lists per scene `id`, `kind`, `set`, `level_db`, `babble_db`, `seed`, `peak_scale`, the sha256 of both wav files and `segments: [{start_ms, end_ms, role, voice, sid, text, kind, expected}]` with `role` one of `main`, `bystander`, `babble`, `kind` one of `qualified`, `long`, `background` and `expected: {speaker: "caller"|"other", transcript: <text, null for babble>}`. Enrollment utterances carry `"enroll": true`. Every random choice is seeded from 20261027 and the scene id.
 
-`--quick` builds a smoke set: S1 for 3 phrases at -10 dB, S2 with 4 utterances per set, and one S3 at -10 dB (tune set) of 6 turns.
+`--quick` builds a smoke set: S1 for 3 qualified phrases and 2 long sentences at -10 dB, S2 with 4 utterances per set, and one S3 at -10 dB (tune set) of 6 turns.
 
 ### Determinism
 
@@ -46,18 +47,29 @@ VITS sampling is random, so synthesizing the same text twice gives different aud
 - the row `real voices (clean)` uses the Sherpa real-voice clips (enroll `*-sr-*`, test `*-test-sr-*`); it has no tune/test split;
 - `compute` time per clip (stream, waveform, embedding), p50 and p99, on one core.
 
-**Part 2, end to end**, on the S3 scenes of the test set: each scene is fed in 20 ms frames of 48 kHz stereo PCM through the speech crate's `VadEngine` with `VadConfig::default()` (energy VAD). Each VAD utterance is transcribed with the Zipformer online recognizer, embedded (first `check` seconds, but never past the end of the utterance, with the model and length with the lowest tune-set EER and its tune-set threshold) and attributed to the caller or to someone else. It is matched to the manifest segment it overlaps most, if that is at least 50 % of the utterance. Per level it reports:
+**Part 2, end to end**, on the S3 scenes of the test set: each scene is fed in 20 ms frames of 48 kHz stereo PCM through the speech crate's `VadEngine`, once per VAD variant (`--vad energy|silero|both`, default `both`):
 
-- (a) share of main turns whose transcript passes the roundtrip oracle (`wordSimilarity` >= 0.75);
-- (b) share of main turns attributed to the caller;
+- `energy`: `VadConfig::default()`;
+- `silero`: the same with provider `silero` and threshold 0.5 (the documented Silero default). It needs the `silero-vad` feature of the speech crate (`--features node-webrtc-rust-speech/silero-vad` on `cargo run`) and an ONNX Runtime at run time (`ORT_DYLIB_PATH`). If it cannot load, the variant is written as `"silero": {"error": "<message>"}` in `results.json`, `summary.md` says "Not run", and the run still exits 0.
+
+Each VAD utterance is transcribed with the Zipformer online recognizer and embedded (first `check` seconds, but never past the end of the utterance, with the model and length with the lowest tune-set EER and its tune-set threshold), then attributed to the caller or to someone else. Both the recognizer input and the embedding clip start where the product STT feed starts: the SpeechStart frame minus the **pre-roll** (`speech_pad_ms + min_speech_duration_ms`, the capacity `SttPreRollBuffer::from_vad_config` uses; a unit test guards it). The utterance is matched to the manifest segment it overlaps most, if that is at least 50 % of the utterance. Per VAD variant and level it reports:
+
+- (a) share of **qualified** main turns whose transcript passes the roundtrip oracle (`wordSimilarity` >= 0.75); long sentences are not judged: the table shows their WER (a turn no utterance matches counts as all words deleted) and `results.json` their mean word similarity;
+- (b) share of main turns attributed to the caller (all, qualified only, long only);
 - (c) share of bystander turns attributed to others;
 - (d) share of bystander turns attributed to the caller (false accepts);
 - (e) background-word leakage: background words (4+ letters, not in a main phrase) found in main-turn transcripts, divided by the words of those transcripts;
-- (f) VAD utterances that match no segment, and how they were attributed.
+- (f) VAD utterances that match no segment, and how they were attributed;
+- merged utterances: VAD utterances that cover (at least half of) two or more turns, which usually means continuous babble kept the VAD from closing the utterance between turns.
 
 A turn that no VAD utterance matches counts as missed; the counts are in the table. `--vad-min-silence-ms <n>` optionally overrides the VAD's `min_silence_duration_ms` (the workflow does not pass it).
 
-Outputs: `results.json` (all numbers plus `nproc`, CPU model, git sha from `NWR_BENCH_GIT_SHA` or `git rev-parse HEAD`, manifest sha256) and `summary.md`.
+Outputs: `results.json` (all numbers plus `nproc`, CPU model, git sha from `NWR_BENCH_GIT_SHA` or `git rev-parse HEAD`, manifest sha256) and `summary.md`, plus the **per-turn record**:
+
+- `turns.jsonl`: one row per manifest segment (enrollment, main, bystander) of every S3 scene and VAD variant, in time order. Each row has `who` (role, voice, sid), `said` (kind, text), `expected` (speaker, transcript), `noticed` (ids and start/end ms of the VAD utterances overlapping the segment, the transcript of the utterance it matched, the speaker score rounded to 3 decimals, the verdict `caller` / `other` / `not noticed`; `enrollment` for the enrollment utterances), `merged` (segment ids when an overlapping utterance covered two or more turns) and `result` (attribution ok, WER for long sentences, oracle for qualified phrases). VAD utterances that match no segment get a row of their own with `who.role` `none/babble`.
+- `conversations.md`: the same as one timeline table per scene and VAD variant: `time | who spoke | said | expected | noticed (transcript) | verdict | ✓/✗`.
+
+The scores and transcripts are bench data from synthetic voices, not customer content.
 
 ## Licenses
 
@@ -97,9 +109,10 @@ H=/Users/akirilyuk/GIT/webrtc-cloud/development/scripts/host-safety/heavy-run.sh
 $H --label speaker-fixtures -- cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
   --models $M/speaker --main-tts $M/vits-piper-en_US-amy-low \
   --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json --out .test-logs/speaker-fixtures [--quick]
-$H --label speaker-bench -- cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_bench -- \
+$H --label speaker-bench -- cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx \
+  --features node-webrtc-rust-speech/silero-vad --example speaker_bench -- \
   --fixtures .test-logs/speaker-fixtures --models $M/speaker \
-  --stt-model $M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06 --out .test-logs/speaker-bench
+  --stt-model $M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06 --out .test-logs/speaker-bench --vad both
 ```
 
 The other voices' bundles are read from the parent of `--models` (`--voices-root` overrides it).
@@ -112,4 +125,4 @@ The workflow `.github/workflows/speaker-bench.yml` is dispatch-only. Load work a
 gh workflow run speaker-bench.yml -R akirilyuk/node-webrtc-rust --ref main -f runner=self-hosted -f quick=false
 ```
 
-It runs `speaker_bench` under `taskset -c 2`, writes `summary.md` to the step summary, uploads `results.json`, `summary.md` and `manifest.json` as `speaker-bench-<run id>` and the test-set conversation scenes as `speaker-scenes-<run id>` (14 days). The workflow file must be on `main` before it can be dispatched. Check `gh run list -R akirilyuk/node-webrtc-rust --status in_progress` and `--status queued` first: one long run at a time.
+It runs `speaker_bench` under `taskset -c 2`, writes `summary.md` to the step summary, uploads `results.json`, `summary.md`, `manifest.json`, `turns.jsonl` and `conversations.md` as `speaker-bench-<run id>` and the test-set conversation scenes as `speaker-scenes-<run id>` (14 days). The workflow file must be on `main` before it can be dispatched. Check `gh run list -R akirilyuk/node-webrtc-rust --status in_progress` and `--status queued` first: one long run at a time.

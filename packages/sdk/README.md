@@ -492,4 +492,12 @@ Traces SDK, bindings, and Rust core on stderr with `[webrtc-debug]` prefix.
 
 ## License
 
-MIT
+node-webrtc-rust is source-available under the [Business Source License 1.1](https://github.com/akirilyuk/node-webrtc-rust/blob/main/LICENSE), starting with version 0.14.0.
+
+- You can build, run and sell your own applications and agents with it, commercially, in production.
+- You cannot run a hosting platform for other people's applications or agents built with node-webrtc-rust (an "Agent Hosting Service") without a commercial license. Contact hello@voicethere.com for one.
+- Using it through the VoiceThere platform is always allowed, including building and reselling services that run on VoiceThere.
+- Each version converts to Apache License 2.0 four years after it is published.
+- Versions 0.13.4 and earlier were published under the MIT License and remain MIT.
+
+The LICENSE file is the binding text; this summary is not. Vendored third-party code keeps its own licenses, see THIRD_PARTY_NOTICES.md in the repository.

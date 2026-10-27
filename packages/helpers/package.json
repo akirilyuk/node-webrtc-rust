@@ -37,7 +37,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
@@ -55,7 +56,7 @@
     "typescript": "^5.7.0",
     "vitest": "^2.1.8"
   },
-  "license": "MIT",
+  "license": "BUSL-1.1",
   "engines": {
     "node": ">=18"
   }

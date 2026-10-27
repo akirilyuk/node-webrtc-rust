@@ -53,7 +53,7 @@
     "prepublishOnly": "napi prepublish -t npm",
     "version": "napi version"
   },
-  "license": "MIT",
+  "license": "BUSL-1.1",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.0"
   },
@@ -70,6 +70,7 @@
   },
   "files": [
     "index.js",
-    "index.d.ts"
+    "index.d.ts",
+    "LICENSE"
   ]
 }

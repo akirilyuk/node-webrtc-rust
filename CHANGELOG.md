@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- License: from 0.14.0, BSL 1.1 (see LICENSE). 0.13.4 and earlier remain MIT.
+
 ## [0.13.4] - 2026-10-26
 
 ### Fixed

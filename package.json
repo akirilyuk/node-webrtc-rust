@@ -59,5 +59,5 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT"
+  "license": "BUSL-1.1"
 }

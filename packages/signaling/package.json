@@ -38,7 +38,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node ../../scripts/fix-esm-import-extensions.mjs dist/esm && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}\\\\n')\"",
@@ -64,7 +65,7 @@
       "optional": false
     }
   },
-  "license": "MIT",
+  "license": "BUSL-1.1",
   "engines": {
     "node": ">=18"
   }

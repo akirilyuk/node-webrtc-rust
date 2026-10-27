@@ -65,7 +65,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
     "prebuild": "rm -rf dist",
@@ -83,7 +84,7 @@
     "typescript": "^5.7.0",
     "vitest": "^2.1.8"
   },
-  "license": "MIT",
+  "license": "BUSL-1.1",
   "engines": {
     "node": ">=18"
   }

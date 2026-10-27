@@ -39,14 +39,14 @@ VITS sampling is random, so synthesizing the same text twice gives different aud
 **Part 1, embedding level**, per embedding model x check length (0.5, 1.0, 1.5 s) x level row:
 
 - _reference_: the embedding of the two enrollment utterances of the main voice in the S3 scene of the same set and level, concatenated;
-- _genuine_: the first `check` seconds of every S1 main phrase and S3 main turn; _impostor_: the first `check` seconds of every S2 bystander utterance and S3 bystander turn;
+- _genuine_: the first `check` seconds of every S1 main phrase and S3 main turn, excluding phrases that are an enrollment phrase of the reference scene (same text, same waveform); _impostor_: the first `check` seconds of every S2 bystander utterance and S3 bystander turn;
 - _score_: cosine similarity of the clip embedding and the reference; a clip is accepted when its score is above the threshold;
 - **EER**: the error rate where false accepts (FAR) and false rejects (FRR) are equal;
 - **FRR at FAR 1 %** and the **threshold at FAR 1 %**: both from the **tune set** only; then that threshold is applied to the **test set** and its FRR and FAR are reported;
 - the row `real voices (clean)` uses the Sherpa real-voice clips (enroll `*-sr-*`, test `*-test-sr-*`); it has no tune/test split;
 - `compute` time per clip (stream, waveform, embedding), p50 and p99, on one core.
 
-**Part 2, end to end**, on the S3 scenes of the test set: each scene is fed in 20 ms frames of 48 kHz stereo PCM through the speech crate's `VadEngine` with `VadConfig::default()` (energy VAD). Each VAD utterance is transcribed with the Zipformer online recognizer, embedded (first `check` seconds, with the model and length with the lowest tune-set EER and its tune-set threshold) and attributed to the caller or to someone else. It is matched to the manifest segment it overlaps most, if that is at least 50 % of the utterance. Per level it reports:
+**Part 2, end to end**, on the S3 scenes of the test set: each scene is fed in 20 ms frames of 48 kHz stereo PCM through the speech crate's `VadEngine` with `VadConfig::default()` (energy VAD). Each VAD utterance is transcribed with the Zipformer online recognizer, embedded (first `check` seconds, but never past the end of the utterance, with the model and length with the lowest tune-set EER and its tune-set threshold) and attributed to the caller or to someone else. It is matched to the manifest segment it overlaps most, if that is at least 50 % of the utterance. Per level it reports:
 
 - (a) share of main turns whose transcript passes the roundtrip oracle (`wordSimilarity` >= 0.75);
 - (b) share of main turns attributed to the caller;

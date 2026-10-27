@@ -606,6 +606,7 @@ impl Ctx {
         if second >= first {
             second += 1;
         }
+        let turn_pool = turn_phrase_indices(pool.len(), first, second);
         for phrase_idx in [first, second] {
             let text = pool[phrase_idx].clone();
             let clip = self.main_clip(&text)?;
@@ -621,7 +622,7 @@ impl Ctx {
         let enroll_end = pos;
         for turn in 0..turns {
             if turn % 2 == 0 {
-                let text = pool[rng.below(pool.len())].clone();
+                let text = pool[turn_pool[rng.below(turn_pool.len())]].clone();
                 let clip = self.main_clip(&text)?;
                 let seg = segment("main", &MAIN_VOICE, &text, pos, clip.len(), false);
                 let start = pos;
@@ -687,6 +688,15 @@ impl Ctx {
             mix,
         )
     }
+}
+
+/// Indices of the phrases a turn may use: every pool phrase except the two enrollment phrases
+/// (the clip cache makes the same text the same waveform, so a reused phrase would be a trial
+/// identical to the enrollment).
+fn turn_phrase_indices(pool_len: usize, first: usize, second: usize) -> Vec<usize> {
+    (0..pool_len)
+        .filter(|i| *i != first && *i != second)
+        .collect()
 }
 
 fn manifest_json(scenes: &[Scene]) -> String {
@@ -890,6 +900,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_phrase_indices_excludes_enrollment() {
+        assert_eq!(turn_phrase_indices(7, 1, 4), vec![0, 2, 3, 5, 6]);
+    }
 
     #[test]
     fn s3_gaps_exceed_default_vad_silence() {

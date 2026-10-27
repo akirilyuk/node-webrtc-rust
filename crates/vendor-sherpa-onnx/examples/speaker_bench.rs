@@ -352,6 +352,20 @@ impl Fixtures {
     }
 }
 
+/// A genuine trial with the text of an enrollment utterance is the same waveform as the
+/// enrollment (TTS clip cache), so it is not a trial.
+fn shares_enrollment_text(text: &str, enroll_texts: &[String]) -> bool {
+    enroll_texts.iter().any(|e| e == text)
+}
+
+/// Sample range `[start, min(start + check, end))` of the Part 2 embedding clip, in samples at
+/// 16 kHz from millisecond bounds: never past the end the VAD reported for the utterance.
+fn part2_clip_range(start_ms: usize, end_ms: usize, check_s: f32) -> (usize, usize) {
+    let from = start_ms * 16;
+    let to = (end_ms * 16).min(from + check_samples(check_s));
+    (from, to.max(from))
+}
+
 fn collect_items(fx: &mut Fixtures) -> Result<Vec<Item>, String> {
     let mut items = Vec::new();
     for scene in 0..fx.scenes.len() {
@@ -362,18 +376,35 @@ fn collect_items(fx: &mut Fixtures) -> Result<Vec<Item>, String> {
         let ref_scene = fx
             .reference_scene(set, level)
             .ok_or("fixtures have no conversation scene (needed for the enrollment reference)")?;
-        let segs: Vec<(usize, usize, String, bool)> = fx.scenes[scene]
+        let enroll_texts: Vec<String> = fx.scenes[ref_scene]
             .segments
             .iter()
-            .map(|s| (s.start_ms, s.end_ms, s.role.clone(), s.enroll))
+            .filter(|s| s.enroll)
+            .map(|s| s.text.clone())
             .collect();
-        for (start_ms, end_ms, role, enroll) in segs {
+        let segs: Vec<(usize, usize, String, bool, String)> = fx.scenes[scene]
+            .segments
+            .iter()
+            .map(|s| {
+                (
+                    s.start_ms,
+                    s.end_ms,
+                    s.role.clone(),
+                    s.enroll,
+                    s.text.clone(),
+                )
+            })
+            .collect();
+        for (start_ms, end_ms, role, enroll, text) in segs {
             let genuine = match (kind.as_str(), role.as_str()) {
                 ("main_over_babble", "main") => true,
                 ("conversation", "main") if !enroll => true,
                 ("bystander_alone", "bystander") | ("conversation", "bystander") => false,
                 _ => continue,
             };
+            if genuine && shares_enrollment_text(&text, &enroll_texts) {
+                continue;
+            }
             let audio = fx.audio16(scene)?;
             let from = (start_ms * 16).min(audio.len());
             let to = (end_ms * 16).min(audio.len()).min(from + MAX_CHECK_SAMPLES);
@@ -662,8 +693,9 @@ fn part2_scene(
         window.extend(std::iter::repeat_n(0.0f32, TAIL_SILENCE_MS * 16));
         let transcript = recognize(recognizer, &window);
 
-        let from = (utt.start_ms * 16).min(audio.len());
-        let clip = first(&audio[from..], check_samples(check_s));
+        let (from, to) = part2_clip_range(utt.start_ms, utt.window_end_ms, check_s);
+        let from = from.min(audio.len());
+        let clip = &audio[from..to.min(audio.len()).max(from)];
         let caller = emb
             .embed(clip)
             .is_some_and(|(e, _)| cosine(&reference, &e) > threshold);
@@ -1149,6 +1181,19 @@ mod tests {
         let few = [0.1f32, 0.5, 0.9];
         let t = threshold_at_far(&few, 0.01).unwrap();
         assert_eq!(far_frr(&[], &few, t).0, Some(0.0));
+    }
+
+    #[test]
+    fn genuine_item_with_enrollment_text_is_skipped() {
+        let enroll = vec!["charlie one two three".to_string(), "x".to_string()];
+        assert!(shares_enrollment_text("charlie one two three", &enroll));
+        assert!(!shares_enrollment_text("bravo four five six", &enroll));
+    }
+
+    #[test]
+    fn part2_clip_stops_at_utterance_end() {
+        assert_eq!(part2_clip_range(0, 800, 1.5), (0, 800 * 16));
+        assert_eq!(part2_clip_range(0, 2000, 1.5), (0, 24_000));
     }
 
     #[test]

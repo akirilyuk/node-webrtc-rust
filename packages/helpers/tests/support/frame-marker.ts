@@ -133,6 +133,14 @@ export interface SequenceAnalysis {
   interiorSilence: number
   /** Position in the input of the first numeric index, or -1. */
   firstIndexAt: number
+  /**
+   * Marker distance walked from the first to the last recognised frame: the sum of the
+   * unwrapped forward steps between consecutive advancing markers (a long forward step counts
+   * at its unwrapped length). A stream of N source frames has a span of at most N - 1, so a
+   * backward step (a replay) that a merge budget lets through as forward shows up as a span
+   * about 40 too long.
+   */
+  span: number
 }
 
 export interface AnalyseOptions {
@@ -152,14 +160,20 @@ export interface AnalyseOptions {
   /**
    * How many of `mergedFrames` are listener catch-up merges (`listenerCatchupCompressed`).
    * A catch-up output frame cross-fades two media ticks, and each tick may itself be a
-   * queue-compressed pair (`compressed`, `overflowCompressed`). When both kinds occur in a run,
-   * one output frame carries up to four source frames, so it can absorb up to three indices,
-   * not one. Default 0: every frame of a step absorbs at most one index.
+   * queue-compressed pair (`compressed`: `pop` merges at most two queued frames). When both
+   * kinds occur in a run, one output frame carries up to four source frames, so it can absorb
+   * up to three indices, not one. `overflowCompressed` can stack more than two frames into one
+   * tick (each overflow merges the queue front again), so with overflow this cap can be too
+   * strict (a false `reordered`), never too loose. Default 0: every frame of a step absorbs at
+   * most one index.
    */
   listenerCatchupFrames?: number
 }
 
-/** Indices one output frame can absorb when listener catch-up merges two compressed ticks. */
+/**
+ * Indices one output frame can absorb when listener catch-up merges two compressed ticks
+ * (pop compression; overflow can stack more).
+ */
 const MAX_STACKED_MERGE_INDICES = 3
 
 /**
@@ -183,6 +197,7 @@ export function analyseSequence(
     silent: 0,
     interiorSilence: 0,
     firstIndexAt: -1,
+    span: 0,
   }
   let lastMarker = -1
   indices.forEach((idx, pos) => {
@@ -237,6 +252,7 @@ export function analyseSequence(
       if (longForward) mergesLeft -= unexplained
       out.gaps += unexplained
       out.played++
+      out.span += delta
       prev = idx
       out.duplicates += pendingDups
       pendingDups = 0

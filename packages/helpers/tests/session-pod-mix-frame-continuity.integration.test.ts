@@ -403,6 +403,8 @@ function expectContinuous({ seq, stats }: { seq: SequenceAnalysis; stats: MixSta
   const merged = mergedFrames(s)
   expect(seq.gaps, detail).toBeLessThanOrEqual(merged)
   expect(seq.reordered, detail).toBe(0)
+  // A replay that the merge budget reads as a long forward step walks ~40 indices too far.
+  expect(seq.span, detail).toBeLessThanOrEqual(MARKED_FRAMES - 1)
   expect(seq.duplicates, detail).toBeLessThanOrEqual(s.concealed)
   expect(seq.played, detail).toBeGreaterThanOrEqual(145 - 2 * merged)
   expect(seq.ambiguous, detail).toBeLessThanOrEqual(
@@ -426,6 +428,7 @@ function expectAccounted({ seq, stats }: { seq: SequenceAnalysis; stats: MixStat
   const s = stats!
   expect(seq.gaps, detail).toBeLessThanOrEqual(mergedFrames(s))
   expect(seq.reordered, detail).toBe(0)
+  expect(seq.span, detail).toBeLessThanOrEqual(MARKED_FRAMES - 1)
   expect(seq.duplicates, detail).toBeLessThanOrEqual(s.concealed)
   expect(s.decodeErrors, detail).toBe(0)
   expect(s.pushed, detail).toBe(s.played + s.compressed + s.overflowCompressed + s.depth)

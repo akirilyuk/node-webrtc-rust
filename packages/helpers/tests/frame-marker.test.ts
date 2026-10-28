@@ -36,6 +36,11 @@ describe('frame-marker helper', () => {
     expect(detectIndex(Buffer.alloc(MARKER_FRAME_BYTES))).toBe('silence')
   })
 
+  it('a clean run of 150 frames spans 149 indices', () => {
+    const marksOnly = seq(0, 150).map((i) => i % 40)
+    expect(analyseSequence(marksOnly)).toMatchObject({ span: 149, reordered: 0, gaps: 0 })
+  })
+
   it('perfect sequence across the wrap: no gaps, no duplicates', () => {
     const r = analyseSequence(detectRun(seq(30, 60)))
     expect(r).toMatchObject({ played: 60, gaps: 0, duplicates: 0, ambiguous: 0 })
@@ -176,6 +181,7 @@ describe('frame-marker helper', () => {
         expect(r.reordered).toBe(0)
         expect(r.duplicates).toBe(0)
         expect(r.gaps).toBeLessThanOrEqual(stats.mergedFrames)
+        expect(r.span).toBeLessThanOrEqual(150)
       })
 
       it('misread it as 12 backward steps and a duplicate before (one index per frame)', () => {
@@ -195,6 +201,17 @@ describe('frame-marker helper', () => {
         expect(analyseSequence(idx, { mergedFrames: 41, listenerCatchupFrames: 40 })).toMatchObject(
           { reordered: 0, gaps: 16 },
         )
+      })
+
+      it('a replay hidden by stacked merges walks a span longer than the stream', () => {
+        // 41 source frames 0..40, but after 9 unknown frames the run steps back 15 (30 -> 15).
+        // Mod 40 that is +25, which the stacked-merge budget pays for: not `reordered`.
+        const idx = [...marks(0, 31), ...ambiguous(9), ...marks(15, 26)]
+        const r = analyseSequence(idx, { mergedFrames: 60, listenerCatchupFrames: 30 })
+        expect(r.reordered).toBe(0)
+        // The span check catches it: 30 + 25 + 25 = 80 > 40.
+        expect(r.span).toBe(80)
+        expect(r.span).toBeGreaterThan(40)
       })
 
       it('an adjacent swap is still reordered with stacked merges', () => {

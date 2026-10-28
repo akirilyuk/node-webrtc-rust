@@ -82,3 +82,46 @@ export const SHERPA_SPEAKER_PIPER_BUNDLES = [
   'vits-piper-en_US-lessac-medium',
   'vits-piper-en_US-libritts_r-medium',
 ]
+
+// ---------------------------------------------------------------------------
+// Speech-enhancement (denoiser) bench assets (benchmarks/speaker/README.md). Test and bench only.
+// Every file is checked against `checksum.txt` of its release. Licenses: GTCRN MIT, DPDFNet
+// Apache-2.0.
+// ---------------------------------------------------------------------------
+
+export const SHERPA_ENHANCE_RELEASE_BASE =
+  'https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models'
+
+/**
+ * `sha256` is set for files that the release's `checksum.txt` does not list (it lists only
+ * gtcrn_simple.onnx and the sample wavs): the digest GitHub shows for that release asset
+ * (`gh api repos/k2-fsa/sherpa-onnx/releases/tags/speech-enhancement-models`, 2026-10-28).
+ */
+export const SHERPA_ENHANCE_MODELS = [
+  { id: 'gtcrn', file: 'gtcrn_simple.onnx' },
+  {
+    id: 'dpdfnet_baseline',
+    file: 'dpdfnet_baseline.onnx',
+    sha256: 'debaf0e8893479fca91b8b4c1eae8db195aa8980ccc9012f5809fde2b738151a',
+  },
+  {
+    id: 'dpdfnet2',
+    file: 'dpdfnet2.onnx',
+    sha256: 'ce35d6025fc71df0ef10d1540e1b7916837bbfe5f6896deb744508d2cad487a9',
+  },
+  {
+    id: 'dpdfnet4',
+    file: 'dpdfnet4.onnx',
+    sha256: '71b588bc26163941aa82a592cce924b08c1fbdc0879fe44f5a2d4eac44bd8420',
+  },
+  {
+    id: 'dpdfnet8',
+    file: 'dpdfnet8.onnx',
+    sha256: '2751c1f5a4e849d23a07c675b4c838158b249b42152f10cc318522dd339134f0',
+  },
+  {
+    id: 'dpdfnet2_48khz_hr',
+    file: 'dpdfnet2_48khz_hr.onnx',
+    sha256: '0b399f8a58dc4d70d8cd97541f5c39869406145193b957d00a03b66070944928',
+  },
+]

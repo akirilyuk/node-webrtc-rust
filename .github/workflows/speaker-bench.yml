@@ -1,8 +1,10 @@
 name: Speaker-ID bench
 
 # Measures how well a speaker-embedding model tells the main voice from quieter background
-# voices (benchmarks/speaker/README.md): generates the speaker test scenes (crates/vendor-sherpa-onnx
-# examples `speaker_fixtures`), then runs `speaker_bench` on them pinned to one core
+# voices, and what denoisers (RNNoise, GTCRN, DPDFNet) and a caller-gain AGC do to the VAD, the
+# transcripts and the attribution (benchmarks/speaker/README.md): generates the test scenes
+# (crates/vendor-sherpa-onnx examples `speaker_fixtures`, caller levels -26 / -20 / -14 dBFS),
+# then runs `speaker_bench` (Parts 1 and 2, and Part 3 with --enhance) on them pinned to one core
 # (`taskset -c 2`) so the CPU numbers map onto a 1000m pod. Dispatch-only; spends no vendor credit
 # and needs no secrets.
 #
@@ -13,9 +15,8 @@ name: Speaker-ID bench
 # results.json, summary.md, manifest.json, turns.jsonl and conversations.md (the per-turn record:
 # who spoke what, what was expected, what the VAD and recognizer noticed; no audio); the artifact
 # speaker-scenes-<run id> holds the test-set conversation scenes (S3) as wav files, kept 14 days,
-# so a human can listen. Part 2 runs with both the energy and the Silero VAD (--vad both); when
-# Silero cannot load in the container (no ONNX Runtime) its section says so and the run still
-# succeeds.
+# so a human can listen. Part 2 and Part 3 use the energy VAD (Silero was evaluated and dropped,
+# see the README). The step summary holds one table per Part 3 grid plus the cost table.
 #
 # GitHub only dispatches workflow_dispatch workflows that exist on the default branch, so this
 # file must be on main before it can be run.
@@ -57,7 +58,7 @@ jobs:
   bench:
     name: Speaker-ID bench (quick=${{ inputs.quick }})
     runs-on: ${{ inputs.runner || 'self-hosted' }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     # Same image and build env as the other cargo jobs (vendor-bench.yml).
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -77,38 +78,15 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Models (kroko Zipformer STT, amy-low TTS, speaker assets)
+      - name: Models (kroko Zipformer STT, amy-low TTS, speaker assets, denoisers)
         run: |
           node examples/voice-agent-local-sherpa/scripts/download-stt.mjs --lang=en
           node examples/voice-agent-local-sherpa/scripts/download-tts.mjs --lang=en
           node examples/voice-agent-local-sherpa/scripts/download-speaker.mjs
-
-      # Silero VAD loads ONNX Runtime at run time (`ort` load-dynamic, pinned to ORT 1.22); the
-      # ci-build image has none, and Sherpa's bundled ONNX is not shared with it
-      # (packages/sdk/VOICE-VAD-AND-BARGE-IN.md). Official Microsoft release, sha256-pinned.
-      - name: ONNX Runtime 1.22 for Silero VAD
-        run: |
-          set -euo pipefail
-          url=https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-1.22.0.tgz
-          curl -sSfL -o "$RUNNER_TEMP/ort.tgz" "$url"
-          echo "8344d55f93d5bc5021ce342db50f62079daf39aaafb5d311a451846228be49b3  $RUNNER_TEMP/ort.tgz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP"
-          lib="$RUNNER_TEMP/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so"
-          test -f "$lib"
-          echo "ORT_DYLIB_PATH=$lib" >> "$GITHUB_ENV"
-
-      # `silero-vad-rust` enables ort's default features, so the `ort-sys` build script pulls in
-      # ureq with native-tls (openssl-sys). The ci-build image (ubuntu:24.04) has no OpenSSL headers.
-      - name: OpenSSL headers for the Silero build
-        run: |
-          set -euo pipefail
-          SUDO=""; if [ "$(id -u)" != "0" ]; then SUDO=sudo; fi
-          $SUDO apt-get update -qq
-          $SUDO apt-get install -y -qq --no-install-recommends libssl-dev pkg-config
-          pkg-config --exists openssl
+          node examples/voice-agent-local-sherpa/scripts/download-enhance.mjs
 
       - name: Build the examples
-        run: cargo build --release -p node-webrtc-rust-vendor-sherpa-onnx --features node-webrtc-rust-speech/silero-vad --example speaker_fixtures --example speaker_bench
+        run: cargo build --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures --example speaker_bench
 
       - name: Fixtures
         env:
@@ -117,10 +95,12 @@ jobs:
           M=examples/voice-agent-local-sherpa/.models
           args=()
           if [ "$QUICK" = "true" ]; then args+=(--quick); fi
+          # Caller levels for Grid B: -26 / -20 / -14 dBFS (test-set conversations at -15 / -10 dB).
           ./target/release/examples/speaker_fixtures \
             --models "$M/speaker" \
             --main-tts "$M/vits-piper-en_US-amy-low" \
             --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json \
+            --main-levels -26,-20,-14 \
             --out speaker-fixtures "${args[@]}"
 
       - name: Bench (pinned to one core)
@@ -134,7 +114,7 @@ jobs:
             --fixtures speaker-fixtures \
             --models "$M/speaker" \
             --stt-model "$M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06" \
-            --vad both \
+            --enhance "$M/enhance" \
             --out bench-results || status=$?
           cp speaker-fixtures/manifest.json bench-results/manifest.json 2>/dev/null || true
           if [ -f bench-results/summary.md ]; then cat bench-results/summary.md >> "$GITHUB_STEP_SUMMARY"; fi

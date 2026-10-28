@@ -285,7 +285,7 @@ How it works, per 20 ms frame (mono 16 kHz, the same signal the energy VAD sees)
 
 1. The frame level is its RMS in dBFS.
 2. For the first `warmupMs` the plain energy rule decides (`vad.threshold`), so the start of a call is never worse than `energy`. Frames judged quiet feed the noise window.
-3. The **noise level** is the `noisePercentile` (70) of the levels of the last `noiseWindowMs` (3 s) of frames judged quiet. If the caller is active for `stuckActiveMs` (8 s) with no quiet frame, active frames also feed the window until the next quiet frame, so a steady loud sound cannot hold the VAD open forever.
+3. The **noise level** is the `noisePercentile` (70) of the levels of the last `noiseWindowMs` (3 s) of frames judged quiet. If an utterance stays open longer than `stuckActiveMs` (8 s), its active frames also feed the noise window until the utterance ends, so a level step in the background noise cannot hold the VAD open. A caller who speaks without pausing for longer than this can be cut off; raise it for monologue-style use.
 4. The **caller level** is a slow average (factor 0.05) of the active frames after warm-up.
 5. The **threshold** is noise + `noiseMarginDb` (6 dB). With `useSpeechLevel`, and when the caller is more than twice the margin above the noise, it is raised to halfway between noise and caller. It is clamped to `minThresholdDbfs`..`maxThresholdDbfs`.
 6. A frame starts speech at the threshold and stays active down to `hysteresisDb` (3 dB) below it, so word gaps do not split an utterance.
@@ -296,17 +296,17 @@ Minimum speech and silence, pre-roll and barge-in work as for `energy`. Set `VOI
 vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'adaptive', adaptive: { noiseMarginDb: 6 } }
 ```
 
-| `vad.adaptive.*`   | Default | Range              | Meaning                                                       |
-| ------------------ | ------- | ------------------ | ------------------------------------------------------------- |
-| `warmupMs`         | `400`   | 0..`noiseWindowMs` | Start of the call decided by `vad.threshold`                  |
-| `noiseWindowMs`    | `3000`  | >= 500             | Window the noise level is read from                           |
-| `noisePercentile`  | `70`    | 1..99              | Percentile of that window taken as noise                      |
-| `noiseMarginDb`    | `6`     | 0..30              | Speech must be this far above the noise                       |
-| `useSpeechLevel`   | `true`  |                    | Raise the threshold toward the caller's level                 |
-| `hysteresisDb`     | `3`     | 0..30              | Stay active this far below the threshold                      |
-| `minThresholdDbfs` | `-50`   | < max              | Lower clamp of the threshold                                  |
-| `maxThresholdDbfs` | `-10`   | <= 0               | Upper clamp of the threshold                                  |
-| `stuckActiveMs`    | `8000`  | >= 1000            | Active this long without a quiet frame feeds the noise window |
+| `vad.adaptive.*`   | Default | Range              | Meaning                                                                 |
+| ------------------ | ------- | ------------------ | ----------------------------------------------------------------------- |
+| `warmupMs`         | `400`   | 0..`noiseWindowMs` | Start of the call decided by `vad.threshold`                            |
+| `noiseWindowMs`    | `3000`  | >= 500             | Window the noise level is read from                                     |
+| `noisePercentile`  | `70`    | 1..99              | Percentile of that window taken as noise                                |
+| `noiseMarginDb`    | `6`     | 0..30              | Speech must be this far above the noise                                 |
+| `useSpeechLevel`   | `true`  |                    | Raise the threshold toward the caller's level                           |
+| `hysteresisDb`     | `3`     | 0..30              | Stay active this far below the threshold                                |
+| `minThresholdDbfs` | `-50`   | < max              | Lower clamp of the threshold                                            |
+| `maxThresholdDbfs` | `-10`   | <= 0               | Upper clamp of the threshold                                            |
+| `stuckActiveMs`    | `8000`  | >= 1000            | An utterance open this long feeds its active frames to the noise window |
 
 The defaults are provisional until the bench picks them. With `adaptive`, `vad.threshold` only matters during warm-up.
 

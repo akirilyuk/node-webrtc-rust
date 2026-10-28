@@ -286,7 +286,7 @@ pub struct AdaptiveVadConfig {
     /// Upper clamp of the threshold, dBFS.
     #[serde(default = "default_adaptive_max_threshold_dbfs")]
     pub max_threshold_dbfs: f32,
-    /// After this long active with no inactive frame, active frames also feed the noise window.
+    /// If an utterance stays open longer than `stuckActiveMs`, its active frames also feed the noise window until the utterance ends, so a level step in the background noise cannot hold the VAD open.
     #[serde(default = "default_adaptive_stuck_active_ms")]
     pub stuck_active_ms: u32,
 }

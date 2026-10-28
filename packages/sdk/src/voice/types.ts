@@ -75,7 +75,7 @@ export interface AdaptiveVadConfig {
   minThresholdDbfs?: number
   /** Upper clamp of the threshold, dBFS (at most 0). Default -10. */
   maxThresholdDbfs?: number
-  /** After this long active with no quiet frame (ms), active frames also feed the noise window. Default 8000, min 1000. */
+  /** If an utterance stays open longer than `stuckActiveMs`, its active frames also feed the noise window until the utterance ends, so a level step in the background noise cannot hold the VAD open. Default 8000, min 1000. */
   stuckActiveMs?: number
 }
 

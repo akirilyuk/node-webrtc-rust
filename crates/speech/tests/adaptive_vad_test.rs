@@ -256,7 +256,8 @@ fn adaptive_reset_clears_state() {
 
 #[test]
 fn adaptive_config_rejects_invalid() {
-    let cases: Vec<(&str, Box<dyn Fn(&mut AdaptiveVadConfig)>)> = vec![
+    type Mutate = Box<dyn Fn(&mut AdaptiveVadConfig)>;
+    let cases: Vec<(&str, Mutate)> = vec![
         ("noisePercentile", Box::new(|c| c.noise_percentile = 0)),
         ("noisePercentile", Box::new(|c| c.noise_percentile = 100)),
         ("noiseWindowMs", Box::new(|c| c.noise_window_ms = 400)),

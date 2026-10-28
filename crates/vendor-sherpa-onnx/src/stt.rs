@@ -24,7 +24,9 @@ pub(crate) const SAMPLE_RATE: i32 = 16_000;
 /// an utterance was dropped or cut ("four five six" -> "four five" / "four five si") depending
 /// on how the utterance length fell on the chunk grid. 100 ms fixed the captured CI turn; 640 ms
 /// covers every 20 ms alignment in `tests/stt_finalize_last_word_test.rs` with margin.
-pub(crate) const FINALIZE_TAIL_PADDING_MS: usize = 640;
+/// The `stt_replay` / `phrase_sweep` examples (`examples/support/mod.rs` `recognize`) feed the
+/// same padding before `InputFinished`, so offline replays decode like the product.
+pub const FINALIZE_TAIL_PADDING_MS: usize = 640;
 
 static SHERPA_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
 static SHERPA_GET_RESULT_COUNT: AtomicU64 = AtomicU64::new(0);

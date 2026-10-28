@@ -24,6 +24,6 @@ pub use pool::SherpaModelPool;
 pub use sentences::engine_pieces;
 pub use stt::{
     reset_sherpa_get_result_count, reset_sherpa_poll_blocking_hops, sherpa_get_result_count,
-    sherpa_poll_blocking_hops,
+    sherpa_poll_blocking_hops, FINALIZE_TAIL_PADDING_MS,
 };
 pub use tts::{reset_tts_generate_count, tts_generate_count};

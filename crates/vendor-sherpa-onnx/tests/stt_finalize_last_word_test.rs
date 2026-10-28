@@ -108,3 +108,55 @@ async fn finalize_keeps_the_last_word_of_the_captured_utterance() {
         "finals lost words of the utterance (lead trimmed in 20 ms steps): {lost:?}"
     );
 }
+
+/// The tail padding is zeros: finalizing an utterance that carried only silence (or no audio at
+/// all) must still give no words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finalize_of_silence_or_no_audio_gives_no_words() {
+    let Ok(model_path) = std::env::var("SHERPA_STT_MODEL_PATH") else {
+        eprintln!("skip: SHERPA_STT_MODEL_PATH is not set");
+        return;
+    };
+    if !std::path::Path::new(&model_path).is_dir() {
+        eprintln!("skip: SHERPA_STT_MODEL_PATH is not a directory: {model_path}");
+        return;
+    }
+
+    let mut stt = SherpaFactory
+        .create_stt(&stt_config(model_path))
+        .expect("create_stt");
+    stt.start().await.expect("stt start");
+
+    // 1 s of zeros, then an utterance with no samples at all, then 1 s of zeros again.
+    let mut texts = Vec::new();
+    for silence_ms in [1000usize, 0, 1000] {
+        let pcm = vec![0_u8; 32 * silence_ms];
+        let mut seen = Vec::new();
+        for chunk in pcm.chunks(CHUNK_BYTES) {
+            stt.push_and_poll(Bytes::copy_from_slice(chunk), &mut seen)
+                .await
+                .expect("push_and_poll");
+        }
+        stt.finalize_utterance().await.expect("finalize_utterance");
+        while let Some(t) = stt.poll_transcript().await.expect("poll") {
+            seen.push(t);
+        }
+        let text = seen
+            .into_iter()
+            .map(|t| match t {
+                SttTranscript::Final(text) | SttTranscript::Partial(text) => text,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        texts.push((silence_ms, text));
+    }
+    stt.stop().await.expect("stt stop");
+
+    for (silence_ms, text) in &texts {
+        eprintln!("silence {silence_ms} ms: {text:?}");
+    }
+    assert!(
+        texts.iter().all(|(_, text)| words(text).is_empty()),
+        "silence-only utterances produced words: {texts:?}"
+    );
+}

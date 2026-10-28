@@ -75,7 +75,7 @@
       "language": "en",
       "kind": "kitten",
       "speakerId": 1,
-      "approxMb": "~25"
+      "approxMb": "~60"
     },
     {
       "id": "en-kitten-m2",
@@ -84,7 +84,7 @@
       "language": "en",
       "kind": "kitten",
       "speakerId": 0,
-      "approxMb": "~25"
+      "approxMb": "~60"
     },
     {
       "id": "en-kitten-f3",
@@ -93,7 +93,7 @@
       "language": "en",
       "kind": "kitten",
       "speakerId": 3,
-      "approxMb": "~25"
+      "approxMb": "~60"
     },
     {
       "id": "en-kitten-m3",
@@ -102,7 +102,7 @@
       "language": "en",
       "kind": "kitten",
       "speakerId": 2,
-      "approxMb": "~25"
+      "approxMb": "~60"
     },
     {
       "id": "en-kitten-f4",
@@ -111,7 +111,7 @@
       "language": "en",
       "kind": "kitten",
       "speakerId": 5,
-      "approxMb": "~25"
+      "approxMb": "~60"
     },
     {
       "id": "en-kitten-m4",
@@ -120,7 +120,7 @@
       "language": "en",
       "kind": "kitten",
       "speakerId": 4,
-      "approxMb": "~25"
+      "approxMb": "~60"
     },
     {
       "id": "en-kitten-f5",
@@ -129,7 +129,7 @@
       "language": "en",
       "kind": "kitten",
       "speakerId": 7,
-      "approxMb": "~25"
+      "approxMb": "~60"
     },
     {
       "id": "en-kitten-m5",
@@ -138,7 +138,7 @@
       "language": "en",
       "kind": "kitten",
       "speakerId": 6,
-      "approxMb": "~25"
+      "approxMb": "~60"
     },
     {
       "id": "en-kokoro-heart",

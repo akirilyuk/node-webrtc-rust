@@ -509,7 +509,10 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       }
       const stats =
         host!.getClientMixer()?.mixStats(host!.resolveParticipantId(ids.speaker)) ?? null
-      const result = analyseSequence(recorder.detected, { mergedFrames: mergedFrames(stats) })
+      const result = analyseSequence(recorder.detected, {
+        mergedFrames: mergedFrames(stats),
+        listenerCatchupFrames: stats?.listenerCatchupCompressed ?? 0,
+      })
       // Machine-readable line for aggregating repeated runs.
       if (process.env.MIX_FC_DUMP) {
         console.log(`SEQ ${pattern} ${JSON.stringify(recorder.detected)}`)
@@ -579,6 +582,7 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
             host!.getClientMixer()?.mixStats(host!.resolveParticipantId(ids.speaker)) ?? null
           const seq = analyseSequence(recorder.detected.slice(from), {
             mergedFrames: mergedFrames(stats),
+            listenerCatchupFrames: stats?.listenerCatchupCompressed ?? 0,
           })
           console.log(
             `MIXSTATS ${JSON.stringify({ pattern: `${caseKey}-burst${burst}`, ...seq, firstFrameMs, stats })}`,

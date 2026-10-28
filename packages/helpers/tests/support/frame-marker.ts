@@ -149,13 +149,25 @@ export interface AnalyseOptions {
    * is accounted for, so only a run of unknown frames can explain a long forward step.
    */
   mergedFrames?: number
+  /**
+   * How many of `mergedFrames` are listener catch-up merges (`listenerCatchupCompressed`).
+   * A catch-up output frame cross-fades two media ticks, and each tick may itself be a
+   * queue-compressed pair (`compressed`, `overflowCompressed`). When both kinds occur in a run,
+   * one output frame carries up to four source frames, so it can absorb up to three indices,
+   * not one. Default 0: every frame of a step absorbs at most one index.
+   */
+  listenerCatchupFrames?: number
 }
+
+/** Indices one output frame can absorb when listener catch-up merges two compressed ticks. */
+const MAX_STACKED_MERGE_INDICES = 3
 
 /**
  * Analyse detected indices, unwrapping mod 40. Leading silence is ignored. An ambiguous or
  * interior-silent frame stands in for one unknown frame, so it explains one missing index
  * (the Rust twin `analyze` in `crates/conference/tests/support/frame_marker.rs` does the same;
- * it still treats every step above 20 as `reordered`, see `AnalyseOptions.mergedFrames`).
+ * it still treats every step above 20 as `reordered`, see `AnalyseOptions.mergedFrames` and
+ * `AnalyseOptions.listenerCatchupFrames`).
  */
 export function analyseSequence(
   indices: readonly DetectedIndex[],
@@ -180,6 +192,9 @@ export function analyseSequence(
   let unknown = 0
   let pendingDups = 0
   let mergesLeft = opts.mergedFrames ?? 0
+  const catchup = Math.min(opts.listenerCatchupFrames ?? 0, mergesLeft)
+  // Listener catch-up merges stacked on queue compressions: one frame can absorb three indices.
+  const perFrame = catchup > 0 && mergesLeft - catchup > 0 ? MAX_STACKED_MERGE_INDICES : 1
   indices.forEach((idx, pos) => {
     if (idx === 'silence' && out.firstIndexAt >= 0) out.silent++
     if (pos > lastMarker) return
@@ -212,9 +227,10 @@ export function analyseSequence(
     const unexplained = Math.max(0, delta - 1 - unknown)
     // A step above half the period is ambiguous mod 40 (forward by `delta` or back by
     // `40 - delta`). It is forward when the unknown frames cover it, or when unused merges pay
-    // for the rest and each frame of the step absorbed at most one index.
+    // for the rest and each frame of the step absorbed at most `perFrame` indices (one, or
+    // three when listener catch-up merges two queue-compressed ticks).
     const longForward =
-      delta > MARKER_PERIOD / 2 && unexplained <= Math.min(mergesLeft, unknown + 1)
+      delta > MARKER_PERIOD / 2 && unexplained <= Math.min(mergesLeft, perFrame * (unknown + 1))
     if (delta > MARKER_PERIOD / 2 && !longForward) {
       out.reordered++
     } else {

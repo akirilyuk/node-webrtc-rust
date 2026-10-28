@@ -148,6 +148,62 @@ describe('frame-marker helper', () => {
       const idx = [...marks(0, 6), ...ambiguous(25), ...marks(31, 5)]
       expect(analyseSequence(idx)).toMatchObject({ reordered: 0, gaps: 0, ambiguous: 25 })
     })
+
+    describe('listener catch-up merges stacked on queue compressions', () => {
+      /** Parses a recorded `SEQ` dump: numbers, `A` = ambiguous, `.` = silence. */
+      const parse = (s: string): DetectedIndex[] =>
+        s
+          .trim()
+          .split(/\s+/)
+          .map((t) => (t === 'A' ? 'ambiguous' : t === '.' ? 'silence' : Number(t)))
+
+      // Recorded with MIX_FC_DUMP=1: the idle-gap case sent with a 300 ms sender stall while the
+      // test process was SIGSTOP duty-cycled (150 ms stopped / 50 ms running), the same
+      // signature as CI job 122629532201 (reordered 15, duplicates 1). Mixer stats: compressed
+      // 11, listenerCatchupCompressed 40, concealed 2. After 18, 11 ambiguous frames carry
+      // source frames up to 86 (marker 6): delta 28, 16 indices beyond the unknown frames, more
+      // than one per frame because a catch-up frame merges two ticks that were each compressed.
+      const recorded = parse(
+        '. . A 0 1 2 3 4 5 6 7 8 9 A A A A A 20 21 22 23 24 25 26 27 28 29 30 31 A A A A A 2 ' +
+          '3 4 5 6 7 8 9 A . . . . . . . A 10 A 13 14 15 16 17 18 A A A A A A A A A A A 6 7 8 9 ' +
+          '10 11 12 13 14 15 16 17 18 A A A A A 29 30 31 32 33 34 35 36 37 38 A 0 A A A A A 11 ' +
+          '12 13 14 15 16 17 18 19 20 21 22 A A A A . . . . . . . . . . . . . . . .',
+      )
+      const stats = { mergedFrames: 11 + 40, listenerCatchupFrames: 40 }
+
+      it('reads the recorded run as forward when both merge kinds are reported', () => {
+        const r = analyseSequence(recorded, stats)
+        expect(r.reordered).toBe(0)
+        expect(r.duplicates).toBe(0)
+        expect(r.gaps).toBeLessThanOrEqual(stats.mergedFrames)
+      })
+
+      it('misread it as 12 backward steps and a duplicate before (one index per frame)', () => {
+        expect(analyseSequence(recorded, { mergedFrames: stats.mergedFrames })).toMatchObject({
+          reordered: 12,
+          duplicates: 1,
+        })
+      })
+
+      it('catch-up merges alone still allow one index per frame', () => {
+        // 20 -> 42 (marker 2) over 5 unknown frames: 16 indices to pay for, more than one per
+        // frame. No queue compression: a catch-up frame merges two plain ticks, absorbing one.
+        const idx = [...marks(0, 21), ...ambiguous(5), ...marks(42, 10)]
+        expect(
+          analyseSequence(idx, { mergedFrames: 40, listenerCatchupFrames: 40 }).reordered,
+        ).toBeGreaterThan(0)
+        expect(analyseSequence(idx, { mergedFrames: 41, listenerCatchupFrames: 40 })).toMatchObject(
+          { reordered: 0, gaps: 16 },
+        )
+      })
+
+      it('an adjacent swap is still reordered with stacked merges', () => {
+        const idx = [...marks(0, 10), 11, 10, ...marks(12, 9)]
+        expect(
+          analyseSequence(idx, { mergedFrames: 100, listenerCatchupFrames: 50 }).reordered,
+        ).toBe(1)
+      })
+    })
   })
 
   it('a cross-faded merge of frames i and i+1 is ambiguous', () => {

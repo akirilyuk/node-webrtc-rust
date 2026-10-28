@@ -29,6 +29,8 @@ Scenes (`<out>/scenes/<id>.wav` is 48 kHz stereo s16le with the same audio in bo
 
 `manifest.json` lists per scene `id`, `kind`, `set`, `level_db`, `babble_db`, `seed`, `peak_scale`, the sha256 of both wav files and `segments: [{start_ms, end_ms, role, voice, sid, text, kind, expected}]` with `role` one of `main`, `bystander`, `babble`, `kind` one of `qualified`, `long`, `background` and `expected: {speaker: "caller"|"other", transcript: <text, null for babble>}`. Enrollment utterances carry `"enroll": true`. Every random choice is seeded from 20261027 and the scene id.
 
+`--main-levels <dBFS,...>` (default `-20`) adds test-set S3 conversations at other main-voice levels for Grid B, at relative levels -15 and -10 dB (quick: one tune-set scene at -10 dB per extra level). Their ids get a `_l26` / `_l14` suffix (the default -20 keeps its ids), the manifest scene carries `main_db`, and the texts, gaps and babble are the same as at -20. S1 also has `main_clean` scenes (`s1c_*`, the same phrases without babble, `level_db` -99 standing in for minus infinity; test set, quick: both sets), the clean row of the denoiser WER table.
+
 `--quick` builds a smoke set: S1 for 3 qualified phrases and 2 long sentences at -10 dB, S2 with 4 utterances per set, and one S3 at -10 dB (tune set) of 6 turns.
 
 ### Determinism
@@ -47,10 +49,9 @@ VITS sampling is random, so synthesizing the same text twice gives different aud
 - the row `real voices (clean)` uses the Sherpa real-voice clips (enroll `*-sr-*`, test `*-test-sr-*`); it has no tune/test split;
 - `compute` time per clip (stream, waveform, embedding), p50 and p99, on one core.
 
-**Part 2, end to end**, on the S3 scenes of the test set: each scene is fed in 20 ms frames of 48 kHz stereo PCM through the speech crate's `VadEngine`, once per VAD variant (`--vad energy|silero|both`, default `both`):
+**Part 2, end to end**, on the S3 scenes of the test set: each scene is fed in 20 ms frames of 48 kHz stereo PCM through the speech crate's `VadEngine` with `VadConfig::default()` (the energy VAD).
 
-- `energy`: `VadConfig::default()`;
-- `silero`: the same with provider `silero` and threshold 0.5 (the documented Silero default). It needs the `silero-vad` feature of the speech crate (`--features node-webrtc-rust-speech/silero-vad` on `cargo run`) and an ONNX Runtime at run time (`ORT_DYLIB_PATH`). If it cannot load, the variant is written as `"silero": {"error": "<message>"}` in `results.json`, `summary.md` says "Not run", and the run still exits 0.
+**Silero is not offered.** It was evaluated as a second VAD variant and merged every babble conversation into one utterance (workflow run 40529240112), so the bench no longer builds or runs it.
 
 Each VAD utterance is transcribed with the Zipformer online recognizer and embedded (first `check` seconds, but never past the end of the utterance, with the model and length with the lowest tune-set EER and its tune-set threshold), then attributed to the caller or to someone else. Both the recognizer input and the embedding clip start where the product STT feed starts: the SpeechStart frame minus the **pre-roll** (`speech_pad_ms + min_speech_duration_ms`, the capacity `SttPreRollBuffer::from_vad_config` uses; a unit test guards it). The utterance is matched to the manifest segment it overlaps most, if that is at least 50 % of the utterance. Per VAD variant and level it reports:
 
@@ -64,12 +65,45 @@ Each VAD utterance is transcribed with the Zipformer online recognizer and embed
 
 A turn that no VAD utterance matches counts as missed; the counts are in the table. `--vad-min-silence-ms <n>` optionally overrides the VAD's `min_silence_duration_ms` (the workflow does not pass it).
 
+**Part 3, denoisers and caller gain** (`--enhance <denoiser models dir>`, `--pre raw,rnnoise,gtcrn,...` to restrict the list). It runs the Part 2 pipeline in the order the product would: a **preprocessor** on the 20 ms 48 kHz stereo frames, an optional **AGC**, then the split into the VAD (on that 48 kHz PCM) and STT / speaker embedding (on its mono 16 kHz conversion, `stereo_48k_to_mono_16k`, starting at SpeechStart minus the product pre-roll). The enrollment is cut from the same processed signal. The speaker model is TitaNet-small at 1.5 s with the Part 1 tune threshold (the Part 2 pick if TitaNet is missing).
+
+- **Preprocessors** (`support/enhance.rs`, `process` returns exactly the input length): `raw`; `rnnoise` (the product's `Stereo48kRnnoise`); `gtcrn` (`gtcrn_simple.onnx`) and the DPDFNet variants `dpdfnet_baseline`, `dpdfnet2`, `dpdfnet4`, `dpdfnet8`, `dpdfnet2_48khz_hr` through sherpa-onnx `OnlineSpeechDenoiser` (one thread, CPU). The Sherpa path downmixes to mono, averages 48 kHz down to the model rate (16 kHz; the `_48khz_hr` model runs at 48 kHz), runs the denoiser, upsamples linearly and duplicates to stereo. An output FIFO pre-filled with silence equal to the model's frame shift keeps every call at the input length; a call that finds the FIFO short is counted as an underrun (reported per row; the model's own window needs a few calls at the start of a stream).
+- **AGC**, the exact algorithm the product would copy, per 20 ms frame after the preprocessor:
+  - `frame_db` = 20 log10(RMS of the mono downmix, floor 1e-6);
+  - noise floor `n` (start -60 dB): `n = min(n + 0.02, frame_db)` per frame (falls at once, rises 1 dB/s);
+  - a frame is speech when `frame_db > n + 10`;
+  - speech level `s` (start -30 dB): on speech frames only, `s += 0.05 (frame_db - s)`;
+  - target gain `t = clamp(-18 - s, 0, +18)` dB; applied gain `g` (start 0): `g += 0.02 (t - g)` per frame;
+  - the frame is multiplied by `10^(g/20)`; if its sample peak would exceed -1 dBFS (0.891), the whole frame is scaled to exactly that peak.
+
+  Gain alone raises the babble by the same amount, so it does not change SNR. The default energy VAD threshold is absolute (0.15 RMS, about -16.5 dBFS), so a caller at -26 dBFS can sit under it; that is the effect the AGC is meant to test. A denoiser is the only stage that raises the caller relative to the babble.
+
+- **Grid A**: every preprocessor x AGC off / on over the S3 test scenes at main -20 dBFS and the four relative levels. Per combo and level: VAD utterances, merged utterances, missed main and bystander turns, (a) oracle % of qualified phrases, WER % of long sentences, (b) main to caller %, (c) bystander to other %, (e) leakage %, (f) unmatched utterances, the median VAD onset delay (utterance start minus segment start, over detected main turns, ms) and the underruns. A pooled `all` row per combo follows its levels.
+- **Grid B, caller level**: `raw`, `rnnoise`, `gtcrn`, `dpdfnet2` x AGC off / on over the scenes with the main voice at -26 / -20 / -14 dBFS (fixtures `--main-levels -26,-20,-14`) at relative levels -15 and -10 dB, same metrics. The bystander follows the main level (0 dB) and the babble follows the relative level, so only the absolute level changes; the texts, gaps and babble are the same at the three levels.
+- **S1 whole-clip WER**: per preprocessor (AGC off) x level (-6 / -10 / -15 / -20 dB and `clean`, the `main_clean` scenes without babble), the whole S1 clip goes through the preprocessor and the online recognizer with no VAD. Qualified phrases: oracle %; long sentences: WER %. This separates the denoiser effect from VAD effects.
+- **Cost**, per preprocessor and for the AGC alone, on one core (the workflow pins the process with `taskset -c 2`):
+  - _RTF_: processing time per 20 ms frame divided by 20 ms, p50 / p99 / mean over `--cost-seconds` (default 60) of S3 audio, the first 25 frames not counted;
+  - _streams per core_: N real-time paced streams on one thread (one frame per stream every 20 ms) for `--streams-seconds` (default 10) each, N in 1, 2, 4, 8, 12, 16, 24, 32; the largest N with at most 1 % of frames finishing more than 20 ms after they were due (stops at the first failing N; `+` = the last step passed);
+  - _added delay_: the lag (0 to 800 ms, 8 kHz) that maximizes the cross-correlation of the input and the processed signal on a clean S1 clip (`main_clean`; an S1 babble clip if none).
+
+Outputs: the Part 3 tables are appended to `summary.md` and `results.json` has a `part3` object (`grid`, `grid_a_pooled`, `s1_wer`, `cost`).
+
 Outputs: `results.json` (all numbers plus `nproc`, CPU model, git sha from `NWR_BENCH_GIT_SHA` or `git rev-parse HEAD`, manifest sha256) and `summary.md`, plus the **per-turn record**:
 
-- `turns.jsonl`: one row per manifest segment (enrollment, main, bystander) of every S3 scene and VAD variant, in time order. Each row has `who` (role, voice, sid), `said` (kind, text), `expected` (speaker, transcript), `noticed` (ids and start/end ms of the VAD utterances overlapping the segment, the transcript of the utterance it matched, the speaker score rounded to 3 decimals, the verdict `caller` / `other` / `not noticed`; `enrollment` for the enrollment utterances), `merged` (segment ids when an overlapping utterance covered two or more turns) and `result` (attribution ok, WER for long sentences, oracle for qualified phrases). VAD utterances that match no segment get a row of their own with `who.role` `none/babble`.
-- `conversations.md`: the same as one timeline table per scene and VAD variant: `time | who spoke | said | expected | noticed (transcript) | verdict | ✓/✗`.
+- `turns.jsonl`: one row per manifest segment (enrollment, main, bystander) of every S3 scene and run, in time order. Each row has `who` (role, voice, sid), `said` (kind, text), `expected` (speaker, transcript), `noticed` (ids and start/end ms of the VAD utterances overlapping the segment, the transcript of the utterance it matched, the speaker score rounded to 3 decimals, the verdict `caller` / `other` / `not noticed`; `enrollment` for the enrollment utterances), `merged` (segment ids when an overlapping utterance covered two or more turns) and `result` (attribution ok, WER for long sentences, oracle for qualified phrases). VAD utterances that match no segment get a row of their own with `who.role` `none/babble`. Every row carries `pre` and `agc` (`part2` and `false` for the Part 2 path, which has no preprocessor).
+- `conversations.md`: the same as one timeline table per scene (and, for Part 3, per preprocessor and AGC setting; only raw/off, gtcrn/on and dpdfnet2/on are written, to keep it readable): `time | who spoke | said | expected | noticed (transcript) | verdict | ✓/✗`.
 
 The scores and transcripts are bench data from synthetic voices, not customer content.
+
+## VoxLock (measured only, not a product path)
+
+VoxLock is target-speaker extraction: it keeps the caller's voice and removes the other voices (Apache-2.0, 27 M parameters). Its author's numbers put it at about one CPU core per call, and its Rust API needs sherpa-onnx >= 2.0, while this repo pins 1.13.2. So it is measured here with the same fixtures, pipeline and metrics, and becomes a follow-up only if the numbers justify the cost (gate G3 of the plan).
+
+- `voxlock_preprocess.py` (Python, `requirements-voxlock.txt`: sherpa-onnx 2.0.1, the first PyPI release with `OfflineSpeechDenoiserVoxLockModelConfig`) streams every S3 conversation scene (test set; tune set for `--quick` fixtures) through VoxLock in `--chunk-ms` chunks (20, 40 or 80) and writes a processed copy of the scenes (`scenes/<id>.16k.wav`, plus a 48 kHz stereo `scenes/<id>.wav` by linear-interpolation upsampling) and `voxlock_cost.json`.
+- Two enrollment modes. `live`: no voice sample; VoxLock passes audio through until it has heard 3 s of speech, takes that as the speaker to keep (what a product would do). `sample`: `voice_sample` is the scene's two enrollment segments cut from the scene audio (upstream uses its loudest 3 s).
+- `speaker_bench --pre raw,precomputed:voxlock-live=<dir>,precomputed:voxlock-sample=<dir>` reads the scene audio from `<dir>/scenes/<id>.wav` instead of the fixtures and runs the identical pipeline (energy VAD, AGC off and on, STT, gate, metrics). Rows appear as `voxlock-live` / `voxlock-sample` in Grid A, Grid B and `turns.jsonl`; `conversations.md` also renders `voxlock-live` with AGC on.
+- Cost method: the workflow runs the script under `taskset -c 2` (one core), and `voxlock_cost.json` holds wall and process-CPU seconds per scene. The bench's cost table shows process CPU seconds per audio second in the RTF columns (a ratio over whole scenes, not per 20 ms frame); streams per core and delay are not measured for it. The 20 ms and 80 ms chunk runs are cost-only and are uploaded as `voxlock_cost_live_<ms>ms.json`.
+- The S1 whole-clip WER table has no VoxLock rows (only S3 scenes are processed).
 
 ## Licenses
 
@@ -98,7 +132,9 @@ The non-commercial and unstated licenses (ryan, hfc_male, hfc_female, lessac, am
 
 ## Run it locally
 
-Models: `npm run download-tts:en`, `npm run download-stt:en` and `npm run download-speaker` (all with `--workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`). `download-speaker` checks every file against the release's `checksum.txt` and exits 1 naming the file on a mismatch.
+Models: `npm run download-tts:en`, `npm run download-stt:en`, `npm run download-speaker` and `npm run download-enhance` (all with `--workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`). `download-speaker` checks every file against the release's `checksum.txt` and exits 1 naming the file on a mismatch.
+
+`download-enhance` checks each denoiser file against the `checksum.txt` of the `speech-enhancement-models` release where that lists it (`gtcrn_simple.onnx`), and against a hash pinned in `sherpa-model-catalog.mjs` otherwise (the DPDFNet files are not in that `checksum.txt`; the hashes are the digests GitHub shows for the release assets). It also fetches `sherpa-onnx-voxlock-int8.tar.bz2` (hash pinned in the script itself) and extracts it to `.models/enhance/sherpa-onnx-voxlock-int8/` (`enroll.onnx`, `chunk_int8.onnx`).
 
 Heavy local runs go through the workspace wrapper (it waits for free memory and stops a runaway process):
 
@@ -108,11 +144,11 @@ M=examples/voice-agent-local-sherpa/.models
 H=/Users/akirilyuk/GIT/webrtc-cloud/development/scripts/host-safety/heavy-run.sh
 $H --label speaker-fixtures -- cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
   --models $M/speaker --main-tts $M/vits-piper-en_US-amy-low \
-  --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json --out .test-logs/speaker-fixtures [--quick]
-$H --label speaker-bench -- cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx \
-  --features node-webrtc-rust-speech/silero-vad --example speaker_bench -- \
+  --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json --out .test-logs/speaker-fixtures [--quick] [--main-levels -26,-20,-14]
+$H --label speaker-bench -- cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_bench -- \
   --fixtures .test-logs/speaker-fixtures --models $M/speaker \
-  --stt-model $M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06 --out .test-logs/speaker-bench --vad both
+  --stt-model $M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06 --out .test-logs/speaker-bench \
+  [--enhance $M/enhance [--pre raw,gtcrn,precomputed:voxlock-live=<dir>]]
 ```
 
 The other voices' bundles are read from the parent of `--models` (`--voices-root` overrides it).

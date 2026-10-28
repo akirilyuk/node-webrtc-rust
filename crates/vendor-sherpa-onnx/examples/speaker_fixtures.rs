@@ -6,7 +6,7 @@
 //! ```text
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
 //!   --models <speaker dir> --main-tts <amy-low dir> --phrases <stt-phrase-qualification.json> \
-//!   --out <dir> [--quick] [--voices-root <dir>] [--cache <dir>]
+//!   --out <dir> [--quick] [--voices-root <dir>] [--cache <dir>] [--main-levels <dBFS,...>]
 //! ```
 //!
 //! - Main voice: `vits-piper-en_US-amy-low` (`--main-tts`), sid 0. Main text = the phrases of
@@ -31,12 +31,20 @@
 //! channels, what the agent receives, and `<id>.16k.wav`, 16 kHz mono, for embedding/STT):
 //! - `main_over_babble` (S1): per main phrase (qualified phrases and long sentences) x level x set:
 //!   300 ms lead, the phrase, 1500 ms tail; babble (2 simultaneous other voices, 150-400 ms between sentences) all the way through.
+//! - `main_clean` (S1 without babble): the same phrases alone (test set; quick: both sets), for the
+//!   clean row of the bench's denoiser WER table; `level_db` -99 stands in for minus infinity.
 //! - `bystander_alone` (S2): per set 60 utterances (30 at 0 dB, 30 at -10 dB), one other voice saying one sentence at 0 or
 //!   -10 dB re the main voice's level, babble at -20 dB underneath, no main speech.
 //! - `conversation` (S3): per level x set one file: two enrollment utterances of the main voice,
 //!   both long sentences (babble -20 dB), then 16 turns alternating main and bystander (one other
 //!   voice at 0 dB); the 8 main turns alternate a qualified phrase and a long sentence (never an
 //!   enrollment sentence); babble at the scene level throughout.
+//!
+//! - `--main-levels` (default `-20`, comma separated dBFS): besides the default scenes, test-set S3
+//!   conversations at each extra main level and relative levels -15 and -10 (quick: one tune-set
+//!   scene at -10 per extra level). Ids get a `_l26` / `_l14` suffix (the default -20 keeps its ids);
+//!   texts, gaps and babble are the same as at -20, only the absolute level changes (bystander
+//!   0 dB and babble relative to the main voice). The manifest scene carries `main_db` then.
 //!
 //! `manifest.json` lists per scene `id`, `kind`, `set`, `level_db`, `seed` and
 //! `segments: [{start_ms, end_ms, role: main|bystander|babble, voice, sid, text, kind, expected}]`
@@ -86,6 +94,8 @@ const MAIN_BUNDLE: &str = "vits-piper-en_US-amy-low";
 const BACKGROUND: &str = include_str!("support/background_sentences.txt");
 const LONG: &str = include_str!("support/long_sentences.txt");
 const S2_PER_SET: usize = 60;
+/// `level_db` of a `main_clean` scene: no babble at all (stands in for minus infinity).
+const CLEAN_LEVEL_DB: i32 = -99;
 
 fn lines_of(text: &str) -> Vec<String> {
     text.lines()
@@ -341,6 +351,15 @@ impl Synth {
 // Mixing
 // ---------------------------------------------------------------------------------------------
 
+/// Scene id for a main level: unchanged at [`MAIN_REF_DB`], else `<base>_l<abs level>`.
+fn scene_id_with_main_level(base_id: &str, main_db: i32) -> String {
+    if main_db == MAIN_REF_DB as i32 {
+        base_id.to_string()
+    } else {
+        format!("{base_id}_l{}", main_db.abs())
+    }
+}
+
 fn db_gain(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
@@ -459,6 +478,8 @@ struct Scene {
     kind: &'static str,
     set: Set,
     level_db: i32,
+    /// Level of the main voice in dBFS (voiced RMS); [`MAIN_REF_DB`] unless `--main-levels`.
+    main_db: i32,
     babble_db: i32,
     seed: u64,
     segments: Vec<Segment>,
@@ -485,6 +506,7 @@ impl Ctx {
         kind: &'static str,
         set: Set,
         level_db: i32,
+        main_db: i32,
         babble_db: i32,
         seed: u64,
         segments: Vec<Segment>,
@@ -510,6 +532,7 @@ impl Ctx {
             kind,
             set,
             level_db,
+            main_db,
             babble_db,
             seed,
             segments,
@@ -521,8 +544,13 @@ impl Ctx {
     }
 
     fn main_clip(&mut self, phrase: &str) -> Result<Vec<f32>, String> {
+        self.main_clip_at(phrase, MAIN_REF_DB as i32)
+    }
+
+    /// The main voice at `main_db` dBFS (voiced RMS).
+    fn main_clip_at(&mut self, phrase: &str, main_db: i32) -> Result<Vec<f32>, String> {
         let clip = self.synth.clip(&MAIN_VOICE, phrase)?;
-        Ok(normalize_to(&clip, MAIN_REF_DB))
+        Ok(normalize_to(&clip, main_db as f32))
     }
 
     /// S1: the main phrase (`tag` is `pNN` for a qualified phrase, `lNN` for a long sentence)
@@ -564,7 +592,38 @@ impl Ctx {
             "main_over_babble",
             set,
             level_db,
+            MAIN_REF_DB as i32,
             level_db,
+            seed,
+            segments,
+            mix,
+        )
+    }
+
+    /// S1 without babble (`main_clean`): the same main phrase alone, for the clean row of the
+    /// denoiser WER table. `level_db` is [`CLEAN_LEVEL_DB`], standing in for minus infinity.
+    fn main_clean(&mut self, set: Set, tag: &str, phrase: String) -> Result<(), String> {
+        let id = format!("s1c_{}_{}", set.name(), tag);
+        let seed = scene_seed(&id);
+        let main = self.main_clip(&phrase)?;
+        let total = ms(LEAD_MS) + main.len() + ms(TAIL_MS);
+        let mut mix = vec![0f32; total];
+        add_at(&mut mix, &main, ms(LEAD_MS));
+        let segments = vec![segment(
+            "main",
+            &MAIN_VOICE,
+            &phrase,
+            ms(LEAD_MS),
+            main.len(),
+            false,
+        )];
+        self.finish(
+            id,
+            "main_clean",
+            set,
+            CLEAN_LEVEL_DB,
+            MAIN_REF_DB as i32,
+            CLEAN_LEVEL_DB,
             seed,
             segments,
             mix,
@@ -608,6 +667,7 @@ impl Ctx {
             "bystander_alone",
             set,
             level_db,
+            MAIN_REF_DB as i32,
             BABBLE_UNDER_DB,
             seed,
             segments,
@@ -619,8 +679,24 @@ impl Ctx {
     /// bystander turns (one other voice at 0 dB); babble at -20 dB during enrollment and at
     /// `level_db` afterwards.
     fn conversation(&mut self, set: Set, level_db: i32, turns: usize) -> Result<(), String> {
-        let id = format!("s3_{}_m{}", set.name(), level_db.abs());
-        let seed = scene_seed(&id);
+        self.conversation_at(set, level_db, turns, MAIN_REF_DB as i32)
+    }
+
+    /// S3 with the main voice at `main_db` dBFS: the bystander follows at 0 dB re the main voice
+    /// and the babble at `level_db` re the main voice, so only the absolute level differs. The
+    /// id gets a `_l<abs main_db>` suffix unless `main_db` is [`MAIN_REF_DB`]; the seed (texts,
+    /// gaps, babble) derives from the id without the suffix, so scenes of different main levels
+    /// say the same things.
+    fn conversation_at(
+        &mut self,
+        set: Set,
+        level_db: i32,
+        turns: usize,
+        main_db: i32,
+    ) -> Result<(), String> {
+        let base_id = format!("s3_{}_m{}", set.name(), level_db.abs());
+        let id = scene_id_with_main_level(&base_id, main_db);
+        let seed = scene_seed(&base_id);
         let mut rng = Rng::new(seed);
         let qualified: Vec<String> = self
             .phrases
@@ -640,7 +716,7 @@ impl Ctx {
         let mut placed: Vec<Placed> = Vec::new();
         let mut pos = ms(LEAD_MS);
         for text in &texts.enroll {
-            let clip = self.main_clip(text)?;
+            let clip = self.main_clip_at(text, main_db)?;
             let seg = segment("main", &MAIN_VOICE, text, pos, clip.len(), true);
             let start = pos;
             pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
@@ -654,7 +730,7 @@ impl Ctx {
         for turn in 0..turns {
             if turn % 2 == 0 {
                 let text = texts.main_turns[turn / 2].clone();
-                let clip = self.main_clip(&text)?;
+                let clip = self.main_clip_at(&text, main_db)?;
                 let seg = segment("main", &MAIN_VOICE, &text, pos, clip.len(), false);
                 let start = pos;
                 pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
@@ -665,7 +741,7 @@ impl Ctx {
                 });
             } else {
                 let text = self.sentences[rng.below(self.sentences.len())].clone();
-                let clip = normalize_to(&self.synth.clip(&bystander, &text)?, MAIN_REF_DB);
+                let clip = normalize_to(&self.synth.clip(&bystander, &text)?, main_db as f32);
                 let seg = segment("bystander", &bystander, &text, pos, clip.len(), false);
                 let start = pos;
                 pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
@@ -687,7 +763,7 @@ impl Ctx {
         )?;
         // One level for the whole babble track first, then a piecewise gain: -20 dB until the
         // enrollment ends, the scene level after it, with a 100 ms linear ramp between.
-        scale_babble(&mut bab, MAIN_REF_DB);
+        scale_babble(&mut bab, main_db as f32);
         let enroll_gain = db_gain(BABBLE_UNDER_DB as f32);
         let scene_gain = db_gain(level_db as f32);
         let ramp = ms(100);
@@ -713,6 +789,7 @@ impl Ctx {
             "conversation",
             set,
             level_db,
+            main_db,
             level_db,
             seed,
             segments,
@@ -789,6 +866,10 @@ fn manifest_json(scenes: &[Scene]) -> String {
         out.push_str(&format!("      \"kind\": \"{}\",\n", scene.kind));
         out.push_str(&format!("      \"set\": \"{}\",\n", scene.set.name()));
         out.push_str(&format!("      \"level_db\": {},\n", scene.level_db));
+        if scene.main_db != MAIN_REF_DB as i32 {
+            // Only written for a non-default main level, so default manifests stay unchanged.
+            out.push_str(&format!("      \"main_db\": {},\n", scene.main_db));
+        }
         out.push_str(&format!("      \"babble_db\": {},\n", scene.babble_db));
         out.push_str(&format!("      \"seed\": {},\n", scene.seed));
         out.push_str(&format!("      \"peak_scale\": {:.6},\n", scene.peak_scale));
@@ -855,6 +936,25 @@ struct Args {
     voices_root: Option<PathBuf>,
     cache: Option<PathBuf>,
     quick: bool,
+    /// Extra main-voice levels (dBFS) for test-set conversation scenes; `-20` is the default set.
+    main_levels: Vec<i32>,
+}
+
+fn parse_main_levels(text: &str) -> Result<Vec<i32>, String> {
+    let mut levels = Vec::new();
+    for part in text.split(',') {
+        let level: i32 = part
+            .trim()
+            .parse()
+            .map_err(|e| format!("--main-levels {part:?}: {e}"))?;
+        if !(-40..=-6).contains(&level) {
+            return Err(format!("--main-levels {level}: must be between -40 and -6"));
+        }
+        if !levels.contains(&level) {
+            levels.push(level);
+        }
+    }
+    Ok(levels)
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -865,6 +965,7 @@ fn parse_args() -> Result<Args, String> {
     let mut voices_root = None;
     let mut cache = None;
     let mut quick = false;
+    let mut main_levels = vec![MAIN_REF_DB as i32];
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -880,6 +981,9 @@ fn parse_args() -> Result<Args, String> {
             "--voices-root" => voices_root = Some(value("--voices-root")?),
             "--cache" => cache = Some(value("--cache")?),
             "--quick" => quick = true,
+            "--main-levels" => {
+                main_levels = parse_main_levels(&value("--main-levels")?.to_string_lossy())?
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -891,6 +995,7 @@ fn parse_args() -> Result<Args, String> {
         voices_root,
         cache,
         quick,
+        main_levels,
     })
 }
 
@@ -952,8 +1057,23 @@ fn run() -> Result<(), String> {
             for index in 0..4 {
                 ctx.bystander_alone(set, index, if index % 2 == 0 { 0 } else { -10 })?;
             }
+            for phrase_idx in 0..3.min(ctx.phrases.len()) {
+                let phrase = ctx.phrases[phrase_idx].clone();
+                ctx.main_clean(set, &format!("p{phrase_idx:02}"), phrase)?;
+            }
+            for long_idx in 0..2.min(ctx.longs.len()) {
+                let phrase = ctx.longs[long_idx].clone();
+                ctx.main_clean(set, &format!("l{long_idx:02}"), phrase)?;
+            }
         }
         ctx.conversation(Set::Tune, -10, 6)?;
+        for &main_db in args
+            .main_levels
+            .iter()
+            .filter(|l| **l != MAIN_REF_DB as i32)
+        {
+            ctx.conversation_at(Set::Tune, -10, 6, main_db)?;
+        }
     } else {
         for set in sets {
             for level in LEVELS {
@@ -966,11 +1086,32 @@ fn run() -> Result<(), String> {
                     ctx.main_over_babble(set, &format!("l{long_idx:02}"), phrase, level)?;
                 }
             }
+            if set == Set::Test {
+                // Babble-free S1, the clean row of the denoiser WER table.
+                for phrase_idx in 0..ctx.phrases.len() {
+                    let phrase = ctx.phrases[phrase_idx].clone();
+                    ctx.main_clean(set, &format!("p{phrase_idx:02}"), phrase)?;
+                }
+                for long_idx in 0..ctx.longs.len() {
+                    let phrase = ctx.longs[long_idx].clone();
+                    ctx.main_clean(set, &format!("l{long_idx:02}"), phrase)?;
+                }
+            }
             for index in 0..S2_PER_SET {
                 ctx.bystander_alone(set, index, if index % 2 == 0 { 0 } else { -10 })?;
             }
             for level in LEVELS {
                 ctx.conversation(set, level, 16)?;
+            }
+        }
+        // Other main levels: test-set conversation scenes at relative levels -15 and -10 only.
+        for &main_db in args
+            .main_levels
+            .iter()
+            .filter(|l| **l != MAIN_REF_DB as i32)
+        {
+            for level in [-15, -10] {
+                ctx.conversation_at(Set::Test, level, 16, main_db)?;
             }
         }
     }
@@ -1106,6 +1247,7 @@ mod tests {
             kind: "conversation",
             set: Set::Test,
             level_db: -10,
+            main_db: -20,
             babble_db: -10,
             seed: 1,
             segments: vec![
@@ -1179,5 +1321,28 @@ mod tests {
             {"phrase":"d","below075":0,"keywordMissing":2},
             {"phrase":"e","below075":0,"keywordMissing":0}]}"#;
         assert_eq!(qualified_phrases(json).unwrap(), vec!["a \"b\"", "e"]);
+    }
+
+    #[test]
+    fn main_level_ids_keep_the_default_and_suffix_the_rest() {
+        assert_eq!(scene_id_with_main_level("s3_test_m10", -20), "s3_test_m10");
+        assert_eq!(
+            scene_id_with_main_level("s3_test_m10", -26),
+            "s3_test_m10_l26"
+        );
+        assert_eq!(
+            scene_id_with_main_level("s3_test_m15", -14),
+            "s3_test_m15_l14"
+        );
+    }
+
+    #[test]
+    fn main_levels_parse_and_reject_out_of_range() {
+        assert_eq!(
+            parse_main_levels("-26,-20,-14,-20").unwrap(),
+            vec![-26, -20, -14]
+        );
+        assert!(parse_main_levels("-50").is_err());
+        assert!(parse_main_levels("loud").is_err());
     }
 }

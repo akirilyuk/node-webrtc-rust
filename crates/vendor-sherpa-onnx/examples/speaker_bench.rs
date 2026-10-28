@@ -5,7 +5,8 @@
 //! ```text
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_bench -- \
 //!   --fixtures <speaker_fixtures out dir> --models <speaker dir> --stt-model <zipformer dir> \
-//!   --out <dir> [--vad energy|silero|both] [--vad-min-silence-ms <n>]
+//!   --out <dir> [--vad-min-silence-ms <n>] \
+//!   [--enhance <denoiser models dir> [--pre raw,rnnoise,gtcrn,...] [--cost-seconds <n>] [--streams-seconds <n>]]
 //! ```
 //!
 //! Every Sherpa object is single-threaded (`num_threads: 1`); pin the process to one core
@@ -27,11 +28,9 @@
 //!
 //! **Part 2, end to end** (the voice agent's path): every S3 scene of the test set (of the tune
 //! set when the fixtures have no test-set S3, marked in the summary) is fed in 20 ms frames of
-//! 48 kHz stereo PCM through the speech crate's `VadEngine`, once per VAD variant (`--vad`,
-//! default `both`): `energy` = `VadConfig::default()`, `silero` = the same with provider `silero`
-//! and threshold 0.5 (needs `--features node-webrtc-rust-speech/silero-vad`; if Silero cannot load, that variant is
-//! recorded as `{"error": ...}` and the run still exits 0). Only `min_silence_duration_ms` may be
-//! overridden, with `--vad-min-silence-ms`. For each VAD utterance:
+//! 48 kHz stereo PCM through the speech crate's `VadEngine` with `VadConfig::default()` (the energy
+//! VAD; Silero was evaluated and dropped, see benchmarks/speaker/README.md). Only
+//! `min_silence_duration_ms` may be overridden, with `--vad-min-silence-ms`. For each VAD utterance:
 //! - the Zipformer online recognizer transcribes the VAD window (the product STT pre-roll,
 //!   `speech_pad_ms + min_speech_duration_ms`, before the SpeechStart frame, + speech + trailing
 //!   silence); qualified phrases are scored with the roundtrip oracle (`wordSimilarity`), long
@@ -57,6 +56,17 @@
 //! transcript, the speaker score and verdict, the result; plus one row per VAD utterance that
 //! matches no segment, and `merged` ids when an utterance covers two or more turns) and
 //! `<out>/conversations.md` (the same as a timeline table per scene).
+//!
+//! **Part 3, enhancement** (`--enhance <dir>`): the Part 2 pipeline with a preprocessor in front
+//! of the VAD / STT split (`support/enhance.rs`): `pre` in raw, rnnoise, gtcrn, dpdfnet_baseline,
+//! dpdfnet2, dpdfnet4, dpdfnet8, dpdfnet2_48khz_hr (`--pre` restricts the list), each with the
+//! caller AGC off and on. Grid A: all combos over the S3 scenes at main -20 dBFS; Grid B: caller
+//! level (main -26 / -20 / -14 dBFS at relative levels -15 and -10) for raw, rnnoise, gtcrn and
+//! dpdfnet2. Cost per preprocessor (RTF p50 / p99 per 20 ms frame, streams per core, added
+//! delay) and the S1 whole-clip WER per level (including clean) are reported too.
+//! `--pre ...,precomputed:<name>=<dir>` adds a preprocessor whose output was computed elsewhere
+//! (VoxLock, `benchmarks/speaker/voxlock_preprocess.py`): scene audio is read from
+//! `<dir>/scenes/<id>.wav`, the cost row from `<dir>/voxlock_cost.json`. Measurement only.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -69,6 +79,11 @@ use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
 
 #[path = "support/mod.rs"]
 mod support;
+
+#[path = "support/enhance.rs"]
+mod enhance;
+
+use enhance::{process_pcm, Agc, Preprocessor, SherpaKind};
 
 use support::{
     create_recognizer, json_escape, normalize_for_compare, parse_json, read_wav,
@@ -115,6 +130,8 @@ struct SceneInfo {
     kind: String,
     set: Set,
     level_db: i32,
+    /// Main voice level in dBFS; -20 unless the fixtures were built with `--main-levels`.
+    main_db: i32,
     segments: Vec<Seg>,
 }
 
@@ -175,6 +192,10 @@ fn load_manifest(text: &str) -> Result<Vec<SceneInfo>, String> {
             kind: str_of(scene, "kind")?,
             set,
             level_db: num_of(scene, "level_db")? as i32,
+            main_db: match scene.get("main_db") {
+                Some(Json::Num(n)) => *n as i32,
+                _ => -20,
+            },
             segments,
         });
     }
@@ -365,7 +386,8 @@ impl Fixtures {
 
     /// The S3 scene whose enrollment is the reference for `(set, level)`.
     fn reference_scene(&self, set: Set, level: Option<i32>) -> Option<usize> {
-        let s3 = |i: &usize| self.scenes[*i].kind == "conversation";
+        let s3 =
+            |i: &usize| self.scenes[*i].kind == "conversation" && self.scenes[*i].main_db == -20;
         let candidates: Vec<usize> = (0..self.scenes.len()).filter(s3).collect();
         let same_set: Vec<usize> = candidates
             .iter()
@@ -397,10 +419,19 @@ fn part2_clip_range(start_ms: usize, end_ms: usize, check_s: f32) -> (usize, usi
     (from, to.max(from))
 }
 
+/// Parts 1 and 2 use the default caller level only (-20 dB); the other caller-level conversation
+/// scenes belong to Part 3.
+fn default_level_scene(kind: &str, main_db: i32) -> bool {
+    kind != "conversation" || main_db == -20
+}
+
 fn collect_items(fx: &mut Fixtures) -> Result<Vec<Item>, String> {
     let mut items = Vec::new();
     for scene in 0..fx.scenes.len() {
         let kind = fx.scenes[scene].kind.clone();
+        if !default_level_scene(&kind, fx.scenes[scene].main_db) {
+            continue;
+        }
         let set = fx.scenes[scene].set;
         let scene_level = fx.scenes[scene].level_db;
         let level = (kind != "bystander_alone").then_some(scene_level);
@@ -451,8 +482,8 @@ fn collect_items(fx: &mut Fixtures) -> Result<Vec<Item>, String> {
     Ok(items)
 }
 
-/// Enrollment of a scene: its enrollment segments concatenated.
-fn enrollment(fx: &mut Fixtures, scene: usize) -> Result<Vec<f32>, String> {
+/// Millisecond ranges of the enrollment segments of a scene.
+fn enrollment_ranges(fx: &Fixtures, scene: usize) -> Result<Vec<(usize, usize)>, String> {
     let ranges: Vec<(usize, usize)> = fx.scenes[scene]
         .segments
         .iter()
@@ -465,12 +496,23 @@ fn enrollment(fx: &mut Fixtures, scene: usize) -> Result<Vec<f32>, String> {
             fx.scenes[scene].id
         ));
     }
-    let audio = fx.audio16(scene)?.clone();
+    Ok(ranges)
+}
+
+/// The enrollment ranges cut out of 16 kHz `audio` and concatenated.
+fn enrollment_clip(ranges: &[(usize, usize)], audio: &[f32]) -> Vec<f32> {
     let mut out = Vec::new();
     for (start, end) in ranges {
         out.extend_from_slice(&audio[(start * 16).min(audio.len())..(end * 16).min(audio.len())]);
     }
-    Ok(out)
+    out
+}
+
+/// Enrollment of a scene: its enrollment segments concatenated.
+fn enrollment(fx: &mut Fixtures, scene: usize) -> Result<Vec<f32>, String> {
+    let ranges = enrollment_ranges(fx, scene)?;
+    let audio = fx.audio16(scene)?.clone();
+    Ok(enrollment_clip(&ranges, &audio))
 }
 
 fn level_matches(row: &str, item: &Item) -> bool {
@@ -616,6 +658,10 @@ struct LevelStats {
     utterances: usize,
     /// VAD utterances that cover two or more non-babble segments.
     merged: usize,
+    /// Per detected main turn: utterance start minus segment start, in ms.
+    onset_delays: Vec<i64>,
+    /// Preprocessor calls whose output had to be padded with silence.
+    underruns: usize,
 }
 
 struct Utt {
@@ -733,6 +779,87 @@ fn wer(reference: &str, hypothesis: &str) -> f64 {
     }
 }
 
+/// The non-babble segment `(index, overlap_ms)` an utterance span matches: the one it overlaps
+/// most, if that overlap is at least half of the span. `segments` are `(start, end, is_babble)`.
+fn match_segment(
+    span: (usize, usize),
+    segments: &[(usize, usize, bool)],
+) -> Option<(usize, usize)> {
+    let len = span.1.saturating_sub(span.0).max(1);
+    let mut best: Option<(usize, usize)> = None;
+    for (i, (s, e, babble)) in segments.iter().enumerate() {
+        if *babble {
+            continue;
+        }
+        let o = overlap_ms(span, (*s, *e));
+        if o > 0 && best.is_none_or(|(_, bo)| o > bo) {
+            best = Some((i, o));
+        }
+    }
+    best.filter(|(_, o)| o * 2 >= len)
+}
+
+/// How late (positive) or early the VAD utterance started relative to the segment, in ms.
+fn onset_delay_ms(utt_start_ms: usize, seg_start_ms: usize) -> i64 {
+    utt_start_ms as i64 - seg_start_ms as i64
+}
+
+/// Onset delay of a turn: the earliest VAD utterance overlapping the turn's span (when the VAD
+/// splits a turn, the first piece is what noticed it). `None` when no utterance overlaps.
+fn turn_onset_ms(seg_start: usize, seg_end: usize, utts: &[(usize, usize)]) -> Option<i64> {
+    utts.iter()
+        .filter(|u| overlap_ms(**u, (seg_start, seg_end)) > 0)
+        .map(|u| u.0)
+        .min()
+        .map(|start| onset_delay_ms(start, seg_start))
+}
+
+fn median_i64(values: &[i64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut v = values.to_vec();
+    v.sort_unstable();
+    let mid = v.len() / 2;
+    Some(if v.len() % 2 == 1 {
+        v[mid] as f64
+    } else {
+        (v[mid - 1] + v[mid]) as f64 / 2.0
+    })
+}
+
+/// Mono 16 kHz f32 samples of 48 kHz stereo PCM, converted the way the product feeds STT.
+fn mono_16k_f32(pcm_48k_stereo: &[u8]) -> Vec<f32> {
+    node_webrtc_rust_speech::pcm::stereo_48k_to_mono_16k(pcm_48k_stereo)
+        .iter()
+        .map(|s| f32::from(*s) / 32_768.0)
+        .collect()
+}
+
+/// Every preprocessor of the bench, in table order.
+const ALL_PRE: [&str; 8] = [
+    "raw",
+    "rnnoise",
+    "gtcrn",
+    "dpdfnet_baseline",
+    "dpdfnet2",
+    "dpdfnet4",
+    "dpdfnet8",
+    "dpdfnet2_48khz_hr",
+];
+
+fn make_preprocessor(name: &str, models: &Path) -> Result<Preprocessor, String> {
+    match name {
+        "raw" => Ok(Preprocessor::Raw),
+        "rnnoise" => Ok(Preprocessor::rnnoise()),
+        "gtcrn" => Preprocessor::sherpa(SherpaKind::Gtcrn, &models.join("gtcrn_simple.onnx")),
+        "dpdfnet_baseline" | "dpdfnet2" | "dpdfnet4" | "dpdfnet8" | "dpdfnet2_48khz_hr" => {
+            Preprocessor::sherpa(SherpaKind::Dpdfnet, &models.join(format!("{name}.onnx")))
+        }
+        other => Err(format!("unknown preprocessor {other}")),
+    }
+}
+
 struct Verdict {
     seg: Option<usize>,
     overlap: usize,
@@ -784,9 +911,23 @@ struct Row {
     wer: Option<f64>,
     word_similarity: Option<f64>,
     oracle_ok: Option<bool>,
+    /// Preprocessor of the run (`part2` for the Part 2 path, which has none) and AGC.
+    pre: String,
+    agc: bool,
+}
+
+/// A preprocessor (and optional AGC) in front of the VAD / STT split (Part 3).
+struct Enhance<'a> {
+    pre_name: &'a str,
+    agc: bool,
+    models: &'a Path,
+    /// Precomputed preprocessor: scene audio comes from `<dir>/scenes/<id>.wav` (already
+    /// processed, 48 kHz stereo) and the in-process preprocessor is `raw`.
+    scene_dir: Option<&'a Path>,
 }
 
 struct P2<'a> {
+    enhance: Option<&'a Enhance<'a>>,
     emb: &'a Embedder,
     check_s: f32,
     threshold: f32,
@@ -796,12 +937,40 @@ struct P2<'a> {
     leak_vocab: &'a HashSet<String>,
 }
 
+/// 48 kHz stereo scene audio: the fixture's, or the precomputed preprocessor's when set.
+fn scene_audio_path(fixtures: &Path, precomputed: Option<&Path>, id: &str) -> PathBuf {
+    precomputed
+        .unwrap_or(fixtures)
+        .join("scenes")
+        .join(format!("{id}.wav"))
+}
+
 fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, Vec<Row>), String> {
     let id = fx.scenes[scene].id.clone();
     let level_db = fx.scenes[scene].level_db;
-    let pcm = read_wav_stereo_48k_pcm(&fx.dir.join("scenes").join(format!("{id}.wav")))?;
-    let audio = fx.audio16(scene)?.clone();
-    let enroll = enrollment(fx, scene)?;
+    let raw_pcm = read_wav_stereo_48k_pcm(&scene_audio_path(
+        &fx.dir,
+        p.enhance.and_then(|e| e.scene_dir),
+        &id,
+    ))?;
+    // Part 2: the scene as generated (16 kHz wav for STT and embedding). Part 3: the product
+    // order, preprocessor and AGC on the 48 kHz stereo frames first, then VAD on that PCM and
+    // STT / embedding on its mono 16 kHz conversion; the enrollment is cut from the same signal.
+    let (pcm, audio, underruns, pre_name, agc_on) = match p.enhance {
+        None => (raw_pcm, fx.audio16(scene)?.clone(), 0, "part2", false),
+        Some(e) => {
+            let mut pre = if e.scene_dir.is_some() {
+                Preprocessor::Raw
+            } else {
+                make_preprocessor(e.pre_name, e.models)?
+            };
+            let mut agc = e.agc.then(Agc::new);
+            let processed = process_pcm(&raw_pcm, &mut pre, agc.as_mut());
+            let audio = mono_16k_f32(&processed);
+            (processed, audio, pre.underruns(), e.pre_name, e.agc)
+        }
+    };
+    let enroll = enrollment_clip(&enrollment_ranges(fx, scene)?, &audio);
     let (reference, _) = p
         .emb
         .embed(&enroll)
@@ -816,6 +985,7 @@ fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, V
         .collect();
     let mut stats = LevelStats {
         utterances: utterances.len(),
+        underruns,
         ..Default::default()
     };
     let mut verdicts: Vec<Verdict> = Vec::new();
@@ -841,18 +1011,7 @@ fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, V
         };
 
         let span = (utt.start_ms, utt.end_active_ms);
-        let len = span.1.saturating_sub(span.0).max(1);
-        let mut best: Option<(usize, usize)> = None;
-        for (i, (s, e, babble)) in seg_info.iter().enumerate() {
-            if *babble {
-                continue;
-            }
-            let o = overlap_ms(span, (*s, *e));
-            if o > 0 && best.is_none_or(|(_, bo)| o > bo) {
-                best = Some((i, o));
-            }
-        }
-        let matched = best.filter(|(_, o)| o * 2 >= len);
+        let matched = match_segment(span, &seg_info);
         if matched.is_none() {
             stats.unmatched += 1;
             if caller {
@@ -940,6 +1099,8 @@ fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, V
             wer: None,
             word_similarity: None,
             oracle_ok: None,
+            pre: pre_name.to_string(),
+            agc: agc_on,
         };
         let long = seg.kind == "long";
         if seg.role == "main" {
@@ -968,6 +1129,10 @@ fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, V
                 match best {
                     None => stats.main_missed += 1,
                     Some(b) => {
+                        let spans: Vec<(usize, usize)> = verdicts.iter().map(|v| v.span).collect();
+                        if let Some(d) = turn_onset_ms(seg.start_ms, seg.end_ms, &spans) {
+                            stats.onset_delays.push(d);
+                        }
                         if b.caller {
                             stats.main_caller += 1;
                             if long {
@@ -1026,6 +1191,8 @@ fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, V
             wer: None,
             word_similarity: None,
             oracle_ok: None,
+            pre: pre_name.to_string(),
+            agc: agc_on,
         });
     }
     rows.sort_by_key(|r| (r.start_ms, r.end_ms));
@@ -1055,6 +1222,8 @@ fn add_stats(into: &mut LevelStats, other: &LevelStats) {
     into.unmatched_other += other.unmatched_other;
     into.utterances += other.utterances;
     into.merged += other.merged;
+    into.onset_delays.extend_from_slice(&other.onset_delays);
+    into.underruns += other.underruns;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1091,7 +1260,7 @@ fn row_json(r: &Row) -> String {
         .collect();
     let merged: Vec<String> = r.merged.iter().map(usize::to_string).collect();
     format!(
-        "{{\"scene\": {}, \"level_db\": {}, \"vad\": {}, \"segment_id\": {}, \"start_ms\": {}, \"end_ms\": {}, \
+        "{{\"scene\": {}, \"level_db\": {}, \"vad\": {}, \"pre\": {}, \"agc\": {}, \"segment_id\": {}, \"start_ms\": {}, \"end_ms\": {}, \
          \"who\": {{\"role\": {}, \"voice\": {}, \"sid\": {}}}, \"said\": {{\"kind\": {}, \"text\": {}}}, \
          \"expected\": {{\"speaker\": {}, \"transcript\": {}}}, \
          \"noticed\": {{\"utterances\": [{}], \"transcript\": {}, \"score\": {}, \"verdict\": {}}}, \
@@ -1100,6 +1269,8 @@ fn row_json(r: &Row) -> String {
         jstr(&r.scene),
         r.level_db,
         jstr(&r.vad),
+        jstr(&r.pre),
+        r.agc,
         r.seg_id.map_or("null".to_string(), |i| i.to_string()),
         r.start_ms,
         r.end_ms,
@@ -1147,20 +1318,34 @@ fn conversations_md(rows: &[Row]) -> String {
          the enrollment (higher = more like the caller). The last column is attribution (verdict equals \
          expected speaker); a qualified phrase adds the oracle result, a long sentence its WER.\n\n",
     );
-    let mut keys: Vec<(String, String)> = Vec::new();
-    for r in rows {
-        let key = (r.vad.clone(), r.scene.clone());
+    // Part 3 rows are many; only raw/off, gtcrn/on and dpdfnet2/on get a timeline (the rest are
+    // in turns.jsonl).
+    let shown = |r: &Row| {
+        r.pre == "part2"
+            || (r.pre == "raw" && !r.agc)
+            || (r.pre == "gtcrn" && r.agc)
+            || (r.pre == "dpdfnet2" && r.agc)
+            || (r.pre == "voxlock-live" && r.agc)
+    };
+    let mut keys: Vec<(String, bool, String, String)> = Vec::new();
+    for r in rows.iter().filter(|r| shown(r)) {
+        let key = (r.pre.clone(), r.agc, r.vad.clone(), r.scene.clone());
         if !keys.contains(&key) {
             keys.push(key);
         }
     }
-    for (vad, scene) in keys {
+    for (pre, agc, vad, scene) in keys {
         let scene_rows: Vec<&Row> = rows
             .iter()
-            .filter(|r| r.vad == vad && r.scene == scene)
+            .filter(|r| r.pre == pre && r.agc == agc && r.vad == vad && r.scene == scene)
             .collect();
+        let pipeline = if pre == "part2" {
+            String::new()
+        } else {
+            format!(", pre {pre}, AGC {}", if agc { "on" } else { "off" })
+        };
         md.push_str(&format!(
-            "## {scene} ({} dB), VAD {vad}\n\n| time | who spoke | said | expected | noticed (transcript) | verdict | ✓/✗ |\n|---|---|---|---|---|---|---|\n",
+            "## {scene} ({} dB), VAD {vad}{pipeline}\n\n| time | who spoke | said | expected | noticed (transcript) | verdict | ✓/✗ |\n|---|---|---|---|---|---|---|\n",
             scene_rows[0].level_db
         ));
         for r in scene_rows {
@@ -1261,12 +1446,801 @@ fn git_sha() -> String {
 // main
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// Part 3: denoisers and caller AGC
+// ---------------------------------------------------------------------------------------------
+
+/// Preprocessors of Grid B (caller level).
+const GRID_B_PRE: [&str; 4] = ["raw", "rnnoise", "gtcrn", "dpdfnet2"];
+/// Streams-per-core steps.
+const STREAM_STEPS: [usize; 8] = [1, 2, 4, 8, 12, 16, 24, 32];
+/// Frames at the start of a cost run that are not counted (model warm-up).
+const COST_WARMUP_FRAMES: usize = 25;
+/// `level_db` of the babble-free S1 scenes.
+const CLEAN_LEVEL_DB: i32 = -99;
+
+struct Part3Run<'a> {
+    models: &'a Path,
+    pre_filter: &'a [String],
+    /// `(name, dir)` of every `--pre precomputed:<name>=<dir>`.
+    precomputed: &'a [(String, PathBuf)],
+    emb: &'a Embedder,
+    check_s: f32,
+    threshold: f32,
+    recognizer: &'a sherpa_onnx::OnlineRecognizer,
+    vad_config: &'a VadConfig,
+    leak_vocab: &'a HashSet<String>,
+    cost_seconds: usize,
+    streams_seconds: usize,
+}
+
+struct GridRow {
+    pre: String,
+    agc: bool,
+    main_db: i32,
+    level_db: i32,
+    stats: LevelStats,
+}
+
+struct CostRow {
+    /// Preprocessor name, or `agc` for the AGC alone.
+    name: String,
+    frames: usize,
+    rtf_p50: f64,
+    rtf_p99: f64,
+    rtf_mean: f64,
+    /// Largest N of [`STREAM_STEPS`] with at most 1 % late frames; `None` when not measured.
+    streams: Option<usize>,
+    /// The largest step passed, and it was the last step (the real value may be higher).
+    streams_capped: bool,
+    /// `(N, late share)` of every step that ran.
+    stream_steps: Vec<(usize, f64)>,
+    delay_ms: Option<f64>,
+}
+
+#[derive(Default, Clone)]
+struct WerStats {
+    q_turns: usize,
+    q_ok: usize,
+    l_turns: usize,
+    l_edits: usize,
+    l_words: usize,
+}
+
+struct WerRow {
+    pre: String,
+    level_db: i32,
+    stats: WerStats,
+}
+
+struct Part3 {
+    model: String,
+    check_s: f32,
+    threshold: f32,
+    set: &'static str,
+    pre_names: Vec<String>,
+    /// Names of the precomputed preprocessors (a subset of `pre_names`).
+    precomputed: Vec<String>,
+    grid: Vec<GridRow>,
+    cost: Vec<CostRow>,
+    wer: Vec<WerRow>,
+}
+
+fn percentile_f(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return f64::NAN;
+    }
+    let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
+    sorted[idx]
+}
+
+/// 20 ms frames of the S3 audio (48 kHz stereo), at least `seconds` worth (cycled if shorter).
+fn cost_frames(fx: &Fixtures, scenes: &[usize], seconds: usize) -> Result<Vec<Vec<u8>>, String> {
+    let wanted = seconds * 50;
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    for &scene in scenes {
+        let pcm = read_wav_stereo_48k_pcm(
+            &fx.dir
+                .join("scenes")
+                .join(format!("{}.wav", fx.scenes[scene].id)),
+        )?;
+        frames.extend(
+            pcm.as_chunks::<{ enhance::FRAME_BYTES }>()
+                .0
+                .iter()
+                .map(|frame| frame.to_vec()),
+        );
+        if frames.len() >= wanted + COST_WARMUP_FRAMES {
+            break;
+        }
+    }
+    if frames.is_empty() {
+        return Err("part 3 cost: no audio".into());
+    }
+    let mut out = Vec::new();
+    while out.len() < wanted + COST_WARMUP_FRAMES {
+        let i = out.len() % frames.len();
+        out.push(frames[i].clone());
+    }
+    Ok(out)
+}
+
+/// Per-frame RTF of one stream, with `agc_alone` timing only the AGC.
+fn single_stream_rtf(
+    name: &str,
+    models: &Path,
+    agc_alone: bool,
+    frames: &[Vec<u8>],
+) -> Result<Vec<f64>, String> {
+    let mut pre = make_preprocessor(if agc_alone { "raw" } else { name }, models)?;
+    let mut agc = Agc::new();
+    let mut rtf = Vec::new();
+    for (i, frame) in frames.iter().enumerate() {
+        let start = Instant::now();
+        let out = if agc_alone {
+            agc.process(frame)
+        } else {
+            pre.process(frame)
+        };
+        let elapsed = start.elapsed().as_secs_f64();
+        std::hint::black_box(&out);
+        if i >= COST_WARMUP_FRAMES {
+            rtf.push(elapsed / 0.020);
+        }
+    }
+    Ok(rtf)
+}
+
+/// Share of frames that finished more than 20 ms after they were due, with `n` real-time paced
+/// streams on this thread (one frame per stream every 20 ms).
+fn late_share(
+    name: &str,
+    models: &Path,
+    agc_alone: bool,
+    n: usize,
+    frames: &[Vec<u8>],
+    seconds: usize,
+) -> Result<f64, String> {
+    let mut pres = Vec::new();
+    let mut agcs = Vec::new();
+    for _ in 0..n {
+        pres.push(make_preprocessor(
+            if agc_alone { "raw" } else { name },
+            models,
+        )?);
+        agcs.push(Agc::new());
+    }
+    let ticks = seconds * 50 + COST_WARMUP_FRAMES;
+    let period = std::time::Duration::from_millis(20);
+    let start = Instant::now();
+    let (mut late, mut total) = (0usize, 0usize);
+    for k in 0..ticks {
+        let due = start + period * k as u32;
+        let now = Instant::now();
+        if now < due {
+            std::thread::sleep(due - now);
+        }
+        for i in 0..n {
+            let frame = &frames[(k + i * 37) % frames.len()];
+            let out = if agc_alone {
+                agcs[i].process(frame)
+            } else {
+                pres[i].process(frame)
+            };
+            std::hint::black_box(&out);
+            if k >= COST_WARMUP_FRAMES {
+                total += 1;
+                if Instant::now() > due + period {
+                    late += 1;
+                }
+            }
+        }
+    }
+    Ok(late as f64 / total.max(1) as f64)
+}
+
+/// Added delay of a preprocessor in ms: the lag (0 to 800 ms, at 8 kHz) that maximizes the
+/// cross-correlation of the input and the processed 16 kHz mono signal.
+fn delay_ms(pre_name: &str, models: &Path, pcm: &[u8]) -> Result<f64, String> {
+    let mut pre = make_preprocessor(pre_name, models)?;
+    let processed = process_pcm(pcm, &mut pre, None);
+    let decimate = |x: Vec<f32>| -> Vec<f32> {
+        x.as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| (c[0] + c[1]) * 0.5)
+            .collect()
+    };
+    let x = decimate(mono_16k_f32(pcm));
+    let y = decimate(mono_16k_f32(&processed));
+    let n = x.len().min(y.len()).min(48_000);
+    let mut best = (0usize, f64::NEG_INFINITY);
+    for lag in 0..=6_400usize.min(n.saturating_sub(1)) {
+        let m = n - lag;
+        let dot: f64 = (0..m)
+            .map(|i| f64::from(x[i]) * f64::from(y[i + lag]))
+            .sum();
+        if dot > best.1 {
+            best = (lag, dot);
+        }
+    }
+    Ok(best.0 as f64 / 8.0)
+}
+
+/// Scene for the added-delay measurement: a clean S1 clip, else an S1 babble clip.
+fn delay_scene(kinds: &[&str]) -> Option<usize> {
+    kinds
+        .iter()
+        .position(|k| *k == "main_clean")
+        .or_else(|| kinds.iter().position(|k| *k == "main_over_babble"))
+}
+
+fn cost_rows(
+    fx: &Fixtures,
+    r: &Part3Run,
+    pre_names: &[&str],
+    s3: &[usize],
+) -> Result<Vec<CostRow>, String> {
+    let frames = cost_frames(fx, s3, r.cost_seconds)?;
+    // Input for the delay measurement: a clean S1 clip (babble clip if none), at most 6 s.
+    let kinds: Vec<&str> = fx.scenes.iter().map(|s| s.kind.as_str()).collect();
+    let delay_scene = delay_scene(&kinds)
+        .or_else(|| s3.first().copied())
+        .ok_or("part 3: no scene for the delay measurement")?;
+    let delay_pcm: Vec<u8> = read_wav_stereo_48k_pcm(
+        &fx.dir
+            .join("scenes")
+            .join(format!("{}.wav", fx.scenes[delay_scene].id)),
+    )?
+    .into_iter()
+    .take(6 * 48_000 * 4)
+    .collect();
+
+    let mut names: Vec<(String, bool)> = pre_names
+        .iter()
+        .map(|p| ((*p).to_string(), false))
+        .collect();
+    names.push(("agc".to_string(), true));
+    let mut out = Vec::new();
+    for (name, agc_alone) in names {
+        eprintln!("part 3 cost: {name}");
+        let mut rtf = single_stream_rtf(&name, r.models, agc_alone, &frames)?;
+        let mean = rtf.iter().sum::<f64>() / rtf.len().max(1) as f64;
+        rtf.sort_by(|a, b| a.total_cmp(b));
+        let mut stream_steps = Vec::new();
+        let mut streams = None;
+        let mut capped = false;
+        if name != "raw" {
+            let mut best = 0usize;
+            for (i, &n) in STREAM_STEPS.iter().enumerate() {
+                let late = late_share(&name, r.models, agc_alone, n, &frames, r.streams_seconds)?;
+                eprintln!("part 3 cost: {name} x{n}: {:.2} % late", late * 100.0);
+                stream_steps.push((n, late));
+                if late <= 0.01 {
+                    best = n;
+                    capped = i + 1 == STREAM_STEPS.len();
+                } else {
+                    break;
+                }
+            }
+            streams = Some(best);
+        }
+        let delay = if agc_alone || name == "raw" {
+            Some(0.0)
+        } else {
+            Some(delay_ms(&name, r.models, &delay_pcm)?)
+        };
+        out.push(CostRow {
+            name,
+            frames: rtf.len(),
+            rtf_p50: percentile_f(&rtf, 0.5),
+            rtf_p99: percentile_f(&rtf, 0.99),
+            rtf_mean: mean,
+            streams,
+            streams_capped: capped,
+            stream_steps,
+            delay_ms: delay,
+        });
+    }
+    Ok(out)
+}
+
+/// S1 whole-clip WER: the main clip (no VAD) through the preprocessor and the online recognizer.
+fn s1_wer(fx: &Fixtures, r: &Part3Run, pre_names: &[&str]) -> Result<Vec<WerRow>, String> {
+    let s1 = |i: &usize| {
+        matches!(
+            fx.scenes[*i].kind.as_str(),
+            "main_over_babble" | "main_clean"
+        )
+    };
+    let all: Vec<usize> = (0..fx.scenes.len()).filter(s1).collect();
+    let set = if all.iter().any(|i| fx.scenes[*i].set == Set::Test) {
+        Set::Test
+    } else {
+        Set::Tune
+    };
+    let scenes: Vec<usize> = all
+        .into_iter()
+        .filter(|i| fx.scenes[*i].set == set)
+        .collect();
+    let mut rows = Vec::new();
+    for name in pre_names {
+        eprintln!("part 3 S1 WER: {name} ({} scenes)", scenes.len());
+        let mut by_level: BTreeMap<i32, WerStats> = BTreeMap::new();
+        for &scene in &scenes {
+            let info = &fx.scenes[scene];
+            let Some(seg) = info.segments.iter().find(|s| s.role == "main") else {
+                continue;
+            };
+            let pcm =
+                read_wav_stereo_48k_pcm(&fx.dir.join("scenes").join(format!("{}.wav", info.id)))?;
+            let mut pre = make_preprocessor(name, r.models)?;
+            let processed = process_pcm(&pcm, &mut pre, None);
+            let mut window = mono_16k_f32(&processed);
+            window.extend(std::iter::repeat_n(0.0f32, TAIL_SILENCE_MS * 16));
+            let heard = recognize(r.recognizer, &window);
+            let stats = by_level.entry(info.level_db).or_default();
+            if seg.kind == "long" {
+                let (edits, n) = word_edits(&seg.text, &heard);
+                stats.l_turns += 1;
+                stats.l_edits += edits;
+                stats.l_words += n;
+            } else {
+                stats.q_turns += 1;
+                if word_similarity(&seg.text, &heard) >= ORACLE_MIN {
+                    stats.q_ok += 1;
+                }
+            }
+        }
+        for (level_db, stats) in by_level {
+            rows.push(WerRow {
+                pre: (*name).to_string(),
+                level_db,
+                stats,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// Cost row of a precomputed preprocessor from `<dir>/voxlock_cost.json`
+/// (`{"scenes":[{"id":..,"audio_s":..,"wall_s":..,"cpu_s":..}]}`, written under `taskset -c 2`).
+/// The RTF columns hold process CPU seconds per audio second over the scenes.
+fn precomputed_cost_row(name: &str, dir: &Path) -> Result<CostRow, String> {
+    let path = dir.join("voxlock_cost.json");
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    cost_row_from_json(name, &text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn cost_row_from_json(name: &str, text: &str) -> Result<CostRow, String> {
+    let json = parse_json(text)?;
+    let Some(Json::Arr(scenes)) = json.get("scenes") else {
+        return Err("no scenes array".into());
+    };
+    let mut ratios = Vec::new();
+    let mut audio_total = 0.0;
+    for s in scenes {
+        let num = |key: &str| match s.get(key) {
+            Some(Json::Num(n)) => *n,
+            _ => 0.0,
+        };
+        let (audio, cpu) = (num("audio_s"), num("cpu_s"));
+        if audio > 0.0 {
+            ratios.push(cpu / audio);
+            audio_total += audio;
+        }
+    }
+    if ratios.is_empty() {
+        return Err("no scene with audio".into());
+    }
+    let mean = ratios.iter().sum::<f64>() / ratios.len() as f64;
+    ratios.sort_by(|a, b| a.total_cmp(b));
+    Ok(CostRow {
+        name: name.to_string(),
+        frames: (audio_total * 50.0).round() as usize,
+        rtf_p50: percentile_f(&ratios, 0.5),
+        rtf_p99: percentile_f(&ratios, 0.99),
+        rtf_mean: mean,
+        streams: None,
+        streams_capped: false,
+        stream_steps: Vec::new(),
+        delay_ms: None,
+    })
+}
+
+/// The precomputed preprocessors whose `scenes/` dir and `voxlock_cost.json` exist. A missing one
+/// is warned about and dropped, so a failed VoxLock step does not cost the other results.
+fn usable_precomputed(all: &[(String, PathBuf)]) -> Vec<(String, PathBuf)> {
+    all.iter()
+        .filter(|(name, dir)| {
+            let ok = dir.join("scenes").is_dir() && dir.join("voxlock_cost.json").is_file();
+            if !ok {
+                eprintln!(
+                    "warning: precomputed {name}: {} has no scenes/ or voxlock_cost.json; skipped",
+                    dir.display()
+                );
+            }
+            ok
+        })
+        .cloned()
+        .collect()
+}
+
+fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Part3, String> {
+    let pre_names: Vec<&str> = ALL_PRE
+        .iter()
+        .copied()
+        .filter(|p| r.pre_filter.iter().any(|f| f == p))
+        .collect();
+    let precomputed = usable_precomputed(r.precomputed);
+    if pre_names.is_empty() && precomputed.is_empty() {
+        return Err("part 3: --pre selects no preprocessor".into());
+    }
+    // Fail early on a missing model.
+    for name in &pre_names {
+        eprintln!(
+            "part 3: {name} -> {}",
+            make_preprocessor(name, r.models)?.describe()
+        );
+    }
+    let s3: Vec<usize> = (0..fx.scenes.len())
+        .filter(|i| fx.scenes[*i].kind == "conversation")
+        .collect();
+    let set = if s3.iter().any(|i| fx.scenes[*i].set == Set::Test) {
+        Set::Test
+    } else {
+        Set::Tune
+    };
+    let set_label = if set == Set::Test {
+        "test"
+    } else {
+        "tune (no test-set conversation scene in the fixtures: smoke only)"
+    };
+    let scenes: Vec<usize> = s3
+        .iter()
+        .copied()
+        .filter(|i| fx.scenes[*i].set == set)
+        .collect();
+
+    // Every combo: (name, precomputed scene dir). Precomputed combos run Grid A and B scenes.
+    let mut combos: Vec<(&str, Option<&Path>)> = pre_names.iter().map(|n| (*n, None)).collect();
+    combos.extend(
+        precomputed
+            .iter()
+            .map(|(n, d)| (n.as_str(), Some(d.as_path()))),
+    );
+    let mut grid = Vec::new();
+    for (name, scene_dir) in &combos {
+        for agc in [false, true] {
+            let in_b = scene_dir.is_some() || GRID_B_PRE.contains(name);
+            let mut by: BTreeMap<(i32, i32), LevelStats> = BTreeMap::new();
+            let combo_started = std::time::Instant::now();
+            for &scene in &scenes {
+                let main_db = fx.scenes[scene].main_db;
+                let level = fx.scenes[scene].level_db;
+                let in_a = main_db == -20;
+                let in_b_scene = in_b && (level == -15 || level == -10);
+                if !(in_a || in_b_scene) {
+                    continue;
+                }
+                let enhance = Enhance {
+                    pre_name: name,
+                    agc,
+                    models: r.models,
+                    scene_dir: *scene_dir,
+                };
+                let p2 = P2 {
+                    enhance: Some(&enhance),
+                    emb: r.emb,
+                    check_s: r.check_s,
+                    threshold: r.threshold,
+                    recognizer: r.recognizer,
+                    vad_name: "energy",
+                    vad_config: r.vad_config,
+                    leak_vocab: r.leak_vocab,
+                };
+                eprintln!(
+                    "part 3 pre {name} agc {} scene {}",
+                    if agc { "on" } else { "off" },
+                    fx.scenes[scene].id
+                );
+                let (stats, scene_rows) = part2_scene(fx, scene, &p2)?;
+                add_stats(by.entry((main_db, level)).or_default(), &stats);
+                rows.extend(scene_rows);
+            }
+            eprintln!(
+                "part 3 pre {name} agc {} done in {:.0} s",
+                on_off(agc),
+                combo_started.elapsed().as_secs_f64()
+            );
+            for ((main_db, level_db), stats) in by {
+                grid.push(GridRow {
+                    pre: (*name).to_string(),
+                    agc,
+                    main_db,
+                    level_db,
+                    stats,
+                });
+            }
+        }
+    }
+    let wer = s1_wer(fx, r, &pre_names)?;
+    let mut cost = cost_rows(fx, r, &pre_names, &scenes)?;
+    for (name, dir) in &precomputed {
+        cost.push(precomputed_cost_row(name, dir)?);
+    }
+    Ok(Part3 {
+        model: r.emb.id.clone(),
+        check_s: r.check_s,
+        threshold: r.threshold,
+        set: set_label,
+        pre_names: combos.iter().map(|(p, _)| (*p).to_string()).collect(),
+        precomputed: precomputed.iter().map(|(n, _)| n.clone()).collect(),
+        grid,
+        cost,
+        wer,
+    })
+}
+
+fn on_off(agc: bool) -> &'static str {
+    if agc {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+/// The metric cells shared by every Part 3 table row.
+fn stats_cells(s: &LevelStats) -> String {
+    format!(
+        "{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}",
+        s.utterances,
+        s.merged,
+        s.main_missed,
+        s.byst_missed,
+        fmt_opt(pct(s.q_recognized, s.q_turns), 1),
+        fmt_opt(pct(s.l_edits, s.l_ref_words), 1),
+        fmt_opt(pct(s.main_caller, s.main_turns), 1),
+        fmt_opt(pct(s.byst_other, s.byst_turns), 1),
+        fmt_opt(pct(s.leak_words, s.main_words), 2),
+        s.unmatched,
+        fmt_opt(median_i64(&s.onset_delays), 0),
+        s.underruns,
+    )
+}
+
+const STATS_HEAD: &str = "VAD utt | merged utt | missed main | missed bystander | (a) oracle % (qualified) | WER % (long) | (b) main to caller % | (c) bystander to other % | (e) leakage % | (f) unmatched utt | median onset ms | underruns";
+
+fn pooled(grid: &[GridRow], pre: &str, agc: bool, main_db: i32) -> LevelStats {
+    let mut all = LevelStats::default();
+    for g in grid
+        .iter()
+        .filter(|g| g.pre == pre && g.agc == agc && g.main_db == main_db)
+    {
+        add_stats(&mut all, &g.stats);
+    }
+    all
+}
+
+/// Caption of the cost table; precomputed rows hold a different quantity and say so.
+fn cost_caption(precomputed: &[String]) -> String {
+    let mut c = String::from("\n### Cost (one core, 20 ms frames)\n\nRTF = processing time / 20 ms per frame. Streams per core = the largest N (steps 1, 2, 4, 8, 12, 16, 24, 32) of real-time paced streams on one core with at most 1 % of frames finishing more than 20 ms after they were due; `+` marks the last step passed. Delay = lag of the cross-correlation of input and output (0 to 800 ms). `agc` is the AGC alone.\n\n");
+    if !precomputed.is_empty() {
+        c.push_str(&format!(
+            " Rows {} are precomputed (VoxLock, `voxlock_preprocess.py` under `taskset -c 2`): the RTF columns hold process CPU seconds per audio second over whole scenes (\u{2248} CPU cores per call), not per 20 ms frame; `frames` is audio seconds \u{d7} 50; streams per core and delay are not measured.",
+            precomputed.join(", ")
+        ));
+    }
+    c
+}
+
+fn part3_md(p: &Part3) -> String {
+    let mut md = String::new();
+    md.push_str(&format!(
+        "\n## Part 3: denoisers and caller AGC\n\nSpeaker model `{}`, check {} s, threshold {:.4} (tune set, FAR 1 %). Scenes: {}. Pipeline per combo: preprocessor, then AGC if on, on the 20 ms 48 kHz stereo frames; energy VAD (`VadConfig::default()`) on that PCM; STT and embedding on its mono 16 kHz conversion, starting at SpeechStart minus the product pre-roll. `turns.jsonl` has every turn (`pre`, `agc`); `conversations.md` shows raw/off, gtcrn/on, dpdfnet2/on and voxlock-live/on. A precomputed preprocessor (`voxlock-*`) reads scene audio that `benchmarks/speaker/voxlock_preprocess.py` wrote; its cost row comes from `voxlock_cost.json` (process CPU seconds per audio second on one pinned core; RTF columns are that ratio, not per 20 ms frame; streams and delay are not measured).\n",
+        p.model, p.check_s, p.threshold, p.set
+    ));
+    md.push_str("\n### Grid A: preprocessor x AGC (S3 scenes at main -20 dBFS)\n\n");
+    md.push_str(&format!("| pre | AGC | level | {STATS_HEAD} |\n"));
+    md.push_str(&format!("|{}\n", "---|".repeat(15)));
+    for name in &p.pre_names {
+        for agc in [false, true] {
+            for g in p
+                .grid
+                .iter()
+                .filter(|g| g.pre == *name && g.agc == agc && g.main_db == -20)
+            {
+                md.push_str(&format!(
+                    "| {name} | {} | {} dB | {} |\n",
+                    on_off(agc),
+                    g.level_db,
+                    stats_cells(&g.stats)
+                ));
+            }
+            let all = pooled(&p.grid, name, agc, -20);
+            md.push_str(&format!(
+                "| **{name}** | **{}** | **all** | {} |\n",
+                on_off(agc),
+                stats_cells(&all)
+            ));
+        }
+    }
+    md.push_str("\n### Grid B: caller level (relative levels -15 and -10 dB)\n\n");
+    md.push_str(&format!(
+        "| pre | AGC | main dBFS | level | {STATS_HEAD} |\n"
+    ));
+    md.push_str(&format!("|{}\n", "---|".repeat(16)));
+    for name in p
+        .pre_names
+        .iter()
+        .filter(|n| GRID_B_PRE.contains(&n.as_str()) || p.precomputed.contains(n))
+    {
+        for agc in [false, true] {
+            for g in p.grid.iter().filter(|g| {
+                g.pre == *name && g.agc == agc && (g.level_db == -15 || g.level_db == -10)
+            }) {
+                md.push_str(&format!(
+                    "| {name} | {} | {} | {} dB | {} |\n",
+                    on_off(agc),
+                    g.main_db,
+                    g.level_db,
+                    stats_cells(&g.stats)
+                ));
+            }
+        }
+    }
+    md.push_str("\n### S1 whole-clip WER (main voice over babble, no VAD, AGC off)\n\nQualified phrases: share judged right by the 0.75 oracle; long sentences: WER (measured, not qualified). `clean` = no babble.\n\n");
+    md.push_str("| pre | level | qualified clips | oracle % | long clips | WER % (long) |\n|---|---|---|---|---|---|\n");
+    for w in &p.wer {
+        let level = if w.level_db == CLEAN_LEVEL_DB {
+            "clean".to_string()
+        } else {
+            format!("{} dB", w.level_db)
+        };
+        md.push_str(&format!(
+            "| {} | {level} | {} | {} | {} | {} |\n",
+            w.pre,
+            w.stats.q_turns,
+            fmt_opt(pct(w.stats.q_ok, w.stats.q_turns), 1),
+            w.stats.l_turns,
+            fmt_opt(pct(w.stats.l_edits, w.stats.l_words), 1),
+        ));
+    }
+    md.push_str(&cost_caption(&p.precomputed));
+    md.push_str("| pre | frames | RTF p50 | RTF p99 | RTF mean | streams per core | delay ms |\n|---|---|---|---|---|---|---|\n");
+    for c in &p.cost {
+        let na = if p.precomputed.contains(&c.name) {
+            "n/a"
+        } else {
+            "-"
+        };
+        md.push_str(&format!(
+            "| {} | {} | {:.4} | {:.4} | {:.4} | {} | {} |\n",
+            c.name,
+            c.frames,
+            c.rtf_p50,
+            c.rtf_p99,
+            c.rtf_mean,
+            c.streams.map_or(na.to_string(), |n| format!(
+                "{n}{}",
+                if c.streams_capped { "+" } else { "" }
+            )),
+            c.delay_ms.map_or(na.to_string(), |d| fmt_opt(Some(d), 1)),
+        ));
+    }
+    md
+}
+
+fn stats_json(s: &LevelStats) -> String {
+    format!(
+        "\"vad_utterances\": {}, \"merged_utterances\": {}, \"main_turns\": {}, \"main_missed\": {}, \"qualified_turns\": {}, \"a_qualified_oracle_pct\": {}, \"long_turns\": {}, \"long_wer_pct\": {}, \"b_main_caller_pct\": {}, \"bystander_turns\": {}, \"bystander_missed\": {}, \"c_bystander_other_pct\": {}, \"d_bystander_caller_pct\": {}, \"e_leakage_pct\": {}, \"f_unmatched_utterances\": {}, \"median_onset_delay_ms\": {}, \"underruns\": {}",
+        s.utterances,
+        s.merged,
+        s.main_turns,
+        s.main_missed,
+        s.q_turns,
+        json_num(pct(s.q_recognized, s.q_turns)),
+        s.l_turns,
+        json_num(pct(s.l_edits, s.l_ref_words)),
+        json_num(pct(s.main_caller, s.main_turns)),
+        s.byst_turns,
+        s.byst_missed,
+        json_num(pct(s.byst_other, s.byst_turns)),
+        json_num(pct(s.byst_caller, s.byst_turns)),
+        json_num(pct(s.leak_words, s.main_words)),
+        s.unmatched,
+        json_num(median_i64(&s.onset_delays)),
+        s.underruns,
+    )
+}
+
+fn part3_json(p: &Part3) -> String {
+    let mut j = String::new();
+    j.push_str(&format!(
+        "  \"part3\": {{\n    \"model\": \"{}\",\n    \"check_s\": {},\n    \"threshold\": {:.6},\n    \"set\": \"{}\",\n    \"grid\": [\n",
+        json_escape(&p.model),
+        p.check_s,
+        p.threshold,
+        json_escape(p.set)
+    ));
+    let lines: Vec<String> = p
+        .grid
+        .iter()
+        .map(|g| {
+            format!(
+                "      {{\"pre\": \"{}\", \"agc\": {}, \"main_db\": {}, \"level_db\": {}, {}}}",
+                g.pre,
+                g.agc,
+                g.main_db,
+                g.level_db,
+                stats_json(&g.stats)
+            )
+        })
+        .collect();
+    j.push_str(&lines.join(",\n"));
+    j.push_str("\n    ],\n    \"grid_a_pooled\": [\n");
+    let mut pooled_lines = Vec::new();
+    for name in &p.pre_names {
+        for agc in [false, true] {
+            pooled_lines.push(format!(
+                "      {{\"pre\": \"{name}\", \"agc\": {agc}, \"main_db\": -20, {}}}",
+                stats_json(&pooled(&p.grid, name, agc, -20))
+            ));
+        }
+    }
+    j.push_str(&pooled_lines.join(",\n"));
+    j.push_str("\n    ],\n    \"s1_wer\": [\n");
+    let wer_lines: Vec<String> = p
+        .wer
+        .iter()
+        .map(|w| {
+            format!(
+                "      {{\"pre\": \"{}\", \"level_db\": {}, \"clean\": {}, \"qualified_clips\": {}, \"oracle_pct\": {}, \"long_clips\": {}, \"long_wer_pct\": {}}}",
+                w.pre,
+                w.level_db,
+                w.level_db == CLEAN_LEVEL_DB,
+                w.stats.q_turns,
+                json_num(pct(w.stats.q_ok, w.stats.q_turns)),
+                w.stats.l_turns,
+                json_num(pct(w.stats.l_edits, w.stats.l_words)),
+            )
+        })
+        .collect();
+    j.push_str(&wer_lines.join(",\n"));
+    j.push_str("\n    ],\n    \"cost\": [\n");
+    let cost_lines: Vec<String> = p
+        .cost
+        .iter()
+        .map(|c| {
+            let steps: Vec<String> = c
+                .stream_steps
+                .iter()
+                .map(|(n, late)| format!("{{\"streams\": {n}, \"late_share\": {late:.5}}}"))
+                .collect();
+            format!(
+                "      {{\"name\": \"{}\", \"frames\": {}, \"rtf_p50\": {:.5}, \"rtf_p99\": {:.5}, \"rtf_mean\": {:.5}, \"streams_per_core\": {}, \"streams_capped\": {}, \"delay_ms\": {}, \"stream_steps\": [{}]}}",
+                c.name,
+                c.frames,
+                c.rtf_p50,
+                c.rtf_p99,
+                c.rtf_mean,
+                c.streams.map_or("null".to_string(), |n| n.to_string()),
+                c.streams_capped,
+                json_num(c.delay_ms),
+                steps.join(", ")
+            )
+        })
+        .collect();
+    j.push_str(&cost_lines.join(",\n"));
+    j.push_str("\n    ]\n  }");
+    j
+}
+
 struct VariantOutcome {
     name: &'static str,
     min_silence_ms: u32,
     pre_roll_ms: u32,
-    /// Per level, or why the variant did not run (Silero failed to load).
-    levels: Result<BTreeMap<i32, LevelStats>, String>,
+    levels: BTreeMap<i32, LevelStats>,
 }
 
 struct Args {
@@ -1275,13 +2249,39 @@ struct Args {
     stt_model: PathBuf,
     out: PathBuf,
     vad_min_silence_ms: Option<u32>,
-    /// `energy`, `silero` or `both`.
-    vad: String,
+    /// Part 3: directory with the denoiser models (`.models/enhance`).
+    enhance: Option<PathBuf>,
+    /// Part 3: preprocessors to run (default: all of [`ALL_PRE`]).
+    pre: Vec<String>,
+    /// Part 3: `--pre precomputed:<name>=<dir>` entries.
+    precomputed: Vec<(String, PathBuf)>,
+    /// Part 3 cost: seconds of S3 audio for the single-stream RTF.
+    cost_seconds: usize,
+    /// Part 3 cost: seconds each streams-per-core step runs.
+    streams_seconds: usize,
+}
+
+/// `precomputed:<name>=<dir>` -> `Some((name, dir))`; any other item -> `None`.
+fn parse_precomputed(item: &str) -> Result<Option<(String, PathBuf)>, String> {
+    let Some(rest) = item.strip_prefix("precomputed:") else {
+        return Ok(None);
+    };
+    match rest.split_once('=') {
+        Some((name, dir)) if !name.is_empty() && !dir.is_empty() => {
+            Ok(Some((name.to_string(), PathBuf::from(dir))))
+        }
+        _ => Err(format!(
+            "--pre: expected precomputed:<name>=<dir>, got {item}"
+        )),
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
     let (mut fixtures, mut models, mut stt, mut out, mut silence) = (None, None, None, None, None);
-    let mut vad = "both".to_string();
+    let mut enhance = None;
+    let mut pre: Vec<String> = ALL_PRE.iter().map(|p| (*p).to_string()).collect();
+    let mut precomputed: Vec<(String, PathBuf)> = Vec::new();
+    let (mut cost_seconds, mut streams_seconds) = (60usize, 10usize);
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -1297,11 +2297,34 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|e| format!("--vad-min-silence-ms: {e}"))?,
                 )
             }
-            "--vad" => {
-                vad = value("--vad")?;
-                if !matches!(vad.as_str(), "energy" | "silero" | "both") {
-                    return Err("--vad must be energy, silero or both".into());
+            "--enhance" => enhance = Some(PathBuf::from(value("--enhance")?)),
+            "--pre" => {
+                let all: Vec<String> = value("--pre")?
+                    .split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect();
+                pre = Vec::new();
+                precomputed = Vec::new();
+                for item in all {
+                    match parse_precomputed(&item)? {
+                        Some(entry) => precomputed.push(entry),
+                        None => pre.push(item),
+                    }
                 }
+                if let Some(bad) = pre.iter().find(|p| !ALL_PRE.contains(&p.as_str())) {
+                    return Err(format!("--pre: unknown preprocessor {bad}"));
+                }
+            }
+            "--cost-seconds" => {
+                cost_seconds = value("--cost-seconds")?
+                    .parse()
+                    .map_err(|e| format!("--cost-seconds: {e}"))?
+            }
+            "--streams-seconds" => {
+                streams_seconds = value("--streams-seconds")?
+                    .parse()
+                    .map_err(|e| format!("--streams-seconds: {e}"))?
             }
             other => return Err(format!("unknown argument {other}")),
         }
@@ -1312,9 +2335,16 @@ fn parse_args() -> Result<Args, String> {
         stt_model: stt.ok_or("--stt-model is required")?,
         out: out.ok_or("--out is required")?,
         vad_min_silence_ms: silence,
-        vad,
+        enhance,
+        pre,
+        precomputed,
+        cost_seconds,
+        streams_seconds,
     })
 }
+
+/// Sample rate of the fixture audio fed to the pipeline (48 kHz stereo PCM), listed in the header.
+const BENCH_SAMPLE_RATE: u32 = 48_000;
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
@@ -1402,12 +2432,16 @@ fn run() -> Result<(), String> {
     );
 
     let s3_test: Vec<usize> = (0..fx.scenes.len())
-        .filter(|i| fx.scenes[*i].kind == "conversation" && fx.scenes[*i].set == Set::Test)
+        .filter(|i| {
+            fx.scenes[*i].kind == "conversation"
+                && fx.scenes[*i].set == Set::Test
+                && fx.scenes[*i].main_db == -20
+        })
         .collect();
     let (part2_scenes, part2_set) = if s3_test.is_empty() {
         (
             (0..fx.scenes.len())
-                .filter(|i| fx.scenes[*i].kind == "conversation")
+                .filter(|i| fx.scenes[*i].kind == "conversation" && fx.scenes[*i].main_db == -20)
                 .collect::<Vec<_>>(),
             "tune (no test-set conversation scene in the fixtures: smoke only, threshold not held out)",
         )
@@ -1431,60 +2465,19 @@ fn run() -> Result<(), String> {
         .filter(|w| w.len() >= 4 && !phrases_main.contains(w))
         .collect();
 
-    // The two VAD variants: the product default (energy) and Silero with its documented
-    // defaults (threshold 0.5, packages/sdk/VOICE-VAD-AND-BARGE-IN.md).
-    let mut variants: Vec<(&'static str, VadConfig)> = Vec::new();
-    if args.vad != "silero" {
-        variants.push(("energy", VadConfig::default()));
-    }
-    if args.vad != "energy" {
-        variants.push((
-            "silero",
-            VadConfig {
-                provider: "silero".to_string(),
-                threshold: 0.5,
-                ..VadConfig::default()
-            },
-        ));
-    }
+    // The product's default VAD. Silero was evaluated and dropped (it merged every babble scene
+    // into one utterance, benchmarks/speaker/README.md).
+    let mut vad_config = VadConfig::default();
     if let Some(ms) = args.vad_min_silence_ms {
-        for (_, config) in &mut variants {
-            config.min_silence_duration_ms = ms;
-        }
+        vad_config.min_silence_duration_ms = ms;
     }
     let recognizer = create_recognizer(&args.stt_model)?;
     let mut outcomes: Vec<VariantOutcome> = Vec::new();
     let mut rows: Vec<Row> = Vec::new();
-    for (name, vad_config) in variants {
-        // Silero can fail to load (no ONNX Runtime, or built without the feature): record it and
-        // go on, so the run still produces the other variant and exits 0.
-        // The ONNX Runtime loader of the `ort` crate panics (instead of returning an error) when
-        // the shared library is missing, so the probe also catches a panic.
-        let probe = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            VadEngine::new(vad_config.clone()).map(|_| ())
-        }));
-        let failure = match probe {
-            Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(e.to_string()),
-            Err(panic) => Some(
-                panic
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_string()))
-                    .unwrap_or_else(|| "panic while loading the VAD".to_string()),
-            ),
-        };
-        if let Some(msg) = failure {
-            eprintln!("part 2 vad {name}: cannot start: {msg}");
-            outcomes.push(VariantOutcome {
-                name,
-                min_silence_ms: vad_config.min_silence_duration_ms,
-                pre_roll_ms: pre_roll_ms(&vad_config),
-                levels: Err(msg),
-            });
-            continue;
-        }
+    {
+        let name = "energy";
         let p2 = P2 {
+            enhance: None,
             emb: &embedders[best_model],
             check_s: best_check,
             threshold: best_threshold,
@@ -1505,9 +2498,49 @@ fn run() -> Result<(), String> {
             name,
             min_silence_ms: vad_config.min_silence_duration_ms,
             pre_roll_ms: pre_roll_ms(&vad_config),
-            levels: Ok(by_level),
+            levels: by_level,
         });
     }
+
+    // ---- Part 3 ----
+    let part3 = match &args.enhance {
+        None => None,
+        Some(models) => {
+            // Same speaker model and threshold as Grid A needs: TitaNet-small at 1.5 s when
+            // present, else the Part 2 pick.
+            let titanet = p1_rows.iter().find(|r| {
+                r.level == "all"
+                    && r.check_s == 1.5
+                    && r.model.contains("titanet")
+                    && r.threshold_tune.is_some()
+            });
+            let (model_idx, check_s, threshold) = match titanet {
+                Some(r) => (
+                    embedders
+                        .iter()
+                        .position(|e| e.id == r.model)
+                        .ok_or("titanet model vanished")?,
+                    r.check_s,
+                    r.threshold_tune.unwrap(),
+                ),
+                None => (best_model, best_check, best_threshold),
+            };
+            let run3 = Part3Run {
+                models,
+                pre_filter: &args.pre,
+                precomputed: &args.precomputed,
+                emb: &embedders[model_idx],
+                check_s,
+                threshold,
+                recognizer: &recognizer,
+                vad_config: &vad_config,
+                leak_vocab: &leak_vocab,
+                cost_seconds: args.cost_seconds,
+                streams_seconds: args.streams_seconds,
+            };
+            Some(part3_run(&mut fx, &run3, &mut rows)?)
+        }
+    };
     let turns_jsonl: String = rows.iter().map(|r| row_json(r) + "\n").collect();
     fs::write(args.out.join("turns.jsonl"), turns_jsonl)
         .map_err(|e| format!("write turns.jsonl: {e}"))?;
@@ -1525,6 +2558,7 @@ fn run() -> Result<(), String> {
     json.push_str(&format!("  \"cpu_model\": \"{}\",\n", json_escape(&cpu)));
     json.push_str(&format!("  \"git_sha\": \"{}\",\n", json_escape(&sha)));
     json.push_str(&format!("  \"manifest_sha256\": \"{manifest_sha}\",\n"));
+    json.push_str(&format!("  \"sample_rate\": {BENCH_SAMPLE_RATE},\n"));
     json.push_str("  \"part1\": {\n    \"rows\": [\n");
     for (i, r) in p1_rows.iter().enumerate() {
         json.push_str(&format!(
@@ -1574,13 +2608,9 @@ fn run() -> Result<(), String> {
     ));
     for (v, o) in outcomes.iter().enumerate() {
         let comma = if v + 1 < outcomes.len() { "," } else { "" };
-        match &o.levels {
-            Err(msg) => json.push_str(&format!(
-                "      \"{}\": {{\"error\": \"{}\"}}{comma}\n",
-                o.name,
-                json_escape(msg)
-            )),
-            Ok(by_level) => {
+        {
+            {
+                let by_level = &o.levels;
                 json.push_str(&format!(
                     "      \"{}\": {{\n        \"vad_min_silence_ms\": {},\n        \"pre_roll_ms\": {},\n        \"levels\": [\n",
                     o.name, o.min_silence_ms, o.pre_roll_ms
@@ -1610,14 +2640,19 @@ fn run() -> Result<(), String> {
             }
         }
     }
-    json.push_str("    }\n  }\n}\n");
+    json.push_str("    }\n  }");
+    if let Some(p3) = &part3 {
+        json.push_str(",\n");
+        json.push_str(&part3_json(p3));
+    }
+    json.push_str("\n}\n");
     fs::write(args.out.join("results.json"), json)
         .map_err(|e| format!("write results.json: {e}"))?;
 
     let mut md = String::new();
     md.push_str("# Speaker-ID bench\n\n");
     md.push_str(&format!(
-        "nproc {nproc}, CPU {cpu}, git {sha}, manifest sha256 `{manifest_sha}`\n\n"
+        "nproc {nproc}, CPU {cpu}, git {sha}, manifest sha256 `{manifest_sha}`, sample_rate {BENCH_SAMPLE_RATE} Hz\n\n"
     ));
     md.push_str("## Part 1: embedding level\n\n");
     md.push_str("Threshold, EER and FRR@FAR1% come from the tune set; the last two columns apply that threshold to the test set. Accept = score above threshold.\n\n");
@@ -1670,9 +2705,9 @@ fn run() -> Result<(), String> {
         embedders[best_model].id, best_check, best_threshold, part2_set
     ));
     for o in &outcomes {
-        match &o.levels {
-            Err(msg) => md.push_str(&format!("\n### VAD {}\n\nNot run: {msg}\n", o.name)),
-            Ok(by_level) => {
+        {
+            {
+                let by_level = &o.levels;
                 md.push_str(&format!(
                     "\n### VAD {} (min_silence {} ms, pre-roll {} ms)\n\n",
                     o.name, o.min_silence_ms, o.pre_roll_ms
@@ -1703,6 +2738,9 @@ fn run() -> Result<(), String> {
             }
         }
     }
+    if let Some(p3) = &part3 {
+        md.push_str(&part3_md(p3));
+    }
     fs::write(args.out.join("summary.md"), md).map_err(|e| format!("write summary.md: {e}"))?;
     eprintln!("wrote {}/results.json and summary.md", args.out.display());
     Ok(())
@@ -1718,6 +2756,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use support::write_wav_stereo_48k;
 
     #[test]
     fn eer_of_separable_scores_is_zero_and_of_identical_is_half() {
@@ -1802,6 +2841,110 @@ mod tests {
             pre_roll_ms(&config),
             config.speech_pad_ms + config.min_speech_duration_ms
         );
+    }
+
+    #[test]
+    fn precomputed_preprocessor_reads_scene_audio() {
+        let base = std::env::temp_dir().join(format!("speaker_bench_pre_{}", std::process::id()));
+        let (fixtures, pre) = (base.join("fixtures"), base.join("voxlock-live"));
+        for d in [&fixtures, &pre] {
+            fs::create_dir_all(d.join("scenes")).unwrap();
+        }
+        // Fixture: 0.1 s of silence; precomputed: 0.2 s of a tone. 48 kHz, mono samples
+        // duplicated to stereo by the writer.
+        write_wav_stereo_48k(&fixtures.join("scenes/s3_x.wav"), &vec![0.0; 4800]).unwrap();
+        write_wav_stereo_48k(&pre.join("scenes/s3_x.wav"), &vec![0.25; 9600]).unwrap();
+        let from_fixture =
+            read_wav_stereo_48k_pcm(&scene_audio_path(&fixtures, None, "s3_x")).unwrap();
+        let from_pre =
+            read_wav_stereo_48k_pcm(&scene_audio_path(&fixtures, Some(&pre), "s3_x")).unwrap();
+        assert_eq!(from_fixture.len(), 4800 * 4);
+        assert_eq!(from_pre.len(), 9600 * 4);
+        assert!(from_pre.iter().any(|b| *b != 0));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn precomputed_arg_parses_name_and_dir() {
+        assert_eq!(
+            parse_precomputed("precomputed:voxlock-live=/tmp/x").unwrap(),
+            Some(("voxlock-live".to_string(), PathBuf::from("/tmp/x")))
+        );
+        assert_eq!(parse_precomputed("gtcrn").unwrap(), None);
+        assert!(parse_precomputed("precomputed:nodir").is_err());
+        assert!(parse_precomputed("precomputed:=/x").is_err());
+    }
+
+    #[test]
+    fn cost_caption_labels_precomputed_rows() {
+        assert!(!cost_caption(&[]).contains("CPU seconds per audio second"));
+        let c = cost_caption(&["voxlock-live".to_string()]);
+        assert!(c.contains("voxlock-live") && c.contains("CPU seconds per audio second"));
+    }
+
+    #[test]
+    fn missing_precomputed_dir_is_skipped() {
+        let missing = std::env::temp_dir().join("speaker_bench_no_such_dir_xyz");
+        let all = vec![("voxlock-live".to_string(), missing)];
+        assert!(usable_precomputed(&all).is_empty());
+    }
+
+    #[test]
+    fn voxlock_cost_json_becomes_a_cost_row() {
+        let json = r#"{"scenes":[{"id":"a","audio_s":10.0,"wall_s":9.0,"cpu_s":8.0},
+            {"id":"b","audio_s":10.0,"wall_s":11.0,"cpu_s":12.0}]}"#;
+        let row = cost_row_from_json("voxlock-live", json).unwrap();
+        assert_eq!(row.name, "voxlock-live");
+        assert_eq!(row.frames, 1000);
+        assert!((row.rtf_mean - 1.0).abs() < 1e-9);
+        assert!(row.streams.is_none() && row.delay_ms.is_none());
+        assert!(cost_row_from_json("x", r#"{"scenes":[]}"#).is_err());
+    }
+
+    #[test]
+    fn onset_delay_median() {
+        // Three main turns whose first VAD piece starts 120 ms late, 40 ms late and 50 ms early:
+        // the median of the per-turn onsets goes through the real `turn_onset_ms`.
+        let utts = [(1120, 3000), (5040, 7000), (8950, 11_000)];
+        let turns = [(1000, 3000), (5000, 7000), (9000, 11_000)];
+        let delays: Vec<i64> = turns
+            .iter()
+            .filter_map(|t| turn_onset_ms(t.0, t.1, &utts))
+            .collect();
+        assert_eq!(delays, vec![120, 40, -50]);
+        assert_eq!(median_i64(&delays), Some(40.0));
+        // An even count averages the two middle values; no values, no median.
+        assert_eq!(median_i64(&[10, 30, 20, 40]), Some(25.0));
+        assert_eq!(median_i64(&[]), None);
+    }
+
+    #[test]
+    fn turn_onset_uses_earliest_overlapping_utterance() {
+        assert_eq!(
+            turn_onset_ms(1000, 3000, &[(1400, 1800), (2000, 2900)]),
+            Some(400)
+        );
+        assert_eq!(turn_onset_ms(1000, 3000, &[(3100, 3500)]), None);
+        assert_eq!(turn_onset_ms(1000, 3000, &[(900, 1500)]), Some(-100));
+    }
+
+    #[test]
+    fn default_level_scene_keeps_parts_1_and_2_at_minus_20() {
+        assert!(default_level_scene("conversation", -20));
+        assert!(!default_level_scene("conversation", -26));
+        assert!(!default_level_scene("conversation", -14));
+        assert!(default_level_scene("main_over_babble", -20));
+        assert!(default_level_scene("bystander_alone", -20));
+    }
+
+    #[test]
+    fn delay_scene_prefers_clean_s1() {
+        assert_eq!(
+            delay_scene(&["conversation", "main_over_babble", "main_clean"]),
+            Some(2)
+        );
+        assert_eq!(delay_scene(&["conversation", "main_over_babble"]), Some(1));
+        assert_eq!(delay_scene(&["conversation"]), None);
     }
 
     #[test]

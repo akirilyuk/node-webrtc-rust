@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **mixer:** a conference listener whose output timer stalled for more than 160 ms and then rendered its missed 20 ms slots back-to-back no longer merges ticks and then repeats the newest one. Each slot now hears its own tick, and when the mix history no longer holds a tick the listener missed, that tick is counted in `listenerSkipped` instead of being replayed or lost without a count.
+
 ## [0.14.0] - 2026-10-28
 
 ### Added

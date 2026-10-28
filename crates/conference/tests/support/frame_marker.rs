@@ -123,12 +123,48 @@ pub struct SequenceReport {
     pub ambiguous: u64,
     /// Silent frames between the first and last marker.
     pub interior_silence: u64,
+    /// Marker distance walked from the first to the last recognised frame: the sum of the
+    /// unwrapped forward steps between advancing markers. A stream of N source frames has a
+    /// span of at most N - 1, so a replay that the merge budget lets through as a long forward
+    /// step shows up as a span about 40 too long.
+    pub span: u64,
+}
+
+/// Merge budget for [`analyze_with`] (mirrors `AnalyseOptions` in the TypeScript twin).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AnalyzeOptions {
+    /// Output frames the mixer reports as merged (`compressed + overflow_compressed +
+    /// listener_catchup_compressed + listener_skipped`). The sequence is unwrapped mod 40,
+    /// which is unambiguous only for a forward step of at most 20; a step above 20 counts as
+    /// forward when the indices it skips beyond its unknown frames are paid for by merges not
+    /// used yet (at most `per frame` each). Anything else above 20 is `reordered`.
+    pub merged_frames: u64,
+    /// How many of `merged_frames` are listener catch-up merges. A catch-up frame cross-fades
+    /// two ticks that may each be a queue-compressed pair, so when both kinds occur one frame
+    /// can absorb up to [`MAX_STACKED_MERGE_INDICES`] indices instead of one.
+    pub listener_catchup_frames: u64,
+}
+
+/// Indices one output frame can absorb when listener catch-up merges two compressed ticks.
+pub const MAX_STACKED_MERGE_INDICES: u64 = 3;
+
+/// [`analyze_with`] without a merge budget: every step above 20 is `reordered`.
+pub fn analyze(frames: &[Detected]) -> SequenceReport {
+    analyze_with(frames, AnalyzeOptions::default())
 }
 
 /// Walks `frames` and reports gaps/duplicates after the first marker. An ambiguous or
 /// interior-silent frame stands in for one unknown frame, so it explains one missing index.
-pub fn analyze(frames: &[Detected]) -> SequenceReport {
+/// Steps above half the period are resolved with the merge budget in `opts`.
+pub fn analyze_with(frames: &[Detected], opts: AnalyzeOptions) -> SequenceReport {
     let mut report = SequenceReport::default();
+    let mut merges_left = opts.merged_frames;
+    let catchup = opts.listener_catchup_frames.min(merges_left);
+    let per_frame = if catchup > 0 && merges_left > catchup {
+        MAX_STACKED_MERGE_INDICES
+    } else {
+        1
+    };
     let last_marker = frames.iter().rposition(|d| matches!(d, Detected::Index(_)));
     let Some(last_marker) = last_marker else {
         return report;
@@ -147,11 +183,19 @@ pub fn analyze(frames: &[Detected]) -> SequenceReport {
                 if delta == 0 {
                     pending_dups += 1;
                     continue;
-                } else if delta > MARKER_PERIOD / 2 {
+                }
+                // Indices this step skips that no unknown frame stands in for.
+                let unexplained = (delta as u64 - 1).saturating_sub(unknown);
+                let long_forward = delta > MARKER_PERIOD / 2
+                    && unexplained <= merges_left.min(per_frame * (unknown + 1));
+                if delta > MARKER_PERIOD / 2 && !long_forward {
                     report.reordered += 1;
                 } else {
-                    let missing = delta as u64 - 1;
-                    report.gaps += missing.saturating_sub(unknown);
+                    if long_forward {
+                        merges_left -= unexplained;
+                    }
+                    report.gaps += unexplained;
+                    report.span += delta as u64;
                     report.played += 1;
                     prev = Some(i);
                     report.duplicates += pending_dups;
@@ -233,5 +277,66 @@ mod tests {
         // 1,2 missing between 0 and 3 (2); 4,5 missing between 3 and 6 minus one unknown (1).
         assert_eq!(r.gaps, 3);
         assert_eq!(r.ambiguous, 1);
+        assert_eq!(r.span, 1 + 1 + 3 + 3);
+    }
+
+    /// 0..=9 heard, 5 merged frames (ambiguous), then the marker 24 on (9 + 24 = 33): six
+    /// frames carried 23 indices, as listener catch-up over compressed ticks does.
+    fn merged_long_step() -> Vec<Detected> {
+        use Detected::*;
+        let mut seq: Vec<Detected> = (0..10).map(Index).collect();
+        seq.extend(std::iter::repeat_n(Ambiguous, 5));
+        seq.extend((33..40).map(Index));
+        seq
+    }
+
+    #[test]
+    fn a_long_step_paid_for_by_counted_merges_is_forward() {
+        let seq = merged_long_step();
+        // No budget: the 24-index step reads as backwards (and `prev` does not resync, so
+        // every later marker of the run does too).
+        assert!(analyze(&seq).reordered > 0);
+        let r = analyze_with(
+            &seq,
+            AnalyzeOptions {
+                merged_frames: 18,
+                listener_catchup_frames: 6,
+            },
+        );
+        assert_eq!(r.reordered, 0, "{r:?}");
+        assert_eq!(r.gaps, 18, "{r:?}");
+        assert_eq!(r.span, 9 + 24 + 6, "{r:?}");
+        // Too few merges to pay for the skipped indices: still reordered.
+        let short = analyze_with(
+            &seq,
+            AnalyzeOptions {
+                merged_frames: 17,
+                listener_catchup_frames: 6,
+            },
+        );
+        assert!(short.reordered > 0, "{short:?}");
+        // Catch-up merges only: one index per frame, so six frames explain 6 of 18.
+        let single = analyze_with(
+            &seq,
+            AnalyzeOptions {
+                merged_frames: 40,
+                listener_catchup_frames: 40,
+            },
+        );
+        assert!(single.reordered > 0, "{single:?}");
+    }
+
+    #[test]
+    fn an_adjacent_swap_is_reordered_whatever_the_merge_budget() {
+        use Detected::*;
+        let seq = [Index(0), Index(1), Index(3), Index(2), Index(4), Index(5)];
+        let r = analyze_with(
+            &seq,
+            AnalyzeOptions {
+                merged_frames: 100,
+                listener_catchup_frames: 50,
+            },
+        );
+        assert!(r.reordered >= 1, "{r:?}");
     }
 }

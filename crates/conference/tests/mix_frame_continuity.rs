@@ -16,7 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use frame_marker::{analyze, detect_frame, Detected, MarkerSource, SequenceReport};
+use frame_marker::{
+    analyze_with, detect_frame, AnalyzeOptions, Detected, MarkerSource, SequenceReport,
+};
 use node_webrtc_rust_conference::{
     ConferenceServer, Room, RoomConfig, SignalingMessage, SignalingResponse,
 };
@@ -240,7 +242,14 @@ async fn run_pattern_with(pattern: Pattern, impairment: Option<&str>) -> Outcome
     let stats = room.lock().await.source_stats("speaker").await;
     reader.abort();
     let frames = received.lock().await.clone();
-    let report = analyze(&frames);
+    // The merge budget is what the mixer counted for this source (see `merged_frames`).
+    let report = analyze_with(
+        &frames,
+        AnalyzeOptions {
+            merged_frames: stats.map_or(0, |s| merged_frames(&s)),
+            listener_catchup_frames: stats.map_or(0, |s| s.listener_catchup_compressed),
+        },
+    );
     if std::env::var("CONTINUITY_TRACE").is_ok() {
         let line: Vec<String> = frames
             .iter()
@@ -324,13 +333,25 @@ fn assert_accounting(o: &Outcome) {
     );
 }
 
-/// Gaps are allowed only as counted compression, duplicates only as counted concealment,
-/// ambiguous (merged) frames only where a merge happened, and no marker may vanish.
+/// Output frames that each swallowed a source frame: queue compression (`pop` pairs and
+/// overflow) and listener catch-up merges or skips (the JS twin's `mergedFrames`).
+fn merged_frames(s: &SourceStats) -> u64 {
+    s.compressed + s.overflow_compressed + s.listener_catchup_compressed + s.listener_skipped
+}
+
+/// Gaps are allowed only as counted compression or listener catch-up, duplicates only as
+/// counted concealment, ambiguous (merged) frames only where a merge happened, the marker
+/// never walks further than the source did, and no marker may vanish.
 fn assert_continuity(o: &Outcome) {
     let r = &o.report;
     let s = o.stats.expect("source stats");
-    let merged = s.compressed + s.overflow_compressed;
+    let merged = merged_frames(&s);
     assert_eq!(r.reordered, 0, "{r:?}");
+    assert!(
+        r.span < FRAMES,
+        "span {} exceeds {FRAMES} source frames: {r:?}",
+        r.span
+    );
     assert!(
         r.gaps <= merged,
         "gaps {} exceed counted compressions {s:?}",

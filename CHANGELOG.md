@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Sherpa TTS: Kokoro (`kokoro-*`) and Kitten (`kitten-*`) bundles load next to Piper/VITS; family detected from `voices.bin` + directory name. Kokoro gets no rule FSTs.
 - License: from 0.14.0, BSL 1.1 (see LICENSE). 0.13.4 and earlier remain MIT.
 
 ## [0.13.4] - 2026-10-26

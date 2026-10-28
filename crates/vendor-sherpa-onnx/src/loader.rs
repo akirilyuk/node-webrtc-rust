@@ -7,9 +7,10 @@ use std::time::Instant;
 use node_webrtc_rust_speech::config::{LanguageIdConfig, SttConfig, TtsConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use sherpa_onnx::{
-    OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig, OfflineTtsVitsModelConfig,
-    OnlineRecognizer, OnlineRecognizerConfig, SpokenLanguageIdentification,
-    SpokenLanguageIdentificationConfig, SpokenLanguageIdentificationWhisperConfig,
+    OfflineTts, OfflineTtsConfig, OfflineTtsKittenModelConfig, OfflineTtsKokoroModelConfig,
+    OfflineTtsModelConfig, OfflineTtsVitsModelConfig, OnlineRecognizer, OnlineRecognizerConfig,
+    SpokenLanguageIdentification, SpokenLanguageIdentificationConfig,
+    SpokenLanguageIdentificationWhisperConfig,
 };
 
 use crate::lid_model_paths::{
@@ -17,7 +18,7 @@ use crate::lid_model_paths::{
 };
 use crate::model_paths::resolve_model_paths;
 use crate::native_calls::NativeCallGuard;
-use crate::tts_model_paths::resolve_tts_model_paths;
+use crate::tts_model_paths::{resolve_tts_model_paths, TtsModelFamily};
 
 pub(crate) fn stt_num_threads() -> i32 {
     parse_thread_env("SHERPA_STT_NUM_THREADS").unwrap_or(1)
@@ -120,32 +121,53 @@ pub fn create_offline_tts(config: &TtsConfig) -> SpeechResult<OfflineTts> {
     let _native = NativeCallGuard::enter();
     let paths = resolve_tts_model_paths(config)?;
 
-    let model_config = OfflineTtsModelConfig {
+    let opt = |p: &Option<std::path::PathBuf>| -> SpeechResult<Option<String>> {
+        p.as_ref().map(|p| path_to_string(p)).transpose()
+    };
+    let mut model_config = OfflineTtsModelConfig {
         num_threads: tts_num_threads(),
-        vits: OfflineTtsVitsModelConfig {
-            model: Some(path_to_string(&paths.vits_model)?),
-            tokens: Some(path_to_string(&paths.tokens)?),
-            data_dir: paths
-                .data_dir
-                .as_ref()
-                .map(|p| path_to_string(p))
-                .transpose()?,
-            lexicon: paths
-                .lexicon
-                .as_ref()
-                .map(|p| path_to_string(p))
-                .transpose()?,
-            dict_dir: paths
-                .dict_dir
-                .as_ref()
-                .map(|p| path_to_string(p))
-                .transpose()?,
-            noise_scale: 0.667,
-            noise_scale_w: 0.8,
-            length_scale: 1.0,
-        },
         ..Default::default()
     };
+    match paths.family {
+        TtsModelFamily::Vits => {
+            model_config.vits = OfflineTtsVitsModelConfig {
+                model: Some(path_to_string(&paths.model)?),
+                tokens: Some(path_to_string(&paths.tokens)?),
+                data_dir: opt(&paths.data_dir)?,
+                lexicon: opt(&paths.lexicon)?,
+                dict_dir: opt(&paths.dict_dir)?,
+                noise_scale: 0.667,
+                noise_scale_w: 0.8,
+                length_scale: 1.0,
+            };
+        }
+        TtsModelFamily::Kokoro => {
+            let lexicons = paths
+                .lexicons
+                .iter()
+                .map(|p| path_to_string(p))
+                .collect::<SpeechResult<Vec<_>>>()?;
+            model_config.kokoro = OfflineTtsKokoroModelConfig {
+                model: Some(path_to_string(&paths.model)?),
+                voices: opt(&paths.voices)?,
+                tokens: Some(path_to_string(&paths.tokens)?),
+                data_dir: opt(&paths.data_dir)?,
+                dict_dir: opt(&paths.dict_dir)?,
+                lexicon: (!lexicons.is_empty()).then(|| lexicons.join(",")),
+                length_scale: 1.0,
+                lang: None,
+            };
+        }
+        TtsModelFamily::Kitten => {
+            model_config.kitten = OfflineTtsKittenModelConfig {
+                model: Some(path_to_string(&paths.model)?),
+                voices: opt(&paths.voices)?,
+                tokens: Some(path_to_string(&paths.tokens)?),
+                data_dir: opt(&paths.data_dir)?,
+                length_scale: 1.0,
+            };
+        }
+    }
 
     let rule_fsts = paths
         .rule_fsts
@@ -160,8 +182,10 @@ pub fn create_offline_tts(config: &TtsConfig) -> SpeechResult<OfflineTts> {
 
     let tts = OfflineTts::create(&tts_config).ok_or_else(|| SpeechError::Vendor {
         vendor: "local-sherpa".into(),
-        message: "failed to create OfflineTts — check SHERPA_TTS_MODEL_PATH (Piper needs espeak-ng-data, lexicon models need lexicon.txt)"
-            .into(),
+        message: format!(
+            "failed to create OfflineTts ({:?} family) — check SHERPA_TTS_MODEL_PATH (Piper needs espeak-ng-data, lexicon models need lexicon.txt, Kokoro/Kitten need voices.bin)",
+            paths.family
+        ),
     })?;
 
     TTS_ENGINE_CREATE_COUNT.fetch_add(1, Ordering::SeqCst);

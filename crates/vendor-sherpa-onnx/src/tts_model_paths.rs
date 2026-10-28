@@ -4,12 +4,26 @@ use std::path::{Path, PathBuf};
 use node_webrtc_rust_speech::config::TtsConfig;
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 
-/// Resolved Sherpa offline TTS (VITS/Piper) files under a model directory.
+/// Model family of a Sherpa offline TTS bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtsModelFamily {
+    Vits,
+    Kokoro,
+    Kitten,
+}
+
+/// Resolved Sherpa offline TTS (VITS/Piper, Kokoro, Kitten) files under a model directory.
 #[derive(Debug, Clone)]
 pub struct ResolvedTtsModelPaths {
     #[allow(dead_code)]
     pub model_dir: PathBuf,
-    pub vits_model: PathBuf,
+    pub family: TtsModelFamily,
+    /// The `.onnx` model file (VITS, Kokoro or Kitten).
+    pub model: PathBuf,
+    /// voices.bin (Kokoro and Kitten only).
+    pub voices: Option<PathBuf>,
+    /// Lexicon files for Kokoro, in the order they are passed (comma-joined).
+    pub lexicons: Vec<PathBuf>,
     pub tokens: PathBuf,
     /// espeak-ng-data (Piper). None for lexicon models without espeak data.
     pub data_dir: Option<PathBuf>,
@@ -40,6 +54,11 @@ pub fn resolve_tts_model_paths(config: &TtsConfig) -> SpeechResult<ResolvedTtsMo
     }
 
     let tokens = find_tokens(&model_dir)?;
+
+    if model_dir.join("voices.bin").is_file() {
+        return resolve_voices_bundle(model_dir, tokens);
+    }
+
     let vits_model = find_vits_onnx(&model_dir)?;
 
     let lexicon_path = model_dir.join("lexicon.txt");
@@ -48,7 +67,10 @@ pub fn resolve_tts_model_paths(config: &TtsConfig) -> SpeechResult<ResolvedTtsMo
         return Ok(ResolvedTtsModelPaths {
             model_dir,
             tokens,
-            vits_model,
+            family: TtsModelFamily::Vits,
+            model: vits_model,
+            voices: None,
+            lexicons: Vec::new(),
             data_dir: Some(data_dir),
             lexicon: None,
             dict_dir: None,
@@ -64,11 +86,74 @@ pub fn resolve_tts_model_paths(config: &TtsConfig) -> SpeechResult<ResolvedTtsMo
     Ok(ResolvedTtsModelPaths {
         model_dir,
         tokens,
-        vits_model,
+        family: TtsModelFamily::Vits,
+        model: vits_model,
+        voices: None,
+        lexicons: Vec::new(),
         data_dir,
         lexicon: Some(lexicon_path),
         dict_dir,
         rule_fsts,
+    })
+}
+
+/// Kokoro / Kitten bundle: `voices.bin` next to the model, family from the directory name.
+/// No rule FSTs are applied: the Kokoro multi-lang bundle ships Chinese normalizers only.
+fn resolve_voices_bundle(
+    model_dir: PathBuf,
+    tokens: PathBuf,
+) -> SpeechResult<ResolvedTtsModelPaths> {
+    let dir_name = model_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let family = if dir_name.starts_with("kokoro") {
+        TtsModelFamily::Kokoro
+    } else if dir_name.starts_with("kitten") {
+        TtsModelFamily::Kitten
+    } else {
+        return Err(SpeechError::Config(format!(
+            "TTS model dir has voices.bin but is neither kokoro-* nor kitten-*: {}",
+            model_dir.display()
+        )));
+    };
+
+    let model = ["model.onnx", "model.fp32.onnx", "model.int8.onnx"]
+        .iter()
+        .map(|name| model_dir.join(name))
+        .find(|path| path.is_file() && is_real_model_file(path))
+        .ok_or_else(|| {
+            SpeechError::Config(format!(
+                "no Kokoro/Kitten model.onnx in {}",
+                model_dir.display()
+            ))
+        })?;
+    let data_dir = find_espeak_data_dir(&model_dir)?;
+
+    let (lexicons, dict_dir) = if family == TtsModelFamily::Kokoro {
+        let lexicons: Vec<PathBuf> = ["lexicon-us-en.txt", "lexicon-zh.txt"]
+            .iter()
+            .map(|name| model_dir.join(name))
+            .filter(|path| path.is_file())
+            .collect();
+        let dict_path = model_dir.join("dict");
+        (lexicons, dict_path.is_dir().then_some(dict_path))
+    } else {
+        (Vec::new(), None)
+    };
+
+    Ok(ResolvedTtsModelPaths {
+        voices: Some(model_dir.join("voices.bin")),
+        model_dir,
+        family,
+        model,
+        lexicons,
+        tokens,
+        data_dir: Some(data_dir),
+        lexicon: None,
+        dict_dir,
+        rule_fsts: Vec::new(),
     })
 }
 
@@ -249,6 +334,21 @@ mod tests {
     struct TempDir(PathBuf);
 
     impl TempDir {
+        fn named(name: &str) -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "nwr-tts-paths-{}-{}-{n}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let model = dir.join(name);
+            fs::create_dir_all(&model).unwrap();
+            Self(model)
+        }
+
         fn new() -> Self {
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
             let dir = std::env::temp_dir().join(format!(
@@ -371,7 +471,7 @@ mod tests {
         dir.file_sized("model.onnx", 2048);
 
         let paths = resolve_tts_model_paths(&dir.config()).unwrap();
-        assert_eq!(paths.vits_model, dir.0.join("model.onnx"));
+        assert_eq!(paths.model, dir.0.join("model.onnx"));
     }
 
     #[test]
@@ -383,5 +483,79 @@ mod tests {
 
         let err = resolve_tts_model_paths(&dir.config()).unwrap_err();
         assert!(err.to_string().contains("git-lfs pointer"), "{err}");
+    }
+
+    #[test]
+    fn kokoro_dir_resolves_family_voices_lexicons_dict_no_fsts() {
+        let dir = TempDir::named("kokoro-multi-lang-v1_0");
+        for name in [
+            "model.onnx",
+            "voices.bin",
+            "tokens.txt",
+            "lexicon-us-en.txt",
+            "lexicon-zh.txt",
+            "number-zh.fst",
+        ] {
+            dir.file(name);
+        }
+        dir.dir("espeak-ng-data");
+        dir.dir("dict");
+
+        let paths = resolve_tts_model_paths(&dir.config()).unwrap();
+        assert_eq!(paths.family, TtsModelFamily::Kokoro);
+        assert_eq!(paths.voices, Some(dir.0.join("voices.bin")));
+        assert_eq!(
+            paths.lexicons,
+            vec![
+                dir.0.join("lexicon-us-en.txt"),
+                dir.0.join("lexicon-zh.txt")
+            ]
+        );
+        assert_eq!(paths.dict_dir, Some(dir.0.join("dict")));
+        assert!(paths.lexicon.is_none());
+        assert!(paths.rule_fsts.is_empty());
+    }
+
+    #[test]
+    fn kitten_dir_picks_model_fp32_onnx() {
+        let dir = TempDir::named("kitten-nano-en-v0_8-fp32");
+        for name in ["model.fp32.onnx", "voices.bin", "tokens.txt"] {
+            dir.file(name);
+        }
+        dir.dir("espeak-ng-data");
+
+        let paths = resolve_tts_model_paths(&dir.config()).unwrap();
+        assert_eq!(paths.family, TtsModelFamily::Kitten);
+        assert_eq!(paths.model, dir.0.join("model.fp32.onnx"));
+        assert!(paths.lexicons.is_empty());
+        assert!(paths.dict_dir.is_none());
+    }
+
+    #[test]
+    fn voices_bin_in_unknown_dir_is_an_error() {
+        let dir = TempDir::named("mystery-tts");
+        for name in ["model.onnx", "voices.bin", "tokens.txt"] {
+            dir.file(name);
+        }
+        dir.dir("espeak-ng-data");
+
+        let err = resolve_tts_model_paths(&dir.config()).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("neither kokoro-* nor kitten-*"), "{text}");
+        assert!(text.contains("mystery-tts"), "{text}");
+    }
+
+    #[test]
+    fn kitten_without_espeak_data_is_an_error() {
+        let dir = TempDir::named("kitten-nano-en-v0_8-fp32");
+        for name in ["model.fp32.onnx", "voices.bin", "tokens.txt"] {
+            dir.file(name);
+        }
+
+        let err = resolve_tts_model_paths(&dir.config()).unwrap_err();
+        assert!(
+            err.to_string().contains("no espeak-ng-data directory in"),
+            "{err}"
+        );
     }
 }

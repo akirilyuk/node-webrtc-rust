@@ -69,6 +69,159 @@
       "approxMb": "~110"
     },
     {
+      "id": "en-kitten-f2",
+      "label": "English (Kitten nano, voice 2 female)",
+      "bundle": "kitten-nano-en-v0_8-fp32",
+      "language": "en",
+      "kind": "kitten",
+      "speakerId": 1,
+      "approxMb": "~25"
+    },
+    {
+      "id": "en-kitten-m2",
+      "label": "English (Kitten nano, voice 2 male)",
+      "bundle": "kitten-nano-en-v0_8-fp32",
+      "language": "en",
+      "kind": "kitten",
+      "speakerId": 0,
+      "approxMb": "~25"
+    },
+    {
+      "id": "en-kitten-f3",
+      "label": "English (Kitten nano, voice 3 female)",
+      "bundle": "kitten-nano-en-v0_8-fp32",
+      "language": "en",
+      "kind": "kitten",
+      "speakerId": 3,
+      "approxMb": "~25"
+    },
+    {
+      "id": "en-kitten-m3",
+      "label": "English (Kitten nano, voice 3 male)",
+      "bundle": "kitten-nano-en-v0_8-fp32",
+      "language": "en",
+      "kind": "kitten",
+      "speakerId": 2,
+      "approxMb": "~25"
+    },
+    {
+      "id": "en-kitten-f4",
+      "label": "English (Kitten nano, voice 4 female)",
+      "bundle": "kitten-nano-en-v0_8-fp32",
+      "language": "en",
+      "kind": "kitten",
+      "speakerId": 5,
+      "approxMb": "~25"
+    },
+    {
+      "id": "en-kitten-m4",
+      "label": "English (Kitten nano, voice 4 male)",
+      "bundle": "kitten-nano-en-v0_8-fp32",
+      "language": "en",
+      "kind": "kitten",
+      "speakerId": 4,
+      "approxMb": "~25"
+    },
+    {
+      "id": "en-kitten-f5",
+      "label": "English (Kitten nano, voice 5 female)",
+      "bundle": "kitten-nano-en-v0_8-fp32",
+      "language": "en",
+      "kind": "kitten",
+      "speakerId": 7,
+      "approxMb": "~25"
+    },
+    {
+      "id": "en-kitten-m5",
+      "label": "English (Kitten nano, voice 5 male)",
+      "bundle": "kitten-nano-en-v0_8-fp32",
+      "language": "en",
+      "kind": "kitten",
+      "speakerId": 6,
+      "approxMb": "~25"
+    },
+    {
+      "id": "en-kokoro-heart",
+      "label": "English (Kokoro Heart, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 3,
+      "approxMb": "~330"
+    },
+    {
+      "id": "en-kokoro-bella",
+      "label": "English (Kokoro Bella, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 2,
+      "approxMb": "~330"
+    },
+    {
+      "id": "en-kokoro-nicole",
+      "label": "English (Kokoro Nicole, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 6,
+      "approxMb": "~330"
+    },
+    {
+      "id": "en-kokoro-sarah",
+      "label": "English (Kokoro Sarah, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 9,
+      "approxMb": "~330"
+    },
+    {
+      "id": "en-kokoro-michael",
+      "label": "English (Kokoro Michael, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 16,
+      "approxMb": "~330"
+    },
+    {
+      "id": "en-kokoro-fenrir",
+      "label": "English (Kokoro Fenrir, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 14,
+      "approxMb": "~330"
+    },
+    {
+      "id": "en-kokoro-puck",
+      "label": "English (Kokoro Puck, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 18,
+      "approxMb": "~330"
+    },
+    {
+      "id": "en-gb-kokoro-emma",
+      "label": "English GB (Kokoro Emma, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 21,
+      "approxMb": "~330"
+    },
+    {
+      "id": "en-gb-kokoro-george",
+      "label": "English GB (Kokoro George, premium)",
+      "bundle": "kokoro-multi-lang-v1_0",
+      "language": "en",
+      "kind": "kokoro",
+      "speakerId": 26,
+      "approxMb": "~330"
+    },
+    {
       "id": "es",
       "label": "Spanish (GLaDOS medium)",
       "bundle": "vits-piper-es-glados-medium",

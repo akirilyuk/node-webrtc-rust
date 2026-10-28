@@ -257,12 +257,18 @@ async fn run_pattern_with(pattern: Pattern, impairment: Option<&str>) -> Outcome
             room.inbound_audio_stats("nobody"),
         )
     };
+    // Only an impaired run conceals on purpose; every other run keeps a zero echo budget.
+    let inbound_concealed = match (impairment, inbound) {
+        (Some(_), Some(i)) => i.plc_decodes + i.fec_decodes,
+        _ => 0,
+    };
     // The merge budget is what the mixer counted for this source (see `merged_frames`).
     let report = analyze_with(
         &frames,
         AnalyzeOptions {
             merged_frames: stats.map_or(0, |s| merged_frames(&s)),
             listener_catchup_frames: stats.map_or(0, |s| s.listener_catchup_compressed),
+            inbound_concealed,
         },
     );
     if std::env::var("CONTINUITY_TRACE").is_ok() {
@@ -368,8 +374,10 @@ async fn impaired_input_stays_ordered_and_counted() {
     let concealed = inbound.plc_decodes + inbound.fec_decodes;
     // The impairment loses packets, so the inbound stage must have concealed some.
     assert!(concealed > 0, "{inbound:?}");
-    // Reordered and duplicated packets are fixed by the inbound stage before the mixer.
+    // Reordered and duplicated packets are fixed by the inbound stage before the mixer; a
+    // concealed frame may only echo the marker before it within the concealment budget.
     assert_eq!(r.reordered, 0, "{r:?} {s:?} {inbound:?}");
+    assert!(r.concealment_echo <= concealed, "{r:?} {inbound:?}");
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert_accounting(&o);
     assert_inbound_stats_readable(&o);

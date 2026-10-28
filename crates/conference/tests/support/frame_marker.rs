@@ -128,6 +128,10 @@ pub struct SequenceReport {
     /// span of at most N - 1, so a replay that the merge budget lets through as a long forward
     /// step shows up as a span about 40 too long.
     pub span: u64,
+    /// Steps of exactly one index back right after an unknown frame or a repeat, paid for by
+    /// the inbound concealment budget ([`AnalyzeOptions::inbound_concealed`]): Opus PLC/FEC of
+    /// a lost packet can sound like the previous marker. Not counted as `reordered`.
+    pub concealment_echo: u64,
 }
 
 /// Merge budget for [`analyze_with`] (mirrors `AnalyseOptions` in the TypeScript twin).
@@ -143,6 +147,12 @@ pub struct AnalyzeOptions {
     /// two ticks that may each be a queue-compressed pair, so when both kinds occur one frame
     /// can absorb up to [`MAX_STACKED_MERGE_INDICES`] indices instead of one.
     pub listener_catchup_frames: u64,
+    /// Frames the speaker's inbound stage synthesised (`plc_decodes + fec_decodes`). A
+    /// concealed frame can read as the marker before it, so a step of exactly one index back
+    /// right after an unknown frame or a repeat counts as `concealment_echo` (at most this
+    /// many) instead of `reordered`. The echo does not move the cursor: the next marker is
+    /// measured from the highest accepted index.
+    pub inbound_concealed: u64,
 }
 
 /// Indices one output frame can absorb when listener catch-up merges two compressed ticks.
@@ -172,6 +182,9 @@ pub fn analyze_with(frames: &[Detected], opts: AnalyzeOptions) -> SequenceReport
     let mut prev: Option<usize> = None;
     let mut unknown = 0u64;
     let mut pending_dups = 0u64;
+    let mut echoes_left = opts.inbound_concealed;
+    // The frame just before this one was unknown, a repeat, or a concealment echo.
+    let mut after_unknown_or_repeat = false;
     for (pos, d) in frames.iter().enumerate().take(last_marker + 1) {
         match (*d, prev) {
             (Detected::Index(i), None) => {
@@ -182,8 +195,18 @@ pub fn analyze_with(frames: &[Detected], opts: AnalyzeOptions) -> SequenceReport
                 let delta = (i + MARKER_PERIOD - p) % MARKER_PERIOD;
                 if delta == 0 {
                     pending_dups += 1;
+                    after_unknown_or_repeat = true;
                     continue;
                 }
+                if delta == MARKER_PERIOD - 1 && after_unknown_or_repeat && echoes_left > 0 {
+                    // A concealed frame that sounds like the marker before it: it stands in
+                    // for one lost frame, like an unknown frame, and the cursor stays put.
+                    echoes_left -= 1;
+                    report.concealment_echo += 1;
+                    unknown += 1;
+                    continue;
+                }
+                after_unknown_or_repeat = false;
                 // Indices this step skips that no unknown frame stands in for.
                 let unexplained = (delta as u64 - 1).saturating_sub(unknown);
                 let long_forward = delta > MARKER_PERIOD / 2
@@ -206,10 +229,12 @@ pub fn analyze_with(frames: &[Detected], opts: AnalyzeOptions) -> SequenceReport
             (Detected::Ambiguous, Some(_)) => {
                 report.ambiguous += 1;
                 unknown += 1;
+                after_unknown_or_repeat = true;
             }
             (Detected::Silent, Some(_)) => {
                 report.interior_silence += 1;
                 unknown += 1;
+                after_unknown_or_repeat = true;
             }
             _ => {}
         }
@@ -301,6 +326,7 @@ mod tests {
             AnalyzeOptions {
                 merged_frames: 18,
                 listener_catchup_frames: 6,
+                ..Default::default()
             },
         );
         assert_eq!(r.reordered, 0, "{r:?}");
@@ -312,6 +338,7 @@ mod tests {
             AnalyzeOptions {
                 merged_frames: 17,
                 listener_catchup_frames: 6,
+                ..Default::default()
             },
         );
         assert!(short.reordered > 0, "{short:?}");
@@ -321,6 +348,7 @@ mod tests {
             AnalyzeOptions {
                 merged_frames: 40,
                 listener_catchup_frames: 40,
+                ..Default::default()
             },
         );
         assert!(single.reordered > 0, "{single:?}");
@@ -335,8 +363,75 @@ mod tests {
             AnalyzeOptions {
                 merged_frames: 100,
                 listener_catchup_frames: 50,
+                ..Default::default()
             },
         );
         assert!(r.reordered >= 1, "{r:?}");
+    }
+
+    fn with_echo_budget(seq: &[Detected], inbound_concealed: u64) -> SequenceReport {
+        analyze_with(
+            seq,
+            AnalyzeOptions {
+                inbound_concealed,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Opus probe: markers 30 and 31 lost. PLC of 30 reads ambiguous, FEC of 31 (decoded from
+    /// 32's in-band data) reads as 28, then 32 arrives: `27 28 29 ? 28 32`. The 28 is one
+    /// index back right after an unknown frame, so it is a concealment echo (one of the two
+    /// concealed frames); 32 is measured from 29, the highest accepted index, and the
+    /// ambiguous frame plus the echo stand in for 30 and 31.
+    #[test]
+    fn a_concealment_echo_after_an_unknown_frame_is_not_reordered() {
+        use Detected::*;
+        let seq = [
+            Index(27),
+            Index(28),
+            Index(29),
+            Ambiguous,
+            Index(28),
+            Index(32),
+        ];
+        let r = with_echo_budget(&seq, 2);
+        assert_eq!(r.reordered, 0, "{r:?}");
+        assert_eq!(r.concealment_echo, 1, "{r:?}");
+        assert_eq!(r.gaps, 0, "{r:?}");
+    }
+
+    #[test]
+    fn a_concealment_echo_without_budget_is_reordered() {
+        use Detected::*;
+        let seq = [
+            Index(27),
+            Index(28),
+            Index(29),
+            Ambiguous,
+            Index(28),
+            Index(32),
+        ];
+        let r = with_echo_budget(&seq, 0);
+        assert_eq!(r.reordered, 1, "{r:?}");
+        assert_eq!(r.concealment_echo, 0, "{r:?}");
+    }
+
+    #[test]
+    fn an_adjacent_swap_with_no_unknown_before_it_is_reordered_whatever_the_echo_budget() {
+        use Detected::*;
+        let seq = [Index(26), Index(27), Index(29), Index(28), Index(30)];
+        let r = with_echo_budget(&seq, 5);
+        assert_eq!(r.reordered, 1, "{r:?}");
+        assert_eq!(r.concealment_echo, 0, "{r:?}");
+    }
+
+    #[test]
+    fn a_second_step_back_past_the_echo_budget_is_reordered() {
+        use Detected::*;
+        let seq = [Index(29), Ambiguous, Index(28), Index(28), Index(30)];
+        let r = with_echo_budget(&seq, 1);
+        assert_eq!(r.concealment_echo, 1, "{r:?}");
+        assert_eq!(r.reordered, 1, "{r:?}");
     }
 }

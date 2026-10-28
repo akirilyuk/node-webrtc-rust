@@ -823,6 +823,7 @@ fn apply_limiter(mix: &mut [f32], main_track: Option<&[f32]>) -> (f32, Option<f3
     let mut deque: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
     let mut next = 0usize;
     let mut g = 1f32;
+    #[allow(clippy::needless_range_loop)]
     for i in 0..n {
         let hi = (i + half).min(n.saturating_sub(1));
         while next <= hi && next < n {

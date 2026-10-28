@@ -96,7 +96,8 @@ pool() {
 rm -rf "$tmp/logs"
 rc="$(pool 1 "" 'echo "ran $1"' "$tmp/w1.out")"
 [[ "$rc" == 0 ]] || { cat "$tmp/w1.out" >&2; fail "width 1 run failed (exit $rc)"; }
-expected_order="$(printf 'ran %s\n' "${parallel[@]}" "${serial[@]}")"
+# start:roundtrip-barge-in runs a second time right after itself with SHERPA_VAD_PROVIDER=adaptive.
+expected_order="$(printf 'ran %s\n' "${parallel[@]}" "${serial[@]}" | awk '{print} $2 == "start:roundtrip-barge-in" {print}')"
 [[ "$(grep -E '^ran ' "$tmp/w1.out")" == "$expected_order" ]] || fail "width 1 must run the parallel group then the serial group in list order"
 if grep -q '\[sherpa e2e parallel\]' "$tmp/w1.out"; then fail "width 1 must not use the pool"; fi
 [[ ! -d "$tmp/logs" ]] || fail "width 1 must not write pool logs"
@@ -129,7 +130,8 @@ last_header="$(grep -n '^==> \[sherpa e2e parallel\]' "$tmp/full.out" | tail -1 
 first_serial="$(grep -n "^ran ${serial[0]}\$" "$tmp/full.out" | head -1 | cut -d: -f1)"
 [[ -n "$last_header" && -n "$first_serial" && "$last_header" -lt "$first_serial" ]] \
   || fail "the serial group must start after the parallel group has finished"
-[[ "$(grep -E '^ran ' "$tmp/full.out" | tail -n "${#serial[@]}")" == "$(printf 'ran %s\n' "${serial[@]}")" ]] \
+serial_expected="$(printf 'ran %s\n' "${serial[@]}" | awk '{print} $2 == "start:roundtrip-barge-in" {print}')"
+[[ "$(grep -E '^ran ' "$tmp/full.out" | tail -n "$(printf '%s\n' "$serial_expected" | wc -l | tr -d ' ')")" == "$serial_expected" ]] \
   || fail "the serial group must run in list order"
 
 # One failing entry: non-zero exit, the name is reported, the others still ran, nothing is left behind.

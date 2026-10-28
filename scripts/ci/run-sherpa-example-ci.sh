@@ -186,6 +186,10 @@ run_rust_ignored() {
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stt_pre_roll_onset_replay_test -- \
       --ignored --nocapture --test-threads=1
   bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust stt_finalize_last_word_test" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stt_finalize_last_word_test -- \
+      --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust stt_concurrent_equals_serial_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stt_concurrent_equals_serial_test -- \
       --ignored --nocapture --test-threads=1

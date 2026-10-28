@@ -18,6 +18,16 @@ use crate::pool::{ActiveSessionGuard, SharedSttRecognizer, SherpaModelPool};
 
 pub(crate) const SAMPLE_RATE: i32 = 16_000;
 
+/// Zeros fed to the stream before `InputFinished` in `finalize_utterance`. The streaming
+/// zipformer decodes whole chunks only, and its last word needs look-ahead frames after it.
+/// Without padding the frames after the last full chunk are never decoded, so the last word of
+/// an utterance was dropped or cut ("four five six" -> "four five" / "four five si") depending
+/// on how the utterance length fell on the chunk grid. 100 ms fixed the captured CI turn; 640 ms
+/// covers every 20 ms alignment in `tests/stt_finalize_last_word_test.rs` with margin.
+/// The `stt_replay` / `phrase_sweep` examples (`examples/support/mod.rs` `recognize`) feed the
+/// same padding before `InputFinished`, so offline replays decode like the product.
+pub const FINALIZE_TAIL_PADDING_MS: usize = 640;
+
 static SHERPA_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
 static SHERPA_GET_RESULT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SHERPA_POLL_BLOCKING_HOPS: AtomicU64 = AtomicU64::new(0);
@@ -349,6 +359,9 @@ impl SttProvider for SherpaStt {
                 return Ok(());
             };
 
+            let tail_padding =
+                vec![0.0_f32; SAMPLE_RATE as usize * FINALIZE_TAIL_PADDING_MS / 1000];
+            session.stream.accept_waveform(SAMPLE_RATE, &tail_padding);
             session.stream.input_finished();
             session.shared.with_recognizer(|recognizer| {
                 let mut decode_steps = 0u32;

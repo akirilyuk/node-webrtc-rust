@@ -10,6 +10,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - License: from 0.14.0, BSL 1.1 (see LICENSE). 0.13.4 and earlier remain MIT.
 
+### Fixed
+
+- **vendor-sherpa-onnx:** local Sherpa STT no longer drops or cuts the last word of an utterance ("four five six" finalized as "four five" or "four five si"). `finalize_utterance` now feeds 640 ms of zero tail padding before `InputFinished`, so the streaming recognizer decodes the frames after its last full chunk. Whether the word survived used to depend on where the utterance fell on the chunk grid.
+
 ## [0.13.4] - 2026-10-26
 
 ### Fixed

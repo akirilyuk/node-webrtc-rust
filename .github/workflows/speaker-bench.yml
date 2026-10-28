@@ -104,6 +104,7 @@ jobs:
             --out speaker-fixtures "${args[@]}"
 
       - name: VoxLock (target-speaker extraction, measurement only)
+        continue-on-error: true
         run: |
           M=examples/voice-agent-local-sherpa/.models
           V=$M/enhance/sherpa-onnx-voxlock-int8
@@ -129,12 +130,16 @@ jobs:
         run: |
           M=examples/voice-agent-local-sherpa/.models
           status=0
+          PRE=raw,rnnoise,gtcrn,dpdfnet_baseline,dpdfnet2,dpdfnet4,dpdfnet8,dpdfnet2_48khz_hr
+          for d in voxlock-live voxlock-sample; do
+            if [ -f "$d/voxlock_cost.json" ]; then PRE="$PRE,precomputed:$d=$d"; else echo "voxlock skipped: $d missing" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
           taskset -c 2 ./target/release/examples/speaker_bench \
             --fixtures speaker-fixtures \
             --models "$M/speaker" \
             --stt-model "$M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06" \
             --enhance "$M/enhance" \
-            --pre raw,rnnoise,gtcrn,dpdfnet_baseline,dpdfnet2,dpdfnet4,dpdfnet8,dpdfnet2_48khz_hr,precomputed:voxlock-live=voxlock-live,precomputed:voxlock-sample=voxlock-sample \
+            --pre "$PRE" \
             --out bench-results || status=$?
           cp speaker-fixtures/manifest.json bench-results/manifest.json 2>/dev/null || true
           # Chunk-size cost runs (20 / 80 ms) next to the results.

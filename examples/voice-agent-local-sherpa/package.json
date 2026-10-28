@@ -31,6 +31,7 @@
     "download-tts:de": "node scripts/download-tts.mjs --lang=de",
     "download-tts:zh": "node scripts/download-tts.mjs --lang=zh",
     "download-speaker": "node scripts/download-speaker.mjs",
+    "download-enhance": "node scripts/download-enhance.mjs",
     "download-lid": "node scripts/download-lid.mjs",
     "download-lid:whisper-tiny": "node scripts/download-lid.mjs whisper-tiny-lid",
     "download-all": "node scripts/download-all-sherpa.mjs",

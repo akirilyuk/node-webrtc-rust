@@ -4163,6 +4163,7 @@ dependencies = [
  "bytes",
  "criterion",
  "libc",
+ "node-webrtc-rust-denoise",
  "node-webrtc-rust-speech",
  "sherpa-onnx",
  "thiserror 1.0.69",

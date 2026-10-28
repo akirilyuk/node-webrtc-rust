@@ -32,14 +32,15 @@ fn amp(db: f32) -> f32 {
 struct Part {
     /// White noise at this rms level (dBFS), optionally 4 Hz +-6 dB modulated.
     noise_db: Option<f32>,
-    modulated: bool,
+    /// Depth in dB of the 4 Hz level modulation (0 = steady).
+    mod_db: f32,
     /// 440 Hz tone at this rms level (dBFS).
     tone_db: Option<f32>,
 }
 
 const SILENT: Part = Part {
     noise_db: None,
-    modulated: false,
+    mod_db: 0.0,
     tone_db: None,
 };
 
@@ -51,9 +52,13 @@ fn noise(db: f32) -> Part {
 }
 
 fn babble(db: f32) -> Part {
+    babble_mod(db, 6.0)
+}
+
+fn babble_mod(db: f32, mod_db: f32) -> Part {
     Part {
         noise_db: Some(db),
-        modulated: true,
+        mod_db,
         ..SILENT
     }
 }
@@ -72,8 +77,8 @@ fn to_pcm(rng: &mut Noise, frame_idx: usize, part: Part) -> Vec<u8> {
         let t = n as f32 / 48_000.0;
         let mut v = 0.0f32;
         if let Some(db) = part.noise_db {
-            let gain = if part.modulated {
-                amp(6.0 * (2.0 * PI * 4.0 * t).sin())
+            let gain = if part.mod_db > 0.0 {
+                amp(part.mod_db * (2.0 * PI * 4.0 * t).sin())
             } else {
                 1.0
             };
@@ -103,8 +108,18 @@ fn run(
     total_ms: u32,
     part_at: impl Fn(u32) -> Part,
 ) -> Vec<(u32, VadTransition)> {
+    run_traced(engine, total_ms, part_at).0
+}
+
+/// Like [`run`], plus `is_speaking` after every frame.
+fn run_traced(
+    engine: &mut VadEngine,
+    total_ms: u32,
+    part_at: impl Fn(u32) -> Part,
+) -> (Vec<(u32, VadTransition)>, Vec<bool>) {
     let mut rng = Noise(42);
     let mut out = Vec::new();
+    let mut speaking = Vec::new();
     for idx in 0..(total_ms / FRAME_MS) as usize {
         let t = idx as u32 * FRAME_MS;
         let pcm = to_pcm(&mut rng, idx, part_at(t));
@@ -112,8 +127,15 @@ fn run(
         for x in tr {
             out.push((t + FRAME_MS, x));
         }
+        speaking.push(engine.is_speaking());
     }
-    out
+    (out, speaking)
+}
+
+fn speaking_between(trace: &[bool], from_ms: u32, to_ms: u32) -> bool {
+    trace[(from_ms / FRAME_MS) as usize..(to_ms / FRAME_MS) as usize]
+        .iter()
+        .any(|s| *s)
 }
 
 fn starts(v: &[(u32, VadTransition)]) -> Vec<u32> {
@@ -177,7 +199,7 @@ fn adaptive_caller_over_babble() {
 #[test]
 fn adaptive_stuck_guard_recovers() {
     let mut engine = VadEngine::new(adaptive_config()).unwrap();
-    let ev = run(&mut engine, 14_000, |t| {
+    let (ev, trace) = run_traced(&mut engine, 17_000, |t| {
         if t < 3000 {
             noise(-55.0)
         } else {
@@ -186,7 +208,52 @@ fn adaptive_stuck_guard_recovers() {
     });
     assert!(starts(&ev).len() <= 1, "{ev:?}");
     assert!(ends(&ev).len() <= 1, "{ev:?}");
-    assert!(!engine.is_speaking(), "still speaking at 14 s: {ev:?}");
+    assert!(
+        !speaking_between(&trace, 14_000, 17_000),
+        "still speaking after 14 s: {ev:?}"
+    );
+}
+
+#[test]
+fn adaptive_recovers_after_noise_step() {
+    let mut engine = VadEngine::new(adaptive_config()).unwrap();
+    let (ev, trace) = run_traced(&mut engine, 22_000, |t| {
+        if t < 6000 {
+            if (2000..3000).contains(&t) || (4000..5000).contains(&t) {
+                with_tone(babble(-45.0), -20.0)
+            } else {
+                babble(-45.0)
+            }
+        } else {
+            babble_mod(-30.0, 10.0)
+        }
+    });
+    assert!(
+        ends(&ev).iter().any(|ms| *ms <= 16_000),
+        "no SpeechEnd by 16 s: {ev:?}"
+    );
+    assert!(
+        !speaking_between(&trace, 18_000, 22_000),
+        "locked open after the noise step: {ev:?}"
+    );
+}
+
+#[test]
+fn adaptive_call_start_speech_still_ends() {
+    let mut cfg = adaptive_config();
+    cfg.adaptive.use_speech_level = false;
+    let mut engine = VadEngine::new(cfg).unwrap();
+    let ev = run(&mut engine, 5000, |t| {
+        if t < 1000 {
+            with_tone(noise(-45.0), -10.0)
+        } else {
+            noise(-45.0)
+        }
+    });
+    assert_eq!(starts(&ev).len(), 1, "{ev:?}");
+    let e = ends(&ev);
+    assert_eq!(e.len(), 1, "{ev:?}");
+    assert!(e[0] <= 2600, "end at {} ms: {ev:?}", e[0]);
 }
 
 #[test]

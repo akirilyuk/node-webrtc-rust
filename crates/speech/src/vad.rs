@@ -62,7 +62,9 @@ pub struct AdaptiveEnergyVad {
     scratch: Vec<f32>,
     elapsed_ms: u32,
     active: bool,
-    active_ms: u32,
+    /// Time since the engine's SpeechStart; 0 while no utterance is open.
+    utterance_ms: u32,
+    utterance_open: bool,
     stuck_logged: bool,
     speech_db: Option<f32>,
     last_threshold_db: f32,
@@ -79,12 +81,26 @@ impl AdaptiveEnergyVad {
             scratch: Vec::new(),
             elapsed_ms: 0,
             active: false,
-            active_ms: 0,
+            utterance_ms: 0,
+            utterance_open: false,
             stuck_logged: false,
             speech_db: None,
             last_threshold_db: f32::NAN,
             last_noise_db: f32::NAN,
         }
+    }
+
+    /// The engine declared SpeechStart: the stuck guard now times the open utterance.
+    pub fn on_speech_start(&mut self) {
+        self.utterance_open = true;
+        self.utterance_ms = 0;
+    }
+
+    /// The engine declared SpeechEnd: the utterance is over, the guard is disarmed.
+    pub fn on_speech_end(&mut self) {
+        self.utterance_open = false;
+        self.utterance_ms = 0;
+        self.stuck_logged = false;
     }
 
     pub fn state(&self) -> AdaptiveVadState {
@@ -126,7 +142,8 @@ impl VoiceActivityDetector for AdaptiveEnergyVad {
         self.ring_pos = 0;
         self.elapsed_ms = 0;
         self.active = false;
-        self.active_ms = 0;
+        self.utterance_ms = 0;
+        self.utterance_open = false;
         self.stuck_logged = false;
         self.speech_db = None;
         self.last_threshold_db = f32::NAN;
@@ -139,7 +156,9 @@ impl VoiceActivityDetector for AdaptiveEnergyVad {
         let cap = (self.cfg.noise_window_ms / frame_ms).max(1) as usize;
         let rms = pcm_rms_i16(mono_i16);
         let db = 20.0 * rms.max(1e-5).log10();
-        let warming = self.elapsed_ms < self.cfg.warmup_ms;
+        // Until the noise window has a frame (a caller talking through the whole warm-up) the
+        // plain energy rule keeps deciding.
+        let warming = self.elapsed_ms < self.cfg.warmup_ms || self.ring.is_empty();
         self.elapsed_ms = self.elapsed_ms.saturating_add(frame_ms);
 
         let active = if warming {
@@ -149,9 +168,7 @@ impl VoiceActivityDetector for AdaptiveEnergyVad {
             }
             a
         } else {
-            let noise = self
-                .noise_level()
-                .unwrap_or(self.cfg.min_threshold_dbfs - 6.0);
+            let noise = self.noise_level().expect("ring non-empty");
             let mut t = noise + self.cfg.noise_margin_db;
             if self.cfg.use_speech_level {
                 if let Some(s) = self.speech_db {
@@ -179,18 +196,21 @@ impl VoiceActivityDetector for AdaptiveEnergyVad {
             a
         };
 
-        if active {
-            self.active_ms = self.active_ms.saturating_add(frame_ms);
-            if !warming && self.active_ms >= self.cfg.stuck_active_ms {
+        // Stuck guard: an utterance open longer than `stuckActiveMs` feeds every frame into the
+        // noise window (active ones too; inactive ones are already in) until SpeechEnd.
+        if self.utterance_open {
+            self.utterance_ms = self.utterance_ms.saturating_add(frame_ms);
+            if self.utterance_ms > self.cfg.stuck_active_ms {
                 if !self.stuck_logged {
                     self.stuck_logged = true;
-                    crate::agent::voice_debug("adaptive vad: stuck active, feeding noise window");
+                    crate::agent::voice_debug(
+                        "adaptive vad: utterance open too long, feeding noise window",
+                    );
                 }
-                self.push_noise(db, cap);
+                if active {
+                    self.push_noise(db, cap);
+                }
             }
-        } else {
-            self.active_ms = 0;
-            self.stuck_logged = false;
         }
         self.active = active;
         Ok(active)
@@ -365,6 +385,14 @@ impl VadEngine {
         };
 
         let transitions = self.update_state(active);
+        if let VadBackend::Adaptive(v) = &mut self.backend {
+            for t in &transitions {
+                match t {
+                    VadTransition::SpeechStart => v.on_speech_start(),
+                    VadTransition::SpeechEnd => v.on_speech_end(),
+                }
+            }
+        }
         if transitions.contains(&VadTransition::SpeechStart) {
             if let VadBackend::Adaptive(v) = &self.backend {
                 let st = v.state();

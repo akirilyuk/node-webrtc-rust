@@ -10,4 +10,13 @@ describe('sherpa TTS catalog', () => {
     expect(enDefault?.bundle).toBe('vits-piper-en_US-amy-low')
     expect(catalog.defaultModelId).toBe('en')
   })
+
+  it('includes Kokoro and Kitten voices with their model kinds', () => {
+    const kokoro = catalog.models.find((entry) => entry.id === 'en-kokoro-heart')
+    const kitten = catalog.models.find((entry) => entry.id === 'en-kitten-f2')
+    expect(kokoro?.kind).toBe('kokoro')
+    expect(kokoro?.bundle).toBe('kokoro-multi-lang-v1_0')
+    expect(kitten?.kind).toBe('kitten')
+    expect(kitten?.bundle).toBe('kitten-nano-en-v0_8-fp32')
+  })
 })

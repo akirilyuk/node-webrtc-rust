@@ -39,7 +39,14 @@ fn unsupported_vad_provider_errors() {
         ..VadConfig::default()
     };
     match VadEngine::new(config) {
-        Err(e) => assert!(e.to_string().contains("webrtc")),
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(msg.contains("webrtc"));
+            assert!(
+                msg.contains("energy") && msg.contains("adaptive") && msg.contains("silero"),
+                "message must list the providers: {msg}"
+            );
+        }
         Ok(_) => panic!("unknown provider must fail"),
     }
 }

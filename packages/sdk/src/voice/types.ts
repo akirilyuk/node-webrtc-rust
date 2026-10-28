@@ -57,6 +57,28 @@ export interface BargeInConfig {
   agentPlaybackGuardMs?: number
 }
 
+/** Parameters of the `adaptive` VAD provider. Defaults are provisional until the bench picks them. */
+export interface AdaptiveVadConfig {
+  /** Start of the call (ms) where the plain energy rule (`vad.threshold`) decides. Default 400. */
+  warmupMs?: number
+  /** Window (ms) of inactive frames the noise level is read from. Default 3000, min 500. */
+  noiseWindowMs?: number
+  /** Percentile (1-99) of that window taken as the noise level. Default 70. */
+  noisePercentile?: number
+  /** Speech must be this many dB above the noise level (0-30). Default 6. */
+  noiseMarginDb?: number
+  /** Also raise the threshold to halfway between noise and the caller's level. Default true. */
+  useSpeechLevel?: boolean
+  /** Once speaking, stay active while within this many dB below the threshold (0-30). Default 3. */
+  hysteresisDb?: number
+  /** Lower clamp of the threshold, dBFS. Default -50. */
+  minThresholdDbfs?: number
+  /** Upper clamp of the threshold, dBFS (at most 0). Default -10. */
+  maxThresholdDbfs?: number
+  /** After this long active with no quiet frame (ms), active frames also feed the noise window. Default 8000, min 1000. */
+  stuckActiveMs?: number
+}
+
 /**
  * Voice activity detection and STT gating.
  *
@@ -68,11 +90,21 @@ export interface VadConfig {
   enabled?: boolean
   /**
    * `energy` = RMS VAD (default native build).
-   * `silero` = neural VAD if the `.node` was built with `silero-vad`.
+   * `adaptive` = energy VAD whose threshold follows the noise floor and the caller's level
+   * (see {@link AdaptiveVadConfig}); opt-in, for noisy or quiet callers.
+   * `silero` = neural VAD if the `.node` was built with `silero-vad`. Silero treats continuous
+   * background voices as speech and does not end turns in babble, so it is not recommended for
+   * noisy calls; it is not in the default build.
    */
-  provider?: 'energy' | 'silero'
-  /** Energy: ~0.05–0.2. Silero: speech probability ~0.3–0.6. */
+  provider?: 'energy' | 'adaptive' | 'silero'
+  /**
+   * Energy: ~0.05–0.2. Silero: speech probability ~0.3–0.6.
+   * Adaptive: only the warm-up threshold (first `adaptive.warmupMs`); afterwards the level
+   * follows the noise floor.
+   */
   threshold?: number
+  /** Parameters of `provider: 'adaptive'`; ignored by the other providers. */
+  adaptive?: AdaptiveVadConfig
   /** Minimum voiced time before `user_speaking_start`. Default 250 ms. */
   minSpeechDurationMs?: number
   /**

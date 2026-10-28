@@ -2,6 +2,7 @@
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use node_webrtc_rust_speech::config::AdaptiveVadConfig;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
     NoiseSuppressionProvider, SentenceCase, SpeechTransport, SttConfig, SttVendor, TtsConfig,
@@ -133,6 +134,44 @@ impl From<JsVadSampleRate> for VadSampleRate {
     }
 }
 
+/// Parameters of the `"adaptive"` VAD provider. Every field is optional (core defaults apply).
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsAdaptiveVadConfig {
+    pub warmup_ms: Option<u32>,
+    pub noise_window_ms: Option<u32>,
+    pub noise_percentile: Option<u32>,
+    pub noise_margin_db: Option<f64>,
+    pub use_speech_level: Option<bool>,
+    pub hysteresis_db: Option<f64>,
+    pub min_threshold_dbfs: Option<f64>,
+    pub max_threshold_dbfs: Option<f64>,
+    pub stuck_active_ms: Option<u32>,
+}
+
+impl From<JsAdaptiveVadConfig> for AdaptiveVadConfig {
+    fn from(value: JsAdaptiveVadConfig) -> Self {
+        let d = AdaptiveVadConfig::default();
+        Self {
+            warmup_ms: value.warmup_ms.unwrap_or(d.warmup_ms),
+            noise_window_ms: value.noise_window_ms.unwrap_or(d.noise_window_ms),
+            noise_percentile: value.noise_percentile.unwrap_or(d.noise_percentile),
+            noise_margin_db: value
+                .noise_margin_db
+                .map_or(d.noise_margin_db, |v| v as f32),
+            use_speech_level: value.use_speech_level.unwrap_or(d.use_speech_level),
+            hysteresis_db: value.hysteresis_db.map_or(d.hysteresis_db, |v| v as f32),
+            min_threshold_dbfs: value
+                .min_threshold_dbfs
+                .map_or(d.min_threshold_dbfs, |v| v as f32),
+            max_threshold_dbfs: value
+                .max_threshold_dbfs
+                .map_or(d.max_threshold_dbfs, |v| v as f32),
+            stuck_active_ms: value.stuck_active_ms.unwrap_or(d.stuck_active_ms),
+        }
+    }
+}
+
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
 pub struct JsVadConfig {
@@ -153,6 +192,8 @@ pub struct JsVadConfig {
     /// Max time a turn keeps waiting while the cluster STT stream open is refused and retried (default 120000 ms; 0 = no extra wait).
     pub stt_open_wait_max_ms: Option<u32>,
     pub utterance_finalize_timeout_ms: Option<u32>,
+    /// Parameters of the `"adaptive"` provider.
+    pub adaptive: Option<JsAdaptiveVadConfig>,
 }
 
 impl From<JsVadConfig> for VadConfig {
@@ -177,6 +218,7 @@ impl From<JsVadConfig> for VadConfig {
             stt_listen_hard_timeout_ms: value.stt_listen_hard_timeout_ms.unwrap_or(0),
             stt_open_wait_max_ms: value.stt_open_wait_max_ms.unwrap_or(120_000),
             utterance_finalize_timeout_ms: value.utterance_finalize_timeout_ms.unwrap_or(1500),
+            adaptive: value.adaptive.map(Into::into).unwrap_or_default(),
         }
     }
 }
@@ -774,5 +816,62 @@ mod vad_config_defaults_tests {
         .into();
         assert_eq!(cfg.min_silence_duration_ms, 1300);
         assert_eq!(cfg.stt_gate_hold_ms, 1000);
+    }
+
+    #[test]
+    fn adaptive_full_object_maps_every_field() {
+        let cfg: VadConfig = JsVadConfig {
+            provider: Some("adaptive".into()),
+            adaptive: Some(JsAdaptiveVadConfig {
+                warmup_ms: Some(500),
+                noise_window_ms: Some(4000),
+                noise_percentile: Some(60),
+                noise_margin_db: Some(8.0),
+                use_speech_level: Some(false),
+                hysteresis_db: Some(2.0),
+                min_threshold_dbfs: Some(-55.0),
+                max_threshold_dbfs: Some(-12.0),
+                stuck_active_ms: Some(9000),
+            }),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(cfg.provider, "adaptive");
+        let a = cfg.adaptive;
+        assert_eq!(a.warmup_ms, 500);
+        assert_eq!(a.noise_window_ms, 4000);
+        assert_eq!(a.noise_percentile, 60);
+        assert_eq!(a.noise_margin_db, 8.0);
+        assert!(!a.use_speech_level);
+        assert_eq!(a.hysteresis_db, 2.0);
+        assert_eq!(a.min_threshold_dbfs, -55.0);
+        assert_eq!(a.max_threshold_dbfs, -12.0);
+        assert_eq!(a.stuck_active_ms, 9000);
+    }
+
+    #[test]
+    fn adaptive_empty_object_and_absent_use_core_defaults() {
+        let core = AdaptiveVadConfig::default();
+        let empty: VadConfig = JsVadConfig {
+            adaptive: Some(JsAdaptiveVadConfig::default()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(empty.adaptive, core);
+        let absent: VadConfig = JsVadConfig::default().into();
+        assert_eq!(absent.adaptive, core);
+        assert_eq!(absent.provider, "energy");
+    }
+
+    #[test]
+    fn provider_passthrough() {
+        for p in ["energy", "adaptive", "silero"] {
+            let cfg: VadConfig = JsVadConfig {
+                provider: Some(p.into()),
+                ..Default::default()
+            }
+            .into();
+            assert_eq!(cfg.provider, p);
+        }
     }
 }

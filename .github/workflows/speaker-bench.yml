@@ -103,6 +103,25 @@ jobs:
             --main-levels -26,-20,-14 \
             --out speaker-fixtures "${args[@]}"
 
+      - name: VoxLock (target-speaker extraction, measurement only)
+        run: |
+          M=examples/voice-agent-local-sherpa/.models
+          V=$M/enhance/sherpa-onnx-voxlock-int8
+          if ! python3 -m venv .voxlock-venv 2>/dev/null; then
+            apt-get update -qq && apt-get install -y -qq python3-venv python3-pip
+            python3 -m venv .voxlock-venv
+          fi
+          .voxlock-venv/bin/pip install -q -r benchmarks/speaker/requirements-voxlock.txt
+          P=.voxlock-venv/bin/python
+          S=benchmarks/speaker/voxlock_preprocess.py
+          # One pinned core, like the bench: the cost numbers are per core.
+          taskset -c 2 $P -I $S --fixtures speaker-fixtures --model "$V" --out voxlock-live --mode live --chunk-ms 40
+          taskset -c 2 $P -I $S --fixtures speaker-fixtures --model "$V" --out voxlock-sample --mode sample --chunk-ms 40
+          # Chunk size vs cost (cost only, no wavs).
+          for ms in 20 80; do
+            taskset -c 2 $P -I $S --fixtures speaker-fixtures --model "$V" --out "voxlock-live-$ms" --mode live --chunk-ms "$ms" --cost-only
+          done
+
       - name: Bench (pinned to one core)
         env:
           # The CI container cannot run git, so results.json takes the commit from here.
@@ -115,8 +134,13 @@ jobs:
             --models "$M/speaker" \
             --stt-model "$M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06" \
             --enhance "$M/enhance" \
+            --pre raw,rnnoise,gtcrn,dpdfnet_baseline,dpdfnet2,dpdfnet4,dpdfnet8,dpdfnet2_48khz_hr,precomputed:voxlock-live=voxlock-live,precomputed:voxlock-sample=voxlock-sample \
             --out bench-results || status=$?
           cp speaker-fixtures/manifest.json bench-results/manifest.json 2>/dev/null || true
+          # Chunk-size cost runs (20 / 80 ms) next to the results.
+          for ms in 20 80; do cp "voxlock-live-$ms/voxlock_cost.json" "bench-results/voxlock_cost_live_${ms}ms.json" 2>/dev/null || true; done
+          cp voxlock-live/voxlock_cost.json bench-results/voxlock_cost_live_40ms.json 2>/dev/null || true
+          cp voxlock-sample/voxlock_cost.json bench-results/voxlock_cost_sample_40ms.json 2>/dev/null || true
           if [ -f bench-results/summary.md ]; then cat bench-results/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$status"
 

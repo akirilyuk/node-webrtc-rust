@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/signaling",
-  "version": "0.13.4",
+  "version": "0.14.0",
   "description": "TypeScript WebSocket signaling helpers for node-webrtc-rust",
   "keywords": [
     "webrtc",
@@ -47,18 +47,18 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@node-webrtc-rust/sdk": "0.13.4",
+    "@node-webrtc-rust/sdk": "0.14.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@node-webrtc-rust/sdk": "0.13.4",
+    "@node-webrtc-rust/sdk": "0.14.0",
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "typescript": "^5.7.0",
     "vitest": "^2.1.8"
   },
   "peerDependencies": {
-    "@node-webrtc-rust/sdk": "^0.13.4"
+    "@node-webrtc-rust/sdk": "^0.14.0"
   },
   "peerDependenciesMeta": {
     "@node-webrtc-rust/sdk": {

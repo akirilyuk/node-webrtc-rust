@@ -64,6 +64,9 @@
 //! level (main -26 / -20 / -14 dBFS at relative levels -15 and -10) for raw, rnnoise, gtcrn and
 //! dpdfnet2. Cost per preprocessor (RTF p50 / p99 per 20 ms frame, streams per core, added
 //! delay) and the S1 whole-clip WER per level (including clean) are reported too.
+//! `--pre ...,precomputed:<name>=<dir>` adds a preprocessor whose output was computed elsewhere
+//! (VoxLock, `benchmarks/speaker/voxlock_preprocess.py`): scene audio is read from
+//! `<dir>/scenes/<id>.wav`, the cost row from `<dir>/voxlock_cost.json`. Measurement only.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -918,6 +921,9 @@ struct Enhance<'a> {
     pre_name: &'a str,
     agc: bool,
     models: &'a Path,
+    /// Precomputed preprocessor: scene audio comes from `<dir>/scenes/<id>.wav` (already
+    /// processed, 48 kHz stereo) and the in-process preprocessor is `raw`.
+    scene_dir: Option<&'a Path>,
 }
 
 struct P2<'a> {
@@ -931,17 +937,33 @@ struct P2<'a> {
     leak_vocab: &'a HashSet<String>,
 }
 
+/// 48 kHz stereo scene audio: the fixture's, or the precomputed preprocessor's when set.
+fn scene_audio_path(fixtures: &Path, precomputed: Option<&Path>, id: &str) -> PathBuf {
+    precomputed
+        .unwrap_or(fixtures)
+        .join("scenes")
+        .join(format!("{id}.wav"))
+}
+
 fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, Vec<Row>), String> {
     let id = fx.scenes[scene].id.clone();
     let level_db = fx.scenes[scene].level_db;
-    let raw_pcm = read_wav_stereo_48k_pcm(&fx.dir.join("scenes").join(format!("{id}.wav")))?;
+    let raw_pcm = read_wav_stereo_48k_pcm(&scene_audio_path(
+        &fx.dir,
+        p.enhance.and_then(|e| e.scene_dir),
+        &id,
+    ))?;
     // Part 2: the scene as generated (16 kHz wav for STT and embedding). Part 3: the product
     // order, preprocessor and AGC on the 48 kHz stereo frames first, then VAD on that PCM and
     // STT / embedding on its mono 16 kHz conversion; the enrollment is cut from the same signal.
     let (pcm, audio, underruns, pre_name, agc_on) = match p.enhance {
         None => (raw_pcm, fx.audio16(scene)?.clone(), 0, "part2", false),
         Some(e) => {
-            let mut pre = make_preprocessor(e.pre_name, e.models)?;
+            let mut pre = if e.scene_dir.is_some() {
+                Preprocessor::Raw
+            } else {
+                make_preprocessor(e.pre_name, e.models)?
+            };
             let mut agc = e.agc.then(Agc::new);
             let processed = process_pcm(&raw_pcm, &mut pre, agc.as_mut());
             let audio = mono_16k_f32(&processed);
@@ -1303,6 +1325,7 @@ fn conversations_md(rows: &[Row]) -> String {
             || (r.pre == "raw" && !r.agc)
             || (r.pre == "gtcrn" && r.agc)
             || (r.pre == "dpdfnet2" && r.agc)
+            || (r.pre == "voxlock-live" && r.agc)
     };
     let mut keys: Vec<(String, bool, String, String)> = Vec::new();
     for r in rows.iter().filter(|r| shown(r)) {
@@ -1439,6 +1462,8 @@ const CLEAN_LEVEL_DB: i32 = -99;
 struct Part3Run<'a> {
     models: &'a Path,
     pre_filter: &'a [String],
+    /// `(name, dir)` of every `--pre precomputed:<name>=<dir>`.
+    precomputed: &'a [(String, PathBuf)],
     emb: &'a Embedder,
     check_s: f32,
     threshold: f32,
@@ -1494,6 +1519,8 @@ struct Part3 {
     threshold: f32,
     set: &'static str,
     pre_names: Vec<String>,
+    /// Names of the precomputed preprocessors (a subset of `pre_names`).
+    precomputed: Vec<String>,
     grid: Vec<GridRow>,
     cost: Vec<CostRow>,
     wer: Vec<WerRow>,
@@ -1776,13 +1803,77 @@ fn s1_wer(fx: &Fixtures, r: &Part3Run, pre_names: &[&str]) -> Result<Vec<WerRow>
     Ok(rows)
 }
 
+/// Cost row of a precomputed preprocessor from `<dir>/voxlock_cost.json`
+/// (`{"scenes":[{"id":..,"audio_s":..,"wall_s":..,"cpu_s":..}]}`, written under `taskset -c 2`).
+/// The RTF columns hold process CPU seconds per audio second over the scenes.
+fn precomputed_cost_row(name: &str, dir: &Path) -> Result<CostRow, String> {
+    let path = dir.join("voxlock_cost.json");
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    cost_row_from_json(name, &text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn cost_row_from_json(name: &str, text: &str) -> Result<CostRow, String> {
+    let json = parse_json(text)?;
+    let Some(Json::Arr(scenes)) = json.get("scenes") else {
+        return Err("no scenes array".into());
+    };
+    let mut ratios = Vec::new();
+    let mut audio_total = 0.0;
+    for s in scenes {
+        let num = |key: &str| match s.get(key) {
+            Some(Json::Num(n)) => *n,
+            _ => 0.0,
+        };
+        let (audio, cpu) = (num("audio_s"), num("cpu_s"));
+        if audio > 0.0 {
+            ratios.push(cpu / audio);
+            audio_total += audio;
+        }
+    }
+    if ratios.is_empty() {
+        return Err("no scene with audio".into());
+    }
+    let mean = ratios.iter().sum::<f64>() / ratios.len() as f64;
+    ratios.sort_by(|a, b| a.total_cmp(b));
+    Ok(CostRow {
+        name: name.to_string(),
+        frames: (audio_total * 50.0).round() as usize,
+        rtf_p50: percentile_f(&ratios, 0.5),
+        rtf_p99: percentile_f(&ratios, 0.99),
+        rtf_mean: mean,
+        streams: None,
+        streams_capped: false,
+        stream_steps: Vec::new(),
+        delay_ms: None,
+    })
+}
+
+/// The precomputed preprocessors whose `scenes/` dir and `voxlock_cost.json` exist. A missing one
+/// is warned about and dropped, so a failed VoxLock step does not cost the other results.
+fn usable_precomputed(all: &[(String, PathBuf)]) -> Vec<(String, PathBuf)> {
+    all.iter()
+        .filter(|(name, dir)| {
+            let ok = dir.join("scenes").is_dir() && dir.join("voxlock_cost.json").is_file();
+            if !ok {
+                eprintln!(
+                    "warning: precomputed {name}: {} has no scenes/ or voxlock_cost.json; skipped",
+                    dir.display()
+                );
+            }
+            ok
+        })
+        .cloned()
+        .collect()
+}
+
 fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Part3, String> {
     let pre_names: Vec<&str> = ALL_PRE
         .iter()
         .copied()
         .filter(|p| r.pre_filter.iter().any(|f| f == p))
         .collect();
-    if pre_names.is_empty() {
+    let precomputed = usable_precomputed(r.precomputed);
+    if pre_names.is_empty() && precomputed.is_empty() {
         return Err("part 3: --pre selects no preprocessor".into());
     }
     // Fail early on a missing model.
@@ -1811,10 +1902,17 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
         .filter(|i| fx.scenes[*i].set == set)
         .collect();
 
+    // Every combo: (name, precomputed scene dir). Precomputed combos run Grid A and B scenes.
+    let mut combos: Vec<(&str, Option<&Path>)> = pre_names.iter().map(|n| (*n, None)).collect();
+    combos.extend(
+        precomputed
+            .iter()
+            .map(|(n, d)| (n.as_str(), Some(d.as_path()))),
+    );
     let mut grid = Vec::new();
-    for name in &pre_names {
+    for (name, scene_dir) in &combos {
         for agc in [false, true] {
-            let in_b = GRID_B_PRE.contains(name);
+            let in_b = scene_dir.is_some() || GRID_B_PRE.contains(name);
             let mut by: BTreeMap<(i32, i32), LevelStats> = BTreeMap::new();
             let combo_started = std::time::Instant::now();
             for &scene in &scenes {
@@ -1829,6 +1927,7 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
                     pre_name: name,
                     agc,
                     models: r.models,
+                    scene_dir: *scene_dir,
                 };
                 let p2 = P2 {
                     enhance: Some(&enhance),
@@ -1866,13 +1965,17 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
         }
     }
     let wer = s1_wer(fx, r, &pre_names)?;
-    let cost = cost_rows(fx, r, &pre_names, &scenes)?;
+    let mut cost = cost_rows(fx, r, &pre_names, &scenes)?;
+    for (name, dir) in &precomputed {
+        cost.push(precomputed_cost_row(name, dir)?);
+    }
     Ok(Part3 {
         model: r.emb.id.clone(),
         check_s: r.check_s,
         threshold: r.threshold,
         set: set_label,
-        pre_names: pre_names.iter().map(|p| (*p).to_string()).collect(),
+        pre_names: combos.iter().map(|(p, _)| (*p).to_string()).collect(),
+        precomputed: precomputed.iter().map(|(n, _)| n.clone()).collect(),
         grid,
         cost,
         wer,
@@ -1919,10 +2022,22 @@ fn pooled(grid: &[GridRow], pre: &str, agc: bool, main_db: i32) -> LevelStats {
     all
 }
 
+/// Caption of the cost table; precomputed rows hold a different quantity and say so.
+fn cost_caption(precomputed: &[String]) -> String {
+    let mut c = String::from("\n### Cost (one core, 20 ms frames)\n\nRTF = processing time / 20 ms per frame. Streams per core = the largest N (steps 1, 2, 4, 8, 12, 16, 24, 32) of real-time paced streams on one core with at most 1 % of frames finishing more than 20 ms after they were due; `+` marks the last step passed. Delay = lag of the cross-correlation of input and output (0 to 800 ms). `agc` is the AGC alone.\n\n");
+    if !precomputed.is_empty() {
+        c.push_str(&format!(
+            " Rows {} are precomputed (VoxLock, `voxlock_preprocess.py` under `taskset -c 2`): the RTF columns hold process CPU seconds per audio second over whole scenes (\u{2248} CPU cores per call), not per 20 ms frame; `frames` is audio seconds \u{d7} 50; streams per core and delay are not measured.",
+            precomputed.join(", ")
+        ));
+    }
+    c
+}
+
 fn part3_md(p: &Part3) -> String {
     let mut md = String::new();
     md.push_str(&format!(
-        "\n## Part 3: denoisers and caller AGC\n\nSpeaker model `{}`, check {} s, threshold {:.4} (tune set, FAR 1 %). Scenes: {}. Pipeline per combo: preprocessor, then AGC if on, on the 20 ms 48 kHz stereo frames; energy VAD (`VadConfig::default()`) on that PCM; STT and embedding on its mono 16 kHz conversion, starting at SpeechStart minus the product pre-roll. `turns.jsonl` has every turn (`pre`, `agc`); `conversations.md` shows raw/off, gtcrn/on and dpdfnet2/on.\n",
+        "\n## Part 3: denoisers and caller AGC\n\nSpeaker model `{}`, check {} s, threshold {:.4} (tune set, FAR 1 %). Scenes: {}. Pipeline per combo: preprocessor, then AGC if on, on the 20 ms 48 kHz stereo frames; energy VAD (`VadConfig::default()`) on that PCM; STT and embedding on its mono 16 kHz conversion, starting at SpeechStart minus the product pre-roll. `turns.jsonl` has every turn (`pre`, `agc`); `conversations.md` shows raw/off, gtcrn/on, dpdfnet2/on and voxlock-live/on. A precomputed preprocessor (`voxlock-*`) reads scene audio that `benchmarks/speaker/voxlock_preprocess.py` wrote; its cost row comes from `voxlock_cost.json` (process CPU seconds per audio second on one pinned core; RTF columns are that ratio, not per 20 ms frame; streams and delay are not measured).\n",
         p.model, p.check_s, p.threshold, p.set
     ));
     md.push_str("\n### Grid A: preprocessor x AGC (S3 scenes at main -20 dBFS)\n\n");
@@ -1958,7 +2073,7 @@ fn part3_md(p: &Part3) -> String {
     for name in p
         .pre_names
         .iter()
-        .filter(|n| GRID_B_PRE.contains(&n.as_str()))
+        .filter(|n| GRID_B_PRE.contains(&n.as_str()) || p.precomputed.contains(n))
     {
         for agc in [false, true] {
             for g in p.grid.iter().filter(|g| {
@@ -1991,9 +2106,14 @@ fn part3_md(p: &Part3) -> String {
             fmt_opt(pct(w.stats.l_edits, w.stats.l_words), 1),
         ));
     }
-    md.push_str("\n### Cost (one core, 20 ms frames)\n\nRTF = processing time / 20 ms per frame. Streams per core = the largest N (steps 1, 2, 4, 8, 12, 16, 24, 32) of real-time paced streams on one core with at most 1 % of frames finishing more than 20 ms after they were due; `+` marks the last step passed. Delay = lag of the cross-correlation of input and output (0 to 800 ms). `agc` is the AGC alone.\n\n");
+    md.push_str(&cost_caption(&p.precomputed));
     md.push_str("| pre | frames | RTF p50 | RTF p99 | RTF mean | streams per core | delay ms |\n|---|---|---|---|---|---|---|\n");
     for c in &p.cost {
+        let na = if p.precomputed.contains(&c.name) {
+            "n/a"
+        } else {
+            "-"
+        };
         md.push_str(&format!(
             "| {} | {} | {:.4} | {:.4} | {:.4} | {} | {} |\n",
             c.name,
@@ -2001,11 +2121,11 @@ fn part3_md(p: &Part3) -> String {
             c.rtf_p50,
             c.rtf_p99,
             c.rtf_mean,
-            c.streams.map_or("-".to_string(), |n| format!(
+            c.streams.map_or(na.to_string(), |n| format!(
                 "{n}{}",
                 if c.streams_capped { "+" } else { "" }
             )),
-            fmt_opt(c.delay_ms, 1),
+            c.delay_ms.map_or(na.to_string(), |d| fmt_opt(Some(d), 1)),
         ));
     }
     md
@@ -2133,16 +2253,34 @@ struct Args {
     enhance: Option<PathBuf>,
     /// Part 3: preprocessors to run (default: all of [`ALL_PRE`]).
     pre: Vec<String>,
+    /// Part 3: `--pre precomputed:<name>=<dir>` entries.
+    precomputed: Vec<(String, PathBuf)>,
     /// Part 3 cost: seconds of S3 audio for the single-stream RTF.
     cost_seconds: usize,
     /// Part 3 cost: seconds each streams-per-core step runs.
     streams_seconds: usize,
 }
 
+/// `precomputed:<name>=<dir>` -> `Some((name, dir))`; any other item -> `None`.
+fn parse_precomputed(item: &str) -> Result<Option<(String, PathBuf)>, String> {
+    let Some(rest) = item.strip_prefix("precomputed:") else {
+        return Ok(None);
+    };
+    match rest.split_once('=') {
+        Some((name, dir)) if !name.is_empty() && !dir.is_empty() => {
+            Ok(Some((name.to_string(), PathBuf::from(dir))))
+        }
+        _ => Err(format!(
+            "--pre: expected precomputed:<name>=<dir>, got {item}"
+        )),
+    }
+}
+
 fn parse_args() -> Result<Args, String> {
     let (mut fixtures, mut models, mut stt, mut out, mut silence) = (None, None, None, None, None);
     let mut enhance = None;
     let mut pre: Vec<String> = ALL_PRE.iter().map(|p| (*p).to_string()).collect();
+    let mut precomputed: Vec<(String, PathBuf)> = Vec::new();
     let (mut cost_seconds, mut streams_seconds) = (60usize, 10usize);
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -2161,11 +2299,19 @@ fn parse_args() -> Result<Args, String> {
             }
             "--enhance" => enhance = Some(PathBuf::from(value("--enhance")?)),
             "--pre" => {
-                pre = value("--pre")?
+                let all: Vec<String> = value("--pre")?
                     .split(',')
                     .map(|p| p.trim().to_string())
                     .filter(|p| !p.is_empty())
                     .collect();
+                pre = Vec::new();
+                precomputed = Vec::new();
+                for item in all {
+                    match parse_precomputed(&item)? {
+                        Some(entry) => precomputed.push(entry),
+                        None => pre.push(item),
+                    }
+                }
                 if let Some(bad) = pre.iter().find(|p| !ALL_PRE.contains(&p.as_str())) {
                     return Err(format!("--pre: unknown preprocessor {bad}"));
                 }
@@ -2191,6 +2337,7 @@ fn parse_args() -> Result<Args, String> {
         vad_min_silence_ms: silence,
         enhance,
         pre,
+        precomputed,
         cost_seconds,
         streams_seconds,
     })
@@ -2381,6 +2528,7 @@ fn run() -> Result<(), String> {
             let run3 = Part3Run {
                 models,
                 pre_filter: &args.pre,
+                precomputed: &args.precomputed,
                 emb: &embedders[model_idx],
                 check_s,
                 threshold,
@@ -2608,6 +2756,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use support::write_wav_stereo_48k;
 
     #[test]
     fn eer_of_separable_scores_is_zero_and_of_identical_is_half() {
@@ -2692,6 +2841,64 @@ mod tests {
             pre_roll_ms(&config),
             config.speech_pad_ms + config.min_speech_duration_ms
         );
+    }
+
+    #[test]
+    fn precomputed_preprocessor_reads_scene_audio() {
+        let base = std::env::temp_dir().join(format!("speaker_bench_pre_{}", std::process::id()));
+        let (fixtures, pre) = (base.join("fixtures"), base.join("voxlock-live"));
+        for d in [&fixtures, &pre] {
+            fs::create_dir_all(d.join("scenes")).unwrap();
+        }
+        // Fixture: 0.1 s of silence; precomputed: 0.2 s of a tone. 48 kHz, mono samples
+        // duplicated to stereo by the writer.
+        write_wav_stereo_48k(&fixtures.join("scenes/s3_x.wav"), &vec![0.0; 4800]).unwrap();
+        write_wav_stereo_48k(&pre.join("scenes/s3_x.wav"), &vec![0.25; 9600]).unwrap();
+        let from_fixture =
+            read_wav_stereo_48k_pcm(&scene_audio_path(&fixtures, None, "s3_x")).unwrap();
+        let from_pre =
+            read_wav_stereo_48k_pcm(&scene_audio_path(&fixtures, Some(&pre), "s3_x")).unwrap();
+        assert_eq!(from_fixture.len(), 4800 * 4);
+        assert_eq!(from_pre.len(), 9600 * 4);
+        assert!(from_pre.iter().any(|b| *b != 0));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn precomputed_arg_parses_name_and_dir() {
+        assert_eq!(
+            parse_precomputed("precomputed:voxlock-live=/tmp/x").unwrap(),
+            Some(("voxlock-live".to_string(), PathBuf::from("/tmp/x")))
+        );
+        assert_eq!(parse_precomputed("gtcrn").unwrap(), None);
+        assert!(parse_precomputed("precomputed:nodir").is_err());
+        assert!(parse_precomputed("precomputed:=/x").is_err());
+    }
+
+    #[test]
+    fn cost_caption_labels_precomputed_rows() {
+        assert!(!cost_caption(&[]).contains("CPU seconds per audio second"));
+        let c = cost_caption(&["voxlock-live".to_string()]);
+        assert!(c.contains("voxlock-live") && c.contains("CPU seconds per audio second"));
+    }
+
+    #[test]
+    fn missing_precomputed_dir_is_skipped() {
+        let missing = std::env::temp_dir().join("speaker_bench_no_such_dir_xyz");
+        let all = vec![("voxlock-live".to_string(), missing)];
+        assert!(usable_precomputed(&all).is_empty());
+    }
+
+    #[test]
+    fn voxlock_cost_json_becomes_a_cost_row() {
+        let json = r#"{"scenes":[{"id":"a","audio_s":10.0,"wall_s":9.0,"cpu_s":8.0},
+            {"id":"b","audio_s":10.0,"wall_s":11.0,"cpu_s":12.0}]}"#;
+        let row = cost_row_from_json("voxlock-live", json).unwrap();
+        assert_eq!(row.name, "voxlock-live");
+        assert_eq!(row.frames, 1000);
+        assert!((row.rtf_mean - 1.0).abs() < 1e-9);
+        assert!(row.streams.is_none() && row.delay_ms.is_none());
+        assert!(cost_row_from_json("x", r#"{"scenes":[]}"#).is_err());
     }
 
     #[test]

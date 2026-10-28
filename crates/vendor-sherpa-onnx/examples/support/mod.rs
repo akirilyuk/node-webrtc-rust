@@ -134,6 +134,15 @@ pub fn recognize(recognizer: &OnlineRecognizer, samples: &[f32]) -> String {
             recognizer.decode(&stream);
         }
     }
+    // Same tail padding as the product's `finalize_utterance`, so replays decode the last word
+    // the way the agent does.
+    let tail = vec![
+        0.0_f32;
+        SAMPLE_RATE as usize
+            * node_webrtc_rust_vendor_sherpa_onnx::FINALIZE_TAIL_PADDING_MS
+            / 1000
+    ];
+    stream.accept_waveform(SAMPLE_RATE, &tail);
     stream.input_finished();
     while recognizer.is_ready(&stream) {
         recognizer.decode(&stream);

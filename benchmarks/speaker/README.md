@@ -95,6 +95,16 @@ Outputs: `results.json` (all numbers plus `nproc`, CPU model, git sha from `NWR_
 
 The scores and transcripts are bench data from synthetic voices, not customer content.
 
+## VoxLock (measured only, not a product path)
+
+VoxLock is target-speaker extraction: it keeps the caller's voice and removes the other voices (Apache-2.0, 27 M parameters). Its author's numbers put it at about one CPU core per call, and its Rust API needs sherpa-onnx >= 2.0, while this repo pins 1.13.2. So it is measured here with the same fixtures, pipeline and metrics, and becomes a follow-up only if the numbers justify the cost (gate G3 of the plan).
+
+- `voxlock_preprocess.py` (Python, `requirements-voxlock.txt`: sherpa-onnx 2.0.1, the first PyPI release with `OfflineSpeechDenoiserVoxLockModelConfig`) streams every S3 conversation scene (test set; tune set for `--quick` fixtures) through VoxLock in `--chunk-ms` chunks (20, 40 or 80) and writes a processed copy of the scenes (`scenes/<id>.16k.wav`, plus a 48 kHz stereo `scenes/<id>.wav` by linear-interpolation upsampling) and `voxlock_cost.json`.
+- Two enrollment modes. `live`: no voice sample; VoxLock passes audio through until it has heard 3 s of speech, takes that as the speaker to keep (what a product would do). `sample`: `voice_sample` is the scene's two enrollment segments cut from the scene audio (upstream uses its loudest 3 s).
+- `speaker_bench --pre raw,precomputed:voxlock-live=<dir>,precomputed:voxlock-sample=<dir>` reads the scene audio from `<dir>/scenes/<id>.wav` instead of the fixtures and runs the identical pipeline (energy VAD, AGC off and on, STT, gate, metrics). Rows appear as `voxlock-live` / `voxlock-sample` in Grid A, Grid B and `turns.jsonl`; `conversations.md` also renders `voxlock-live` with AGC on.
+- Cost method: the workflow runs the script under `taskset -c 2` (one core), and `voxlock_cost.json` holds wall and process-CPU seconds per scene. The bench's cost table shows process CPU seconds per audio second in the RTF columns (a ratio over whole scenes, not per 20 ms frame); streams per core and delay are not measured for it. The 20 ms and 80 ms chunk runs are cost-only and are uploaded as `voxlock_cost_live_<ms>ms.json`.
+- The S1 whole-clip WER table has no VoxLock rows (only S3 scenes are processed).
+
 ## Licenses
 
 Speaker-embedding models (release tag `speaker-recongition-models` (sic) of `k2-fsa/sherpa-onnx`). A model whose license does not allow commercial use, or states none, is dropped.
@@ -124,7 +134,7 @@ The non-commercial and unstated licenses (ryan, hfc_male, hfc_female, lessac, am
 
 Models: `npm run download-tts:en`, `npm run download-stt:en`, `npm run download-speaker` and `npm run download-enhance` (all with `--workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`). `download-speaker` checks every file against the release's `checksum.txt` and exits 1 naming the file on a mismatch.
 
-`download-enhance` checks each denoiser file against the `checksum.txt` of the `speech-enhancement-models` release where that lists it (`gtcrn_simple.onnx`), and against a hash pinned in `sherpa-model-catalog.mjs` otherwise (the DPDFNet files are not in that `checksum.txt`; the hashes are the digests GitHub shows for the release assets).
+`download-enhance` checks each denoiser file against the `checksum.txt` of the `speech-enhancement-models` release where that lists it (`gtcrn_simple.onnx`), and against a hash pinned in `sherpa-model-catalog.mjs` otherwise (the DPDFNet files are not in that `checksum.txt`; the hashes are the digests GitHub shows for the release assets). It also fetches `sherpa-onnx-voxlock-int8.tar.bz2` (hash pinned in the script itself) and extracts it to `.models/enhance/sherpa-onnx-voxlock-int8/` (`enroll.onnx`, `chunk_int8.onnx`).
 
 Heavy local runs go through the workspace wrapper (it waits for free memory and stops a runaway process):
 
@@ -138,7 +148,7 @@ $H --label speaker-fixtures -- cargo run --release -p node-webrtc-rust-vendor-sh
 $H --label speaker-bench -- cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_bench -- \
   --fixtures .test-logs/speaker-fixtures --models $M/speaker \
   --stt-model $M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06 --out .test-logs/speaker-bench \
-  [--enhance $M/enhance [--pre raw,gtcrn]]
+  [--enhance $M/enhance [--pre raw,gtcrn,precomputed:voxlock-live=<dir>]]
 ```
 
 The other voices' bundles are read from the parent of `--models` (`--voices-root` overrides it).

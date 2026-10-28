@@ -377,6 +377,11 @@ async fn impaired_input_stays_ordered_and_counted() {
     // Reordered and duplicated packets are fixed by the inbound stage before the mixer; a
     // concealed frame may only echo the marker before it within the concealment budget.
     assert_eq!(r.reordered, 0, "{r:?} {s:?} {inbound:?}");
+    assert!(
+        r.span < FRAMES,
+        "span {} exceeds {FRAMES} source frames: {r:?} {inbound:?}",
+        r.span
+    );
     assert!(r.concealment_echo <= concealed, "{r:?} {inbound:?}");
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert_accounting(&o);

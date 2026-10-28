@@ -1,0 +1,5 @@
+# VoxLock measurement (chunk 1d). 2.0.1 is the first sherpa-onnx PyPI release whose Python API has
+# OfflineSpeechDenoiserVoxLockModelConfig (2.0.0 does not; checked 2026-10-28).
+sherpa-onnx==2.0.1
+numpy
+soundfile

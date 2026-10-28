@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use node_webrtc_rust_core::{
-    debug_call, debug_evt, IceServer, PeerConnection, PeerConnectionConfig,
+    debug_call, debug_evt, inbound_audio::InboundAudioStatsSnapshot, IceServer, PeerConnection,
+    PeerConnectionConfig,
 };
 use node_webrtc_rust_mixer::{Frame, MixGraph, SourceStats};
 use tokio::sync::Mutex;
@@ -399,6 +400,16 @@ impl Room {
     /// Counters and queue depth/target for one participant's source queue.
     pub async fn source_stats(&self, participant_id: &str) -> Option<SourceStats> {
         self.mix_graph.lock().await.source_stats(participant_id)
+    }
+
+    /// Diagnostic, read-only: the inbound audio stage counters (reorder, loss, PLC/FEC
+    /// concealment) of one participant's server-side audio track. The counters are cumulative
+    /// since the track started. `None` for an unknown participant or one whose audio track has
+    /// not arrived yet.
+    pub fn inbound_audio_stats(&self, participant_id: &str) -> Option<InboundAudioStatsSnapshot> {
+        self.participants
+            .get(participant_id)
+            .and_then(Participant::inbound_audio_stats)
     }
 
     /// Closes all participants and clears room state.

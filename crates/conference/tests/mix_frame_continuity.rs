@@ -16,10 +16,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use frame_marker::{analyze, detect_frame, Detected, MarkerSource, SequenceReport};
+use frame_marker::{
+    analyze_with, detect_frame, AnalyzeOptions, Detected, MarkerSource, SequenceReport,
+};
 use node_webrtc_rust_conference::{
     ConferenceServer, Room, RoomConfig, SignalingMessage, SignalingResponse,
 };
+use node_webrtc_rust_core::inbound_audio::InboundAudioStatsSnapshot;
 use node_webrtc_rust_core::{
     ConnectionState, LocalAudioTrack, OfferOptions, PeerConnection, PeerConnectionConfig, SdpType,
     SessionDescription,
@@ -154,6 +157,12 @@ fn send_schedule(pattern: Pattern) -> Vec<u64> {
 struct Outcome {
     report: SequenceReport,
     stats: Option<SourceStats>,
+    /// `Room::inbound_audio_stats("speaker")` right after the last marker was sent.
+    inbound_after_send: Option<InboundAudioStatsSnapshot>,
+    /// The same, read after the listener capture ended (the concealment budget's source).
+    inbound: Option<InboundAudioStatsSnapshot>,
+    /// `Room::inbound_audio_stats` for an id that never joined.
+    inbound_unknown: Option<InboundAudioStatsSnapshot>,
 }
 
 async fn run_pattern(pattern: Pattern) -> Outcome {
@@ -234,13 +243,34 @@ async fn run_pattern_with(pattern: Pattern, impairment: Option<&str>) -> Outcome
             .await
             .expect("send");
     }
+    let inbound_after_send = room.lock().await.inbound_audio_stats("speaker");
     // Drain: target depth is at most 160 ms; leave generous slack for the receive side.
     sleep(Duration::from_millis(1_500)).await;
 
     let stats = room.lock().await.source_stats("speaker").await;
     reader.abort();
     let frames = received.lock().await.clone();
-    let report = analyze(&frames);
+    let (inbound, inbound_unknown) = {
+        let room = room.lock().await;
+        (
+            room.inbound_audio_stats("speaker"),
+            room.inbound_audio_stats("nobody"),
+        )
+    };
+    // Only an impaired run conceals on purpose; every other run keeps a zero echo budget.
+    let inbound_concealed = match (impairment, inbound) {
+        (Some(_), Some(i)) => i.plc_decodes + i.fec_decodes,
+        _ => 0,
+    };
+    // The merge budget is what the mixer counted for this source (see `merged_frames`).
+    let report = analyze_with(
+        &frames,
+        AnalyzeOptions {
+            merged_frames: stats.map_or(0, |s| merged_frames(&s)),
+            listener_catchup_frames: stats.map_or(0, |s| s.listener_catchup_compressed),
+            inbound_concealed,
+        },
+    );
     if std::env::var("CONTINUITY_TRACE").is_ok() {
         let line: Vec<String> = frames
             .iter()
@@ -252,7 +282,7 @@ async fn run_pattern_with(pattern: Pattern, impairment: Option<&str>) -> Outcome
             .collect();
         eprintln!("[continuity {pattern:?} trace] {}", line.join(" "));
     }
-    eprintln!("[continuity {pattern:?}] {report:?} stats={stats:?}");
+    eprintln!("[continuity {pattern:?}] {report:?} stats={stats:?} inbound={inbound:?}");
 
     let _ = speaker.close().await;
     let _ = listener.close().await;
@@ -260,7 +290,13 @@ async fn run_pattern_with(pattern: Pattern, impairment: Option<&str>) -> Outcome
     server.destroy_room("continuity").await.ok();
     std::env::remove_var("NWR_TEST_RTP_IMPAIRMENT");
     sleep(Duration::from_millis(500)).await;
-    Outcome { report, stats }
+    Outcome {
+        report,
+        stats,
+        inbound_after_send,
+        inbound,
+        inbound_unknown,
+    }
 }
 
 /// Distinct markers that may go unheard in a clean run: Opus start-up and a few frames it
@@ -279,6 +315,35 @@ async fn paced_input_has_no_gaps_or_duplicates() {
         "heard too few markers: {r:?}"
     );
     assert_accounting(&o);
+    assert_inbound_stats_readable(&o);
+}
+
+/// `Room::inbound_audio_stats`: `None` for an id that never joined; for the speaker, a
+/// snapshot whose cumulative counters never go down between two reads.
+fn assert_inbound_stats_readable(o: &Outcome) {
+    assert_eq!(o.inbound_unknown, None);
+    let first = o
+        .inbound_after_send
+        .expect("speaker inbound stats after send");
+    let last = o.inbound.expect("speaker inbound stats after capture");
+    assert!(first.packets_received > 0, "{first:?}");
+    let pairs = [
+        (first.packets_received, last.packets_received),
+        (first.packets_discarded, last.packets_discarded),
+        (first.reordered, last.reordered),
+        (first.lost, last.lost),
+        (first.late_after_loss, last.late_after_loss),
+        (first.concealed_samples, last.concealed_samples),
+        (first.concealment_events, last.concealment_events),
+        (first.fec_decodes, last.fec_decodes),
+        (first.plc_decodes, last.plc_decodes),
+        (first.lost_not_concealed, last.lost_not_concealed),
+        (first.resets, last.resets),
+        (first.undecodable, last.undecodable),
+    ];
+    for (a, b) in pairs {
+        assert!(b >= a, "counter went down: {first:?} then {last:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -305,10 +370,22 @@ async fn impaired_input_stays_ordered_and_counted() {
     .await;
     let r = &o.report;
     let s = o.stats.expect("source stats");
-    // Reordered and duplicated packets are fixed by the inbound stage before the mixer.
-    assert_eq!(r.reordered, 0, "{r:?} {s:?}");
+    let inbound = o.inbound.expect("speaker inbound stats");
+    let concealed = inbound.plc_decodes + inbound.fec_decodes;
+    // The impairment loses packets, so the inbound stage must have concealed some.
+    assert!(concealed > 0, "{inbound:?}");
+    // Reordered and duplicated packets are fixed by the inbound stage before the mixer; a
+    // concealed frame may only echo the marker before it within the concealment budget.
+    assert_eq!(r.reordered, 0, "{r:?} {s:?} {inbound:?}");
+    assert!(
+        r.span < FRAMES,
+        "span {} exceeds {FRAMES} source frames: {r:?} {inbound:?}",
+        r.span
+    );
+    assert!(r.concealment_echo <= concealed, "{r:?} {inbound:?}");
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert_accounting(&o);
+    assert_inbound_stats_readable(&o);
 }
 
 /// The queue's books balance: every pushed frame is played, absorbed by a counted
@@ -324,13 +401,25 @@ fn assert_accounting(o: &Outcome) {
     );
 }
 
-/// Gaps are allowed only as counted compression, duplicates only as counted concealment,
-/// ambiguous (merged) frames only where a merge happened, and no marker may vanish.
+/// Output frames that each swallowed a source frame: queue compression (`pop` pairs and
+/// overflow) and listener catch-up merges or skips (the JS twin's `mergedFrames`).
+fn merged_frames(s: &SourceStats) -> u64 {
+    s.compressed + s.overflow_compressed + s.listener_catchup_compressed + s.listener_skipped
+}
+
+/// Gaps are allowed only as counted compression or listener catch-up, duplicates only as
+/// counted concealment, ambiguous (merged) frames only where a merge happened, the marker
+/// never walks further than the source did, and no marker may vanish.
 fn assert_continuity(o: &Outcome) {
     let r = &o.report;
     let s = o.stats.expect("source stats");
-    let merged = s.compressed + s.overflow_compressed;
+    let merged = merged_frames(&s);
     assert_eq!(r.reordered, 0, "{r:?}");
+    assert!(
+        r.span < FRAMES,
+        "span {} exceeds {FRAMES} source frames: {r:?}",
+        r.span
+    );
     assert!(
         r.gaps <= merged,
         "gaps {} exceed counted compressions {s:?}",

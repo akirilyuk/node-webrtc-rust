@@ -28,6 +28,18 @@ on:
         description: 'runs-on label. EU self-hosted runners; never ARC for load'
         required: false
         default: self-hosted
+      voxlock:
+        description: 'true = also run the VoxLock measurement step and add its preprocessors'
+        required: false
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
+      vad:
+        description: 'VAD providers to run, comma separated (energy, adaptive)'
+        required: false
+        default: 'energy,adaptive'
       quick:
         description: 'true = smoke-sized fixtures (a few scenes), false = the full set'
         required: false
@@ -104,6 +116,7 @@ jobs:
             --out speaker-fixtures "${args[@]}"
 
       - name: VoxLock (target-speaker extraction, measurement only)
+        if: ${{ inputs.voxlock == 'true' }}
         continue-on-error: true
         run: |
           M=examples/voice-agent-local-sherpa/.models
@@ -125,13 +138,16 @@ jobs:
 
       - name: Bench (pinned to one core)
         env:
+          VOXLOCK: ${{ inputs.voxlock }}
+          VAD: ${{ inputs.vad || 'energy,adaptive' }}
           # The CI container cannot run git, so results.json takes the commit from here.
           NWR_BENCH_GIT_SHA: ${{ github.sha }}
         run: |
           M=examples/voice-agent-local-sherpa/.models
           status=0
-          PRE=raw,rnnoise,gtcrn,dpdfnet_baseline,dpdfnet2,dpdfnet4,dpdfnet8,dpdfnet2_48khz_hr
+          PRE=raw,rnnoise
           for d in voxlock-live voxlock-sample; do
+            if [ "$VOXLOCK" != "true" ]; then break; fi
             if [ -f "$d/voxlock_cost.json" ]; then PRE="$PRE,precomputed:$d=$d"; else echo "voxlock skipped: $d missing" >> "$GITHUB_STEP_SUMMARY"; fi
           done
           taskset -c 2 ./target/release/examples/speaker_bench \
@@ -140,6 +156,8 @@ jobs:
             --stt-model "$M/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06" \
             --enhance "$M/enhance" \
             --pre "$PRE" \
+            --vad "$VAD" \
+            --adaptive-sweep \
             --out bench-results || status=$?
           cp speaker-fixtures/manifest.json bench-results/manifest.json 2>/dev/null || true
           # Chunk-size cost runs (20 / 80 ms) next to the results.

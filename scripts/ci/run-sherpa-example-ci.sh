@@ -238,7 +238,14 @@ run_one_roundtrip() {
   fi
   SHERPA_ROUNDTRIP_STEP_TIMEOUT_SEC="$step_timeout" CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
     bash "$CI_STEP" --timeout "$step_timeout" \
-      "sherpa e2e $script" -- "${cmd[@]}"
+      "sherpa e2e $script" -- "${cmd[@]}" || return $?
+  # Barge-in also runs with the opt-in adaptive VAD (same assertions, same step budget).
+  if [[ "$script" == "start:roundtrip-barge-in" ]]; then
+    SHERPA_VAD_PROVIDER=adaptive SHERPA_ROUNDTRIP_STEP_TIMEOUT_SEC="$step_timeout" \
+      CI_STEP_INDEX=$idx CI_STEP_TOTAL=$total \
+      bash "$CI_STEP" --timeout "$step_timeout" \
+        "sherpa e2e $script (adaptive VAD)" -- "${cmd[@]}"
+  fi
 }
 
 # Kill a pool member and everything below it (the roundtrip is npm > tsx > node, under timeout).

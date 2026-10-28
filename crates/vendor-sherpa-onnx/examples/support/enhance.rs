@@ -7,8 +7,8 @@
 //! - [`Agc`]: the caller-gain algorithm the product would copy (see its doc comment).
 //!
 //! Only these sherpa-onnx 1.13.2 APIs are used: `OnlineSpeechDenoiser::{create, run,
-//! frame_shift_in_samples}`, `OnlineSpeechDenoiserConfig`, `OfflineSpeechDenoiserModelConfig`
-//! and `DenoisedAudio { samples, sample_rate }`.
+//! frame_shift_in_samples, sample_rate}`, `OnlineSpeechDenoiserConfig`,
+//! `OfflineSpeechDenoiserModelConfig` and `DenoisedAudio { samples, sample_rate }`.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};

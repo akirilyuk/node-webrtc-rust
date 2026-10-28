@@ -84,7 +84,7 @@ A turn that no VAD utterance matches counts as missed; the counts are in the tab
 - **Cost**, per preprocessor and for the AGC alone, on one core (the workflow pins the process with `taskset -c 2`):
   - _RTF_: processing time per 20 ms frame divided by 20 ms, p50 / p99 / mean over `--cost-seconds` (default 60) of S3 audio, the first 25 frames not counted;
   - _streams per core_: N real-time paced streams on one thread (one frame per stream every 20 ms) for `--streams-seconds` (default 10) each, N in 1, 2, 4, 8, 12, 16, 24, 32; the largest N with at most 1 % of frames finishing more than 20 ms after they were due (stops at the first failing N; `+` = the last step passed);
-  - _added delay_: the lag (0 to 800 ms, 8 kHz) that maximizes the cross-correlation of the input and the processed signal on an S1 clip.
+  - _added delay_: the lag (0 to 800 ms, 8 kHz) that maximizes the cross-correlation of the input and the processed signal on a clean S1 clip (`main_clean`; an S1 babble clip if none).
 
 Outputs: the Part 3 tables are appended to `summary.md` and `results.json` has a `part3` object (`grid`, `grid_a_pooled`, `s1_wer`, `cost`).
 

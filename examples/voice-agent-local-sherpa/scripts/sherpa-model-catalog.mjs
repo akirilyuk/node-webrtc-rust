@@ -85,7 +85,8 @@ export const SHERPA_SPEAKER_PIPER_BUNDLES = [
 
 // ---------------------------------------------------------------------------
 // Speech-enhancement (denoiser) bench assets (benchmarks/speaker/README.md). Test and bench only.
-// Every file is checked against `checksum.txt` of its release. Licenses: GTCRN MIT, DPDFNet
+// gtcrn is checked against `checksum.txt` of its release; DPDFNet against hashes pinned from the
+// GitHub release-asset digests (its release lists no checksum). Licenses: GTCRN MIT, DPDFNet
 // Apache-2.0.
 // ---------------------------------------------------------------------------
 

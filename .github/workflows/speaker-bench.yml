@@ -58,7 +58,7 @@ jobs:
   bench:
     name: Speaker-ID bench (quick=${{ inputs.quick }})
     runs-on: ${{ inputs.runner || 'self-hosted' }}
-    timeout-minutes: 180
+    timeout-minutes: 300
     # Same image and build env as the other cargo jobs (vendor-bench.yml).
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest

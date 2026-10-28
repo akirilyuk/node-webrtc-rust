@@ -383,7 +383,8 @@ impl Fixtures {
 
     /// The S3 scene whose enrollment is the reference for `(set, level)`.
     fn reference_scene(&self, set: Set, level: Option<i32>) -> Option<usize> {
-        let s3 = |i: &usize| self.scenes[*i].kind == "conversation";
+        let s3 =
+            |i: &usize| self.scenes[*i].kind == "conversation" && self.scenes[*i].main_db == -20;
         let candidates: Vec<usize> = (0..self.scenes.len()).filter(s3).collect();
         let same_set: Vec<usize> = candidates
             .iter()
@@ -415,10 +416,19 @@ fn part2_clip_range(start_ms: usize, end_ms: usize, check_s: f32) -> (usize, usi
     (from, to.max(from))
 }
 
+/// Parts 1 and 2 use the default caller level only (-20 dB); the other caller-level conversation
+/// scenes belong to Part 3.
+fn default_level_scene(kind: &str, main_db: i32) -> bool {
+    kind != "conversation" || main_db == -20
+}
+
 fn collect_items(fx: &mut Fixtures) -> Result<Vec<Item>, String> {
     let mut items = Vec::new();
     for scene in 0..fx.scenes.len() {
         let kind = fx.scenes[scene].kind.clone();
+        if !default_level_scene(&kind, fx.scenes[scene].main_db) {
+            continue;
+        }
         let set = fx.scenes[scene].set;
         let scene_level = fx.scenes[scene].level_db;
         let level = (kind != "bystander_alone").then_some(scene_level);
@@ -791,6 +801,16 @@ fn onset_delay_ms(utt_start_ms: usize, seg_start_ms: usize) -> i64 {
     utt_start_ms as i64 - seg_start_ms as i64
 }
 
+/// Onset delay of a turn: the earliest VAD utterance overlapping the turn's span (when the VAD
+/// splits a turn, the first piece is what noticed it). `None` when no utterance overlaps.
+fn turn_onset_ms(seg_start: usize, seg_end: usize, utts: &[(usize, usize)]) -> Option<i64> {
+    utts.iter()
+        .filter(|u| overlap_ms(**u, (seg_start, seg_end)) > 0)
+        .map(|u| u.0)
+        .min()
+        .map(|start| onset_delay_ms(start, seg_start))
+}
+
 fn median_i64(values: &[i64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -840,8 +860,6 @@ fn make_preprocessor(name: &str, models: &Path) -> Result<Preprocessor, String> 
 struct Verdict {
     seg: Option<usize>,
     overlap: usize,
-    /// Utterance start minus the start of the segment it matched, in ms (0 when unmatched).
-    onset_ms: i64,
     transcript: String,
     caller: bool,
     score: f32,
@@ -987,7 +1005,6 @@ fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, V
         verdicts.push(Verdict {
             seg: matched.map(|m| m.0),
             overlap: matched.map_or(0, |m| m.1),
-            onset_ms: matched.map_or(0, |m| onset_delay_ms(span.0, seg_info[m.0].0)),
             transcript,
             caller,
             score,
@@ -1090,7 +1107,10 @@ fn part2_scene(fx: &mut Fixtures, scene: usize, p: &P2) -> Result<(LevelStats, V
                 match best {
                     None => stats.main_missed += 1,
                     Some(b) => {
-                        stats.onset_delays.push(b.onset_ms);
+                        let spans: Vec<(usize, usize)> = verdicts.iter().map(|v| v.span).collect();
+                        if let Some(d) = turn_onset_ms(seg.start_ms, seg.end_ms, &spans) {
+                            stats.onset_delays.push(d);
+                        }
                         if b.caller {
                             stats.main_caller += 1;
                             if long {
@@ -1620,6 +1640,14 @@ fn delay_ms(pre_name: &str, models: &Path, pcm: &[u8]) -> Result<f64, String> {
     Ok(best.0 as f64 / 8.0)
 }
 
+/// Scene for the added-delay measurement: a clean S1 clip, else an S1 babble clip.
+fn delay_scene(kinds: &[&str]) -> Option<usize> {
+    kinds
+        .iter()
+        .position(|k| *k == "main_clean")
+        .or_else(|| kinds.iter().position(|k| *k == "main_over_babble"))
+}
+
 fn cost_rows(
     fx: &Fixtures,
     r: &Part3Run,
@@ -1627,9 +1655,9 @@ fn cost_rows(
     s3: &[usize],
 ) -> Result<Vec<CostRow>, String> {
     let frames = cost_frames(fx, s3, r.cost_seconds)?;
-    // Input for the delay measurement: an S1 clip (main voice over babble), at most 6 s.
-    let delay_scene = (0..fx.scenes.len())
-        .find(|i| fx.scenes[*i].kind == "main_over_babble")
+    // Input for the delay measurement: a clean S1 clip (babble clip if none), at most 6 s.
+    let kinds: Vec<&str> = fx.scenes.iter().map(|s| s.kind.as_str()).collect();
+    let delay_scene = delay_scene(&kinds)
         .or_else(|| s3.first().copied())
         .ok_or("part 3: no scene for the delay measurement")?;
     let delay_pcm: Vec<u8> = read_wav_stereo_48k_pcm(
@@ -1788,6 +1816,7 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
         for agc in [false, true] {
             let in_b = GRID_B_PRE.contains(name);
             let mut by: BTreeMap<(i32, i32), LevelStats> = BTreeMap::new();
+            let combo_started = std::time::Instant::now();
             for &scene in &scenes {
                 let main_db = fx.scenes[scene].main_db;
                 let level = fx.scenes[scene].level_db;
@@ -1820,6 +1849,11 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
                 add_stats(by.entry((main_db, level)).or_default(), &stats);
                 rows.extend(scene_rows);
             }
+            eprintln!(
+                "part 3 pre {name} agc {} done in {:.0} s",
+                on_off(agc),
+                combo_started.elapsed().as_secs_f64()
+            );
             for ((main_db, level_db), stats) in by {
                 grid.push(GridRow {
                     pre: (*name).to_string(),
@@ -2162,6 +2196,9 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
+/// Sample rate of the fixture audio fed to the pipeline (48 kHz stereo PCM), listed in the header.
+const BENCH_SAMPLE_RATE: u32 = 48_000;
+
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     let manifest_bytes = fs::read(args.fixtures.join("manifest.json"))
@@ -2248,12 +2285,16 @@ fn run() -> Result<(), String> {
     );
 
     let s3_test: Vec<usize> = (0..fx.scenes.len())
-        .filter(|i| fx.scenes[*i].kind == "conversation" && fx.scenes[*i].set == Set::Test)
+        .filter(|i| {
+            fx.scenes[*i].kind == "conversation"
+                && fx.scenes[*i].set == Set::Test
+                && fx.scenes[*i].main_db == -20
+        })
         .collect();
     let (part2_scenes, part2_set) = if s3_test.is_empty() {
         (
             (0..fx.scenes.len())
-                .filter(|i| fx.scenes[*i].kind == "conversation")
+                .filter(|i| fx.scenes[*i].kind == "conversation" && fx.scenes[*i].main_db == -20)
                 .collect::<Vec<_>>(),
             "tune (no test-set conversation scene in the fixtures: smoke only, threshold not held out)",
         )
@@ -2369,6 +2410,7 @@ fn run() -> Result<(), String> {
     json.push_str(&format!("  \"cpu_model\": \"{}\",\n", json_escape(&cpu)));
     json.push_str(&format!("  \"git_sha\": \"{}\",\n", json_escape(&sha)));
     json.push_str(&format!("  \"manifest_sha256\": \"{manifest_sha}\",\n"));
+    json.push_str(&format!("  \"sample_rate\": {BENCH_SAMPLE_RATE},\n"));
     json.push_str("  \"part1\": {\n    \"rows\": [\n");
     for (i, r) in p1_rows.iter().enumerate() {
         json.push_str(&format!(
@@ -2462,7 +2504,7 @@ fn run() -> Result<(), String> {
     let mut md = String::new();
     md.push_str("# Speaker-ID bench\n\n");
     md.push_str(&format!(
-        "nproc {nproc}, CPU {cpu}, git {sha}, manifest sha256 `{manifest_sha}`\n\n"
+        "nproc {nproc}, CPU {cpu}, git {sha}, manifest sha256 `{manifest_sha}`, sample_rate {BENCH_SAMPLE_RATE} Hz\n\n"
     ));
     md.push_str("## Part 1: embedding level\n\n");
     md.push_str("Threshold, EER and FRR@FAR1% come from the tune set; the last two columns apply that threshold to the test set. Accept = score above threshold.\n\n");
@@ -2654,28 +2696,48 @@ mod tests {
 
     #[test]
     fn onset_delay_median() {
-        // Three main turns at 1000, 5000 and 9000 ms; the VAD utterances start at 1120, 5040 and
-        // 8950 ms (late, late, early): delays 120, 40, -50 -> median 40. A babble utterance and
-        // an utterance that matches no turn do not count.
-        let segs = [
-            (1000, 3000, false),
-            (3500, 4200, true),
-            (5000, 7000, false),
-            (9000, 11_000, false),
-        ];
-        let utts = [(1120, 3000), (3500, 4200), (5040, 7000), (8950, 11_000)];
-        let delays: Vec<i64> = utts
+        // Three main turns whose first VAD piece starts 120 ms late, 40 ms late and 50 ms early:
+        // the median of the per-turn onsets goes through the real `turn_onset_ms`.
+        let utts = [(1120, 3000), (5040, 7000), (8950, 11_000)];
+        let turns = [(1000, 3000), (5000, 7000), (9000, 11_000)];
+        let delays: Vec<i64> = turns
             .iter()
-            .filter_map(|u| match_segment(*u, &segs))
-            .map(|(i, _)| i)
-            .zip([1120usize, 5040, 8950])
-            .map(|(i, start)| onset_delay_ms(start, segs[i].0))
+            .filter_map(|t| turn_onset_ms(t.0, t.1, &utts))
             .collect();
         assert_eq!(delays, vec![120, 40, -50]);
         assert_eq!(median_i64(&delays), Some(40.0));
         // An even count averages the two middle values; no values, no median.
         assert_eq!(median_i64(&[10, 30, 20, 40]), Some(25.0));
         assert_eq!(median_i64(&[]), None);
+    }
+
+    #[test]
+    fn turn_onset_uses_earliest_overlapping_utterance() {
+        assert_eq!(
+            turn_onset_ms(1000, 3000, &[(1400, 1800), (2000, 2900)]),
+            Some(400)
+        );
+        assert_eq!(turn_onset_ms(1000, 3000, &[(3100, 3500)]), None);
+        assert_eq!(turn_onset_ms(1000, 3000, &[(900, 1500)]), Some(-100));
+    }
+
+    #[test]
+    fn default_level_scene_keeps_parts_1_and_2_at_minus_20() {
+        assert!(default_level_scene("conversation", -20));
+        assert!(!default_level_scene("conversation", -26));
+        assert!(!default_level_scene("conversation", -14));
+        assert!(default_level_scene("main_over_babble", -20));
+        assert!(default_level_scene("bystander_alone", -20));
+    }
+
+    #[test]
+    fn delay_scene_prefers_clean_s1() {
+        assert_eq!(
+            delay_scene(&["conversation", "main_over_babble", "main_clean"]),
+            Some(2)
+        );
+        assert_eq!(delay_scene(&["conversation", "main_over_babble"]), Some(1));
+        assert_eq!(delay_scene(&["conversation"]), None);
     }
 
     #[test]

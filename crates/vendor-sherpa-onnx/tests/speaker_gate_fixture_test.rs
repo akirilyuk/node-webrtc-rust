@@ -16,8 +16,7 @@
 //! least the bench value (run 5: 100 % for both VADs) minus 5 points. All levels are printed.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
@@ -32,6 +31,8 @@ use tokio::time::{sleep, Duration};
 const BENCH_B_AT_M15: f64 = 100.0;
 const BENCH_C_AT_M15: f64 = 100.0;
 const MARGIN_POINTS: f64 = 5.0;
+/// Shortest scene gap is ~1.4 s; VAD SpeechEnd comes `minSilenceDurationMs` after the turn ends.
+const FIXTURE_UTTERANCE_FINALIZE_MS: u32 = 100;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Role {
@@ -136,6 +137,10 @@ struct Stats {
     missed_main: usize,
     missed_by: usize,
     utterances: usize,
+    /// Utterances matched by more than one manifest turn (one final spans several turns).
+    merged: usize,
+    /// Turns whose utterance got no final.
+    no_final: usize,
 }
 
 fn pct(n: usize, d: usize) -> f64 {
@@ -155,8 +160,13 @@ struct Utt {
 async fn run_scene(scene: &Scene, provider: &str, stt_model: &str, speaker_model: &str) -> Stats {
     let mut registry = VendorRegistry::new();
     registry.register_stt(SttVendor::LocalSherpa, Arc::new(SherpaFactory));
+    // End-of-turn finalize below the scenes' shortest pause after VAD SpeechEnd: with the
+    // default 1500 ms, a next turn that starts within 1.5 s of SpeechEnd continues the same STT
+    // utterance, so several manifest turns share one final (one verdict) and the rest get none.
+    // The bench scored each turn on its own; this makes every VAD utterance finalize separately.
     let vad = VadConfig {
         provider: provider.to_string(),
+        utterance_finalize_timeout_ms: FIXTURE_UTTERANCE_FINALIZE_MS,
         ..VadConfig::default()
     };
     let config = VoiceAgentConfig {
@@ -183,20 +193,21 @@ async fn run_scene(scene: &Scene, provider: &str, stt_model: &str, speaker_model
     agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
     agent.start(None).await.unwrap();
 
-    // Media clock (ms of audio fed) at the moment each event arrives.
-    let fed = Arc::new(AtomicU64::new(0));
-    let log: Arc<Mutex<Vec<(u64, SpeechEvent)>>> = Arc::new(Mutex::new(Vec::new()));
+    // Events are drained after every frame and stamped with the media clock (ms of audio fed),
+    // so VAD events (emitted inside `process_inbound_pcm`) get the same stamp on every run.
     let mut rx = agent.subscribe_events();
-    let (fed_c, log_c) = (Arc::clone(&fed), Arc::clone(&log));
-    let collector = tokio::spawn(async move {
-        while let Ok(e) = rx.recv().await {
-            log_c
-                .lock()
-                .unwrap()
-                .push((fed_c.load(Ordering::SeqCst), e));
-        }
-    });
+    let mut events: Vec<(u64, SpeechEvent)> = Vec::new();
+    let mut fed = 0_u64;
 
+    // Frames are paced at real time from an anchor. The agent's STT finalize and gate-hold
+    // timers run on the wall clock: fed faster than real time (the old 1 ms sleep = 20x), a
+    // turn's final had not arrived when the next turn started, so turns merged into one final
+    // or lost theirs. The bench scored every turn on its own; real time keeps that.
+    let pace = std::env::var("SPEAKER_FIXTURE_SPEEDUP")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
     let pcm = read_wav_48k_stereo(&scene.wav48);
     let silent = vec![0_u8; 3840];
     let (speech_frames, _) = pcm.as_chunks::<3840>();
@@ -204,20 +215,26 @@ async fn run_scene(scene: &Scene, provider: &str, stt_model: &str, speaker_model
         .iter()
         .map(|f| &f[..])
         .chain(std::iter::repeat_n(&silent[..], 250));
-    for frame in frames {
+    let anchor = tokio::time::Instant::now();
+    for (n, frame) in frames.enumerate() {
+        let due = anchor + Duration::from_millis(n as u64 * 20 / u64::from(pace));
+        tokio::time::sleep_until(due).await;
         agent
             .process_inbound_pcm(Bytes::copy_from_slice(frame), 20)
             .await
             .unwrap();
-        fed.fetch_add(20, Ordering::SeqCst);
-        sleep(Duration::from_millis(1)).await;
+        fed += 20;
+        while let Ok(e) = rx.try_recv() {
+            events.push((fed, e));
+        }
     }
     assert!(agent.wait_stt_idle(Duration::from_secs(120)).await);
     sleep(Duration::from_millis(500)).await;
+    while let Ok(e) = rx.try_recv() {
+        events.push((fed, e));
+    }
     agent.stop().await.unwrap();
-    collector.abort();
 
-    let events = log.lock().unwrap().clone();
     // One entry per utterance id: start time from user_speaking_start, speaker from the final.
     let mut utts: Vec<(String, Utt)> = Vec::new();
     for (t, e) in &events {
@@ -246,13 +263,33 @@ async fn run_scene(scene: &Scene, provider: &str, stt_model: &str, speaker_model
         utterances: utts.len(),
         ..Stats::default()
     };
+    let verbose = std::env::var("SPEAKER_FIXTURE_VERBOSE").is_ok_and(|v| v == "1");
+    let mut hits_per_utt = vec![0_usize; utts.len()];
     for turn in &scene.turns {
         // First utterance starting inside the turn (onset slack for the VAD pre-roll).
-        let hit = utts
+        let hit_idx = utts
             .iter()
-            .map(|(_, u)| u)
-            .filter(|u| u.start_ms + 500 >= turn.start_ms && u.start_ms <= turn.end_ms)
-            .min_by_key(|u| u.start_ms.abs_diff(turn.start_ms));
+            .enumerate()
+            .filter(|(_, (_, u))| u.start_ms + 500 >= turn.start_ms && u.start_ms <= turn.end_ms)
+            .min_by_key(|(_, (_, u))| u.start_ms.abs_diff(turn.start_ms))
+            .map(|(i, _)| i);
+        if let Some(i) = hit_idx {
+            hits_per_utt[i] += 1;
+        }
+        let hit = hit_idx.map(|i| &utts[i].1);
+        st.no_final += usize::from(hit.is_some_and(|u| !u.has_final));
+        if verbose {
+            println!(
+                "  turn {:?} {}-{} -> {}",
+                turn.role,
+                turn.start_ms,
+                turn.end_ms,
+                hit_idx.map_or("none".to_string(), |i| format!(
+                    "{} start={} final={} speaker={:?}",
+                    utts[i].0, utts[i].1.start_ms, utts[i].1.has_final, utts[i].1.speaker
+                ))
+            );
+        }
         let speaker = hit
             .filter(|u| u.has_final)
             .and_then(|u| u.speaker.as_deref());
@@ -270,6 +307,7 @@ async fn run_scene(scene: &Scene, provider: &str, stt_model: &str, speaker_model
             }
         }
     }
+    st.merged = hits_per_utt.iter().filter(|n| **n > 1).count();
     st
 }
 
@@ -286,10 +324,17 @@ async fn speaker_gate_in_a_real_agent_on_the_s3_conversations() {
     let scenes = load_scenes(Path::new(&dir));
     assert!(!scenes.is_empty(), "no S3 test conversations in {dir}");
 
+    // Debug aid: `SPEAKER_FIXTURE_LEVEL=-15` runs one level only.
+    let only_level = std::env::var("SPEAKER_FIXTURE_LEVEL")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok());
     let mut failures = Vec::new();
     for provider in ["energy", "adaptive"] {
-        println!("\nVAD {provider}: level | utt | main turns (missed) | (b) main->caller % | bystander turns (missed) | (c) other % | (d) caller %");
+        println!("\nVAD {provider}: level | utt | merged | no final | main turns (missed) | (b) main->caller % | bystander turns (missed) | (c) other % | (d) caller %");
         for scene in &scenes {
+            if only_level.is_some_and(|l| l != scene.level_db) {
+                continue;
+            }
             let s = run_scene(scene, provider, &stt_model, &speaker_model).await;
             let (b, c, d) = (
                 pct(s.main_caller, s.main),
@@ -297,10 +342,12 @@ async fn speaker_gate_in_a_real_agent_on_the_s3_conversations() {
                 pct(s.by_caller, s.by),
             );
             println!(
-                "| {} dB ({}) | {} | {} ({}) | {:.1} | {} ({}) | {:.1} | {:.1} |",
+                "| {} dB ({}) | {} | {} | {} | {} ({}) | {:.1} | {} ({}) | {:.1} | {:.1} |",
                 scene.level_db,
                 scene.id,
                 s.utterances,
+                s.merged,
+                s.no_final,
                 s.main,
                 s.missed_main,
                 b,

@@ -402,6 +402,16 @@ impl SpeakerGate {
         }
     }
 
+    /// The verdict a final of `key` can carry right now: the stored verdict, or `Unknown` when no
+    /// check was sent. `None` while a sent check has not settled (use [`Self::await_outcome`]
+    /// off the frame path).
+    pub fn settled_outcome(&self, key: u64) -> Option<Outcome> {
+        if !self.check_sent(key) {
+            return Some(self.outcome_for(key).unwrap_or(Outcome::Unknown));
+        }
+        self.outcome_for(key)
+    }
+
     /// Verdict for the final of `key`: waits at most `verify_timeout_ms` for a check that was
     /// sent but has not settled, then `Unknown`.
     pub async fn await_outcome(&self, key: u64) -> Outcome {

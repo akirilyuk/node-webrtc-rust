@@ -572,6 +572,9 @@ pub struct VoiceAgent {
     speaker_gate: Option<Arc<SpeakerGate>>,
     /// The embedder until `start` hands it to the gate's verifier task.
     speaker_embedder: std::sync::Mutex<Option<Box<dyn SpeakerEmbedder>>>,
+    /// Finals waiting for their speaker verdict off the step lock; `wait_stt_idle` waits for them.
+    speaker_finals_pending: AtomicU64,
+    speaker_finals_done: Notify,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -755,6 +758,8 @@ impl VoiceAgent {
             language_id: Mutex::new(language_id),
             speaker_gate,
             speaker_embedder: std::sync::Mutex::new(speaker_embedder),
+            speaker_finals_pending: AtomicU64::new(0),
+            speaker_finals_done: Notify::new(),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
@@ -1337,11 +1342,27 @@ impl VoiceAgent {
         let Some(actor) = self.actor() else {
             return true;
         };
+        let started = tokio::time::Instant::now();
         let (done, rx) = oneshot::channel();
         if !actor.send(SttCommand::Barrier { done }) {
             return false;
         }
-        matches!(tokio::time::timeout(timeout, rx).await, Ok(Ok(())))
+        if !matches!(tokio::time::timeout(timeout, rx).await, Ok(Ok(()))) {
+            return false;
+        }
+        // Finals that wait for their speaker verdict are emitted from their own task.
+        loop {
+            let notified = self.speaker_finals_done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.speaker_finals_pending.load(Ordering::SeqCst) == 0 {
+                return true;
+            }
+            let left = timeout.saturating_sub(started.elapsed());
+            if left.is_zero() || tokio::time::timeout(left, notified).await.is_err() {
+                return self.speaker_finals_pending.load(Ordering::SeqCst) == 0;
+            }
+        }
     }
 
     /// Total bytes the STT actor pushed to the provider (tests).
@@ -3574,15 +3595,7 @@ impl VoiceAgent {
             return;
         }
         self.note_stt_final_for_turn_latency().await;
-        // Speaker gate: the verdict of this utterance, waiting at most `verifyTimeoutMs` for a
-        // check that was sent and has not settled (then `unknown`).
-        let speaker = match self.speaker_gate.as_ref() {
-            Some(gate) => Some(gate.await_outcome(key).await),
-            None => None,
-        };
-        let drop_mismatch = self.inner.lock().await.config.speaker_gate.on_mismatch
-            == crate::config::SpeakerMismatchAction::Drop;
-        let event = {
+        let (event, record_id) = {
             let mut inner = self.inner.lock().await;
             let Some(rec) = inner.record_mut(key) else {
                 return;
@@ -3622,20 +3635,67 @@ impl VoiceAgent {
             };
             rec.final_emitted = true;
             rec.mark_terminal();
-            match speaker {
-                Some(Outcome::Other) if drop_mismatch => {
-                    SpeechEvent::user_speech_ignored(Some(rec.id.clone()))
-                }
-                Some(outcome) => event.with_speaker(outcome.as_str()),
-                None => event,
-            }
+            (event, rec.id.clone())
+        };
+        let Some(gate) = self.speaker_gate.as_ref() else {
+            self.emit(event);
+            self.fire_final_terminal_waiter(key).await;
+            return;
+        };
+        // Speaker gate: the final carries this utterance's verdict. A final that arrives before
+        // its verdict waits for it (at most `verifyTimeoutMs`, then `unknown`) on its own task:
+        // this runs under the step lock, which every inbound frame takes, so waiting here would
+        // stall the frame path (`rt.serial-queue-head-of-line`).
+        if let Some(outcome) = gate.settled_outcome(key) {
+            self.emit_final_with_speaker(key, event, record_id, outcome)
+                .await;
+            return;
+        }
+        let Some(this) = self.weak_self.upgrade() else {
+            return;
+        };
+        voice_debug(format!(
+            "speaker gate: final key={key} waits for its verdict off the step lock"
+        ));
+        self.speaker_finals_pending.fetch_add(1, Ordering::SeqCst);
+        tokio::spawn(async move {
+            let outcome = match this.speaker_gate.as_ref() {
+                Some(gate) => gate.await_outcome(key).await,
+                None => Outcome::Unknown,
+            };
+            this.emit_final_with_speaker(key, event, record_id, outcome)
+                .await;
+            this.speaker_finals_pending.fetch_sub(1, Ordering::SeqCst);
+            this.speaker_finals_done.notify_waiters();
+        });
+    }
+
+    /// Emits a final with the speaker verdict (or `user_speech_ignored` for a dropped mismatch),
+    /// feeds enrollment, and releases the utterance's terminal waiter.
+    async fn emit_final_with_speaker(
+        &self,
+        key: u64,
+        event: SpeechEvent,
+        record_id: String,
+        outcome: Outcome,
+    ) {
+        let drop_mismatch = self.inner.lock().await.config.speaker_gate.on_mismatch
+            == crate::config::SpeakerMismatchAction::Drop;
+        let event = if outcome == Outcome::Other && drop_mismatch {
+            SpeechEvent::user_speech_ignored(Some(record_id))
+        } else {
+            event.with_speaker(outcome.as_str())
         };
         self.emit(event);
-        if let (Some(gate), Some(outcome)) = (self.speaker_gate.as_ref(), speaker) {
-            if outcome != Outcome::Other {
+        if outcome != Outcome::Other {
+            if let Some(gate) = self.speaker_gate.as_ref() {
                 gate.enroll_utterance(key);
             }
         }
+        self.fire_final_terminal_waiter(key).await;
+    }
+
+    async fn fire_final_terminal_waiter(&self, key: u64) {
         let mut inner = self.inner.lock().await;
         if let Some(rec) = inner.record_mut(key) {
             rec.fire_terminal_waiter(true);

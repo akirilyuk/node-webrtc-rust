@@ -555,6 +555,73 @@ async fn frame_path_never_awaits_the_embedder() {
     rig.agent.stop().await.unwrap();
 }
 
+/// A final that arrives before its verdict waits off the step lock: inbound frames keep
+/// returning at once, and the final is emitted later with `unknown` once `verifyTimeoutMs`
+/// passes (`rt.serial-queue-head-of-line`).
+#[tokio::test(start_paused = true)]
+async fn final_waiting_for_verdict_does_not_stall_frames() {
+    let mut cfg = agent_config(gate_cfg(SpeakerMismatchAction::Flag));
+    cfg.tts = None;
+    let mut rig = rig_with(cfg).await;
+    rig.enroll().await;
+    let finals_before = rig.finals().len();
+    *rig.default.lock().unwrap() = Behavior::Pending;
+    rig.script.lock().unwrap().final_on_finalize = Some("final before verdict".into());
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    let mut worst = Duration::ZERO;
+    let agent = Arc::clone(&rig.agent);
+    let timed = |frame: &[u8]| {
+        let agent = Arc::clone(&agent);
+        let frame = Bytes::from(frame.to_vec());
+        async move {
+            let t = tokio::time::Instant::now();
+            agent.process_inbound_pcm(frame, 20).await.unwrap();
+            t.elapsed()
+        }
+    };
+    for i in 0..45 {
+        let frame = if i < 15 { &loud } else { &silent };
+        worst = worst.max(timed(frame).await);
+    }
+    // Let the STT gate hold run out so the vendor final arrives; the check (sent after 200 ms
+    // of speech) is still pending: its 300 ms bound has not passed.
+    sleep(Duration::from_millis(100)).await;
+    rig.drain();
+    assert!(
+        rig.log
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::SttStreamEnd
+                && e.reason.as_deref() == Some("vendor_final")),
+        "the vendor final must have arrived"
+    );
+    assert_eq!(
+        rig.finals().len(),
+        finals_before,
+        "the final waits for its verdict"
+    );
+    for _ in 0..1000 {
+        worst = worst.max(timed(&silent).await);
+    }
+    assert!(
+        worst < Duration::from_millis(5),
+        "a frame waited {worst:?} behind a final waiting for its verdict"
+    );
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(rig.finals().len(), finals_before + 1);
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("unknown")
+    );
+    assert!(rig
+        .agent
+        .speaker_gate_warnings()
+        .iter()
+        .any(|w| w.contains("speaker gate verify timeout key=")));
+    rig.agent.stop().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn embeddings_are_never_logged() {
     let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;

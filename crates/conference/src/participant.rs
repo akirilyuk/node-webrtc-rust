@@ -9,7 +9,7 @@ use node_webrtc_rust_core::{
     LocalAudioTrack, PeerConnection, RemoteTrack, TrackKind,
 };
 use node_webrtc_rust_denoise::Stereo48kRnnoise;
-use node_webrtc_rust_mixer::{Frame, MixGraph, FRAME_BYTES, FRAME_MS};
+use node_webrtc_rust_mixer::{Frame, MixGraph, OutboundPacer, FRAME_BYTES, FRAME_MS};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -234,29 +234,40 @@ fn spawn_outbound_task(
             return;
         }
 
-        let mut interval = time::interval(Duration::from_millis(FRAME_MS as u64));
-        loop {
-            // Render at the tick's *scheduled* time, not at wall-clock time: when this task
-            // is late and tokio fires the missed ticks back-to-back, each render still
-            // advances the mix media clock by exactly one 20 ms tick (no skipped source
-            // frame followed by a repeated one).
-            let tick_at = interval.tick().await.into_std();
+        // Renders use each slot's *scheduled* time, so every render advances the mix media
+        // clock by exactly one 20 ms tick. A stall writes at most `MAX_BURST_WRITES` frames
+        // back to back (`one-writer-per-media-track`: re-anchor, never burst); the ticks of
+        // the skipped slots are counted by the graph as `listener_skipped`.
+        let mut pacer = OutboundPacer::new(std::time::Instant::now());
+        'outbound: loop {
+            time::sleep_until(time::Instant::from_std(pacer.next_due())).await;
 
             if pc.connection_state() != ConnectionState::Connected {
                 break;
             }
 
-            let frame = {
-                let mut graph = mix_graph.lock().await;
-                graph.render_output(&participant_id, tick_at)
-            };
-
-            if outbound_track
-                .write_sample(frame.pcm, Duration::from_millis(FRAME_MS as u64))
-                .await
-                .is_err()
-            {
-                break;
+            let due = pacer.due_slots(std::time::Instant::now());
+            if due.skipped > 0 {
+                debug_evt!(
+                    "conference::participant",
+                    "outbound_reanchor",
+                    "id={} skipped_slots={}",
+                    participant_id,
+                    due.skipped
+                );
+            }
+            for tick_at in due.at {
+                let frame = {
+                    let mut graph = mix_graph.lock().await;
+                    graph.render_output(&participant_id, tick_at)
+                };
+                if outbound_track
+                    .write_sample(frame.pcm, Duration::from_millis(FRAME_MS as u64))
+                    .await
+                    .is_err()
+                {
+                    break 'outbound;
+                }
             }
         }
 

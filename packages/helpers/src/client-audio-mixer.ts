@@ -1007,6 +1007,13 @@ export class ClientAudioMixer {
     if (due <= 0) return
 
     const originalDue = due
+    // A stall: skip the oldest slots (their mix ticks are counted by the graph as
+    // listenerSkipped) and write the newest PUMP_MAX_FRAMES_PER_TICK, never a burst.
+    // Lockstep: native PumpScheduler.plan_tick, mixer OutboundPacer.
+    if (due > PUMP_MAX_FRAMES_PER_TICK) {
+      state.pumpWritten += due - PUMP_MAX_FRAMES_PER_TICK
+      due = PUMP_MAX_FRAMES_PER_TICK
+    }
     const slotBudget = Math.min(due, PUMP_MAX_FRAMES_PER_TICK)
     let slotsAttempted = 0
 

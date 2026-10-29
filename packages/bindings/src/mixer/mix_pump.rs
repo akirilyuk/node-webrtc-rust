@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use node_webrtc_rust_core::LocalAudioTrack;
-use node_webrtc_rust_mixer::{Frame, MixGraph, FRAME_BYTES};
+use node_webrtc_rust_mixer::{Frame, MixGraph, FRAME_BYTES, MAX_BURST_WRITES};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::media::WriteSampleTee;
@@ -20,7 +20,7 @@ use crate::media::WriteSampleTee;
 /// One output frame.
 pub(crate) const PUMP_FRAME: Duration = Duration::from_millis(20);
 /// Max slots emitted from one tick (avoids silence catch-up bursts).
-pub(crate) const PUMP_MAX_FRAMES_PER_TICK: u64 = 4;
+pub(crate) const PUMP_MAX_FRAMES_PER_TICK: u64 = MAX_BURST_WRITES;
 /// A TTS enqueue within this window keeps the stream "active".
 pub(crate) const TTS_ACTIVE_WINDOW: Duration = Duration::from_millis(60);
 /// After this many consecutive active-window skips the stream counts as ended.
@@ -150,6 +150,13 @@ impl PumpScheduler {
             return actions;
         }
         let original_due = due;
+        // A stall: skip the oldest slots (their mix ticks are counted by the graph as
+        // listener_skipped) and write the newest PUMP_MAX_FRAMES_PER_TICK. Lockstep: mixer
+        // OutboundPacer, helpers pumpMixFrame.
+        if due > PUMP_MAX_FRAMES_PER_TICK {
+            self.written += due - PUMP_MAX_FRAMES_PER_TICK;
+            due = PUMP_MAX_FRAMES_PER_TICK;
+        }
         let budget = due.min(PUMP_MAX_FRAMES_PER_TICK);
         let tts_active = self.queue_was_non_empty || tts_active_recent;
         let mut attempted = 0;
@@ -419,9 +426,49 @@ mod tests {
         let now = base + ms(200);
         let actions = plan(&mut s, now, &mut q, false);
         assert_eq!(actions.len(), 4);
-        assert_eq!(s.written, 4);
+        let times: Vec<Instant> = actions
+            .iter()
+            .map(|a| match a {
+                SlotAction::Tts { at, .. } | SlotAction::Silence { at } => *at,
+            })
+            .collect();
+        assert_eq!(
+            times,
+            vec![
+                base + ms(140),
+                base + ms(160),
+                base + ms(180),
+                base + ms(200)
+            ]
+        );
+        assert_eq!(s.written, 10);
         assert_eq!(s.rebases, 1);
-        assert_eq!(s.anchor, now - ms(80));
+        assert_eq!(s.anchor, now - ms(200));
+    }
+
+    #[test]
+    fn one_second_stall_plans_the_newest_four_slots() {
+        let base = Instant::now();
+        let mut s = PumpScheduler::new(base);
+        let mut q = VecDeque::new();
+        let actions = plan(&mut s, base + ms(1000), &mut q, false);
+        assert_eq!(actions.len(), 4);
+        for (i, a) in actions.iter().enumerate() {
+            match a {
+                SlotAction::Silence { at } => assert_eq!(*at, base + ms(940 + 20 * i as u64)),
+                SlotAction::Tts { .. } => panic!("expected silence"),
+            }
+        }
+        assert_eq!(s.written, 50);
+        assert_eq!(s.rebases, 1);
+        let mut q: VecDeque<Bytes> = (1..=3).map(frame).collect();
+        let actions = plan(&mut s, base + ms(1020), &mut q, false);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            SlotAction::Tts { frame, .. } => assert_eq!(frame_id(frame), 1),
+            SlotAction::Silence { .. } => panic!("expected tts"),
+        }
+        assert_eq!(q.len(), 2);
     }
 
     #[test]

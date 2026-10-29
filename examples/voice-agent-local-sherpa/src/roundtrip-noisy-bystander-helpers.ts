@@ -46,6 +46,27 @@ export function readWavPcm(path: string): Buffer {
   throw new Error(`no data chunk in ${path}`)
 }
 
+/**
+ * Matches each scene turn to the utterance the agent heard for it: the first `user_speaking_start`
+ * at or after the turn's scene start and before the next turn's scene start, each utterance used
+ * once. A turn whose audio merged into the previous utterance gets none. Everything after this
+ * step pairs events by `utteranceId`, never by time.
+ */
+export function matchTurnUtterances(turns: Turn[], seen: Seen[]): (Seen | undefined)[] {
+  const starts = seen.filter(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart && e.utteranceId != null,
+  )
+  const used = new Set<string>()
+  return turns.map((turn, i) => {
+    const next = turns[i + 1]?.startMs ?? Number.POSITIVE_INFINITY
+    const start = starts.find(
+      (e) => !used.has(e.utteranceId!) && e.atMs >= turn.startMs && e.atMs < next,
+    )
+    if (start != null) used.add(start.utteranceId!)
+    return start
+  })
+}
+
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
 export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): string[] {
   const failures: string[] = []
@@ -56,19 +77,21 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     }
   }
   const barges = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  for (const b of barges) {
+    if (b.utteranceId == null) failures.push(`${label}: barge_in at ${b.atMs} ms without utteranceId`)
+  }
+  const bargesOf = (id: string): Seen[] => barges.filter((b) => b.utteranceId === id)
+  const starts = matchTurnUtterances(turns, seen)
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
-    const start = seen.find(
-      (e) =>
-        e.type === SPEECH_EVENT_TYPE.userSpeakingStart &&
-        e.atMs >= turn.startMs - 300 &&
-        e.atMs <= turn.endMs + 300,
-    )
-    const final = start?.utteranceId != null ? finals.get(start.utteranceId) : undefined
+    const start = starts[i]
+    const id = start?.utteranceId
+    const final = id != null ? finals.get(id) : undefined
     if (turn.role === 'bystander') {
-      const hit = barges.filter((b) => b.atMs >= turn.startMs && b.atMs <= turn.endMs + 1000)
-      if (hit.length > 0) failures.push(`${tag}: barge_in during a bystander turn`)
+      if (id != null && bargesOf(id).length > 0) {
+        failures.push(`${tag}: barge_in for the bystander utterance ${id}`)
+      }
       if (final != null) {
         if (final.speaker !== 'other') {
           failures.push(`${tag}: final speaker ${String(final.speaker)}, expected other`)
@@ -78,13 +101,11 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       }
       return
     }
-    const barge = barges.find(
-      (b) => b.atMs >= turn.startMs && b.atMs <= Math.max(turn.endMs, turn.startMs + 2200),
-    )
-    if (start == null) {
+    if (start == null || id == null) {
       failures.push(`${tag}: caller speech start not detected`)
       return
     }
+    const barge = bargesOf(id)[0]
     if (barge == null) {
       failures.push(`${tag}: no barge_in`)
     } else {

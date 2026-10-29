@@ -160,7 +160,7 @@ ensure_speaker_fixtures() {
     cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
       --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low" \
       --phrases "$ex/stt-phrase-qualification.json" --out "$ex/.models/speaker-fixtures" \
-      --main-levels -26 --min-turn-gap-ms 2500 --only s3_test_m15
+      --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --only s3_test_m15
 }
 
 # Model-backed vendor tests kept #[ignore] in default cargo test (no weights in PR quality).

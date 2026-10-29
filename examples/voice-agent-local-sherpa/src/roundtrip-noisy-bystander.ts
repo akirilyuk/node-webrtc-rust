@@ -2,16 +2,19 @@
  * E2E noisy bystander (Sherpa STT + TTS) — adaptive VAD + speaker gate over a real WebRTC loopback.
  *
  * One client leg plays a generated "conversation" test scene (`speaker_fixtures`, never committed):
- * two enrollment utterances of the caller, then alternating caller and bystander turns with
- * background babble. The bystander is 15 dB below the caller (scene level -15). While those turns
- * play, the agent keeps speaking, so a barge-in is possible at every turn.
+ * two enrollment utterances of the caller, then alternating caller and bystander turns at least
+ * 2.5 s apart. The bystander's voice is 15 dB below the caller (`--bystander-db -15`) and the
+ * background babble is at the scene level, also 15 dB below the caller. The agent answers every
+ * `user_speech_final` with a long reply, like an app, so every turn starts during playback.
+ * `barge_in` is paired with turns by `utteranceId`: each turn takes the first `user_speaking_start`
+ * inside its scene slot, everything else goes by id.
  *
  * Two passes, each with a fresh agent:
  *   1. caller at the default level (-20 dBFS);
- *   2. quiet caller at -26 dBFS (`_l26` scene), bystander still -15 dB relative.
+ *   2. quiet caller at -26 dBFS (`_l26` scene), bystander and babble still -15 dB relative.
  *
  * Per pass the script asserts:
- *   - no `barge_in` during a bystander turn, and its final (when detected) has `speaker: 'other'`;
+ *   - no `barge_in` carries a bystander utterance's id, and its final (when detected) has `speaker: 'other'`;
  *   - every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match
  *     the manifest text by the roundtrip oracle (`wordSimilarity`; long sentences are not judged);
  *   - barge-in delay after the caller's `user_speaking_start` <= checkSpeechMs + 150 ms.
@@ -20,7 +23,7 @@
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
  *     --models .models/speaker --main-tts .models/vits-piper-en_US-amy-low \
  *     --phrases stt-phrase-qualification.json --out .models/speaker-fixtures --main-levels -26 \
- *     --min-turn-gap-ms 2500 --only s3_test_m15
+ *     --min-turn-gap-ms 2500 --bystander-db -15 --only s3_test_m15
  * (CI does this in `ensure_sherpa_models`.)
  *
  * Run:
@@ -188,14 +191,16 @@ async function runPass(params: {
 
   let anchorEpoch = Date.now()
   const seen: Seen[] = []
-  let speaking = false
   let running = true
   void (async () => {
     try {
       for await (const event of listener.speechEvents()) {
         logRoundtripSpeechEvent(label, event)
-        if (event.type === SPEECH_EVENT_TYPE.agentSpeakingStart) speaking = true
-        if (event.type === SPEECH_EVENT_TYPE.agentSpeakingEnd) speaking = false
+        // Like an app: answer every final with a reply long enough to still be playing when the
+        // next turn starts, so every caller and bystander turn starts during playback.
+        if (event.type === SPEECH_EVENT_TYPE.userSpeechFinal) {
+          void listener.sendTextToTTS(AGENT_PHRASE).catch(() => undefined)
+        }
         seen.push({
           type: event.type,
           atMs: Date.now() - anchorEpoch,
@@ -210,22 +215,9 @@ async function runPass(params: {
   })()
   void drainInbound(userInbound, () => running)
 
-  // Keep the agent talking: queue a reply shortly before each judged turn unless it is playing.
-  const queued = new Set<number>()
-  const driver = setInterval(() => {
-    const elapsed = Date.now() - anchorEpoch
-    turns.forEach((turn, i) => {
-      if (!queued.has(i) && elapsed >= turn.startMs - 400 && elapsed < turn.endMs) {
-        queued.add(i)
-        if (!speaking) void listener.sendTextToTTS(AGENT_PHRASE).catch(() => undefined)
-      }
-    })
-  }, 50)
-
   anchorEpoch = Date.now()
   await playPaced(userOut, pcm)
   await streamSilence(userOut, 3)
-  clearInterval(driver)
   running = false
   await listener.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)

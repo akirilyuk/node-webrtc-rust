@@ -665,9 +665,9 @@ Exit code `1` if any phrase is empty or below the similarity threshold.
 
 ## Noisy bystander E2E
 
-[`src/roundtrip-noisy-bystander.ts`](./src/roundtrip-noisy-bystander.ts) — loopback with `vad.provider: 'adaptive'` and `speakerGate: { enabled: true, modelPath }` (product defaults). One client leg plays a generated `conversation` test scene: two caller enrollment utterances, then alternating caller and bystander turns with babble; the bystander is 15 dB below the caller. The agent keeps talking, so every turn could barge in. Two passes: caller at -20 dBFS, then a quiet caller at -26 dBFS (`_l26` scene), bystander still -15 dB relative.
+[`src/roundtrip-noisy-bystander.ts`](./src/roundtrip-noisy-bystander.ts) — loopback with `vad.provider: 'adaptive'` and `speakerGate: { enabled: true, modelPath }` (product defaults). One client leg plays a generated `conversation` test scene: two caller enrollment utterances, then alternating caller and bystander turns at least 2.5 s apart. The bystander's voice is 15 dB below the caller and the background babble is at the scene level, also 15 dB below the caller. The agent answers every `user_speech_final` with a long reply, so every turn starts during playback. Two passes: caller at -20 dBFS, then a quiet caller at -26 dBFS (`_l26` scene), bystander and babble still -15 dB relative.
 
-Asserted per pass: no `barge_in` during a bystander turn and its final has `speaker: 'other'`; every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match the manifest text (`wordSimilarity` >= 0.75; long sentences are not judged); the barge-in comes at most `checkSpeechMs` + 150 ms after the caller's `user_speaking_start`.
+Asserted per pass (each turn takes the first `user_speaking_start` inside its scene slot; `barge_in` and finals are paired by `utteranceId`): no `barge_in` carries a bystander utterance's id and its final has `speaker: 'other'`; every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match the manifest text (`wordSimilarity` >= 0.75; long sentences are not judged); the barge-in comes at most `checkSpeechMs` + 150 ms after the caller's `user_speaking_start`.
 
 ```bash
 npm run download-speaker --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
@@ -676,12 +676,12 @@ cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fix
   --main-tts examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low \
   --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json \
   --out examples/voice-agent-local-sherpa/.models/speaker-fixtures --main-levels -26 \
-  --min-turn-gap-ms 2500 --only s3_test_m15
+  --min-turn-gap-ms 2500 --bystander-db -15 --only s3_test_m15
 WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1 npm run start:roundtrip-noisy-bystander --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-Every turn gap in these scenes is at least 2.5 s (`--min-turn-gap-ms 2500`): with the product's default end of turn (1.5 s finalize plus VAD hangover), turns from two people closer than about 1.5 s merge into one transcript labelled by its first speaker. `--only s3_test_m15` generates just the two scenes the roundtrip plays. CI generates the scenes in `ensure_sherpa_models`; the speaker model and Piper voices are baked into the CI test image (`docker/ci/Dockerfile.test`). Env: `SHERPA_SPEAKER_SCENES_DIR`, `SHERPA_SPEAKER_MODEL_PATH`. Evaluator logic: [`src/roundtrip-noisy-bystander-helpers.ts`](./src/roundtrip-noisy-bystander-helpers.ts) (Vitest, no models).
+Every turn gap in these scenes is at least 2.5 s (`--min-turn-gap-ms 2500`) and the bystander is at `--bystander-db -15`: with the product's default end of turn (1.5 s finalize plus VAD hangover), turns from two people closer than about 1.5 s merge into one transcript labelled by its first speaker. `--only s3_test_m15` generates just the two scenes the roundtrip plays. CI generates the scenes in `ensure_sherpa_models`; the speaker model and Piper voices are baked into the CI test image (`docker/ci/Dockerfile.test`). Env: `SHERPA_SPEAKER_SCENES_DIR`, `SHERPA_SPEAKER_MODEL_PATH`. Evaluator logic: [`src/roundtrip-noisy-bystander-helpers.ts`](./src/roundtrip-noisy-bystander-helpers.ts) (Vitest, no models).
 
 ## Semantic barge-in E2E
 

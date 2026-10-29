@@ -7,7 +7,7 @@
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
 //!   --models <speaker dir> --main-tts <amy-low dir> --phrases <stt-phrase-qualification.json> \
 //!   --out <dir> [--quick] [--voices-root <dir>] [--cache <dir>] [--main-levels <dBFS,...>]
-//!   [--min-turn-gap-ms <ms>] [--only <scene-id-prefix>]
+//!   [--min-turn-gap-ms <ms>] [--bystander-db <dB>] [--only <scene-id-prefix>]
 //! ```
 //!
 //! - Main voice: `vits-piper-en_US-amy-low` (`--main-tts`), sid 0. Main text = the phrases of
@@ -62,6 +62,8 @@
 //!
 //! `--min-turn-gap-ms` (default 0: the drawn 1400-2000 ms gaps): raises every S3 gap to at least
 //! this many ms. The draws (and so texts, voices and babble) are unchanged, only the positions move.
+//! `--bystander-db` (default 0): level of the S3 bystander turns re the main voice; babble keeps
+//! the scene level. Only the gain changes, so the draws stay the same.
 //! `--only` (repeatable): generate only scenes whose id starts with one of the prefixes; the
 //! manifest lists only those. Without it every scene is generated (the bench default).
 //!
@@ -358,6 +360,11 @@ impl Synth {
 // ---------------------------------------------------------------------------------------------
 
 /// Scene id for a main level: unchanged at [`MAIN_REF_DB`], else `<base>_l<abs level>`.
+/// Voiced level (dBFS) of an S3 bystander turn: `rel_db` re the main voice at `main_db`.
+fn bystander_level_db(main_db: i32, rel_db: i32) -> f32 {
+    (main_db + rel_db) as f32
+}
+
 /// `--only` filter: an empty list selects every scene.
 fn scene_selected(only: &[String], id: &str) -> bool {
     only.is_empty() || only.iter().any(|prefix| id.starts_with(prefix.as_str()))
@@ -513,6 +520,8 @@ struct Ctx {
     min_turn_gap_ms: usize,
     /// `--only`: scene id prefixes to generate; empty generates every scene.
     only: Vec<String>,
+    /// `--bystander-db`: S3 bystander level re the main voice (0 = same voiced level).
+    bystander_db: i32,
 }
 
 impl Ctx {
@@ -785,7 +794,10 @@ impl Ctx {
                 });
             } else {
                 let text = self.sentences[rng.below(self.sentences.len())].clone();
-                let clip = normalize_to(&self.synth.clip(&bystander, &text)?, main_db as f32);
+                let clip = normalize_to(
+                    &self.synth.clip(&bystander, &text)?,
+                    bystander_level_db(main_db, self.bystander_db),
+                );
                 let seg = segment("bystander", &bystander, &text, pos, clip.len(), false);
                 let start = pos;
                 pos += clip.len() + ms(self.turn_gap_ms(&mut rng));
@@ -1053,6 +1065,7 @@ struct Args {
     main_levels: Vec<i32>,
     min_turn_gap_ms: usize,
     only: Vec<String>,
+    bystander_db: i32,
 }
 
 fn parse_main_levels(text: &str) -> Result<Vec<i32>, String> {
@@ -1083,6 +1096,7 @@ fn parse_args() -> Result<Args, String> {
     let mut main_levels = vec![MAIN_REF_DB as i32];
     let mut min_turn_gap_ms = 0usize;
     let mut only = Vec::new();
+    let mut bystander_db = 0i32;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -1107,6 +1121,17 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--min-turn-gap-ms {text:?}: {e}"))?;
             }
+            "--bystander-db" => {
+                let text = value("--bystander-db")?.to_string_lossy().into_owned();
+                bystander_db = text
+                    .parse()
+                    .map_err(|e| format!("--bystander-db {text:?}: {e}"))?;
+                if !(-40..=0).contains(&bystander_db) {
+                    return Err(format!(
+                        "--bystander-db {bystander_db}: must be between -40 and 0"
+                    ));
+                }
+            }
             "--only" => only.push(value("--only")?.to_string_lossy().into_owned()),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -1122,6 +1147,7 @@ fn parse_args() -> Result<Args, String> {
         main_levels,
         min_turn_gap_ms,
         only,
+        bystander_db,
     })
 }
 
@@ -1169,6 +1195,7 @@ fn run() -> Result<(), String> {
         scenes: Vec::new(),
         min_turn_gap_ms: args.min_turn_gap_ms,
         only: args.only.clone(),
+        bystander_db: args.bystander_db,
     };
 
     let sets = [Set::Tune, Set::Test];
@@ -1315,6 +1342,14 @@ mod tests {
     #[test]
     fn turn_phrase_indices_excludes_enrollment() {
         assert_eq!(turn_phrase_indices(7, 1, 4), vec![0, 2, 3, 5, 6]);
+    }
+
+    #[test]
+    fn bystander_db_offsets_the_main_level() {
+        // Default 0: the bystander keeps the main voice level (today's scenes).
+        assert_eq!(bystander_level_db(-20, 0), -20.0);
+        assert_eq!(bystander_level_db(-20, -15), -35.0);
+        assert_eq!(bystander_level_db(-26, -15), -41.0);
     }
 
     #[test]

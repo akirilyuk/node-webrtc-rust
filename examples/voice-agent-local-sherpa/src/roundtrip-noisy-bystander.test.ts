@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { evaluateTurns, type Seen, type Turn } from './roundtrip-noisy-bystander-helpers.js'
+import {
+  evaluateTurns,
+  matchTurnUtterances,
+  type Seen,
+  type Turn,
+} from './roundtrip-noisy-bystander-helpers.js'
 
 const caller: Turn = {
   role: 'main',
@@ -25,7 +30,7 @@ function ev(type: string, atMs: number, extra: Partial<Seen> = {}): Seen {
 function healthy(): Seen[] {
   return [
     ev('user_speaking_start', 10_100, { utteranceId: 'u1' }),
-    ev('barge_in', 11_500),
+    ev('barge_in', 11_500, { utteranceId: 'u1' }),
     ev('user_speech_final', 13_000, {
       utteranceId: 'u1',
       text: 'please check my order',
@@ -41,11 +46,40 @@ describe('evaluateTurns', () => {
     expect(evaluateTurns([caller, bystander], healthy(), 'p')).toEqual([])
   })
 
-  it('fails a barge-in during the bystander turn', () => {
-    const seen = [...healthy(), ev('barge_in', 15_000)]
+  it('fails a barge-in that carries the bystander utterance id', () => {
+    const seen = [...healthy(), ev('barge_in', 15_000, { utteranceId: 'u2' })]
     expect(evaluateTurns([caller, bystander], seen, 'p').join('\n')).toMatch(
-      /barge_in during a bystander/,
+      /barge_in for the bystander utterance u2/,
     )
+  })
+
+  it('attributes a late barge of the previous caller utterance to that utterance', () => {
+    // Inside the bystander's time window, but the id says it is the caller's utterance u1.
+    const seen = [...healthy(), ev('barge_in', 14_500, { utteranceId: 'u1' })]
+    seen.sort((a, b) => a.atMs - b.atMs)
+    expect(evaluateTurns([caller, bystander], seen, 'p')).toEqual([])
+  })
+
+  it('fails a barge_in without utteranceId', () => {
+    const seen = [...healthy(), ev('barge_in', 12_500)]
+    expect(evaluateTurns([caller, bystander], seen, 'p').join('\n')).toMatch(/without utteranceId/)
+  })
+
+  it('matches turns to utterances by the first speaking start inside the turn slot', () => {
+    // u2 starts 2.3 s after the bystander's scene start (pipeline delay), still before any next turn.
+    const seen = healthy().map((e) =>
+      e.type === 'user_speaking_start' && e.utteranceId === 'u2' ? { ...e, atMs: 16_300 } : e,
+    )
+    expect(matchTurnUtterances([caller, bystander], seen).map((s) => s?.utteranceId)).toEqual([
+      'u1',
+      'u2',
+    ])
+    // A bystander merged into the caller utterance has no own start: nothing matched, no steal.
+    const merged = healthy().filter((e) => e.utteranceId !== 'u2')
+    expect(matchTurnUtterances([caller, bystander], merged).map((s) => s?.utteranceId)).toEqual([
+      'u1',
+      undefined,
+    ])
   })
 
   it('fails a bystander final tagged caller', () => {

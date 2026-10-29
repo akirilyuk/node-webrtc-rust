@@ -3,6 +3,8 @@ name: Sherpa E2E stress
 # Runs the Sherpa e2e block (scripts/ci/run-sherpa-example-ci.sh e2e) N times in one job and
 # stops at the first failure: proof for flaky-tests-root-cause.md (20 consecutive green runs)
 # before changing how the roundtrips run. Dispatch-only; spends no vendor credit.
+# mode=cargo loops one `cargo test` invocation instead (Rust flake reproductions, e.g. the
+# conference mix-continuity tests), so those loops stay off the shared dev host and off ARC.
 #
 # Runs on the EU self-hosted runners by default. The ARC scale sets (nwr-small / nwr-large) are
 # reserved for PR CI, main CI and releases: a stress run holds a runner for hours and queues them.
@@ -14,12 +16,16 @@ on:
         description: Consecutive Sherpa e2e runs (stop at first failure)
         default: '20'
       mode:
-        description: e2e = the full CI Sherpa block per iteration; roundtrips = roundtrips only (models prepared once, no Rust ignored tests)
+        description: e2e = the full CI Sherpa block per iteration; roundtrips = roundtrips only (models prepared once, no Rust ignored tests); cargo = `cargo test <cargo_args>` per iteration (no npm, no .node)
         type: choice
         default: e2e
         options:
           - e2e
           - roundtrips
+          - cargo
+      cargo_args:
+        description: 'mode=cargo only: arguments after `cargo test`, e.g. -p node-webrtc-rust-conference --test mix_frame_continuity -- --test-threads=1'
+        default: ''
       only:
         description: Comma list of roundtrip npm scripts to keep (SHERPA_E2E_ONLY); empty = all
         default: ''
@@ -93,6 +99,7 @@ jobs:
       # block needs the debug .node, synced bindings and the TS dist; models come from
       # run-sherpa-example-ci.sh itself).
       - name: Prepare (npm ci, debug .node, TS dist)
+        if: inputs.mode != 'cargo'
         run: |
           bash scripts/ci/npm-ci-workspace.sh
           bash scripts/ci/build-native-addon.sh --target x86_64-unknown-linux-gnu --profile debug
@@ -109,6 +116,7 @@ jobs:
           ONLY: ${{ inputs.only }}
           PARALLEL: ${{ inputs.parallel }}
           CPU_BURN: ${{ inputs.cpu_burn }}
+          CARGO_ARGS: ${{ inputs.cargo_args }}
           NATIVE_TRACE: ${{ inputs.native_trace }}
           FIRST_PASS_VOICE_DEBUG: ${{ inputs.voice_debug }}
         run: |
@@ -126,6 +134,17 @@ jobs:
           [[ "$FIRST_PASS_VOICE_DEBUG" == "true" ]] && export SHERPA_ROUNDTRIP_FIRST_PASS_VOICE_DEBUG=1
           [[ -n "$ONLY" ]] && export SHERPA_E2E_ONLY="$ONLY"
           [[ -n "$PARALLEL" ]] && export SHERPA_E2E_PARALLEL="$PARALLEL"
+          if [[ "$MODE" == "cargo" && -z "$CARGO_ARGS" ]]; then
+            echo "mode=cargo needs cargo_args" >&2
+            exit 2
+          fi
+          if [[ "$MODE" == "cargo" ]]; then
+            # Build once outside the loop so iteration times measure the tests, not compilation.
+            read -r -a cargo_argv <<<"$CARGO_ARGS"
+            cargo_build_argv=()
+            for a in "${cargo_argv[@]}"; do [[ "$a" == "--" ]] && break; cargo_build_argv+=("$a"); done
+            cargo test --no-run "${cargo_build_argv[@]}" || exit 1
+          fi
           if [[ "$MODE" == "roundtrips" ]]; then
             # roundtrips mode expects the model paths in the environment (prepared once above).
             # shellcheck source=/dev/null
@@ -133,7 +152,7 @@ jobs:
             export SHERPA_LID_MODEL_PATH="${SHERPA_LID_MODEL_PATH:-$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny}"
           fi
           {
-            echo "## Sherpa e2e stress (${ITERATIONS} iterations, mode=${MODE}, only=${ONLY:-all}, parallel=${PARALLEL:-default}, cpu_burn=${CPU_BURN:-0})"
+            echo "## Sherpa e2e stress (${ITERATIONS} iterations, mode=${MODE}, cargo_args=${CARGO_ARGS:-n/a}, only=${ONLY:-all}, parallel=${PARALLEL:-default}, cpu_burn=${CPU_BURN:-0})"
             echo
             echo "| iteration | seconds |"
             echo "|---|---|"
@@ -155,7 +174,11 @@ jobs:
               export WNR_LOG_FILE="$stress_dir/native-trace/native-{pid}.log"
               export RUST_LOG="dtls=trace,webrtc_dtls=trace,webrtc::dtls_transport=trace,webrtc::peer_connection=trace,webrtc::mux=debug,webrtc_ice=trace,webrtc_sctp=trace,webrtc::sctp_transport=trace"
             fi
-            bash scripts/ci/run-sherpa-example-ci.sh "$MODE" 2>&1 | tee "$stress_dir/iteration-$i.log"
+            if [[ "$MODE" == "cargo" ]]; then
+              cargo test "${cargo_argv[@]}" 2>&1 | tee "$stress_dir/iteration-$i.log"
+            else
+              bash scripts/ci/run-sherpa-example-ci.sh "$MODE" 2>&1 | tee "$stress_dir/iteration-$i.log"
+            fi
             rc=${PIPESTATUS[0]}
             if [[ "$rc" -ne 0 ]]; then
               green=$((i - 1))

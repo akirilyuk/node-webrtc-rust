@@ -395,7 +395,6 @@ async fn default_min_check_checks_1800ms_utterance() {
     rig.script.lock().unwrap().final_on_finalize = Some("buy a car".into());
     // 90 frames x 20 ms = 1.8 s of speech.
     rig.feed(&loud_stereo_frame(), 90).await;
-    sleep(Duration::from_millis(300)).await;
     rig.feed(&silent_stereo_frame(), 30).await;
     rig.agent.flush_tts().await.unwrap();
     rig.feed(&silent_stereo_frame(), 30).await;

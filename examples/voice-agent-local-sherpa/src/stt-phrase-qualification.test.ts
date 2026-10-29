@@ -112,6 +112,8 @@ const UNQUALIFIED_PHRASES: Record<string, string> = {
     'counting phrase, judged by number-word counts, not by word similarity',
   'The quick brown fox jumps over the lazy dog and then continues speaking for several more seconds so we can interrupt playback.':
     'agent speech that barge-in cuts off; judged by playback duration ratios, its transcript is not compared',
+  'The quick brown fox jumps over the lazy dog and then keeps on talking about the weather in the valley. ':
+    'noisy-bystander agent reply (first part of a concatenation); only its playback span is used, its transcript is never compared',
 }
 
 interface PhraseConstant {

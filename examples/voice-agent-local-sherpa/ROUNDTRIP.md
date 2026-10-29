@@ -79,6 +79,7 @@ npm run start:roundtrip --workspace=@node-webrtc-rust/example-voice-agent-local-
 | **Single phrase**     | `npm run start:roundtrip -- "I love America"`                                                                                                                                                                                                                    |
 | **Single via env**    | `SHERPA_ROUNDTRIP_PHRASE="Hello world" npm run start:roundtrip`                                                                                                                                                                                                  |
 | **Semantic barge-in** | `npm run start:roundtrip-barge-in` — tone must not barge; spoken phrase must (see [§ Semantic barge-in E2E](#semantic-barge-in-e2e))                                                                                                                             |
+| **Noisy bystander**   | `npm run start:roundtrip-noisy-bystander` — adaptive VAD + speaker gate: a bystander 15 dB below the caller must not barge in, the caller (also at -26 dBFS) must (see [§ Noisy bystander E2E](#noisy-bystander-e2e))                                            |
 
 All modes above are exercised in CI — see [§ CI (GitHub Actions)](#ci-github-actions).
 
@@ -661,6 +662,25 @@ Roundtrip OK — 5 phrase(s) passed similarity check.
 ```
 
 Exit code `1` if any phrase is empty or below the similarity threshold.
+
+## Noisy bystander E2E
+
+[`src/roundtrip-noisy-bystander.ts`](./src/roundtrip-noisy-bystander.ts) — loopback with `vad.provider: 'adaptive'` and `speakerGate: { enabled: true, modelPath }` (product defaults). One client leg plays a generated `conversation` test scene: two caller enrollment utterances, then alternating caller and bystander turns with babble; the bystander is 15 dB below the caller. The agent keeps talking, so every turn could barge in. Two passes: caller at -20 dBFS, then a quiet caller at -26 dBFS (`_l26` scene), bystander still -15 dB relative.
+
+Asserted per pass: no `barge_in` during a bystander turn and its final has `speaker: 'other'`; every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match the manifest text (`wordSimilarity` >= 0.75; long sentences are not judged); the barge-in comes at most `checkSpeechMs` + 150 ms after the caller's `user_speaking_start`.
+
+```bash
+npm run download-speaker --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
+  --models examples/voice-agent-local-sherpa/.models/speaker \
+  --main-tts examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low \
+  --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json \
+  --out examples/voice-agent-local-sherpa/.models/speaker-fixtures --main-levels -26
+WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1 npm run start:roundtrip-noisy-bystander --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
+CI generates the scenes in `ensure_sherpa_models`; the speaker model and Piper voices are baked into the CI test image (`docker/ci/Dockerfile.test`). Env: `SHERPA_SPEAKER_SCENES_DIR`, `SHERPA_SPEAKER_MODEL_PATH`. Evaluator logic: [`src/roundtrip-noisy-bystander-helpers.ts`](./src/roundtrip-noisy-bystander-helpers.ts) (Vitest, no models).
 
 ## Semantic barge-in E2E
 

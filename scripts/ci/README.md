@@ -240,6 +240,40 @@ Details, env vars, and debug logging: [`examples/voice-agent-local-sherpa/ROUNDT
 
 ---
 
+## Stress loop workflow (`sherpa-e2e-stress.yml`)
+
+Dispatch-only workflow that runs one thing N times in a single job and stops at the first failing iteration. Use it to reproduce or rule out a flake (20 or more consecutive green runs) before changing how a test runs. It spends no vendor credit. Per-iteration seconds and the failure summary go to `GITHUB_STEP_SUMMARY`; on failure the iteration logs are uploaded as an artifact.
+
+Modes:
+
+- `e2e` (default): the full CI Sherpa block (`run-sherpa-example-ci.sh e2e`) per iteration, after the usual preparation (npm ci, debug `.node`, synced bindings, TS dist).
+- `roundtrips`: the Sherpa roundtrip scripts only. Models are prepared once, no Rust ignored tests.
+- `cargo`: one `cargo test <cargo_args>` invocation per iteration. No npm, no `.node`. The test binary is built once before the loop (from the arguments before `--`), so iteration times measure the tests.
+
+Inputs:
+
+| Input          | Default       | Meaning                                                                                                                                                 |
+| -------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `iterations`   | `20`          | Consecutive runs; the job stops at the first failure                                                                                                    |
+| `mode`         | `e2e`         | `e2e`, `roundtrips` or `cargo`                                                                                                                          |
+| `cargo_args`   | empty         | `mode=cargo` only (required there): arguments after `cargo test`, e.g. `-p node-webrtc-rust-conference --test mix_frame_continuity -- --test-threads=1` |
+| `only`         | empty         | Comma list of roundtrip npm scripts to keep (`SHERPA_E2E_ONLY`); empty = all                                                                            |
+| `parallel`     | empty         | Parallel-group width (`SHERPA_E2E_PARALLEL`); empty = the CI default                                                                                    |
+| `cpu_burn`     | `0`           | Number of busy-loop processes (`yes >/dev/null`) pinning cores for the whole loop, to reproduce CPU starvation; `0` = none                              |
+| `runner`       | `self-hosted` | `runs-on` label                                                                                                                                         |
+| `voice_debug`  | `false`       | `true` = `VOICE_DEBUG=1` on the first pass, so a failing pass has `[voice-debug]` internals                                                             |
+| `native_trace` | `false`       | `true` = native DTLS/ICE/SCTP trace per process, kept only for the failing iteration                                                                    |
+
+Load work runs on the EU self-hosted runners: always pass `-f runner=self-hosted`, never the ARC scale sets (`nwr-small` / `nwr-large`), which are reserved for PR CI, `main` CI and releases.
+
+Example (50 iterations of the conference mix-continuity tests under CPU starvation):
+
+```bash
+gh workflow run sherpa-e2e-stress.yml -R akirilyuk/node-webrtc-rust --ref <branch> -f runner=self-hosted -f mode=cargo -f iterations=50 -f cpu_burn=8 -f cargo_args="-p node-webrtc-rust-conference --test mix_frame_continuity -- --test-threads=1"
+```
+
+---
+
 ## Main push pipeline (`build-main.yml`)
 
 Triggered on every push to `main`.

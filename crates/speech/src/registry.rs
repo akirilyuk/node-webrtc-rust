@@ -3,9 +3,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::{LanguageIdConfig, SttConfig, SttVendor, TtsConfig, TtsVendor};
+use crate::config::{
+    LanguageIdConfig, SpeakerGateConfig, SttConfig, SttVendor, TtsConfig, TtsVendor,
+};
 use crate::error::{SpeechError, SpeechResult};
-use crate::pipeline::{LanguageIdProvider, SttProvider, TtsProvider, VendorFactory};
+use crate::pipeline::{
+    LanguageIdProvider, SpeakerEmbedder, SttProvider, TtsProvider, VendorFactory,
+};
 
 /// Registry mapping vendor ids to factory implementations.
 pub struct VendorRegistry {
@@ -53,6 +57,16 @@ impl VendorRegistry {
             )
         })?;
         factory.create_language_id(config)
+    }
+
+    pub fn create_speaker_embedder(
+        &self,
+        config: &SpeakerGateConfig,
+    ) -> SpeechResult<Option<Box<dyn SpeakerEmbedder>>> {
+        let factory = self.stt.get(&SttVendor::LocalSherpa).ok_or_else(|| {
+            SpeechError::Config("speaker gate requires local-sherpa vendor registration".into())
+        })?;
+        factory.create_speaker_embedder(config)
     }
 }
 

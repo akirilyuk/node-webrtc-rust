@@ -59,6 +59,8 @@ pub mod pipeline;
 pub mod registry;
 pub mod session_recorder;
 #[doc(hidden)]
+pub mod speaker_gate;
+#[doc(hidden)]
 pub mod stt_actor;
 #[doc(hidden)]
 pub mod stt_deferred;
@@ -78,18 +80,18 @@ pub use config::{
     resolve_min_stt_partial_tokens, resolved_language_id_min_speech_ms,
     resolved_post_utterance_silence_ms, stt_partial_token_count, BargeInConfig, EventDeliveryMode,
     EventsConfig, LanguageIdConfig, NoiseSuppressionConfig, NoiseSuppressionProvider,
-    SendTextToTtsOptions, SentenceCase, SpeechTransport, SttConfig, SttVendor, TtsConfig,
-    TtsVendor, UpdateTtsConfigOptions, VadConfig, VadSampleRate, VoiceAgentConfig,
-    VoiceSessionContext,
+    SendTextToTtsOptions, SentenceCase, SpeakerGateConfig, SpeakerMismatchAction, SpeechTransport,
+    SttConfig, SttVendor, TtsConfig, TtsVendor, UpdateTtsConfigOptions, VadConfig, VadSampleRate,
+    VoiceAgentConfig, VoiceSessionContext,
 };
 pub use error::{SpeechError, SpeechResult};
 pub use events::{SpeechEvent, SpeechEventBus, SpeechEventKind};
 pub use node_webrtc_rust_denoise::Stereo48kRnnoise;
 pub use pcm::{pcm_rms_i16, stereo_48k_to_mono_16k};
 pub use pipeline::{
-    tts_stream_chunks_enabled, FinalizeMode, LanguageIdProvider, LanguageIdResult, SttOutput,
-    SttProvider, SttTranscript, TtsAudioChunk, TtsOpenWait, TtsProgressiveSink, TtsProvider,
-    TtsSynthesis, VendorFactory, DEFAULT_STT_FINALIZE_WAIT_MS,
+    tts_stream_chunks_enabled, FinalizeMode, LanguageIdProvider, LanguageIdResult, SpeakerEmbedder,
+    SttOutput, SttProvider, SttTranscript, TtsAudioChunk, TtsOpenWait, TtsProgressiveSink,
+    TtsProvider, TtsSynthesis, VendorFactory, DEFAULT_STT_FINALIZE_WAIT_MS,
 };
 pub use registry::VendorRegistry;
 pub use session_recorder::{

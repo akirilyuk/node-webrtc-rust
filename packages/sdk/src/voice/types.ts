@@ -280,6 +280,40 @@ export interface VoiceAgentConfig {
   noiseSuppression?: {
     provider?: 'none' | 'rnnoise'
   }
+  /**
+   * Caller verification. Off by default.
+   *
+   * The caller's voice is learned from their first utterances (`enrollSpeechMs` of speech) and
+   * every later utterance is checked against it (`checkSpeechMs` of speech, about 20 ms of CPU).
+   * While the agent speaks and the voice is enrolled, a barge-in waits for the verdict, so it is
+   * delayed by up to `checkSpeechMs` plus `verifyTimeoutMs`. A voice that does not match does not
+   * barge in; its final carries `speaker: 'other'` (`onMismatch: 'flag'`) or is replaced by a
+   * `user_speech_ignored` event (`'drop'`). Utterances shorter than `minCheckSpeechMs`, and any
+   * check that fails or times out, are `speaker: 'unknown'` and behave as without the gate.
+   *
+   * Use it with `vad.provider: 'adaptive'`. With the energy VAD, turns in background noise split
+   * into short pieces, which are more often `unknown`.
+   *
+   * Voice embeddings are biometric data. They stay in process memory: never logged, emitted,
+   * stored or sent anywhere. Tell your users when you enable this.
+   */
+  speakerGate?: {
+    enabled?: boolean
+    /** Speaker embedding model, e.g. `nemo_en_titanet_small.onnx`. Required when enabled. */
+    modelPath?: string
+    /** Cosine similarity in (0, 1) at or above which an utterance is the caller. Default 0.459. */
+    threshold?: number
+    /** Speech (ms) used to learn the caller. Default 3000. */
+    enrollSpeechMs?: number
+    /** Speech (ms) of an utterance used for one check. Default 1500. */
+    checkSpeechMs?: number
+    /** Shorter clips are `unknown`. Default 1000. */
+    minCheckSpeechMs?: number
+    /** `'flag'` (default) keeps the final with `speaker: 'other'`; `'drop'` emits `user_speech_ignored`. */
+    onMismatch?: 'flag' | 'drop'
+    /** Bound (ms) on one check and on a final waiting for its verdict. Default 500. */
+    verifyTimeoutMs?: number
+  }
 }
 
 /**
@@ -359,6 +393,11 @@ export type SpeechEventType =
    * `interrupted`, `synthesizedMs`, `synthesisComplete`). Emitted once per reply, also for a reply dropped from the queue (`playedMs: 0`).
    */
   | 'agent_reply_end'
+  /**
+   * `speakerGate` with `onMismatch: 'drop'`: a final from a voice that is not the enrolled caller
+   * was dropped (`utteranceId`, `reason: 'speaker_mismatch'`). No text.
+   */
+  | 'user_speech_ignored'
   /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
   | 'voice_language_switching'
   /** Host coordinator: switch succeeded. */
@@ -396,6 +435,7 @@ export const SPEECH_EVENT_TYPE = {
   agentSpeakFailed: 'agent_speak_failed',
   agentReplyStart: 'agent_reply_start',
   agentReplyEnd: 'agent_reply_end',
+  userSpeechIgnored: 'user_speech_ignored',
   voiceLanguageSwitching: 'voice_language_switching',
   voiceLanguageChanged: 'voice_language_changed',
   voiceLanguageSwitchFailed: 'voice_language_switch_failed',
@@ -482,6 +522,8 @@ export interface SpeechEvent {
   synthesisComplete?: boolean
   /** `agent_reply_end`: true when the reply was cut off (barge-in, flush, stop) before its last frame. */
   interrupted?: boolean
+  /** `user_speech_final` with `speakerGate` on: who spoke. */
+  speaker?: 'caller' | 'other' | 'unknown'
 }
 
 /** `languageId.timing` values. */

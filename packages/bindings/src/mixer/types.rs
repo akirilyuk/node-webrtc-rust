@@ -197,7 +197,8 @@ pub struct JsMixStats {
     pub decode_errors: f64,
     /// Popped frames merged into one output frame for a listener that rendered late.
     pub listener_catchup_compressed: f64,
-    /// Popped frames a listener jumped over after a render more than 8 ticks late.
+    /// Popped frames a listener jumped over after a render more than 8 ticks late, or ticks
+    /// no longer held in the mix history (a burst after a stall over 340 ms).
     pub listener_skipped: f64,
     /// Frames currently queued.
     pub depth: u32,

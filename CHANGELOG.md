@@ -13,6 +13,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **vendor-sherpa-onnx:** Sherpa TTS loads Kokoro (`kokoro-*`) and Kitten (`kitten-*`) bundles next to Piper/VITS. The family is detected from `voices.bin` and the directory name. Kokoro gets no rule FSTs.
+- **conference (Rust):** `Room::inbound_audio_stats(participant_id)` returns a participant's server-side inbound audio counters (reorder, loss, PLC/FEC concealment) as an `InboundAudioStatsSnapshot`, or `None` before that participant's audio track arrives. Read-only diagnostics; the counters are cumulative since the track started.
 
 ### Changed
 
@@ -21,6 +22,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **vendor-sherpa-onnx:** local Sherpa STT no longer drops or cuts the last word of an utterance ("four five six" finalized as "four five" or "four five si"). `finalize_utterance` now feeds 640 ms of zero tail padding before `InputFinished`, so the streaming recognizer decodes the frames after its last full chunk. Whether the word survived used to depend on where the utterance fell on the chunk grid.
+- **mixer:** a conference listener whose output timer stalled for more than 160 ms and then rendered its missed 20 ms slots back-to-back no longer merges ticks and then repeats the newest one. Each slot now hears its own tick, and when the mix history no longer holds a tick the listener missed, that tick is counted in `listenerSkipped` instead of being replayed or lost without a count.
 
 ## [0.13.4] - 2026-10-26
 

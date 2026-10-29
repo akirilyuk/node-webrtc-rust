@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use node_webrtc_rust_core::{
-    debug_call, debug_evt, ConnectionState, LocalAudioTrack, PeerConnection, RemoteTrack,
+    debug_call, debug_evt, inbound_audio::InboundAudioStatsSnapshot, ConnectionState,
+    LocalAudioTrack, PeerConnection, RemoteTrack, TrackKind,
 };
 use node_webrtc_rust_denoise::Stereo48kRnnoise;
 use node_webrtc_rust_mixer::{Frame, MixGraph, FRAME_BYTES, FRAME_MS};
@@ -25,6 +26,8 @@ pub struct Participant {
     pc: PeerConnection,
     outbound_track: LocalAudioTrack,
     outbound_task: JoinHandle<()>,
+    /// Server-side inbound audio track, once `on_track` delivered it.
+    inbound_audio: Arc<std::sync::Mutex<Option<RemoteTrack>>>,
 }
 
 impl Participant {
@@ -43,6 +46,8 @@ impl Participant {
 
         let participant_id = id.clone();
         let mix_for_handler = Arc::clone(&mix_graph);
+        let inbound_audio: Arc<std::sync::Mutex<Option<RemoteTrack>>> = Arc::default();
+        let inbound_for_handler = Arc::clone(&inbound_audio);
         pc.on_track(move |track| {
             debug_evt!(
                 "conference::participant",
@@ -51,6 +56,11 @@ impl Participant {
                 participant_id,
                 track.id()
             );
+            if track.kind() == TrackKind::Audio {
+                if let Ok(mut slot) = inbound_for_handler.lock() {
+                    *slot = Some(track.clone());
+                }
+            }
             let mix_graph = Arc::clone(&mix_for_handler);
             let id = participant_id.clone();
             tokio::spawn(run_inbound_loop(id, track, mix_graph, noise_suppression));
@@ -73,7 +83,15 @@ impl Participant {
             pc,
             outbound_track,
             outbound_task,
+            inbound_audio,
         })
+    }
+
+    /// Inbound audio stage counters of this participant's server-side audio track, or `None`
+    /// before the track arrived. Read-only; the counters are cumulative since the track started.
+    pub fn inbound_audio_stats(&self) -> Option<InboundAudioStatsSnapshot> {
+        let slot = self.inbound_audio.lock().ok()?;
+        slot.as_ref().map(RemoteTrack::inbound_stats)
     }
 
     /// Returns the underlying peer connection.

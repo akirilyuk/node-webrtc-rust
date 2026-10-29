@@ -51,6 +51,10 @@ sherpa_roundtrip_timeout_sec() {
       # ~60s of real-time phases (6s pending finals x 3 phases, model loads); 150s in-process wall, one VOICE_DEBUG re-run.
       echo "${CI_SHERPA_SLOW_FINAL_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
+    start:roundtrip-noisy-bystander)
+      # Two real-time passes of a ~90s scene (420s in-process wall); one VOICE_DEBUG re-run.
+      echo "${CI_SHERPA_NOISY_BYSTANDER_ROUNDTRIP_TIMEOUT_SEC:-900}"
+      ;;
     start:roundtrip-load-ci)
       # 4 concurrent legs x 2 turns; 60s setup + per-turn TTS/silence/STT budget in-process.
       echo "${CI_SHERPA_LOAD_ROUNDTRIP_TIMEOUT_SEC:-420}"
@@ -75,6 +79,7 @@ SHERPA_ROUNDTRIP_E2E_SERIAL=(
   start:roundtrip-slow-final
   start:roundtrip-barge-in
   start:roundtrip-barge-in-buffered
+  start:roundtrip-noisy-bystander
   start:roundtrip-counting-barge-recovery
   start:roundtrip-concurrent-multi-client
   start:roundtrip-load-ci
@@ -136,6 +141,23 @@ ensure_sherpa_models() {
   unset SHERPA_STT_MODEL_PATH SHERPA_TTS_MODEL_PATH SHERPA_STT_LANGUAGE
   # shellcheck source=/dev/null
   source "$ROOT/scripts/export-sherpa-local-models.sh"
+  ensure_speaker_fixtures
+}
+
+# Speaker model, Piper voices and the generated conversation scenes for start:roundtrip-noisy-bystander,
+# once per job (S3 test set at the default main level and at -26 dBFS). Scenes are never committed.
+ensure_speaker_fixtures() {
+  sherpa_e2e_selected start:roundtrip-noisy-bystander || return 0
+  local ex="$ROOT/examples/voice-agent-local-sherpa"
+  echo "==> speaker assets + noisy-bystander scenes"
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
+    "sherpa download-speaker" -- npm run download-speaker --workspace="$WORKSPACE"
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
+    "sherpa speaker_fixtures" -- \
+    cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
+      --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low" \
+      --phrases "$ex/stt-phrase-qualification.json" --out "$ex/.models/speaker-fixtures" \
+      --main-levels -26
 }
 
 # Model-backed vendor tests kept #[ignore] in default cargo test (no weights in PR quality).

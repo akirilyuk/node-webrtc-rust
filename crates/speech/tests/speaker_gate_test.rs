@@ -597,7 +597,7 @@ async fn short_caller_verdict_fires_after_next_utterance_started() {
 /// `agent_reply_end{interrupted}` -> `barge_in` -> `agent_speaking_end` (`contract.event-order`);
 /// the reply and speaking events no longer bypass the ordered queue.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn barge_in_precedes_interrupted_reply_end_while_a_final_waits() {
+async fn interrupted_reply_order_holds_while_a_final_waits() {
     let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
     cfg.verify_timeout_ms = 3000;
     let mut rig = rig_with(agent_config(cfg)).await;

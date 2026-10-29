@@ -26,6 +26,7 @@ on:
       - 'examples/voice-agent-local-sherpa/scripts/download-stt.mjs'
       - 'examples/voice-agent-local-sherpa/scripts/download-tts.mjs'
       - 'examples/voice-agent-local-sherpa/scripts/download-lid.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/download-speaker.mjs'
       - 'examples/voice-agent-local-sherpa/scripts/sherpa-model-catalog.mjs'
       - 'examples/voice-agent-local-sherpa/scripts/sherpa-tts-model-catalog.mjs'
   pull_request:
@@ -41,6 +42,7 @@ on:
       - 'examples/voice-agent-local-sherpa/scripts/download-stt.mjs'
       - 'examples/voice-agent-local-sherpa/scripts/download-tts.mjs'
       - 'examples/voice-agent-local-sherpa/scripts/download-lid.mjs'
+      - 'examples/voice-agent-local-sherpa/scripts/download-speaker.mjs'
       - 'examples/voice-agent-local-sherpa/scripts/sherpa-model-catalog.mjs'
       - 'examples/voice-agent-local-sherpa/scripts/sherpa-tts-model-catalog.mjs'
   workflow_dispatch:

@@ -13,12 +13,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends coturn bzip2 \
 # Sherpa models via the same download scripts as local dev. Only the scripts and
 # catalogs are copied, so source edits elsewhere do not rebuild this layer.
 COPY examples/shared/sherpa-local-model-catalog.json examples/shared/sherpa-tts-model-catalog.json /opt/nwr-model-src/examples/shared/
-COPY examples/voice-agent-local-sherpa/scripts/download-stt.mjs examples/voice-agent-local-sherpa/scripts/download-tts.mjs examples/voice-agent-local-sherpa/scripts/download-lid.mjs examples/voice-agent-local-sherpa/scripts/sherpa-model-catalog.mjs examples/voice-agent-local-sherpa/scripts/sherpa-tts-model-catalog.mjs /opt/nwr-model-src/examples/voice-agent-local-sherpa/scripts/
+COPY examples/voice-agent-local-sherpa/scripts/download-stt.mjs examples/voice-agent-local-sherpa/scripts/download-tts.mjs examples/voice-agent-local-sherpa/scripts/download-lid.mjs examples/voice-agent-local-sherpa/scripts/download-speaker.mjs examples/voice-agent-local-sherpa/scripts/sherpa-model-catalog.mjs examples/voice-agent-local-sherpa/scripts/sherpa-tts-model-catalog.mjs /opt/nwr-model-src/examples/voice-agent-local-sherpa/scripts/
 RUN set -eux \
     && cd /opt/nwr-model-src/examples/voice-agent-local-sherpa \
     && node scripts/download-stt.mjs --lang=en \
     && node scripts/download-tts.mjs --lang=en \
     && node scripts/download-lid.mjs \
+    && node scripts/download-speaker.mjs \
     && node scripts/download-tts.mjs --lang=de \
     && node scripts/download-tts.mjs --lang=es \
     && rm -f .models/*.tar.bz2 \
@@ -35,6 +36,11 @@ RUN set -eux \
          test -d "$d"; \
          ls "$d"/*.onnx >/dev/null; \
          find "$d" -maxdepth 1 -name '*.onnx' -size +0 | grep -q .; \
+       done \
+    && test -s /opt/sherpa-models/speaker/nemo_en_titanet_small.onnx \
+    && for b in ryan-medium kristin-medium hfc_male-medium joe-medium hfc_female-medium lessac-medium libritts_r-medium; do \
+         test -s "/opt/sherpa-models/vits-piper-en_US-$b/tokens.txt"; \
+         find "/opt/sherpa-models/vits-piper-en_US-$b" -maxdepth 1 -name '*.onnx' -size +0 | grep -q .; \
        done
 
 ENV NWR_CI_SHERPA_MODELS=/opt/sherpa-models

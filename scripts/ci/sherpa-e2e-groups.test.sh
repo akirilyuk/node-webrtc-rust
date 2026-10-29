@@ -58,7 +58,7 @@ caps="$(bash "$CI_SCRIPT" step-timeouts | cut -d' ' -f1 | sort)"
 
 # 2. Timing-sensitive and CPU-heavy (10-session lid-multi) scripts stay serial.
 for name in start:roundtrip-utterance-timing start:roundtrip-c1-timeouts start:roundtrip-slow-final \
-  start:roundtrip-barge-in start:roundtrip-barge-in-buffered start:roundtrip-counting-barge-recovery \
+  start:roundtrip-barge-in start:roundtrip-barge-in-buffered start:roundtrip-noisy-bystander start:roundtrip-counting-barge-recovery \
   start:roundtrip-concurrent-multi-client start:roundtrip-load-ci start:roundtrip-barge-replay \
   start:roundtrip-counting-echo-lid-multi; do
   printf '%s\n' "${serial[@]}" | grep -qx "$name" || fail "$name must be in the serial group"
@@ -66,7 +66,7 @@ done
 for name in "${serial[@]}"; do
   case "$name" in
     start:roundtrip-utterance-timing | start:roundtrip-c1-timeouts | start:roundtrip-slow-final | \
-      start:roundtrip-barge-in | start:roundtrip-barge-in-buffered | start:roundtrip-counting-barge-recovery | \
+      start:roundtrip-barge-in | start:roundtrip-barge-in-buffered | start:roundtrip-noisy-bystander | start:roundtrip-counting-barge-recovery | \
       start:roundtrip-concurrent-multi-client | start:roundtrip-load-ci | start:roundtrip-barge-replay | start:roundtrip-counting-echo-lid-multi) ;;
     *) fail "$name is in the serial group but not in the reviewed timing-sensitive list" ;;
   esac

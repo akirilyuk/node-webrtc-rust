@@ -22,7 +22,8 @@ const MAX_CATCHUP_TICKS: u64 = 8;
 /// frame in order (it advances one tick per render until it has caught up).
 ///
 /// A listener trails the clock by up to `MAX_CATCHUP_TICKS` plus the ticks it renders early
-/// (`behind`, also capped), and merging reads one tick further back.
+/// (`behind`), and merging reads one tick further back. A render whose next unheard tick is
+/// older than this skips to the oldest tick still held, counted as `listener_skipped`.
 const HISTORY_TICKS: usize = 2 * MAX_CATCHUP_TICKS as usize + 2;
 
 /// Which history ticks one listener render hears (see `MixGraph::next_listener_step`).
@@ -32,7 +33,8 @@ enum ListenerStep {
     Single { lag: u64 },
     /// Two consecutive ticks merged into one frame, catching up by one tick.
     Merged { older_lag: u64, newer_lag: u64 },
-    /// Jumped to the newest tick; `skipped` popped ticks were not heard.
+    /// Jumped forward to the tick at `lag` (the newest, the oldest still held, or beyond the
+    /// history, which renders silence); `skipped` popped ticks were not heard.
     Skipped { lag: u64, skipped: u64 },
 }
 
@@ -556,17 +558,25 @@ impl MixGraph {
     /// clock (another listener's later slot already advanced it). Such a render is
     /// `behind` whole ticks early: it may only hear ticks up to `tick_count - behind`,
     /// otherwise it would consume a tick whose time has not come and then, finding no new
-    /// tick at its next slot, repeat the frame it just played.
+    /// tick at its next slot, repeat the frame it just played. `behind` is not capped: a
+    /// listener whose timer stalled and then fires its missed slots back-to-back renders each
+    /// slot at its own tick, one new tick per render. Capping it made such a burst merge ticks
+    /// it was not late for and then replay the newest tick until its slots caught up (an
+    /// uncounted duplicate per merge). When the history no longer holds the next tick the
+    /// listener has not heard, it skips, and every tick it never hears is counted as
+    /// `listener_skipped`: a render near the present (its slot's tick at least
+    /// `MAX_CATCHUP_TICKS` newer than the oldest held tick) jumps once to `newest`, as a merge
+    /// per render could not catch up; a burst render further back hears the oldest held tick
+    /// and catches up by merging; a render whose own tick is gone too renders silence.
     fn next_listener_step(&mut self, listener_id: &str, now: Instant) -> ListenerStep {
         let tick = Duration::from_millis(u64::from(FRAME_MS));
         let behind = match self.clock {
             Some(clock) if now < clock => {
                 let early = clock.duration_since(now).as_micros();
-                u64::try_from(early.div_ceil(tick.as_micros())).unwrap_or(MAX_CATCHUP_TICKS)
+                u64::try_from(early.div_ceil(tick.as_micros())).unwrap_or(u64::MAX)
             }
             _ => 0,
-        }
-        .min(MAX_CATCHUP_TICKS);
+        };
         let newest = self.tick_count.saturating_sub(behind);
         let tick_count = self.tick_count;
         let cursor = self
@@ -574,6 +584,26 @@ impl MixGraph {
             .entry(listener_id.to_string())
             .or_insert(newest);
         let trailing = newest.saturating_sub(*cursor);
+        // Oldest tick `frame_at_lag` can still serve (lag < HISTORY_TICKS).
+        let oldest_held = tick_count.saturating_sub(HISTORY_TICKS as u64 - 1);
+        if trailing > 0 && *cursor + 1 < oldest_held {
+            // The next unheard tick is gone; every tick the listener never hears is counted.
+            let (heard, skipped) = if newest < oldest_held {
+                // This slot's tick is gone too: silence (`frame_at_lag` beyond the history).
+                (newest, trailing)
+            } else if newest - oldest_held >= MAX_CATCHUP_TICKS {
+                // Rendering near the present: one jump, as before (a merge per render cannot
+                // catch up).
+                (newest, trailing - 1)
+            } else {
+                (oldest_held, oldest_held - *cursor - 1)
+            };
+            *cursor = heard;
+            return ListenerStep::Skipped {
+                lag: tick_count - heard,
+                skipped,
+            };
+        }
         if trailing <= 1 {
             // On time (or early): hear the next tick if there is one, else repeat the last.
             if trailing == 1 {
@@ -1464,6 +1494,188 @@ mod tests {
         let stats = graph.source_stats("talker").unwrap();
         let silent_ticks = graph.tick_count - stats.played;
         (carried, stats, silent_ticks)
+    }
+
+    /// A paced source (frame k pushed at 20 k ms) heard by a `driver` that renders on time
+    /// (slot phase +3 ms, so it advances the media clock) and a `listener` (phase +7 ms) whose
+    /// timer stalls from wall time `stall_at` for `stall_ms` and then fires every missed slot
+    /// back-to-back with its *scheduled* time (tokio `MissedTickBehavior::Burst`, as the
+    /// conference outbound loop renders). Returns the indices each listener render carried
+    /// and the final source stats.
+    fn run_listener_burst_after_stall(
+        total: u64,
+        stall_at: u64,
+        stall_ms: u64,
+    ) -> (Vec<Vec<u64>>, SourceStats) {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        graph.set_listener_sources("driver", &["talker".to_string()]);
+        let table: HashMap<i16, u64> = (0..total)
+            .map(|k| (first_sample(&graph_pan(marker_amp(k))), k))
+            .collect();
+        let mut carried = Vec::new();
+        let mut next_listener_slot = 1u64;
+        for wall in 0..(20 * (total + 5)) {
+            if wall % 20 == 0 && wall / 20 < total {
+                let k = wall / 20;
+                graph.push_frame_at("talker", tone_frame(1, marker_amp(k)), t0() + ms(20 * k));
+            }
+            if wall % 20 == 3 {
+                graph.render_output("driver", t0() + ms(wall));
+            }
+            let stalled = wall >= stall_at && wall < stall_at + stall_ms;
+            while !stalled && 20 * next_listener_slot + 7 <= wall {
+                let out = graph.render_output("listener", t0() + ms(20 * next_listener_slot + 7));
+                carried.push(indices_in(&out, &table));
+                next_listener_slot += 1;
+            }
+        }
+        (carried, graph.source_stats("talker").unwrap())
+    }
+
+    #[test]
+    fn listener_returning_after_a_history_overrun_jumps_once() {
+        // Paced talker; `driver` renders every slot at +3 ms; `listener` renders slots 1..=10
+        // at +7 ms, none for 11..=39 (its pump dropped them), then 40..=60. Its cursor is then
+        // older than the history while it renders near the present: it must jump once.
+        let total = 62u64;
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        graph.set_listener_sources("driver", &["talker".to_string()]);
+        let table: HashMap<i16, u64> = (0..total)
+            .map(|k| (first_sample(&graph_pan(marker_amp(k))), k))
+            .collect();
+        let mut carried: Vec<(u64, Vec<u64>)> = Vec::new();
+        for slot in 0..=60u64 {
+            graph.push_frame_at(
+                "talker",
+                tone_frame(1, marker_amp(slot)),
+                t0() + ms(20 * slot),
+            );
+            graph.render_output("driver", t0() + ms(20 * slot + 3));
+            if (1..=10).contains(&slot) || (40..=60).contains(&slot) {
+                let out = graph.render_output("listener", t0() + ms(20 * slot + 7));
+                carried.push((slot, indices_in(&out, &table)));
+            }
+        }
+        let after: Vec<u64> = carried
+            .iter()
+            .filter(|(slot, _)| *slot >= 40)
+            .flat_map(|(_, v)| v.iter().copied())
+            .collect();
+        assert!(
+            after.windows(2).all(|w| w[1] == w[0] + 1),
+            "a second jump after returning: {carried:?}"
+        );
+        let last_before = *carried
+            .iter()
+            .filter(|(slot, _)| *slot <= 10)
+            .flat_map(|(_, v)| v.iter())
+            .max()
+            .unwrap();
+        let unheard = after[0] - last_before - 1;
+        let stats = graph.source_stats("talker").unwrap();
+        assert_eq!(unheard, stats.listener_skipped, "{stats:?} {carried:?}");
+        assert_eq!(stats.listener_catchup_compressed, 0, "{stats:?}");
+    }
+
+    #[test]
+    fn listener_returning_early_within_the_history_hears_the_oldest_held_tick_then_catches_up() {
+        // Paced talker; `driver` renders every slot 0..=60 at +3 ms; `listener` renders slots
+        // 1..=10 at +7 ms, then, after slot 60, slots 46..=60 back to back at their scheduled
+        // times (20 s + 7). At its first return render (slot 46) the newest tick is about 46
+        // while the history holds ticks from about 60 - (HISTORY_TICKS - 1) = 43: newest -
+        // oldest_held = 3 < MAX_CATCHUP_TICKS and the cursor (10) is older than oldest_held, so
+        // it hears the oldest held tick (not the newest) and catches up by merging.
+        let total = 62u64;
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        graph.set_listener_sources("driver", &["talker".to_string()]);
+        let table: HashMap<i16, u64> = (0..total)
+            .map(|k| (first_sample(&graph_pan(marker_amp(k))), k))
+            .collect();
+        let mut driver_heard: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut before: Vec<u64> = Vec::new();
+        for slot in 0..=60u64 {
+            graph.push_frame_at(
+                "talker",
+                tone_frame(1, marker_amp(slot)),
+                t0() + ms(20 * slot),
+            );
+            let out = graph.render_output("driver", t0() + ms(20 * slot + 3));
+            driver_heard.insert(slot, indices_in(&out, &table));
+            if (1..=10).contains(&slot) {
+                let out = graph.render_output("listener", t0() + ms(20 * slot + 7));
+                before.extend(indices_in(&out, &table));
+            }
+        }
+        let mut carried: Vec<Vec<u64>> = Vec::new();
+        for slot in 46..=60u64 {
+            let out = graph.render_output("listener", t0() + ms(20 * slot + 7));
+            carried.push(indices_in(&out, &table));
+        }
+        let after: Vec<u64> = carried.iter().flatten().copied().collect();
+        let mut heard = before.clone();
+        heard.extend(after.iter().copied());
+        assert!(
+            heard.windows(2).all(|w| w[0] < w[1]),
+            "a frame was heard twice or out of order: {before:?} {carried:?}"
+        );
+        let newest_at_return = *driver_heard[&46].iter().max().unwrap();
+        let newest_now = *driver_heard[&60].iter().max().unwrap();
+        let oldest_held = newest_now - (HISTORY_TICKS as u64 - 1);
+        assert_eq!(after[0], oldest_held, "{carried:?}");
+        assert!(after[0] < newest_at_return, "{carried:?}");
+        let last_before = *before.iter().max().unwrap();
+        let stats = graph.source_stats("talker").unwrap();
+        let unheard = (last_before..=newest_now)
+            .filter(|k| !heard.contains(k))
+            .count() as u64;
+        assert_eq!(unheard, stats.listener_skipped, "{stats:?} {carried:?}");
+        assert!(
+            stats.listener_skipped < newest_at_return - last_before - 1,
+            "took the jump arm: {stats:?} {carried:?}"
+        );
+        assert!(stats.listener_catchup_compressed > 0, "{stats:?}");
+    }
+
+    #[test]
+    fn listener_burst_after_a_stall_never_replays_a_heard_frame() {
+        // Up to 340 ms the history still holds every missed tick: each burst render hears
+        // the next tick on its own, nothing is merged, skipped or repeated. Before the fix a
+        // 240 ms stall merged two pairs of ticks and then replayed the newest tick twice.
+        for stall_ms in [60u64, 100, 160, 240, 400, 600] {
+            let (carried, stats) = run_listener_burst_after_stall(80, 400, stall_ms);
+            let flat: Vec<u64> = carried.iter().flatten().copied().collect();
+            // Up to the last frame; after it the queue conceals (a counted repeat).
+            let end = flat
+                .iter()
+                .position(|&k| k == 79)
+                .expect("last frame heard");
+            assert!(
+                flat[..=end].windows(2).all(|w| w[0] < w[1]),
+                "stall {stall_ms} ms: a frame was heard twice or out of order: {carried:?}"
+            );
+            let unheard = (0..80).filter(|k| !flat.contains(k)).count() as u64;
+            if stall_ms <= 340 {
+                assert_eq!(unheard, 0, "stall {stall_ms} ms: {carried:?}");
+                assert_eq!(
+                    (stats.listener_catchup_compressed, stats.listener_skipped),
+                    (0, 0),
+                    "stall {stall_ms} ms: {stats:?}"
+                );
+            } else {
+                // Beyond the history: the ticks it no longer holds are lost and counted exactly.
+                assert!(unheard > 0, "stall {stall_ms} ms must overrun: {carried:?}");
+                assert_eq!(
+                    unheard, stats.listener_skipped,
+                    "stall {stall_ms} ms: {stats:?}"
+                );
+            }
+        }
     }
 
     #[test]

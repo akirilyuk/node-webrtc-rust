@@ -163,7 +163,10 @@ export interface JsMixStats {
   decodeErrors: number
   /** Popped frames merged into one output frame for a listener that rendered late. */
   listenerCatchupCompressed: number
-  /** Popped frames a listener jumped over after a render more than 8 ticks late. */
+  /**
+   * Popped frames a listener jumped over after a render more than 8 ticks late, or ticks
+   * no longer held in the mix history (a burst after a stall over 340 ms).
+   */
   listenerSkipped: number
   /** Frames currently queued. */
   depth: number

@@ -36,7 +36,8 @@ export interface DistanceParams {
  *
  * `played` counts frames popped by the media clock, not frames a listener received. A listener
  * whose renders run late receives those frames merged (`listenerCatchupCompressed`) or, beyond
- * 8 ticks behind, jumps over them (`listenerSkipped`). Both are summed over listeners, so a
+ * 8 ticks behind or for ticks no longer held in the mix history (a burst after a stall over
+ * 340 ms), jumps over them (`listenerSkipped`). Both are summed over listeners, so a
  * source heard by two late listeners counts twice. Listener-level losses are visible here and
  * never silent: frames heard = `played - listenerSkipped - listenerCatchupCompressed` for a
  * single listener.

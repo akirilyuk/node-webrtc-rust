@@ -204,7 +204,8 @@ pub struct SpeakerGateConfig {
     pub enroll_speech_ms: u32,
     /// Speech (ms) of an utterance used for one check.
     pub check_speech_ms: u32,
-    /// Clips shorter than this are `unknown` (the gate fails open).
+    /// Clips with less speech than this (ms) are `unknown` (the gate fails open). Default 1500:
+    /// at 1 s of speech about 6 % of genuine caller clips scored below the threshold, at 1.5 s none.
     pub min_check_speech_ms: u32,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
@@ -219,7 +220,7 @@ impl Default for SpeakerGateConfig {
             threshold: 0.459,
             enroll_speech_ms: 3000,
             check_speech_ms: 1500,
-            min_check_speech_ms: 1000,
+            min_check_speech_ms: 1500,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
         }

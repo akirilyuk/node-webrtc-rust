@@ -307,7 +307,7 @@ export interface VoiceAgentConfig {
     enrollSpeechMs?: number
     /** Speech (ms) of an utterance used for one check. Default 1500. */
     checkSpeechMs?: number
-    /** Shorter clips are `unknown`. Default 1000. */
+    /** Clips with less speech than this are `unknown` and fail open. Default 1500: at 1 s of speech about 6 % of genuine caller clips scored below the threshold, at 1.5 s none. */
     minCheckSpeechMs?: number
     /** `'flag'` (default) keeps the final with `speaker: 'other'`; `'drop'` emits `user_speech_ignored`. */
     onMismatch?: 'flag' | 'drop'

@@ -13,7 +13,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **speech / bindings / sdk:** adaptive energy VAD, opt-in with `vad.provider: 'adaptive'`. The energy VAD stays the default. Defaults: `noiseMarginDb` 6, `useSpeechLevel` true, `stuckActiveMs` 8000.
-- **speech / bindings / sdk:** opt-in caller speaker gate (TitaNet-small via sherpa-onnx). The first speech of a caller is enrolled, and later utterances are checked against it. Defaults: `checkSpeechMs` 1500, `threshold` 0.459, `minCheckSpeechMs` 1000.
+- **speech / bindings / sdk:** opt-in caller speaker gate (TitaNet-small via sherpa-onnx). The first speech of a caller is enrolled, and later utterances are checked against it. Defaults: `checkSpeechMs` 1500, `threshold` 0.459, `minCheckSpeechMs` 1500 (at 1 s of speech about 6 % of genuine caller clips scored below the threshold, at 1.5 s none; a shorter clip is not checked and stays `unknown`, so its barge-in goes through).
   - Barge-in waits for the verdict, so a bystander does not interrupt the agent.
   - Finals carry `speaker`.
   - With `onMismatch: 'drop'`, a final from another speaker is dropped and a `user_speech_ignored` event is emitted.

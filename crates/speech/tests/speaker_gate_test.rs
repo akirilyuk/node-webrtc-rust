@@ -342,6 +342,73 @@ async fn gate_off_unchanged() {
     rig.agent.stop().await.unwrap();
 }
 
+/// Gate config with the product defaults for the check window (`checkSpeechMs` 1500,
+/// `minCheckSpeechMs` 1500); only enrollment is shortened for the test.
+fn default_check_cfg() -> SpeakerGateConfig {
+    SpeakerGateConfig {
+        enroll_speech_ms: 400,
+        verify_timeout_ms: 2000,
+        ..gate_cfg(SpeakerMismatchAction::Flag)
+    }
+}
+
+/// With the default `minCheckSpeechMs` (1500), an utterance with about 1.2 s of speech is not
+/// checked: even though the voice differs (the embedder returns OTHER), the verdict is `unknown`
+/// and the barge-in goes through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_min_check_skips_1200ms_utterance_and_barge_in_proceeds() {
+    let mut cfg = default_check_cfg();
+    cfg.check_speech_ms = SpeakerGateConfig::default().check_speech_ms;
+    cfg.min_check_speech_ms = SpeakerGateConfig::default().min_check_speech_ms;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
+    // 60 frames x 20 ms = 1.2 s of speech.
+    rig.feed(&loud_stereo_frame(), 60).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
+        "unchecked short utterance fails open: barge-in proceeds"
+    );
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("unknown")
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// With the default config, an utterance with at least 1.5 s of speech is checked: a different
+/// voice is labelled `other` and does not barge in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_min_check_checks_1800ms_utterance() {
+    let mut cfg = default_check_cfg();
+    cfg.check_speech_ms = SpeakerGateConfig::default().check_speech_ms;
+    cfg.min_check_speech_ms = SpeakerGateConfig::default().min_check_speech_ms;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("buy a car".into());
+    // 90 frames x 20 ms = 1.8 s of speech.
+    rig.feed(&loud_stereo_frame(), 90).await;
+    sleep(Duration::from_millis(300)).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(rig.count(SpeechEventKind::BargeIn), 0);
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("other")
+    );
+    rig.agent.stop().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn not_enrolled_is_unknown_and_barge_in_as_today() {
     let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
@@ -1039,7 +1106,7 @@ fn config_errors() {
             d.enroll_speech_ms,
             d.verify_timeout_ms
         ),
-        (0.459, 1500, 1000, 3000, 500)
+        (0.459, 1500, 1500, 3000, 500)
     );
     assert!(!d.enabled);
 }

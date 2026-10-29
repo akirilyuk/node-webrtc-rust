@@ -141,26 +141,15 @@ ensure_sherpa_models() {
   unset SHERPA_STT_MODEL_PATH SHERPA_TTS_MODEL_PATH SHERPA_STT_LANGUAGE
   # shellcheck source=/dev/null
   source "$ROOT/scripts/export-sherpa-local-models.sh"
-  ensure_speaker_fixtures
+  ensure_speaker_fixtures_if_selected
 }
 
-# Speaker model, Piper voices and the generated conversation scenes for start:roundtrip-noisy-bystander,
-# once per job: only the two S3 test scenes the roundtrip plays (-15 dB bystander, caller at the
-# default level and at -26 dBFS), with every turn gap raised to 2.5 s so the agent's default
-# end-of-turn (1.5 s finalize + VAD hangover) closes each turn before the next speaker starts.
-# Scenes are never committed.
-ensure_speaker_fixtures() {
+# Speaker assets + noisy-bystander scenes (scripts/ci/ensure-speaker-fixtures.sh), once per job
+# before the roundtrip steps, so the generator's cargo build is not charged to a roundtrip's step cap.
+# run-sherpa-roundtrip-e2e.sh calls the same idempotent helper, which then skips.
+ensure_speaker_fixtures_if_selected() {
   sherpa_e2e_selected start:roundtrip-noisy-bystander || return 0
-  local ex="$ROOT/examples/voice-agent-local-sherpa"
-  echo "==> speaker assets + noisy-bystander scenes"
-  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
-    "sherpa download-speaker" -- npm run download-speaker --workspace="$WORKSPACE"
-  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC" \
-    "sherpa speaker_fixtures" -- \
-    cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
-      --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low" \
-      --phrases "$ex/stt-phrase-qualification.json" --out "$ex/.models/speaker-fixtures" \
-      --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --only s3_test_m15
+  ensure_speaker_fixtures
 }
 
 # Model-backed vendor tests kept #[ignore] in default cargo test (no weights in PR quality).

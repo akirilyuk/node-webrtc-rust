@@ -74,6 +74,15 @@ describe('evaluateTurns', () => {
       'u1',
       'u2',
     ])
+    // VAD opened in the babble 700 ms before the bystander voice (caller ended at 12 000, slot
+    // boundary 13 000): still the bystander's utterance.
+    const early = healthy().map((e) =>
+      e.type === 'user_speaking_start' && e.utteranceId === 'u2' ? { ...e, atMs: 13_300 } : e,
+    )
+    expect(matchTurnUtterances([caller, bystander], early).map((s) => s?.utteranceId)).toEqual([
+      'u1',
+      'u2',
+    ])
     // A bystander merged into the caller utterance has no own start: nothing matched, no steal.
     const merged = healthy().filter((e) => e.utteranceId !== 'u2')
     expect(matchTurnUtterances([caller, bystander], merged).map((s) => s?.utteranceId)).toEqual([

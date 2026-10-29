@@ -46,22 +46,30 @@ export function readWavPcm(path: string): Buffer {
   throw new Error(`no data chunk in ${path}`)
 }
 
+/** Slack before the first judged turn: the agent's VAD can open a little before the voice. */
+export const FIRST_SLOT_LEAD_MS = 300
+
 /**
- * Matches each scene turn to the utterance the agent heard for it: the first `user_speaking_start`
- * at or after the turn's scene start and before the next turn's scene start, each utterance used
- * once. A turn whose audio merged into the previous utterance gets none. Everything after this
- * step pairs events by `utteranceId`, never by time.
+ * Matches each scene turn to the utterance the agent heard for it: the first unused
+ * `user_speaking_start` inside the turn's slot. Slots split each gap between two turns in the
+ * middle, because the VAD can open in the babble shortly before a voice starts. A turn whose
+ * audio merged into the previous utterance gets none. Everything after this step pairs events by
+ * `utteranceId`, never by time.
  */
 export function matchTurnUtterances(turns: Turn[], seen: Seen[]): (Seen | undefined)[] {
   const starts = seen.filter(
     (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart && e.utteranceId != null,
   )
   const used = new Set<string>()
-  return turns.map((turn, i) => {
-    const next = turns[i + 1]?.startMs ?? Number.POSITIVE_INFINITY
-    const start = starts.find(
-      (e) => !used.has(e.utteranceId!) && e.atMs >= turn.startMs && e.atMs < next,
-    )
+  const boundary = (i: number): number => {
+    if (i <= 0) return turns[0]!.startMs - FIRST_SLOT_LEAD_MS
+    if (i >= turns.length) return Number.POSITIVE_INFINITY
+    return (turns[i - 1]!.endMs + turns[i]!.startMs) / 2
+  }
+  return turns.map((_turn, i) => {
+    const from = boundary(i)
+    const to = boundary(i + 1)
+    const start = starts.find((e) => !used.has(e.utteranceId!) && e.atMs >= from && e.atMs < to)
     if (start != null) used.add(start.utteranceId!)
     return start
   })

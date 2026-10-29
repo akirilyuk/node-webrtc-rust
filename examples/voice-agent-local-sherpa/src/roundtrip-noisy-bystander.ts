@@ -54,6 +54,7 @@ import {
   QUIET_CALLER_DBFS,
   WARMUP_S,
   evaluateTurns,
+  matchTurnUtterances,
   readWavPcm,
   type Seen,
   type Turn,
@@ -221,6 +222,13 @@ async function runPass(params: {
   running = false
   await listener.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)
+  // Diagnostics: scene clock vs the agent's first user_speaking_start per turn.
+  matchTurnUtterances(turns, seen).forEach((start, i) => {
+    const firstStart = start?.atMs
+    console.log(
+      `${label}: lag turn=${i} sceneStart=${turns[i]!.startMs} firstStart=${firstStart ?? 'none'} lagMs=${firstStart != null ? firstStart - turns[i]!.startMs : 'none'}`,
+    )
+  })
   return evaluateTurns(turns, seen, label)
 }
 

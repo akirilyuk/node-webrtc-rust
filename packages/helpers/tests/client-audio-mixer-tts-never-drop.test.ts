@@ -88,6 +88,54 @@ describe('ClientAudioMixer never drops TTS frames', () => {
     expect(out.writeSample.mock.calls.length).toBeLessThanOrEqual(4)
   })
 
+  it('a 1 s pump stall writes the newest 4 slots and keeps every queued TTS frame', async () => {
+    const slots: number[] = []
+    const graph = createPassthroughGraph()
+    graph.renderOutput = (_id, atMs) => {
+      slots.push(atMs as number)
+      return Buffer.alloc(PCM_FULL_FRAME_BYTES)
+    }
+    const m = new ClientAudioMixer({ graph, warn })
+    m.registerPeer('p')
+    let t: (...args: unknown[]) => void = () => undefined
+    m.wireTtsSidecar('p', {
+      setWriteSampleTee: vi.fn((cb: ((...args: unknown[]) => void) | null) => {
+        if (cb) t = cb
+      }),
+    } as never)
+    const state = (m as unknown as { peers: Map<string, { pumpT0: number }> }).peers.get('p')!
+    const pumpT0 = state.pumpT0
+    const seen: number[] = []
+    const o = {
+      writeSample: vi.fn(async (frame: Buffer) => {
+        seen.push(frame.readInt16LE(0))
+      }),
+    }
+
+    vi.advanceTimersByTime(20)
+    await m.pumpMixFrame('p', o)
+    for (let i = 0; i < 10; i += 1) t(markedFrame(i), 20)
+    seen.length = 0
+    slots.length = 0
+    o.writeSample.mockClear()
+
+    vi.advanceTimersByTime(1000)
+    await m.pumpMixFrame('p', o)
+
+    expect(o.writeSample).toHaveBeenCalledTimes(4)
+    const elapsed = Math.floor((performance.now() - pumpT0) / 20)
+    expect(slots).toEqual(
+      [elapsed - 3, elapsed - 2, elapsed - 1, elapsed].map((n) => pumpT0 + n * 20),
+    )
+    expect(seen).toEqual([1, 2, 3, 4])
+
+    for (let i = 0; i < 20 && seen.length < 10; i += 1) {
+      vi.advanceTimersByTime(20)
+      await m.pumpMixFrame('p', o)
+    }
+    expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  })
+
   it('warns once per window on a TTS backlog with depth fields', () => {
     burst(0, 120)
     expect(warn).toHaveBeenCalledTimes(1)

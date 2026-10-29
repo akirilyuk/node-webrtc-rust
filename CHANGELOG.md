@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **mixer / conference / helpers:** the mix outbound (conference room, native and JS mix pumps) no longer writes a stalled listener's missed slots back to back. After a stall it writes at most 4 frames (the newest slots, which still carry audio) and resumes 20 ms pacing; skipped ticks stay counted in `listenerSkipped`.
+
 ## [0.14.0] - 2026-10-28
 
 ### Added

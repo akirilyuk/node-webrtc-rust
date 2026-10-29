@@ -164,6 +164,32 @@ describe('evaluateTurns', () => {
     expect(sttPartialTokenCount('')).toBe(0)
   })
 
+  it('names a missing barge-in as a harness failure when the reply ended before the qualifying partial', () => {
+    const withReply = (end: number, restart?: number): Seen[] => {
+      const seen = [
+        ...healthy().filter((e) => e.type !== 'barge_in'),
+        ev('agent_speaking_start', 9_000),
+        ev('agent_speaking_end', end),
+      ]
+      if (restart != null) seen.push(ev('agent_speaking_start', restart))
+      return seen.sort((a, b) => a.atMs - b.atMs)
+    }
+    // Reply drained at 11000, qualifying partial at 11400: still a failure, named as harness.
+    const ended = evaluateTurns([caller, bystander], withReply(11_000), 'p').join('\n')
+    expect(ended).toMatch(
+      /harness: reply ended at 11000 ms before the qualifying partial at 11400 ms \(lengthen AGENT_PHRASE\)/,
+    )
+    expect(ended).not.toMatch(/no barge_in/)
+    // Reply still playing at the partial: a real miss.
+    const playing = evaluateTurns([caller, bystander], withReply(11_600), 'p').join('\n')
+    expect(playing).toMatch(/no barge_in/)
+    expect(playing).not.toMatch(/harness/)
+    // A new reply started before the partial: a real miss.
+    const restarted = evaluateTurns([caller, bystander], withReply(10_500, 10_800), 'p').join('\n')
+    expect(restarted).toMatch(/no barge_in/)
+    expect(restarted).not.toMatch(/harness/)
+  })
+
   it('fails a caller turn without barge-in, and a misrecognized qualified phrase', () => {
     const noBarge = healthy().filter((e) => e.type !== 'barge_in')
     expect(evaluateTurns([caller, bystander], noBarge, 'p').join('\n')).toMatch(/no barge_in/)

@@ -56,14 +56,39 @@ export function sttPartialTokenCount(text: string): number {
  * `undefined` when the utterance never had a qualifying partial.
  */
 export function expectedBargeAtMs(start: Seen, seen: Seen[]): number | undefined {
-  const partial = seen.find(
+  const partial = qualifyingPartial(start, seen)
+  if (partial == null) return undefined
+  return Math.max(start.atMs + CHECK_SPEECH_MS, partial.atMs)
+}
+
+/** First `user_speech_partial` on the start's `utteranceId` with enough tokens for a barge-in. */
+function qualifyingPartial(start: Seen, seen: Seen[]): Seen | undefined {
+  return seen.find(
     (e) =>
       e.type === SPEECH_EVENT_TYPE.userSpeechPartial &&
       e.utteranceId === start.utteranceId &&
       sttPartialTokenCount(e.text ?? '') >= MIN_STT_PARTIAL_TOKENS,
   )
+}
+
+/**
+ * Harness check for a caller turn without barge-in: when the agent's reply had already ended
+ * (`agent_speaking_end` with no later `agent_speaking_start`) before the turn's qualifying partial,
+ * there was nothing left to barge into. Returns that end and the partial, else `undefined`.
+ */
+export function replyEndedBeforeQualifyingPartial(
+  start: Seen,
+  seen: Seen[],
+): { endAtMs: number; partialAtMs: number } | undefined {
+  const partial = qualifyingPartial(start, seen)
   if (partial == null) return undefined
-  return Math.max(start.atMs + CHECK_SPEECH_MS, partial.atMs)
+  let endAtMs: number | undefined
+  for (const e of seen) {
+    if (e.atMs > partial.atMs) break
+    if (e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd) endAtMs = e.atMs
+    else if (e.type === SPEECH_EVENT_TYPE.agentSpeakingStart) endAtMs = undefined
+  }
+  return endAtMs != null ? { endAtMs, partialAtMs: partial.atMs } : undefined
 }
 
 /** Interleaved stereo s16le @ 48 kHz payload of a wav file (the `data` chunk). */
@@ -158,7 +183,13 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     }
     const barge = bargesOf(id)[0]
     if (barge == null) {
-      failures.push(`${tag}: no barge_in`)
+      // Still a failure, never a skip: a harness miss is named so a real miss cannot hide behind it.
+      const ended = replyEndedBeforeQualifyingPartial(start, seen)
+      failures.push(
+        ended != null
+          ? `${tag}: harness: reply ended at ${ended.endAtMs} ms before the qualifying partial at ${ended.partialAtMs} ms (lengthen AGENT_PHRASE)`
+          : `${tag}: no barge_in`,
+      )
     } else {
       const delay = barge.atMs - start.atMs
       const expected = expectedBargeAtMs(start, seen)

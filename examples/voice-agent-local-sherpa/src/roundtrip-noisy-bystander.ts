@@ -73,9 +73,16 @@ import { logRoundtripScriptBanner } from './roundtrip-topology-log.js'
 const here = dirname(fileURLToPath(import.meta.url))
 const exampleRoot = join(here, '..')
 
-/** Agent reply long enough to still be playing when the next turn starts. */
+/**
+ * Agent reply long enough to still be playing past the next caller turn's latest barge bound
+ * (the next turn's qualifying partial came up to ~7.7 s after the previous final; the old
+ * one-sentence reply drained after ~7.66 s and lost the race). Measured Piper reply: 18.0-18.6 s
+ * (`tts synthesis done audio_duration_ms`, 18 replies, run 20261029-145736).
+ */
 const AGENT_PHRASE =
-  'The quick brown fox jumps over the lazy dog and then continues speaking for several more seconds so we can interrupt playback.'
+  'The quick brown fox jumps over the lazy dog and then keeps on talking about the weather in the valley. ' +
+  'After that it describes the long road home, the small bridge over the river, and the old house on the hill. ' +
+  'Finally it reads out a short list of groceries so the caller has plenty of time to interrupt the playback.'
 
 interface ManifestSegment {
   start_ms: number

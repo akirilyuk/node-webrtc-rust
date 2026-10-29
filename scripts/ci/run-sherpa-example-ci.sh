@@ -16,6 +16,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
 CI_STEP="$ROOT/scripts/ci/ci-step.sh"
+# shellcheck source=scripts/ci/ensure-speaker-fixtures.sh
+source "$ROOT/scripts/ci/ensure-speaker-fixtures.sh"
 # Per roundtrip script — must exceed in-process SHERPA_ROUNDTRIP_WALL_MS (often 70–120s).
 # Long scripts and failure re-runs (VOICE_DEBUG) need headroom — see sherpa_roundtrip_timeout_sec.
 DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC="${CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC:-180}"
@@ -51,6 +53,10 @@ sherpa_roundtrip_timeout_sec() {
       # ~60s of real-time phases (6s pending finals x 3 phases, model loads); 150s in-process wall, one VOICE_DEBUG re-run.
       echo "${CI_SHERPA_SLOW_FINAL_ROUNDTRIP_TIMEOUT_SEC:-300}"
       ;;
+    start:roundtrip-noisy-bystander)
+      # Two real-time passes of a ~90s scene (420s in-process wall); one VOICE_DEBUG re-run.
+      echo "${CI_SHERPA_NOISY_BYSTANDER_ROUNDTRIP_TIMEOUT_SEC:-900}"
+      ;;
     start:roundtrip-load-ci)
       # 4 concurrent legs x 2 turns; 60s setup + per-turn TTS/silence/STT budget in-process.
       echo "${CI_SHERPA_LOAD_ROUNDTRIP_TIMEOUT_SEC:-420}"
@@ -75,6 +81,7 @@ SHERPA_ROUNDTRIP_E2E_SERIAL=(
   start:roundtrip-slow-final
   start:roundtrip-barge-in
   start:roundtrip-barge-in-buffered
+  start:roundtrip-noisy-bystander
   start:roundtrip-counting-barge-recovery
   start:roundtrip-concurrent-multi-client
   start:roundtrip-load-ci
@@ -136,6 +143,15 @@ ensure_sherpa_models() {
   unset SHERPA_STT_MODEL_PATH SHERPA_TTS_MODEL_PATH SHERPA_STT_LANGUAGE
   # shellcheck source=/dev/null
   source "$ROOT/scripts/export-sherpa-local-models.sh"
+  ensure_speaker_fixtures_if_selected
+}
+
+# Speaker assets + noisy-bystander scenes (scripts/ci/ensure-speaker-fixtures.sh), once per job
+# before the roundtrip steps, so the generator's cargo build is not charged to a roundtrip's step cap.
+# run-sherpa-roundtrip-e2e.sh calls the same idempotent helper, which then skips.
+ensure_speaker_fixtures_if_selected() {
+  sherpa_e2e_selected start:roundtrip-noisy-bystander || return 0
+  ensure_speaker_fixtures
 }
 
 # Model-backed vendor tests kept #[ignore] in default cargo test (no weights in PR quality).

@@ -28,6 +28,14 @@ RETRIES="${SHERPA_ROUNDTRIP_E2E_RETRIES:-1}"
 
 # shellcheck source=/dev/null
 source "$ROOT/scripts/export-sherpa-local-models.sh"
+# shellcheck source=scripts/ci/ensure-speaker-fixtures.sh
+source "$ROOT/scripts/ci/ensure-speaker-fixtures.sh"
+
+# Every path that runs the noisy-bystander roundtrip (run-sherpa-example-ci.sh, the stress workflow,
+# local runs) gets its generated scenes here; idempotent, skips when they match the args.
+if [[ "$SCRIPT" == "start:roundtrip-noisy-bystander" ]]; then
+  ensure_speaker_fixtures
+fi
 
 run_pass() {
   local voice_debug="${1:?}"

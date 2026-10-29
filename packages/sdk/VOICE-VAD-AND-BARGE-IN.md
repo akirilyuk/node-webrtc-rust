@@ -337,6 +337,35 @@ Use `adaptive` for quiet callers; a bystander within about 10 dB of the caller c
 
 ---
 
+## Speaker gate
+
+Opt-in (`speakerGate.enabled`, off by default). It stops a second voice on the same microphone from interrupting the agent or passing as the caller.
+
+```ts
+vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'adaptive' },
+speakerGate: { enabled: true, modelPath: '/models/speaker/nemo_en_titanet_small.onnx' }
+```
+
+How it works:
+
+- **Enrollment.** The agent learns the caller's voice from their first `enrollSpeechMs` of speech (default 3000 ms). Until then every utterance is `speaker: 'unknown'` and nothing changes.
+- **Check.** Each later utterance is compared with the enrolled voice using `checkSpeechMs` of its speech (default 1500 ms, `minCheckSpeechMs` 1000 ms). The cosine score must reach `threshold` (default 0.459, TitaNet-small). The check costs about 20 ms of CPU and runs off the audio path.
+- **Barge-in delay.** While the agent speaks and a voice is enrolled, a barge-in waits for the verdict. The caller therefore interrupts at the later of `checkSpeechMs` after they start speaking and the first partial with `minSttPartialTokens` tokens when `requireSttPartial` is on (the roundtrip asserts within 300 ms of that). A voice that does not match never barges in. Turn the gate off if you need instant barge-in.
+- **`flag` or `drop`.** `onMismatch: 'flag'` (default) keeps the final and sets `speaker: 'other'` on it. `'drop'` replaces it with `user_speech_ignored` (`reason: 'speaker_mismatch'`, no text). Clips shorter than `minCheckSpeechMs`, and any check that fails or exceeds `verifyTimeoutMs`, are `speaker: 'unknown'` and behave as without the gate, so a stuck gate never mutes the real caller.
+- **`resetSpeakerEnrollment()`** forgets the voice, for example when another person takes over the line. The next utterances enroll again.
+
+Recommended with `vad.provider: 'adaptive'`. With the energy VAD, turns in background noise split into short pieces, which are more often `unknown`.
+
+Limit: a bystander about as loud as the caller can pass the check; the gate is tested with bystanders 15 dB or more below the caller. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that starts less than about 1 s before the caller (a voice in the background) can fall into the 1.5 s check and make it reject the caller, so the barge-in is suppressed and the final is labelled other.
+
+`barge_in` carries the `utteranceId` of the utterance that interrupted, so an app can tell which turn it belongs to.
+
+Privacy:
+
+- A voice embedding is biometric data (special-category data under GDPR Art. 9 when it identifies a person). Embeddings stay in process memory: they are never logged, put in events, metrics or traces, stored, or sent anywhere, and they are gone when the agent stops.
+- The feature is opt-in. Tell your users that their voice is analyzed during the call and obtain the consent your jurisdiction requires.
+- The speaker model is your choice and its license applies. The recommended `nemo_en_titanet_small.onnx` is NVIDIA NeMo TitaNet-small, published under the NeMo Toolkit license (Apache-2.0); check the license of any other model you use.
+
 ## Use cases
 
 ### 1. Standard voice agent (one peer, user talks, agent replies)

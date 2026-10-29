@@ -593,6 +593,65 @@ async fn short_caller_verdict_fires_after_next_utterance_started() {
     rig.agent.stop().await.unwrap();
 }
 
+/// A barge-in that fires while a final waits for its verdict keeps the documented barge order
+/// `agent_reply_end{interrupted}` -> `barge_in` -> `agent_speaking_end` (`contract.event-order`);
+/// the reply and speaking events no longer bypass the ordered queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_reply_order_holds_while_a_final_waits() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 3000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    let agent = Arc::clone(&rig.agent);
+    let text = "interrupt this mock playback please ".repeat(8);
+    tokio::spawn(async move {
+        let _ = agent
+            .send_text_to_tts_with_options(
+                &text,
+                node_webrtc_rust_speech::config::SendTextToTtsOptions {
+                    non_blocking: true,
+                    reply_id: Some("r1".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+    });
+    sleep(Duration::from_millis(200)).await;
+    let release = Arc::new(Notify::new());
+    rig.queue
+        .lock()
+        .unwrap()
+        .push_back(Behavior::WaitFor(Arc::clone(&release), REF.to_vec()));
+    // Short caller utterance: its final waits for the held verdict (a slot is open).
+    rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
+    rig.feed(&loud_stereo_frame(), 5).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    rig.drain();
+    assert_eq!(rig.count(SpeechEventKind::BargeIn), 0, "verdict still held");
+    release.notify_waiters();
+    assert!(rig.wait_event(SpeechEventKind::BargeIn, 3000).await);
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    sleep(Duration::from_millis(200)).await;
+    rig.drain();
+    let pos = |pred: &dyn Fn(&SpeechEvent) -> bool| rig.log[base..].iter().position(pred);
+    let barge = pos(&|e| e.kind == SpeechEventKind::BargeIn).expect("barge_in");
+    let reply_end =
+        pos(&|e| e.kind == SpeechEventKind::AgentReplyEnd && e.reply_id.as_deref() == Some("r1"))
+            .expect("agent_reply_end for r1");
+    assert!(
+        reply_end < barge,
+        "agent_reply_end ({reply_end}) before barge_in ({barge})"
+    );
+    if let Some(end) = pos(&|e| e.kind == SpeechEventKind::AgentSpeakingEnd) {
+        assert!(
+            barge < end,
+            "barge_in ({barge}) before agent_speaking_end ({end})"
+        );
+    }
+    rig.agent.stop().await.unwrap();
+}
+
 /// Events keep production order while a final waits for its verdict (`contract.event-order`):
 /// A's final (verdict pending, then `unknown` after verifyTimeoutMs) comes before every event of
 /// the next utterance B, and frames never wait.
@@ -994,4 +1053,128 @@ async fn agent_new_rejects_bad_gate_config() {
     let mut cfg = agent_config(gate_cfg(SpeakerMismatchAction::Flag));
     cfg.speaker_gate.threshold = 1.5;
     assert!(VoiceAgent::new(cfg, registry).is_err());
+}
+
+/// `barge_in` names the utterance that barged in, on the immediate path (no reference yet) and
+/// on the verdict path (enrolled caller), so consumers pair it by id, not by time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn barge_in_carries_utterance_id_on_immediate_and_verdict_paths() {
+    fn ids(rig: &Rig) -> (Option<String>, Option<String>, Option<String>) {
+        let barge = rig
+            .log
+            .iter()
+            .rev()
+            .find(|e| e.kind == SpeechEventKind::BargeIn)
+            .and_then(|e| e.utterance_id.clone());
+        let start = rig
+            .log
+            .iter()
+            .rev()
+            .find(|e| e.kind == SpeechEventKind::UserSpeakingStart)
+            .and_then(|e| e.utterance_id.clone());
+        let final_id = rig.finals().last().and_then(|e| e.utterance_id.clone());
+        (barge, start, final_id)
+    }
+
+    // Immediate path: nothing enrolled, the barge fires on the first frames.
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("hello".into());
+    rig.feed(&loud_stereo_frame(), 3).await;
+    assert!(rig.wait_event(SpeechEventKind::BargeIn, 2000).await);
+    rig.feed(&loud_stereo_frame(), 12).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let (barge, start, final_id) = ids(&rig);
+    assert!(barge.is_some(), "immediate barge_in has an utterance id");
+    assert_eq!(barge, start);
+    assert_eq!(barge, final_id);
+    rig.agent.stop().await.unwrap();
+
+    // Verdict path: enrolled caller, the barge fires on the verdict.
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("let me interrupt".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    assert!(rig.wait_event(SpeechEventKind::BargeIn, 3000).await);
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let (barge, start, final_id) = ids(&rig);
+    assert!(barge.is_some(), "verdict barge_in has an utterance id");
+    assert_eq!(barge, start);
+    assert_eq!(barge, final_id);
+    rig.agent.stop().await.unwrap();
+}
+
+/// One verdict per utterance key: a second speech segment that joins the same utterance during
+/// the gate hold (brief gap, same stream) neither starts a new check nor relabels the final.
+/// `queued_other` stays queued when no second check runs.
+async fn second_segment_on_same_key(on_mismatch: SpeakerMismatchAction) -> (Rig, usize, usize) {
+    let mut rig = rig_with(agent_config(gate_cfg(on_mismatch))).await;
+    rig.enroll().await;
+    let finals_before = rig.finals().len();
+    rig.script.lock().unwrap().final_on_finalize = Some("caller then bystander".into());
+    // Caller segment: 300 ms of speech, the 200 ms check scores REF (caller).
+    rig.feed(&loud_stereo_frame(), 15).await;
+    sleep(Duration::from_millis(150)).await;
+    // A mismatching embedding for any further check of this utterance.
+    rig.queue
+        .lock()
+        .unwrap()
+        .push_back(Behavior::Vector(OTHER.to_vec()));
+    // Brief gap (SpeechEnd, then SpeechStart in the first half of the 80 ms hold): same key.
+    rig.feed(&silent_stereo_frame(), 2).await;
+    rig.feed(&loud_stereo_frame(), 15).await;
+    sleep(Duration::from_millis(150)).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let queued = rig.queue.lock().unwrap().len();
+    (rig, finals_before, queued)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_verdict_is_final_for_a_merged_utterance() {
+    let (mut rig, finals_before, queued) =
+        second_segment_on_same_key(SpeakerMismatchAction::Flag).await;
+    assert_eq!(
+        queued, 1,
+        "the joined segment must not start a second check"
+    );
+    let finals = rig.finals();
+    assert_eq!(
+        finals.len(),
+        finals_before + 1,
+        "one final for the merged utterance"
+    );
+    let last = finals.last().copied().unwrap().clone();
+    assert_eq!(last.text.as_deref(), Some("caller then bystander"));
+    assert_eq!(last.speaker.as_deref(), Some("caller"));
+    assert_eq!(rig.count(SpeechEventKind::UserSpeechIgnored), 0);
+    rig.drain();
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_verdict_is_final_with_drop() {
+    let (mut rig, finals_before, queued) =
+        second_segment_on_same_key(SpeakerMismatchAction::Drop).await;
+    assert_eq!(
+        queued, 1,
+        "the joined segment must not start a second check"
+    );
+    let finals = rig.finals();
+    assert_eq!(
+        finals.len(),
+        finals_before + 1,
+        "a caller-labelled final is not dropped"
+    );
+    let last = finals.last().copied().unwrap().clone();
+    assert_eq!(last.speaker.as_deref(), Some("caller"));
+    assert_eq!(rig.count(SpeechEventKind::UserSpeechIgnored), 0);
+    rig.drain();
+    rig.agent.stop().await.unwrap();
 }

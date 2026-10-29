@@ -45,6 +45,8 @@
 //! 6. `utteranceId` is also set on `user_stt_start`, `stt_stream_start`, `stt_stream_end` and
 //!    `user_stt_end` (builder `with_utterance_id`), and `user_speaking_end` always carries the id
 //!    of the utterance it closes.
+//! 7. `barge_in` from a `VoiceAgent` carries the `utteranceId` of the utterance that barged in;
+//!    the standalone VAD path and a manual flush leave it unset.
 
 use crate::config::{SttConfig, TtsConfig};
 
@@ -464,20 +466,66 @@ impl SpeechEvent {
 #[derive(Clone)]
 pub struct SpeechEventBus {
     tx: broadcast::Sender<SpeechEvent>,
+    order: std::sync::Arc<std::sync::Mutex<EmitOrder>>,
+}
+
+/// Emission order while finals wait for their speaker verdict (`contract.event-order`).
+///
+/// A final whose verdict is still pending takes a slot; every event emitted after it (by any
+/// emitter on this bus) queues behind the slot and is delivered, in order, once the slot is
+/// filled. With no slot open (gate off or no pending final) events are delivered at once.
+/// Nothing here awaits.
+#[derive(Default)]
+struct EmitOrder {
+    next_slot: u64,
+    /// `(slot, event)`: slot 0 = an ordinary event (always `Some`); a reserved slot is `None`
+    /// until its final is filled in.
+    queue: std::collections::VecDeque<(u64, Option<SpeechEvent>)>,
 }
 
 impl SpeechEventBus {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(256);
-        Self { tx }
+        Self {
+            tx,
+            order: std::sync::Arc::new(std::sync::Mutex::new(EmitOrder::default())),
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<SpeechEvent> {
         self.tx.subscribe()
     }
 
+    /// Emits in production order: behind any open final slot, else at once.
     pub fn emit(&self, event: SpeechEvent) {
-        let _ = self.tx.send(event);
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        if order.queue.is_empty() {
+            let _ = self.tx.send(event);
+        } else {
+            order.queue.push_back((0, Some(event)));
+        }
+    }
+
+    /// Reserves the emission slot of a final that waits for its speaker verdict.
+    pub(crate) fn reserve_slot(&self) -> u64 {
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        order.next_slot += 1;
+        let slot = order.next_slot;
+        order.queue.push_back((slot, None));
+        slot
+    }
+
+    /// Fills a reserved slot and delivers everything that is ready, in order.
+    pub(crate) fn fill_slot(&self, slot: u64, event: SpeechEvent) {
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = order.queue.iter_mut().find(|(s, _)| *s == slot) {
+            entry.1 = Some(event);
+        }
+        while order.queue.front().is_some_and(|(_, e)| e.is_some()) {
+            if let Some((_, Some(event))) = order.queue.pop_front() {
+                let _ = self.tx.send(event);
+            }
+        }
     }
 }
 
@@ -490,6 +538,43 @@ impl Default for SpeechEventBus {
 #[cfg(test)]
 mod user_language_event_tests {
     use super::*;
+
+    /// Step 0 (`contract.event-order`): events emitted through any clone of the bus queue behind
+    /// an open final slot and come out after the final, in production order.
+    #[test]
+    fn bus_emit_from_clone_queues_behind_open_final_slot() {
+        let bus = SpeechEventBus::new();
+        let mut rx = bus.subscribe();
+        let drain = bus.clone();
+        let slot = bus.reserve_slot();
+        drain.emit(SpeechEvent::agent_reply_end("r1", 900, true, 1500, false));
+        drain.emit(SpeechEvent::agent_speaking_end());
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing may overtake the open final slot"
+        );
+        bus.fill_slot(
+            slot,
+            SpeechEvent::user_speech_final("hi", Some("u1".into())),
+        );
+        let kinds: Vec<SpeechEventKind> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|e| e.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                SpeechEventKind::UserSpeechFinal,
+                SpeechEventKind::AgentReplyEnd,
+                SpeechEventKind::AgentSpeakingEnd,
+            ]
+        );
+        drain.emit(SpeechEvent::agent_speaking_start());
+        assert_eq!(
+            rx.try_recv().map(|e| e.kind).ok(),
+            Some(SpeechEventKind::AgentSpeakingStart),
+            "with no open slot an emit is delivered at once"
+        );
+    }
 
     #[test]
     fn user_language_sets_text_and_language() {

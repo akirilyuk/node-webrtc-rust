@@ -450,7 +450,11 @@ export interface SpeechEvent {
   language?: string
   /** Present on `error`. */
   error?: string
-  /** Shared across `user_speaking_start` … `user_speech_final` for one utterance. */
+  /**
+   * Shared across `user_speaking_start` … `user_speech_final` for one utterance. `barge_in`
+   * carries the id of the utterance that barged in when a `VoiceAgent` emits it (unset for a
+   * manual flush and the standalone VAD).
+   */
   utteranceId?: string
   /**
    * True when this final was produced by `replayLastUtterance()` or by

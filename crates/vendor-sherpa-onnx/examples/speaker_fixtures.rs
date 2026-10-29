@@ -7,6 +7,7 @@
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
 //!   --models <speaker dir> --main-tts <amy-low dir> --phrases <stt-phrase-qualification.json> \
 //!   --out <dir> [--quick] [--voices-root <dir>] [--cache <dir>] [--main-levels <dBFS,...>]
+//!   [--min-turn-gap-ms <ms>] [--bystander-db <dB>] [--only <scene-id-prefix>]
 //! ```
 //!
 //! - Main voice: `vits-piper-en_US-amy-low` (`--main-tts`), sid 0. Main text = the phrases of
@@ -58,6 +59,17 @@
 //! override with `--cache`) keyed by bundle, sid and text; a second run with the same arguments reads
 //! the same clips and writes byte-identical files. Delete the cache to re-roll the voices. The
 //! manifest carries the sha256 of every wav, and the sha256 of `manifest.json` is printed last.
+//!
+//! `--min-turn-gap-ms` (default 0: the drawn 1400-2000 ms gaps): raises every S3 gap to at least
+//! this many ms. The draws (and so texts, voices and babble) are unchanged, only the positions move.
+//! `--bystander-db` (default 0): level of the S3 bystander turns re the main voice; babble keeps
+//! the scene level. Only the gain changes, so the draws stay the same.
+//! `--babble-clear-ms` (default 0): S3 babble sentences that would start within this many ms before
+//! a main turn's start are pushed to start after that turn's end, or dropped when they then no
+//! longer fit before the same voice's next sentence (each logged as `babble-clear: pushed|dropped`).
+//! The draws stay the same, only placements move, so VAD opens on the caller, not on babble.
+//! `--only` (repeatable): generate only scenes whose id starts with one of the prefixes; the
+//! manifest lists only those. Without it every scene is generated (the bench default).
 //!
 //! `--quick`: S1 for 3 qualified phrases and 2 long sentences at -10 dB, S2 with 4 utterances per
 //! set, one S3 at -10 dB (tune set) of 6 turns.
@@ -352,6 +364,16 @@ impl Synth {
 // ---------------------------------------------------------------------------------------------
 
 /// Scene id for a main level: unchanged at [`MAIN_REF_DB`], else `<base>_l<abs level>`.
+/// Voiced level (dBFS) of an S3 bystander turn: `rel_db` re the main voice at `main_db`.
+fn bystander_level_db(main_db: i32, rel_db: i32) -> f32 {
+    (main_db + rel_db) as f32
+}
+
+/// `--only` filter: an empty list selects every scene.
+fn scene_selected(only: &[String], id: &str) -> bool {
+    only.is_empty() || only.iter().any(|prefix| id.starts_with(prefix.as_str()))
+}
+
 fn scene_id_with_main_level(base_id: &str, main_db: i32) -> String {
     if main_db == MAIN_REF_DB as i32 {
         base_id.to_string()
@@ -415,9 +437,51 @@ fn segment(
     }
 }
 
+/// Start of a babble sentence drawn at `pos` with `--babble-clear-ms` (`clear` samples): a start
+/// within `clear` before a turn's start (`turns`: main turn (start, end) in samples) moves to that
+/// turn's end, repeated until it sits in no such window. `clear == 0` returns `pos`.
+fn babble_clear_start(pos: usize, turns: &[(usize, usize)], clear: usize) -> usize {
+    let mut pos = pos;
+    while let Some(&(_, end)) = turns
+        .iter()
+        .find(|(start, _)| clear > 0 && start.saturating_sub(clear) <= pos && pos < *start)
+    {
+        pos = end;
+    }
+    pos
+}
+
+/// Placements of one babble track's drawn sentences (`starts`, clip `lens`, in samples): `Some`
+/// start per kept sentence (the drawn one, or a start moved by [`babble_clear_start`]), `None` for
+/// a moved sentence that no longer ends before the next drawn start (or `len`). One entry per
+/// draw, so the draws themselves never change.
+fn place_babble(
+    starts: &[usize],
+    lens: &[usize],
+    len: usize,
+    turns: &[(usize, usize)],
+    clear: usize,
+) -> Vec<Option<usize>> {
+    starts
+        .iter()
+        .zip(lens)
+        .enumerate()
+        .map(|(i, (&pos, &clip_len))| {
+            let start = babble_clear_start(pos, turns, clear);
+            if start == pos {
+                return Some(pos);
+            }
+            let next = starts.get(i + 1).copied().unwrap_or(len).min(len);
+            (start + clip_len <= next).then_some(start)
+        })
+        .collect()
+}
+
 /// Two simultaneous voices (picked from `pool`, never `exclude`) each reading background
 /// sentences with 150-400 ms gaps for `len` samples, level-matched to each other and summed.
-/// The result is at an arbitrary level: the caller scales it.
+/// The result is at an arbitrary level: the caller scales it. `turns`/`clear`: see
+/// [`place_babble`] (`&[]`/0 keep every drawn start).
+#[allow(clippy::too_many_arguments)]
 fn babble(
     synth: &mut Synth,
     rng: &mut Rng,
@@ -425,6 +489,8 @@ fn babble(
     pool: &[Voice; 5],
     exclude: Option<&Voice>,
     len: usize,
+    turns: &[(usize, usize)],
+    clear: usize,
 ) -> Result<(Vec<f32>, Vec<Segment>), String> {
     let candidates: Vec<Voice> = pool
         .iter()
@@ -441,14 +507,40 @@ fn babble(
     for voice in [candidates[first], candidates[second]] {
         let mut track = vec![0f32; len];
         let mut track_segments = Vec::new();
+        let mut drawn: Vec<(usize, &String, Vec<f32>)> = Vec::new();
         let mut pos = rng.range(0, ms(300));
         while pos < len {
             let text = &sentences[rng.below(sentences.len())];
             let clip = synth.clip(&voice, text)?;
+            let next = pos + clip.len() + ms(rng.range(150, 400));
+            drawn.push((pos, text, clip));
+            pos = next;
+        }
+        let starts: Vec<usize> = drawn.iter().map(|d| d.0).collect();
+        let lens: Vec<usize> = drawn.iter().map(|d| d.2.len()).collect();
+        let placements = place_babble(&starts, &lens, len, turns, clear);
+        for ((drawn_at, text, clip), placed) in drawn.iter().zip(placements) {
+            let Some(pos) = placed else {
+                eprintln!(
+                    "babble-clear: dropped {} {:?} drawn at {} ms",
+                    voice.name,
+                    text,
+                    to_ms(*drawn_at)
+                );
+                continue;
+            };
+            if pos != *drawn_at {
+                eprintln!(
+                    "babble-clear: pushed {} {:?} from {} ms to {} ms",
+                    voice.name,
+                    text,
+                    to_ms(*drawn_at),
+                    to_ms(pos)
+                );
+            }
             let used = clip.len().min(len - pos);
             add_at(&mut track, &clip[..used], pos);
             track_segments.push(segment("babble", &voice, text, pos, used, false));
-            pos += clip.len() + ms(rng.range(150, 400));
         }
         let leveled = normalize_to(&track, -20.0);
         add_at(&mut mix, &leveled, 0);
@@ -498,9 +590,29 @@ struct Ctx {
     longs: Vec<String>,
     out: PathBuf,
     scenes: Vec<Scene>,
+    /// `--min-turn-gap-ms`: floor of every S3 turn gap (0 keeps the drawn gap).
+    min_turn_gap_ms: usize,
+    /// `--only`: scene id prefixes to generate; empty generates every scene.
+    only: Vec<String>,
+    /// `--bystander-db`: S3 bystander level re the main voice (0 = same voiced level).
+    bystander_db: i32,
+    /// `--babble-clear-ms`: S3 babble keeps clear of this window before each main turn (0 = off).
+    babble_clear_ms: usize,
 }
 
 impl Ctx {
+    /// True when `--only` is unset or `id` starts with one of its prefixes.
+    fn wants(&self, id: &str) -> bool {
+        scene_selected(&self.only, id)
+    }
+
+    /// Gap after an S3 turn: the drawn gap (the draw always happens, so the seed stream and
+    /// everything derived from it stay the same), raised to `--min-turn-gap-ms`.
+    fn turn_gap_ms(&self, rng: &mut Rng) -> usize {
+        rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS)
+            .max(self.min_turn_gap_ms)
+    }
+
     /// Finishes a scene: peak guard, writes both wav files, records the scene.
     #[allow(clippy::too_many_arguments)]
     fn finish(
@@ -562,6 +674,9 @@ impl Ctx {
         level_db: i32,
     ) -> Result<(), String> {
         let id = format!("s1_{}_{}_m{}", set.name(), tag, level_db.abs());
+        if !self.wants(&id) {
+            return Ok(());
+        }
         let seed = scene_seed(&id);
         let mut rng = Rng::new(seed);
         let main = self.main_clip(&phrase)?;
@@ -573,6 +688,8 @@ impl Ctx {
             set.voices(),
             None,
             total,
+            &[],
+            0,
         )?;
         scale_babble(&mut bab, MAIN_REF_DB + level_db as f32);
         let mut mix = bab;
@@ -606,6 +723,9 @@ impl Ctx {
     /// denoiser WER table. `level_db` is [`CLEAN_LEVEL_DB`], standing in for minus infinity.
     fn main_clean(&mut self, set: Set, tag: &str, phrase: String) -> Result<(), String> {
         let id = format!("s1c_{}_{}", set.name(), tag);
+        if !self.wants(&id) {
+            return Ok(());
+        }
         let seed = scene_seed(&id);
         let main = self.main_clip(&phrase)?;
         let total = ms(LEAD_MS) + main.len() + ms(TAIL_MS);
@@ -637,6 +757,9 @@ impl Ctx {
     /// S2: one other voice saying one sentence, babble at -20 dB underneath, no main speech.
     fn bystander_alone(&mut self, set: Set, index: usize, level_db: i32) -> Result<(), String> {
         let id = format!("s2_{}_u{:02}_m{}", set.name(), index, level_db.abs());
+        if !self.wants(&id) {
+            return Ok(());
+        }
         let seed = scene_seed(&id);
         let mut rng = Rng::new(seed);
         let voice = set.voices()[rng.below(5)];
@@ -653,6 +776,8 @@ impl Ctx {
             set.voices(),
             Some(&voice),
             total,
+            &[],
+            0,
         )?;
         scale_babble(&mut bab, MAIN_REF_DB + BABBLE_UNDER_DB as f32);
         let mut mix = bab;
@@ -701,6 +826,9 @@ impl Ctx {
     ) -> Result<(), String> {
         let base_id = format!("s3_{}_m{}", set.name(), level_db.abs());
         let id = scene_id_with_main_level(&base_id, main_db);
+        if !self.wants(&id) {
+            return Ok(());
+        }
         let seed = scene_seed(&base_id);
         let mut rng = Rng::new(seed);
         let qualified: Vec<String> = self
@@ -724,7 +852,7 @@ impl Ctx {
             let clip = self.main_clip_at(text, main_db)?;
             let seg = segment("main", &MAIN_VOICE, text, pos, clip.len(), true);
             let start = pos;
-            pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
+            pos += clip.len() + ms(self.turn_gap_ms(&mut rng));
             placed.push(Placed {
                 clip,
                 start,
@@ -738,7 +866,7 @@ impl Ctx {
                 let clip = self.main_clip_at(&text, main_db)?;
                 let seg = segment("main", &MAIN_VOICE, &text, pos, clip.len(), false);
                 let start = pos;
-                pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
+                pos += clip.len() + ms(self.turn_gap_ms(&mut rng));
                 placed.push(Placed {
                     clip,
                     start,
@@ -746,10 +874,13 @@ impl Ctx {
                 });
             } else {
                 let text = self.sentences[rng.below(self.sentences.len())].clone();
-                let clip = normalize_to(&self.synth.clip(&bystander, &text)?, main_db as f32);
+                let clip = normalize_to(
+                    &self.synth.clip(&bystander, &text)?,
+                    bystander_level_db(main_db, self.bystander_db),
+                );
                 let seg = segment("bystander", &bystander, &text, pos, clip.len(), false);
                 let start = pos;
-                pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
+                pos += clip.len() + ms(self.turn_gap_ms(&mut rng));
                 placed.push(Placed {
                     clip,
                     start,
@@ -758,6 +889,11 @@ impl Ctx {
             }
         }
         let total = pos + ms(TAIL_MS);
+        let main_turns: Vec<(usize, usize)> = placed
+            .iter()
+            .filter(|p| p.segment.role == "main")
+            .map(|p| (p.start, p.start + p.clip.len()))
+            .collect();
         let (mut bab, mut segments) = babble(
             &mut self.synth,
             &mut rng,
@@ -765,6 +901,8 @@ impl Ctx {
             set.voices(),
             Some(&bystander),
             total,
+            &main_turns,
+            ms(self.babble_clear_ms),
         )?;
         // One level for the whole babble track first, then a piecewise gain: -20 dB until the
         // enrollment ends, the scene level after it, with a 100 ms linear ramp between.
@@ -1012,6 +1150,10 @@ struct Args {
     quick: bool,
     /// Extra main-voice levels (dBFS) for test-set conversation scenes; `-20` is the default set.
     main_levels: Vec<i32>,
+    min_turn_gap_ms: usize,
+    only: Vec<String>,
+    bystander_db: i32,
+    babble_clear_ms: usize,
 }
 
 fn parse_main_levels(text: &str) -> Result<Vec<i32>, String> {
@@ -1040,6 +1182,10 @@ fn parse_args() -> Result<Args, String> {
     let mut cache = None;
     let mut quick = false;
     let mut main_levels = vec![MAIN_REF_DB as i32];
+    let mut min_turn_gap_ms = 0usize;
+    let mut only = Vec::new();
+    let mut bystander_db = 0i32;
+    let mut babble_clear_ms = 0usize;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -1058,6 +1204,30 @@ fn parse_args() -> Result<Args, String> {
             "--main-levels" => {
                 main_levels = parse_main_levels(&value("--main-levels")?.to_string_lossy())?
             }
+            "--min-turn-gap-ms" => {
+                let text = value("--min-turn-gap-ms")?.to_string_lossy().into_owned();
+                min_turn_gap_ms = text
+                    .parse()
+                    .map_err(|e| format!("--min-turn-gap-ms {text:?}: {e}"))?;
+            }
+            "--bystander-db" => {
+                let text = value("--bystander-db")?.to_string_lossy().into_owned();
+                bystander_db = text
+                    .parse()
+                    .map_err(|e| format!("--bystander-db {text:?}: {e}"))?;
+                if !(-40..=0).contains(&bystander_db) {
+                    return Err(format!(
+                        "--bystander-db {bystander_db}: must be between -40 and 0"
+                    ));
+                }
+            }
+            "--babble-clear-ms" => {
+                let text = value("--babble-clear-ms")?.to_string_lossy().into_owned();
+                babble_clear_ms = text
+                    .parse()
+                    .map_err(|e| format!("--babble-clear-ms {text:?}: {e}"))?;
+            }
+            "--only" => only.push(value("--only")?.to_string_lossy().into_owned()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -1070,6 +1240,10 @@ fn parse_args() -> Result<Args, String> {
         cache,
         quick,
         main_levels,
+        min_turn_gap_ms,
+        only,
+        bystander_db,
+        babble_clear_ms,
     })
 }
 
@@ -1115,6 +1289,10 @@ fn run() -> Result<(), String> {
         longs: lines_of(LONG),
         out: args.out.clone(),
         scenes: Vec::new(),
+        min_turn_gap_ms: args.min_turn_gap_ms,
+        only: args.only.clone(),
+        bystander_db: args.bystander_db,
+        babble_clear_ms: args.babble_clear_ms,
     };
 
     let sets = [Set::Tune, Set::Test];
@@ -1261,6 +1439,97 @@ mod tests {
     #[test]
     fn turn_phrase_indices_excludes_enrollment() {
         assert_eq!(turn_phrase_indices(7, 1, 4), vec![0, 2, 3, 5, 6]);
+    }
+
+    #[test]
+    fn bystander_db_offsets_the_main_level() {
+        // Default 0: the bystander keeps the main voice level (today's scenes).
+        assert_eq!(bystander_level_db(-20, 0), -20.0);
+        assert_eq!(bystander_level_db(-20, -15), -35.0);
+        assert_eq!(bystander_level_db(-26, -15), -41.0);
+    }
+
+    #[test]
+    fn only_filter_selects_by_prefix() {
+        assert!(scene_selected(&[], "s1_test_p00_m10"));
+        let only = vec!["s3_test_m15".to_string()];
+        assert!(scene_selected(&only, "s3_test_m15"));
+        assert!(scene_selected(&only, "s3_test_m15_l26"));
+        assert!(!scene_selected(&only, "s3_tune_m15"));
+        assert!(!scene_selected(&only, "s1_test_p00_m15"));
+    }
+
+    #[test]
+    fn min_turn_gap_raises_gap_without_changing_the_draws() {
+        let mut a = Rng::new(7);
+        let mut b = Rng::new(7);
+        for _ in 0..50 {
+            let drawn = a.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS);
+            let raised = b.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS).max(2500);
+            assert!(drawn < 2500);
+            assert_eq!(raised, 2500);
+        }
+        // Same number of draws: both streams stay in step.
+        assert_eq!(a.next_u64(), b.next_u64());
+    }
+
+    #[test]
+    fn babble_clear_moves_starts_out_of_the_window_without_changing_the_draws() {
+        let clear = ms(1000);
+        // Main turns (start, end) in samples, as conversation_at builds them.
+        let turns = [
+            (ms(5000), ms(7000)),
+            (ms(9500), ms(11000)),
+            (ms(14000), ms(16000)),
+        ];
+        // One babble track drawn the way babble() draws it.
+        let mut rng = Rng::new(11);
+        let len = ms(20_000);
+        let (mut starts, mut lens) = (Vec::new(), Vec::new());
+        let mut pos = rng.range(0, ms(300));
+        while pos < len {
+            let clip = ms(rng.range(1500, 3000));
+            starts.push(pos);
+            lens.push(clip);
+            pos += clip + ms(rng.range(150, 400));
+        }
+        // Off: every drawn start kept as is.
+        let off = place_babble(&starts, &lens, len, &turns, 0);
+        assert_eq!(off, starts.iter().map(|&s| Some(s)).collect::<Vec<_>>());
+        // On: one entry per draw (the draws do not change), no start in [turnStart - n, turnStart).
+        let on = place_babble(&starts, &lens, len, &turns, clear);
+        assert_eq!(on.len(), starts.len());
+        for (i, placed) in on.iter().enumerate() {
+            let in_window = |p: usize| turns.iter().any(|&(t, _)| t - clear <= p && p < t);
+            match placed {
+                Some(p) => {
+                    assert!(!in_window(*p), "start {p} in a cleared window");
+                    if *p != starts[i] {
+                        assert!(in_window(starts[i]), "only starts in a window move");
+                        assert!(
+                            turns.iter().any(|&(_, end)| end == *p),
+                            "moved to a turn end"
+                        );
+                        let next = starts.get(i + 1).copied().unwrap_or(len);
+                        assert!(
+                            *p + lens[i] <= next,
+                            "a moved sentence fits before the next"
+                        );
+                    }
+                }
+                None => assert!(in_window(starts[i]), "only moved sentences are dropped"),
+            }
+        }
+        assert!(
+            on.iter().zip(&starts).any(|(p, s)| *p != Some(*s)),
+            "the fixture must exercise at least one moved or dropped start"
+        );
+        // Direct cases: in the window → turn end; just outside → unchanged; chained windows.
+        assert_eq!(babble_clear_start(ms(4500), &turns, clear), ms(7000));
+        assert_eq!(babble_clear_start(ms(3999), &turns, clear), ms(3999));
+        assert_eq!(babble_clear_start(ms(5000), &turns, clear), ms(5000));
+        let chained = [(ms(1000), ms(2000)), (ms(2500), ms(4000))];
+        assert_eq!(babble_clear_start(ms(500), &chained, clear), ms(4000));
     }
 
     #[test]

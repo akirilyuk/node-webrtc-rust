@@ -31,7 +31,8 @@ link_baked_models() {
   local models_dir="$ROOT/examples/voice-agent-local-sherpa/.models" name
   mkdir -p "$models_dir"
   for name in "$(basename "$STT_DIR")" "$(basename "$TTS_DIR")" \
-    sherpa-onnx-whisper-tiny vits-piper-de_DE-thorsten-medium vits-piper-es-glados-medium; do
+    sherpa-onnx-whisper-tiny vits-piper-de_DE-thorsten-medium vits-piper-es-glados-medium \
+    speaker vits-piper-en_US-{ryan,kristin,hfc_male,joe,hfc_female,lessac,libritts_r}-medium; do
     if [[ ! -e "$models_dir/$name" && -d "$root/$name" ]]; then
       ln -s "$root/$name" "$models_dir/$name"
       echo "==> Sherpa model from image: $name"

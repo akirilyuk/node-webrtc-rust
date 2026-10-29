@@ -546,19 +546,6 @@ struct TtsSynthesisJob {
 ///
 /// Holds VAD (optional), STT/TTS providers, TTS outbound buffer, and utterance state
 /// (`stt_gate_hold_ms`, finalize pending, barge-in flags). Thread-safe via internal `Mutex` / `Mutex`es.
-/// Emission order while finals wait for their speaker verdict (`contract.event-order`).
-///
-/// A final whose verdict is still pending takes a slot; events produced after it queue behind
-/// the slot and are delivered, in order, once the slot is filled. With no slot open (gate off or
-/// no pending final) events are delivered at once, as without the gate. Nothing here awaits.
-#[derive(Default)]
-struct EmitOrder {
-    next_slot: u64,
-    /// `(slot, event)`: slot 0 = an ordinary event (always `Some`); a reserved slot is `None`
-    /// until its final is filled in.
-    queue: VecDeque<(u64, Option<SpeechEvent>)>,
-}
-
 pub struct VoiceAgent {
     event_bus: SpeechEventBus,
     tts_buffer: TtsBuffer,
@@ -588,8 +575,6 @@ pub struct VoiceAgent {
     /// Finals waiting for their speaker verdict off the step lock; `wait_stt_idle` waits for them.
     speaker_finals_pending: AtomicU64,
     speaker_finals_done: Notify,
-    /// Keeps event emission in production order while a final waits for its speaker verdict.
-    emit_order: std::sync::Mutex<EmitOrder>,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -775,7 +760,6 @@ impl VoiceAgent {
             speaker_embedder: std::sync::Mutex::new(speaker_embedder),
             speaker_finals_pending: AtomicU64::new(0),
             speaker_finals_done: Notify::new(),
-            emit_order: std::sync::Mutex::new(EmitOrder::default()),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
@@ -3014,7 +2998,7 @@ impl VoiceAgent {
             inner.config.vad.barge_in.clone()
         };
         if barge_in.enabled && !barge_in.use_vad {
-            self.barge_in_with_speaking_end(&barge_in).await;
+            self.barge_in_with_speaking_end(&barge_in, None).await;
             voice_debug("agent_speaking=false (manual barge-in flush)");
         } else {
             self.tts_buffer
@@ -3101,14 +3085,15 @@ impl VoiceAgent {
         let _step = self.utterance_step.lock().await;
         // Live or closing: a short utterance's check goes out at SpeechEnd, after the record
         // moved to closing, and its barge-in still fires on that verdict.
-        let (known, barge_in, speaking) = {
+        let (record_id, barge_in, speaking) = {
             let inner = self.inner.lock().await;
             (
-                inner.stt_record_ref(verdict.key).is_some(),
+                inner.stt_record_ref(verdict.key).map(|r| r.id.clone()),
                 inner.config.vad.barge_in.clone(),
                 inner.agent_speaking,
             )
         };
+        let known = record_id.is_some();
         // A pending barge for this key makes the verdict known even after the record is gone
         // (the next utterance completed it); only a key with neither is stale.
         if !gate.take_pending_barge(verdict.key) {
@@ -3140,7 +3125,7 @@ impl VoiceAgent {
             "speaker gate: barge-in after verdict ({})",
             verdict.outcome.as_str()
         ));
-        self.barge_in_with_speaking_end(&barge_in).await;
+        self.barge_in_with_speaking_end(&barge_in, record_id).await;
         self.cancel_pending_tts_synthesis().await;
     }
 
@@ -3170,7 +3155,13 @@ impl VoiceAgent {
     /// TTS drain (which observes the flush) finds `agent_speaking == false` and does not emit; then
     /// flush + `agent_reply_end{interrupted}` + `barge_in`; then `agent_speaking_end` if this call
     /// ended speaking. Order is always reply_end(s) -> barge_in -> agent_speaking_end.
-    async fn barge_in_with_speaking_end(&self, barge_in: &BargeInConfig) {
+    /// `utterance_id`: the utterance that barged in (`None` for a manual flush, or when the
+    /// utterance record is already gone).
+    async fn barge_in_with_speaking_end(
+        &self,
+        barge_in: &BargeInConfig,
+        utterance_id: Option<String>,
+    ) {
         if !barge_in.enabled {
             return;
         }
@@ -3189,7 +3180,7 @@ impl VoiceAgent {
             // Test-only hook (`set_barge_in_flush_delay_for_test`).
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
-        self.emit(SpeechEvent::barge_in());
+        self.emit(SpeechEvent::barge_in().with_utterance_id(utterance_id));
         if ended {
             self.emit(SpeechEvent::agent_speaking_end());
         }
@@ -3221,7 +3212,9 @@ impl VoiceAgent {
             voice_debug("STT-gated barge-in suppressed: non-interruptible TTS job active");
             return Ok(());
         }
-        let (should_barge, barge_in) = {
+        // `utterance_id` is read in the same lock as the decision: the gate check below awaits, and
+        // a new utterance may start before the barge fires (`rt.stale-event-by-key`).
+        let (should_barge, barge_in, utterance_id) = {
             let inner = self.inner.lock().await;
             let barge_in_cfg = &inner.config.vad.barge_in;
             if !barge_in_cfg.enabled
@@ -3248,7 +3241,11 @@ impl VoiceAgent {
             if inner.stt_barge_fired_this_agent_playback {
                 return Ok(());
             }
-            (true, barge_in_cfg.clone())
+            (
+                true,
+                barge_in_cfg.clone(),
+                inner.record_ref(key).map(|r| r.id.clone()),
+            )
         };
         if !should_barge {
             return Ok(());
@@ -3274,7 +3271,8 @@ impl VoiceAgent {
                 otel::record_voice_turn_response_abandoned(Self::project_id_label(&guard));
             }
         }
-        self.barge_in_with_speaking_end(&barge_in).await;
+        self.barge_in_with_speaking_end(&barge_in, utterance_id)
+            .await;
         self.cancel_pending_tts_synthesis().await;
         Ok(())
     }
@@ -3339,11 +3337,15 @@ impl VoiceAgent {
             self.emit_stt_stream_start_if_needed().await;
         }
 
+        // The utterance this SpeechStart belongs to, read before any await below (the gate check
+        // awaits; a later utterance must not lend its id to this barge, `rt.stale-event-by-key`).
+        let utterance_id;
         {
             let mut inner = self.inner.lock().await;
             let partials_emitted = {
                 let rec = inner.ensure_live();
                 rec.vad_triggered = true;
+                utterance_id = Some(rec.id.clone());
                 rec.partials_emitted
             };
             inner.c1_backlog_deferred_logged = false;
@@ -3383,7 +3385,8 @@ impl VoiceAgent {
                 voice_debug(format!(
                     "immediate barge-in on VAD SpeechStart (require_stt_partial={require_stt_partial}, emits_partials={emits_partials})"
                 ));
-                self.barge_in_with_speaking_end(&barge_in).await;
+                self.barge_in_with_speaking_end(&barge_in, utterance_id)
+                    .await;
                 self.cancel_pending_tts_synthesis().await;
             }
         }
@@ -3683,7 +3686,7 @@ impl VoiceAgent {
         ));
         self.speaker_finals_pending.fetch_add(1, Ordering::SeqCst);
         // Events produced after this final queue behind its slot (`contract.event-order`).
-        let slot = self.reserve_emit_slot();
+        let slot = self.event_bus.reserve_slot();
         tokio::spawn(async move {
             let outcome = match this.speaker_gate.as_ref() {
                 Some(gate) => gate.await_outcome(key).await,
@@ -3714,7 +3717,7 @@ impl VoiceAgent {
             event.with_speaker(outcome.as_str())
         };
         match slot {
-            Some(slot) => self.fill_emit_slot(slot, event),
+            Some(slot) => self.event_bus.fill_slot(slot, event),
             None => self.emit(event),
         }
         if outcome != Outcome::Other {
@@ -5454,45 +5457,10 @@ impl VoiceAgent {
         }
     }
 
+    /// Emits in production order: behind any final waiting for its speaker verdict
+    /// (`contract.event-order`), else at once. Every emitter on the bus is ordered the same way.
     pub(crate) fn emit(&self, event: SpeechEvent) {
-        let mut order = self.emit_order.lock().unwrap_or_else(|e| e.into_inner());
-        if order.queue.is_empty() {
-            self.deliver(event);
-        } else {
-            order.queue.push_back((0, Some(event)));
-        }
-    }
-
-    /// Reserves the emission slot of a final that waits for its speaker verdict.
-    fn reserve_emit_slot(&self) -> u64 {
-        let mut order = self.emit_order.lock().unwrap_or_else(|e| e.into_inner());
-        order.next_slot += 1;
-        let slot = order.next_slot;
-        order.queue.push_back((slot, None));
-        slot
-    }
-
-    /// Fills a reserved slot and delivers everything that is ready, in order.
-    fn fill_emit_slot(&self, slot: u64, event: SpeechEvent) {
-        let mut order = self.emit_order.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = order.queue.iter_mut().find(|(s, _)| *s == slot) {
-            entry.1 = Some(event);
-        }
-        while order.queue.front().is_some_and(|(_, e)| e.is_some()) {
-            if let Some((_, Some(event))) = order.queue.pop_front() {
-                self.deliver(event);
-            }
-        }
-    }
-
-    fn deliver(&self, event: SpeechEvent) {
-        let mode = self.events_mode();
-        if matches!(
-            mode,
-            EventDeliveryMode::Callback | EventDeliveryMode::Stream | EventDeliveryMode::Both
-        ) {
-            self.event_bus.emit(event);
-        }
+        self.event_bus.emit(event);
     }
 
     async fn run_tts_drain(

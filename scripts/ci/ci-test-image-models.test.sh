@@ -43,6 +43,18 @@ check_names() {
 
 check_names "$DOCKERFILE"
 
+# Speaker-gate roundtrip assets (start:roundtrip-noisy-bystander): the embedding model and every
+# Piper bundle in SHERPA_SPEAKER_PIPER_BUNDLES must be checked with `test -s` in the image.
+grep -qF '/opt/sherpa-models/speaker/nemo_en_titanet_small.onnx' "$DOCKERFILE" \
+  || fail "Dockerfile.test does not check the TitaNet-small speaker model (ci.image-asset-lockstep)"
+bundles="$(grep -o "'vits-piper-en_US-[a-z_]*-medium'" examples/voice-agent-local-sherpa/scripts/sherpa-model-catalog.mjs | tr -d "'" | sed 's/^vits-piper-en_US-//')"
+[[ "$(printf '%s\n' "$bundles" | grep -c .)" -eq 7 ]] \
+  || fail "expected 7 speaker Piper bundles in sherpa-model-catalog.mjs, got: $bundles"
+while IFS= read -r b; do
+  [[ -n "$b" ]] || continue
+  grep -qF "$b" "$DOCKERFILE" || fail "Dockerfile.test does not check speaker Piper bundle $b (ci.image-asset-lockstep)"
+done <<<"$bundles"
+
 grep -Eq 'apt-get install[^&]*\bcoturn\b' "$DOCKERFILE" || fail "Dockerfile.test does not install coturn"
 grep -qx 'ENV NWR_CI_SHERPA_MODELS=/opt/sherpa-models' "$DOCKERFILE" \
   || fail "Dockerfile.test must set ENV NWR_CI_SHERPA_MODELS=/opt/sherpa-models"

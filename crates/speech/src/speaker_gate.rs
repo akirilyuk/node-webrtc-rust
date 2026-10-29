@@ -255,6 +255,10 @@ impl SpeakerGate {
 
     /// SpeechStart of utterance `key`; `frame` is the onset frame (16 kHz mono s16le).
     /// A second start for the same key (brief gap) continues the same utterance.
+    ///
+    /// One check per utterance key: the first verdict is final. A segment that joins a key whose
+    /// check already went out (pending or settled) does not send another check, so a speaker who
+    /// joins the utterance during the gate hold cannot relabel it.
     pub fn begin(&self, key: u64, frame: &[u8]) {
         let mut feed = lock(&self.feed);
         if feed.cur.as_ref().is_some_and(|c| c.key == key) {
@@ -284,7 +288,7 @@ impl SpeakerGate {
                     key,
                     pre: buf.len(),
                     buf,
-                    sent: false,
+                    sent: self.check_sent(key),
                 }
             }
         };

@@ -487,21 +487,50 @@ async fn verifier_never_settles_fails_open_and_does_not_block_next() {
     rig.agent.stop().await.unwrap();
 }
 
-/// A short enrolled-caller interruption ("stop", shorter than `checkSpeechMs`): its check goes
-/// out at SpeechEnd, after the record moved to closing, and its verdict still fires the barge-in
-/// while playback is active. (Here the clip, 100 ms of speech plus the VAD tail, passes the test
-/// config's 100 ms `minCheckSpeechMs`, so the verdict is `caller`; an `unknown` takes the same path.)
+/// A short enrolled-caller interruption ("stop") whose verdict settles only after the utterance
+/// has ended and its vendor final arrived: the verdict still fires the barge-in while playback
+/// is active. (During playback the record stays `live` after its vendor final; the close waits
+/// for playback, so this path does not reach `closing`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn enrolled_short_caller_utterance_barges_in() {
-    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    // Wall-clock test: the held verdict must outlast the wait for the vendor final.
+    cfg.verify_timeout_ms = 2000;
+    let mut rig = rig_with(agent_config(cfg)).await;
     rig.enroll().await;
     rig.start_speaking().await;
+    let release = Arc::new(Notify::new());
+    rig.queue
+        .lock()
+        .unwrap()
+        .push_back(Behavior::WaitFor(Arc::clone(&release), REF.to_vec()));
     rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
     rig.feed(&loud_stereo_frame(), 5).await;
     rig.feed(&silent_stereo_frame(), 30).await;
+    let mut final_arrived = false;
+    for _ in 0..200 {
+        rig.drain();
+        if rig.log.iter().any(|e| {
+            e.kind == SpeechEventKind::SttStreamEnd && e.reason.as_deref() == Some("vendor_final")
+        }) {
+            final_arrived = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        final_arrived,
+        "the vendor final of the short utterance must arrive first"
+    );
+    assert_eq!(
+        rig.count(SpeechEventKind::BargeIn),
+        0,
+        "no barge-in before the verdict"
+    );
+    release.notify_waiters();
     assert!(
         rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
-        "the short caller utterance barges in on its verdict"
+        "the verdict for the closing utterance fires the barge-in"
     );
     assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
     rig.drain();
@@ -509,6 +538,127 @@ async fn enrolled_short_caller_utterance_barges_in() {
         rig.finals().last().unwrap().speaker.as_deref(),
         Some("caller")
     );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Events keep production order while a final waits for its verdict (`contract.event-order`):
+/// A's final (verdict pending, then `unknown` after verifyTimeoutMs) comes before every event of
+/// the next utterance B, and frames never wait.
+#[tokio::test(start_paused = true)]
+async fn events_keep_production_order_while_a_final_waits() {
+    let mut cfg = agent_config(gate_cfg(SpeakerMismatchAction::Flag));
+    cfg.tts = None;
+    let mut rig = rig_with(cfg).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    // A's check pends (bounded at 300 ms); B's check, queued behind it, returns the caller.
+    rig.queue.lock().unwrap().push_back(Behavior::Pending);
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    let agent = Arc::clone(&rig.agent);
+    let mut worst = Duration::ZERO;
+    let feed = async |frame: &[u8], n: usize, worst: &mut Duration| {
+        for _ in 0..n {
+            let t = tokio::time::Instant::now();
+            agent
+                .process_inbound_pcm(Bytes::from(frame.to_vec()), 20)
+                .await
+                .unwrap();
+            *worst = (*worst).max(t.elapsed());
+        }
+    };
+    rig.script.lock().unwrap().final_on_finalize = Some("alpha".into());
+    feed(&loud, 15, &mut worst).await;
+    feed(&silent, 30, &mut worst).await;
+    sleep(Duration::from_millis(100)).await;
+    rig.drain();
+    let a_end = rig.log[base..]
+        .iter()
+        .position(|e| {
+            e.kind == SpeechEventKind::SttStreamEnd && e.reason.as_deref() == Some("vendor_final")
+        })
+        .expect("A's vendor final arrived")
+        + base;
+    assert_eq!(
+        rig.finals()
+            .iter()
+            .filter(|e| e.text.as_deref() == Some("alpha"))
+            .count(),
+        0
+    );
+    rig.script.lock().unwrap().final_on_finalize = Some("bravo".into());
+    feed(&loud, 15, &mut worst).await;
+    feed(&silent, 30, &mut worst).await;
+    sleep(Duration::from_millis(100)).await;
+    rig.drain();
+    assert!(
+        rig.log[a_end + 1..]
+            .iter()
+            .all(|e| e.kind != SpeechEventKind::UserSpeakingStart),
+        "B's events wait behind A's final"
+    );
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let pos = |pred: &dyn Fn(&SpeechEvent) -> bool| {
+        rig.log[a_end + 1..]
+            .iter()
+            .position(pred)
+            .map(|p| p + a_end + 1)
+    };
+    let a_final =
+        pos(&|e| e.kind == SpeechEventKind::UserSpeechFinal && e.text.as_deref() == Some("alpha"))
+            .expect("A final");
+    let b_start = pos(&|e| e.kind == SpeechEventKind::UserSpeakingStart).expect("B start");
+    let b_final =
+        pos(&|e| e.kind == SpeechEventKind::UserSpeechFinal && e.text.as_deref() == Some("bravo"))
+            .expect("B final");
+    assert!(
+        a_final < b_start && b_start < b_final,
+        "{a_final} {b_start} {b_final}"
+    );
+    assert_eq!(rig.log[a_final].speaker.as_deref(), Some("unknown"));
+    assert_eq!(rig.log[b_final].speaker.as_deref(), Some("caller"));
+    assert!(worst < Duration::from_millis(5), "a frame waited {worst:?}");
+    rig.agent.stop().await.unwrap();
+}
+
+/// A verdict that arrives after its utterance is gone is dropped and counted
+/// (`rt.stale-event-by-key`): A's pending check holds the serial verifier for its 300 ms bound,
+/// B's check queues behind it, B's final hits its own bound and is emitted `unknown`, and B's
+/// late verdict then finds no record.
+#[tokio::test(start_paused = true)]
+async fn verdict_for_finished_utterance_is_counted_stale() {
+    let mut cfg = agent_config(gate_cfg(SpeakerMismatchAction::Flag));
+    cfg.tts = None;
+    let mut rig = rig_with(cfg).await;
+    rig.enroll().await;
+    {
+        let mut q = rig.queue.lock().unwrap();
+        q.push_back(Behavior::Pending); // A
+        q.push_back(Behavior::Pending); // B: its verdict comes after B's final bound
+    }
+    rig.script.lock().unwrap().final_on_finalize = Some("alpha".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    sleep(Duration::from_millis(100)).await;
+    rig.script.lock().unwrap().final_on_finalize = Some("bravo".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    // Past B's verdict (A's bound + B's bound) and a little more.
+    sleep(Duration::from_millis(1000)).await;
+    rig.drain();
+    let bravo = rig
+        .finals()
+        .into_iter()
+        .find(|e| e.text.as_deref() == Some("bravo"))
+        .expect("B final");
+    assert_eq!(bravo.speaker.as_deref(), Some("unknown"));
+    // Both verdicts land after their utterance's record is gone: B's after B's final bound,
+    // and A's after A's final (released by that very verdict) retired A's record. Neither is
+    // applied; both are counted.
+    assert_eq!(rig.agent.speaker_gate_stale_verdicts(), 2);
+    assert_eq!(rig.count(SpeechEventKind::BargeIn), 0);
     rig.agent.stop().await.unwrap();
 }
 

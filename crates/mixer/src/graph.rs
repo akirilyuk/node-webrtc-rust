@@ -1642,6 +1642,85 @@ mod tests {
         assert!(stats.listener_catchup_compressed > 0, "{stats:?}");
     }
 
+    /// Like `run_listener_burst_after_stall`, but the listener is paced by `OutboundPacer`
+    /// (the conference outbound loop): after the stall it renders at most `MAX_BURST_WRITES`
+    /// slots per wall tick. Returns `(wall ms, indices heard)` per render.
+    fn run_listener_paced_after_stall(
+        total: u64,
+        stall_at: u64,
+        stall_ms: u64,
+    ) -> (
+        Vec<(u64, Vec<u64>)>,
+        SourceStats,
+        crate::pacer::OutboundPacer,
+    ) {
+        let mut graph = MixGraph::new();
+        graph.add_input("talker");
+        graph.set_listener_sources("listener", &["talker".to_string()]);
+        graph.set_listener_sources("driver", &["talker".to_string()]);
+        let table: HashMap<i16, u64> = (0..total)
+            .map(|k| (first_sample(&graph_pan(marker_amp(k))), k))
+            .collect();
+        let mut pacer = crate::pacer::OutboundPacer::new(t0() + ms(7));
+        let mut carried = Vec::new();
+        for wall in 0..(20 * (total + 5)) {
+            if wall % 20 == 0 && wall / 20 < total {
+                let k = wall / 20;
+                graph.push_frame_at("talker", tone_frame(1, marker_amp(k)), t0() + ms(20 * k));
+            }
+            if wall % 20 == 3 {
+                graph.render_output("driver", t0() + ms(wall));
+            }
+            let stalled = wall >= stall_at && wall < stall_at + stall_ms;
+            if !stalled && t0() + ms(wall) >= pacer.next_due() {
+                for at in pacer.due_slots(t0() + ms(wall)).at {
+                    let out = graph.render_output("listener", at);
+                    carried.push((wall, indices_in(&out, &table)));
+                }
+            }
+        }
+        (carried, graph.source_stats("talker").unwrap(), pacer)
+    }
+
+    #[test]
+    fn listener_paced_after_a_one_second_stall_writes_at_most_four_back_to_back() {
+        let (carried, stats, pacer) = run_listener_paced_after_stall(120, 400, 1000);
+        let mut per_wall: HashMap<u64, usize> = HashMap::new();
+        for (wall, _) in &carried {
+            *per_wall.entry(*wall).or_default() += 1;
+        }
+        let max_burst = per_wall.values().copied().max().unwrap_or(0) as u64;
+        assert!(
+            max_burst <= 4, // literal: independent of the constant under test
+            "{max_burst} back-to-back writes: {carried:?}"
+        );
+        let mut flat: Vec<u64> = carried
+            .iter()
+            .flat_map(|(_, v)| v.iter().copied())
+            .collect();
+        // Up to the last frame; after it the queue conceals (a counted repeat).
+        let end = flat
+            .iter()
+            .position(|&k| k == 119)
+            .expect("last frame heard");
+        flat.truncate(end + 1);
+        assert!(
+            flat.windows(2).all(|w| w[0] < w[1]),
+            "a frame was heard twice or out of order: {carried:?}"
+        );
+        let span = flat.iter().max().unwrap() - flat.iter().min().unwrap() + 1;
+        assert_eq!(
+            flat.len() as u64 + stats.listener_skipped,
+            span,
+            "{stats:?} {carried:?}"
+        );
+        assert!(stats.listener_skipped > 0, "stall must overrun: {stats:?}");
+        assert_eq!(
+            carried.len() as u64 + pacer.skipped_total(),
+            pacer.written()
+        );
+    }
+
     #[test]
     fn listener_burst_after_a_stall_never_replays_a_heard_frame() {
         // Up to 340 ms the history still holds every missed tick: each burst render hears

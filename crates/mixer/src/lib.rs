@@ -14,6 +14,7 @@ mod elastic;
 mod frame;
 mod graph;
 mod otel;
+pub mod pacer;
 mod spatial;
 
 pub use bus::MixBus;
@@ -24,6 +25,7 @@ pub use frame::{
     SAMPLES_PER_CHANNEL, SAMPLES_PER_FRAME, SAMPLE_RATE,
 };
 pub use graph::{MixGraph, ParticipantId};
+pub use pacer::{DueSlots, OutboundPacer, MAX_BURST_WRITES};
 pub use spatial::{
     apply_pan_gains, pan_frame_with_placement, pan_gains_placement, pan_gains_positional,
     ClientPose, DistanceParams, MixPlacement, PanGains, Quat, SpatialError, Vec3,

@@ -675,12 +675,13 @@ cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fix
   --models examples/voice-agent-local-sherpa/.models/speaker \
   --main-tts examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low \
   --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json \
-  --out examples/voice-agent-local-sherpa/.models/speaker-fixtures --main-levels -26
+  --out examples/voice-agent-local-sherpa/.models/speaker-fixtures --main-levels -26 \
+  --min-turn-gap-ms 2500 --only s3_test_m15
 WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1 npm run start:roundtrip-noisy-bystander --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 npm run test:roundtrip-counting --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 ```
 
-CI generates the scenes in `ensure_sherpa_models`; the speaker model and Piper voices are baked into the CI test image (`docker/ci/Dockerfile.test`). Env: `SHERPA_SPEAKER_SCENES_DIR`, `SHERPA_SPEAKER_MODEL_PATH`. Evaluator logic: [`src/roundtrip-noisy-bystander-helpers.ts`](./src/roundtrip-noisy-bystander-helpers.ts) (Vitest, no models).
+Every turn gap in these scenes is at least 2.5 s (`--min-turn-gap-ms 2500`): with the product's default end of turn (1.5 s finalize plus VAD hangover), turns from two people closer than about 1.5 s merge into one transcript labelled by its first speaker. `--only s3_test_m15` generates just the two scenes the roundtrip plays. CI generates the scenes in `ensure_sherpa_models`; the speaker model and Piper voices are baked into the CI test image (`docker/ci/Dockerfile.test`). Env: `SHERPA_SPEAKER_SCENES_DIR`, `SHERPA_SPEAKER_MODEL_PATH`. Evaluator logic: [`src/roundtrip-noisy-bystander-helpers.ts`](./src/roundtrip-noisy-bystander-helpers.ts) (Vitest, no models).
 
 ## Semantic barge-in E2E
 

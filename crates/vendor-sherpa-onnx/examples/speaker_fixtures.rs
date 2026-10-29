@@ -7,6 +7,7 @@
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
 //!   --models <speaker dir> --main-tts <amy-low dir> --phrases <stt-phrase-qualification.json> \
 //!   --out <dir> [--quick] [--voices-root <dir>] [--cache <dir>] [--main-levels <dBFS,...>]
+//!   [--min-turn-gap-ms <ms>] [--only <scene-id-prefix>]
 //! ```
 //!
 //! - Main voice: `vits-piper-en_US-amy-low` (`--main-tts`), sid 0. Main text = the phrases of
@@ -58,6 +59,11 @@
 //! override with `--cache`) keyed by bundle, sid and text; a second run with the same arguments reads
 //! the same clips and writes byte-identical files. Delete the cache to re-roll the voices. The
 //! manifest carries the sha256 of every wav, and the sha256 of `manifest.json` is printed last.
+//!
+//! `--min-turn-gap-ms` (default 0: the drawn 1400-2000 ms gaps): raises every S3 gap to at least
+//! this many ms. The draws (and so texts, voices and babble) are unchanged, only the positions move.
+//! `--only` (repeatable): generate only scenes whose id starts with one of the prefixes; the
+//! manifest lists only those. Without it every scene is generated (the bench default).
 //!
 //! `--quick`: S1 for 3 qualified phrases and 2 long sentences at -10 dB, S2 with 4 utterances per
 //! set, one S3 at -10 dB (tune set) of 6 turns.
@@ -352,6 +358,11 @@ impl Synth {
 // ---------------------------------------------------------------------------------------------
 
 /// Scene id for a main level: unchanged at [`MAIN_REF_DB`], else `<base>_l<abs level>`.
+/// `--only` filter: an empty list selects every scene.
+fn scene_selected(only: &[String], id: &str) -> bool {
+    only.is_empty() || only.iter().any(|prefix| id.starts_with(prefix.as_str()))
+}
+
 fn scene_id_with_main_level(base_id: &str, main_db: i32) -> String {
     if main_db == MAIN_REF_DB as i32 {
         base_id.to_string()
@@ -498,9 +509,25 @@ struct Ctx {
     longs: Vec<String>,
     out: PathBuf,
     scenes: Vec<Scene>,
+    /// `--min-turn-gap-ms`: floor of every S3 turn gap (0 keeps the drawn gap).
+    min_turn_gap_ms: usize,
+    /// `--only`: scene id prefixes to generate; empty generates every scene.
+    only: Vec<String>,
 }
 
 impl Ctx {
+    /// True when `--only` is unset or `id` starts with one of its prefixes.
+    fn wants(&self, id: &str) -> bool {
+        scene_selected(&self.only, id)
+    }
+
+    /// Gap after an S3 turn: the drawn gap (the draw always happens, so the seed stream and
+    /// everything derived from it stay the same), raised to `--min-turn-gap-ms`.
+    fn turn_gap_ms(&self, rng: &mut Rng) -> usize {
+        rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS)
+            .max(self.min_turn_gap_ms)
+    }
+
     /// Finishes a scene: peak guard, writes both wav files, records the scene.
     #[allow(clippy::too_many_arguments)]
     fn finish(
@@ -562,6 +589,9 @@ impl Ctx {
         level_db: i32,
     ) -> Result<(), String> {
         let id = format!("s1_{}_{}_m{}", set.name(), tag, level_db.abs());
+        if !self.wants(&id) {
+            return Ok(());
+        }
         let seed = scene_seed(&id);
         let mut rng = Rng::new(seed);
         let main = self.main_clip(&phrase)?;
@@ -606,6 +636,9 @@ impl Ctx {
     /// denoiser WER table. `level_db` is [`CLEAN_LEVEL_DB`], standing in for minus infinity.
     fn main_clean(&mut self, set: Set, tag: &str, phrase: String) -> Result<(), String> {
         let id = format!("s1c_{}_{}", set.name(), tag);
+        if !self.wants(&id) {
+            return Ok(());
+        }
         let seed = scene_seed(&id);
         let main = self.main_clip(&phrase)?;
         let total = ms(LEAD_MS) + main.len() + ms(TAIL_MS);
@@ -637,6 +670,9 @@ impl Ctx {
     /// S2: one other voice saying one sentence, babble at -20 dB underneath, no main speech.
     fn bystander_alone(&mut self, set: Set, index: usize, level_db: i32) -> Result<(), String> {
         let id = format!("s2_{}_u{:02}_m{}", set.name(), index, level_db.abs());
+        if !self.wants(&id) {
+            return Ok(());
+        }
         let seed = scene_seed(&id);
         let mut rng = Rng::new(seed);
         let voice = set.voices()[rng.below(5)];
@@ -701,6 +737,9 @@ impl Ctx {
     ) -> Result<(), String> {
         let base_id = format!("s3_{}_m{}", set.name(), level_db.abs());
         let id = scene_id_with_main_level(&base_id, main_db);
+        if !self.wants(&id) {
+            return Ok(());
+        }
         let seed = scene_seed(&base_id);
         let mut rng = Rng::new(seed);
         let qualified: Vec<String> = self
@@ -724,7 +763,7 @@ impl Ctx {
             let clip = self.main_clip_at(text, main_db)?;
             let seg = segment("main", &MAIN_VOICE, text, pos, clip.len(), true);
             let start = pos;
-            pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
+            pos += clip.len() + ms(self.turn_gap_ms(&mut rng));
             placed.push(Placed {
                 clip,
                 start,
@@ -738,7 +777,7 @@ impl Ctx {
                 let clip = self.main_clip_at(&text, main_db)?;
                 let seg = segment("main", &MAIN_VOICE, &text, pos, clip.len(), false);
                 let start = pos;
-                pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
+                pos += clip.len() + ms(self.turn_gap_ms(&mut rng));
                 placed.push(Placed {
                     clip,
                     start,
@@ -749,7 +788,7 @@ impl Ctx {
                 let clip = normalize_to(&self.synth.clip(&bystander, &text)?, main_db as f32);
                 let seg = segment("bystander", &bystander, &text, pos, clip.len(), false);
                 let start = pos;
-                pos += clip.len() + ms(rng.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS));
+                pos += clip.len() + ms(self.turn_gap_ms(&mut rng));
                 placed.push(Placed {
                     clip,
                     start,
@@ -1012,6 +1051,8 @@ struct Args {
     quick: bool,
     /// Extra main-voice levels (dBFS) for test-set conversation scenes; `-20` is the default set.
     main_levels: Vec<i32>,
+    min_turn_gap_ms: usize,
+    only: Vec<String>,
 }
 
 fn parse_main_levels(text: &str) -> Result<Vec<i32>, String> {
@@ -1040,6 +1081,8 @@ fn parse_args() -> Result<Args, String> {
     let mut cache = None;
     let mut quick = false;
     let mut main_levels = vec![MAIN_REF_DB as i32];
+    let mut min_turn_gap_ms = 0usize;
+    let mut only = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -1058,6 +1101,13 @@ fn parse_args() -> Result<Args, String> {
             "--main-levels" => {
                 main_levels = parse_main_levels(&value("--main-levels")?.to_string_lossy())?
             }
+            "--min-turn-gap-ms" => {
+                let text = value("--min-turn-gap-ms")?.to_string_lossy().into_owned();
+                min_turn_gap_ms = text
+                    .parse()
+                    .map_err(|e| format!("--min-turn-gap-ms {text:?}: {e}"))?;
+            }
+            "--only" => only.push(value("--only")?.to_string_lossy().into_owned()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -1070,6 +1120,8 @@ fn parse_args() -> Result<Args, String> {
         cache,
         quick,
         main_levels,
+        min_turn_gap_ms,
+        only,
     })
 }
 
@@ -1115,6 +1167,8 @@ fn run() -> Result<(), String> {
         longs: lines_of(LONG),
         out: args.out.clone(),
         scenes: Vec::new(),
+        min_turn_gap_ms: args.min_turn_gap_ms,
+        only: args.only.clone(),
     };
 
     let sets = [Set::Tune, Set::Test];
@@ -1261,6 +1315,30 @@ mod tests {
     #[test]
     fn turn_phrase_indices_excludes_enrollment() {
         assert_eq!(turn_phrase_indices(7, 1, 4), vec![0, 2, 3, 5, 6]);
+    }
+
+    #[test]
+    fn only_filter_selects_by_prefix() {
+        assert!(scene_selected(&[], "s1_test_p00_m10"));
+        let only = vec!["s3_test_m15".to_string()];
+        assert!(scene_selected(&only, "s3_test_m15"));
+        assert!(scene_selected(&only, "s3_test_m15_l26"));
+        assert!(!scene_selected(&only, "s3_tune_m15"));
+        assert!(!scene_selected(&only, "s1_test_p00_m15"));
+    }
+
+    #[test]
+    fn min_turn_gap_raises_gap_without_changing_the_draws() {
+        let mut a = Rng::new(7);
+        let mut b = Rng::new(7);
+        for _ in 0..50 {
+            let drawn = a.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS);
+            let raised = b.range(S3_GAP_MIN_MS, S3_GAP_MAX_MS).max(2500);
+            assert!(drawn < 2500);
+            assert_eq!(raised, 2500);
+        }
+        // Same number of draws: both streams stay in step.
+        assert_eq!(a.next_u64(), b.next_u64());
     }
 
     #[test]

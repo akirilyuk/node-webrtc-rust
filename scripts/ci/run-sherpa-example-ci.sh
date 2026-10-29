@@ -145,7 +145,10 @@ ensure_sherpa_models() {
 }
 
 # Speaker model, Piper voices and the generated conversation scenes for start:roundtrip-noisy-bystander,
-# once per job (S3 test set at the default main level and at -26 dBFS). Scenes are never committed.
+# once per job: only the two S3 test scenes the roundtrip plays (-15 dB bystander, caller at the
+# default level and at -26 dBFS), with every turn gap raised to 2.5 s so the agent's default
+# end-of-turn (1.5 s finalize + VAD hangover) closes each turn before the next speaker starts.
+# Scenes are never committed.
 ensure_speaker_fixtures() {
   sherpa_e2e_selected start:roundtrip-noisy-bystander || return 0
   local ex="$ROOT/examples/voice-agent-local-sherpa"
@@ -157,7 +160,7 @@ ensure_speaker_fixtures() {
     cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
       --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low" \
       --phrases "$ex/stt-phrase-qualification.json" --out "$ex/.models/speaker-fixtures" \
-      --main-levels -26
+      --main-levels -26 --min-turn-gap-ms 2500 --only s3_test_m15
 }
 
 # Model-backed vendor tests kept #[ignore] in default cargo test (no weights in PR quality).

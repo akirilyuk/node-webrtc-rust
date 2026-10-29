@@ -19,7 +19,8 @@
  * Needs the speaker assets (`npm run download-speaker`) and the scenes:
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
  *     --models .models/speaker --main-tts .models/vits-piper-en_US-amy-low \
- *     --phrases stt-phrase-qualification.json --out .models/speaker-fixtures --main-levels -26
+ *     --phrases stt-phrase-qualification.json --out .models/speaker-fixtures --main-levels -26 \
+ *     --min-turn-gap-ms 2500 --only s3_test_m15
  * (CI does this in `ensure_sherpa_models`.)
  *
  * Run:

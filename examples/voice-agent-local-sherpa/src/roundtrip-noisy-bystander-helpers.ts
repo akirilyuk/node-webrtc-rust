@@ -10,9 +10,17 @@ import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
 import { wordSimilarity } from './roundtrip-counting.js'
 
-/** Product defaults of `speakerGate` (G1): the delay bound is checkSpeechMs + this margin. */
+/** Product default of `speakerGate.checkSpeechMs` (G1): the verdict needs this much speech. */
 export const CHECK_SPEECH_MS = 1500
-export const BARGE_DELAY_MARGIN_MS = 150
+/**
+ * `vad.bargeIn.minSttPartialTokens` the roundtrip sets on its agent (the product default, 2). With
+ * `requireSttPartial` a barge-in waits for the first partial with at least this many tokens.
+ */
+export const MIN_STT_PARTIAL_TOKENS = 2
+/** A barge-in may come at most this long after the later of the verdict and the qualifying partial. */
+export const BARGE_SLACK_MS = 300
+/** Absolute cap on barge-in delay after the caller's `user_speaking_start`. */
+export const BARGE_ABS_CAP_MS = 3000
 export const BYSTANDER_RELATIVE_DB = -15
 export const QUIET_CALLER_DBFS = -26
 export const WARMUP_S = 0.6
@@ -31,6 +39,31 @@ export interface Seen {
   text?: string
   utteranceId?: string
   speaker?: string
+}
+
+/**
+ * Token count as the product counts it (`stt_partial_token_count` in crates/speech config.rs):
+ * whitespace-separated tokens with at least one alphanumeric character.
+ */
+export function sttPartialTokenCount(text: string): number {
+  return text.split(/\s+/).filter((tok) => tok.length > 0 && /[\p{L}\p{N}]/u.test(tok)).length
+}
+
+/**
+ * When a caller's barge-in is due, from events the product emits for that utterance: the later of
+ * speech start + checkSpeechMs (speaker verdict) and the first `user_speech_partial` on the same
+ * `utteranceId` with at least {@link MIN_STT_PARTIAL_TOKENS} tokens (`requireSttPartial`).
+ * `undefined` when the utterance never had a qualifying partial.
+ */
+export function expectedBargeAtMs(start: Seen, seen: Seen[]): number | undefined {
+  const partial = seen.find(
+    (e) =>
+      e.type === SPEECH_EVENT_TYPE.userSpeechPartial &&
+      e.utteranceId === start.utteranceId &&
+      sttPartialTokenCount(e.text ?? '') >= MIN_STT_PARTIAL_TOKENS,
+  )
+  if (partial == null) return undefined
+  return Math.max(start.atMs + CHECK_SPEECH_MS, partial.atMs)
 }
 
 /** Interleaved stereo s16le @ 48 kHz payload of a wav file (the `data` chunk). */
@@ -86,7 +119,8 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
   }
   const barges = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
   for (const b of barges) {
-    if (b.utteranceId == null) failures.push(`${label}: barge_in at ${b.atMs} ms without utteranceId`)
+    if (b.utteranceId == null)
+      failures.push(`${label}: barge_in at ${b.atMs} ms without utteranceId`)
   }
   const bargesOf = (id: string): Seen[] => barges.filter((b) => b.utteranceId === id)
   const starts = matchTurnUtterances(turns, seen)
@@ -118,11 +152,21 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       failures.push(`${tag}: no barge_in`)
     } else {
       const delay = barge.atMs - start.atMs
-      console.log(`${tag}: barge-in ${delay} ms after speech start`)
-      if (delay > CHECK_SPEECH_MS + BARGE_DELAY_MARGIN_MS) {
+      const expected = expectedBargeAtMs(start, seen)
+      console.log(
+        `${tag}: barge-in ${delay} ms after speech start, ${expected != null ? barge.atMs - expected : 'n/a'} ms after expected`,
+      )
+      if (expected == null) {
         failures.push(
-          `${tag}: barge-in ${delay} ms after speech start > ${CHECK_SPEECH_MS + BARGE_DELAY_MARGIN_MS}`,
+          `${tag}: barge_in without a qualifying partial (>= ${MIN_STT_PARTIAL_TOKENS} tokens) on ${id}`,
         )
+      } else if (barge.atMs - expected > BARGE_SLACK_MS) {
+        failures.push(
+          `${tag}: barge-in ${barge.atMs - expected} ms after expected (max of verdict and qualifying partial) > ${BARGE_SLACK_MS}`,
+        )
+      }
+      if (delay > BARGE_ABS_CAP_MS) {
+        failures.push(`${tag}: barge-in ${delay} ms after speech start > cap ${BARGE_ABS_CAP_MS}`)
       }
     }
     if (final == null) {

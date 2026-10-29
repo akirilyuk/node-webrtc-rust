@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   evaluateTurns,
+  expectedBargeAtMs,
   matchTurnUtterances,
+  sttPartialTokenCount,
   type Seen,
   type Turn,
 } from './roundtrip-noisy-bystander-helpers.js'
@@ -30,6 +32,7 @@ function ev(type: string, atMs: number, extra: Partial<Seen> = {}): Seen {
 function healthy(): Seen[] {
   return [
     ev('user_speaking_start', 10_100, { utteranceId: 'u1' }),
+    ev('user_speech_partial', 11_400, { utteranceId: 'u1', text: 'please check' }),
     ev('barge_in', 11_500, { utteranceId: 'u1' }),
     ev('user_speech_final', 13_000, {
       utteranceId: 'u1',
@@ -98,9 +101,55 @@ describe('evaluateTurns', () => {
     expect(evaluateTurns([caller, bystander], seen, 'p').join('\n')).toMatch(/expected other/)
   })
 
-  it('fails a barge-in later than checkSpeechMs + 150 ms', () => {
-    const seen = healthy().map((e) => (e.type === 'barge_in' ? { ...e, atMs: 11_800 } : e))
-    expect(evaluateTurns([caller, bystander], seen, 'p').join('\n')).toMatch(/> 1650/)
+  it('bounds the barge by the verdict when a qualifying partial came first', () => {
+    // Start 10 100, qualifying partial 10 600 -> expected = verdict 11 600.
+    const base = healthy().filter((e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in')
+    const seen = [
+      ...base,
+      ev('user_speech_partial', 10_600, { utteranceId: 'u1', text: 'please check' }),
+      ev('barge_in', 11_650, { utteranceId: 'u1' }),
+    ].sort((a, b) => a.atMs - b.atMs)
+    expect(evaluateTurns([caller, bystander], seen, 'p')).toEqual([])
+    expect(expectedBargeAtMs(seen[0]!, seen)).toBe(11_600)
+  })
+
+  it('passes a barge at the first qualifying partial after a 1-token partial', () => {
+    const base = healthy().filter((e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in')
+    const seen = [
+      ...base,
+      ev('user_speech_partial', 11_000, { utteranceId: 'u1', text: 'please' }),
+      ev('user_speech_partial', 12_270, { utteranceId: 'u1', text: 'please check my' }),
+      ev('barge_in', 12_280, { utteranceId: 'u1' }),
+    ].sort((a, b) => a.atMs - b.atMs)
+    expect(evaluateTurns([caller, bystander], seen, 'p')).toEqual([])
+  })
+
+  it('fails a barge 400 ms after expected', () => {
+    const base = healthy().filter((e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in')
+    const seen = [
+      ...base,
+      ev('user_speech_partial', 10_600, { utteranceId: 'u1', text: 'please check' }),
+      ev('barge_in', 12_000, { utteranceId: 'u1' }),
+    ].sort((a, b) => a.atMs - b.atMs)
+    expect(evaluateTurns([caller, bystander], seen, 'p').join('\n')).toMatch(
+      /400 ms after expected .* > 300/,
+    )
+  })
+
+  it('fails a barge without a qualifying partial', () => {
+    const seen = healthy().map((e) =>
+      e.type === 'user_speech_partial' ? { ...e, text: 'please' } : e,
+    )
+    expect(evaluateTurns([caller, bystander], seen, 'p').join('\n')).toMatch(
+      /barge_in without a qualifying partial \(>= 2 tokens\) on u1/,
+    )
+  })
+
+  it('counts tokens like the product (alphanumeric tokens only)', () => {
+    expect(sttPartialTokenCount('Excu')).toBe(1)
+    expect(sttPartialTokenCount('Excuse me, please')).toBe(3)
+    expect(sttPartialTokenCount('  - ... ok  ')).toBe(1)
+    expect(sttPartialTokenCount('')).toBe(0)
   })
 
   it('fails a caller turn without barge-in, and a misrecognized qualified phrase', () => {

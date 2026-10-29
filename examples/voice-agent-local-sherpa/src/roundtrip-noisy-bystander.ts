@@ -17,7 +17,8 @@
  *   - no `barge_in` carries a bystander utterance's id, and its final (when detected) has `speaker: 'other'`;
  *   - every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match
  *     the manifest text by the roundtrip oracle (`wordSimilarity`; long sentences are not judged);
- *   - barge-in delay after the caller's `user_speaking_start` <= checkSpeechMs + 150 ms.
+ *   - the barge-in comes at most 300 ms after the later of speech start + checkSpeechMs and the
+ *     first partial with >= minSttPartialTokens tokens on that utterance; at most 3 s after start.
  *
  * Needs the speaker assets (`npm run download-speaker`) and the scenes:
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
@@ -55,6 +56,7 @@ import {
   WARMUP_S,
   evaluateTurns,
   matchTurnUtterances,
+  MIN_STT_PARTIAL_TOKENS,
   readWavPcm,
   type Seen,
   type Turn,
@@ -153,6 +155,7 @@ function listenerConfig(base: VoiceAgentConfig, modelPath: string): VoiceAgentCo
         useVad: true,
         flushTts: true,
         requireSttPartial: true,
+        minSttPartialTokens: MIN_STT_PARTIAL_TOKENS,
         agentPlaybackGuardMs: 0,
       },
     },

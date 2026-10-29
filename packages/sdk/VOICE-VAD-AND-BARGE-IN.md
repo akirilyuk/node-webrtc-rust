@@ -310,6 +310,17 @@ vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'adaptive', adaptive: { noiseMarginD
 
 The defaults are provisional until the bench picks them. With `adaptive`, `vad.threshold` only matters during warm-up.
 
+Bench results (main caller at −20 dBFS, raw audio, one bystander at the given level below the caller):
+
+| Bystander | `energy`: oracle / onset | `adaptive`: oracle / onset | `adaptive` merged / missed turns |
+| --------- | ------------------------ | -------------------------- | -------------------------------- |
+| −20 dB    | 50 % / 706 ms            | **100 % / 74 ms**          | 0 / 0                            |
+| −15 dB    | 50 % / 654 ms            | **100 % / 77 ms**          | 0 / 0                            |
+| −10 dB    | 75 % / 554 ms            | 75 % / 194 ms              | 2 / 2                            |
+| −6 dB     | 50 % / 574 ms            | 75 % / 144 ms              | 1 / 2                            |
+
+Use `adaptive` for quiet callers; a bystander within about 10 dB of the caller can merge or split turns (accepted limit, not tuned).
+
 **When to use it:** a caller who is quiet or far from the mic (the fixed threshold never fires), or a noise level that differs per call (the fixed threshold is either too high or too low).
 
 **Caveat:** it follows level, not voice. A bystander who is louder than the caller is still speech. Telling voices apart is the job of the speaker gate, not of the VAD.

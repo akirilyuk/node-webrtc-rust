@@ -374,3 +374,229 @@ fn adaptive_frame_cost() {
         "100k frames took {took:?}"
     );
 }
+
+// ---- Long-turn reliability (chunk 2b). Every randomized test loops seeds 0..50. ----
+
+/// Samples with a 4 Hz +-8 dB syllable envelope applied on top of `to_pcm` output.
+fn syllable_pcm(rng: &mut Noise, idx: usize, part: Part) -> Vec<u8> {
+    let mut pcm = to_pcm(rng, idx, part);
+    if part.tone_db.is_some() {
+        for i in 0..SAMPLES {
+            let t = (idx * SAMPLES + i) as f32 / 48_000.0;
+            let g = amp(8.0 * (2.0 * PI * 4.0 * t).sin());
+            for ch in 0..2 {
+                let o = i * 4 + ch * 2;
+                let s = i16::from_le_bytes([pcm[o], pcm[o + 1]]);
+                let v = (s as f32 * g).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                pcm[o..o + 2].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+    pcm
+}
+
+/// Noise floor (-45 dBFS) plus, while `caller_db_at(t)` is `Some`, the modulated caller.
+/// Returns transitions `(ms_after_frame, kind)`, the speaking trace and the final engine.
+fn run_scene(
+    seed: u64,
+    total_ms: u32,
+    caller_db_at: impl Fn(u32) -> Option<f32>,
+) -> (Vec<(u32, VadTransition)>, Vec<bool>, VadEngine) {
+    let mut engine = VadEngine::new(adaptive_config()).unwrap();
+    let mut rng = Noise(seed.wrapping_mul(7919).wrapping_add(1));
+    let (mut out, mut trace) = (Vec::new(), Vec::new());
+    for idx in 0..(total_ms / FRAME_MS) as usize {
+        let t = idx as u32 * FRAME_MS;
+        let part = match caller_db_at(t) {
+            Some(db) => with_tone(noise(-45.0), db),
+            None => noise(-45.0),
+        };
+        let pcm = syllable_pcm(&mut rng, idx, part);
+        let (tr, _) = engine.process_webrtc_pcm(&pcm, FRAME_MS).unwrap();
+        out.extend(tr.into_iter().map(|x| (t + FRAME_MS, x)));
+        trace.push(engine.is_speaking());
+    }
+    (out, trace, engine)
+}
+
+/// Seeded turn plan: turns of 2..7.5 s separated by 2 s of noise; in-turn pauses 100..900 ms.
+/// Returns (turn windows, pause windows).
+type Windows = Vec<(u32, u32)>;
+
+fn turn_plan(seed: u64) -> (Windows, Windows) {
+    let mut r = Noise(seed + 1000);
+    let mut rnd = |lo: u32, hi: u32| lo + (((r.next() + 1.0) / 2.0) * (hi - lo) as f32) as u32;
+    let (mut turns, mut pauses) = (Vec::new(), Vec::new());
+    let mut t = 2000;
+    for _ in 0..3 {
+        let len = rnd(2000, 7500) / FRAME_MS * FRAME_MS;
+        turns.push((t, t + len));
+        let mut p = t + rnd(600, 1400) / FRAME_MS * FRAME_MS;
+        while p + 900 + 400 < t + len {
+            let pl = rnd(100, 900) / FRAME_MS * FRAME_MS;
+            pauses.push((p, p + pl));
+            p += pl + rnd(500, 1500) / FRAME_MS * FRAME_MS;
+        }
+        t += len + 2000;
+    }
+    (turns, pauses)
+}
+
+#[test]
+fn adaptive_turn_under_guard_never_cut() {
+    for seed in 0..50u64 {
+        let (turns, pauses) = turn_plan(seed);
+        let total = turns.last().unwrap().1 + 3000;
+        let (ev, _, _) = run_scene(seed, total, |t| {
+            let in_turn = turns.iter().any(|(a, b)| t >= *a && t < *b);
+            let in_pause = pauses.iter().any(|(a, b)| t >= *a && t < *b);
+            (in_turn && !in_pause).then_some(-20.0)
+        });
+        let (s, e) = (starts(&ev), ends(&ev));
+        assert_eq!(s.len(), turns.len(), "seed {seed}: {ev:?} turns {turns:?}");
+        assert_eq!(e.len(), turns.len(), "seed {seed}: {ev:?} turns {turns:?}");
+        for (i, (a, b)) in turns.iter().enumerate() {
+            assert!(s[i] >= *a, "seed {seed}: start {} before turn {a}", s[i]);
+            assert!(e[i] >= *b, "seed {seed}: end {} before turn end {b}", e[i]);
+        }
+    }
+}
+
+/// 12 s continuous caller from 3 s; returns the engine events and the trace.
+fn long_turn(
+    seed: u64,
+    total_ms: u32,
+    db: f32,
+) -> (Vec<(u32, VadTransition)>, Vec<bool>, VadEngine) {
+    run_scene(seed, total_ms, |t| {
+        (3000..15_000).contains(&t).then_some(db)
+    })
+}
+
+#[test]
+fn adaptive_long_turn_cut_bounded() {
+    let mut cuts = Vec::new();
+    for seed in 0..50u64 {
+        let (ev, _, _) = long_turn(seed, 20_000, -20.0);
+        let (s, e) = (starts(&ev), ends(&ev));
+        assert_eq!(s.len(), 1, "seed {seed}: second lock-open: {ev:?}");
+        assert_eq!(e.len(), 1, "seed {seed}: {ev:?}");
+        let dur = e[0] - s[0];
+        assert!(
+            (8000..=11_000).contains(&dur),
+            "seed {seed}: cut after {dur} ms"
+        );
+        cuts.push(dur);
+    }
+    let (min, max) = (*cuts.iter().min().unwrap(), *cuts.iter().max().unwrap());
+    eprintln!("long_turn cut ms: min {min} max {max}");
+    assert!(
+        (PIN_CUT_MS - 500..=PIN_CUT_MS + 500).contains(&min)
+            && (PIN_CUT_MS - 500..=PIN_CUT_MS + 500).contains(&max),
+        "cut range {min}..{max} left the pinned {PIN_CUT_MS} +- 500 ms"
+    );
+}
+
+/// Measured cut time of a 12 s caller turn (ms after SpeechStart).
+const PIN_CUT_MS: u32 = 10_940;
+
+#[test]
+fn adaptive_recovers_after_long_turn_cut() {
+    for seed in 0..50u64 {
+        // 12 s turn at 3 s, cut ~11 s, caller stops at 15 s, 3 s noise, -26 dBFS turn at 18 s.
+        let (ev, _, _) = run_scene(seed, 22_000, |t| {
+            if (3000..15_000).contains(&t) {
+                Some(-20.0)
+            } else if (18_000..19_500).contains(&t) {
+                Some(-26.0)
+            } else {
+                None
+            }
+        });
+        let s: Vec<u32> = starts(&ev).into_iter().filter(|ms| *ms >= 18_000).collect();
+        assert_eq!(s.len(), 1, "seed {seed}: {ev:?}");
+        assert!(
+            s[0] <= 18_400,
+            "seed {seed}: start {} ms after onset 18000",
+            s[0]
+        );
+    }
+}
+
+#[test]
+fn adaptive_twenty_second_monologue_bounded() {
+    for seed in 0..50u64 {
+        let (ev, trace, engine) = run_scene(seed, 30_000, |t| {
+            (3000..23_000).contains(&t).then_some(-20.0)
+        });
+        let e = ends(&ev);
+        assert!(e.len() <= 3, "seed {seed}: {ev:?}");
+        let first_start = starts(&ev)[0];
+        assert!(
+            e.iter().all(|ms| *ms - first_start >= 8000),
+            "seed {seed}: early end {ev:?}"
+        );
+        assert!(
+            !speaking_between(&trace, 24_500, 27_000),
+            "seed {seed}: still speaking after the caller stopped: {ev:?}"
+        );
+        // 4 s after the end, N is within 3 dB of what it read on the same noise before the
+        // caller (the VAD's 16 kHz mono level of -45 dBFS white noise sits below -45).
+        let base = run_scene(seed, 3000, |_| None)
+            .2
+            .adaptive_state()
+            .unwrap()
+            .noise_db;
+        let n = engine.adaptive_state().unwrap().noise_db;
+        assert!(
+            (n - base).abs() <= 3.0,
+            "seed {seed}: N {n} dB vs baseline {base} dB"
+        );
+    }
+}
+
+#[test]
+fn adaptive_guard_vs_noise_step_seeds() {
+    for seed in 0..50u64 {
+        let mut engine = VadEngine::new(adaptive_config()).unwrap();
+        let mut rng = Noise(seed + 77);
+        let mut ends_ms = Vec::new();
+        for idx in 0..(22_000 / FRAME_MS) as usize {
+            let t = idx as u32 * FRAME_MS;
+            let part = if t < 6000 {
+                if (2000..3000).contains(&t) || (4000..5000).contains(&t) {
+                    with_tone(babble(-45.0), -20.0)
+                } else {
+                    babble(-45.0)
+                }
+            } else {
+                babble_mod(-30.0, 10.0)
+            };
+            let pcm = to_pcm(&mut rng, idx + seed as usize * 7, part);
+            let (tr, _) = engine.process_webrtc_pcm(&pcm, FRAME_MS).unwrap();
+            if tr.contains(&VadTransition::SpeechEnd) {
+                ends_ms.push(t + FRAME_MS);
+            }
+        }
+        assert!(
+            ends_ms.iter().any(|ms| *ms <= 16_000),
+            "seed {seed}: no SpeechEnd by 16 s: {ends_ms:?}"
+        );
+    }
+}
+
+#[test]
+fn adaptive_guard_episode_logs_once() {
+    // One guard episode per over-long utterance, however many frames it feeds; zero otherwise.
+    let (_, _, engine) = long_turn(1, 20_000, -20.0);
+    assert_eq!(engine.adaptive_state().unwrap().stuck_episodes, 1);
+
+    let (_, _, engine) = run_scene(1, 12_000, |t| (3000..6000).contains(&t).then_some(-20.0));
+    assert_eq!(engine.adaptive_state().unwrap().stuck_episodes, 0);
+
+    // Two long turns: two episodes.
+    let (_, _, engine) = run_scene(1, 40_000, |t| {
+        ((3000..15_000).contains(&t) || (22_000..34_000).contains(&t)).then_some(-20.0)
+    });
+    assert_eq!(engine.adaptive_state().unwrap().stuck_episodes, 2);
+}

@@ -48,6 +48,8 @@ pub struct AdaptiveVadState {
     pub threshold_db: f32,
     pub noise_db: f32,
     pub speech_db: f32,
+    /// Stuck-guard episodes since the last reset (one per open utterance that outlasted `stuckActiveMs`).
+    pub stuck_episodes: u32,
 }
 
 /// Energy VAD whose threshold follows the noise floor and the caller's level.
@@ -66,6 +68,7 @@ pub struct AdaptiveEnergyVad {
     utterance_ms: u32,
     utterance_open: bool,
     stuck_logged: bool,
+    stuck_episodes: u32,
     speech_db: Option<f32>,
     last_threshold_db: f32,
     last_noise_db: f32,
@@ -84,6 +87,7 @@ impl AdaptiveEnergyVad {
             utterance_ms: 0,
             utterance_open: false,
             stuck_logged: false,
+            stuck_episodes: 0,
             speech_db: None,
             last_threshold_db: f32::NAN,
             last_noise_db: f32::NAN,
@@ -108,6 +112,7 @@ impl AdaptiveEnergyVad {
             threshold_db: self.last_threshold_db,
             noise_db: self.last_noise_db,
             speech_db: self.speech_db.unwrap_or(f32::NAN),
+            stuck_episodes: self.stuck_episodes,
         }
     }
 
@@ -145,6 +150,7 @@ impl VoiceActivityDetector for AdaptiveEnergyVad {
         self.utterance_ms = 0;
         self.utterance_open = false;
         self.stuck_logged = false;
+        self.stuck_episodes = 0;
         self.speech_db = None;
         self.last_threshold_db = f32::NAN;
         self.last_noise_db = f32::NAN;
@@ -203,6 +209,7 @@ impl VoiceActivityDetector for AdaptiveEnergyVad {
             if self.utterance_ms > self.cfg.stuck_active_ms {
                 if !self.stuck_logged {
                     self.stuck_logged = true;
+                    self.stuck_episodes += 1;
                     crate::agent::voice_debug(
                         "adaptive vad: utterance open too long, feeding noise window",
                     );

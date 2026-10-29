@@ -2998,7 +2998,7 @@ impl VoiceAgent {
             inner.config.vad.barge_in.clone()
         };
         if barge_in.enabled && !barge_in.use_vad {
-            self.barge_in_with_speaking_end(&barge_in).await;
+            self.barge_in_with_speaking_end(&barge_in, None).await;
             voice_debug("agent_speaking=false (manual barge-in flush)");
         } else {
             self.tts_buffer
@@ -3085,14 +3085,15 @@ impl VoiceAgent {
         let _step = self.utterance_step.lock().await;
         // Live or closing: a short utterance's check goes out at SpeechEnd, after the record
         // moved to closing, and its barge-in still fires on that verdict.
-        let (known, barge_in, speaking) = {
+        let (record_id, barge_in, speaking) = {
             let inner = self.inner.lock().await;
             (
-                inner.stt_record_ref(verdict.key).is_some(),
+                inner.stt_record_ref(verdict.key).map(|r| r.id.clone()),
                 inner.config.vad.barge_in.clone(),
                 inner.agent_speaking,
             )
         };
+        let known = record_id.is_some();
         // A pending barge for this key makes the verdict known even after the record is gone
         // (the next utterance completed it); only a key with neither is stale.
         if !gate.take_pending_barge(verdict.key) {
@@ -3124,7 +3125,7 @@ impl VoiceAgent {
             "speaker gate: barge-in after verdict ({})",
             verdict.outcome.as_str()
         ));
-        self.barge_in_with_speaking_end(&barge_in).await;
+        self.barge_in_with_speaking_end(&barge_in, record_id).await;
         self.cancel_pending_tts_synthesis().await;
     }
 
@@ -3154,7 +3155,13 @@ impl VoiceAgent {
     /// TTS drain (which observes the flush) finds `agent_speaking == false` and does not emit; then
     /// flush + `agent_reply_end{interrupted}` + `barge_in`; then `agent_speaking_end` if this call
     /// ended speaking. Order is always reply_end(s) -> barge_in -> agent_speaking_end.
-    async fn barge_in_with_speaking_end(&self, barge_in: &BargeInConfig) {
+    /// `utterance_id`: the utterance that barged in (`None` for a manual flush, or when the
+    /// utterance record is already gone).
+    async fn barge_in_with_speaking_end(
+        &self,
+        barge_in: &BargeInConfig,
+        utterance_id: Option<String>,
+    ) {
         if !barge_in.enabled {
             return;
         }
@@ -3173,7 +3180,7 @@ impl VoiceAgent {
             // Test-only hook (`set_barge_in_flush_delay_for_test`).
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
-        self.emit(SpeechEvent::barge_in());
+        self.emit(SpeechEvent::barge_in().with_utterance_id(utterance_id));
         if ended {
             self.emit(SpeechEvent::agent_speaking_end());
         }
@@ -3258,7 +3265,8 @@ impl VoiceAgent {
                 otel::record_voice_turn_response_abandoned(Self::project_id_label(&guard));
             }
         }
-        self.barge_in_with_speaking_end(&barge_in).await;
+        let live_id = self.inner.lock().await.live_id();
+        self.barge_in_with_speaking_end(&barge_in, live_id).await;
         self.cancel_pending_tts_synthesis().await;
         Ok(())
     }
@@ -3367,7 +3375,8 @@ impl VoiceAgent {
                 voice_debug(format!(
                     "immediate barge-in on VAD SpeechStart (require_stt_partial={require_stt_partial}, emits_partials={emits_partials})"
                 ));
-                self.barge_in_with_speaking_end(&barge_in).await;
+                let live_id = self.inner.lock().await.live_id();
+                self.barge_in_with_speaking_end(&barge_in, live_id).await;
                 self.cancel_pending_tts_synthesis().await;
             }
         }

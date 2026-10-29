@@ -1054,3 +1054,57 @@ async fn agent_new_rejects_bad_gate_config() {
     cfg.speaker_gate.threshold = 1.5;
     assert!(VoiceAgent::new(cfg, registry).is_err());
 }
+
+/// `barge_in` names the utterance that barged in, on the immediate path (no reference yet) and
+/// on the verdict path (enrolled caller), so consumers pair it by id, not by time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn barge_in_carries_utterance_id_on_immediate_and_verdict_paths() {
+    fn ids(rig: &Rig) -> (Option<String>, Option<String>, Option<String>) {
+        let barge = rig
+            .log
+            .iter()
+            .rev()
+            .find(|e| e.kind == SpeechEventKind::BargeIn)
+            .and_then(|e| e.utterance_id.clone());
+        let start = rig
+            .log
+            .iter()
+            .rev()
+            .find(|e| e.kind == SpeechEventKind::UserSpeakingStart)
+            .and_then(|e| e.utterance_id.clone());
+        let final_id = rig.finals().last().and_then(|e| e.utterance_id.clone());
+        (barge, start, final_id)
+    }
+
+    // Immediate path: nothing enrolled, the barge fires on the first frames.
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("hello".into());
+    rig.feed(&loud_stereo_frame(), 3).await;
+    assert!(rig.wait_event(SpeechEventKind::BargeIn, 2000).await);
+    rig.feed(&loud_stereo_frame(), 12).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let (barge, start, final_id) = ids(&rig);
+    assert!(barge.is_some(), "immediate barge_in has an utterance id");
+    assert_eq!(barge, start);
+    assert_eq!(barge, final_id);
+    rig.agent.stop().await.unwrap();
+
+    // Verdict path: enrolled caller, the barge fires on the verdict.
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("let me interrupt".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    assert!(rig.wait_event(SpeechEventKind::BargeIn, 3000).await);
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let (barge, start, final_id) = ids(&rig);
+    assert!(barge.is_some(), "verdict barge_in has an utterance id");
+    assert_eq!(barge, start);
+    assert_eq!(barge, final_id);
+    rig.agent.stop().await.unwrap();
+}

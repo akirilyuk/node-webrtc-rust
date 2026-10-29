@@ -45,6 +45,8 @@
 //! 6. `utteranceId` is also set on `user_stt_start`, `stt_stream_start`, `stt_stream_end` and
 //!    `user_stt_end` (builder `with_utterance_id`), and `user_speaking_end` always carries the id
 //!    of the utterance it closes.
+//! 7. `barge_in` from a `VoiceAgent` carries the `utteranceId` of the utterance that barged in;
+//!    the standalone VAD path and a manual flush leave it unset.
 
 use crate::config::{SttConfig, TtsConfig};
 

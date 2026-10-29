@@ -17,6 +17,15 @@ describe('speaker gate speech events', () => {
     expect(ev.text).toBeUndefined()
   })
 
+  test('barge_in passes the utterance id through', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.BargeIn,
+      utteranceId: 'utt-7',
+    })
+    expect(ev.type).toBe('barge_in')
+    expect(ev.utteranceId).toBe('utt-7')
+  })
+
   test('user_speech_final passes the speaker verdict through', () => {
     const ev = fromJsSpeechEvent({
       eventType: JsSpeechEventType.UserSpeechFinal,

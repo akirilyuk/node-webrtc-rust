@@ -291,6 +291,9 @@ export interface VoiceAgentConfig {
    * `user_speech_ignored` event (`'drop'`). Utterances shorter than `minCheckSpeechMs`, and any
    * check that fails or times out, are `speaker: 'unknown'` and behave as without the gate.
    *
+   * Use it with `vad.provider: 'adaptive'`. With the energy VAD, turns in background noise split
+   * into short pieces, which are more often `unknown`.
+   *
    * Voice embeddings are biometric data. They stay in process memory: never logged, emitted,
    * stored or sent anywhere. Tell your users when you enable this.
    */

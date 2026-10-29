@@ -354,7 +354,10 @@ impl SpeakerGate {
             });
         }
         if !self.is_enrolled() {
-            feed.ended.push_back((cur.key, cur.buf));
+            // Kept for enrollment: voiced PCM only, without the pre-roll.
+            let mut voiced = cur.buf;
+            voiced.drain(..cur.pre);
+            feed.ended.push_back((cur.key, voiced));
             while feed.ended.len() > ENDED_CAP {
                 feed.ended.pop_front();
             }
@@ -434,8 +437,8 @@ impl SpeakerGate {
         }
     }
 
-    /// After a non-empty final whose verdict is not `other`: hand that utterance's voiced PCM to
-    /// enrollment (until enrolled).
+    /// After a non-empty final whose verdict is not `other`: hand that utterance's voiced PCM
+    /// (without the pre-roll) to enrollment (until enrolled).
     pub fn enroll_utterance(&self, key: u64) {
         if self.is_enrolled() {
             return;
@@ -443,7 +446,7 @@ impl SpeakerGate {
         let pcm = {
             let mut feed = lock(&self.feed);
             if let Some(cur) = feed.cur.as_ref().filter(|c| c.key == key) {
-                Some(cur.buf.clone())
+                Some(cur.buf[cur.pre..].to_vec())
             } else {
                 feed.ended
                     .iter()
@@ -587,6 +590,35 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enrollment_pcm_excludes_the_pre_roll() {
+        let gate = SpeakerGate::new(SpeakerGateConfig {
+            enabled: true,
+            model_path: Some("m.onnx".into()),
+            ..SpeakerGateConfig::default()
+        });
+        // 300 ms of pre-roll (value 1), then 100 ms of speech (value 2).
+        for _ in 0..15 {
+            gate.push_frame(&[1_u8; 640]);
+        }
+        gate.begin(7, &[2_u8; 640]);
+        for _ in 0..4 {
+            gate.push_frame(&[2_u8; 640]);
+        }
+        gate.end_utterance();
+        let mut rx = lock(&gate.rx).take().unwrap();
+        gate.enroll_utterance(7);
+        let mut enrolled = None;
+        while let Ok(msg) = rx.try_recv() {
+            if let Msg::Enroll { pcm } = msg {
+                enrolled = Some(pcm);
+            }
+        }
+        let pcm = enrolled.expect("enroll message");
+        assert_eq!(pcm.len(), 5 * 640);
+        assert!(pcm.iter().all(|b| *b == 2), "pre-roll bytes in enrollment");
+    }
 
     #[test]
     fn cosine_basics() {

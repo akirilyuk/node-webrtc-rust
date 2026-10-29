@@ -3058,16 +3058,19 @@ impl VoiceAgent {
     }
 
     /// Verdicts dropped because their utterance was gone (tests and diagnostics).
+    #[doc(hidden)]
     pub fn speaker_gate_stale_verdicts(&self) -> u64 {
         self.speaker_gate.as_ref().map_or(0, |g| g.stale_verdicts())
     }
 
     /// True once the caller's voice is enrolled (tests and diagnostics).
+    #[doc(hidden)]
     pub fn speaker_gate_enrolled(&self) -> bool {
         self.speaker_gate.as_ref().is_some_and(|g| g.is_enrolled())
     }
 
     /// Warn lines of the speaker gate (tests and diagnostics).
+    #[doc(hidden)]
     pub fn speaker_gate_warnings(&self) -> Vec<String> {
         self.speaker_gate
             .as_ref()
@@ -3080,11 +3083,12 @@ impl VoiceAgent {
             return;
         };
         let _step = self.utterance_step.lock().await;
-        let (known, live, barge_in, speaking) = {
+        // Live or closing: a short utterance's check goes out at SpeechEnd, after the record
+        // moved to closing, and its barge-in still fires on that verdict.
+        let (known, barge_in, speaking) = {
             let inner = self.inner.lock().await;
             (
-                inner.record_ref(verdict.key).is_some(),
-                inner.live_key() == Some(verdict.key),
+                inner.stt_record_ref(verdict.key).is_some(),
                 inner.config.vad.barge_in.clone(),
                 inner.agent_speaking,
             )
@@ -3107,7 +3111,7 @@ impl VoiceAgent {
             );
             return;
         }
-        if !live || !speaking || self.protected_tts_active() {
+        if !speaking || self.protected_tts_active() {
             return;
         }
         {
@@ -3134,7 +3138,10 @@ impl VoiceAgent {
         };
         match gate.barge_decision(key) {
             BargeDecision::Proceed => false,
-            BargeDecision::Suppress => true,
+            BargeDecision::Suppress => {
+                eprintln!("[speaker-gate] info: speaker gate suppressed barge-in key={key}");
+                true
+            }
             BargeDecision::Defer => {
                 gate.set_pending_barge(key);
                 true

@@ -487,6 +487,31 @@ async fn verifier_never_settles_fails_open_and_does_not_block_next() {
     rig.agent.stop().await.unwrap();
 }
 
+/// A short enrolled-caller interruption ("stop", shorter than `checkSpeechMs`): its check goes
+/// out at SpeechEnd, after the record moved to closing, and its verdict still fires the barge-in
+/// while playback is active. (Here the clip, 100 ms of speech plus the VAD tail, passes the test
+/// config's 100 ms `minCheckSpeechMs`, so the verdict is `caller`; an `unknown` takes the same path.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enrolled_short_caller_utterance_barges_in() {
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
+    rig.feed(&loud_stereo_frame(), 5).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
+        "the short caller utterance barges in on its verdict"
+    );
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("caller")
+    );
+    rig.agent.stop().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn late_verdict_of_old_key_is_not_applied_to_next_utterance() {
     let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
@@ -534,7 +559,9 @@ async fn late_verdict_of_old_key_is_not_applied_to_next_utterance() {
 async fn frame_path_never_awaits_the_embedder() {
     let mut cfg = agent_config(gate_cfg(SpeakerMismatchAction::Flag));
     cfg.tts = None;
-    let rig = rig_with(cfg).await;
+    let mut rig = rig_with(cfg).await;
+    // Enrolled first: before enrollment a check is `unknown` without calling the embedder.
+    rig.enroll().await;
     *rig.default.lock().unwrap() = Behavior::Pending;
     let loud = loud_stereo_frame();
     let silent = silent_stereo_frame();
@@ -552,6 +579,13 @@ async fn frame_path_never_awaits_the_embedder() {
         worst < Duration::from_millis(5),
         "a frame waited {worst:?} on the embedder"
     );
+    // The checks did reach the pending embedder (each timed out off the frame path).
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    assert!(rig
+        .agent
+        .speaker_gate_warnings()
+        .iter()
+        .any(|w| w.contains("speaker gate verify timeout key=")));
     rig.agent.stop().await.unwrap();
 }
 

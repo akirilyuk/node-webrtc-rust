@@ -1,0 +1,29 @@
+import { describe, expect, test } from 'vitest'
+
+import { JsSpeechEventType } from '@node-webrtc-rust/bindings'
+
+import { fromJsSpeechEvent } from '../src/voice/VoiceAgent'
+
+describe('speaker gate speech events', () => {
+  test('user_speech_ignored carries reason and utterance id, no text', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechIgnored,
+      reason: 'speaker_mismatch',
+      utteranceId: 'u1',
+    })
+    expect(ev.type).toBe('user_speech_ignored')
+    expect(ev.reason).toBe('speaker_mismatch')
+    expect(ev.utteranceId).toBe('u1')
+    expect(ev.text).toBeUndefined()
+  })
+
+  test('user_speech_final passes the speaker verdict through', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hello',
+      speaker: 'other',
+    })
+    expect(ev.type).toBe('user_speech_final')
+    expect(ev.speaker).toBe('other')
+  })
+})

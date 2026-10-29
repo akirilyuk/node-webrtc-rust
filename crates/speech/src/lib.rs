@@ -58,6 +58,7 @@ pub mod pcm;
 pub mod pipeline;
 pub mod registry;
 pub mod session_recorder;
+#[doc(hidden)]
 pub mod speaker_gate;
 #[doc(hidden)]
 pub mod stt_actor;
